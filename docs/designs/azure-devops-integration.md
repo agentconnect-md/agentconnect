@@ -627,9 +627,9 @@ inside a sandbox, that Git must not hold the token either:
   credential helpers and the daemon minting capability. Every managed target
   of that invocation must be covered by the route before Git starts.
 - Non-Azure daemon Git retains its existing helper path in this delivery.
-  Scoped source acquisition and the in-pod auto-merge watcher also retain
-  their existing credential contracts. Their remaining capabilities mean a
-  mixed environment is not entirely free of token-minting authority.
+  Scoped source acquisition also retains its existing credential contract.
+  Its remaining capability means a mixed environment is not entirely free of
+  token-minting authority.
 
 The proxy already carries agent runtime Git. Workspace preparation now binds
 the execution environment and waits for its route before the first clone or

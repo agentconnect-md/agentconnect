@@ -48,8 +48,8 @@ export class ShimAutoMergeClient implements AutoMergeSandbox {
     } catch (err) {
       if (err instanceof ShimChannelLostError) throw err
       const message = err instanceof Error ? err.message : String(err)
-      // An image that ships no watcher is a refusal the console shows.
-      if (message.includes(AUTO_MERGE_UNSUPPORTED_IMAGE)) {
+      // An image that ships no watcher, or one whose watcher still asks for a credential capability, is a refusal the console shows.
+      if (message.includes(AUTO_MERGE_UNSUPPORTED_IMAGE) || message.includes('credential capability')) {
         throw new AutoMergeViolationError('unsupported-image', message)
       }
       // A pod BOUND before this daemon learned the capability carries no `automerge` grant, so its

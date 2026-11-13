@@ -3,8 +3,6 @@
 // intent IS the contract, and these tests pin the behaviour that projects it honestly.
 import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import type { GitCredentialCache } from '../src/cp/git-credential.js'
-import { AgentChannelServer } from '../src/cp/agent-channel-server.js'
 import { AutoMergeLoop } from '../src/github/auto-merge/loop.js'
 import { AutoMergeViolationError, AutoMergeWatcher, type AutoMergeSandbox } from '../src/github/auto-merge/watcher.js'
 import { ShimAutoMergeClient, askArmed } from '../src/shim/auto-merge-client.js'
@@ -58,7 +56,7 @@ const prAnswer = (checks: Array<Record<string, unknown>> = []) => ({
 
 describe('AutoMergeLoop', () => {
   it('ticks immediately on arm — a pull request that is already green must not wait out a poll', async () => {
-    const github = githubStub([prAnswer(), { data: { mergePullRequest: {} } }])
+    const github = githubStub([prAnswer(), { merged: true }])
     const { timers } = fakeTimers()
     const loop = new AutoMergeLoop({
       access: { token: async () => 'ghs_x', fetchImpl: github.fetchImpl },
@@ -76,7 +74,7 @@ describe('AutoMergeLoop', () => {
     const github = githubStub([
       prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }]),
       prAnswer(),
-      { data: { mergePullRequest: {} } }
+      { merged: true }
     ])
     const { timers, fire } = fakeTimers()
     const loop = new AutoMergeLoop({
@@ -133,8 +131,8 @@ describe('AutoMergeLoop', () => {
     // read BEFORE the operator unticked the box. Without it, the toggle reports off and merges anyway.
     let release: ((value: Response) => void) | undefined
     const calls: string[] = []
-    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
-      calls.push(String(init?.body).includes('mergePullRequest') ? 'merge' : 'snapshot')
+    const fetchImpl = vi.fn((url: string) => {
+      calls.push(url.endsWith('/merge') ? 'merge' : 'snapshot')
       return new Promise<Response>((resolve) => (release = resolve))
     })
     const { timers } = fakeTimers()
@@ -160,8 +158,8 @@ describe('AutoMergeLoop', () => {
     // The narrower window: the snapshot is back, readiness said go, and the tick is awaiting the token
     // the merge will be sent with. A fence checked only before that await has already passed.
     const calls: string[] = []
-    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
-      calls.push(String(init?.body).includes('mergePullRequest') ? 'merge' : 'snapshot')
+    const fetchImpl = vi.fn((url: string) => {
+      calls.push(url.endsWith('/merge') ? 'merge' : 'snapshot')
       return Promise.resolve(json(prAnswer()))
     })
     // One resolver per `token()` call: the snapshot's, then the merge's.
@@ -224,7 +222,7 @@ function fakeSandbox(): AutoMergeSandbox & { ops: string[]; armed: Set<string> }
     ops,
     armed,
     arm: async (c) => {
-      ops.push(`arm ${key(c)} cap=${c.capability ?? 'none'}`)
+      ops.push(`arm ${key(c)} via=${c.proxy?.url ?? 'none'}`)
       armed.add(key(c))
       return { armed: true, waitingOn: 'checks running: build' }
     },
@@ -268,15 +266,21 @@ const LOCAL = {
   placementOf: async (agentId: string) => agentId
 }
 
+const PROXY = {
+  url: 'http://codehost:t@127.0.0.1:1',
+  trustBundle: '/run/agentconnect/codehost-trust.pem',
+  placeholder: 'acph1_x'
+}
+
 const QUEUED = () => githubStub([prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }])]).fetchImpl
 
 describe('AutoMergeWatcher', () => {
-  it('routes a SANDBOX agent to its pod, carrying the credential capability', async () => {
+  it('routes a SANDBOX agent to its pod, carrying its GitHub proxy route', async () => {
     const sandbox = fakeSandbox()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: sandbox }),
-      daemonCapabilityFor: () => 'cap_secret',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -288,28 +292,26 @@ describe('AutoMergeWatcher', () => {
       waitingOn: 'checks running: build'
     })
     expect(await watcher.state(TARGET)).toMatchObject({ armed: true, placement: 'sandbox' })
-    expect(sandbox.ops).toContain('arm acme/repo#7 cap=cap_secret')
+    expect(sandbox.ops).toContain(`arm acme/repo#7 via=${PROXY.url}`)
 
     expect(await watcher.set(TARGET, false)).toEqual({ ...TARGET, armed: false })
     expect(await watcher.state(TARGET)).toEqual({ ...TARGET, armed: false })
   })
 
-  it('hands the pod the daemon’s agent channel capability, never the runtime’s', async () => {
+  it('arms no watcher in a pod whose listener does not forward GitHub', async () => {
     const sandbox = fakeSandbox()
-    // Never started: issuing capabilities needs no socket.
-    const server = new AgentChannelServer({} as GitCredentialCache, '/tmp/ac-amw-unused.sock', {
-      log: { info: () => undefined, warn: () => undefined }
-    })
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: sandbox }),
-      daemonCapabilityFor: (agentId) => server.capabilityFor(agentId, 'daemon'),
+      proxyFor: async () => undefined,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
-    await watcher.set(TARGET, true)
-    expect(sandbox.ops).toContain(`arm acme/repo#7 cap=${server.capabilityFor(TARGET.agentId, 'daemon')}`)
-    expect(sandbox.ops.join('\n')).not.toContain(server.capabilityFor(TARGET.agentId, 'runtime'))
+    await expect(watcher.set(TARGET, true)).rejects.toMatchObject({
+      reason: 'unsupported-image',
+      message: expect.stringContaining('no GitHub proxy route')
+    })
+    expect(sandbox.ops.filter((op) => op.startsWith('arm'))).toEqual([])
   })
 
   it('watches an isolated session’s arm in that session’s pod, leaving the agent pod untouched', async () => {
@@ -331,14 +333,14 @@ describe('AutoMergeWatcher', () => {
         return () => {}
       },
       onArmed: (subject) => renewed.push(subject),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
 
     expect(await watcher.set(TARGET, true, 'session-1')).toMatchObject({ armed: true, placement: 'sandbox' })
     expect(placedFor).toEqual(['session-1'])
-    expect(sessionPod.ops).toContain('arm acme/repo#7 cap=cap')
+    expect(sessionPod.ops).toContain(`arm acme/repo#7 via=${PROXY.url}`)
     // The agent pod was only asked whether it already watches this pull request.
     expect(agentPod.ops).toEqual(['watching acme/repo#7'])
     // The sweep's hold is taken and renewed on the pod that runs the watcher.
@@ -353,7 +355,7 @@ describe('AutoMergeWatcher', () => {
       knownAgent: () => true,
       // A shared session's tier places it with the agent, whatever pod is bound beside it.
       ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }, { 'shared-session': AGENT_POD }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: githubStub([
         prAnswer([{ __typename: 'CheckRun', name: 'build', status: 'QUEUED' }]),
@@ -364,8 +366,8 @@ describe('AutoMergeWatcher', () => {
     await watcher.set(TARGET, true, 'shared-session')
     await watcher.set({ ...TARGET, prNumber: 8 }, true)
     expect(agentPod.ops.filter((op) => op.startsWith('arm'))).toEqual([
-      'arm acme/repo#7 cap=cap',
-      'arm acme/repo#8 cap=cap'
+      `arm acme/repo#7 via=${PROXY.url}`,
+      `arm acme/repo#8 via=${PROXY.url}`
     ])
     expect(sessionPod.ops.filter((op) => op.startsWith('arm'))).toEqual([])
   })
@@ -377,7 +379,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x'
     })
 
@@ -404,7 +406,7 @@ describe('AutoMergeWatcher', () => {
         }
       ),
       onArmed: (subject) => renewed.push(subject),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -437,7 +439,7 @@ describe('AutoMergeWatcher', () => {
           b: SIBLING_POD
         }
       ),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl
     })
@@ -451,8 +453,8 @@ describe('AutoMergeWatcher', () => {
     expect(await one).toMatchObject({ armed: true })
     expect(await two).toMatchObject({ armed: true, placement: 'sandbox' })
     const arms = [...first.ops, ...second.ops].filter((op) => op.startsWith('arm'))
-    expect(arms).toEqual(['arm acme/repo#7 cap=cap'])
-    expect(first.ops).toContain('arm acme/repo#7 cap=cap')
+    expect(arms).toEqual([`arm acme/repo#7 via=${PROXY.url}`])
+    expect(first.ops).toContain(`arm acme/repo#7 via=${PROXY.url}`)
     // The second arm never reached the pre-arm probe: its scan answered first.
     expect(probes).toBe(1)
   })
@@ -471,7 +473,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -500,7 +502,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: sessionPod }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x'
     })
 
@@ -536,7 +538,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: agentPod, [SESSION_POD]: oldPod }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -548,7 +550,7 @@ describe('AutoMergeWatcher', () => {
     const unsure = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: fakeSandbox(), [SESSION_POD]: broken }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x'
     })
     await expect(unsure.state(TARGET)).rejects.toThrow(/timed out/)
@@ -560,7 +562,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods(pods, { 'session-1': SESSION_POD }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -581,7 +583,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL, // a daemon that runs no sandboxes at all
-      daemonCapabilityFor: () => 'cap_secret',
+      proxyFor: async () => PROXY,
       // The daemon's own clamped credential path is what a local loop polls with.
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
@@ -610,7 +612,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl,
       timers
@@ -632,7 +634,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => false,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x'
     })
 
@@ -646,7 +648,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...inPods({ [AGENT_POD]: undefined }, { 'session-1': SESSION_POD }),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl
     })
@@ -682,7 +684,7 @@ describe('AutoMergeWatcher', () => {
         return () => events.push('released')
       },
       onArmed: (subject) => events.push(`renewed ${subject}`),
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -708,7 +710,7 @@ describe('AutoMergeWatcher', () => {
       ...inPods({ [AGENT_POD]: sandbox }),
       holdSandbox: () => undefined,
       onArmed,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: QUEUED()
     })
@@ -725,7 +727,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl
     })
@@ -739,7 +741,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => {
         throw new Error('no gh credentials')
       },
@@ -762,7 +764,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
       timers
@@ -778,9 +780,8 @@ describe('AutoMergeWatcher', () => {
   it('answers a local disarm only after the tick in flight has settled, and never merges behind it', async () => {
     let release: ((value: Response) => void) | undefined
     const calls: string[] = []
-    const fetchImpl = vi.fn((_url: string, init?: RequestInit) => {
-      const body = String(init?.body)
-      calls.push(body.includes('mergePullRequest') ? 'merge' : 'snapshot')
+    const fetchImpl = vi.fn((url: string) => {
+      calls.push(url.endsWith('/merge') ? 'merge' : 'snapshot')
       // The pre-arm probe answers at once (not ready); only the LOOP's snapshot is held open.
       if (calls.length === 1) {
         return Promise.resolve(
@@ -793,7 +794,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap_secret',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl,
       timers
@@ -842,7 +843,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap_secret',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
       timers
@@ -862,7 +863,7 @@ describe('AutoMergeWatcher', () => {
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
       ...LOCAL,
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x',
       fetchImpl: github.fetchImpl,
       timers,
@@ -979,7 +980,7 @@ describe('asking a pod whether anything is armed, across a channel renewal', () 
       podsOf: () => ['agent-1/session-aaa'],
       sandboxAt: async () => new ShimAutoMergeClient(session),
       placementOf: async () => 'agent-1/session-aaa',
-      daemonCapabilityFor: () => 'cap',
+      proxyFor: async () => PROXY,
       tokenFor: async () => 'ghs_x'
     })
   }

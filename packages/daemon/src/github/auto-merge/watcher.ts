@@ -15,11 +15,18 @@ export interface AutoMergeSandbox {
   watching(target: SandboxCall): Promise<SandboxState>
 }
 
+/** The pod's codehost proxy route and the agent's placeholder, which its watcher presents to GitHub. */
+export interface SandboxProxy {
+  url: string
+  trustBundle: string
+  placeholder: string
+}
+
 export interface SandboxCall {
   agentId: string
   repoFullName: string
   prNumber: number
-  capability?: string
+  proxy?: SandboxProxy
 }
 
 export interface SandboxState {
@@ -56,9 +63,9 @@ export interface AutoMergeWatcherDeps {
   holdSandbox?: (subject: string) => (() => void) | undefined
   /** A pod answered with a watcher armed in it: renew the idle sweep's own hold on that pod. */
   onArmed?: (subject: string) => void
-  /** The agent's daemon-holder agent channel capability (never the runtime's), so the POD's watcher can fetch its own token. */
-  daemonCapabilityFor: (agentId: string) => string
-  /** A GH_TOKEN-plane token for the LOCAL loop; the pod fetches its own over the agent tunnel. */
+  /** The pod's GitHub proxy route for the agent, or undefined when its listener does not forward GitHub. */
+  proxyFor: (agentId: string, subject: string) => Promise<SandboxProxy | undefined>
+  /** A GH_TOKEN-plane token for the LOCAL loop; the pod's watcher reaches GitHub through its proxy route. */
   tokenFor: (agentId: string, repoFullName: string) => Promise<string>
   log?: { info: (message: string) => void; warn: (message: string) => void }
   /** GitHub seam for the LOCAL loop; the pod's watcher owns its own. Tests substitute it. */
@@ -166,10 +173,15 @@ export class AutoMergeWatcher {
       throw sandboxAsleep(subject)
     }
     try {
-      const answer = await sandbox.arm({
-        ...this.call(target),
-        capability: this.deps.daemonCapabilityFor(target.agentId)
-      })
+      const proxy = await this.deps.proxyFor(target.agentId, subject)
+      // Typed so the console branches on it; the route needs a current image, a running credential proxy and a managed GitHub credential.
+      if (!proxy) {
+        throw new AutoMergeViolationError(
+          'unsupported-image',
+          `the sandbox ${subject} has no GitHub proxy route for its watcher (it needs a current runtime image, this daemon's credential proxy and the agent's managed GitHub credential)`
+        )
+      }
+      const answer = await sandbox.arm({ ...this.call(target), proxy })
       if (answer.armed) this.deps.onArmed?.(subject)
       return this.project(target, 'sandbox', answer)
     } finally {

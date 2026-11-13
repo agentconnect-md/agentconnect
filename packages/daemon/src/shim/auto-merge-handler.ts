@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { MAX_AUTO_MERGE_DETAIL } from '@agentconnect.md/protocol'
 import { z } from 'zod'
-import { AGENT_CHANNEL_CAPABILITY_ENV, AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
+import { CODE_HOST_CREDENTIAL_ENV } from '../credential-proxy/placeholder-helper.js'
+import { PROXY_TRUST_VARS } from '../credential-proxy/trust-bundle.js'
 import { DEFAULT_SHIM_PATHS, type ShimPaths } from './sandbox-paths.js'
 
 /**
@@ -26,9 +27,8 @@ export const AutoMergePayloadSchema = z.object({
   agentId: z.string().min(1),
   repoFullName: z.string().min(3).optional(), // required for every op but `list`
   prNumber: z.number().int().positive().optional(),
-  /** The agent's runtime-only agent channel capability, so the child can fetch its own gh token per
-   *  tick. Required to arm; never logged, and passed to the child through env, not argv. */
-  capability: z.string().min(1).optional()
+  // The pod's codehost proxy route and the agent's placeholder, which the child presents to GitHub through it; required to arm, and passed through env, never argv.
+  proxy: z.object({ url: z.string().min(1), trustBundle: z.string().min(1), placeholder: z.string().min(1) }).optional()
 })
 export type AutoMergePayload = z.infer<typeof AutoMergePayloadSchema>
 
@@ -55,7 +55,7 @@ export interface AutoMergeHandlerDeps {
   /** Seams for tests; production spawns the image's own entry with the shim's interpreter. */
   spawnChild?: (args: string[], env: NodeJS.ProcessEnv) => ChildProcess
   entryPath?: string
-  /** The shim's own layout: the watcher entry and the agent channel socket its child dials. */
+  /** The shim's own layout: where the watcher entry is. */
   paths?: ShimPaths
 }
 
@@ -118,17 +118,23 @@ export function createAutoMergeHandler(
     }
 
     if (entry) return { ...entry.status } // idempotent: arming an armed watcher keeps its process
-    if (!p.capability) throw new AutoMergeRefusedError('arming needs the agent’s credential capability')
+    if (!p.proxy) throw new AutoMergeRefusedError('arming needs the sandbox’s GitHub proxy route')
     // Reported rather than assumed: whether THIS image ships the watcher is a fact of this
     // filesystem, and an older image is version skew the daemon has to read, not guess.
     if (!existsSync(entryPath)) {
       throw new AutoMergeRefusedError(AUTO_MERGE_UNSUPPORTED_IMAGE)
     }
 
+    const loopback = 'localhost,127.0.0.1,::1'
     const child = spawnChild([p.agentId, p.repoFullName, String(p.prNumber)], {
       ...process.env,
-      [AGENT_CHANNEL_CAPABILITY_ENV]: p.capability,
-      [AGENT_CHANNEL_SOCKET_ENV]: process.env[AGENT_CHANNEL_SOCKET_ENV] ?? paths.tunnels.agent
+      HTTPS_PROXY: p.proxy.url,
+      https_proxy: p.proxy.url,
+      NO_PROXY: loopback,
+      no_proxy: loopback,
+      NODE_USE_ENV_PROXY: '1',
+      ...Object.fromEntries(PROXY_TRUST_VARS.map((name) => [name, p.proxy!.trustBundle])),
+      [CODE_HOST_CREDENTIAL_ENV]: p.proxy.placeholder
     })
     const created: Entry = { child, status: { armed: true }, buffer: '' }
     entries.set(id, created)

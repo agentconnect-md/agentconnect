@@ -4509,7 +4509,7 @@ export class Daemon {
     }
     await this.agentChannelServer.start()
     await this.startCredentialProxy(root)
-    // A cluster agent's watcher runs in a pod's `automerge` channel, a local agent's loop in this process; both read a token through the clamped credential path the agent's own gh does.
+    // A cluster agent's watcher runs in a pod and reaches GitHub through its proxy route; a local agent's loop runs here on the clamped token the agent's own gh reads.
     this.autoMergeWatcher = new AutoMergeWatcher({
       knownAgent: (agentId) => this.agents.has(agentId),
       // A `--k8s` daemon runs every agent in a pod, so the plane's presence — not a channel's attachment — decides where a watcher may live.
@@ -4519,7 +4519,17 @@ export class Daemon {
       placementOf: (agentId, sessionId) => this.autoMergePlacement(agentId, sessionId),
       holdSandbox: (subject) => this.k8sPlane?.holdIfBound(subject),
       onArmed: (subject) => this.sandboxHolds.renew(subject, AUTO_MERGE_HOLDER, ['auto-merge-armed']),
-      daemonCapabilityFor: (agentId) => this.agentChannelServer!.capabilityFor(agentId, 'daemon'),
+      proxyFor: async (agentId, subject) => {
+        const proxy = this.credentialProxy?.proxy
+        const listener = proxy ? await this.k8sPlane?.codehostRouting?.(subject, ['api.github.com:443']) : undefined
+        return proxy && listener
+          ? {
+              url: codehostProxyUrl(listener),
+              trustBundle: listener.trustBundle,
+              placeholder: proxy.placeholderFor(agentId)
+            }
+          : undefined
+      },
       tokenFor: async (agentId, repoFullName) =>
         (await this.gitCreds.get(agentId, 'helper', { plane: 'gh', repo: repoFullName })).token,
       log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }

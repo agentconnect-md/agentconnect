@@ -7,13 +7,10 @@
 //
 // It runs HERE, in the agent's pod, so the watcher's lifetime is the sandbox's: a reclaimed pod
 // takes the intent with it and the console's box reads back unchecked, with nothing persisted
-// anywhere to contradict that. It holds no policy — the daemon decided this agent may merge this
-// repository, and the token it fetches per tick is clamped CP-side.
+// anywhere to contradict that. It holds no policy and no token: the daemon's proxy swaps its placeholder for the repository's.
 import { AUTO_MERGE_POLL_MS } from '../github/auto-merge/core.js'
 import { AutoMergeLoop } from '../github/auto-merge/loop.js'
-import { AGENT_CHANNEL_SOCKET_ENV } from '../agent-channel/env.js'
-import { fetchGhToken } from '../agent-channel/ipc.js'
-import { SANDBOX_TUNNEL_PATHS } from './sandbox-paths.js'
+import { CODE_HOST_CREDENTIAL_ENV } from '../credential-proxy/placeholder-helper.js'
 
 /** Poll cadence override, so an operator can tighten it without a new image. */
 export const AUTO_MERGE_POLL_ENV = 'AC_AUTO_MERGE_POLL_MS'
@@ -26,14 +23,17 @@ async function main(): Promise<number> {
     process.stderr.write('agentconnect: auto-merge expects <agentId> <owner/repo> <prNumber>\n')
     return 2
   }
-  // The tunnel's path unless something names another; a pod has no daemon root to derive one from.
-  const socketPath = process.env[AGENT_CHANNEL_SOCKET_ENV]?.trim() || SANDBOX_TUNNEL_PATHS.agent
+  const placeholder = process.env[CODE_HOST_CREDENTIAL_ENV]?.trim()
+  if (!placeholder) {
+    process.stderr.write('agentconnect: auto-merge has no GitHub proxy route\n')
+    return 2
+  }
   const pollMs = Number(process.env[AUTO_MERGE_POLL_ENV]) || AUTO_MERGE_POLL_MS
 
   // One line of NDJSON per tick on stdout — the shim reads it back as this watcher's status, so
   // the console can say what the merge is waiting on. Nothing else is ever written to stdout.
   const loop = new AutoMergeLoop({
-    access: { token: () => fetchGhToken({ agentId, repoFullName, socketPath }) },
+    access: { token: async () => placeholder },
     repoFullName,
     prNumber,
     pollMs,
