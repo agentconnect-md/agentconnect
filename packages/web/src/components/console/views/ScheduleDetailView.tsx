@@ -18,6 +18,8 @@ import { creatorLabel, fetchCronRuns, fmtDate, runCronNow } from '@/lib/api'
 import { cronHuman, cronNext, cronUpdateInput, fmtNextRun, zonedDay } from '@/lib/cron'
 import { useScheduleTimeZone } from '@/lib/schedule-timezone'
 import { useConsoleData } from '@/lib/data-context'
+import { displayRow } from '@/components/console/IntegrationChannelList'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { conversationUrl } from '@/components/console/place-link'
 import { useProfile } from '@/lib/profile'
 import { useModal } from '@/components/console/ModalProvider'
@@ -51,6 +53,7 @@ const RUN_REFRESH_MS = 10_000
 export default function ScheduleDetailView() {
   const t = useTranslations('Crons.detail')
   const locale = useLocale()
+  const unnamedLabel = useUnnamedLabel()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const { me } = useProfile()
@@ -112,11 +115,17 @@ export default function ScheduleDetailView() {
   const zone = clock.zoneFor(c.timezone)
   // The sigil is the target platform's own — a Linear team's label carries no "#".
   const sigil = chatRoomSigil(c.targetPlatform)
-  const channelName = c.targetChannel
-    ? (integrations
+  const targetRow = c.targetChannel
+    ? integrations
         .filter((i) => (c.targetIntegrationId ? i.id === c.targetIntegrationId : i.agentId === c.agentId))
         .flatMap((i) => i.channels)
-        .find((ch) => ch.channelId === c.targetChannel)?.name ?? c.targetChannel)
+        .find((ch) => ch.channelId === c.targetChannel)
+    : undefined
+  // An unnamed target prints its platform's placeholder; the schedule still posts to the id.
+  const channelName = c.targetChannel
+    ? targetRow
+      ? displayRow(targetRow, c.targetPlatform, unnamedLabel).name
+      : (unnamedLabel(c.targetPlatform, { kind: 'place', id: c.targetChannel }) ?? c.targetChannel)
     : null
   // The page the target opens on its platform, resolved as every other place's link is.
   const channelUrl = c.targetChannel

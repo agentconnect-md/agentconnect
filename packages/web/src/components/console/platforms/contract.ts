@@ -662,6 +662,18 @@ export interface WebChannelListMessage {
   values?: Record<string, string>
 }
 
+/** A conversation or person with no name, by its platform id; `place` is a conversation no row describes, so the id tells room from direct. */
+export interface WebUnnamedSubject {
+  kind: 'room' | 'direct' | 'place' | 'person'
+  id: string
+}
+
+/** Message keys for unnamed labels; the host owns locale resolution. */
+export type WebUnnamedLabelKey = 'wecomGroup' | 'wecomMember'
+
+/** What the host prints for an unnamed subject: a readable id as it is, or a localized noun with a short tag of the id. */
+export type WebUnnamedLabel = { text: string } | { key: WebUnnamedLabelKey; tag: string }
+
 /** A module's additions to one integration card on the agent page; the host keeps the chrome (mark, name, state pill, unlink). */
 /** A platform's connect still waiting: the host reads it once per agent for its header marks and its Integrations card. */
 export interface WebAgentPendingFacet {
@@ -714,6 +726,8 @@ export interface WebPlatformModule<TApi = unknown> {
   readonly requires?: FeatureFlagId
   /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */
   senderFallback?(senderId: string): string | undefined
+  /** Display-only label for a conversation or person the platform never names; a known name wins, and absent ⇒ the raw id shows. */
+  unnamedLabel?(subject: WebUnnamedSubject): WebUnnamedLabel | undefined
   /**
    * The platform's brand mark, sized by its box like today's `fillPct`
    * convention (marks.tsx:207-216). Replaces the chat arms of

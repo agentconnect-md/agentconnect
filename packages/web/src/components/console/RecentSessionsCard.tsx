@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import {
@@ -115,6 +116,7 @@ export function RecentSessionsCard({
   rowClassName?: string
 }) {
   const t = useTranslations('Home.dashboard')
+  const unnamedLabel = useUnnamedLabel()
   const { orgPath } = useOrgs()
   const { getAgent, crons } = useConsoleData()
   const recent = sessions.slice(0, limit)
@@ -134,7 +136,7 @@ export function RecentSessionsCard({
         ) : (
           recent.map((s) => {
             const owner = s.agentId ? getAgent(s.agentId) : undefined
-            const ch = sessionChannelDisplay(s, (id) => crons.find((c) => c.id === id)?.name)
+            const ch = sessionChannelDisplay(s, (id) => crons.find((c) => c.id === id)?.name, unnamedLabel)
             return (
               <Link
                 key={s.id}
@@ -173,7 +175,12 @@ export function RecentSessionsCard({
                         <span className="imark h-4 w-4 flex-none rounded-xs">
                           <PlatformMark platform={ch.platform} fillPct={90} />
                         </span>
-                        <span className="mono truncate text-[11px]">{ch.label}</span>
+                        <span
+                          className="mono truncate text-[11px]"
+                          title={s.channelUnnamed && ch.label !== s.channel ? s.channel : undefined}
+                        >
+                          {ch.label}
+                        </span>
                       </span>
                     )}
                   </span>

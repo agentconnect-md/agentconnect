@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { useOrgs } from '@/lib/org-context'
 import {
@@ -20,6 +21,7 @@ import {
   poolFleetStatus,
   poolLabel,
   presentedDaemonStatus,
+  sessionPlatform,
   status
 } from '@/lib/data'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -109,6 +111,7 @@ export function GlobalSearch({
   const locale = useLocale()
   const t = useTranslations('Shell.globalSearch')
   const decisionT = useTranslations('Decisions')
+  const unnamedLabel = useUnnamedLabel()
   const router = useRouter()
   const { orgPath, myRole, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions, memberSets, orgSetIds } = useConsoleData()
@@ -277,12 +280,15 @@ export function GlobalSearch({
       href: orgPath(`/decisions/${encodeURIComponent(entry.id)}`)
     }))
 
+    // An unnamed place prints its platform's placeholder, as the sessions list does.
+    const sessionPlaceLabel = (s: (typeof allSessions)[number]) =>
+      (s.channelUnnamed && unnamedLabel(sessionPlatform(s), { kind: 'place', id: s.channel })) || s.channel
     const sessionMatches = allSessions.filter((s) => hit(s.title))
     const sessionItems: SearchItem[] = sessionMatches.slice(0, CAP).map((s) => ({
       key: `session:${s.id}`,
       kind: 'session',
       title: s.title,
-      meta: [s.agentName, s.channel].filter(Boolean).join(' · '),
+      meta: [s.agentName, sessionPlaceLabel(s)].filter(Boolean).join(' · '),
       aux: s.time,
       href: orgPath(`/sessions/${s.id}`)
     }))
@@ -357,7 +363,8 @@ export function GlobalSearch({
     sessionAccessRenders,
     t,
     decisionT,
-    locale
+    locale,
+    unnamedLabel
   ])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])

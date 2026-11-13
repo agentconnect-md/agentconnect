@@ -17,6 +17,7 @@ import {
   mergeCanonicalSessions,
   platName,
   sessionChannelDisplay,
+  sessionUserDisplay,
   sessionChannelFilterValue,
   sessionPlatform,
   status,
@@ -34,6 +35,7 @@ import {
   type SessionTriggerKind
 } from '@/lib/session-trigger'
 import { useConsoleData } from '@/lib/data-context'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { useSessionFacets } from '@/lib/use-session-facets'
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView, sessionListSearchParams, showsTasks, withShowTasks } from '@/lib/session-list-view'
@@ -103,6 +105,7 @@ function activityMs(s: Session): number {
 
 export default function SessionsView() {
   const t = useTranslations('Sessions.list')
+  const unnamedLabel = useUnnamedLabel()
   const { activeOrg, orgPath } = useOrgs()
   const { agents, allSessions, sessionFacets: baseSessionFacets, crons, members } = useConsoleData()
   const { pgSessionList } = usePlayground()
@@ -136,9 +139,10 @@ export default function SessionsView() {
   // A trigger from a linked chat account reads as its member, the reader's own as theirs.
   const triggerLabel = useCallback(
     (s: Session) => {
-      return sessionSenderLabel(s.triggeredByUserId ?? s.triggeredBy, s.user, agentNameById, memberNameByIdentity, me)
+      const user = sessionUserDisplay(s, unnamedLabel)
+      return sessionSenderLabel(s.triggeredByUserId ?? s.triggeredBy, user, agentNameById, memberNameByIdentity, me)
     },
-    [agentNameById, me, memberNameByIdentity]
+    [agentNameById, me, memberNameByIdentity, unnamedLabel]
   )
 
   const fAgent = params.get('agent') ?? 'all'
@@ -265,7 +269,11 @@ export default function SessionsView() {
       }),
       // Headless-schedule channels keep their raw `cron:<id>` filter value but
       // render as the schedule's name under the schedule mark.
-      sessionChannelDisplay({ platform: channel.platform, channel: channel.label }, (id) => cronById.get(id)?.name)
+      sessionChannelDisplay(
+        { platform: channel.platform, channel: channel.label, channelUnnamed: channel.label === channel.value },
+        (id) => cronById.get(id)?.name,
+        unnamedLabel
+      )
     ])
   )
   const triggerSources = new Map(
@@ -323,7 +331,8 @@ export default function SessionsView() {
   const hookSets = new Map<HookKind, Map<string, string>>(HOOK_TRIGGER_KINDS.map((kind) => [kind, new Map()]))
   const cronSet = new Map<string, string>()
   for (const [triggeredBy, source] of triggerSources) {
-    const label = sessionSenderLabel(source.userId ?? triggeredBy, source.name, agentNameById, memberNameByIdentity, me)
+    const name = source.name ?? unnamedLabel(source.platform, { kind: 'person', id: triggeredBy })
+    const label = sessionSenderLabel(source.userId ?? triggeredBy, name, agentNameById, memberNameByIdentity, me)
     const kind = sessionTriggerKind({ triggeredBy, hookKind: source.hookKind }, agentById)
     switch (kind) {
       case null:
@@ -712,7 +721,8 @@ export default function SessionsView() {
         )}
         {filtered.map((s, i) => {
           const ss = status(s.status)
-          const ch = sessionChannelDisplay(s, (id) => cronById.get(id)?.name)
+          const ch = sessionChannelDisplay(s, (id) => cronById.get(id)?.name, unnamedLabel)
+          const placeTitle = s.channelUnnamed && ch.label !== s.channel ? s.channel : undefined
           return (
             <Link
               key={s.id}
@@ -752,7 +762,10 @@ export default function SessionsView() {
                   <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
                     <PlatformMark platform={ch.platform} fillPct={100} />
                   </span>
-                  <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  <span
+                    className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)"
+                    title={placeTitle}
+                  >
                     {ch.label}
                   </span>
                 </span>
@@ -778,7 +791,9 @@ export default function SessionsView() {
                 <span className="imark h-5 w-5 rounded-[5px]">
                   <PlatformMark platform={ch.platform} />
                 </span>
-                <span className="mono truncate text-[12px] text-(--text-secondary)">{ch.label}</span>
+                <span className="mono truncate text-[12px] text-(--text-secondary)" title={placeTitle}>
+                  {ch.label}
+                </span>
               </div>
               <div className="hidden items-center desktop:flex">
                 <SessionStatus label={s.statusLabel || ss.label} />

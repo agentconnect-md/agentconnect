@@ -2383,6 +2383,9 @@ export function sessionFromDto(d: SessionDto): Session {
     platform,
     channel,
     ...((isWebchat || isHook || d.channelName || dmFallback) && rawChannel ? { channelId: rawChannel } : {}),
+    ...(!isWebchat && !isHook && !isDream && !d.channelName && !dmFallback && rawChannel
+      ? { channelUnnamed: true as const }
+      : {}),
     ...(d.threadUrl ? { threadUrl: d.threadUrl } : {}),
     ...(isSubsessionCoordinate(d.sessionKey.thread) ? { subsession: true as const } : {}),
     ...(isCoordinatorCoordinate(d.sessionKey.thread) ? { coordinator: true as const } : {}),

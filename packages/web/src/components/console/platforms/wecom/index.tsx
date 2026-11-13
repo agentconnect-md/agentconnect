@@ -5,6 +5,7 @@ import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { WeComWizardBody } from './Body'
 import { WeComMark } from './mark'
 import { weComSettingsFragments } from './settings'
+import { weComUnnamedLabel } from './unnamed'
 
 /** A group row's semantics: WeCom delivers a group message only when it mentions the bot, so no trigger may promise more. */
 export const WECOM_CHANNEL_LIST: WebChannelListSemantics = {
@@ -22,6 +23,7 @@ export const weComModule: WebPlatformModule = {
   docsPath: 'connect-automate/chat-platforms/wecom',
   requires: 'wecom',
   Mark: WeComMark,
+  unnamedLabel: weComUnnamedLabel,
   wizard: {
     Body: WeComWizardBody,
     // One bot serves one agent, so any freed WeCom bot is reusable.

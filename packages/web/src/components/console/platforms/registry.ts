@@ -10,7 +10,9 @@ import type {
   WebChannelListSemantics,
   WebPlatformModule,
   WebPlatformRegistry,
-  WebThreadShape
+  WebThreadShape,
+  WebUnnamedLabel,
+  WebUnnamedSubject
 } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
@@ -62,6 +64,14 @@ export const platformRegistry: WebPlatformRegistry = {
 /** A platform-owned label for an unresolved sender, without changing their stored identity. */
 export function platformSenderFallback(platform: string, sender?: string | null): string | undefined {
   return sender ? platformRegistry.get(platform)?.senderFallback?.(sender) : undefined
+}
+
+/** A platform-owned label for a conversation or person it never names; the caller translates it and a known name wins. */
+export function platformUnnamedLabel(
+  platform: string | undefined,
+  subject: WebUnnamedSubject
+): WebUnnamedLabel | undefined {
+  return platform && subject.id ? platformRegistry.get(platform)?.unnamedLabel?.(subject) : undefined
 }
 
 /**

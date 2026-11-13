@@ -6354,6 +6354,10 @@
     "duplicateHeaders": "Header names must be unique, ignoring case."
   },
   "Platforms": {
+    "unnamed": {
+      "wecomGroup": "WeCom group · {tag}",
+      "wecomMember": "WeCom member · {tag}"
+    },
     "chrome": {
       "delivery": {
         "label": "Delivery:",

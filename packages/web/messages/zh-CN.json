@@ -6354,6 +6354,10 @@
     "duplicateHeaders": "Header 名称不能重复，大小写视为相同。"
   },
   "Platforms": {
+    "unnamed": {
+      "wecomGroup": "企业微信群 · {tag}",
+      "wecomMember": "企业微信成员 · {tag}"
+    },
     "chrome": {
       "delivery": {
         "label": "投递方式：",

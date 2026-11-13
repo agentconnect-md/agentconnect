@@ -43,6 +43,7 @@ import {
   runtimeDefaultModel,
   runtimeLabel,
   sessionChannelDisplay,
+  sessionUserDisplay,
   sessionPlatform,
   status,
   type Agent,
@@ -98,6 +99,7 @@ import {
   sessionTranscriptAgentIds
 } from '@/lib/session-trigger'
 import { useSenderPeople } from '@/components/console/sender-people'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { useStickToBottom } from '@/lib/stick-to-bottom'
 import { newDividerIndex, useSeenMarker } from '@/lib/transcript-seen'
 import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/components/console/TranscriptNav'
@@ -814,6 +816,7 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
 
 export default function SessionDetailView() {
   const t = useTranslations('Sessions.detail')
+  const unnamedLabel = useUnnamedLabel()
   const permissionT = useTranslations('Common.permissionModes')
   const tState = useTranslations('Common.stateIcon')
   const tShare = useTranslations('Sessions.share')
@@ -2423,7 +2426,7 @@ export default function SessionDetailView() {
   const isWebchat = session.platform === 'webchat' && !taskPage
   const sessionIntegration = sessionPlatform(session)
   // Header channel chip — resolves a headless `cron:<id>` channel to its schedule.
-  const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
+  const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name, unnamedLabel)
   // What the chip opens: the session's thread on its platform, else the conversation it runs in.
   const placeChannelId = currentSessionDetail?.channel ?? session.channelId
   const placeLink = sessionPlaceLink(
@@ -2445,7 +2448,12 @@ export default function SessionDetailView() {
       <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
         <PlatformMark platform={channelDisplay.platform} />
       </span>
-      <span className="truncate">{channelDisplay.label}</span>
+      <span
+        className="truncate"
+        title={session.channelUnnamed && channelDisplay.label !== session.channel ? session.channel : undefined}
+      >
+        {channelDisplay.label}
+      </span>
     </>
   )
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
@@ -2907,7 +2915,8 @@ export default function SessionDetailView() {
     ownsDecisionSeq,
     viewer,
     pictureOf: people.pictureOf,
-    sourceLabel: platName(sessionIntegration)
+    sourceLabel: platName(sessionIntegration),
+    unnamedLabel
   })
   // In the roots view the coordinator's work in a thread is drawn in that thread's panel, not on the main timeline.
   const { main: turns, byThread: threadWork } = threadsView
@@ -3095,7 +3104,7 @@ export default function SessionDetailView() {
       !participant.id.startsWith('hook:') &&
       !agentParticipantIds.has(participant.id)
   )
-  const soleAuthor = senderLabel(session.triggeredBy, session.user)
+  const soleAuthor = senderLabel(session.triggeredBy, sessionUserDisplay(session, unnamedLabel))
   const soleSpeaker = speakers.size === 1 ? speakers.entries().next().value : undefined
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host

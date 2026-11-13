@@ -37,7 +37,14 @@ import {
   type IntegrationChannelRow,
   type IntegrationRow
 } from '@/lib/data'
-import { ConversationName, roomGlyph, roomPlural, rowLabelParts } from '@/components/console/IntegrationChannelList'
+import {
+  ConversationName,
+  displayRow,
+  roomGlyph,
+  roomPlural,
+  rowLabelParts
+} from '@/components/console/IntegrationChannelList'
+import { useUnnamedLabel, type UnnamedLabeler } from '@/components/console/platforms/unnamed-label'
 import { RevokedMarkDot } from '@/components/console/IntegrationMarks'
 import {
   botCardCopy,
@@ -137,11 +144,12 @@ interface BotChannelView {
 
 // The bot's conversation roster, merged across its installs (a shared bot fans out to
 // one integration per agent, each reporting its own membership snapshot).
-function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelView[] {
+function botChannels(bot: BotDto, integrations: IntegrationRow[], unnamed: UnnamedLabeler): BotChannelView[] {
   const merged = new Map<string, BotChannelView>()
   for (const i of integrations) {
     if (i.botId !== bot.id) continue
-    for (const c of i.channels) {
+    for (const stored of i.channels) {
+      const c = displayRow(stored, bot.platform, unnamed)
       const explicit = c.agentId ?? null
       const routed = c.trigger === 'decision' && c.decisionBinding?.type === 'shared_bot_routing'
       const prev = merged.get(c.channelId)
@@ -283,6 +291,7 @@ function BotsCard({
   onDelete: (b: BotDto) => void
 }) {
   const t = useTranslations('Integrations')
+  const unnamedLabel = useUnnamedLabel()
   const { orgPath } = useOrgs()
   const {
     bots,
@@ -309,12 +318,14 @@ function BotsCard({
     const resumed = readRoutingResume()
     if (!resumed) return
     const bot = bots.find((entry) => entry.id === resumed.botId)
-    const row = bot ? botChannels(bot, integrations).find((c) => c.channelId === resumed.channelId) : undefined
+    const row = bot
+      ? botChannels(bot, integrations, unnamedLabel).find((c) => c.channelId === resumed.channelId)
+      : undefined
     if (!bot || !row) return
     clearRoutingResume()
     setOpenBotId(bot.id)
     setRoutingRow({ botId: bot.id, channelId: row.channelId, name: row.name, resume: true })
-  }, [bots, integrations])
+  }, [bots, integrations, unnamedLabel])
   const [routingErr, setRoutingErr] = useState<{ botId: string; msg: string } | null>(null)
   const tabs = visibleBotPlatformTabs(bots)
   const [platformTabKey, setPlatformTabKey] = useState<string>(tabs[0]?.key ?? '')
@@ -474,7 +485,7 @@ function BotsCard({
             ...revokedAgentIds(b, integrations).map((id) => ({ id, revoked: true }))
           ]
           const open = openBotId === b.id
-          const channels = open ? botChannels(b, integrations) : []
+          const channels = open ? botChannels(b, integrations, unnamedLabel) : []
           // One member is no choice — the column would name that agent on every row and offer nothing.
           const showDefaultDispatch = b.shareable && channels.length > 0 && b.agentIds.length > 1
           // A single-owner bot's rooms take the same By decision gate as that agent's Integrations tab.

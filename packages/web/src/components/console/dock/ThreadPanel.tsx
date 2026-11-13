@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import Link from 'next/link'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
@@ -146,6 +147,7 @@ export function ThreadPanel({
 }) {
   const t = useTranslations('Common.taskThread')
   const tl = useTranslations('Common.taskList')
+  const unnamedLabel = useUnnamedLabel()
   const { orgPath } = useOrgs()
   const {
     getLiveSteps,
@@ -250,7 +252,8 @@ export function ThreadPanel({
     ownsDecisionSeq: () => false,
     viewer: people?.viewer ?? {},
     pictureOf: (sender) => people?.pictureOf(sender),
-    sourceLabel: platName(platform)
+    sourceLabel: platName(platform),
+    unnamedLabel
   }).turns
   // Another agent's post reads as that agent, so its "sent by" line goes.
   const turns: Turn[] = built.map((turn) =>

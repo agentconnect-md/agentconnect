@@ -889,6 +889,7 @@ interface WebPlatformModule {
   apiBindings: { ... }                   // typed CP client calls
   textRenderer?: (text, ctx) => ReactNode
   turnFacts?: ComponentType<{ body: UserTurnBody }> // the facts a delivery bubble folds behind "more"
+  unnamedLabel?(subject): { text } | { key; tag } // a conversation or person the platform never names; the host localizes
   Mark: ComponentType                    // inline SVG
 }
 

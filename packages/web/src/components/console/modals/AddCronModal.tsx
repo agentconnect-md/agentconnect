@@ -19,6 +19,8 @@ import {
   parseCron
 } from '@/lib/cron'
 import { useConsoleData } from '@/lib/data-context'
+import { displayRow } from '@/components/console/IntegrationChannelList'
+import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { useProfile } from '@/lib/profile'
 import { randomUuid } from '@/lib/random-uuid'
 import { AgentIconView, PlatformMark } from '@/components/marks'
@@ -101,6 +103,7 @@ export default function AddCronModal({
 }) {
   const t = useTranslations('Crons.dialog')
   const locale = useLocale()
+  const unnamedLabel = useUnnamedLabel()
   const { agents, integrations, saveCron, saveSharing } = useConsoleData()
   const { me } = useProfile()
   // Only real agents can own a cron (a mock agent isn't on any daemon).
@@ -155,6 +158,7 @@ export default function AddCronModal({
     .flatMap((i) =>
       i.channels
         .filter((ch) => !i.shareable || ch.agentId === agentId)
+        .map((stored) => displayRow(stored, i.platform, unnamedLabel))
         .map((ch) => ({
           value: `${i.id}|${ch.channelId}`,
           // The room sigil is the integration's platform's own — a Linear team has none.
