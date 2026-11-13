@@ -462,6 +462,9 @@ export const HOOK_REPORT_REASON_AGENT_HANDOVER = 'agent_handover' as const
 /** The delivery's session is bound to another source, so its turn was refused before it ran. */
 export const HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH = 'session_source_mismatch' as const
 
+/** The hook's settings changed after dispatch, so `hook/start` refused the run (as `details.reason`) and no turn ran. */
+export const HOOK_REPORT_REASON_HOOK_CHANGED = 'hook_changed' as const
+
 /** A `notice` delivery posted its fixed text; the run row records a post, not a model turn. */
 export const HOOK_REPORT_REASON_NOTICE_POSTED = 'notice_posted' as const
 /** A `notice` delivery found its thread already carried one — a thread is told once. */

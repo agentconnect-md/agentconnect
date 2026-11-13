@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
 import type { AgentRecord, HookRecord, HookRepo, HookRunRecord } from '../persistence/ports.js'
 import { githubHookRun } from '../../test/fixtures/github-hook-run.js'
-import { HOOK_DELIVERY_REASON_DAEMON_DRAINING } from '@agentconnect.md/protocol'
+import { HOOK_DELIVERY_REASON_DAEMON_DRAINING, HOOK_REPORT_REASON_HOOK_CHANGED } from '@agentconnect.md/protocol'
 import { GitCredDeniedError } from './service.js'
 import {
   GithubReviewBrokerError,
@@ -221,6 +221,42 @@ describe('GithubReviewBrokerService', () => {
         baseSha: 'base-sha'
       })
     )
+  })
+
+  it('refuses hook/start with the hook_changed reason once the hook was edited after dispatch', async () => {
+    const { service, hookRepo } = setup()
+    hookRepo.getUnscoped.mockResolvedValue(hook({ configRevision: 8n, dispatchRevision: 10n }))
+    const refusal = await service
+      .start(
+        {
+          hookId: HOOK,
+          agentId: AGENT,
+          deliveryKey: 'delivery-1',
+          event: 'pull_request:synchronize',
+          ...snapshot,
+          github: {
+            repoId: '123',
+            repoFullName: 'acme/widgets',
+            sourceInstallationId: '456',
+            subjectKind: 'pull_request',
+            pullNumber: 42,
+            headSha: 'head-sha',
+            baseSha: 'base-sha',
+            reportSha: 'head-sha',
+            isDraft: false,
+            baseChanged: false
+          }
+        },
+        DAEMON
+      )
+      .catch((err: unknown) => err)
+    expect(refusal).toBeInstanceOf(GithubReviewBrokerError)
+    expect(refusal).toMatchObject({
+      code: 'SCOPE_DENIED',
+      retryable: false,
+      details: { reason: HOOK_REPORT_REASON_HOOK_CHANGED }
+    })
+    expect(hookRepo.recordStart).not.toHaveBeenCalled()
   })
 
   it('uses exact-current hook/start to recover a claimed pre-admission row when accepted reporting was lost', async () => {

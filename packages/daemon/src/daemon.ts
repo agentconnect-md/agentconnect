@@ -796,6 +796,7 @@ import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
 import {
   GithubReviewOrchestrator,
+  HookStartRefused,
   type AnchorTriggerResult,
   type GithubReviewHost
 } from './github/review-orchestrator.js'
@@ -22216,6 +22217,15 @@ export class Daemon {
     const currentAttributionInfo = async (): Promise<SlackAttributionInfo> =>
       await this.turnAttributionInfo(p, run, sessionId, turnModel)
     try {
+      // A refused start barrier would leave the model reviewing with no way to publish; end the run with the cause.
+      if (activeTurn.refused) {
+        observedOutcome = 'cancelled'
+        this.clearTurnActivity(run)
+        if (entry.hookContext && this.reportsHookOutcome(entry)) {
+          await this.emitHookCompletion(entry.hookContext, 'failed', { sessionId, reason: activeTurn.refused }, entry)
+        }
+        return null
+      }
       const { host, modelOverride } = await this.reapplyStickyControls(p, run, sessionId)
       // Pause/loop protection may land while a slow host is starting or sticky
       // overrides are being restored. At this point Pending exists but no prompt has
@@ -23489,6 +23499,8 @@ export class Daemon {
     /** Seats a per-turn block on the already-assembled prompt; the durable message gets it through `appendTurnPrompt`. */
     seatPromptBlock?: (block: string) => void
   ): Promise<{
+    /** The CP refused the start barrier for good: the turn must end with this reason, unprompted. */
+    refused?: HookStartRefused['reason']
     github?: ActiveGithubTurnMeta
     githubReplyBatch?: ActiveGithubReplyBatchMeta
     gitlabReview?: GitlabReviewTurn
@@ -23541,10 +23553,13 @@ export class Daemon {
         hookId: hookContext.hookId
       })
     }
+    let refused: HookStartRefused['reason'] | undefined
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
-      this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
+      if (err instanceof HookStartRefused) refused = err.reason
+      else this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
       return undefined
     })
+    if (refused) return { refused }
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
     // A verdict amendment is known only past the GitHub barrier: its block reaches the model and the record here.
     if (activeGithub?.amendment) {

@@ -16,6 +16,7 @@ import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   GITEA_V1_FEATURE,
+  HOOK_REPORT_REASON_HOOK_CHANGED,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH,
@@ -883,6 +884,60 @@ describe('Daemon rd/msg hook fires', () => {
     },
     15_000
   )
+
+  it('ends a GitHub review turn unprompted when hook/start says the hook changed', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = {
+      ...fakeCpClient(),
+      startHook: vi.fn(async (_payload: HookStart): Promise<HookStartOk> => {
+        throw new WireError('SCOPE_DENIED', 'hook definition changed before the accepted turn started', false, {
+          reason: HOOK_REPORT_REASON_HOOK_CHANGED
+        })
+      })
+    }
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeCodeHostReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => ({ kind: 'issue_comment' as const, commentId: '1' })) },
+      collector: new GithubReplyCollector()
+    }))
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+
+    await (daemon as any).handleRelayMsg(
+      fire({
+        sessionKey: 'acme/infra#42',
+        event: 'pull_request_review_comment:created',
+        configRevision: '1',
+        dispatchRevision: '1',
+        dispatchDaemonId,
+        reviewPolicy: 'full',
+        reportingMode: 'check',
+        gateMode: 'informational',
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 42,
+          headSha: 'a'.repeat(40),
+          baseSha: 'b'.repeat(40),
+          reportSha: 'a'.repeat(40),
+          reviewCommentId: '3565656411',
+          reviewThreadRootCommentId: '3565283658'
+        }
+      }),
+      () => {}
+    )
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: HOOK_REPORT_REASON_HOOK_CHANGED })
+    // A definitive refusal is not retried, and the model never runs a review it could not publish.
+    expect(cp.startHook).toHaveBeenCalledOnce()
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect((daemon as any).activeGithubTurnMeta.size).toBe(0)
+    await daemon.stop()
+  })
 
   it('routes review-comment follow-ups inline without granting formal-review authority', async () => {
     let onUpdate!: (sid: string, update: unknown) => void

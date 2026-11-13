@@ -8,6 +8,7 @@
  * persistence transaction owned by HookRepo.
  */
 import {
+  HOOK_REPORT_REASON_HOOK_CHANGED,
   hookReviewEventSettles,
   isRetryableHookDeliveryReason,
   type ErrorCode,
@@ -42,7 +43,8 @@ export class GithubReviewBrokerError extends Error {
   constructor(
     readonly code: ReviewBrokerCode,
     message: string,
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    readonly details?: Record<string, unknown>
   ) {
     super(message)
     this.name = 'GithubReviewBrokerError'
@@ -80,8 +82,8 @@ const EVENT_RANK: Record<HookReviewEvent, number> = {
   APPROVE: POLICY_RANK.full
 }
 
-function denied(message: string, code: ReviewBrokerCode = 'SCOPE_DENIED'): never {
-  throw new GithubReviewBrokerError(code, message, false)
+function denied(message: string, code: ReviewBrokerCode = 'SCOPE_DENIED', details?: Record<string, unknown>): never {
+  throw new GithubReviewBrokerError(code, message, false, details)
 }
 
 function bigintWire(value: string): bigint {
@@ -162,7 +164,10 @@ function requireCurrentHookForStart(hook: HookRecord | null, run: HookRunRecord,
     hook.gateMode !== run.gateModeSnapshot ||
     run.dispatchDaemonId !== daemonId
   ) {
-    denied('hook definition changed before the accepted turn started')
+    // The reason tells the daemon to end the turn rather than run it without review authority.
+    denied('hook definition changed before the accepted turn started', 'SCOPE_DENIED', {
+      reason: HOOK_REPORT_REASON_HOOK_CHANGED
+    })
   }
   return hook
 }

@@ -4,6 +4,7 @@ import {
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
+  HOOK_REPORT_REASON_HOOK_CHANGED,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   HOOK_REPORT_REASON_SESSION_SOURCE_MISMATCH
@@ -85,6 +86,19 @@ describe('hookRuntimeProjectionState', () => {
     // Without a configured App slug the button is still the reachable path.
     expect(hookIncompleteCheckGuidance(HOOK_REPORT_REASON_AGENT_HANDOVER)).toContain('**Request review**')
     expect(hookIncompleteCheckGuidance(HOOK_REPORT_REASON_AGENT_HANDOVER)).not.toContain('comment `@')
+  })
+
+  it('says a review did not run because its settings changed, and how to run it again', () => {
+    expect(hookRuntimeProjectionState({ status: 'failed', reason: HOOK_REPORT_REASON_HOOK_CHANGED })).toBe('failure')
+    expect(hookIncompleteCheckLabel(HOOK_REPORT_REASON_HOOK_CHANGED, 'example-app')).toBe(
+      'Review did not run: the review settings changed'
+    )
+    const guidance = hookIncompleteCheckGuidance(HOOK_REPORT_REASON_HOOK_CHANGED, 'example-app')
+    expect(guidance).toContain('How to run this review again')
+    expect(guidance).toContain('@example-app')
+    expect(guidance).toContain('**Request review**')
+    expect(guidance).not.toContain(HOOK_REPORT_REASON_HOOK_CHANGED)
+    expect(guidance).not.toMatch(/daemon|barrier|revision/i)
   })
 
   it('names every role that can actually start a review, on both guidance paths', () => {
