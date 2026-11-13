@@ -997,11 +997,6 @@ export class AcpHost {
     return this.isClaudeRuntime() || this.canUseCustomInstructions
   }
 
-  /** Whether `session/load` applies the native standing instructions it carries; custom instructions apply only when a thread starts. */
-  appliesSystemPromptOnLoad(): boolean {
-    return this.isClaudeRuntime()
-  }
-
   private async sessionMeta(
     effortOverride?: string,
     systemPrompt?: string,

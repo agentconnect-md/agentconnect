@@ -14,13 +14,19 @@ import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
-// session-concept.md §2.3: a resumed session whose runtime keeps the standing context it started with gets the current one inline once.
+// session-concept.md §2.3: a resumed session whose runtime keeps the standing context it started with gets what changed inline once.
 const REFRESH_HEADING = '[Standing instructions updated]'
+const MEMORY_HEADING = '[Memory index updated]'
+const MEMORY_SECTION = '\n\n# Persistent memory'
 const MEMORY_CATALOG = '\n\nMemory catalog observed'
 const KEY = sessionKey('slack', 'C1', '100.1', 'bot-a')
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
-/** The recorded digest leaves out the session's own id, which the turn that opens a session does not have yet. */
-const digestOf = (text: string): string => sha256(text.replace(/^- Session: .*\n/m, ''))
+/** The recorded digest hashes the rules and the memory index apart, and leaves out the session's own id, which the opening turn does not have yet. */
+const digestOf = (text: string): string => {
+  const at = text.indexOf(MEMORY_SECTION)
+  const rules = at < 0 ? text : text.slice(0, at)
+  return `${sha256(rules.replace(/^- Session: .*\n/m, ''))}:${sha256(at < 0 ? '' : text.slice(at + 2))}`
+}
 
 /** One agent per test, so no other test's memory writes reach its standing context. */
 function testAgent() {
@@ -42,11 +48,11 @@ function testAgent() {
       permissions: { policy: 'ask', autoApprove: [] },
       crons: []
     }) as unknown as Agent & { dir: string; env: Record<string, string> }
-  return { memory, described }
+  return { memory, described, dir }
 }
 
-/** A runtime process: `inline` takes standing context in the prompt, `instructions` natively when a thread starts, `claude` natively on every `session/load` too. */
-function runtime(kind: 'inline' | 'instructions' | 'claude') {
+/** A runtime process: `inline` takes standing context in the prompt, `instructions` natively when a session starts; neither is trusted to apply what a load carries. */
+function runtime(kind: 'inline' | 'instructions') {
   const live = new Set<string>()
   return {
     newSession: vi.fn(async () => {
@@ -58,8 +64,7 @@ function runtime(kind: 'inline' | 'instructions' | 'claude') {
     }),
     hasSession: (id: string) => live.has(id),
     loadSupported: () => true,
-    ...(kind === 'inline' ? {} : { usesMetaSystemPrompt: () => true }),
-    ...(kind === 'claude' ? { appliesSystemPromptOnLoad: () => true } : {})
+    ...(kind === 'inline' ? {} : { usesMetaSystemPrompt: () => true })
   } as any
 }
 
@@ -78,6 +83,7 @@ const msg = (ts: string, text: string): NormalizedMessage => ({
 
 const texts = (blocks: any[]): string[] => blocks.filter((b) => b.type === 'text').map((b) => b.text as string)
 const refreshes = (blocks: any[]): string[] => texts(blocks).filter((t) => t.startsWith(REFRESH_HEADING))
+const memoryRefreshes = (blocks: any[]): string[] => texts(blocks).filter((t) => t.startsWith(MEMORY_HEADING))
 /** The standing context a refresh block carries, below its heading line. */
 const refreshed = (block: string): string => block.slice(block.indexOf('\n\n') + 2)
 
@@ -151,7 +157,7 @@ describe('standing context on a resumed session', () => {
     await store.close()
   })
 
-  it('treats a runtime whose native instructions apply only at thread start like an inline one', async () => {
+  it('treats a runtime that takes its instructions natively like an inline one', async () => {
     const store = await newStore()
     const { memory, described } = testAgent()
     const opener = runtime('instructions')
@@ -205,36 +211,89 @@ describe('standing context on a resumed session', () => {
     await store.close()
   })
 
-  it('adds no block where a load applies the instructions natively, and records what the load carried', async () => {
+  it.each(['inline', 'instructions'] as const)(
+    'restates the memory index alone on a %s runtime when only it changed',
+    async (kind) => {
+      const store = await newStore()
+      const { memory, described, dir } = testAgent()
+      const agent = described('Same description.')
+      const before = new SessionManager({ store, hostFor: async () => runtime(kind), agentById: () => agent, memory })
+      await delivered(before, '100.1', 'first')
+      const opened = (await store.getSession(KEY))?.standingDigest
+
+      // Another session, the console or a dream rewrote the index while this one was closed.
+      writeFileSync(join(dir, 'memory', 'MEMORY.md'), '# bot-a memory\n\n- [marker](marker.md) — QUARTZ topic\n')
+      const host = runtime(kind)
+      const after = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      const second = await delivered(after, '100.2', 'second')
+      expect(host.loadSession).toHaveBeenCalledOnce()
+      expect(refreshes(second.blocks)).toEqual([])
+      const blocks = memoryRefreshes(second.blocks)
+      expect(blocks).toHaveLength(1)
+      expect(texts(second.blocks)[0]).toBe(blocks[0])
+      expect(blocks[0]).toContain('QUARTZ topic')
+      expect(blocks[0]).not.toContain('# Agent')
+      const recorded = (await store.getSession(KEY))?.standingDigest
+      expect(recorded).not.toBe(opened)
+      expect(recorded?.split(':')[0]).toBe(opened?.split(':')[0])
+      expect(recorded?.split(':')[1]).toBe(sha256(refreshed(blocks[0]!)))
+
+      expect(memoryRefreshes((await delivered(after, '100.3', 'third')).blocks)).toEqual([])
+      await store.close()
+    }
+  )
+
+  it('restates the rules and the memory index together when the rules changed', async () => {
     const store = await newStore()
-    const { memory, described } = testAgent()
+    const { memory, described, dir } = testAgent()
     const before = new SessionManager({
       store,
-      hostFor: async () => runtime('claude'),
+      hostFor: async () => runtime('instructions'),
       agentById: () => described('Old description.'),
       memory
     })
     await delivered(before, '100.1', 'first')
-    const opened = (await store.getSession(KEY))?.standingDigest
-    expect(opened).toEqual(expect.any(String))
-
-    const host = runtime('claude')
+    writeFileSync(join(dir, 'memory', 'MEMORY.md'), '# bot-a memory\n\n- [marker](marker.md) — QUARTZ topic\n')
     const after = new SessionManager({
       store,
-      hostFor: async () => host,
+      hostFor: async () => runtime('instructions'),
       agentById: () => described('New description.'),
       memory
     })
-    const second = await after.handle('bot-a', msg('100.2', 'second'))
-    expect(host.loadSession).toHaveBeenCalledOnce()
-    const resumed = host.loadSession.mock.calls[0][4] as string
-    expect(resumed).toContain('New description.')
-    expect(second.standingDigest).toBeUndefined()
-    expect(refreshes(second.blocks)).toEqual([])
-    expect(texts(second.blocks).some((t) => t.includes('# Agent'))).toBe(false)
-    const digest = (await store.getSession(KEY))?.standingDigest
-    expect(digest).not.toBe(opened)
-    expect(digest).toBe(digestOf(resumed.split(MEMORY_CATALOG)[0]!))
+    const second = await delivered(after, '100.2', 'second')
+    expect(memoryRefreshes(second.blocks)).toEqual([])
+    const blocks = refreshes(second.blocks)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toContain('New description.')
+    expect(blocks[0]).toContain('QUARTZ topic')
+    expect((await store.getSession(KEY))?.standingDigest).toBe(digestOf(refreshed(blocks[0]!)))
+    await store.close()
+  })
+
+  it('counts a digest recorded in any other form as changed', async () => {
+    const store = await newStore()
+    const { memory, described } = testAgent()
+    const agent = described('Same description.')
+    const before = new SessionManager({
+      store,
+      hostFor: async () => runtime('instructions'),
+      agentById: () => agent,
+      memory
+    })
+    await delivered(before, '100.1', 'first')
+    // What an earlier release recorded: one hash over the whole context.
+    await store.setSessionStandingDigest(KEY, sha256('whole context'))
+    const after = new SessionManager({
+      store,
+      hostFor: async () => runtime('instructions'),
+      agentById: () => agent,
+      memory
+    })
+    const second = await delivered(after, '100.2', 'second')
+    expect(memoryRefreshes(second.blocks)).toEqual([])
+    expect(refreshes(second.blocks)).toHaveLength(1)
+    expect((await store.getSession(KEY))?.standingDigest).toBe(second.standingDigest)
+    expect(second.standingDigest).toContain(':')
     await store.close()
   })
 

@@ -57,7 +57,7 @@ import {
   buildSessionMessagesBlock,
   buildStandingContext,
   MAX_LISTED_SESSION_MESSAGES,
-  standingRefreshBlock,
+  standingRefresh,
   type StandingContext
 } from './turn/standing-context.js'
 import { backfillThreadHistory } from './turn/thread-backfill.js'
@@ -881,10 +881,9 @@ export class SessionManager {
       await this.deps.store.setSessionStandingDigest(key, digest)
       session.standingDigest = digest
     }
-    const appliesOnLoad = usesMeta && (host.appliesSystemPromptOnLoad?.() ?? false)
     if (created) await recordStanding(rec, usesMeta ? (await standingContext()).sessionDigest : null)
-    else if (opened.resumed && appliesOnLoad) await recordStanding(rec, (await standingContext()).resumeDigest)
-    if ((created && !usesMeta) || (opened.resumed && !appliesOnLoad)) this.standingRefreshDue.add(key)
+    // No runtime is trusted to apply the instructions a load carries, so every resume compares on its first prompt.
+    if ((created && !usesMeta) || opened.resumed) this.standingRefreshDue.add(key)
     // What the model holds of the daemon's tool definitions: a new session starts from the current ones.
     const toolsNow = toolContext?.tools?.length ? toolContext.tools : undefined
     const digestsNow = toolsNow ? toolDigests(toolsNow) : undefined
@@ -1124,11 +1123,12 @@ export class SessionManager {
     const promptPrelude: ContentBlock[] = []
     // The digest of the standing context this prompt carries inline, recorded by standingDelivered once the runtime takes it.
     let standingDigest: string | undefined
-    if (refreshDue && preludeStanding?.sessionDigest === rec.standingDigest) this.standingRefreshDue.delete(key)
-    else if (refreshDue && preludeStanding) {
-      standingDigest = preludeStanding.sessionDigest
-      promptPrelude.push({ type: 'text', text: standingRefreshBlock(preludeStanding.sessionContext) })
-    }
+    // The whole context when its rules changed, the memory index alone when only that did, nothing when neither.
+    const refresh = refreshDue && preludeStanding ? standingRefresh(rec.standingDigest, preludeStanding) : undefined
+    if (refresh !== undefined) {
+      standingDigest = preludeStanding?.sessionDigest
+      promptPrelude.push({ type: 'text', text: refresh })
+    } else if (refreshDue && preludeStanding) this.standingRefreshDue.delete(key)
     // Tools whose definitions changed since the model got them, once the session's bridge serves the current ones.
     let toolDigestsDue: string | undefined
     const attachedTools = host.sessionToolContext?.(rec.acpSessionId!)

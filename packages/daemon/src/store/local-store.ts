@@ -365,7 +365,7 @@ export interface SessionRecord {
   // The latest turn's delivery target, independent of the session's stable coordinates.
   replyChannel?: string | null
   replyThread?: string | null
-  // A digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null on a session from before it was recorded.
+  // The `rules:memory` digest of the standing context its model last received (session-concept.md §2.3), written by `setSessionStandingDigest`; null before any was recorded.
   standingDigest?: string | null
   // The digests of the tool definitions its model last received, a JSON object written by `setSessionToolDigests`; null on a session from before it was recorded.
   toolDigests?: string | null
