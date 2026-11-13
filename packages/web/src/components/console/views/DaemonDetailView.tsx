@@ -382,7 +382,7 @@ export default function DaemonDetailView() {
                   )}
                   {(warning === 'image-binary-missing' || warning === 'host-binary-missing') && (
                     <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-4 py-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
-                      <Icon name="triangle-alert" size={12} className="flex-none" />
+                      <Icon name="triangle-exclamation-point" size={12} className="flex-none" />
                       {warning === 'host-binary-missing' ? HOST_BINARY_MISSING_LABEL : IMAGE_BINARY_MISSING_LABEL}
                     </div>
                   )}
@@ -399,7 +399,7 @@ export default function DaemonDetailView() {
                       }
                       className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-4 py-[7px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                     >
-                      <Icon name="triangle-alert" size={12} className="flex-none" />
+                      <Icon name="triangle-exclamation-point" size={12} className="flex-none" />
                       <span className="min-w-0 truncate">{t('loginRequired')}</span>
                       <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
                         {t('showCommand')}
@@ -773,7 +773,7 @@ export default function DaemonDetailView() {
       <DaemonApprovalNotice daemon={daemon} />
       {groupErr && (
         <div className="mb-[18px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
-          <Icon name="triangle-alert" size={15} />
+          <Icon name="triangle-exclamation-point" size={15} />
           {groupErr}
         </div>
       )}

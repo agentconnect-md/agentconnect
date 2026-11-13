@@ -87,7 +87,7 @@ export function ConnectorsModal({
       <div className="modalbody">
         {error ? (
           <div className="flex flex-col items-center gap-3 py-8 text-center">
-            <Icon name="triangle-alert" size={22} color="var(--status-error)" />
+            <Icon name="triangle-exclamation-point" size={22} color="var(--status-error)" />
             <div className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">{error}</div>
             <Button variant="secondary" size="sm" onClick={() => void load()}>
               <Icon name="refresh-cw" size={14} />

@@ -193,7 +193,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
             {expired ? (
               <>
                 <span className="flex h-[22px] w-[22px] flex-none items-center justify-center leading-[0]">
-                  <Icon name="triangle-alert" size={18} color="var(--status-paused)" />
+                  <Icon name="triangle-exclamation-point" size={18} color="var(--status-paused)" />
                 </span>
                 <div className="flex-1">
                   <div className="font-sans text-[13px] font-semibold leading-normal">{t('expired')}</div>
@@ -251,7 +251,7 @@ export default function AddComputerModal({ onClose }: { onClose: () => void }) {
             role="alert"
             className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)"
           >
-            <Icon name="triangle-alert" size={15} />
+            <Icon name="triangle-exclamation-point" size={15} />
             {t('saveError', { message: err })}
           </div>
         )}

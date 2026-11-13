@@ -299,7 +299,7 @@ export function SuggestionRow({
               </div>
             ) : contentError ? (
               <div className={`${NOTE} flex flex-wrap items-center gap-2 text-(--status-error)`}>
-                <Icon name="triangle-alert" size={14} className="flex-none" />
+                <Icon name="triangle-exclamation-point" size={14} className="flex-none" />
                 <span>{contentError instanceof Error ? contentError.message : t('loadSuggestionError')}</span>
                 <button type="button" className="lnk text-[12px]" onClick={() => void mutate()}>
                   {t('retry')}

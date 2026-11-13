@@ -135,7 +135,7 @@ export function RuntimeSelect({
                   className="flex-none"
                   title={selected.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : loginHint}
                 >
-                  <Icon name="triangle-alert" size={13} color="var(--status-paused)" />
+                  <Icon name="triangle-exclamation-point" size={13} color="var(--status-paused)" />
                 </span>
               )}
             </>
@@ -197,7 +197,7 @@ export function RuntimeSelect({
                       <span>{row.label}</span>
                       {row.warning && (
                         <span className="flex items-start gap-[4px] font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
-                          <Icon name="triangle-alert" size={11} className="mt-[2px] flex-none" />
+                          <Icon name="triangle-exclamation-point" size={11} className="mt-[2px] flex-none" />
                           <span>
                             {row.warning === 'image-binary-missing' ? IMAGE_BINARY_MISSING_LABEL : t('loginRequired')}
                           </span>

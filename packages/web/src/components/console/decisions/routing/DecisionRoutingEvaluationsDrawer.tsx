@@ -134,10 +134,14 @@ export function DecisionRoutingEvaluationsDrawer({
         ? note('wifi-off', t('evaluations.offline'), { label: t('retryLoad'), run: () => void mutate() })
         : kind === 'unsupported'
           ? note('circle-arrow-up', t('evaluations.unsupported'))
-          : note('triangle-alert', t('evaluations.error', { message: errorParts(error)?.message ?? String(error) }), {
-              label: t('retryLoad'),
-              run: () => void mutate()
-            })
+          : note(
+              'triangle-exclamation-point',
+              t('evaluations.error', { message: errorParts(error)?.message ?? String(error) }),
+              {
+                label: t('retryLoad'),
+                run: () => void mutate()
+              }
+            )
   } else if (items.length === 0 && nextCursor === null) body = note('info', t('evaluations.empty'))
   else
     body = (

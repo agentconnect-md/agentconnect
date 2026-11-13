@@ -456,7 +456,7 @@ export default function AgentsView() {
                   </span>
                   {/* Trailing cluster. */}
                   {s.label === 'offline' ? (
-                    <Icon name="triangle-alert" size={16} color="var(--amber-500)" className="flex-none" />
+                    <Icon name="triangle-exclamation-point" size={16} color="var(--amber-500)" className="flex-none" />
                   ) : null}
                   {first ? (
                     <span className="relative isolate flex h-4 w-4 flex-none items-center justify-center">

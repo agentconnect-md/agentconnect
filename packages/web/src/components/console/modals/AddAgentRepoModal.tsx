@@ -917,7 +917,7 @@ export default function AddAgentRepoModal({
           )}
           {!uncovered && probeNote && (
             <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-              <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+              <Icon name="shield-exclamation-point" size={14} className="mt-[1px] flex-none" />
               <span>{probeNote}</span>
             </div>
           )}

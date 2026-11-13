@@ -149,7 +149,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
         ) : flow.err ? (
           <>
             <div className="flex items-start gap-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
-              <Icon name="triangle-alert" size={15} className="mt-[1px] flex-none" />
+              <Icon name="triangle-exclamation-point" size={15} className="mt-[1px] flex-none" />
               <span>{flow.err}</span>
             </div>
             <div className="mt-[12px] flex items-center gap-2">

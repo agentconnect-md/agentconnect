@@ -185,7 +185,12 @@ export default function GithubCard({ canWrite, isOwner }: { canWrite: boolean; i
                     className="flex flex-col items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500) desktop:flex-row desktop:items-center desktop:justify-between desktop:gap-3 desktop:pl-[50px]"
                   >
                     <span className="flex min-w-0 items-start gap-2">
-                      <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
+                      <Icon
+                        name="triangle-exclamation-point"
+                        size={14}
+                        color="var(--amber-500)"
+                        className="mt-[2px] flex-none"
+                      />
                       <span>{t('github.permissionsNeedUpdate')}</span>
                     </span>
                     <a

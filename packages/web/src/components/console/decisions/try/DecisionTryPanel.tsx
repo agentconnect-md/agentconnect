@@ -222,7 +222,7 @@ export function DecisionTryPanel<L extends TryLane, R>({
           className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
         >
           <Icon
-            name={failure.kind === 'offline' ? 'wifi-off' : 'triangle-alert'}
+            name={failure.kind === 'offline' ? 'wifi-off' : 'triangle-exclamation-point'}
             size={14}
             className="mt-[2px] flex-none"
           />

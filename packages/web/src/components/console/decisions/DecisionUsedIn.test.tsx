@@ -159,7 +159,7 @@ describe('DecisionUsedIn', () => {
     expect(button('agent_tool:agent-9', /^Recent evaluations/)).toBeUndefined()
     expect(count('agent_tool:agent-9')).toBe('—')
     const ops = row('gate-local:C7')
-    expect(ops.querySelector('svg.lucide-triangle-alert')).not.toBeNull()
+    expect(ops.querySelector('svg.lucide-triangle-exclamation-point')).not.toBeNull()
     const card = await hover(ops.querySelector('[data-rule-chip]')!)
     expect(card?.textContent).toBe('StatusNeeds review1YesTrigger—OtherwiseSkip')
   })

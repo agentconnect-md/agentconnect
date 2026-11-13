@@ -380,7 +380,7 @@ function PanelNotice({ text, warn = false }: { text: string; warn?: boolean }) {
   return (
     <div className="flex items-start gap-2 px-[2px] py-1 font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
       <Icon
-        name={warn ? 'triangle-alert' : 'list-checks'}
+        name={warn ? 'triangle-exclamation-point' : 'list-checks'}
         size={14}
         color={warn ? 'var(--amber-500)' : 'var(--text-tertiary)'}
         className="mt-[2px] flex-none"

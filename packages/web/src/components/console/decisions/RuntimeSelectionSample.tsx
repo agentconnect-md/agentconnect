@@ -205,7 +205,7 @@ export function RuntimeSelectionSample({
           <span className={SECTION_LABEL}>{t('result')}</span>
           {!answer ? (
             <div className="flex items-center gap-2 rounded-sm bg-(--status-paused-soft) px-[10px] py-2 font-sans text-[12px] font-medium leading-normal">
-              <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+              <Icon name="triangle-exclamation-point" size={13} color="var(--amber-500)" />
               {t('unavailable')}
             </div>
           ) : answer.type === 'choice' ? (

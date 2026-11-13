@@ -12,7 +12,7 @@ import { Icon, Toggle } from '@/components/ui'
 const NOTE_ICON: Record<AutoUpgradeNote['kind'], string> = {
   upgrading: 'circle-fading-arrow-up',
   upgraded: 'circle-check',
-  failed: 'triangle-alert',
+  failed: 'triangle-exclamation-point',
   waiting: 'clock'
 }
 const NOTE_COLOR: Record<AutoUpgradeNote['kind'], string> = {

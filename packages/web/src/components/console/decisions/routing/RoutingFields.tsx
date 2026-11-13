@@ -61,7 +61,7 @@ export function issueText(t: T, issue: RoutingIssue): string {
 export function FieldIssue({ children }: { children: ReactNode }) {
   return (
     <div className="flex items-start gap-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--red-600)">
-      <Icon name="triangle-alert" size={12} className="mt-[2px] flex-none" />
+      <Icon name="triangle-exclamation-point" size={12} className="mt-[2px] flex-none" />
       <span>{children}</span>
     </div>
   )

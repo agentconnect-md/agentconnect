@@ -220,7 +220,7 @@ function ManagedComputer({
       )}
       {!pool?.enabled && (
         <p className="m-0 mt-3 flex items-start gap-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-          <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={13} className="mt-[2px] flex-none" />
           <span>{t('poolOff')}</span>
         </p>
       )}

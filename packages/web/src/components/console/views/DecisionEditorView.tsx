@@ -706,14 +706,14 @@ function DecisionEditor() {
         <div className="flex min-w-0 flex-col gap-4">
           {saveError && (
             <div className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
-              <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+              <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
               <span>{saveError}</span>
             </div>
           )}
 
           {brokenGates.length > 0 && (
             <div className="flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
-              <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+              <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
               <span>{t('breaksChannels', { names: brokenGates.map((usage) => usage.channelName).join(', ') })}</span>
             </div>
           )}
@@ -1099,7 +1099,7 @@ function DecisionEditor() {
 function IssueLine({ children }: { children: ReactNode }) {
   return (
     <span className="flex items-start gap-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--red-600)">
-      <Icon name="triangle-alert" size={12} className="mt-[2px] flex-none" />
+      <Icon name="triangle-exclamation-point" size={12} className="mt-[2px] flex-none" />
       <span>{children}</span>
     </span>
   )

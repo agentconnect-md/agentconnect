@@ -927,7 +927,12 @@ export default function EditAgentModal({
                   {/* Keep the placement warning with the daemon selector. */}
                   {sourceDaemon && sourceUnavailable && (
                     <div className="col-span-full flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
-                      <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+                      <Icon
+                        name="triangle-exclamation-point"
+                        size={15}
+                        color="var(--amber-500)"
+                        className="mt-[1px] flex-none"
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
                           {t('edit.safeMoveUnavailable')}
@@ -1104,7 +1109,12 @@ export default function EditAgentModal({
 
             {placementRequested && (
               <div className="mt-[18px] flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[11px]">
-                <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
+                <Icon
+                  name="triangle-exclamation-point"
+                  size={15}
+                  color="var(--amber-500)"
+                  className="mt-[1px] flex-none"
+                />
                 {initialPlacement ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                     {t('edit.initialPlacementNotice', { daemon: daemon?.name ?? t('edit.selectedDaemon') })}
@@ -1137,7 +1147,7 @@ export default function EditAgentModal({
             role="alert"
             className="flex w-full items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)"
           >
-            <Icon name="triangle-alert" size={15} className="flex-none" />
+            <Icon name="triangle-exclamation-point" size={15} className="flex-none" />
             {err}
           </div>
         )}
@@ -1150,7 +1160,7 @@ export default function EditAgentModal({
           disabled={saving || !loaded || sourceBlocksSafeMove || (validateModelSelection && !modelSelectionValid)}
           onClick={() => void save()}
         >
-          <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />
+          <Icon name={forceMove ? 'triangle-exclamation-point' : 'check'} size={15} />
           {saving
             ? initialPlacement
               ? t('edit.placing')

@@ -45,7 +45,7 @@ export function WeChatWizardBody({ agent, host }: { agent: Agent; host: WizardHo
         </div>
       </div>
       <div className="flex items-start gap-2 rounded-md bg-(--status-paused-soft) px-[10px] py-2 font-sans text-[12px] font-medium leading-[1.5] text-(--text-secondary)">
-        <Icon name="triangle-alert" size={14} color="var(--status-paused)" className="mt-[2px] flex-none" />
+        <Icon name="triangle-exclamation-point" size={14} color="var(--status-paused)" className="mt-[2px] flex-none" />
         <span>{t('intro.counterpart')}</span>
       </div>
       {state.phase === 'idle' ? (

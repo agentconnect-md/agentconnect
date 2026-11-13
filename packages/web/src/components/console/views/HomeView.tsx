@@ -888,7 +888,7 @@ export default function HomeView() {
           reported "sign-in required" (no active AI subscription/login). */}
       {!loading && blocked && (
         <div className="mb-3 flex items-center gap-3 rounded-lg border border-(--status-paused-soft) bg-(--status-paused-soft) px-4 py-[10px]">
-          <Icon name="triangle-alert" size={16} color="var(--status-paused)" />
+          <Icon name="triangle-exclamation-point" size={16} color="var(--status-paused)" />
           <span className="min-w-0 flex-1 font-sans text-[13px] leading-normal text-(--text-secondary)">
             {blocked === 'offline' ? (
               <>

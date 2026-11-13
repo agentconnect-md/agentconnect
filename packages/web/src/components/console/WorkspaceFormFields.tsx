@@ -85,7 +85,7 @@ export function RepositoryGrantSuspendedBadge({
       className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
       title={t(`grantSuspendedReason.${reason}`)}
     >
-      <Icon name="triangle-alert" size={11} />
+      <Icon name="triangle-exclamation-point" size={11} />
       {!compact && t('grantSuspended')}
     </span>
   )

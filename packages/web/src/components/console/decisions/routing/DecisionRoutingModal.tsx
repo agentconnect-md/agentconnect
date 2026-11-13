@@ -253,7 +253,7 @@ export function DecisionRoutingModal({
           </span>
         </div>
         {readiness && readiness !== 'ready' && (
-          <Note icon={readiness === 'daemon_offline' ? 'wifi-off' : 'triangle-alert'}>
+          <Note icon={readiness === 'daemon_offline' ? 'wifi-off' : 'triangle-exclamation-point'}>
             <b className="font-semibold text-(--text-secondary)">{t(`status.${readiness}`)}</b>
             {readiness === 'needs_review' && <> — {t('banner.needsReview')}</>}
           </Note>
@@ -326,7 +326,7 @@ export function DecisionRoutingModal({
             role="alert"
             className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
           >
-            <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+            <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
             <span>{saveErrorText(t, serverError)}</span>
           </div>
         )}

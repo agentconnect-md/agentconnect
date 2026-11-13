@@ -84,7 +84,7 @@ function Note({ icon, children }: { icon: string; children: ReactNode }) {
 /** The icon each non-ready status leads its banner with. */
 const STATUS_ICON: Record<Exclude<GateStatus, 'ready'>, string> = {
   pending_sync: 'clock',
-  needs_review: 'triangle-alert',
+  needs_review: 'triangle-exclamation-point',
   daemon_offline: 'wifi-off',
   unsupported: 'circle-arrow-up',
   access_revoked: 'lock'
@@ -544,7 +544,7 @@ export function DecisionBindingStrip({
 
             {decision && invalidText && !awaiting && (
               <div className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
-                <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+                <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
                 <span>{invalidText}</span>
               </div>
             )}
@@ -554,7 +554,7 @@ export function DecisionBindingStrip({
                 role="alert"
                 className="flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]"
               >
-                <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+                <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
                 <span>{saveErrorText(t, activeDraft.error)}</span>
               </div>
             )}
@@ -594,7 +594,7 @@ export function DecisionBindingStrip({
                     <Note icon="clock">{t('binding.helpHistory')}</Note>
                   </>
                 )}
-                <Note icon="shield-alert">{t('binding.helpUnavailable')}</Note>
+                <Note icon="shield-exclamation-point">{t('binding.helpUnavailable')}</Note>
               </div>
             )}
 

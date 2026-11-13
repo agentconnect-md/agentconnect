@@ -201,7 +201,7 @@ export function WeChatLoginView({
     const reason = login?.failureReason ? t(FAILURES[login.failureReason]) : null
     return (
       <div role="alert" className="flex flex-col items-start gap-2">
-        <Line icon="circle-alert" color="var(--status-error)">
+        <Line icon="circle-exclamation-point" color="var(--status-error)">
           {reason ?? (state.pollError || t('failed.gone'))}
         </Line>
         <Button size="sm" variant="secondary" disabled={state.starting || state.reconciling} onClick={onRetry}>

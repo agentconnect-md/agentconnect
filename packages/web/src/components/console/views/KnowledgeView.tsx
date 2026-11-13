@@ -74,7 +74,7 @@ function ErrorNote({ message, card = false }: { message: string; card?: boolean 
           : 'flex items-center justify-center gap-2 px-5 py-10 font-sans text-[13px] text-(--text-tertiary)'
       }
     >
-      <Icon name="triangle-alert" size={16} />
+      <Icon name="triangle-exclamation-point" size={16} />
       {message}
     </div>
   )

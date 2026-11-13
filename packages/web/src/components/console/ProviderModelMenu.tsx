@@ -35,7 +35,7 @@ function ProviderButton({ item, active, onPick }: { item: ProviderColumnItem; ac
       )}
       {item.warning && (
         <span className="flex flex-none" title={item.warning}>
-          <Icon name="triangle-alert" size={12} color="var(--status-paused)" />
+          <Icon name="triangle-exclamation-point" size={12} color="var(--status-paused)" />
         </span>
       )}
       {item.count !== undefined && (

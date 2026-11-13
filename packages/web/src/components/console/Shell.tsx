@@ -900,7 +900,7 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
                   className="fixed top-[72px] right-4 left-4 z-50 flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) desktop:top-4 desktop:left-auto desktop:w-[460px]"
                 >
                   <Icon
-                    name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-alert'}
+                    name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-exclamation-point'}
                     size={16}
                     color={githubNotice.tone === 'success' ? 'var(--status-online)' : 'var(--amber-500)'}
                     className="mt-[1px] flex-none"

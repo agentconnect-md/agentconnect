@@ -95,7 +95,7 @@ function RuleChip({
       }`}
     >
       <Icon
-        name={place.review ? 'triangle-alert' : 'split'}
+        name={place.review ? 'triangle-exclamation-point' : 'split'}
         size={13}
         className={`flex-none ${place.review ? 'text-(--amber-500)' : 'text-(--brand)'}`}
       />

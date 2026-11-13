@@ -354,7 +354,9 @@ export function FleetUsageCard({ agentIds, note }: { agentIds: readonly string[]
           className="flex flex-1 items-center justify-center gap-[6px] px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
           title={message.title}
         >
-          {message.icon && <Icon name="triangle-alert" size={14} color="var(--status-error)" className="flex-none" />}
+          {message.icon && (
+            <Icon name="triangle-exclamation-point" size={14} color="var(--status-error)" className="flex-none" />
+          )}
           {message.text}
         </div>
       ) : (
@@ -586,7 +588,7 @@ export function FleetRuntimesCard({
                 </button>
                 {(warning === 'image-binary-missing' || warning === 'host-binary-missing') && (
                   <div className="flex items-center gap-[6px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)">
-                    <Icon name="triangle-alert" size={12} className="flex-none" />
+                    <Icon name="triangle-exclamation-point" size={12} className="flex-none" />
                     {warning === 'host-binary-missing' ? HOST_BINARY_MISSING_LABEL : IMAGE_BINARY_MISSING_LABEL}
                   </div>
                 )}
@@ -597,7 +599,7 @@ export function FleetRuntimesCard({
                     onClick={() => openModal('runtimeLogin', loginTarget)}
                     className="flex w-full cursor-pointer items-center gap-[6px] border-0 bg-(--status-paused-soft) px-[13px] py-[6px] text-left font-sans text-[11.5px] font-medium leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
                   >
-                    <Icon name="triangle-alert" size={12} className="flex-none" />
+                    <Icon name="triangle-exclamation-point" size={12} className="flex-none" />
                     <span className="min-w-0 truncate">{loginText}</span>
                     <span className="ml-auto flex flex-none items-center gap-[3px] underline underline-offset-2">
                       {t('showCommand')}

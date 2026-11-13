@@ -2516,7 +2516,7 @@ export default function AddIntegrationModal({
 
                 {!gtRepoAuthorized && (
                   <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+                    <Icon name="shield-exclamation-point" size={14} className="mt-[1px] flex-none" />
                     <span>
                       {t('giteaNotAuthorized', {
                         agent: agentLabel(agent),
@@ -2635,7 +2635,7 @@ export default function AddIntegrationModal({
 
                 {!azRepoAuthorized && (
                   <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                    <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+                    <Icon name="shield-exclamation-point" size={14} className="mt-[1px] flex-none" />
                     <span>
                       {t('azureDevOpsNotAuthorized', {
                         agent: agentLabel(agent),
@@ -2739,7 +2739,7 @@ export default function AddIntegrationModal({
                 {/* §8.3 — stated where the pick is, not only inside the closed dropdown. */}
                 {!glProjectAuthorized && (
                   <div className="mb-4 flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
-                    <Icon name="shield-alert" size={14} className="mt-[1px] flex-none" />
+                    <Icon name="shield-exclamation-point" size={14} className="mt-[1px] flex-none" />
                     <span>{t('gitlabNotAuthorized', { project: glPicked?.projectPath ?? t('thisProject') })}</span>
                   </div>
                 )}
@@ -2960,7 +2960,7 @@ export default function AddIntegrationModal({
         )}
         {err && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
-            <Icon name="triangle-alert" size={15} className="mt-[1px] flex-none" />
+            <Icon name="triangle-exclamation-point" size={15} className="mt-[1px] flex-none" />
             {err}
           </div>
         )}

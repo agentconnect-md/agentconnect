@@ -57,7 +57,7 @@ function DecisionsList() {
         </div>
       ) : error ? (
         <div className="card flex items-center justify-center gap-2 px-5 py-10 font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-          <Icon name="triangle-alert" size={16} />
+          <Icon name="triangle-exclamation-point" size={16} />
           {error}
         </div>
       ) : decisions.length === 0 ? (
@@ -174,7 +174,7 @@ function DecisionExamples({ writable }: { writable: boolean }) {
       </div>
       {error && (
         <div className="mx-5 mb-3 flex items-start gap-[9px] rounded-md border border-(--red-500) bg-(--status-error-soft) px-[13px] py-[10px] font-sans text-[12.5px] font-normal leading-[1.55]">
-          <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
           <span>{error}</span>
         </div>
       )}

@@ -559,7 +559,7 @@ export function GitPanel({
           data-git-stage-error=""
           className="flex flex-none items-start gap-[6px] border-t border-(--border-subtle) px-3 py-[7px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--red-600)"
         >
-          <Icon name="triangle-alert" size={13} color="var(--red-600)" className="mt-[2px] flex-none" />
+          <Icon name="triangle-exclamation-point" size={13} color="var(--red-600)" className="mt-[2px] flex-none" />
           <span>{stageErr}</span>
         </div>
       ) : null}
@@ -636,7 +636,7 @@ function PanelNotice({ text, warn = false }: { text: string; warn?: boolean }) {
   return (
     <div className="flex items-start gap-2 px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-secondary)">
       <Icon
-        name={warn ? 'triangle-alert' : 'git-commit-horizontal'}
+        name={warn ? 'triangle-exclamation-point' : 'git-commit-horizontal'}
         size={14}
         color={warn ? 'var(--amber-500)' : 'var(--text-tertiary)'}
         className="mt-[2px] flex-none"

@@ -880,7 +880,7 @@ export function WorkspaceFiles({
               startable={sandboxed || workspaceRootReadState(root) === 'asleep'}
               notice={
                 <div className="flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-                  <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+                  <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" />
                   <span>
                     {workspaceRootReadState(root) === 'asleep' ? SANDBOX_ASLEEP_NOTICE : t('workspaceBrowseError')}
                   </span>
@@ -1076,7 +1076,12 @@ function FilePreview({
           className="flex items-start gap-[10px] border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-3 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)"
           role="alert"
         >
-          <Icon name="triangle-alert" size={15} color="var(--status-error)" className="mt-[2px] flex-none" />
+          <Icon
+            name="triangle-exclamation-point"
+            size={15}
+            color="var(--status-error)"
+            className="mt-[2px] flex-none"
+          />
           <div>
             <span className="font-semibold text-(--text-primary)">{t('deleteFilePrompt')}</span> {t('cannotUndo')}
             {deletePrompt.error ? <div className="mt-1 text-(--status-error)">{deletePrompt.error}</div> : null}
@@ -1092,7 +1097,7 @@ function FilePreview({
 
       {!viewer.loading && viewer.err && (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+          <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" />
           <span>{t('fileReadError')}</span>
         </div>
       )}

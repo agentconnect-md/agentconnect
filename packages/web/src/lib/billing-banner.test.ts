@@ -43,7 +43,7 @@ describe('balanceBanner', () => {
 
   it('keeps the low-balance banner even while the gateway answer is unconfirmed', () => {
     const banner = balanceBanner(acct({ balanceMicro: 4_180_000, state: 'unknown' }), funded)
-    expect(banner).toMatchObject({ tone: 'amber', icon: 'triangle-alert' })
+    expect(banner).toMatchObject({ tone: 'amber', icon: 'triangle-exclamation-point' })
     expect(banner?.titleKey).toBe('lowBalanceTitle')
     expect(banner?.titleValues).toMatchObject({ balance: '$4.18' })
     expect(banner?.textValues).toMatchObject({ threshold: '$10.00' })

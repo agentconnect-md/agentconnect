@@ -86,7 +86,7 @@ export function CodeHostDecisionEntry({
           label={status ? t('pillStatusTitle', { name, status: tDecisions(`binding.status.${status}`) }) : undefined}
           hover={hover}
           onOpen={() => setOpen(true)}
-          warning={status ? (status === 'access_revoked' ? 'lock' : 'triangle-alert') : undefined}
+          warning={status ? (status === 'access_revoked' ? 'lock' : 'triangle-exclamation-point') : undefined}
           remove={
             canWrite
               ? {

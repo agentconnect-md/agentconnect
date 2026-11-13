@@ -593,7 +593,12 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 className="flex flex-col items-start gap-2 border-b border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--amber-500) desktop:flex-row desktop:items-center desktop:justify-between desktop:gap-3"
               >
                 <span className="flex min-w-0 items-start gap-2">
-                  <Icon name="triangle-alert" size={14} color="var(--amber-500)" className="mt-[2px] flex-none" />
+                  <Icon
+                    name="triangle-exclamation-point"
+                    size={14}
+                    color="var(--amber-500)"
+                    className="mt-[2px] flex-none"
+                  />
                   <span>{ct('reauthWarning')}</span>
                 </span>
               </div>
@@ -698,7 +703,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                         onClick={() => setExpanded(open ? null : row.agentId)}
                         className="badge flex-none cursor-pointer border-0 bg-(--status-paused-soft) text-(--amber-500)"
                       >
-                        <Icon name="triangle-alert" size={11} className="mr-[3px] inline-block align-[-1px]" />
+                        <Icon
+                          name="triangle-exclamation-point"
+                          size={11}
+                          className="mr-[3px] inline-block align-[-1px]"
+                        />
                         {wanting.length === 1
                           ? ct('projectsNeedAttentionOne')
                           : ct('projectsNeedAttentionMany', { count: wanting.length })}

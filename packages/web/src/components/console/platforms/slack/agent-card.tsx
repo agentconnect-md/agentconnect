@@ -77,7 +77,7 @@ export function SlackAgentCardNotice({ padX }: { integration: IntegrationRow; pa
         className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
         style={{ padding: `9px ${padX}px` }}
       >
-        <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
+        <Icon name="triangle-exclamation-point" size={13} className="mt-[2px] flex-none" />
         <span>{card.error}</span>
       </div>
     )

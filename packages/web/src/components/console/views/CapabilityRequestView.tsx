@@ -139,7 +139,12 @@ export function CapabilityRequestBody({
                 role="note"
                 className="flex items-start gap-2 text-[13px] leading-[1.5] text-(--text-primary)"
               >
-                <Icon name="triangle-alert" size={14} color="var(--status-paused)" className="mt-[3px] flex-none" />
+                <Icon
+                  name="triangle-exclamation-point"
+                  size={14}
+                  color="var(--status-paused)"
+                  className="mt-[3px] flex-none"
+                />
                 <span>{warning}</span>
               </li>
             ))}

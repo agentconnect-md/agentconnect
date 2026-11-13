@@ -366,7 +366,7 @@ export function AgentSkillsCard({
                       data-skill-source-failure={failure.code}
                       className="flex items-start gap-2 px-4 pb-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
                     >
-                      <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />
+                      <Icon name="triangle-exclamation-point" size={14} className="mt-[2px] flex-none" />
                       <span className="min-w-0">
                         <span className="font-semibold">{t('installFailed')}</span>
                         {t.has(`failureCodes.${failure.code}`) && <span>: {t(`failureCodes.${failure.code}`)}</span>}
