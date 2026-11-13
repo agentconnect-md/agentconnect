@@ -247,6 +247,8 @@ export class LookBack {
       for (const task of tasks) {
         if (items.length >= LOOK_BACK_ITEMS_MAX) break
         const key = task.childSessionKey
+        // The row alone rules most tasks out; only one it would list is worth asking the store and the platform about.
+        if (!lookBackVerdict(task, now, { busy: false, muted: false }).listed) continue
         const verdict = lookBackVerdict(task, now, {
           busy: await this.host.busy(key),
           muted: await this.host.muted(key, task.owner!.platform)
