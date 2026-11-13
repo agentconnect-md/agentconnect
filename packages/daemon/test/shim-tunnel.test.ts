@@ -19,6 +19,7 @@ import type { ShimEvent } from '../src/shim/protocol.js'
 import {
   ACK_EVERY_FRAMES,
   MAX_CODEHOST_STREAMS,
+  MAX_DAEMON_FRAMES_IN_FLIGHT,
   MAX_IN_FLIGHT_FRAMES,
   MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
@@ -451,8 +452,8 @@ describe('the shim tunnel', () => {
     proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
     const socket = proxy.socketFor(streamId)!
 
-    socket.emit('data', Buffer.alloc(MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
-    expect(proxy.sent.filter(isData)).toHaveLength(MAX_IN_FLIGHT_FRAMES)
+    socket.emit('data', Buffer.alloc(MAX_DAEMON_FRAMES_IN_FLIGHT * MAX_TUNNEL_CHUNK_BYTES))
+    expect(proxy.sent.filter(isData)).toHaveLength(MAX_DAEMON_FRAMES_IN_FLIGHT)
     expect(socket.isPaused()).toBe(true)
 
     proxy.held.shift()!.ack()
@@ -466,7 +467,7 @@ describe('the shim tunnel', () => {
     await proxy.instance.ensure('agent')
     const streamId = randomUUID()
     proxy.announce({ kind: 'connect', tunnel: 'agent' }, streamId)
-    proxy.socketFor(streamId)!.emit('data', Buffer.alloc(MAX_IN_FLIGHT_FRAMES * MAX_TUNNEL_CHUNK_BYTES))
+    proxy.socketFor(streamId)!.emit('data', Buffer.alloc(MAX_DAEMON_FRAMES_IN_FLIGHT * MAX_TUNNEL_CHUNK_BYTES))
 
     proxy.held.shift()!.fail(new Error('socket replaced'))
     await vi.waitFor(() => expect(proxy.instance.streamCount()).toBe(0))
@@ -476,7 +477,7 @@ describe('the shim tunnel', () => {
         expect.objectContaining({ op: 'close', streamId, error: expect.stringContaining('could not be delivered') })
       )
     )
-    expect(proxy.sent.filter(isData)).toHaveLength(MAX_IN_FLIGHT_FRAMES)
+    expect(proxy.sent.filter(isData)).toHaveLength(MAX_DAEMON_FRAMES_IN_FLIGHT)
   })
 
   it('splits a reply larger than one frame instead of dropping it', async () => {

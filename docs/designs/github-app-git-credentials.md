@@ -1432,7 +1432,8 @@ it actually exercised; source inspection alone is not a successful environment t
 
 **Capacity gate, required before delivery 2 (or any earlier expansion to all
 providers).** The `codehost` tunnel uses 32 KiB chunks encoded as base64 in JSON,
-eight unacknowledged frames per stream, and sixteen simultaneous code-host streams
+thirty-two unanswered frames per stream toward the sandbox (the direction a clone
+reads) and eight unacknowledged toward the daemon, and sixteen simultaneous code-host streams
 per shim (`shim/tunnel.ts`). Additional-repository and submodule fetches share that
 per-shim ceiling; it is not a pool-member-wide load limit. A CONNECT past the ceiling
 waits for a stream to end rather than being refused, since Git does not retry a

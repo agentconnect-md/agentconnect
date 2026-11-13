@@ -22,8 +22,10 @@ export const MAX_CODEHOST_ROUTES = 64
 export const MAX_CODEHOST_STREAMS = 16
 /** Concurrent `provider` streams per sandbox, its own budget: each session holds a few long-lived model connections (subagents, pooled keep-alives), so it is wider than a clone burst's. */
 export const MAX_PROVIDER_STREAMS = 64
-/** Data frames one stream may have unacknowledged, in either direction, before its local socket is paused (8 × 32 KiB). */
+/** Chunks a shim may have unacknowledged on one stream before it pauses the in-pod socket (8 × 32 KiB); both sides derive the ack cadence from it, so it moves only with the shim. */
 export const MAX_IN_FLIGHT_FRAMES = 8
+/** Daemon data frames one stream may have unanswered before the daemon pauses its socket (32 × 32 KiB); the shim answers each frame, so the daemon alone sets it. */
+export const MAX_DAEMON_FRAMES_IN_FLIGHT = 32
 /** How many shim-sent chunks the daemon writes out before acknowledging them, so a paused stream always earns an ack. */
 export const ACK_EVERY_FRAMES = MAX_IN_FLIGHT_FRAMES / 2
 const MAX_TUNNEL_CHUNK_BASE64 = Math.ceil(MAX_TUNNEL_CHUNK_BYTES / 3) * 4

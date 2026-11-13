@@ -5,7 +5,7 @@ import {
   ACK_EVERY_FRAMES,
   isProxyTunnel,
   MAX_CODEHOST_STREAMS,
-  MAX_IN_FLIGHT_FRAMES,
+  MAX_DAEMON_FRAMES_IN_FLIGHT,
   MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
   TunnelListeningSchema,
@@ -278,7 +278,7 @@ export class TunnelProxy {
         void this.deliver(streamId, entry, seq)
       }
       // Stop reading until the pod acknowledges enough, so a large transfer is not one burst of requests.
-      if (entry.unconfirmed.size >= MAX_IN_FLIGHT_FRAMES) entry.socket.pause()
+      if (entry.unconfirmed.size >= MAX_DAEMON_FRAMES_IN_FLIGHT) entry.socket.pause()
     })
     socket.on('error', (err) => this.hangUp(streamId, entry, err.message))
     socket.on('close', () => this.hangUp(streamId, entry))
@@ -337,7 +337,7 @@ export class TunnelProxy {
       this.close(streamId, entry.closing.reason)
       return
     }
-    if (entry.unconfirmed.size < MAX_IN_FLIGHT_FRAMES && entry.socket.isPaused()) entry.socket.resume()
+    if (entry.unconfirmed.size < MAX_DAEMON_FRAMES_IN_FLIGHT && entry.socket.isPaused()) entry.socket.resume()
   }
 
   /** Tell the shim how many of its chunks are written out; cumulative, so one resend covers a renewal, and a second loss ends the stream rather than hang it paused. */
