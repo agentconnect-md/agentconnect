@@ -849,7 +849,10 @@ export function sessionGitConfig(
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
     `# Keeps non-identity host config and disables repository hooks${bases.length ? `, then pins ${bases.join(' + ')} credentials to the credential proxy's placeholder` : ''}.`,
-    ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
+    // Quoted and escaped: git reads `\U` in a bare Windows path as an escape and rejects the whole file.
+    ...(target.hostConfig
+      ? ['[include]', `\tpath = "${target.hostConfig.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`]
+      : []),
     // AFTER the include, or a host ~/.gitconfig hooksPath would be the last writer and win.
     '[core]',
     `\thooksPath = ${EMPTY_GIT_CONFIG}`,
