@@ -19,8 +19,8 @@ import {
   CoordinatorTurns,
   inThread,
   platformMessageIdOf,
+  postlessWebchat,
   replyThreadOf,
-  threadless,
   wholeRoomThread,
   type DeliveredMessage
 } from './coordinator-turns.js'
@@ -122,14 +122,17 @@ export function messageForTask(
   }
 }
 
-/** The thread an adopted session holds (§3.5): its own, but never a room's whole thread (§6.8) nor a threadless room's root, whose session holds the internal thread of the last message it answered instead (§6.10). */
+/** The thread a room's session from before `auto` holds as a task where the room has no threads: no message's own id has a colon (`platformMessageIdOf`), so none carries it (§6.10). */
+export function earlierRoomSessionAnchor(root: string): string {
+  return `${root}:before-auto`
+}
+
+/** The thread an adopted session holds (§3.5): its own, but never a room's whole thread (§6.8), and a threadless room's root session holds `earlierRoomSessionAnchor` instead (§6.10). */
 function adoptableAs(session: UnownedThreadSession, at: { platform: string; channel: string }): UnownedThreadSession[] {
   const isDm = session.conversationKind === 'dm'
   const room = { ...at, thread: session.thread, isDm, isGroupDm: session.conversationKind === 'group_dm' }
   if (wholeRoomThread(room)) return []
-  if (!atThreadlessRoot(room)) return [session]
-  const anchor = session.lastDeliveredTs
-  return anchor === undefined || atThreadlessRoot({ ...room, thread: anchor }) ? [] : [{ ...session, thread: anchor }]
+  return [atThreadlessRoot(room) ? { ...session, thread: earlierRoomSessionAnchor(session.thread) } : session]
 }
 
 /** A room keyed as one thread, as a task holds a channel it made (§6.8). */
@@ -258,7 +261,7 @@ export class CoordinatorSessions {
           const owner = await this.taskOwner(ctx.agentId, ctx, key)
           const taskKey = await this.openTask(owner, ctx.agentId, held.message, call.title, call.message)
           this.turns.settle(key, call.messageId, 'delegate')
-          const note = threadless(held.message.msg)
+          const note = postlessWebchat(held.message.msg)
             ? 'Task opened; it answers on its own page, which the conversation now links to.'
             : "Task opened; it answers in the message's thread."
           return { ok: true, taskId: taskKey, title: call.title, note }
@@ -349,7 +352,7 @@ export class CoordinatorSessions {
         `sendMessage: the thread of ${message.id} already belongs to task ${owner}; hand the message to it with action ` +
           `"messageTask" and that taskId`
       )
-    if (threadless(msg)) return await this.openPageTask(coordinatorKey, agentId, message, title, background)
+    if (postlessWebchat(msg)) return await this.openPageTask(coordinatorKey, agentId, message, title, background)
     const taskKey = sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
     const now = this.host.now()
     const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
@@ -532,7 +535,7 @@ export class CoordinatorSessions {
       !row ||
       row.mode === 'watch' ||
       !owners.has(row.parentSessionKey) ||
-      (threadless(msg) && pageTaskCoordinate(row.childSessionKey, msg.platform, agentId) === undefined)
+      (postlessWebchat(msg) && pageTaskCoordinate(row.childSessionKey, msg.platform, agentId) === undefined)
     )
       throw new Error(`sendMessage: ${taskId} is not one of your open tasks; listTasks lists them`)
     const threads = await index.threadsOf(agentId, row.childSessionKey)
@@ -541,7 +544,7 @@ export class CoordinatorSessions {
         `sendMessage: task ${taskId} works in the background and cannot take a channel message; open a task for the ` +
           'message with action "delegateTask" instead'
       )
-    const room = threadless(msg) ? undefined : this.roomOf(threads, msg)
+    const room = postlessWebchat(msg) ? undefined : this.roomOf(threads, msg)
     if (room) {
       // Its thread stays the coordinator's: the task answers in the channel it holds, which the thread links to.
       const session = await this.sessionOf(row.childSessionKey, threads)
@@ -589,7 +592,8 @@ export class CoordinatorSessions {
     threads: readonly TaskRoom[],
     msg: NormalizedMessage
   ): Promise<string | undefined> {
-    if (msg.platform !== 'webchat' || threadless(msg) || inThread(msg) || msg.transcriptPostId === undefined) return
+    if (msg.platform !== 'webchat' || postlessWebchat(msg) || inThread(msg) || msg.transcriptPostId === undefined)
+      return
     if (pageTaskCoordinate(taskKey, msg.platform, agentId) !== undefined) return
     const session = await this.sessionOf(taskKey, threads)
     const here = threads.filter((at) => at.channel === msg.channel)
@@ -625,7 +629,7 @@ export class CoordinatorSessions {
     const store = this.host.store()
     // A legacy page task's message moves into its conversation, which the coordinator links to, threaded or not (§10).
     const page = pageTaskCoordinate(taskKey, message.msg.platform, agentId)
-    if (page === undefined && threadless(message.msg))
+    if (page === undefined && postlessWebchat(message.msg))
       throw new Error(`sendMessage: ${taskKey} has no page this message can move to`)
     if (page !== undefined) {
       this.host.dispatch(

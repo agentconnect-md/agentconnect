@@ -9,7 +9,11 @@ import { manifestFor } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { QQConnection } from '../src/platforms/qq/connection.js'
 import { WeComConnection } from '../src/platforms/wecom/connection.js'
-import { deliveredMessage, THREADED_TASK_IDLE_CLOSE_MS } from '../src/auto-session/coordinator-sessions.js'
+import {
+  deliveredMessage,
+  earlierRoomSessionAnchor,
+  THREADED_TASK_IDLE_CLOSE_MS
+} from '../src/auto-session/coordinator-sessions.js'
 import { coordinatorSessionTools } from '../src/auto-session/coordinator-prompt.js'
 import {
   atThreadlessRoot,
@@ -19,6 +23,7 @@ import {
   wholeRoomThread
 } from '../src/auto-session/coordinator-turns.js'
 import { WECOM_DM_THREAD, WECOM_GROUP_THREAD } from '../src/platforms/wecom/module.js'
+import { THREADLESS_NEW_TASKS_NOTE, THREADLESS_STOP_TASKS_NOTE } from '../src/commands/handlers.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { isAppendCoordinate, isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { sessionKey, type SessionRecord } from '../src/store/local-store.js'
@@ -442,7 +447,7 @@ describe('a room without threads', () => {
         await daemon.stop()
       })
 
-      it('makes the room’s session a task anchored on the last message it answered on the switch into auto', async () => {
+      it('makes the room’s session a task on an anchor of its own on the switch into auto', async () => {
         const { daemon, d, calls, index, keyAt, route, setMode, seed, coordinatorKey, tasksOf, at } = await boot(
           'createNew',
           platform
@@ -465,8 +470,9 @@ describe('a room without threads', () => {
         expect(owners).toHaveBeenCalledWith('bot-a', [keyAt('group')])
         expect(await index.taskOfThread('bot-a', at('group'))).toBeUndefined()
         expect((await index.threadsOf('bot-a', keyAt('group'))).map((one: { thread: string }) => one.thread)).toEqual([
-          'm1'
+          earlierRoomSessionAnchor('group')
         ])
+        expect(await index.taskOfThread('bot-a', at('m1'))).toBeUndefined()
 
         // A later message also reaches the coordinator, which hands it to the old session as one of its tasks.
         await route(message('m3'))
@@ -477,13 +483,19 @@ describe('a room without threads', () => {
         await daemon.stop()
       })
 
-      it('adopts no room session that has answered nothing, and nothing ever as holding the room’s root', async () => {
+      it('adopts the room’s session whatever its replay cursor, never as holding the room’s root', async () => {
         const { daemon, d, scope, index, keyAt, seed, at } = await boot('auto', platform)
-        await seed('group')
+        // A recreated runtime session resets the cursor; the session has still answered the room before.
+        await seed('group', { title: 'Meet the team' })
         const room = { platform, channel: ROOMS[platform].channel, transportScope: scope }
-        expect(await d.coordinators.adoptThreadSessions('bot-a', keyAt('append:coordinator-1'), room)).toBe(0)
-        expect(await index.get('bot-a', keyAt('group'))).toBeUndefined()
+        expect(await d.coordinators.adoptThreadSessions('bot-a', keyAt('append:coordinator-1'), room)).toBe(1)
+        expect(await index.get('bot-a', keyAt('group'))).toBeDefined()
+        expect(await index.taskOfThread('bot-a', at(earlierRoomSessionAnchor('group')))).toBe(keyAt('group'))
         expect(await index.taskOfThread('bot-a', at('group'))).toBeUndefined()
+        // The anchor is no message's thread: a message keyed on it would sit in a thread, which none here does.
+        const anchored = { platform, msgId: `${platform}:example:m9`, thread: earlierRoomSessionAnchor('group') }
+        expect(atThreadlessRoot(anchored)).toBe(false)
+        expect(replyThreadOf({ ...anchored, thread: 'group' })).not.toBe(earlierRoomSessionAnchor('group'))
         await daemon.stop()
       })
 
@@ -533,10 +545,14 @@ describe('a room without threads', () => {
         await d.leaveAutoConversations()
         expect(await coordinatorKey()).toBeUndefined()
         expect(await index.get('bot-a', keyAt('group'))).toBeUndefined()
-        expect(await index.taskOfThread('bot-a', at('m1'))).toBeUndefined()
+        expect(await index.taskOfThread('bot-a', at(earlierRoomSessionAnchor('group')))).toBeUndefined()
         await route(message('m3'))
         expect(calls.at(-1)).toMatchObject({ thread: 'group' })
         expect(calls.at(-1)!.sessionThread).toBeUndefined()
+        // Back into auto, a new coordinator adopts the same session on the same anchor again.
+        setMode('auto')
+        await route(message('m4'))
+        expect(await index.taskOfThread('bot-a', at(earlierRoomSessionAnchor('group')))).toBe(keyAt('group'))
         await daemon.stop()
       })
 
@@ -559,6 +575,45 @@ describe('a room without threads', () => {
         expect(isCoordinatorCoordinate(append)).toBe(false)
         expect(single.calls.map((msg) => msg.sessionThread)).toEqual([append, append])
         await single.daemon.stop()
+      })
+
+      it('answers !stop and !new without sending anyone to a thread the room does not have', async () => {
+        const { daemon, d, calls, route, seed } = await boot('auto', platform)
+        const replies: string[] = []
+        const chrome = vi
+          .spyOn(d.commandChrome.for(platform), 'reply')
+          .mockImplementation((_conn, _msg, _ctx, text) => void replies.push(text as string))
+        const command = (id: string, text: string) => {
+          const msg = message(id, text)
+          if (platform === 'wecom') msg.text = text
+          return msg
+        }
+        await route(message('m1'))
+        await seed(calls[0]!.sessionThread!)
+        await route(command('m2', '!stop'))
+        await route(command('m3', '!new'))
+        expect(replies).toEqual([
+          `Nothing is running. ${THREADLESS_STOP_TASKS_NOTE}`,
+          `🆕 Started a new session for new messages here. ${THREADLESS_NEW_TASKS_NOTE}`
+        ])
+        chrome.mockRestore()
+        await daemon.stop()
+
+        // Per thread keeps the room on one session, which the replies call the conversation.
+        const perThread = await boot('createNew', platform)
+        const said: string[] = []
+        const again = vi
+          .spyOn(perThread.d.commandChrome.for(platform), 'reply')
+          .mockImplementation((_conn, _msg, _ctx, text) => void said.push(text as string))
+        await perThread.seed('group')
+        await perThread.route(command('m4', '!stop'))
+        await perThread.route(command('m5', '!new'))
+        expect(said).toEqual([
+          '🔇 Nothing is running. Muted in this conversation — @mention me to resume.',
+          '🆕 Cleared. This conversation continues with a fresh context.'
+        ])
+        again.mockRestore()
+        await perThread.daemon.stop()
       })
 
       it('acts on no earlier session for a command at the root before the coordinator exists', async () => {

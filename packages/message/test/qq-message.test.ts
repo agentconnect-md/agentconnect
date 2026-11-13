@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { manifestFor } from '@agentconnect.md/protocol'
 import { normalizeQQMessage, parseQQUserId, QQAttachmentUrl, QQAvatarUrl, QQUserId } from '../src/qq-message.js'
 
 const event = { kind: 'c2c', rawEventType: 'C2C_MESSAGE_CREATE', senderId: 'user', messageId: 'm1', content: 'hello' }
@@ -102,6 +103,19 @@ describe('QQ normalization', () => {
     expect(normalizeQQMessage('100', { ...group, groupOpenid: 'g2' }, 'trace')!.channel).not.toBe(first.channel)
     expect(normalizeQQMessage('100', { ...event, senderId: 'g1' }, 'trace')!.channel).not.toBe(first.channel)
     expect(normalizeQQMessage('200', group, 'trace')!.msgId).not.toBe(first.msgId)
+  })
+  it('keys a group message on the root its manifest declares, and a direct message on none of it', () => {
+    // A drift here puts every group message "in a thread" and hides the room's root from its coordinator (auto-session-mode.md §6.10).
+    const group = {
+      ...event,
+      kind: 'group',
+      rawEventType: 'GROUP_AT_MESSAGE_CREATE',
+      groupOpenid: 'chat-example-group'
+    }
+    expect(normalizeQQMessage('100', { ...group, content: '<@!100> hi' }, 'trace')!.thread).toBe(
+      manifestFor('qq').threadlessRoomRoot
+    )
+    expect(normalizeQQMessage('100', event, 'trace')!.thread).not.toBe(manifestFor('qq').threadlessRoomRoot)
   })
   it('uses one app-scoped identity for the same sender in groups and C2C', () => {
     const dm = normalizeQQMessage('100', event, 'trace')!

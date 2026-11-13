@@ -358,8 +358,6 @@ export interface UnownedThreadSession {
   title?: string
   running: boolean
   conversationKind?: string
-  /** The platform id of the last message it answered. */
-  lastDeliveredTs?: string
 }
 
 export class AssistantSubsessionIndex {
@@ -1110,7 +1108,7 @@ export class AssistantSubsessionIndex {
   ): Promise<UnownedThreadSession[]> {
     const rows = (
       await this.db.query(
-        `SELECT s.key, s.thread, s.title, s.state, s.conversationKind, s.lastDeliveredTs FROM sessions s
+        `SELECT s.key, s.thread, s.title, s.state, s.conversationKind FROM sessions s
           WHERE s.agentId = ? AND s.platform = ? AND s.channel = ? AND COALESCE(s.transportScope, '') = ?
             AND s.thread NOT LIKE ? AND s.thread NOT LIKE ? AND s.originSessionId IS NULL AND s.updatedAt >= ?
             AND NOT EXISTS (SELECT 1 FROM assistant_subsession a WHERE a.agentId = s.agentId AND a.childSessionKey = s.key
@@ -1135,8 +1133,7 @@ export class AssistantSubsessionIndex {
       thread: String(row.thread),
       ...(row.title != null ? { title: String(row.title) } : {}),
       running: row.state === 'prompting' || row.state === 'cancelling',
-      ...(row.conversationKind != null ? { conversationKind: String(row.conversationKind) } : {}),
-      ...(row.lastDeliveredTs != null ? { lastDeliveredTs: String(row.lastDeliveredTs) } : {})
+      ...(row.conversationKind != null ? { conversationKind: String(row.conversationKind) } : {})
     }))
   }
 

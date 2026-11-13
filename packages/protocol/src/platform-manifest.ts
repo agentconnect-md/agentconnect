@@ -125,6 +125,9 @@ export const WECHAT_PLATFORM = 'wechat'
 // WeCom's platform id (a smart bot on its long connection), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
 export const WECOM_PLATFORM = 'wecom'
 
+/** The fixed thread key every group message of QQ and WeCom carries, which names the group's root (auto-session-mode.md §6.10); their normalizers read it from here. */
+export const THREADLESS_GROUP_ROOT = 'group'
+
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   consoleContinuation: false,
@@ -151,8 +154,16 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
  * axes — a fail-OPEN hole in the exact guarantee this module sells.
  */
 const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
-  // A group has no threads: every message carries the fixed thread `group` (`qq-message.ts`), its root.
-  ['qq', { ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, appendKinds: ['channel'], threadlessRoomRoot: 'group' }],
+  // A group has no threads: every message carries the fixed thread `THREADLESS_GROUP_ROOT` (`qq-message.ts`), its root.
+  [
+    'qq',
+    {
+      ...DEFAULT_MANIFEST,
+      dmChannelPattern: /^dm:/,
+      appendKinds: ['channel'],
+      threadlessRoomRoot: THREADLESS_GROUP_ROOT
+    }
+  ],
   // Slack is the only platform with an authoritative membership snapshot — which
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND
@@ -289,8 +300,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       addressedByConstruction: true,
       // A direct chat is one continuous session already, so only groups take `append`.
       appendKinds: ['channel'],
-      // WeCom has no threads: every group message carries the fixed thread `group` (`canonicalizeWeComThread`), its root.
-      threadlessRoomRoot: 'group'
+      // WeCom has no threads: every group message carries the fixed thread `THREADLESS_GROUP_ROOT` (`canonicalizeWeComThread`), its root.
+      threadlessRoomRoot: THREADLESS_GROUP_ROOT
     }
   ]
 ])

@@ -11,7 +11,10 @@ Status: implemented.
 
 Add a native `qq` integration using the official QQ Bot API. One bot serves one
 agent across multiple conversations. Members of the same group share a task
-session; different groups and individual DMs remain separate.
+session; different groups and individual DMs remain separate. Under `auto` a
+group is a room without threads instead: every message is at its root and
+reaches the coordinator
+([auto-session-mode.md §6.10](auto-session-mode.md#610-a-room-without-threads)).
 
 The first contribution focuses on QQ adaptation through existing contracts.
 Shared group-history behavior requires an upstream-owned design; QQ adopts that
@@ -74,7 +77,10 @@ flowchart LR
 Scope user identity to AppID plus OpenID; `user_openid` and `member_openid`
 normalize into the same identity when their values match. Distinguish group and DM addresses. Use a stable
 logical session key per group, independent of the sender or quoted message;
-retain each sender's identity. Secret rotation must not change session identity.
+retain each sender's identity. That key is the fixed thread every group message
+carries, which the manifest declares as the room's root (`threadlessRoomRoot`);
+under `auto` it names that root, and a task keys on its message's own id instead
+(auto-session-mode.md §6.10). Secret rotation must not change session identity.
 Never merge people by nickname.
 
 When an event supplies `author.username`, cache it under that app-scoped

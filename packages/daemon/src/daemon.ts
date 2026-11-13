@@ -11332,7 +11332,7 @@ export class Daemon {
       peers,
       ...(at.platform === 'webchat' ? { webchat: true } : {}),
       // A room without threads keeps every follow-up at its root, so the coordinator places each one (§6.10).
-      ...(threadlessRoom(at) ? { threadless: true } : {})
+      ...(threadlessRoom(at) ? { threadlessRoom: true } : {})
     })
   }
 
@@ -15952,7 +15952,7 @@ export class Daemon {
     const thread = answerThreadOf(msg)
     const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
     if (!gateway) {
-      // A platform that only answers a message passively replies to it through its out-of-turn post (auto-session-mode.md §6.10).
+      // No send gateway: the platform's out-of-turn post answers the message, a QQ passive reply or a Linear activity in its AgentSession (§6.10).
       const conn = integrationId === undefined ? undefined : this.anyConnForIntegration(integrationId)
       const replied = this.chromeNotice(msg.platform, conn, msg, thread, text)
       if (!replied) throw new Error('the conversation is not connected right now; nothing was posted')

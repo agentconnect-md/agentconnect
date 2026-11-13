@@ -60,7 +60,7 @@ const STRATEGIES = new Map<string, ThreadKeyStrategy>([
   ['googlechat', { key: (channel, thread, isDm) => (isDm ? channel : thread), dmSensitive: true }],
   // A group post keys on its process query key, which a quote of it brings back; a DM is the one continuous `dm` session.
   ['dingtalk', { key: (_channel, ts, isDm) => (isDm ? 'dm' : ts), dmSensitive: true }],
-  // A group and a direct chat are each one session whatever was posted, as `canonicalizeWeComThread` keys them.
+  // A post keys where `canonicalizeWeComThread` keys a reply: a group on its root key (auto-session-mode.md §6.10), a direct chat on `dm`.
   ['wecom', { key: (_channel, _ts, isDm) => (isDm ? WECOM_DM_THREAD : WECOM_GROUP_THREAD), dmSensitive: true }]
 ])
 

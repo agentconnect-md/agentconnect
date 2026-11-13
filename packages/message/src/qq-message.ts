@@ -1,4 +1,8 @@
-import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
+import {
+  THREADLESS_GROUP_ROOT,
+  type NormalizedPlatformMessage,
+  type PlatformAttachment
+} from '@agentconnect.md/protocol'
 import { mimeTypeFromFileName, safeAttachmentName } from './file-name.js'
 
 interface QQUrl {
@@ -166,7 +170,8 @@ export function normalizeQQMessage(
       ? `qq:${appId}:${message.senderId}:${message.messageId}`
       : `qq:${appId}:group:${message.groupOpenid}:${message.messageId}`,
     channel: isDm ? `dm:${message.senderId}` : `group:${message.groupOpenid}`,
-    thread: isDm ? 'dm' : 'group',
+    // A group has no threads: its every message carries the root key the QQ manifest declares (auto-session-mode.md §6.10).
+    thread: isDm ? 'dm' : THREADLESS_GROUP_ROOT,
     sender: {
       id: QQUserId(appId, message.senderId),
       isBot: false,
