@@ -32,15 +32,15 @@ const newestFirst = (a: CoordinatorModelOption, b: CoordinatorModelOption): numb
   return 0
 }
 
-// Each runtime's small, fast tier by model id; Codex starts at terra, since its mini models are too weak to coordinate.
+// Each runtime's middle tier by model id: placing a room's messages takes judgment its small tier gets wrong.
 const DEFAULT_TIER: Readonly<Record<string, RegExp>> = Object.freeze({
-  'claude-acp': /haiku/i,
-  claude: /haiku/i,
+  'claude-acp': /sonnet/i,
+  claude: /sonnet/i,
   'codex-acp': /-terra\b/i,
   codex: /-terra\b/i
 })
 
-/** The model "Default" means for `runtime` among the models it offers: its newest small tier, else undefined, which follows the task model. */
+/** The model "Default" means for `runtime` among the models it offers: its newest middle tier, else undefined, which follows the task model. */
 export function defaultCoordinatorModel(
   runtime: string,
   models: readonly CoordinatorModelOption[]
@@ -48,6 +48,6 @@ export function defaultCoordinatorModel(
   const tier = Object.prototype.hasOwnProperty.call(DEFAULT_TIER, runtime) ? DEFAULT_TIER[runtime] : undefined
   if (!tier) return undefined
   const matching = models.filter((model) => tier.test(model.id))
-  // A bare alias (Claude Code's `haiku`) is the runtime's own newest of the tier.
+  // A bare alias (Claude Code's `sonnet`) is the runtime's own newest of the tier; a variant such as `sonnet[1m]` is not one.
   return (matching.find((model) => !/\d/.test(model.id)) ?? [...matching].sort(newestFirst)[0])?.id
 }

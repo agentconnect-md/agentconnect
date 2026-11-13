@@ -17,11 +17,11 @@ describe('coordinatorTarget', () => {
     expect(target).toEqual({ runtime: 'codex-acp', model: 'gpt-5.6-terra', effort: '', fastMode: true })
   })
 
-  it("defaults to the runtime's small model at low effort", () => {
+  it("defaults to the runtime's middle model at low effort", () => {
     const target = coordinatorTarget({ runtime: 'claude-acp', runtimeOverrides: { model: 'opus' } }, () =>
-      catalog([{ id: 'opus' }, { id: 'haiku', efforts: [{ value: 'low' }, { value: 'high' }] }])
+      catalog([{ id: 'opus' }, { id: 'haiku' }, { id: 'sonnet', efforts: [{ value: 'low' }, { value: 'high' }] }])
     )
-    expect(target).toEqual({ runtime: 'claude-acp', model: 'haiku', effort: 'low', fastMode: false })
+    expect(target).toEqual({ runtime: 'claude-acp', model: 'sonnet', effort: 'low', fastMode: false })
   })
 
   it('follows the task model where the runtime has no small model, leaving an effort the model lacks', () => {
