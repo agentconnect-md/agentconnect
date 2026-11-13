@@ -293,3 +293,41 @@ for (const platform of ['wecom', 'qq'] as const) {
     })
   })
 }
+
+// The coordinator's reply where the platform has no send gateway goes through its command chrome's `notice` (§6.10).
+describe('a coordinator reply without a send gateway', () => {
+  const user = (platform: string, channel: string, thread: string, id: string) =>
+    ({
+      msgId: `${platform}:example:${id}`,
+      traceId: `t-${id}`,
+      source: 'user',
+      platform,
+      channel,
+      thread,
+      sender: { id: 'user-alice', isBot: false },
+      text: 'hello',
+      mentionedBots: [],
+      isDm: false
+    }) as NormalizedMessage
+
+  it('answers a Linear message with a response activity in its AgentSession, and refuses where no notice exists', async () => {
+    const { d } = await boot('qq', {})
+    const activities: [string, unknown][] = []
+    const linear = {
+      postActivity: vi.fn(async (session: string, body: unknown) => void activities.push([session, body]))
+    }
+    d.gatewayForIntegration = () => undefined
+    d.anyConnForIntegration = () => linear
+    await d.postCoordinatorReply(
+      'bot-a',
+      'int-bot-a',
+      user('linear', 'team-example', 'agent-session-1', 'a1'),
+      'On it.'
+    )
+    expect(activities).toEqual([['agent-session-1', { type: 'response', body: 'On it.' }]])
+    // WeChat's chrome has no notice, so nothing is posted and the coordinator is told so.
+    await expect(
+      d.postCoordinatorReply('bot-a', 'int-bot-a', user('wechat', 'dm:user-alice', 'dm', 'w1'), 'On it.')
+    ).rejects.toThrow('not connected')
+  })
+})

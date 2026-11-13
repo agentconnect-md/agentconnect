@@ -168,7 +168,7 @@ describe('the coordinator prompt and batch', () => {
   // §6.10: a room without threads keeps every follow-up at its root, so the coordinator places each one itself.
   it('tells a coordinator of a room without threads that people cannot answer in a thread', () => {
     const base = { agentName: 'bot-a', platform: 'WeCom', channelId: 'chat-example-group', peers: [] }
-    const prompt = coordinatorPrompt({ ...base, threadless: true })
+    const prompt = coordinatorPrompt({ ...base, threadlessRoom: true })
     expect(prompt).toContain('You coordinate the agent "bot-a" in WeCom conversation chat-example-group.')
     expect(prompt).toContain(
       'This conversation has no threads: people cannot answer in a thread, so every follow-up to a task arrives here, ' +

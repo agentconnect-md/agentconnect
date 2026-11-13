@@ -541,7 +541,8 @@ open background tasks of its own, and those may not open more.
 
 A threaded task can hold several threads, one more for each `messageTask` with a `messageId`. A
 message in any of them reaches the task, and the answer goes to the thread it came from (the delivery
-coordinate is unchanged, [channel-session-mode.md](channel-session-mode.md) §3.1).
+coordinate is unchanged, [channel-session-mode.md](channel-session-mode.md) §3.1). In a room without
+threads every handed message adds one, so such a task's list grows with its traffic (§6.10).
 
 ### 6.5 Lifetime
 
@@ -984,8 +985,10 @@ Open:
 A WeCom or QQ group has no threads: nothing can be posted under a message, and every message the
 platform delivers there carries the same fixed thread key, `group`. The platform declares that key
 in its manifest (`threadlessRoomRoot` in `packages/protocol/src/platform-manifest.ts`), and core
-reads the fact, never the platform's name. Under `auto` such a room runs as a channel whose every
-message is at its root.
+reads the fact, never the platform's name. The QQ normalizer and the WeCom module key a group
+message with the same exported constant (`THREADLESS_GROUP_ROOT`), and each has a test that its key
+equals the manifest's: if the two ever differed, every message would sit "in a thread" again. Under
+`auto` such a room runs as a channel whose every message is at its root.
 
 - **The root.** The fixed key names the room's root, not a thread a task can hold. Every message
   there is a root message: it goes to the coordinator (§4.1), and the first row of §7, a thread
@@ -1005,15 +1008,23 @@ message is at its root.
   unclaimed because it renders no text of its own; QQ sends a passive reply to it. The coordinator's
   own reply (§4.2 (d)) is a message in the room: a post on WeCom, and on QQ, which has no free post, a
   passive reply through the platform's out-of-turn post for core (its command chrome's `notice`).
+  That fallback serves every platform with a `notice` but no send gateway, which today is QQ and
+  Linear; on Linear it is a `response` activity in the message's AgentSession, the place its own
+  turns answer. WeChat has no `notice`, so a coordinator reply there fails as unconnected.
 - **The prompt.** The coordinator's standing instructions name the place a conversation without
   threads: people cannot answer in a thread, so every follow-up to a task arrives at the root, and it
   is the coordinator's job to recognize which open task a message continues and hand it over, or to
   open a new task. A task there is told that nobody can reply to it directly, that every message
   reaches it through the coordinator, and that its answer replies to the message it was handed.
 - **Into `auto`** (§3.5). The room's session from before is keyed on the root key, and it never holds
-  that key as a task. It is adopted holding the internal thread of the last message it answered (its
-  `lastDeliveredTs`), which no later message carries, so it is listed as an open task the coordinator
-  can hand messages to, keeping its session. A session that has answered nothing is not adopted.
+  that key as a task. It is adopted holding an anchor of its own, the root key followed by
+  `:before-auto` (`group:before-auto`). No message carries it: a message's internal thread is its
+  platform id, which has no colon. So the session is listed as an open task the coordinator can hand
+  messages to, keeping its session, whatever its replay cursor says; a recreated runtime session
+  does not lose it its place. The anchor has no transcript row and no link, so the console shows the
+  task under the messages handed to it, not under the anchor, and `listTasks` names it with no link.
+  On a switch out it is released with the task, and a later switch in adopts the session again on
+  the same anchor.
 - **Out of `auto`.** Per thread keys every message on the root key again, which is the room's session
   from before: the room is one session. A task opened under `auto` is released as an ordinary session
   on its message's internal thread, which no message reaches, and ages out. Single session keys the
@@ -1021,11 +1032,43 @@ message is at its root.
 - **Commands.** A command typed in the room is at its root, so `!new`, `!stop`, `!queue` and `/status`
   act on the coordinator, as at a channel's root (§8). Before the conversation has a coordinator they
   find nothing: under `auto` and Single session the root key names no session of its own, so a command
-  never reaches the session from before the switch.
+  never reaches the session from before the switch. Their replies send nobody to a thread: `!stop`
+  says a task cannot be stopped from the chat and its console page's Stop can, `!new` says tasks keep
+  working and the room's messages still reach them, and under Per thread the room's one session is
+  "this conversation".
 - **Rows from before this.** A daemon could record the room's session as a task holding the root key,
   under a coordinator with an outward id and no session (#3947). The next message there keys on that
   reserved coordinator, whose session opens then, and the old session is one of its tasks; its hold
   on the root key routes nothing, since no message sits in a thread there. Nothing needs repair.
+
+**Limits.** These follow from the platforms and are not worked around:
+
+- **Only mentions arrive.** Both platforms deliver a group message to the bot only when it mentions
+  the bot. The coordinator never sees the chatter between mentions, so ignoring a message is close
+  to moot, a message it leaves undecided always opens a task (§4.5), and which open task a message
+  continues rests on its own earlier turns and `listTasks`.
+- **One message's QQ budget.** On QQ every answer is a passive reply to the message it answers, so
+  the coordinator's turn and the task's turn it hands the message to must both fit that message's
+  passive-reply window and its reply budget (four replies, `QQGroupReplyLimit`). This is unverified
+  against a live group.
+- **No stop from the chat.** A task has no thread to type `!stop` in, and `!stop` at the root stops
+  only the coordinator's turn. A task is stopped from its console page.
+- **QQ's other out-of-turn posts.** Only the coordinator's direct reply to a message has a route on
+  QQ (above). Everything else the coordinator or a task posts outside a turn's reply has none,
+  including the coordinator's answer to a report, which names no message to reply to; assistant mode
+  forces `auto` on a QQ group, so this applies there too. The lasting seam is a passive-reply member
+  on the platform's gateway, not more uses of `notice`.
+- **One attached thread per handed message.** A task gains an attached thread for every message
+  handed to it (§6.4), where a Slack task gains one per thread. `listTasks` and the listing of tasks
+  elsewhere name every attached thread, and the console marks each handed message with the task; a
+  task's own context does not list them. The rows go when the task closes (§6.5), so they grow with a
+  task's traffic within its life. No bound is set: a listed thread is a short id with no link, and
+  none is needed until a listing proves too long in use.
+
+**Open.** How §6.9's "home for every task" applies here is undecided. A home is a thread in the place
+(§6.9.1), and here neither a card's thread nor a daemon-posted root is one people can answer in,
+while QQ cannot post a root at all. Which rule an approved proposal follows in such a room is to be
+decided before §6.9's homes are built for it.
 
 ## 7. Thread routing
 

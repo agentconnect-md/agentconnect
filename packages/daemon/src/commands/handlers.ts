@@ -30,7 +30,7 @@ import {
   type ConversationCoordinateKind
 } from '../session/append-coordinate.js'
 import { transcriptCoords } from '../session/session-manager.js'
-import { atThreadlessRoot, platformMessageIdOf } from '../auto-session/coordinator-turns.js'
+import { atThreadlessRoot, platformMessageIdOf, threadlessRoom } from '../auto-session/coordinator-turns.js'
 import {
   CommandChromeRegistry,
   type CommandChromeContext,
@@ -173,6 +173,14 @@ export interface QueueAdmission {
   /** The dispatch promise, so a dispatch that ends before admission still settles the caller. */
   onDispatched?: (turn: Promise<unknown>) => void
 }
+
+/** What a coordinator's `!new` says of its tasks where the room has no threads (auto-session-mode.md §6.10). */
+export const THREADLESS_NEW_TASKS_NOTE =
+  'Tasks keep working, and the messages here that continue them still reach them.'
+
+/** What a coordinator's `!stop` says of its tasks where the room has no threads, which no command here can stop (§6.10). */
+export const THREADLESS_STOP_TASKS_NOTE =
+  'Tasks keep working: a task cannot be stopped from this chat, so open it in the console and use Stop there.'
 
 /** A coordinator's queue holds other people's messages, not follow-ups of the stopped turn, so they are still decided (auto-session-mode.md §4.3). */
 function keepsCoordinatorQueue(thread: string): { preserveQueued?: true } {
@@ -823,7 +831,9 @@ export class CommandHandlers {
       // Not "the next message": a running turn and anything queued behind it finish on the retired coordinate.
       reply(
         coordinator
-          ? '🆕 Started a new session for new messages here. Tasks keep working in their threads.'
+          ? threadlessRoom(msg)
+            ? `🆕 Started a new session for new messages here. ${THREADLESS_NEW_TASKS_NOTE}`
+            : '🆕 Started a new session for new messages here. Tasks keep working in their threads.'
           : '🆕 Started a new session. New messages from here on begin it.'
       )
       return 'applied'
@@ -876,7 +886,7 @@ export class CommandHandlers {
       return 'consumed'
     }
     this.logSessionAction('new', key, senderActor(msg))
-    reply('🆕 Cleared. This thread continues with a fresh context.')
+    reply(`🆕 Cleared. This ${threadlessRoom(msg) ? 'conversation' : 'thread'} continues with a fresh context.`)
     return 'applied'
   }
 
@@ -889,10 +899,14 @@ export class CommandHandlers {
     const coordinator = isCoordinatorCoordinate(thread)
     // A thread stays muted, running turn or not, until someone @mentions the agent there (onInbound clears it).
     if (mutes && (rec || inflight)) await this.setSessionMuted(key, true)
+    // A room without threads has no task thread to type `!stop` in (auto-session-mode.md §6.10).
+    const roomless = threadlessRoom(ctx.msg)
     const muteNote = mutes
-      ? 'Muted in this thread — @mention me to resume.'
+      ? `Muted in this ${roomless ? 'conversation' : 'thread'} — @mention me to resume.`
       : coordinator
-        ? 'Tasks keep working; `!stop` in a task’s thread stops that task.'
+        ? roomless
+          ? THREADLESS_STOP_TASKS_NOTE
+          : 'Tasks keep working; `!stop` in a task’s thread stops that task.'
         : 'This conversation keeps one session, so nothing is muted.'
     if (!inflight) {
       if (canceled > 0) reply(`🛑 Stopped.${rec ? ` ${muteNote}` : ''}`)

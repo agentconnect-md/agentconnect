@@ -27,7 +27,7 @@ export interface CoordinatorPromptInput {
   /** A member's webchat conversation, shared if published: one message a turn, with streamed text. */
   webchat?: boolean
   /** A room its platform gives no threads, where every follow-up arrives at the root (auto-session-mode.md §6.10). */
-  threadless?: boolean
+  threadlessRoom?: boolean
 }
 
 /** What a report's block names beside its id: the task it speaks for, by its `taskId`, kind and title. */
@@ -72,7 +72,7 @@ const CHANNEL_FINAL_TEXT =
 /** The words the prompt names its place and a task's answer with: a channel's threads, a room without threads, or a console conversation's. */
 function placeWords(input: CoordinatorPromptInput) {
   const self = input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''
-  if (input.threadless && !input.webchat)
+  if (input.threadlessRoom && !input.webchat)
     return {
       intro:
         `You coordinate the agent "${input.agentName}" in ${input.platform} conversation ${where(input)}.${self} ` +

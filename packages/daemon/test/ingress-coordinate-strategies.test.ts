@@ -5,6 +5,7 @@ import { threadPromotionFor, type ThreadPromotionHost } from '../src/platforms/t
 import { discordThreadPromotion, discordThreadName } from '../src/platforms/discord/thread-promotion.js'
 import { manifestFor } from '@agentconnect.md/protocol'
 import { canonicalizeDingTalkThread } from '../src/platforms/dingtalk/threading.js'
+import { canonicalizeWeComThread } from '../src/platforms/wecom/module.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 describe('outbound thread keys (threadKeyForPost)', () => {
@@ -30,9 +31,21 @@ describe('outbound thread keys (threadKeyForPost)', () => {
     // DingTalk: a group post keys on its process query key, a DM joins the one `dm` session.
     expect(threadKeyForPost('dingtalk', 'cid-1', 'pqk-1')).toBe('pqk-1')
     expect(threadKeyForPost('dingtalk', 'dm:user-0001', 'pqk-1', true)).toBe('dm')
-    // WeCom: a group and a direct chat are each one session, whatever the post's frame id.
+    // WeCom: a group post keys on the group's root, a direct chat on its one session, whatever the post's frame id.
     expect(threadKeyForPost('wecom', 'chat-example-group', 'aibot_send_msg_1')).toBe('group')
     expect(threadKeyForPost('wecom', 'dm:user-alice', 'aibot_send_msg_1', true)).toBe('dm')
+  })
+
+  it('keys a WeCom group message and post on the root its manifest declares (auto-session-mode.md §6.10)', async () => {
+    // A drift here puts every group message "in a thread" and hides the room's root from its coordinator.
+    const root = manifestFor('wecom').threadlessRoomRoot
+    const group = { platform: 'wecom', isDm: false, msgId: 'wecom:aibot-example:m1' } as NormalizedMessage
+    await canonicalizeWeComThread(undefined, group)
+    expect(group.thread).toBe(root)
+    expect(threadKeyForPost('wecom', 'chat-example-group', 'aibot_send_msg_1')).toBe(root)
+    const dm = { platform: 'wecom', isDm: true, msgId: 'wecom:aibot-example:m2' } as NormalizedMessage
+    await canonicalizeWeComThread(undefined, dm)
+    expect(dm.thread).not.toBe(root)
   })
 
   it('lands a DingTalk send and the reply to it in the same session', async () => {
