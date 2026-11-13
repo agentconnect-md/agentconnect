@@ -308,16 +308,26 @@ describe('a host session with the credential proxy on', () => {
     expect(env.NO_PROXY!.split(',')).toEqual(expect.arrayContaining(['localhost', '127.0.0.1', '::1']))
     expect(env.no_proxy).toBe(env.NO_PROXY)
     expect(env.NODE_USE_ENV_PROXY).toBe('1')
-    // The last command-scope pair empties the helpers for the proxy's own origin.
-    const last = Number(env.GIT_CONFIG_COUNT) - 1
-    expect([env[`GIT_CONFIG_KEY_${last}`], env[`GIT_CONFIG_VALUE_${last}`]]).toEqual([
-      `credential.${proxyUrl.origin}.helper`,
-      ''
-    ])
+    // The session gitconfig empties the helpers for the proxy's own origin; no indexed pair carries it.
+    expect(readFileSync(env.GIT_CONFIG_GLOBAL!, 'utf8')).toContain(`[credential "${proxyUrl.origin}"]\n\thelper = \n`)
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined()
     const bundle = env.SSL_CERT_FILE!
     for (const name of PROXY_TRUST_VARS) expect(env[name]).toBe(bundle)
     expect(readFileSync(bundle, 'utf8')).toContain(d.credentialProxy.ca.certPem.trim())
     expect(JSON.stringify(env)).not.toMatch(/ghs_|glpat/)
+  })
+
+  it("keeps git working, and the proxy's helpers empty, in a child whose runtime drops credential-shaped names", async () => {
+    // Some harnesses spawn every tool with `KEY`, `PASSWORD`, `SECRET` and `TOKEN` names removed from the env they inherit.
+    const { d } = await startDaemon()
+    await admit(d, GITHUB_AGENT, githubSpec())
+    const { own, child } = sessionEnv(d, GITHUB_AGENT)
+    const scrubbed = Object.fromEntries(
+      Object.entries(child).filter(([name]) => !/KEY|PASSWORD|SECRET|TOKEN/i.test(name))
+    )
+    const origin = new URL(own.HTTPS_PROXY!).origin
+    const helpers = execFileSync('git', ['config', '--get-all', `credential.${origin}.helper`], { env: scrubbed })
+    expect(helpers.toString()).toBe('\n')
   })
 
   // POSIX only: the stand-in helper is a shell script.

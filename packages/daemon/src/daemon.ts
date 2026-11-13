@@ -412,9 +412,7 @@ import {
 import {
   daemonGitCredentialTarget,
   initGitInjection,
-  mergeGitConfigEnv,
   probeGitVersion,
-  proxyCredentialResetEnv,
   sandboxGitCredentialTarget,
   sessionGitConfig,
   liveSecretsChannelEnv,
@@ -7661,9 +7659,7 @@ export class Daemon {
         https_proxy: url,
         NO_PROXY: noProxy,
         no_proxy: noProxy,
-        NODE_USE_ENV_PROXY: '1',
-        // Read after every pair the session already carries, so no machine helper keeps the proxy's own credential.
-        ...mergeGitConfigEnv({ ...runtimeEnv, ...env }, proxyCredentialResetEnv(url))
+        NODE_USE_ENV_PROXY: '1'
       })
     }
     return out
@@ -9527,9 +9523,18 @@ export class Daemon {
         : undefined
     const providerPlaceholder =
       providerSlot && this.credentialProxy?.proxy.providerPlaceholderFor(agent.id, providerSlot.id)
+    // The proxy this session's git reaches when known now, so its gitconfig keeps machine helpers from storing the proxy's own credential.
+    const sessionProxyUrl =
+      (proxied || (providerPlaceholder && localProxyRoute)) && srtShim === undefined
+        ? remoteSession
+          ? remoteCodehost && 'url' in remoteCodehost
+            ? remoteCodehost.url
+            : undefined
+          : this.credentialProxy?.proxy.loopbackUrl()
+        : undefined
     const sandboxSessionGit =
       (this.k8sPlane || remoteRoots) && needsSessionGit
-        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope)
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitTarget, sessionGitScope, sessionProxyUrl)
         : undefined
     // A VM (here or placed on an executor) or pool pod session gets the placeholder at spawn, only once its own shim reports a codehost listener.
     const hostedVm = remoteSession?.strategy === 'microsandbox'
@@ -9566,7 +9571,7 @@ export class Daemon {
     // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
     // never read back out of the merged child env, where runtimeOverrides.env could name any file.
     const sessionGitInjection = needsSessionGit
-      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
+      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope, sessionProxyUrl))
       : undefined
     // Every runtime but a dream's gets the agent channel for its live secrets; the session channel above re-states it where it applies.
     const liveSecretsChannel =

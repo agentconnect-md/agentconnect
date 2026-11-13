@@ -20,7 +20,9 @@
  *     silently drop the reset and reopen the leak — and a child that inherits
  *     COUNT without the indexed pairs makes every git invocation fail with
  *     "unable to parse command-line config", measured per process in a pod.
- *     A proxied session adds its placeholder helper there too, since a checkout's own helper outranks the global file.
+ *     A proxied session adds its placeholder helper there too, since a checkout's own helper outranks the global file,
+ *     and the helper reset for the proxy's own origin: a runtime that drops `*KEY*` names from its children's env leaves
+ *     an indexed reset with no key.
  *
  * All config values single-quote the shim path (git runs `!`-helpers via
  * `sh -c` — a space in $HOME must not word-split), reset the helper list first
@@ -268,9 +270,9 @@ export function mergeGitConfigEnv(
   return pairs.length > 0 ? gitConfigEnv(pairs) : {}
 }
 
-/** An empty helper list for a proxy's own origin: git approves a proxy's URL credential to the machine's helpers, which would keep it. */
-export function proxyCredentialResetEnv(proxyUrl: string): Record<string, string> {
-  return gitConfigEnv([[`credential.${new URL(proxyUrl).origin}.helper`, '']])
+/** Gitconfig lines emptying the helper list for a proxy's own origin: git approves a proxy's URL credential to the machine's helpers, which would keep it. */
+export function proxyCredentialResetLines(proxyUrl: string): string[] {
+  return [`[credential "${new URL(proxyUrl).origin}"]`, '\thelper = ']
 }
 
 /** Workspace clone/pull policy. Keep this separate from `gitEnvBase`: skill
@@ -837,7 +839,9 @@ export function sessionGitConfig(
   target: GitCredentialTarget = targetOf(agentId),
   // `null` is an agent the daemon issues NO managed credential to: it still gets the file for the
   // ambient policy, and nothing that would hand it a credential pointer or a socket capability.
-  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
+  /** The proxy the session reaches when known now; a pod's or VM's spawn appends its listener's reset once its shim reports one. */
+  proxyUrl?: string
 ): { path: string; content: string; env: Record<string, string> } {
   // Keyed by content, a pure function of (agent, class) with identity in env, so a dream host never cuts the warm host's helper.
   const file = join(target.configDir, `${agentId}${scope ? '' : '.policy'}.gitconfig`)
@@ -858,6 +862,7 @@ export function sessionGitConfig(
       `\thelper = ${PLACEHOLDER_HELPER}`,
       '\tuseHttpPath = true'
     ]),
+    ...(proxyUrl ? proxyCredentialResetLines(proxyUrl) : []),
     ''
   ]
   return {
@@ -882,12 +887,13 @@ export function sessionGitConfig(
 export function sessionGitEnv(
   agentId: string,
   commitIdentity?: GitCommitIdentity,
-  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE,
+  proxyUrl?: string
 ): Record<string, string> {
   if (targetOf(agentId).kind !== 'daemon') {
     throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
   }
-  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope)
+  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope, proxyUrl)
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   writeFileSync(file, content, { mode: 0o644 })
   return env
