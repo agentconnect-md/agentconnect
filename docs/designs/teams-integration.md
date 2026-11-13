@@ -29,7 +29,8 @@ Microsoft SDK is used.
 | Setup                | A Console wizard that checks the credentials live and downloads the Teams app package for the admin to upload (§5).                                          |
 | Access               | Microsoft sign-in links a person; session access sync checks conversation membership with the bot's credentials (§4.5).                                      |
 
-Outside this scope: files and attachments in either direction, meetings and
+Files go both ways in a 1:1 chat only (§4.8). Outside this scope: files in
+channels and group chats, meetings and
 calls ([voice participation](voice-meeting-participation.md)), the Teams Store,
 native streaming, and one bot serving several agents.
 
@@ -559,6 +560,37 @@ answer `help`, so a first contact never dead-ends.
 A tenant no organization has connected still gets nothing: its activities
 match no row (§8.3). That case needs the deployment app's own answer and is
 not covered here.
+
+### 4.8 Files in a 1:1 chat
+
+The bot declares `supportsFiles`, so a 1:1 chat with it offers the attach
+button and Teams' shared-files view. Teams carries bot files only in 1:1 chats;
+channel and group-chat files stay later (§9). No Graph or resource-specific
+permission is involved: both directions use links Teams pre-authorizes.
+
+- **Inbound.** A file a person sends arrives as a
+  `application/vnd.microsoft.teams.file.download.info` attachment whose
+  `downloadUrl` is short-lived and pre-authorized. The normalizer carries it as
+  an attachment (at most ten per message, a name made safe, an image type by
+  extension) and a file-only message starts a turn. The daemon fetches it
+  directly: https on a `*.sharepoint.com` host only, redirects re-checked, the
+  attachment byte cap, no credential sent. Any other attachment keeps the "not
+  read" note.
+- **Outbound.** `shareFile` and the send tool post a file consent card into a
+  1:1 chat the bot has seen; anywhere else answers `forbidden`. The card's
+  accept and decline contexts carry only the daemon's ID for the file, whose
+  bytes the connection holds in memory for an hour, bounded in count and total
+  bytes. The share succeeds once the card is posted, with a note that the
+  person must allow the file.
+- **The answer.** The relay forwards the `fileConsent/invoke` from a 1:1 chat
+  as a `platform_action` (ticketed like a card click) and answers the invoke
+  with an empty 200 at once. The daemon acks and settles after: on accept it
+  PUTs the bytes to the person's OneDrive upload session in one range (https on
+  SharePoint only) and posts a file info card; on decline it drops the file. An
+  accept for a file it no longer holds, after a restart or an hour, or an upload
+  that fails, posts a short note asking the agent to share it again.
+- **Rollout.** Turning on `supportsFiles` changes the package, so every tenant
+  re-publishes it once (§5.1); it adds no permission to consent to.
 
 ## 5. Console setup
 
@@ -1539,8 +1571,8 @@ review, support checks current tenant authority before releasing a binding.
 ## 9. Later
 
 - **Native streaming** in 1:1 chats (§4.3).
-- **Files**: 1:1 file consent cards, and Graph access for channel and group-chat
-  files.
+- **Files outside 1:1 chats**: Graph access for channel and group-chat files
+  (§4.8).
 
 ## 10. Validation
 

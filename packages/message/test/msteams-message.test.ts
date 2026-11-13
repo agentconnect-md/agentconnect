@@ -180,6 +180,30 @@ describe('Microsoft Teams normalization', () => {
     )
   })
 
+  it('carries a 1:1 file as an attachment by its pre-authorized download link', () => {
+    const downloadUrl =
+      'https://example-my.sharepoint.com/personal/user/_layouts/15/download.aspx?UniqueId=abc&tempauth=t'
+    const file = (name: string) => ({
+      contentType: 'application/vnd.microsoft.teams.file.download.info',
+      contentUrl: 'https://example-my.sharepoint.com/personal/user/Documents/Microsoft%20Teams%20Chat%20Files/x',
+      name,
+      content: { downloadUrl, uniqueId: 'abc-123', fileType: 'png' }
+    })
+    const message = messageOf({ ...personalText, text: '', attachments: [file('shot.png'), file('notes (v2).pdf')] })
+    expect(message.text).toBe('')
+    expect(message.attachments).toEqual([
+      { id: 'abc-123', name: 'shot.png', mimeType: 'image/png', sourceUrl: downloadUrl },
+      { id: 'abc-123', name: 'notes _v2_.pdf', mimeType: 'application/pdf', sourceUrl: downloadUrl }
+    ])
+    // A file beside something it cannot read still notes the rest.
+    const mixed = messageOf({ ...personalText, attachments: [file('a.txt'), { contentType: 'image/*' }] })
+    expect(mixed.attachments).toHaveLength(1)
+    expect(mixed.text).toBe('hello there\n[Attachment not read: Microsoft Teams attachments are not supported.]')
+    // A link that is not https is never carried.
+    const plain = { ...file('a.txt'), content: { downloadUrl: 'http://example-my.sharepoint.com/x' } }
+    expect(messageOf({ ...personalText, attachments: [plain] }).attachments).toBeUndefined()
+  })
+
   it('falls back to the bot-specific sender ID when the activity carries no Entra object ID', () => {
     expect(messageOf({ ...personalText, from: { id: USER, name: 'Example User' } }).sender.id).toBe(USER)
   })

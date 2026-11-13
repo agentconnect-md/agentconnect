@@ -11,10 +11,14 @@ import {
   type WireNormalizedMessage,
   type WireMsTeamsBotAdded,
   type WireMsTeamsCardAction,
+  type WireMsTeamsFileConsent,
   type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
 import {
   MSTEAMS_CARD_ACTION_INVOKE,
+  MSTEAMS_FILE_CONSENT_INVOKE,
+  msTeamsFileConsent,
+  msTeamsFileConsentMsgId,
   MsTeamsHttpIngest,
   msTeamsActionMsgId,
   msTeamsActivityOf,
@@ -99,11 +103,16 @@ async function forwardCardClick(host: RelayIngressHost, botId: string, click: Wi
   return note
 }
 
-// Forward a roster change to the bot's agent: the people it added for the daemon to look up, or the bot's own install for it to welcome; bounded like a click, since Teams waits on the answer.
-async function forwardRosterChange(
+// Forward a roster change or a file consent answer to the bot's agent; bounded like a click, since Teams waits on the answer.
+async function forwardTeamsEvent(
   host: RelayIngressHost,
   botId: string,
-  change: { sessionKey: string; msgId: string; payload: WireMsTeamsMembersAdded | WireMsTeamsBotAdded; what: string }
+  change: {
+    sessionKey: string
+    msgId: string
+    payload: WireMsTeamsMembersAdded | WireMsTeamsBotAdded | WireMsTeamsFileConsent
+    what: string
+  }
 ): Promise<void> {
   const route = host.directory.soleTarget(botId)
   if (!route) return
@@ -279,6 +288,20 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
       }
       if (activity.type === 'invoke') {
         // Every invoke is answered 200; only a card click carries a note, and an unknown invoke an empty body.
+        if (activity.name === MSTEAMS_FILE_CONSENT_INVOKE) {
+          const consent = msTeamsFileConsent(activity)
+          if (!consent) {
+            host.log.warn(`relay-ingress(${botId}): dropped a malformed Teams file consent answer`)
+            return {}
+          }
+          await forwardTeamsEvent(host, botId, {
+            sessionKey: `msteams-file-consent:${consent.conversationId}`,
+            msgId: msTeamsFileConsentMsgId(botId, consent),
+            payload: { ...consent, ...tickets(consent.conversationId, consent.serviceUrl) },
+            what: 'file consent answer'
+          })
+          return {}
+        }
         if (activity.name !== MSTEAMS_CARD_ACTION_INVOKE) return {}
         const click = msTeamsCardClick(activity)
         if (!click) {
@@ -292,7 +315,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
       // The bot's own install is welcomed once in the conversation it joined (teams-integration.md §4.7).
       const added = msTeamsBotAdded(activity, ingest.appId)
       if (added)
-        await forwardRosterChange(host, botId, {
+        await forwardTeamsEvent(host, botId, {
           sessionKey: `msteams-bot-added:${added.conversationId}`,
           msgId: msTeamsBotAddedMsgId(botId, activity),
           payload: { ...added, ...tickets(added.conversationId, added.serviceUrl, added.teamId) },
@@ -301,7 +324,7 @@ export function createMsTeamsIngressPlugin(deps: MsTeamsIngressPluginDeps = {}):
       // People added to a conversation are looked up for a guest or another organization (assistant-mode.md §5.3).
       const joined = msTeamsMembersAdded(activity, ingest.appId)
       if (joined)
-        await forwardRosterChange(host, botId, {
+        await forwardTeamsEvent(host, botId, {
           sessionKey: `msteams-members:${joined.conversationId}`,
           msgId: msTeamsMembersAddedMsgId(botId, activity),
           payload: { ...joined, ...tickets(joined.conversationId, joined.serviceUrl, joined.teamId) },

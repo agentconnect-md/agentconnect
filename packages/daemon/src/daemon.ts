@@ -17284,6 +17284,14 @@ export class Daemon {
   private async handleRelayPlatformAction(msg: RdMsgPlatformAction): Promise<RdAck> {
     const decode = this.platformActionDecoders.get(msg.platformId)
     if (decode) return await decode(msg)
+    const consent = this.platformModules.get(msg.platformId)?.fileConsents?.decode(msg)
+    if (consent) {
+      // The upload outlasts the relay's wait on the ack, so the answer is taken now and settled after.
+      void consent
+        .settle()
+        .catch((err: unknown) => this.log.warn(`relay: ${msg.platformId} file consent not settled: ${formatErr(err)}`))
+      return { msgId: msg.msgId, accepted: true }
+    }
     const join = this.platformModules.get(msg.platformId)?.memberJoins?.decode(msg)
     if (join) return await this.handleRelayMemberJoin(msg, join)
     const added = this.platformModules.get(msg.platformId)?.botAdds?.decode(msg)

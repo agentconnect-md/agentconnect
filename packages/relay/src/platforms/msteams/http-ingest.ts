@@ -4,6 +4,7 @@ import {
   MSTEAMS_MEMBERS_ADDED_MAX,
   type WireMsTeamsBotAdded,
   type WireMsTeamsCardAction,
+  type WireMsTeamsFileConsent,
   type WireMsTeamsMembersAdded
 } from '@agentconnect.md/protocol'
 import type { MsTeamsAnchorEgress } from './anchor.js'
@@ -14,6 +15,9 @@ export const MSTEAMS_BODY_LIMIT = 1024 * 1024
 
 /** The invoke name of an Adaptive Card `Action.Execute` click (§4.4). */
 export const MSTEAMS_CARD_ACTION_INVOKE = 'adaptiveCard/action'
+
+/** The invoke name of a person's answer to a bot's file consent card (§4.8). */
+export const MSTEAMS_FILE_CONSENT_INVOKE = 'fileConsent/invoke'
 
 /** The invoke response type the Teams client shows as a dismissible note under the card. */
 export const MSTEAMS_INVOKE_MESSAGE_TYPE = 'application/vnd.microsoft.activity.message'
@@ -161,6 +165,55 @@ export function msTeamsActionMsgId(botId: string, click: WireMsTeamsCardAction):
     )
     .digest('hex')
   return `msteams-action:${digest}`
+}
+
+/** A person's answer to the bot's file consent card in a 1:1 chat (§4.8); undefined for anything else or a malformed one. */
+export function msTeamsFileConsent(activity: Obj): WireMsTeamsFileConsent | undefined {
+  if (activity.type !== 'invoke' || activity.name !== MSTEAMS_FILE_CONSENT_INVOKE) return undefined
+  const conversation = obj(activity.conversation)
+  if (conversation?.conversationType !== 'personal') return undefined
+  const value = obj(activity.value)
+  const action = value?.action
+  const uploadId = str(obj(value?.context)?.uploadId)
+  const conversationId = str(conversation.id)
+  const serviceUrl = str(activity.serviceUrl)
+  const userId = str(obj(activity.from)?.id)
+  if ((action !== 'accept' && action !== 'decline') || !uploadId || uploadId.length > 128) return undefined
+  if (!conversationId || !serviceUrl || !userId) return undefined
+  const info = obj(value?.uploadInfo)
+  const uploadUrl = str(info?.uploadUrl)
+  const contentUrl = str(info?.contentUrl)
+  const name = str(info?.name)?.slice(0, 256)
+  if (action === 'accept' && (!uploadUrl || !contentUrl || !name)) return undefined
+  const uniqueId = str(info?.uniqueId)?.slice(0, 256)
+  const fileType = str(info?.fileType)?.slice(0, 32)
+  return {
+    kind: 'file-consent',
+    action,
+    uploadId,
+    conversationId,
+    serviceUrl,
+    userId,
+    ...(action === 'accept'
+      ? {
+          upload: {
+            uploadUrl: uploadUrl!,
+            contentUrl: contentUrl!,
+            name: name!,
+            ...(uniqueId ? { uniqueId } : {}),
+            ...(fileType ? { fileType } : {})
+          }
+        }
+      : {})
+  }
+}
+
+/** A consent answer's dedup identity: the card's file and the answer, so a client retry collapses. */
+export function msTeamsFileConsentMsgId(botId: string, consent: WireMsTeamsFileConsent): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ v: 1, botId, conversationId: consent.conversationId, uploadId: consent.uploadId }))
+    .digest('hex')
+  return `msteams-file-consent:${digest.slice(0, 32)}`
 }
 
 /** The synchronous invoke answer: a short text the clicker alone sees as a note under the card. */

@@ -1,4 +1,10 @@
-import { MSTEAMS_PLATFORM, type NormalizedPlatformMessage, type QuotedMessage } from '@agentconnect.md/protocol'
+import {
+  MSTEAMS_PLATFORM,
+  type NormalizedPlatformMessage,
+  type PlatformAttachment,
+  type QuotedMessage
+} from '@agentconnect.md/protocol'
+import { mimeTypeFromFileName, safeAttachmentName } from './file-name.js'
 
 // Plain-object views of a Bot Connector activity (teams-integration.md §3, §4.1); every field is optional because the body is only structurally trusted.
 export interface MsTeamsChannelAccount {
@@ -58,7 +64,7 @@ export interface MsTeamsActivity {
   textFormat?: string
   text?: string
   replyToId?: string | null
-  attachments?: { contentType?: string; content?: unknown }[]
+  attachments?: { contentType?: string; contentUrl?: string; name?: string; content?: unknown }[]
   entities?: MsTeamsEntity[]
   channelData?: MsTeamsChannelData
   locale?: string
@@ -108,6 +114,16 @@ const QUOTED_TAG = /^<quoted messageId="[^"]*"\/>\r?\n?/
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i
 const MAX_QUOTED_TEXT_CHARS = 1000
 const ATTACHMENT_NOTE = '[Attachment not read: Microsoft Teams attachments are not supported.]'
+/** A file a person sent in a 1:1 chat with a bot that declares `supportsFiles` (§4.8). */
+export const MSTEAMS_FILE_DOWNLOAD_INFO_TYPE = 'application/vnd.microsoft.teams.file.download.info'
+const MAX_FILES = 10
+const IMAGE_TYPES: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp'
+}
 
 function obj(value: unknown): Obj | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Obj) : undefined
@@ -198,6 +214,23 @@ function quotedOf(entities: Obj[]): { replyTo: string; quoted?: QuotedMessage } 
   return undefined
 }
 
+/** A 1:1 file's pre-authorized download link, read into provider attachment metadata; anything else is not a file. */
+function fileAttachmentOf(item: Obj): PlatformAttachment | undefined {
+  if (item.contentType !== MSTEAMS_FILE_DOWNLOAD_INFO_TYPE) return undefined
+  const content = obj(item.content)
+  const downloadUrl = str(content?.downloadUrl)
+  const name = safeAttachmentName(str(item.name))
+  if (!downloadUrl || !/^https:\/\/[^\s/?#@]+\/\S*$/.test(downloadUrl) || !name) return undefined
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : ''
+  const uniqueId = str(content?.uniqueId)
+  return {
+    id: uniqueId && NATIVE_ID.test(uniqueId) ? uniqueId : name,
+    name,
+    mimeType: (Object.hasOwn(IMAGE_TYPES, ext) && IMAGE_TYPES[ext]) || mimeTypeFromFileName(name),
+    sourceUrl: downloadUrl
+  }
+}
+
 function timeMs(value: unknown): number | undefined {
   if (typeof value !== 'string' || !ISO_TIME.test(value)) return undefined
   const ms = Date.parse(value)
@@ -260,11 +293,15 @@ export function normalizeMsTeamsActivity(activity: unknown, context: MsTeamsNorm
   const raw = typeof a.text === 'string' ? a.text : ''
   const body = reply ? raw.replace(QUOTED_TAG, '') : raw
   const mentions = resolveMentions(body, entities, botId)
-  const attachments = Array.isArray(a.attachments) ? a.attachments.map(obj) : []
-  const unread = attachments.some((item) => !item || item.contentType !== 'text/html')
+  const items = Array.isArray(a.attachments) ? a.attachments.map(obj) : []
+  const files = items.flatMap((item) => (item ? [fileAttachmentOf(item)] : [])).filter((f) => f !== undefined)
+  const attachments = files.slice(0, MAX_FILES)
+  const unread =
+    files.length > MAX_FILES ||
+    items.some((item) => !item || (item.contentType !== 'text/html' && !fileAttachmentOf(item)))
   const text = unread ? [mentions.text, ATTACHMENT_NOTE].filter(Boolean).join('\n') : mentions.text
   const addressed = mentions.mentionedBots.includes(botId)
-  if (!text && !reply?.quoted && !addressed) return { kind: 'ignored', reason: 'empty' }
+  if (!text && !attachments.length && !reply?.quoted && !addressed) return { kind: 'ignored', reason: 'empty' }
 
   // The Entra object ID is the person; the bot-specific `29:` ID stands in only when an activity carries none.
   const aadObjectId = str(from.aadObjectId)
@@ -284,6 +321,7 @@ export function normalizeMsTeamsActivity(activity: unknown, context: MsTeamsNorm
       sender: { id: aadObjectId ?? fromId, isBot: false, ...(displayName ? { name: displayName } : {}) },
       text,
       mentionedBots: mentions.mentionedBots,
+      ...(attachments.length ? { attachments } : {}),
       isDm: type === 'personal',
       ...(reply ? { replyTo: reply.replyTo } : {}),
       ...(reply?.quoted ? { quoted: reply.quoted } : {}),

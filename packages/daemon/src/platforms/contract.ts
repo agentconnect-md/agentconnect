@@ -548,6 +548,12 @@ export interface BotAdded {
   places?(): Promise<ObservedChat[]>
 }
 
+/** Relayed answers to a file the bot offered (a 1:1 file consent card), which the platform settles on its own connection. */
+export interface RelayFileConsents {
+  /** The answer a payload carries, not yet settled; null for a payload that is no file consent of this platform's. */
+  decode(msg: RdMsgPlatformAction): { settle(): Promise<void> } | null
+}
+
 /** Core's welcome, which the platform renders: what the bot does, how to use it here, whether it is enabled here, and where to go next. */
 export interface Welcome {
   title: string
@@ -575,6 +581,8 @@ export interface DaemonPlatformModule {
   readonly memberJoins?: RelayMemberJoins
   /** The bot's own installs, arriving as relayed `platform_action`s; absent ⇒ none do. */
   readonly botAdds?: RelayBotAdds
+  /** Answers to files the bot offered, arriving as relayed `platform_action`s and settled after the ack; absent ⇒ none do. */
+  readonly fileConsents?: RelayFileConsents
   /** Features this module adds to the daemon's registration, which the CP reads before sending it this platform's integrations; absent ⇒ none. */
   readonly registrationFeatures?: readonly string[]
 }

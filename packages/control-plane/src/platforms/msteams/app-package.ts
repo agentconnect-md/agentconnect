@@ -116,7 +116,7 @@ export function msTeamsManifest(input: MsTeamsManifestInput): Record<string, unk
       {
         botId: input.appId,
         scopes: ['personal', 'team', 'groupChat'],
-        supportsFiles: false,
+        supportsFiles: true,
         isNotificationOnly: false,
         commandLists: [{ scopes: ['personal', 'team', 'groupChat'], commands: MSTEAMS_COMMANDS.map((c) => ({ ...c })) }]
       }

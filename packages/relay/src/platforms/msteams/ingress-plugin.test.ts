@@ -405,6 +405,47 @@ describe('msteams ingress plugin — admission, dedup and triggers (§4.1, §4.2
     expect(s.h.log.info).toHaveBeenCalledWith(expect.stringContaining('Teams messageUpdate activity not forwarded'))
   })
 
+  it('forwards a 1:1 file consent answer to the daemon and answers the invoke with an empty 200', async () => {
+    const s = setup()
+    const uploadInfo = {
+      name: 'report.txt',
+      uploadUrl: 'https://example-my.sharepoint.com/personal/user/uploadSession?guid=g',
+      contentUrl: 'https://example-my.sharepoint.com/personal/user/Documents/Applications/report.txt',
+      uniqueId: 'unique-1',
+      fileType: 'txt'
+    }
+    const consent = (action: string, extra: Record<string, unknown> = {}) =>
+      edit(personalText, (a) => {
+        a.type = 'invoke'
+        a.name = 'fileConsent/invoke'
+        a.value = { type: 'fileUpload', action, context: { uploadId: 'up-1' }, uploadInfo, ...extra }
+      })
+    expect((await deliver(s, consent('accept'))).handled).toEqual({})
+    expect((await deliver(s, consent('decline'))).handled).toEqual({})
+    const forwarded = vi.mocked(s.h.forwardAction).mock.calls.map(([rd]) => rd)
+    expect(forwarded).toHaveLength(2)
+    expect(forwarded[0]).toMatchObject({
+      source: 'platform_action',
+      platformId: 'msteams',
+      integrationId: TARGET.integrationId,
+      payload: {
+        kind: 'file-consent',
+        action: 'accept',
+        uploadId: 'up-1',
+        conversationId: PERSONAL,
+        serviceUrl: SERVICE_URL,
+        upload: uploadInfo
+      }
+    })
+    expect(forwarded[1]!.payload).toMatchObject({ kind: 'file-consent', action: 'decline' })
+    expect((forwarded[1]!.payload as { upload?: unknown }).upload).toBeUndefined()
+    // An accept without its upload session, or one outside a 1:1 chat, forwards nothing.
+    expect((await deliver(s, consent('accept', { uploadInfo: {} }))).handled).toEqual({})
+    const group = edit(consent('accept'), (a) => (a.conversation.conversationType = 'groupChat'))
+    expect((await deliver(s, group)).handled).toEqual({})
+    expect(s.h.forwardAction).toHaveBeenCalledTimes(2)
+  })
+
   it('forwards the people a roster change added, the bot left out, for the daemon to look up', async () => {
     const s = setup()
     const added = edit(conversationUpdate, (a) => {

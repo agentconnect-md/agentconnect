@@ -4,6 +4,7 @@ import {
   MSTEAMS_PLATFORM,
   MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   WireMsTeamsCardAction,
+  WireMsTeamsFileConsent,
   WireMsTeamsMembersAdded,
   type RdMsgPlatformAction,
   type WireMsTeamsCardActionResponse
@@ -13,6 +14,7 @@ import type {
   DaemonPlatformModule,
   InteractionActor,
   RelayCardClicks,
+  RelayFileConsents,
   RelayMemberJoins
 } from '../contract.js'
 import { parseMsTeamsApprovalClick } from './approval-card.js'
@@ -64,6 +66,23 @@ export function msTeamsMemberJoins(host: MsTeamsRelayIngressHost): RelayMemberJo
   }
 }
 
+/** A person's answer to a file the bot offered in a 1:1 chat (§4.8), settled on the integration's live connection. */
+export function msTeamsFileConsents(host: MsTeamsRelayIngressHost): RelayFileConsents {
+  return {
+    decode: (msg) => {
+      const parsed = WireMsTeamsFileConsent.safeParse(msg.payload)
+      if (!parsed.success) return null
+      return {
+        settle: async () => {
+          const conn = host.connection(msg.integrationId)
+          if (!conn) throw new Error('msteams: the integration has no live connection')
+          await conn.settleFileConsent(parsed.data)
+        }
+      }
+    }
+  }
+}
+
 /** Teams' daemon platform module, bound to one daemon's host. */
 export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlatformModule {
   return {
@@ -74,6 +93,7 @@ export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlat
     cardClicks: msTeamsCardClicks,
     memberJoins: msTeamsMemberJoins(host),
     botAdds: msTeamsBotAdds(host),
+    fileConsents: msTeamsFileConsents(host),
     // A deployment app's row sends through the relay; the CP connects one only to a daemon listing this (§8.5).
     registrationFeatures: [MSTEAMS_RELAY_EGRESS_V1_FEATURE]
   }
