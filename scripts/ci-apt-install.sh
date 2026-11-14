@@ -5,7 +5,8 @@ set -eu
 MIRRORS=/etc/apt/apt-mirrors.txt
 UPSTREAM=https://archive.ubuntu.com/ubuntu/
 APT_OPTS='-o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=2'
-# Two attempts fit the calling step's five-minute cap; a healthy one takes about fifteen seconds.
+# The pinned download plus two apt attempts leave a minute of the calling step's five for installing; healthy ones take seconds.
+PINNED_SECONDS=40
 ATTEMPT_SECONDS=100
 
 # CI_APT_DEBS names a sha256sum manifest of .debs that, with what the runner image ships, provide every requested package.
@@ -13,10 +14,12 @@ pinned() {
   [ -n "${CI_APT_DEBS_URL:-}" ] && [ -n "${CI_APT_DEBS:-}" ] || return 1
   manifest=$(realpath "$CI_APT_DEBS")
   dir=$(mktemp -d)
-  # Object keys keep the literal `+` of a Debian version, which a URL path must escape.
-  awk '{ print $2 }' "$manifest" | while read -r deb; do
-    curl -fsSL --retry 3 --max-time 60 -o "$dir/$deb" "$CI_APT_DEBS_URL/$(printf %s "$deb" | sed 's/+/%2B/g')" || exit 1
-  done || return 1
+  # One cap over every download, so a stalled host leaves the apt attempts their whole budget; keys' literal `+` is escaped.
+  # shellcheck disable=SC2016 # $1 and $2 belong to the inner shell.
+  awk '{ print $2 }' "$manifest" | timeout "$PINNED_SECONDS" sh -c '
+    while read -r deb; do
+      curl -fsSL --connect-timeout 10 --retry 2 -o "$1/$deb" "$2/$(printf %s "$deb" | sed "s/+/%2B/g")" || exit 1
+    done' sh "$dir" "$CI_APT_DEBS_URL" || return 1
   (cd "$dir" && sha256sum --check --quiet "$manifest") || return 1
   # No sources: apt resolves against the given files and the installed set only, and refuses rather than fetch.
   mkdir "$dir/sources.list.d" && touch "$dir/sources.list"
