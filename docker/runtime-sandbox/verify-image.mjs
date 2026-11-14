@@ -55,6 +55,10 @@ const CREDENTIAL_HELPER_PATH = '/opt/agentconnect/bin/git-credential'
 const PATHBIN_DIR = '/opt/agentconnect/pathbin'
 // The pinned gh a session runs directly, with the credential proxy's placeholder as GH_TOKEN.
 const GH_PATH = '/usr/local/bin/gh'
+// The pinned glab, which reads the placeholder from GITLAB_TOKEN or its config directory.
+const GLAB_PATH = '/usr/local/bin/glab'
+// The pinned tea, Gitea's CLI, which presents the credential proxy's placeholder.
+const TEA_PATH = '/usr/local/bin/tea'
 // Must match SANDBOX_SECRETS_ENTRY in sandbox-paths.ts and SECRETS_WRAPPER_NAME in cp/secrets-shim.ts (capability-requests.md §4.9.2).
 const SECRETS_WRAPPER_PATH = '/opt/agentconnect/pathbin/agentconnect-secrets'
 // Must match SANDBOX_MCP_BRIDGE_ENTRY in sandbox-paths.ts: the daemon copies this path into the `mcpServers` spec.
@@ -156,6 +160,22 @@ check('login shells resolve gh to the pinned binary', () => {
   if (resolved !== GH_PATH) throw new Error(`login shell resolves gh to ${resolved}`)
   const out = sh(`gh --version 2>&1 | head -1`)
   if (!/^gh version /.test(out)) throw new Error(`gh did not run: ${out}`)
+  return out
+})
+
+check('login shells resolve glab to the pinned binary', () => {
+  const resolved = execFileSync('bash', ['-lc', 'command -v glab'], { encoding: 'utf8' }).trim()
+  if (resolved !== GLAB_PATH) throw new Error(`login shell resolves glab to ${resolved}`)
+  const out = sh(`glab --version 2>&1 | head -1`)
+  if (!/^glab \d/.test(out)) throw new Error(`glab did not run: ${out}`)
+  return out
+})
+
+check('login shells resolve tea to the pinned binary', () => {
+  const resolved = execFileSync('bash', ['-lc', 'command -v tea'], { encoding: 'utf8' }).trim()
+  if (resolved !== TEA_PATH) throw new Error(`login shell resolves tea to ${resolved}`)
+  const out = sh(`tea --version 2>&1 | head -1`)
+  if (!/^Version: /.test(out)) throw new Error(`tea did not run: ${out}`)
   return out
 })
 
@@ -284,7 +304,7 @@ check('dsh-acp launches the installed harness instead of unpacking its own', () 
 
 // Git runs INSIDE the sandbox over the shim's exec channel, so a missing git is every workspace operation failing.
 check('provides the executables the shim must resolve', () => {
-  const required = ['git', 'gh', 'node', 'claude-agent-acp', 'codex-acp', 'dsh-acp', 'dsh', 'opencode']
+  const required = ['git', 'gh', 'glab', 'tea', 'node', 'claude-agent-acp', 'codex-acp', 'dsh-acp', 'dsh', 'opencode']
   const missing = required.filter((bin) => sh(`command -v ${bin} >/dev/null && echo y || echo n`) === 'n')
   if (missing.length > 0) throw new Error(`missing: ${missing.join(', ')}`)
   return required.join(' ')

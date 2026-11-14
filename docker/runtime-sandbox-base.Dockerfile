@@ -24,6 +24,53 @@ RUN set -eu; \
   install -D -m 0555 "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}/bin/gh" /out/gh; \
   /out/gh --version
 
+# ──────────────────────────── glab CLI fetch ────────────────────────────────
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS glab-cli
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+ARG GLAB_CLI_VERSION=1.130.0
+ARG GLAB_CLI_SHA256_AMD64=ce06313b2075af25180cd195ab3496d42bc5857c85a1c12ba996838dfe9d822c
+ARG GLAB_CLI_SHA256_ARM64=062d53acb0f2cbcc79a014600df1aa0fb440bb3a08a5d4900d3b49b553b22767
+ARG TARGETARCH
+RUN set -eu; \
+  arch="${TARGETARCH:-amd64}"; \
+  case "$arch" in \
+  amd64) sha256="$GLAB_CLI_SHA256_AMD64" ;; \
+  arm64) sha256="$GLAB_CLI_SHA256_ARM64" ;; \
+  *) echo "no pinned glab checksum for TARGETARCH=$arch" >&2; exit 1 ;; \
+  esac; \
+  tarball="glab_${GLAB_CLI_VERSION}_linux_${arch}.tar.gz"; \
+  curl -fsSL -o "/tmp/${tarball}" "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_CLI_VERSION}/downloads/${tarball}"; \
+  printf '%s  /tmp/%s\n' "$sha256" "$tarball" | sha256sum -c -; \
+  mkdir /tmp/glab; \
+  tar -xzf "/tmp/${tarball}" -C /tmp/glab; \
+  install -D -m 0555 /tmp/glab/bin/glab /out/glab; \
+  /out/glab --version
+
+# ───────────────────────────── tea CLI fetch ────────────────────────────────
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS tea-cli
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y ca-certificates curl xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+ARG TEA_CLI_VERSION=0.16.0
+ARG TEA_CLI_SHA256_AMD64=92e0c966c98be0c6ca4c80b1912d08ff7887c7cb55e123542fa541842d875149
+ARG TEA_CLI_SHA256_ARM64=7ebeb8783ac0d69a1cac545e5a0d8f0c7dd7d6e943e73b32dfc051ef7686a60b
+ARG TARGETARCH
+RUN set -eu; \
+  arch="${TARGETARCH:-amd64}"; \
+  case "$arch" in \
+  amd64) sha256="$TEA_CLI_SHA256_AMD64" ;; \
+  arm64) sha256="$TEA_CLI_SHA256_ARM64" ;; \
+  *) echo "no pinned tea checksum for TARGETARCH=$arch" >&2; exit 1 ;; \
+  esac; \
+  archive="tea-${TEA_CLI_VERSION}-linux-${arch}.xz"; \
+  curl -fsSL -o "/tmp/${archive}" "https://gitea.com/gitea/tea/releases/download/v${TEA_CLI_VERSION}/${archive}"; \
+  printf '%s  /tmp/%s\n' "$sha256" "$archive" | sha256sum -c -; \
+  xz -d "/tmp/${archive}"; \
+  install -D -m 0555 "/tmp/tea-${TEA_CLI_VERSION}-linux-${arch}" /out/tea; \
+  /out/tea --version
+
 # ─────────────────────────── Chrome for Testing ─────────────────────────────
 FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS chrome
 RUN apt-get update \
@@ -74,6 +121,10 @@ RUN mkdir -p /opt/agentconnect/bin \
 
 # The pinned gh a session runs with the credential proxy's placeholder as GH_TOKEN.
 COPY --from=gh-cli --chown=0:0 /out/gh /usr/local/bin/gh
+# The pinned glab, which reads the placeholder from GITLAB_TOKEN or the config GLAB_CONFIG_DIR names.
+COPY --from=glab-cli --chown=0:0 /out/glab /usr/local/bin/glab
+# The pinned tea, Gitea's CLI, which presents the credential proxy's placeholder.
+COPY --from=tea-cli --chown=0:0 /out/tea /usr/local/bin/tea
 
 # Only /opt/agentconnect/pathbin is prepended to runtime PATH; the final image supplies agentconnect-secrets.
 RUN mkdir -p /opt/agentconnect/pathbin \
