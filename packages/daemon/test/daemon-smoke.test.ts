@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
+import { KeyServerError } from '../src/key-server/client.js'
 import { AGENT_CHANNEL_AGENT_ENV, AGENT_CHANNEL_CAPABILITY_ENV } from '../src/cp/agent-channel-server.js'
 import { agentHostKey } from '../src/acp/host-key.js'
 import { FakeClock } from './cp/fake-clock.js'
@@ -1775,6 +1776,65 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         username: expectedUsername,
         chrome: true
       })
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it.each([
+    {
+      scenario: "shows a key server's denial as the issuer wrote it, links included",
+      error: new KeyServerError(
+        'Out of credits. Add credits (https://console.example.test/example-org/billing), then resend.',
+        'quota_denied',
+        402
+      ),
+      notice: 'Out of credits. Add credits (https://console.example.test/example-org/billing), then resend.'
+    },
+    {
+      scenario: 'still redacts an address in any other start failure',
+      error: new Error('could not reach https://internal.example.test/runtime'),
+      notice: 'could not reach [remote]'
+    }
+  ])(
+    '$scenario',
+    async ({ error, notice }) => {
+      const root = scaffold()
+      const fakeHost = {
+        __started: true,
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => {
+          throw error
+        }),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      }
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
+      await daemon.start()
+      const postMessage = vi.fn(async () => 'failure-ts')
+      vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({ setStatus: vi.fn(async () => {}), postMessage })
+
+      await expect(
+        (daemon as any).dispatch('bot-a', {
+          msgId: 'slack:C1:203.1',
+          traceId: 'issuer-denial',
+          source: 'cron',
+          platform: 'slack',
+          channel: 'C1',
+          thread: '203.1',
+          sender: { id: 'U1', isBot: false },
+          text: 'hello',
+          mentionedBots: [],
+          isDm: false
+        })
+      ).rejects.toThrow()
+
+      expect(postMessage).toHaveBeenCalledWith(
+        'C1',
+        `⚠️ Agent failed to respond: ${notice}`,
+        '203.1',
+        expect.anything()
+      )
       await daemon.stop()
     },
     15_000

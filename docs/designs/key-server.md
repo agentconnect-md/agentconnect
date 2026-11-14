@@ -348,7 +348,9 @@ organization's other sessions. An issuer that does not track organization standi
 it; its `IssueKey` can still fail for other reasons.
 
 Today the daemon acts on either code only for the session whose request was refused, at its start,
-resume or refresh: that session's turn fails, its host stops, and its key is revoked. An
+resume or refresh: that session's turn fails, its host stops, and its key is revoked. The turn's
+failure notice carries the issuer's message as written, links included: it is worded for the person
+it refuses, so the daemon does not shorten it or redact its addresses as it does other start failures. An
 organization-wide check would act on `org_suspended` alone, stopping every session of the
 organization on the member; a `quota_denied` answer to such a check refuses nothing but the check.
 

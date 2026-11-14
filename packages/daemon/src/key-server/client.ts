@@ -37,6 +37,12 @@ export class KeyServerError extends Error {
   }
 }
 
+// The issuer's refusal of an organization or a limit, worded for the person it refuses (key-server.md §6).
+export function issuerDenialMessage(error: unknown): string | undefined {
+  const denied = error instanceof KeyServerError && (error.code === 'org_suspended' || error.code === 'quota_denied')
+  return denied ? error.message : undefined
+}
+
 export interface KeyGrant extends IssueKeyResponse {
   requestedAtMs: number
   refreshAtMs?: number
