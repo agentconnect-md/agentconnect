@@ -1625,6 +1625,8 @@ export class CollabCoordinator {
       originCodeHostReplyTarget,
       originCoords,
       ...(externalOrigin ? { externalOrigin } : {}),
+      // session-visibility.md §4.2: a self-post channel root binds where it landed, as the postMessage seed does.
+      ...(pairedChannelRootSelfWake ? { platformOrigin: true as const } : {}),
       // §5.3: `toAgent.needsReply` — tell the child to report its outcome back to that origin.
       // Meaningless without an origin to reply into, so it rides the same condition.
       ...(needsReply && originSessionId !== undefined ? { needsReply: true } : {}),
