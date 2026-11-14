@@ -139,6 +139,7 @@ export function scheduleRoomMessage(
     sender: fire.sender,
     text: task,
     ...(fire.scheduleTimeZone ? { scheduleTimeZone: fire.scheduleTimeZone } : {}),
+    ...(fire.cronRun ? { roomOfCron: fire.cronRun.cronId } : {}),
     ...(title ? { initialSessionTitle: title } : {}),
     mentionedBots: [],
     isDm: false,

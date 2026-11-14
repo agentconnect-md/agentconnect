@@ -60,18 +60,21 @@ const cron: CronDef = {
 async function fire(
   during: (d: any, ctx: SessionContext) => Promise<unknown>,
   place: { external?: boolean; isPrivate?: boolean; room?: string } = {},
-  turns = 1
+  turns = 1,
+  after?: (d: any) => Promise<void>
 ) {
   let outcome: unknown
   let sessions = 0
   const prompts: string[] = []
+  const promptSessions: string[] = []
   let anchor = ''
   const host = {
     __started: true,
     start: vi.fn(async () => {}),
     newSession: vi.fn(async () => `acp-${++sessions}`),
-    prompt: vi.fn(async (_session: string, blocks: unknown) => {
+    prompt: vi.fn(async (session: string, blocks: unknown) => {
       prompts.push(JSON.stringify(blocks))
+      promptSessions.push(session)
       // Only the schedule's own turn calls the tool; the turn the hand-off starts just ends.
       if (prompts.length > 1) return { stopReason: 'end_turn' }
       const scope: string = d.transportScopeForIntegrationIds([INT])
@@ -126,9 +129,14 @@ async function fire(
     updateMessage: vi.fn(async () => true),
     updateBlocks: vi.fn(async () => true),
     deleteMessage: vi.fn(async () => true),
-    postContext: vi.fn(async () => {})
+    postContext: vi.fn(async () => {}),
+    updateCodeContext: vi.fn(async () => true)
   })
   const posted = vi.spyOn(d.gatewayForIntegration(INT), 'postMessage')
+  // Slack reports the channel the run made as a code channel, which is one session keyed on itself.
+  vi.spyOn(d.gatewayForIntegration(INT), 'roomThread').mockImplementation(async (channel: unknown) =>
+    channel === (place.room ?? 'C2') ? (channel as string) : undefined
+  )
   vi.spyOn(d, 'placeConfirmedInternal').mockResolvedValue(undefined)
   vi.spyOn(d.mcp.deps, 'targetExternal').mockResolvedValue(place.external ?? false)
   vi.spyOn(d.mcp.deps, 'placeSnapshot').mockReturnValue({ kind: 'channel', isPrivate: place.isPrivate ?? false })
@@ -137,8 +145,10 @@ async function fire(
   // The task's turn starts after the tool returns, so the daemon stops only once every expected turn has run.
   await vi.waitFor(() => expect(prompts).toHaveLength(turns))
   await vi.waitFor(() => expect(d.inflight.size).toBe(0))
+  await after?.(d)
+  await vi.waitFor(() => expect(d.inflight.size).toBe(0))
   await daemon.stop()
-  return { outcome, create, posted, prompts, anchor }
+  return { outcome, create, posted, prompts, promptSessions, sessions, anchor }
 }
 
 const TASK = 'Pick up ticket 42 and open a pull request'
@@ -165,6 +175,31 @@ describe('a scheduled run making a code channel, through the daemon', () => {
     const { outcome, prompts } = await fire(createChannel, { isPrivate: true, room: 'C3' }, 2)
     expect(outcome).toMatchObject({ channel_id: 'C3', handedOff: true })
     expect(prompts).toHaveLength(2)
+  })
+
+  it('answers a reply in the channel in the session doing the task', async () => {
+    const reply = {
+      msgId: 'slack:C4:1700000400.000001',
+      traceId: 'trace-reply',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C4',
+      // Ingress keys every message in a code channel on the channel itself.
+      thread: 'C4',
+      sender: { id: 'U_ALICE', isBot: false },
+      text: 'Also pick up ticket 43',
+      mentionedBots: ['U_FAKE_BOT'],
+      isDm: false
+    }
+    const { prompts, promptSessions, sessions } = await fire(createChannel, { room: 'C4' }, 2, async (d) => {
+      await d.dispatch(AGENT, reply, INT)
+      await vi.waitFor(() => expect(d.inflight.size).toBe(0))
+    })
+    expect(prompts).toHaveLength(3)
+    expect(prompts[2]).toContain('Also pick up ticket 43')
+    // One session for the schedule's own turn, one for the channel: the reply resumed the task's, and opened none.
+    expect(promptSessions[2]).toBe(promptSessions[1])
+    expect(sessions).toBe(2)
   })
 
   it('refuses a channel with nobody in it before anything is made', async () => {

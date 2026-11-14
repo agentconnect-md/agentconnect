@@ -106,8 +106,10 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
   (`invite`) and what to do there (`task`). The anchor's author is the bot, so Slack adds
   nobody and its copy of the post starts nothing: the daemon invites the people named and
   starts the task there as it starts a fire, with a post of the task and a turn of the same
-  schedule's. A channel nobody could be added to is archived rather than left without an
-  owner. Each fire makes at most one channel, keyed on its anchor, and a retried creation
+  schedule's, read as the same recorded person. That turn is keyed on the channel, so it is
+  the session a reply there reaches. It reports no run: the schedule's run closes when the
+  anchor turn ends. A channel nobody could be added to is archived rather than left without
+  an owner, and one that could not be archived is named in the refusal. Each fire makes at most one channel, keyed on its anchor, and a retried creation
   starts the task once.
 - `setSlackCodeView`: publish a unified diff, self-contained HTML preview, PR tab, or
   existing Canvas with comment access using `type: canvas`, `canvasId` and `viewKey`.

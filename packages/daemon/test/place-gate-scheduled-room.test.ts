@@ -153,7 +153,7 @@ describe('scheduleAnchorOf', () => {
 })
 
 describe('scheduleRoomMessage', () => {
-  it('carries the schedule into the room as its own turn, with the task as its text and no run to report', () => {
+  it('carries the schedule into the room as its own turn: its person, the task as its text, and no run to report', () => {
     const cron = {
       id: 'tickets',
       schedule: '0 9 * * 1',
@@ -164,6 +164,8 @@ describe('scheduleRoomMessage', () => {
     const fire = { ...buildSyntheticMessage('a1', cron, 't1').msg, cronRun: { cronId: 'tickets', firedAt: 'now' } }
     const room = scheduleRoomMessage({ ...fire, transcriptTs: '1.005' }, 'C2', 'Fix ticket 42', 't2')
     expect(room).toMatchObject({ source: 'cron', channel: 'C2', text: 'Fix ticket 42', sender: fire.sender })
+    // The schedule's recorded person is found by its id, which the room turn keeps without the run.
+    expect(room.roomOfCron).toBe('tickets')
     expect(room.msgId).not.toBe(fire.msgId)
     expect(room).not.toHaveProperty('cronRun')
     expect(room).not.toHaveProperty('transcriptTs')

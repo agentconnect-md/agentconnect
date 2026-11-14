@@ -372,14 +372,12 @@ async function execute(
       )
       // A code channel's one session keys on the channel itself (slack-code-channels.md), the coordinate a task holds it by.
       const id = created.existing ? undefined : created.channelId
-      // Slack adds a message's author and its copy starts the work; a schedule's post has neither, so both are done here.
-      const result =
-        anchored !== undefined && id
-          ? { ...(created.response as object), ...(await ownAndStart(conn, env, ctx.agentId, id, invite, a.task!)) }
-          : created.response
-      return { result, ...(id ? { room: { channel: id, thread: id } } : {}) }
+      return { result: { response: created.response, id }, ...(id ? { room: { channel: id, thread: id } } : {}) }
     }
-    return env.makeRoom ? await env.makeRoom(make) : (await make()).result
+    const made = env.makeRoom ? await env.makeRoom(make) : (await make()).result
+    if (anchored === undefined || !made.id) return made.response
+    // Slack adds a message's author and its copy starts the work; a schedule's post has neither. Done once the room is attached, so the task's turn does not wait on it.
+    return { ...(made.response as object), ...(await ownAndStart(conn, env, ctx.agentId, made.id, invite, a.task!)) }
   }
   if (name === 'setSlackCodeView' || name === 'manageSlackCodeChannel') {
     const a = name === 'setSlackCodeView' ? parseArgs(viewArgs, args) : parseArgs(manageArgs, args)
