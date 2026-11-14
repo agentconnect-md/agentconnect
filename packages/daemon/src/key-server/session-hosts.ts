@@ -19,14 +19,14 @@ import {
 import {
   DEFAULT_MODEL_KEY_TTL_SECONDS,
   KeyServerClient,
-  KeyServerError,
+  issuerDenialMessage,
   parseModelKeyTtlSeconds,
   type KeyGrant
 } from './client.js'
 
 // A refusal of this session's request for its organization or a limit (key-server.md §6), which no degradation window outlasts.
 function standingDenied(error: unknown): boolean {
-  return error instanceof KeyServerError && (error.code === 'org_suspended' || error.code === 'quota_denied')
+  return issuerDenialMessage(error) !== undefined
 }
 
 /** The daemon-internal session keys that address a credential lifecycle with no chat session

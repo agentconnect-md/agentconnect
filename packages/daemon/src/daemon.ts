@@ -942,7 +942,7 @@ import {
   configuredRuntimeEnvironment,
   type RuntimeEnvironment
 } from './runtimes/runtime-environment.js'
-import { KeyServerClient, type KeyGrant } from './key-server/client.js'
+import { issuerDenialMessage, KeyServerClient, type KeyGrant } from './key-server/client.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
 import { DecisionModelEvaluationReader } from './decisions/model-evaluations.js'
@@ -22756,9 +22756,15 @@ export class Daemon {
         if (interrupted) {
           this.terminateQueuedSink(entry, interrupted)
           this.clearTurnActivity(run)
-        } else
+        } else {
+          // An issuer's denial is written for the person, links included, so it skips the start-failure redaction.
+          const denial = issuerDenialMessage(err)
           await this.surfaceTurnFailure(
-            new Error(startFailureDetail(this.maskAgentSecrets(agentId, turnFailureReason(err)))),
+            new Error(
+              denial !== undefined
+                ? this.maskAgentSecrets(agentId, denial)
+                : startFailureDetail(this.maskAgentSecrets(agentId, turnFailureReason(err)))
+            ),
             {
               agentId,
               message: msg,
@@ -22778,6 +22784,7 @@ export class Daemon {
               ...(entry.acknowledgement ? { acknowledgement: entry.acknowledgement.handle } : {})
             }
           )
+        }
       } finally {
         releaseReplyConn()
       }
