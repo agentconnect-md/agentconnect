@@ -2,6 +2,7 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startVsCodeHost, type HostRecord } from './host.js'
@@ -10,10 +11,14 @@ const METHOD_NOT_FOUND = -32601
 // VS Code's own diagnostics probe; it logs the refusal and carries on.
 const TOLERATED_UNSUPPORTED = new Set(['getNetworkDiagnosticsInfo'])
 // The second default turn writes `docs/notes.txt` and reports the edit as a fragment, as a search-and-replace tool does.
+// With AHP_HARNESS_SIGN_IN the relay's endpoint fronts the daemon and VS Code signs in through the AgentConnect extension.
+const signIn = !!process.env.AHP_HARNESS_SIGN_IN
 const prompts = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ['hello from the harness', 'edit a file [ahp:write]']
-const browses = prompts.some((prompt) => prompt.includes('[ahp:write]'))
+  : signIn
+    ? ['hello from the harness']
+    : ['hello from the harness', 'edit a file [ahp:write]']
+const browses = !signIn && prompts.some((prompt) => prompt.includes('[ahp:write]'))
 type DriverEntry = {
   step: string
   reason?: string
@@ -21,6 +26,7 @@ type DriverEntry = {
   entries?: [string, number][]
   size?: number
   document?: string
+  folder?: string
   refs?: Record<string, string>
 }
 const code =
@@ -74,7 +80,30 @@ const profile = join(scratch, 'data')
 const workspace = join(scratch, 'workspace')
 const driverOut = join(scratch, 'driver.jsonl')
 const browsePlan = join(scratch, 'browse.json')
-const host = await startVsCodeHost()
+const extension = fileURLToPath(new URL('../../../../vscode', import.meta.url))
+// A stand-in for the Control Plane's OAuth server, shared with the extension's own tests.
+const authorizationServer = signIn
+  ? await (
+      createRequire(import.meta.url)(join(extension, 'test', 'mock-server.js')) as {
+        startAuthorizationServer(): Promise<{
+          issuer: string
+          accessTokens: Set<string>
+          requests: { path: string; agent?: string }[]
+          close(): Promise<void>
+        }>
+      }
+    ).startAuthorizationServer()
+  : undefined
+const host = await startVsCodeHost(
+  authorizationServer
+    ? {
+        signIn: {
+          issuer: authorizationServer.issuer,
+          accepts: (token) => authorizationServer.accessTokens.has(token)
+        }
+      }
+    : {}
+)
 let failed = false
 try {
   mkdirSync(join(workspace, '.vscode'), { recursive: true })
@@ -93,6 +122,9 @@ try {
       '--skip-welcome',
       '--skip-release-notes',
       `--extensionDevelopmentPath=${fileURLToPath(new URL('./driver', import.meta.url))}`,
+      ...(signIn
+        ? [`--extensionDevelopmentPath=${extension}`, '--enable-proposed-api=agentconnect.agentconnect-vscode']
+        : []),
       workspace
     ],
     {
@@ -100,7 +132,8 @@ try {
         ...process.env,
         AHP_DRIVER_OUT: driverOut,
         AHP_DRIVER_PROMPTS: JSON.stringify(prompts),
-        ...(browses ? { AHP_DRIVER_BROWSE: browsePlan } : {})
+        ...(browses ? { AHP_DRIVER_BROWSE: browsePlan } : {}),
+        ...(signIn ? { AHP_DRIVER_SIGN_IN: '1' } : {})
       }
     }
   )
@@ -111,7 +144,8 @@ try {
           .filter(Boolean)
           .map((line) => JSON.parse(line) as DriverEntry)
       : []
-  const finished = () => driver().some((entry) => ['done', 'failed', 'error'].includes(entry.step))
+  const finished = () =>
+    driver().some((entry) => [signIn ? 'workspace' : 'done', 'failed', 'error'].includes(entry.step))
   // Per connection, since a second client receives each turn's actions as well; VS Code's is the one that saw the most.
   const completed = () => {
     const seen = new Map<number, number>()
@@ -177,6 +211,26 @@ try {
     ['VS Code reported no chat error', !renderer.includes('Error while handling chat request'), ''],
     ['VS Code reported a successful first response', outcomes.includes('success'), outcomes.join(', ') || 'none']
   ]
+  if (authorizationServer) {
+    const paths = authorizationServer.requests.map((request) => request.path)
+    checks.push(
+      [
+        'the extension signed in through the authorization server',
+        paths.includes('/oauth/register') && paths.includes('/oauth/authorize') && paths.includes('/oauth/token'),
+        `authorization page fetched by ${authorizationServer.requests.find((request) => request.path === '/oauth/authorize')?.agent ?? 'nothing'}`
+      ],
+      [
+        'the relay admitted VS Code with the token the extension issued',
+        host.records.some((entry) => entry.dir === 'in' && entry.method === 'createSession'),
+        ''
+      ],
+      [
+        "the extension added the agent's workspace to the Explorer",
+        driver().some((entry) => entry.step === 'workspace' && entry.folder?.startsWith('vscode-agent-host://')),
+        JSON.stringify(driver().find((entry) => entry.step === 'workspace') ?? driver().at(-1) ?? null)
+      ]
+    )
+  }
   if (browses)
     checks.push(
       [
@@ -227,6 +281,7 @@ try {
     await sleep(2000)
   }
   await host.stop()
+  await authorizationServer?.close()
   if (!process.env.AHP_HARNESS_KEEP) rmSync(scratch, { recursive: true, force: true })
   else console.log(`\nKept ${scratch}`)
 }

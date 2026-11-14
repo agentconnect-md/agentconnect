@@ -1,12 +1,22 @@
 // A real Daemon with AHP on and a scripted ACP runtime, served on a local WebSocket for an external AHP client such as VS Code.
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
-import type { AhpAttachmentAuthorization, AhpSessionBinding } from '@agentconnect.md/protocol'
+import type {
+  AhpAttachmentAuthorization,
+  AhpSessionBinding,
+  RdAhpClose,
+  RdAhpMessage,
+  RdAhpOpen
+} from '@agentconnect.md/protocol'
+import { createAhpServer } from '../../../../relay/src/ahp-server.js'
+import type { RelayDaemonConnection } from '../../../../relay/src/relay-daemon-connection.js'
 import { Daemon } from '../../../src/daemon.js'
 import type { AhpService, AhpServiceOptions } from '../../../src/ahp/service.js'
 
@@ -101,7 +111,10 @@ function describe(dir: 'in' | 'out', text: string): Frame | undefined {
   return { dir, id: message.id, ...(message.error ? { error: message.error } : {}) }
 }
 
-export async function startVsCodeHost(options: { port?: number; logPath?: string } = {}) {
+/** With `signIn`, the relay's own AHP endpoint fronts the daemon: clients authenticate in-band with a token `accepts` admits. */
+export async function startVsCodeHost(
+  options: { port?: number; logPath?: string; signIn?: { issuer: string; accepts(token: string): boolean } } = {}
+) {
   const root = mkdtempSync(join(tmpdir(), 'ahp-vscode-host-'))
   const script = join(root, 'acp-agent.mjs')
   copyFileSync(fileURLToPath(new URL('../../fixtures/ahp-acp-agent.mjs', import.meta.url)), script)
@@ -170,33 +183,104 @@ export async function startVsCodeHost(options: { port?: number; logPath?: string
     records.push(entry)
     if (options.logPath) appendFileSync(options.logPath, `${JSON.stringify(entry)}\n`)
   }
-  const server = new WebSocketServer({ host: '127.0.0.1', port: options.port ?? 0, maxPayload: 1024 * 1024 })
-  await once(server, 'listening')
-  server.on('connection', (socket) => {
-    const attachmentId = randomUUID()
+  const stops: Array<() => void> = []
+  let server: { address(): string | AddressInfo | null; close(done: () => void): void }
+  if (options.signIn) {
+    const signIn = options.signIn
     const connectionId = randomUUID()
-    const connection = ++connections
-    const opened = internal.ahp.open(
-      { attachmentId, authorization: authorization() },
-      {
-        send: (message) => {
-          record(connection, 'out', message)
-          socket.send(message)
-        },
-        close: () => socket.close()
+    const numbers = new Map<string, number>()
+    const number = (attachmentId: string) =>
+      numbers.get(attachmentId) ?? numbers.set(attachmentId, ++connections).get(attachmentId)!
+    const listeners = new Map<string, (frame: RdAhpMessage | RdAhpClose) => void>()
+    // The daemon hop of the relay, in process: what `rd/ahp-*` frames carry in a deployment.
+    const carrier = {
+      state: 'READY',
+      supports: () => true,
+      // The relay renews a grant every minute with the same call, without `initial`.
+      authorizeAhp: (input: RdAhpOpen, initial = false) =>
+        initial
+          ? internal.ahp.open(
+              input,
+              {
+                send: (message) => {
+                  record(number(input.attachmentId), 'out', message)
+                  listeners.get(input.attachmentId)?.({ attachmentId: input.attachmentId, message })
+                },
+                close: (reason) => listeners.get(input.attachmentId)?.({ attachmentId: input.attachmentId, reason })
+              },
+              connectionId
+            )
+          : internal.ahp.authorize(input, connectionId),
+      sendAhp: (frame: RdAhpMessage | RdAhpClose) => {
+        if ('message' in frame) {
+          record(number(frame.attachmentId), 'in', frame.message)
+          void internal.ahp.receive(frame, connectionId)
+        } else internal.ahp.close(frame, connectionId)
       },
-      connectionId
-    )
-    socket.on('message', (data) => {
-      const text = data.toString()
-      record(connection, 'in', text)
-      void opened
-        .then((ok) => (ok ? internal.ahp.receive({ attachmentId, message: text }, connectionId) : socket.close()))
-        .catch(() => socket.close())
+      listenAhp: (id: string, listener: (frame: RdAhpMessage | RdAhpClose) => void) => {
+        listeners.set(id, listener)
+        return () => listeners.delete(id)
+      },
+      onceClosed: () => () => {}
+    } as unknown as RelayDaemonConnection
+    const http = createServer()
+    const edge = createAhpServer({ server: http } as Parameters<typeof createAhpServer>[0], {
+      mode: () => 'on',
+      authorizationServer: signIn.issuer,
+      daemon: () => carrier,
+      verify: async (credential, verifiedAgent) => {
+        const { grant, ...caller } = authorization()
+        return signIn.accepts(credential) && verifiedAgent === agentId
+          ? {
+              ok: true,
+              ...caller,
+              daemonId: randomUUID(),
+              apiProtocols: ['ahp'],
+              ahpGrant: { ...grant, expiresAtMs: Date.now() + 55_000 }
+            }
+          : { ok: false, reason: 'forbidden' }
+      }
     })
-    socket.on('close', () => internal.ahp.close({ attachmentId, reason: 'client_closed' }, connectionId))
-    void opened.then((ok) => ok || socket.close()).catch(() => socket.close())
-  })
+    http.listen(options.port ?? 0, '127.0.0.1')
+    await once(http, 'listening')
+    stops.push(() => {
+      for (const socket of edge.wss.clients) socket.terminate()
+      edge.close()
+    })
+    server = http
+  } else {
+    const direct = new WebSocketServer({ host: '127.0.0.1', port: options.port ?? 0, maxPayload: 1024 * 1024 })
+    await once(direct, 'listening')
+    direct.on('connection', (socket) => {
+      const attachmentId = randomUUID()
+      const connectionId = randomUUID()
+      const connection = ++connections
+      const opened = internal.ahp.open(
+        { attachmentId, authorization: authorization() },
+        {
+          send: (message) => {
+            record(connection, 'out', message)
+            socket.send(message)
+          },
+          close: () => socket.close()
+        },
+        connectionId
+      )
+      socket.on('message', (data) => {
+        const text = data.toString()
+        record(connection, 'in', text)
+        void opened
+          .then((ok) => (ok ? internal.ahp.receive({ attachmentId, message: text }, connectionId) : socket.close()))
+          .catch(() => socket.close())
+      })
+      socket.on('close', () => internal.ahp.close({ attachmentId, reason: 'client_closed' }, connectionId))
+      void opened.then((ok) => ok || socket.close()).catch(() => socket.close())
+    })
+    stops.push(() => {
+      for (const socket of direct.clients) socket.terminate()
+    })
+    server = direct
+  }
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Missing listener')
   return {
@@ -206,7 +290,7 @@ export async function startVsCodeHost(options: { port?: number; logPath?: string
     workspace: () => realpathSync(join(agentDir, 'workspace')),
     url: `ws://127.0.0.1:${address.port}/ahp/agents/${agentId}`,
     stop: async () => {
-      for (const socket of server.clients) socket.terminate()
+      for (const stop of stops) stop()
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })

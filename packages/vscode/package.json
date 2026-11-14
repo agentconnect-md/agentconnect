@@ -1,0 +1,63 @@
+{
+  "private": true,
+  "name": "agentconnect-vscode",
+  "version": "0.1.0",
+  "description": "Sign in to AgentConnect agents from VS Code and open their workspaces.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/vscode"
+  },
+  "main": "./extension.js",
+  "scripts": {
+    "package": "pnpm dlx @vscode/vsce@3 package --no-dependencies",
+    "test": "node --test",
+    "test:unit": "node --test"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "agentsWindow": {
+      "supported": true
+    }
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "contributes": {
+    "authentication": [
+      {
+        "id": "agentconnect",
+        "label": "AgentConnect"
+      }
+    ],
+    "commands": [
+      {
+        "command": "agentconnect.signIn",
+        "title": "Sign In to an Agent",
+        "category": "AgentConnect"
+      },
+      {
+        "command": "agentconnect.signOut",
+        "title": "Sign Out",
+        "category": "AgentConnect"
+      },
+      {
+        "command": "agentconnect.openWorkspace",
+        "title": "Add an Agent's Workspace to the Explorer",
+        "category": "AgentConnect"
+      }
+    ]
+  },
+  "displayName": "AgentConnect",
+  "enabledApiProposals": [
+    "authIssuers"
+  ],
+  "publisher": "agentconnect"
+}

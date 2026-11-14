@@ -17,8 +17,11 @@ const text = async (uri) => Buffer.from(await vscode.workspace.fs.readFile(uri))
 exports.activate = async () => {
   const out = process.env.AHP_DRIVER_OUT
   // Adding a folder restarts the extension host; the run that added it is the one that counts.
-  if (!out || vscode.workspace.workspaceFolders?.some((folder) => folder.uri.scheme === 'vscode-agent-host')) return
+  if (!out) return
   const report = (entry) => fs.appendFileSync(out, `${JSON.stringify({ at: Date.now(), ...entry })}\n`)
+  const mounted = vscode.workspace.workspaceFolders?.find((folder) => folder.uri.scheme === 'vscode-agent-host')
+  if (mounted)
+    return process.env.AHP_DRIVER_SIGN_IN ? report({ step: 'workspace', folder: mounted.uri.toString() }) : undefined
   try {
     const [host] = vscode.workspace.getConfiguration().get('chat.workspaceRemoteAgentHosts') ?? []
     if (!host) return report({ step: 'failed', reason: 'no chat.workspaceRemoteAgentHosts entry in this workspace' })
@@ -26,6 +29,12 @@ exports.activate = async () => {
     const type = `remote-${authority}-${new URL(host.address).pathname.split('/').pop()}`
     report({ step: 'session-type', sessionType: type })
     await sleep(Number(process.env.AHP_DRIVER_SETTLE_MS ?? 8000))
+    if (process.env.AHP_DRIVER_SIGN_IN) {
+      // The sign-in page is a redirect back to the extension's loopback listener, so fetching it is the whole browser step.
+      await vscode.commands.executeCommand('agentconnect.signIn', undefined, (url) => fetch(url))
+      report({ step: 'signed-in' })
+      await sleep(3000)
+    }
     const resource = vscode.Uri.from({ scheme: type, path: `/untitled-${crypto.randomUUID()}` })
     await vscode.commands.executeCommand('vscode.open', resource)
     await sleep(2000)
@@ -36,6 +45,12 @@ exports.activate = async () => {
       report({ step: 'submitted', index })
     }
     report({ step: 'done' })
+    if (process.env.AHP_DRIVER_SIGN_IN) {
+      // The session has a workspace once its first turn has run.
+      await sleep(Number(process.env.AHP_DRIVER_GAP_MS ?? 6000) + 6000)
+      // Adding the folder restarts the extension host, and the next activation reports it.
+      return void (await vscode.commands.executeCommand('agentconnect.openWorkspace'))
+    }
 
     // The runner names what to read once the turns have produced it.
     const plan = process.env.AHP_DRIVER_BROWSE
