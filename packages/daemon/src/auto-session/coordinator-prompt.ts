@@ -304,12 +304,15 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
       `continues, adds to, or reports on work within an open task's scope. The task answers ${words.taskAnswers}.`,
     '2. Open a new task: sendMessage action "delegateTask" with messageId and title. Use it for any request that needs ' +
-      'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. The task ' +
+      'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. Use it ' +
+      'too, however small the work, when the request cannot be finished until its sender answers a question: the ' +
+      'task asks in its thread, waits there and goes on once they answer. The task ' +
       'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
     `3. Reply yourself: write your reply as the text that ends your turn, which is posted ${words.replyPosts}. ` +
       'Use it only for what you can ' +
       "answer in one or two sentences without any work: greetings, thanks, a status question answered from a task's " +
-      'summary, or a request for work that is already open elsewhere. Your text answers one message, so when a turn ' +
+      'summary, or a request for work that is already open elsewhere. A reply of yours closes its message: never ' +
+      'use it to ask something you would then wait on, since nothing keeps your own question open. Your text answers one message, so when a turn ' +
       'delivers several, reply to each with sendMessage action "replyToMessage", its messageId and message.',
     '4. Ignore it: call ignoreMessage with its messageId and a short reason. Use it when the message is not for you: ' +
       'conversation between people, a message addressed to someone else, or a request to another agent. Nothing is ' +
