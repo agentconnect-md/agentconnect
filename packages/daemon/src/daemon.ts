@@ -9629,16 +9629,19 @@ export class Daemon {
             ...env
           })
         : undefined
+    // What the session's own env sets, read before the proxy's placeholders join it.
+    const ownEnv = new Set([...Object.keys(env), ...Object.keys(runtimeEnv)])
+    const ownsEnv = (name: string): boolean => ownEnv.has(name)
     if (proxied && this.credentialProxy) {
       // Each provider CLI's variables beside git's placeholder, here alone, since they name this machine's paths (azure-devops-integration.md §6.4).
       const cli = localProxyRoute
         ? codeHostCliEnv({
-            providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
+            hosts: this.credentialProxyHosts(agent.id),
             placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
             home: privateRuntimeHomeFor(agent.dir, opts.hostKey),
             hostKey: opts.hostKey,
             config: cfg,
-            own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
+            own: ownsEnv
           })
         : {}
       Object.assign(
@@ -9702,6 +9705,7 @@ export class Daemon {
     const providerSpawn: Partial<ProviderSpawn> = {}
     let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
     let cliStateDirs: string[] = []
+    let cliStateFiles: SpawnFile[] = []
     // Writable roots come from the trusted agent dir, never agent.json's workspace.path, and an un-sandboxable layout (SandboxError) refuses rather than runs unconfined.
     let launch: ReturnType<typeof prepareRuntimeLaunch>
     let launchRuntime = runtime
@@ -9838,14 +9842,15 @@ export class Daemon {
       launchRuntime = assembled.runtime
       if (this.credentialProxy && !localProxyRoute && (proxied || guestCodehost)) {
         const cli = codeHostCliLaunch({
-          providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
+          hosts: this.credentialProxyHosts(agent.id),
           placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
           root: launch.runtimeHome ?? remoteRoots?.runtimeRoot ?? DEFAULT_SHIM_RUNTIME_ROOT,
           hostKey: opts.hostKey,
-          own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
+          own: ownsEnv
         })
         Object.assign(codehostSpawn?.env ?? launch.env, cli.env)
         cliStateDirs = cli.clearDirs
+        cliStateFiles = cli.files
       }
       if (codehostSpawn && this.credentialProxy) {
         const noProxy = this.credentialProxy.proxy.sessionNoProxy(agent.id, launch.env.NO_PROXY ?? launch.env.no_proxy)
@@ -9918,7 +9923,8 @@ export class Daemon {
               }
             ]
           : []),
-        ...(launchConfigFiles?.files ?? [])
+        ...(launchConfigFiles?.files ?? []),
+        ...cliStateFiles
       ],
       clearDirs: [...(launchConfigFiles ? [launchConfigFiles.dir] : []), ...cliStateDirs],
       ...(codehostSpawn ? { codehost: codehostSpawn } : {}),

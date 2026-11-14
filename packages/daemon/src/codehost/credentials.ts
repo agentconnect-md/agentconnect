@@ -115,10 +115,14 @@ export interface CodeHostCredentialModule {
 export interface CodeHostCli {
   /** The command an OS sandbox's read allowlist carves back where it is installed. */
   readonly command: string
+  /** Variables that carry an agent's own token for this CLI; a session whose own env sets one is left to it. */
+  readonly ownTokenEnv?: readonly string[]
   /** Where the operator installed the CLI's extensions: the daemon config's directory, else the CLI's default under the daemon user's home. */
-  extensionDir(config: Pick<Config, 'azureDevOps'>): string
+  extensionDir?(config: Pick<Config, 'azureDevOps'>): string
   /** The variables the CLI reads: the placeholder it presents, a fresh state directory of the session's own, and the extensions when they exist. */
   env(session: { placeholder: string; stateDir: string; extensionDir?: string }): Record<string, string>
+  /** Files written into that state directory, by name, holding the placeholder for each of the provider's hosts; a runtime that drops token-named variables still reads them. */
+  stateFiles?(session: { placeholder: string; hosts: readonly ManagedCredentialHost[] }): Record<string, string>
 }
 
 /** Who will present a credential: the credential proxy, the daemon's own Git, or the agent-facing helper. */

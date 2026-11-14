@@ -352,6 +352,26 @@ describe.skipIf(process.platform === 'win32')('the holder of an executor-placed 
     }
   })
 
+  it("plans gh's placeholder config for a host session on an executor, whose GH_TOKEN placeholder is not the agent's own", async () => {
+    const { d, agent, stop } = await holder()
+    try {
+      placedOn(d, agent, 'host')
+      d.executorPlane.codehostProxyFor = () => ({ url: 'http://127.0.0.1:18080', trustBundle: '/home/agent/trust.pem' })
+      const opts = launch(d, agent, 'host') as ReturnType<typeof launch> & {
+        files: { root: string; relPath: string[]; content: string }[]
+        clearDirs: string[]
+      }
+      const placeholder = opts.env.AC_CODEHOST_CREDENTIAL!
+      expect(opts.env.GH_TOKEN).toBe(placeholder)
+      expect(opts.env.GH_CONFIG_DIR).toMatch(/^\/home\/agent\/\.agentconnect-cli\/github-/)
+      expect(opts.clearDirs).toContain(opts.env.GH_CONFIG_DIR)
+      const hosts = opts.files.find((file) => file.root === opts.env.GH_CONFIG_DIR && file.relPath[0] === 'hosts.yml')
+      expect(hosts?.content).toContain(`oauth_token: "${placeholder}"`)
+    } finally {
+      await stop()
+    }
+  })
+
   it('switches no host session placed on an executor at spawn, which its shim listener routes at launch', async () => {
     const { d, agent, stop } = await holder()
     try {

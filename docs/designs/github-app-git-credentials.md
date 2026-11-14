@@ -646,7 +646,18 @@ placeholder through its pod's codehost proxy route.
   needs no command-scope override of its own.
 - No `gh` or `glab` wrapper stands in front of the real CLI: `GH_TOKEN` and
   `GITLAB_TOKEN` carry the placeholder, and `GITLAB_HOST` names the spec's
-  instance for every GitLab-credentialed session. `agentconnect-secrets` has
+  instance for every GitLab-credentialed session.
+- Each CLI's configuration directory holds the placeholder too, because some
+  runtimes remove every variable named like a credential (`KEY`, `PASSWORD`,
+  `SECRET`, `TOKEN`) from the children they spawn. `GH_CONFIG_DIR` and
+  `GLAB_CONFIG_DIR` name a state directory of the host's own, emptied and
+  rewritten at each start the way `AZURE_CONFIG_DIR` is
+  ([azure-devops-integration.md §6.4](azure-devops-integration.md)). Its
+  `hosts.yml` (gh) or `config.yml` (glab) names each of the provider's proxied
+  hosts with the placeholder; glab keys a host by its host and path prefix, and
+  its update check is off. The variable still wins where it survives, and a
+  `GH_TOKEN` or `GITLAB_TOKEN` the agent was configured with leaves that CLI
+  without a directory. `agentconnect-secrets` has
   its own directory on the `PATH`; a shim (`srt`, a VM, a pod, an executor)
   puts its own copy first.
 - A session that does not reach the proxy holds no code-host credential: the
