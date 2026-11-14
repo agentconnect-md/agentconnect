@@ -3,6 +3,7 @@ import type {
   ChatInputAnswer,
   ChatInputQuestion,
   ChatState,
+  PendingMessage,
   SessionState,
   StateAction,
   StringOrMarkdown,
@@ -27,6 +28,12 @@ import { filesMarker } from '@/lib/webchat-file'
 
 const text = (value: StringOrMarkdown | undefined): string =>
   typeof value === 'string' ? value : (value?.markdown ?? '')
+/** Steering still waiting on the turn: the shared pending list, plus the legacy field a pre-1.1.0 snapshot carries alone. */
+export function pendingSteering(chat: ChatState): PendingMessage[] {
+  const listed = (chat.queuedMessages ?? []).filter((message) => message.kind === 'steering')
+  const legacy = chat.steeringMessage
+  return legacy && !listed.some((message) => message.id === legacy.id) ? [...listed, legacy] : listed
+}
 /** A runtime call's latest title: the start names it generically ("Terminal"), running and finished states carry the refined one (the command). */
 export function ahpToolTitle(tool: {
   toolName?: string
@@ -220,14 +227,8 @@ export function ahpSteps(chat: ChatState, agentId: string, session?: SessionStat
       if (turnId === turn.id) steps.push({ ...base, kind: 'fill', text: fill.website.origin, fill, boundary: true })
     stampTurnEnd(steps, turn, base.observedAtMs)
   }
-  if (chat.steeringMessage)
-    steps.push({
-      kind: 'msg',
-      turnId: chat.steeringMessage.id,
-      agentId,
-      text: chat.steeringMessage.message.text,
-      steer: true
-    })
+  for (const pending of pendingSteering(chat))
+    steps.push({ kind: 'msg', turnId: pending.id, agentId, text: pending.message.text, steer: true })
   for (const app of meta?.apps ?? [])
     steps.push({
       kind: 'app',
