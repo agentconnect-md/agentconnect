@@ -74,7 +74,7 @@ parity table holds with `gitlab` replaced by `gitea`.
 | Informational run state  | Daemon-authored status note                       | Control-Plane-written commit status                                                                       |
 | Re-request               | Reviewer re-request, mention, reply, new revision | Same four; re-requesting the bot as reviewer is a plain `POST /requested_reviewers`                       |
 | Loop prevention veto set | Every bound service-account user id               | The connection's single bot user id                                                                       |
-| Read-only provider CLI   | `glab` through the credential proxy               | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch                              |
+| Provider CLI             | `glab` through the credential proxy               | None in v1; `tea` has no read-only mode and a generic `tea api` escape hatch                              |
 | Lost-delivery recovery   | Provider retries only                             | Provider retries only; Gitea exposes no delivery-history or redelivery API                                |
 
 ## 3. Instance Axis and Version Floor
@@ -579,6 +579,17 @@ webhooks, deploy keys, push mirrors, and Actions secrets, variables and runners.
 A path under a repository with an empty or dot segment, or a segment that
 decodes to a separator, is refused too, because Forgejo collapses repeated
 slashes before routing and would otherwise answer a setting the check missed.
+
+An API write under `repos/{owner}/{repo}/…` of an authorized repository is
+served at the agent's `write` tier, as a push is, and refused below it. The
+bot is an administrator of every bound repository, so the proxy also refuses
+what only an administrator changes, whatever the tier: the repository itself
+(editing or deleting it), collaborators, teams, branch and tag protections,
+transfer, forks, template generation, mirror sync and the avatar, beside the
+settings above. A pull request's merge is refused as well, because an
+administrator's merge may set `force_merge` and pass over required approvals
+and status checks; the agent merges with the effect broker's tool, which never
+sends it. A write outside a repository is refused.
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect
