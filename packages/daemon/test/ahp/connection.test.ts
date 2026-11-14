@@ -38,7 +38,7 @@ afterEach(() => {
 })
 
 // This verifies the protocol boundary with the real SDK; runtime acceptance uses a separate Daemon fixture.
-async function fixture(overrides: Partial<AhpHostPort> = {}) {
+async function fixture(overrides: Partial<AhpHostPort> = {}, warn?: (message: string) => void) {
   let high = 0
   const journal = await AhpActionJournal.create({ reserve: async (size) => ({ start: high + 1, end: (high += size) }) })
   const port: AhpHostPort = {
@@ -67,7 +67,8 @@ async function fixture(overrides: Partial<AhpHostPort> = {}) {
     close: (reason) => {
       closed(reason)
       serverTransport.close()
-    }
+    },
+    ...(warn ? { warn } : {})
   })
   const serving = (async () => {
     for (;;) {
@@ -423,6 +424,24 @@ describe('AHP recovery and authorization boundary', () => {
     })
     expect(recovered).toMatchObject({ type: 'snapshot', snapshots: [{ state: JSON.parse(JSON.stringify(tail)) }] })
     expect(first.port.snapshot(chat)).toEqual(tail)
+  })
+
+  it('answers resolveSessionConfig, which VS Code sends before createSession, and names an unsupported method in the log', async () => {
+    const warn = vi.fn()
+    const { client, connection, frames } = await fixture({}, warn)
+    await client.initialize({ clientId: 'one', protocolVersions: ['1.0.0'] })
+    const config = { autoApprove: 'default' }
+    expect(await client.request('resolveSessionConfig', { channel: root, provider: 'agent', config })).toEqual({
+      schema: { type: 'object', properties: {} },
+      values: {}
+    })
+    await expect(client.request('resolveSessionConfig', { channel: root, provider: 'other' })).rejects.toMatchObject({
+      code: AhpErrorCodes.ProviderNotFound
+    })
+    expect(warn).not.toHaveBeenCalled()
+    await connection.receive(JSON.stringify({ jsonrpc: '2.0', id: 93, method: 'sessionConfigCompletions' }))
+    expect(JSON.parse(frames.at(-1)!)).toMatchObject({ id: 93, error: { code: -32601 } })
+    expect(warn).toHaveBeenCalledWith('unsupported AHP method "sessionConfigCompletions"')
   })
 
   it('accepts opaque 2048-byte cursors and only exposes explicitly supported extension methods', async () => {

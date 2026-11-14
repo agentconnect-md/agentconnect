@@ -88,6 +88,11 @@ const createSession = z
     progressToken: identifier.optional()
   })
   .passthrough()
+const resolveSessionConfig = rootParams.extend({
+  provider: identifier.optional(),
+  workingDirectory: channel.optional(),
+  config: z.record(z.string(), z.unknown()).optional()
+})
 const fetchTurns = z.object({
   channel: channel.refine((value) => value.startsWith('ahp-chat:/')),
   cursor: cursor.optional()
@@ -281,6 +286,13 @@ export class AhpHostConnection {
         await this.port.createSession(params as CreateSessionParams)
         return {}
       }
+      case 'resolveSessionConfig': {
+        const params = parse(resolveSessionConfig, message.params)
+        if (params.provider && params.provider !== this.port.provider.provider)
+          throw new AhpProtocolError(AhpErrorCodes.ProviderNotFound, 'Provider not found')
+        // No property is settable before a session exists; a client drops the values this schema does not name.
+        return { schema: { type: 'object', properties: {} }, values: {} }
+      }
       case 'fetchTurns': {
         const params = parse(fetchTurns, message.params)
         if (!this.port.fetchTurns)
@@ -325,6 +337,8 @@ export class AhpHostConnection {
         return this.port.customRequest(message.method, message.params)
       }
       default:
+        // Names the gap in the daemon log; clients such as VS Code do not log the method they sent.
+        this.options.warn?.(`unsupported AHP method ${JSON.stringify(message.method.slice(0, 64))}`)
         throw new AhpProtocolError(JsonRpcErrorCodes.MethodNotFound, 'Unknown method')
     }
   }
