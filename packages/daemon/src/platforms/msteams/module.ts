@@ -94,6 +94,8 @@ export function msTeamsPlatformModule(host: MsTeamsRelayIngressHost): DaemonPlat
     memberJoins: msTeamsMemberJoins(host),
     botAdds: msTeamsBotAdds(host),
     fileConsents: msTeamsFileConsents(host),
+    // `mentionedBots` holds only `28:` bot ids; a person's mention never lands there.
+    mentionsOnlyBots: true,
     // A deployment app's row sends through the relay; the CP connects one only to a daemon listing this (§8.5).
     registrationFeatures: [MSTEAMS_RELAY_EGRESS_V1_FEATURE]
   }

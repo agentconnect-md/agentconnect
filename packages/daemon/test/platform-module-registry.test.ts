@@ -32,5 +32,6 @@ describe('PlatformModuleRegistry', () => {
   it('carries the Teams relay egress feature from the Teams module, not from daemon core', () => {
     const teams = msTeamsPlatformModule({} as never)
     expect(teams.registrationFeatures).toEqual([MSTEAMS_RELAY_EGRESS_V1_FEATURE])
+    expect(teams.mentionsOnlyBots).toBe(true)
   })
 })

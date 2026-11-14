@@ -8,6 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import {
   COORDINATOR_FILTER_QUESTION,
   COORDINATOR_FILTER_SKIP_BELOW,
+  addressedToAnotherBot,
   coordinatorFilterAdmits,
   screensCoordinatorMessage
 } from '../src/auto-session/coordinator-filter.js'
@@ -53,6 +54,42 @@ describe('which messages the filter screens and lets through', () => {
     expect(coordinatorFilterAdmits(answered(COORDINATOR_FILTER_SKIP_BELOW))).toBe(true)
     expect(coordinatorFilterAdmits(answered(0.4))).toBe(true)
     expect(coordinatorFilterAdmits({ status: 'unavailable', reason: 'timeout' })).toBe(true)
+  })
+})
+
+describe('a message that mentions only other bots (auto-session-mode.md §9)', () => {
+  const self = '28:00000000-0000-0000-0000-00000000000a'
+  const peer = '28:00000000-0000-0000-0000-00000000000b'
+  const stranger = '28:00000000-0000-0000-0000-00000000000c'
+  const teams = (over: Partial<NormalizedMessage> = {}): NormalizedMessage =>
+    slack('1.1', { platform: 'msteams', channel: '19:general@thread.tacv2', ...over })
+
+  it('skips a root message that mentions only another bot, listed as a peer or not', () => {
+    expect(addressedToAnotherBot({ msg: teams({ mentionedBots: [peer] }) }, self)).toBe(true)
+    expect(addressedToAnotherBot({ msg: teams({ mentionedBots: [stranger, peer] }) }, self)).toBe(true)
+  })
+
+  it('skips a reply in an unowned thread that mentions only another bot', () => {
+    expect(addressedToAnotherBot({ msg: teams({ thread: '1.0', mentionedBots: [peer] }) }, self)).toBe(true)
+  })
+
+  it('keeps a message that mentions this agent, nobody, or this agent beside another bot', () => {
+    expect(addressedToAnotherBot({ msg: teams({ mentionedBots: [] }) }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg: teams({ mentionedBots: [self], trigger: 'mention' }) }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg: teams({ mentionedBots: [self] }) }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg: teams({ mentionedBots: [peer, self] }) }, self)).toBe(false)
+  })
+
+  it('keeps a DM, a report, an agent message, a call, a hook and webchat, and anything when its own bot is unknown', () => {
+    const msg = teams({ mentionedBots: [peer] })
+    expect(addressedToAnotherBot({ msg: { ...msg, isDm: true } }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg: { ...msg, parentReport: true } }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg: { ...msg, source: 'agent' } }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg: { ...msg, platform: 'webchat' } }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg, callMeta: {} }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg, hookContext: {} }, self)).toBe(false)
+    expect(addressedToAnotherBot({ msg }, undefined)).toBe(false)
+    expect(addressedToAnotherBot({ msg }, '')).toBe(false)
   })
 })
 
