@@ -64,7 +64,7 @@ function fixture(provider: 'telegram' | 'discord', respond: (url: string, init?:
     await service.addViewerIdentities(viewer)
     return service.resolve([scope], viewer)
   }
-  return { service, viewer, scope, bot, clock, identity, fetchImpl, resolve }
+  return { service, viewer, scope, bot, clock, identity, fetchImpl, resolve, deps }
 }
 
 describe('Telegram permission sync', () => {
@@ -135,6 +135,53 @@ describe('Telegram permission sync', () => {
     f.scope.realmKey = 'bot99'
     expect((await f.resolve()).allowedScopes).toHaveLength(0)
     expect(f.fetchImpl).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('Bot permission sync scheduling and diagnostics', () => {
+  const member = (_url: string, init?: RequestInit) => {
+    const id = JSON.parse(String(init?.body)).user_id as number
+    return Response.json({ ok: true, result: { user: { id }, status: id === 42 ? 'administrator' : 'member' } })
+  }
+  const scopesOf = (f: ReturnType<typeof fixture>, count: number) =>
+    Array.from({ length: count }, (_, i) => ({ ...f.scope, id: `scope-${i}`, resourceKey: `-100${i}` }))
+
+  it('keeps checking other conversations while one is slow', async () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const f = fixture('telegram', member)
+    f.fetchImpl.mockImplementation(async (url, init) => {
+      if (JSON.parse(String(init?.body)).chat_id === '-1000') await held
+      return member(String(url), init)
+    })
+    await f.service.addViewerIdentities(f.viewer)
+    const result = f.service.resolve(scopesOf(f, 6), f.viewer)
+    // Every other scope finishes — two calls each — while the first is still waiting on its provider.
+    await vi.waitFor(() => expect(f.fetchImpl).toHaveBeenCalledTimes(11))
+    release()
+    expect((await result).allowedScopes).toHaveLength(6)
+  })
+
+  it('warns with per-cause counts when a check cannot answer', async () => {
+    const f = fixture('telegram', () => Response.json({ ok: false }, { status: 503 }))
+    const warn = vi.fn()
+    const service = createTelegramSessionAccess({ ...f.deps, log: { warn } }, f.fetchImpl)
+    await service.addViewerIdentities(f.viewer)
+    expect(await service.resolve(scopesOf(f, 2), f.viewer)).toMatchObject({ degraded: true })
+    expect(warn).toHaveBeenCalledWith(
+      { provider: 'telegram', degradedScopes: 2, totalScopes: 2, causes: { unavailable: 2 } },
+      'telegram access check degraded — affected sessions are hidden until access can be verified'
+    )
+  })
+
+  it('does not warn when the viewer has no linked account', async () => {
+    const f = fixture('telegram', member)
+    const warn = vi.fn()
+    f.identity.chatIdentitiesFor.mockResolvedValue([])
+    const service = createTelegramSessionAccess({ ...f.deps, log: { warn } }, f.fetchImpl)
+    await service.addViewerIdentities(f.viewer)
+    expect(await service.resolve([f.scope], f.viewer)).toMatchObject({ accessIssues: [{ reason: 'authorization' }] })
+    expect(warn).not.toHaveBeenCalled()
   })
 })
 
