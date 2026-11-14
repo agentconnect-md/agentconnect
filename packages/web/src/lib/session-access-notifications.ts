@@ -15,6 +15,7 @@ export interface SessionAccessNotificationInput {
   title: string
   message: string
   action?: SessionAccessNotificationAction
+  resolution?: { read?: boolean }
 }
 
 /** Where an installed app's permissions are actually repaired: the app's own row
@@ -149,7 +150,9 @@ function genericNotification(surface: SessionAccessSurface): SessionAccessNotifi
     message:
       surface === 'sessions'
         ? 'Affected sessions are hidden until access can be verified.'
-        : 'Usage is temporarily under-counted rather than exposing inaccessible sessions.'
+        : 'Usage is temporarily under-counted rather than exposing inaccessible sessions.',
+    // It clears on its own and asks nothing of the reader, so a cleared one is not left unread.
+    resolution: { read: true }
   }
 }
 
