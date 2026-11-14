@@ -29,6 +29,15 @@ export const UPGRADE_TRIAL_FILE = 'upgrade-trial.json'
 /** Consecutive failed starts of a trial version before the CLI run shell restores `from`. */
 export const UPGRADE_TRIAL_MAX_FAILURES = 3
 
+/** File under the AgentConnect root recording a version prune a live daemon deferred; its next start on `current` runs it. */
+export const VERSION_PRUNE_DEFERRED_FILE = 'version-prune-deferred.json'
+
+export const DeferredVersionPrune = z.object({
+  keep: z.number().int().min(1),
+  protect: z.array(z.string().min(1)).default([])
+})
+export type DeferredVersionPrune = z.infer<typeof DeferredVersionPrune>
+
 export const UpgradeTrialMarker = z.object({
   from: z.string().min(1),
   to: z.string().min(1),

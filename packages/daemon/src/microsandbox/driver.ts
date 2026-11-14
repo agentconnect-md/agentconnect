@@ -428,7 +428,39 @@ export class MicrosandboxManager {
   }
 
   async environmentIds(): Promise<string[]> {
-    return [...new Set([...this.environments.keys(), ...(await this.persistedIds())])]
+    return [...new Set([...this.environments.keys(), ...(await this.persistedIds()), ...(await this.dormantIds())])]
+  }
+
+  /** Stopped environments whose VM booted an image other than the configured one, which their next start replaces anyway. */
+  async staleImageIds(): Promise<string[]> {
+    const current = await this.imageIdentity(this.options.config.image)
+    if (!current) return []
+    const ids: string[] = []
+    for (const id of await this.persistedIds()) {
+      if (this.environments.has(id)) continue
+      const identity = (await this.readBinding(id))?.imageIdentity
+      if (identity !== undefined && identity !== current) ids.push(id)
+    }
+    return ids
+  }
+
+  /** Destroy a stopped VM on a superseded image, unpinning that image; a dormant marker keeps the id, so the next start creates it fresh. */
+  async retireStaleImage(id: string): Promise<boolean> {
+    if (this.closed || this.environments.has(id)) return false
+    const binding = await this.readBinding(id)
+    const current = await this.imageIdentity(this.options.config.image)
+    if (!binding?.imageIdentity || !current || binding.imageIdentity === current) return false
+    const handle = await this.find(this.sandboxName(id, binding))
+    if (handle && (handle.status === 'running' || handle.status === 'starting' || handle.status === 'draining'))
+      return false
+    if (this.environments.has(id)) return false
+    // The marker goes first: a crash after it leaves a binding the next start drops, never an id that vanished.
+    const marker = this.dormantPath(id)
+    await mkdir(dirname(marker), { recursive: true, mode: 0o700 })
+    await writeFileAtomic(marker, JSON.stringify({ environmentId: id }))
+    await this.dropPersisted(id, binding)
+    this.options.log?.info(`microsandbox: retired the stopped VM of ${id}, which booted a superseded image`)
+    return true
   }
 
   async suspendIdle(idleBefore: number): Promise<void> {
@@ -457,6 +489,42 @@ export class MicrosandboxManager {
 
   private name(id: string): string {
     return `agentconnect-${hash(this.options.root).slice(0, 12)}-${hash(id).slice(0, 24)}`
+  }
+
+  private dormantPath(id: string): string {
+    return join(this.options.root, 'microsandbox', 'dormant', `${this.name(id)}.json`)
+  }
+
+  private async dormantIds(): Promise<string[]> {
+    const directory = join(this.options.root, 'microsandbox', 'dormant')
+    const ids: string[] = []
+    for (const file of await listDirectory(directory)) {
+      if (!file.endsWith('.json')) continue
+      const id = z
+        .object({ environmentId: z.string() })
+        .safeParse(parseJson(await readFile(join(directory, file), 'utf8'))).data?.environmentId
+      if (id !== undefined && file === `${this.name(id)}.json`) ids.push(id)
+    }
+    return ids
+  }
+
+  private async isDormant(id: string): Promise<boolean> {
+    return await stat(this.dormantPath(id)).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false
+        throw error
+      }
+    )
+  }
+
+  /** Destroy a not-loaded environment's VMs and volumes, then its binding; a missing VM is already gone. */
+  private async dropPersisted(id: string, binding?: Binding): Promise<void> {
+    binding ??= await this.readBinding(id)
+    if (!binding) return
+    await this.cleanReplacement(binding)
+    for (const owned of [binding, ...(binding.retired ?? [])]) await this.destroyOwned(id, owned)
+    await rm(this.bindingPath(id), { force: true })
   }
 
   private bindingPath(id: string): string {
@@ -954,6 +1022,9 @@ export class MicrosandboxManager {
       if (contains(source, stateRoot) || contains(stateRoot, source))
         throw new Error('microsandbox mounts cannot expose host sandbox state')
     }
+    const dormant = await this.isDormant(environment.id)
+    // A retirement cut short leaves a binding whose VM may be gone; the fresh start below supersedes it.
+    if (dormant) await this.dropPersisted(environment.id)
     let binding = await this.readBinding(environment.id)
     if (binding) {
       await this.cleanReplacement(binding)
@@ -1018,6 +1089,7 @@ export class MicrosandboxManager {
         ...(overlayMounts(environment.mounts).length ? { overlayVolume: `${name}-overlays` } : {})
       }
       await this.writeBinding(binding)
+      if (dormant) await rm(this.dormantPath(environment.id), { force: true })
       await prepareOverlayMounts(sandbox, environment.mounts)
       await this.startShim(environment, sandbox)
       return sandbox
@@ -1319,7 +1391,10 @@ export class MicrosandboxManager {
             if (volume) await this.removeVolume(volume)
           }
         }
-        if (remove) await rm(this.bindingPath(id), { force: true })
+        if (remove) {
+          await rm(this.bindingPath(id), { force: true })
+          await rm(this.dormantPath(id), { force: true })
+        }
       } finally {
         if (state) state.closing = undefined
       }

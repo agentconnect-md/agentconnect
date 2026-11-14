@@ -357,9 +357,9 @@ sessions that share workspace files. Its private HOME lives under
 `runtime-homes/<session-leaf>/home` unless it already owns a confined session
 directory. For shared workspaces, native-memory directories mount the agent's
 existing memory store so every session shares it; runtime
-state stays in the session's HOME. Image changes apply to new sessions;
-resume keeps the original image, runtime versions, HOME and disks until session
-retention removes them. Sessions created in a legacy shared agent VM continue
+state stays in the session's HOME. Image changes apply to new sessions, and a
+retained session's next start replaces its VM on the new image while keeping its
+host-mounted workspace, HOME and memory. Sessions created in a legacy shared agent VM continue
 using that VM until its last session retires. Resource and mount changes still
 require environment recreation. Image
 digest resolution and in-place disk migration remain proposed.
@@ -378,7 +378,22 @@ startup, so a retention pass that discards at least one session VM runs the same
 collection again. The same pass also retires session VMs whose session row is
 gone, such as those left by a purge while microsandbox was unavailable, but never
 the agent's shared VM, a hosted executor VM, a loaded or dream VM, or a VM of an
-agent with work in flight.
+agent with work in flight. It retires every VM of an agent this daemon no longer
+loads once no row, dream or work in flight names that agent, which is what a
+removal made while microsandbox was unavailable leaves behind; an agent whose rows
+remain, as a detach or move leaves them, keeps its VMs.
+
+A stopped VM on an image other than the configured one is retired by the same
+pass: its next start would replace it anyway, and until then it pins a whole
+release image, so a host that upgrades often would otherwise hold one image per
+release for the workspace retention window. Retirement destroys the VM and its
+disks and leaves a dormant marker under the microsandbox state directory, so the
+environment id still exists for session ownership: a session with its own VM is
+never mistaken for one in the legacy shared VM. The next start creates the VM
+fresh and removes the marker; a discard removes both. The marker is written
+before the VM is destroyed, so a retirement cut short is finished by the next
+start. Loaded VMs, hosted executor VMs, and VMs of an agent with a live,
+starting or stopping host are skipped.
 An upgrade pre-pulls the next release's image from a separate
 process while the old daemon still runs, so every pull records the reference it
 fetched in a file under the microsandbox state directory, and the runtime pass

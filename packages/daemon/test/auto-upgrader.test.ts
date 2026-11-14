@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FakeClock, WireError } from '@agentconnect.md/connection'
-import { LIFECYCLE_DEFERRED_REASON } from '@agentconnect.md/protocol'
+import { LIFECYCLE_DEFERRED_REASON, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
 import {
   AUTO_UPGRADE_IDLE_WAIT_MS,
   AUTO_UPGRADE_QUIET_MS,
@@ -352,6 +352,29 @@ describe('AutoUpgrader', () => {
     await h.upgrader.onCpReady()
     expect(existsSync(trialMarkerPath(root))).toBe(false)
     expect(h.cp.reportProgress).not.toHaveBeenCalled()
+  })
+
+  it('runs the version prune a live daemon deferred once, on its first READY', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentconnect-auto-upgrade-'))
+    writeFileSync(join(root, VERSION_PRUNE_DEFERRED_FILE), JSON.stringify({ keep: 3, protect: [] }))
+    const h = harness({ root, version: '1.1.0' })
+    await h.upgrader.onCpReady()
+    await h.upgrader.onCpReady()
+    await flush()
+    expect(h.cli.mock.calls.filter(([a]) => a[1] === 'prune')).toEqual([[['version', 'prune', '--deferred', '1.1.0']]])
+  })
+
+  it('spawns no prune without a deferral or when the daemon cannot run the CLI', async () => {
+    const h = harness()
+    await h.upgrader.onCpReady()
+    await flush()
+    const root = mkdtempSync(join(tmpdir(), 'agentconnect-auto-upgrade-'))
+    writeFileSync(join(root, VERSION_PRUNE_DEFERRED_FILE), JSON.stringify({ keep: 3, protect: [] }))
+    const ineligible = harness({ root })
+    ineligible.setEligible(false)
+    await ineligible.upgrader.onCpReady()
+    await flush()
+    expect([...h.cli.mock.calls, ...ineligible.cli.mock.calls]).toEqual([])
   })
 
   it('rolls back after two non-retryable register rejections, never for an unreachable CP', async () => {

@@ -3,7 +3,14 @@ import { mkdtempSync, mkdirSync, existsSync, readlinkSync, renameSync, rmSync, w
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { autoPrune, pruneVersions, useVersion } from '../src/version-ops.js'
+import {
+  autoPrune,
+  deferredPrunePath,
+  pruneVersions,
+  readDeferredPrune,
+  runDeferredPrune,
+  useVersion
+} from '../src/version-ops.js'
 import { currentVersion, listInstalled, readMeta } from '../src/version-store.js'
 
 const root = () => mkdtempSync(join(tmpdir(), 'ac-vops-'))
@@ -154,5 +161,41 @@ describe('autoPrune', () => {
     const lines: string[] = []
     expect(autoPrune(r, (m) => lines.push(m))).toEqual([])
     expect(lines).toEqual([])
+  })
+})
+
+describe('deferred prune', () => {
+  const deferred = (protect: string[] = []) => {
+    const r = root()
+    for (const v of ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0']) install(r, v)
+    useVersion(r, '1.3.0')
+    writeFileSync(join(r, 'daemon.lock'), `${process.pid}\n`)
+    expect(autoPrune(r, () => {}, { protect })).toEqual([])
+    return r
+  }
+  it('records what a live daemon deferred, merging the protected versions', () => {
+    const r = deferred(['1.4.0'])
+    expect(autoPrune(r, () => {}, { protect: ['1.0.0'] })).toEqual([])
+    expect(readDeferredPrune(r)).toEqual({ keep: 3, protect: ['1.4.0', '1.0.0'] })
+  })
+  it('runs it once the daemon reports it runs current, then forgets it', () => {
+    const r = deferred(['1.4.0'])
+    useVersion(r, '1.4.0')
+    expect(runDeferredPrune(r, '1.4.0')).toEqual({ removed: ['1.1.0', '1.0.0'] })
+    expect(listInstalled(r)).toEqual(['1.2.0', '1.3.0', '1.4.0'])
+    expect(existsSync(deferredPrunePath(r))).toBe(false)
+    expect(runDeferredPrune(r, '1.4.0')).toEqual({ skipped: 'no deferred prune' })
+  })
+  it('keeps the deferral while the daemon runs a bundle other than current', () => {
+    const r = deferred()
+    expect(runDeferredPrune(r, '1.2.0')).toEqual({ skipped: 'the daemon runs 1.2.0, not current 1.3.0' })
+    expect(listInstalled(r)).toHaveLength(5)
+    expect(existsSync(deferredPrunePath(r))).toBe(true)
+  })
+  it('is superseded by a prune that ran', () => {
+    const r = deferred()
+    rmSync(join(r, 'daemon.lock'))
+    autoPrune(r, () => {})
+    expect(existsSync(deferredPrunePath(r))).toBe(false)
   })
 })

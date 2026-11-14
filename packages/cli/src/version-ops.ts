@@ -2,8 +2,9 @@
  * Activation + cleanup for the version store (cli-daemon-split.md §5). Both MUTATE
  * and must run inside the version lock (version-lock.ts).
  */
-import { existsSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs'
-import { basename } from 'node:path'
+import { existsSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
+import { DeferredVersionPrune, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
 import { liveDaemonPid } from './daemon-live.js'
 import { currentLink, versionDir } from './paths.js'
 import { cliCommand } from './invocation.js'
@@ -104,17 +105,58 @@ export function autoPrune(root: string, log: (m: string) => void, opts: AutoPrun
   // A daemon we did not just restart is still running the bundle it was launched under, which may be any installed version.
   const livePid = opts.assumeIdle ? null : liveDaemonPid(root)
   if (livePid !== null) {
-    log(`kept old versions: daemon pid ${livePid} is still running — prune after restarting it`)
+    deferPrune(root, keep, opts.protect ?? [], log)
+    log(`kept old versions: daemon pid ${livePid} is still running — its next start on \`current\` prunes them`)
     return []
   }
   try {
     const removed = pruneVersions(root, keep, opts.protect ?? [])
+    rmSync(deferredPrunePath(root), { force: true })
     if (removed.length) log(`pruned ${removed.length} old version(s): ${removed.join(', ')}`)
     return removed
   } catch (err) {
     log(`could not prune old versions: ${err instanceof Error ? err.message : String(err)}`)
     return []
   }
+}
+
+export function deferredPrunePath(root: string): string {
+  return join(root, VERSION_PRUNE_DEFERRED_FILE)
+}
+
+/** The deferred prune on disk, or undefined when absent or unreadable (an unreadable record defers nothing). */
+export function readDeferredPrune(root: string): DeferredVersionPrune | undefined {
+  try {
+    const parsed = DeferredVersionPrune.safeParse(JSON.parse(readFileSync(deferredPrunePath(root), 'utf8')))
+    return parsed.success ? parsed.data : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Merged with an earlier deferral: the latest retention wins, and every version some deferral protected stays protected.
+function deferPrune(root: string, keep: number, protect: string[], log: (m: string) => void): void {
+  const earlier = readDeferredPrune(root)
+  const record: DeferredVersionPrune = { keep, protect: [...new Set([...(earlier?.protect ?? []), ...protect])] }
+  const file = deferredPrunePath(root)
+  try {
+    writeFileSync(`${file}.tmp`, JSON.stringify(record, null, 2) + '\n')
+    renameSync(`${file}.tmp`, file)
+  } catch (err) {
+    log(`could not record the deferred prune: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/** Run the prune a live daemon deferred, once the daemon reports it runs `current`; lock held by caller. */
+export function runDeferredPrune(root: string, running: string): { removed: string[] } | { skipped: string } {
+  const deferred = readDeferredPrune(root)
+  if (!deferred) return { skipped: 'no deferred prune' }
+  const active = currentVersion(root)
+  // A daemon on any other bundle may still load files from a version the prune would remove.
+  if (active !== running) return { skipped: `the daemon runs ${running}, not current ${active ?? '(none)'}` }
+  const removed = pruneVersions(root, deferred.keep, deferred.protect)
+  rmSync(deferredPrunePath(root), { force: true })
+  return { removed }
 }
 
 /** Basename of an installed version dir (helper for callers that resolve paths). */

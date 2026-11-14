@@ -128,7 +128,9 @@ function useMicrosandbox(daemon: Daemon, environments: string[] = []) {
     suspendIdle: vi.fn(async () => {}),
     stopAll: vi.fn(async () => {}),
     discard: vi.fn(async () => {}),
-    collectImages: vi.fn(async () => {})
+    collectImages: vi.fn(async () => {}),
+    staleImageIds: vi.fn(async (): Promise<string[]> => []),
+    retireStaleImage: vi.fn(async (_id: string) => true)
   }
   // A probed, prepared microsandbox, whatever this test host could run itself, and every agent's sessions run in it.
   for (const agent of (daemon as any).agents.values()) agent.execution = 'microsandbox'
@@ -1595,6 +1597,54 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(hosts[1]!.stop).not.toHaveBeenCalled()
     expect((daemon as any).hosts.get(key)).toBe(hosts[1])
     await daemon.stop()
+  })
+
+  it('retires the VMs an agent removed from this daemon left behind, but not one it may come back to', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      // The startup retention pass must not run beside the one under test.
+      await vi.waitFor(() => expect((daemon as any).sessionRetentionSweepInFlight).toBe(false), WAIT)
+      const leaf = hostKeyDirName(sessionHostKey('gone', KEY('T1')))
+      const manager = useMicrosandbox(daemon, [
+        'gone/agent',
+        `gone/${leaf}`,
+        'detached/agent',
+        'executor/session-0123456789abcdef01234567',
+        'bot-a/agent'
+      ])
+      const kept = (daemon as any).keptSessionLeaves.bind(daemon)
+      vi.spyOn(daemon as any, 'keptSessionLeaves').mockImplementation(async (agentId: unknown) =>
+        agentId === 'detached' ? new Set(['session-row']) : kept(agentId)
+      )
+      expect(await (daemon as any).retireDepartedAgentVms()).toBe(2)
+      expect(manager.discard.mock.calls).toEqual([['gone/agent'], [`gone/${leaf}`]])
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('retires stopped VMs on a superseded image only while no host of their agent is live', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    try {
+      // The startup retention pass must not run beside the one under test.
+      await vi.waitFor(() => expect((daemon as any).sessionRetentionSweepInFlight).toBe(false), WAIT)
+      const manager = useMicrosandbox(daemon)
+      manager.staleImageIds.mockResolvedValue([
+        'bot-a/agent',
+        'executor/session-0123456789abcdef01234567',
+        'gone/agent'
+      ])
+      expect(await (daemon as any).retireStaleImageVms()).toBe(1)
+      expect(manager.retireStaleImage.mock.calls).toEqual([['bot-a/agent']])
+
+      manager.retireStaleImage.mockClear()
+      await (daemon as any).dispatch('bot-a', dm('100', 'hi', 'T1'), 'int-a')
+      expect((daemon as any).hosts.size).toBeGreaterThan(0)
+      expect(await (daemon as any).retireStaleImageVms()).toBe(0)
+      expect(manager.retireStaleImage).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+    }
   })
 
   it('discards the VM disk of an idle-closed hook session only, keeping its row', async () => {
