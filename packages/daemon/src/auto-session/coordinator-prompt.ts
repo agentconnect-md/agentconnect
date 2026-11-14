@@ -23,6 +23,8 @@ export interface CoordinatorPromptInput {
   channelName?: string
   /** How the platform mentions this agent, when known. */
   selfAddress?: string
+  /** The name its platform shows for this agent, where a mention reads as that name rather than an address. */
+  selfName?: string
   peers: readonly CoordinatorPeer[]
   /** A member's webchat conversation, shared if published: one message a turn, with streamed text. */
   webchat?: boolean
@@ -64,6 +66,8 @@ export interface CoordinatorMessage extends ReportAbout {
   /** The sender, as the platform names them. */
   from: string
   mentionsYou: boolean
+  /** Whom else the message mentions, by the name its platform shows. */
+  mentions?: readonly string[]
   text: string
   /** The {@link coordinatorMessageId} of the root a thread reply sits under; absent at the root. */
   thread?: string
@@ -91,7 +95,11 @@ const CHANNEL_FINAL_TEXT =
 
 /** The words the prompt names its place and a task's answer with: a channel's threads, a room without threads, or a console conversation's. */
 function placeWords(input: CoordinatorPromptInput) {
-  const self = input.selfAddress ? ` Your ${input.platform} user is ${input.selfAddress}.` : ''
+  const self = input.selfAddress
+    ? ` Your ${input.platform} user is ${input.selfAddress}.`
+    : input.selfName
+      ? ` Your ${input.platform} name is "${input.selfName}".`
+      : ''
   if (input.threadlessRoom && !input.webchat)
     return {
       intro:
@@ -398,6 +406,7 @@ export function renderCoordinatorBatch(
     message.report
       ? `<report id="${message.id}"${aboutAttrs(message)}>\n${framed(message.text)}\n</report>`
       : `<message id="${message.id}" from="${message.from}" mentions-you="${message.mentionsYou ? 'yes' : 'no'}"` +
+        `${message.mentions?.length ? ` mentions="${attr(message.mentions.join(', '))}"` : ''}` +
         `${message.thread ? ` thread="${message.thread}"` : ''}>\n${framed(message.text)}\n</message>`
   )
   const channel = messages.filter((message) => !message.report)

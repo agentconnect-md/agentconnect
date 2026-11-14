@@ -371,6 +371,8 @@ export interface PlatformConnection {
   // exposes it, so it is per-platform state, not shared identity — the manifest
   // (§5 `credentialShape`/`identityScope`) is where that difference belongs.
   readonly botUserId?: string
+  /** The name the platform shows for this bot, where a mention reads as that name; learned from traffic. */
+  readonly selfName?: string
   readonly botId?: string
   readonly workspaceUrl?: string
   /** Durable tenant id for session/audience classification (Slack's team id).

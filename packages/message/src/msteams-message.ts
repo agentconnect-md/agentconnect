@@ -89,6 +89,8 @@ export interface MsTeamsAdapterExt {
   userId: string
   /** A channel's enclosing team, when the activity names one. */
   teamId?: string
+  /** The receiving bot's name as Teams shows it, from the activity's recipient. */
+  botName?: string
   /** The relay's tickets for the conversation and its team, which a deployment app's row sends through the relay with; never set by this normalizer. */
   ticket?: string
   teamTicket?: string
@@ -149,8 +151,13 @@ export function msTeamsActivityTenantId(activity: unknown): string | undefined {
 }
 
 // Removes the bot's own mention spans and renders every other one as `@Name`; a span the text does not hold is skipped, so no user content is erased.
-function resolveMentions(text: string, entities: Obj[], botId: string): { text: string; mentionedBots: string[] } {
+function resolveMentions(
+  text: string,
+  entities: Obj[],
+  botId: string
+): { text: string; mentionedBots: string[]; mentionNames: { id: string; name: string }[] } {
   const mentionedBots = new Set<string>()
+  const mentionNames = new Map<string, string>()
   let out = ''
   let cursor = 0
   for (const entity of entities) {
@@ -164,13 +171,20 @@ function resolveMentions(text: string, entities: Obj[], botId: string): { text: 
     if (at < 0) continue
     const label = /^<at>([\s\S]*)<\/at>$/.exec(span)?.[1]?.trim()
     const isBot = id.toLowerCase() === botId
+    // Whom else it names, as Teams shows them: the entity's name, else the span's label.
+    const name = (str(obj(entity.mentioned)?.name)?.trim() || label)?.slice(0, 256)
+    if (!isBot && name && mentionNames.size < 20) mentionNames.set(id.startsWith('28:') ? id.toLowerCase() : id, name)
     out += text.slice(cursor, at) + (isBot ? '' : label ? `@${label}` : span)
     cursor = at + span.length
     // A removed span between two words leaves one space, not two.
     if (isBot && (!out || /\s$/.test(out)) && /[ \t]/.test(text[cursor] ?? '')) cursor++
   }
   out += text.slice(cursor)
-  return { text: out.trim(), mentionedBots: [...mentionedBots] }
+  return {
+    text: out.trim(),
+    mentionedBots: [...mentionedBots],
+    mentionNames: [...mentionNames].map(([id, name]) => ({ id: id.slice(0, 256), name }))
+  }
 }
 
 // The quoted message a reply names (§4.1): its ID is the reply-chain key, its preview the bounded quote.
@@ -293,7 +307,14 @@ export function normalizeMsTeamsActivity(activity: unknown, context: MsTeamsNorm
   const aadObjectId = str(from.aadObjectId)
   const displayName = str(from.name)?.trim()
   const teamId = type === 'channel' ? str(obj(channelData?.team)?.id) : undefined
-  const ext: MsTeamsAdapterExt = { serviceUrl, conversationId, userId: fromId, ...(teamId ? { teamId } : {}) }
+  const botName = str(obj(a.recipient)?.name)?.trim()
+  const ext: MsTeamsAdapterExt = {
+    serviceUrl,
+    conversationId,
+    userId: fromId,
+    ...(teamId ? { teamId } : {}),
+    ...(botName ? { botName } : {})
+  }
   const platformTimeMs = timeMs(a.timestamp)
   return {
     kind: 'message',
@@ -307,6 +328,7 @@ export function normalizeMsTeamsActivity(activity: unknown, context: MsTeamsNorm
       sender: { id: aadObjectId ?? fromId, isBot: false, ...(displayName ? { name: displayName } : {}) },
       text,
       mentionedBots: mentions.mentionedBots,
+      ...(mentions.mentionNames.length ? { mentionNames: mentions.mentionNames } : {}),
       ...(attachments.length ? { attachments } : {}),
       isDm: type === 'personal',
       ...(reply ? { replyTo: reply.replyTo } : {}),

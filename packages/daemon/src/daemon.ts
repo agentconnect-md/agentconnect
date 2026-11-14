@@ -11464,11 +11464,17 @@ export class Daemon {
         }
       })
     const selfAddress = addressOf(agent.id)
+    // A platform whose mentions read as names gives the bot's own name instead (auto-session-mode.md §4.3).
+    const conn: ContractConnection | undefined = at.integrationId
+      ? this.gatewayForIntegration(at.integrationId)
+      : undefined
+    const selfName = selfAddress ? undefined : conn?.selfName
     return coordinatorPrompt({
       agentName: agent.displayName?.trim() || agent.name,
       platform: platformLabel(at.platform),
       channelId: at.channel,
       ...(selfAddress ? { selfAddress } : {}),
+      ...(selfName ? { selfName } : {}),
       peers,
       ...(at.platform === 'webchat' ? { webchat: true } : {}),
       // A room without threads keeps every follow-up at its root, so the coordinator places each one (§6.10).

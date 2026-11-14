@@ -75,6 +75,17 @@ describe('the coordinator prompt and batch', () => {
     expect(batch).not.toContain('</message><message id="msg-x">')
   })
 
+  // §4.1: whom else a message mentions is named on it, by the name its platform shows.
+  it('names whom else a message mentions, unable to leave the attribute', () => {
+    const batch = renderCoordinatorBatch(
+      [{ id: 'msg-1', from: 'U2', mentionsYou: false, mentions: ['Other Bot', 'A "quoted" <name>'], text: 'hi' }],
+      { channelId: 'C1' }
+    )
+    expect(batch).toContain(
+      '<message id="msg-1" from="U2" mentions-you="no" mentions="Other Bot, A &quot;quoted&quot; &lt;name&gt;">'
+    )
+  })
+
   // §4.1: a thread it meets part-way arrives with what was said there, apart from the messages it decides.
   it('shows a thread’s earlier messages in a block of their own, ahead of the messages, unable to leave their frame', () => {
     const batch = renderCoordinatorBatch(
@@ -119,6 +130,9 @@ describe('the coordinator prompt and batch', () => {
       peers: [{ name: 'billing', address: '<@UPEER>', description: 'Owns invoices.' }]
     })
     expect(prompt).toContain('Your Slack user is <@UBOT>.')
+    // A platform whose mentions read as names gives the agent its own name instead.
+    const named = coordinatorPrompt({ ...base, platform: 'Microsoft Teams', selfName: 'Example Bot', peers: [] })
+    expect(named).toContain('Your Microsoft Teams name is "Example Bot".')
     expect(prompt).toContain('- Other agents in this channel: billing (Slack user <@UPEER>): Owns invoices.')
     expect(prompt).toContain('AC_NO_RESPONSE')
   })
