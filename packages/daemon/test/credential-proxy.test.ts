@@ -747,6 +747,8 @@ describe('routing a GitLab or Gitea request', () => {
       ['POST', '/forge/api/v1/repos/owner/repo/transfer'],
       ['POST', '/forge/api/v1/repos/owner/repo/branch_protections'],
       ['POST', '/forge/api/v1/repos/owner/repo/hooks'],
+      ['POST', '/forge/api/v1/repos/owner/repo/pulls/1/merge'],
+      ['POST', '/forge/api/v1/repos/owner/repo/Pulls/1/%6Derge'],
       ['POST', '/forge/api/v1/user/repos'],
       ['POST', '/forge/api/v1/repos/migrate']
     ] as const) {

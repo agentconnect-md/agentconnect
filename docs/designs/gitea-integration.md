@@ -586,7 +586,10 @@ bot is an administrator of every bound repository, so the proxy also refuses
 what only an administrator changes, whatever the tier: the repository itself
 (editing or deleting it), collaborators, teams, branch and tag protections,
 transfer, forks, template generation, mirror sync and the avatar, beside the
-settings above. A write outside a repository is refused.
+settings above. A pull request's merge is refused as well, because an
+administrator's merge may set `force_merge` and pass over required approvals
+and status checks; the agent merges with the effect broker's tool, which never
+sends it. A write outside a repository is refused.
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect

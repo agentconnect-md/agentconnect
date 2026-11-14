@@ -13,6 +13,7 @@ const NO_REPOSITORY_WRITE_REFUSAL =
 const NO_REPOSITORY_REFUSAL =
   'a Gitea API read that names no repository is not available with this agent’s credential; name the repository as /api/v1/repos/{owner}/{repo}/…'
 const SETTINGS_REFUSAL = 'repository settings are not available with this agent’s credential'
+const MERGE_REFUSAL = 'merge a Gitea pull request with the giteaPullRequest tool'
 const NOT_A_PLAIN_PATH = 'the API path under the repository has an empty, dot or encoded-separator segment'
 
 /** A segment Gitea or Forgejo could route as something else: empty (Forgejo collapses repeated slashes), a dot segment, or one decoding to a separator. */
@@ -84,8 +85,10 @@ export const giteaProxyRoute: ProxyRouteDescriptor = {
     if (adminSetting(under)) return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
     if (reads) return { kind: 'repository', plane: 'api', repo }
     // The repository itself is its settings: editing or deleting it, like the administrator subresources, is not the agent's.
-    if (under.length === 0 || ADMIN_WRITES.has(decodeURIComponent(under[0]!).toLowerCase()))
-      return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
+    const [first, , third] = under.map((segment) => decodeURIComponent(segment).toLowerCase())
+    if (under.length === 0 || ADMIN_WRITES.has(first!)) return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
+    // An administrator's merge may carry `force_merge`, past required approvals and checks; the broker never sends it.
+    if (first === 'pulls' && third === 'merge') return { kind: 'deny', status: 403, reason: MERGE_REFUSAL }
     return { kind: 'repository', plane: 'api', repo, readOnly: false, write: true }
   }
 }
