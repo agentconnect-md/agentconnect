@@ -135,8 +135,15 @@ export interface DeletedIdentityStore {
  */
 export type EnsureIdentityFresh = (principal: { userId: string; oidcSubject?: string }) => void
 
+/** Whether a verified subject may use the plane at all: false ⇒ 403, a throw ⇒ 503; absent ⇒ every subject is admitted. */
+export type AdmitOidcSubject = (oidcSubject: string) => Promise<boolean>
+
+class SubjectRefused extends Error {}
+class AdmissionUnavailable extends Error {}
+
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
+  admitSubject?: AdmitOidcSubject
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
   principalExists?: PrincipalExists
@@ -405,19 +412,48 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // parallel first requests coalesce into ONE signup.
       let pending = resolved.get(sub)
       if (!pending) {
-        pending = cfg.resolveUser
-          ? cfg.resolveUser({
-              oidcSubject: sub,
-              ...(email ? { email } : {}),
-              emailVerified,
-              ...(displayName ? { displayName } : {}),
-              ...(picture ? { picture } : {})
+        pending = (async () => {
+          // Checked before provisioning and on each process's first sight, so an already-provisioned subject is refused too.
+          if (cfg.admitSubject) {
+            const admitted = await cfg.admitSubject(sub).catch((err: unknown) => {
+              throw new AdmissionUnavailable('subject admission check failed', { cause: err })
             })
-          : Promise.resolve({ userId: sub })
+            if (!admitted) throw new SubjectRefused()
+          }
+          return cfg.resolveUser
+            ? cfg.resolveUser({
+                oidcSubject: sub,
+                ...(email ? { email } : {}),
+                emailVerified,
+                ...(displayName ? { displayName } : {}),
+                ...(picture ? { picture } : {})
+              })
+            : { userId: sub }
+        })()
         resolved.set(sub, pending)
         pending.catch(() => resolved.delete(sub))
       }
-      const identity = await pending
+      let identity: { userId: string }
+      try {
+        identity = await pending
+      } catch (err) {
+        if (err instanceof SubjectRefused) {
+          req.log.warn({ sub }, 'humanAuth: subject has no linked sign-in identity — refused')
+          return reply.code(403).send({
+            error: 'Forbidden',
+            statusCode: 403,
+            message: 'this account has no linked sign-in identity',
+            code: 'SIGN_IN_IDENTITY_REQUIRED'
+          })
+        }
+        if (err instanceof AdmissionUnavailable) {
+          req.log.warn({ err: err.cause }, 'humanAuth: could not check the sign-in identity — refusing for now')
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'temporarily unavailable' })
+        }
+        throw err
+      }
       // The memo (and the token) can outlive the account: an admin deleting a user
       // leaves this subject mapped to a row that no longer exists. Confirm it, drop
       // the dead mapping, and refuse the session so the client signs out — the next

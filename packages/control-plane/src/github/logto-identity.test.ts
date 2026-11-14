@@ -51,6 +51,48 @@ it('binds GitLab numeric identities to the verified OIDC issuer and invalidates 
   expect(await service.gitlabUserIdFor('subject', issuer)).toBeNull()
 })
 
+describe('LogtoIdentityService.hasSignInIdentity', () => {
+  const users: Record<string, unknown> = {
+    social: { identities: { github: { userId: '1' } } },
+    sso: { identities: {}, ssoIdentities: [{ issuer: 'https://idp.example.test' }] },
+    bare: { identities: {}, ssoIdentities: [] }
+  }
+  const service = () => {
+    const urls: string[] = []
+    const fetchImpl: FetchImpl = async (url) => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'tok', expires_in: 3600 })
+      urls.push(url)
+      const user = users[decodeURIComponent(new URL(url).pathname.split('/').pop()!)]
+      if (!user) return new Response('{}', { status: 404 })
+      const { ssoIdentities, ...rest } = user as { ssoIdentities?: unknown }
+      return Response.json(url.includes('includeSsoIdentities=true') ? user : rest)
+    }
+    return { svc: new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl), urls }
+  }
+
+  it('admits a linked social account from the cached user alone', async () => {
+    const { svc, urls } = service()
+    expect(await svc.hasSignInIdentity('social')).toBe(true)
+    expect(urls).toEqual(['https://t.logto.app/api/users/social'])
+  })
+
+  it('admits an SSO-only account and refuses one with no linked identity', async () => {
+    const { svc } = service()
+    expect(await svc.hasSignInIdentity('sso')).toBe(true)
+    expect(await svc.hasSignInIdentity('bare')).toBe(false)
+    expect(await svc.hasSignInIdentity('missing')).toBe(false)
+  })
+
+  it('throws on an upstream failure instead of answering', async () => {
+    const fetchImpl: FetchImpl = async (url) =>
+      url.endsWith('/oidc/token')
+        ? Response.json({ access_token: 'tok', expires_in: 3600 })
+        : new Response('{}', { status: 502 })
+    const svc = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+    await expect(svc.hasSignInIdentity('social')).rejects.toThrow('logto user lookup failed: 502')
+  })
+})
+
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
 /** A Logto user with a Slack identity in the given workspace. Synthetic ids. */

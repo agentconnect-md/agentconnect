@@ -424,6 +424,18 @@ export class LogtoIdentityService {
     }
   }
 
+  // A real sign-in always links a social or SSO account; a bare self-registered Logto account links neither.
+  async hasSignInIdentity(sub: string): Promise<boolean> {
+    const user = await this.logtoUser(sub)
+    if (!user) return false
+    if (Object.keys(user.identities ?? {}).length > 0) return true
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}?includeSsoIdentities=true`)
+    if (res.status === 404) return false
+    if (!res.ok) throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
+    const { ssoIdentities } = (await res.json()) as { ssoIdentities?: unknown }
+    return Array.isArray(ssoIdentities) && ssoIdentities.length > 0
+  }
+
   /**
    * Drop the cached user because it was changed somewhere this service cannot
    * see. Linking runs browser→Logto — the Account API is the only side with a

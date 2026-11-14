@@ -345,6 +345,32 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
     expect(warm).toHaveBeenCalledTimes(1)
   })
 
+  it('refuses a subject with no linked sign-in identity before provisioning it', async () => {
+    const resolveUser = vi.fn(async () => ({ userId: 'local-bare' }))
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, admitSubject: async () => false, resolveUser })
+    const headers = { authorization: `Bearer ${await mintBearer('bare')}` }
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/probe', headers })
+
+    expect(response.statusCode).toBe(403)
+    expect(response.json().code).toBe('SIGN_IN_IDENTITY_REQUIRED')
+    expect(resolveUser).not.toHaveBeenCalled()
+  })
+
+  it('answers 503 when the identity check fails and checks again on the next request', async () => {
+    const admitSubject = vi
+      .fn<(sub: string) => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error('logto down'))
+      .mockResolvedValue(true)
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, admitSubject })
+    const headers = { authorization: `Bearer ${await mintBearer('sub-42')}` }
+
+    expect((await app.inject({ method: 'GET', url: '/api/v1/probe', headers })).statusCode).toBe(503)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/probe', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/probe', headers })).statusCode).toBe(200)
+    expect(admitSubject).toHaveBeenCalledTimes(2)
+  })
+
   it('does not fire when the bearer is rejected', async () => {
     const warm = vi.fn<EnsureIdentityFresh>()
     const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, ensureIdentityFresh: warm })
