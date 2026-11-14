@@ -306,19 +306,12 @@ const CoreConfigShape = {
   // Cloud tenants fronted by a custom domain must pin the canonical
   // `https://tenant.example.com/api` here.
   LOGTO_MGMT_RESOURCE: z.string().url().optional(),
-  // ── Object store for uploaded icons (docs/designs/icon-uploads.md) — opt-in ──
-  // A neutral S3-compatible target. `S3_ENDPOINT` takes the full S3 API origin,
-  // so hosted services and local development stores use the same interface.
-  // All FIVE required vars must be set to enable icon uploads; any unset ⇒ the
-  // store is not assembled, the upload routes are not mounted, and the console
-  // hides the Upload button (icons stay glyph-only). Must stay .optional() so an
-  // existing deploy never fail-fast on the next image bump.
+  // Uploaded icons (docs/designs/icon-uploads.md): the full group below, or S3_PUBLIC_BASE_URL alone to share AC_FILE_TRANSFER's bucket.
   S3_ENDPOINT: z.string().url().optional(), // full S3 API origin (NOT an R2 account id)
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_BUCKET: z.string().optional(),
-  // Public base the uploaded object is served from (R2 custom domain / r2.dev URL,
-  // a CDN, or MinIO's public bucket). Rendered into `<img src>` + Slack icon_url.
+  // Public base icons are served from, rendered into `<img src>` and chat avatar URLs.
   S3_PUBLIC_BASE_URL: z.string().url().optional(),
   // SigV4 region. R2 ignores it ("auto"); real S3/MinIO may need a concrete one.
   S3_REGION: z.string().default('auto'),

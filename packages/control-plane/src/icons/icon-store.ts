@@ -2,20 +2,65 @@
 import {
   addressFor,
   amzDate,
+  bucketEndpoint,
   canonicalUri,
   sha256Hex,
   signHeaders,
-  type BucketAddressing
+  type BucketAddressing,
+  type BucketLocation,
+  type CredentialsProvider
 } from '@agentconnect.md/object-store'
 
 export interface IconStoreConfig {
   endpoint: string // full S3 API origin, e.g. https://objects.example.test
-  accessKeyId: string
-  secretAccessKey: string
+  credentials: CredentialsProvider
   bucket: string
   region: string // provider-specific region identifier
   publicBaseUrl: string // the origin objects are served from (custom domain / CDN)
+  forcePathStyle?: boolean // default true: a local store has no per-bucket DNS
 }
+
+/** The `S3_*` env group (docs/designs/icon-uploads.md). */
+export interface IconStoreEnv {
+  S3_ENDPOINT?: string | undefined
+  S3_ACCESS_KEY_ID?: string | undefined
+  S3_SECRET_ACCESS_KEY?: string | undefined
+  S3_BUCKET?: string | undefined
+  S3_PUBLIC_BASE_URL?: string | undefined
+  S3_REGION: string
+}
+
+/** The file transfer bucket and its credentials, which icons share when only `S3_PUBLIC_BASE_URL` is set. */
+export interface SharedIconBucket {
+  location: Pick<BucketLocation, 'endpoint' | 'region' | 'bucket' | 'forcePathStyle'>
+  credentials: CredentialsProvider
+}
+
+/** The full `S3_*` group, else the shared transfer bucket under `S3_PUBLIC_BASE_URL`; undefined leaves upload off. */
+export function resolveIconStoreConfig(env: IconStoreEnv, shared?: SharedIconBucket): IconStoreConfig | undefined {
+  const publicBaseUrl = env.S3_PUBLIC_BASE_URL
+  if (!publicBaseUrl) return undefined
+  if (env.S3_ENDPOINT) {
+    const { S3_ACCESS_KEY_ID: accessKeyId, S3_SECRET_ACCESS_KEY: secretAccessKey, S3_BUCKET: bucket } = env
+    if (!accessKeyId || !secretAccessKey || !bucket) return undefined
+    const keys = { accessKeyId, secretAccessKey }
+    const credentials: CredentialsProvider = { source: 'static', get: () => Promise.resolve(keys) }
+    return { endpoint: env.S3_ENDPOINT, credentials, bucket, region: env.S3_REGION, publicBaseUrl }
+  }
+  if (!shared) return undefined
+  const { location } = shared
+  return {
+    endpoint: bucketEndpoint(location),
+    credentials: shared.credentials,
+    bucket: location.bucket,
+    region: location.region,
+    publicBaseUrl,
+    forcePathStyle: location.forcePathStyle
+  }
+}
+
+// Credentials good for one signed request.
+const REQUEST_VALIDITY_MS = 60_000
 
 export interface IconStore {
   /** Overwrite the object at `key` with `bytes` (path-style PUT). Throws on non-2xx. */
@@ -74,8 +119,7 @@ class S3IconStore implements IconStore {
     private readonly cfg: IconStoreConfig,
     deps: IconStoreDeps
   ) {
-    // Always path style, as before: a local store has no per-bucket DNS.
-    this.address = addressFor(cfg.endpoint, cfg.bucket, true)
+    this.address = addressFor(cfg.endpoint, cfg.bucket, cfg.forcePathStyle ?? true)
     this.basePath = `${new URL(cfg.endpoint).pathname.replace(/\/+$/, '')}${this.address.basePath}`
     this.publicBase = cfg.publicBaseUrl.replace(/\/+$/, '')
     this.fetch = deps.fetch ?? fetch
@@ -90,16 +134,22 @@ class S3IconStore implements IconStore {
   ): Promise<Response> {
     const path = `${this.basePath}${key}`
     const payloadHash = sha256Hex(Buffer.from(body ?? new Uint8Array()))
-    const headers = { ...extraHeaders, 'x-amz-date': amzDate(this.now()), 'x-amz-content-sha256': payloadHash }
+    const credentials = await this.cfg.credentials.get(REQUEST_VALIDITY_MS)
+    const headers: Record<string, string> = {
+      ...extraHeaders,
+      'x-amz-date': amzDate(this.now()),
+      'x-amz-content-sha256': payloadHash
+    }
+    if (credentials.sessionToken) headers['x-amz-security-token'] = credentials.sessionToken
     const { authorization } = signHeaders({
       method,
       protocol: this.address.protocol,
       host: this.address.host,
       path,
       headers,
-      credentials: { accessKeyId: this.cfg.accessKeyId, secretAccessKey: this.cfg.secretAccessKey },
+      credentials,
       region: this.cfg.region,
-      datetime: headers['x-amz-date'],
+      datetime: headers['x-amz-date']!,
       payloadHash
     })
     return await this.fetch(`${this.address.protocol}//${this.address.host}${canonicalUri(path)}`, {

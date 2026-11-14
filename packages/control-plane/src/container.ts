@@ -304,7 +304,7 @@ import { DeferredLifecycleOpSweeper } from './registry/deferredLifecycleOpSweepe
 
 import { InMemorySessionEventSink } from './events/sink.js'
 import { SessionUsageWriter } from './usage/writer.js'
-import { createIconStore } from './icons/icon-store.js'
+import { createIconStore, resolveIconStoreConfig } from './icons/icon-store.js'
 import { createCredentialsProvider, createObjectClient } from '@agentconnect.md/object-store'
 import { loadFileTransferConfig } from './file-transfer/config.js'
 import { loadComputerScreenshotsConfig } from './computer-screenshots/config.js'
@@ -849,28 +849,19 @@ export function buildContainer(
   )
   const relayStaleMs = config.RELAY_STALE_SEC * 1000
 
-  // Uploaded-icon object store (docs/designs/icon-uploads.md): a neutral S3-compatible
-  // target. Assembled ONLY when the FULL S3_* group is
-  // present; any missing ⇒ undefined, so the upload routes aren't mounted and the console
-  // hides Upload (icons stay glyph-only). This is deliberately forgiving, not fail-fast:
-  // secret keys (access key id / secret) may roll out independently from non-secret
-  // config, so a partial group leaves the feature off rather
-  // than crash-looping the CP.
-  const iconStore =
-    config.S3_ENDPOINT &&
-    config.S3_ACCESS_KEY_ID &&
-    config.S3_SECRET_ACCESS_KEY &&
-    config.S3_BUCKET &&
-    config.S3_PUBLIC_BASE_URL
-      ? createIconStore({
-          endpoint: config.S3_ENDPOINT,
-          accessKeyId: config.S3_ACCESS_KEY_ID,
-          secretAccessKey: config.S3_SECRET_ACCESS_KEY,
-          bucket: config.S3_BUCKET,
-          region: config.S3_REGION,
-          publicBaseUrl: config.S3_PUBLIC_BASE_URL
-        })
+  // Console file transfer bucket (source-cache-file-transfer.md), parsed here because uploaded icons may share it.
+  const fileTransferConfig = loadFileTransferConfig({ AC_FILE_TRANSFER: config.AC_FILE_TRANSFER })
+  const fileTransferCredentials =
+    fileTransferConfig &&
+    createCredentialsProvider(fileTransferConfig.credentials, { region: fileTransferConfig.region, env: process.env })
+  // Uploaded-icon store (docs/designs/icon-uploads.md); a partial S3_* group leaves upload off rather than failing boot.
+  const iconStoreConfig = resolveIconStoreConfig(
+    config,
+    fileTransferConfig && fileTransferCredentials
+      ? { location: fileTransferConfig, credentials: fileTransferCredentials }
       : undefined
+  )
+  const iconStore = iconStoreConfig ? createIconStore(iconStoreConfig) : undefined
   // Bases the reconcile roster + DTOs resolve avatar URLs against: `cp` for the
   // glyph/runtime PNG endpoint, `store` for uploaded `image` icons.
   const iconBases: IconUrlBases = {
@@ -1098,35 +1089,32 @@ export function buildContainer(
   const sender = new ControlSender(connReg, repos.launch)
 
   // Console file transfer (source-cache-file-transfer.md): this process signs every URL for the deployment's bucket.
-  const fileTransferConfig = loadFileTransferConfig({ AC_FILE_TRANSFER: config.AC_FILE_TRANSFER })
-  const fileTransferBucket = fileTransferConfig
-    ? (() => {
-        const credentials = createCredentialsProvider(fileTransferConfig.credentials, {
-          region: fileTransferConfig.region,
-          env: process.env
-        })
-        const objects = createObjectClient({ config: fileTransferConfig, credentials, isKey: isTransferObjectKey })
-        // Lazy over `http.log` (assigned below; only ever called once the gate starts).
-        const gate = createLifecycleGate({
-          objects,
-          prefix: fileTransferConfig.prefix,
-          minimumPendingDays: transferPendingMinimumDays(fileTransferConfig.limits.urlSeconds),
-          log: { info: (m) => http.log.info(m), warn: (m) => http.log.warn(m) }
-        })
-        const transfer = createFileTransfer({
-          config: fileTransferConfig,
-          credentials,
-          objects,
-          enabled: () => gate.enabled(),
-          multipart: () => gate.multipart()
-        })
-        return {
-          gate,
-          transfer,
-          service: createFileTransferService({ transfer, control: sender, tickets: repos.uploadTicket })
-        }
-      })()
-    : undefined
+  const fileTransferBucket =
+    fileTransferConfig && fileTransferCredentials
+      ? (() => {
+          const credentials = fileTransferCredentials
+          const objects = createObjectClient({ config: fileTransferConfig, credentials, isKey: isTransferObjectKey })
+          // Lazy over `http.log` (assigned below; only ever called once the gate starts).
+          const gate = createLifecycleGate({
+            objects,
+            prefix: fileTransferConfig.prefix,
+            minimumPendingDays: transferPendingMinimumDays(fileTransferConfig.limits.urlSeconds),
+            log: { info: (m) => http.log.info(m), warn: (m) => http.log.warn(m) }
+          })
+          const transfer = createFileTransfer({
+            config: fileTransferConfig,
+            credentials,
+            objects,
+            enabled: () => gate.enabled(),
+            multipart: () => gate.multipart()
+          })
+          return {
+            gate,
+            transfer,
+            service: createFileTransferService({ transfer, control: sender, tickets: repos.uploadTicket })
+          }
+        })()
+      : undefined
   const fileTransfer = fileTransferBucket?.service
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
   const sharedImages = createSharedImageService({

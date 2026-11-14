@@ -32,13 +32,8 @@ services:
       CORS_ORIGIN: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_HTTPS_PORT}'
       # Console file transfer through the bundled object store (docs/designs/source-cache-file-transfer.md §7): URLs are signed for the public origin, while the Control Plane reaches the store at Caddy's in-network name.
       AC_FILE_TRANSFER: '{"version":1,"endpoint":"https://object-store.internal:9443","publicEndpoint":"https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}","region":"us-east-1","bucket":"agentconnect","forcePathStyle":true,"credentials":{"source":"static","dir":"/run/secrets","accessKeyIdKey":"object_store_access_key_id","secretAccessKeyKey":"object_store_secret_access_key"}}'
-      # Uploaded icons in the same bucket's public-read icon/ prefix (docs/designs/icon-uploads.md).
-      S3_ENDPOINT: http://object-store:9000
-      S3_BUCKET: agentconnect
+      # Uploaded icons share that bucket and its keys; only their public-read icon/ prefix is named here (docs/designs/icon-uploads.md).
       S3_PUBLIC_BASE_URL: 'https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_OBJECT_STORE_HTTPS_PORT:?set AGENTCONNECT_OBJECT_STORE_HTTPS_PORT before enabling HTTPS}/agentconnect'
-      S3_REGION: us-east-1
-      S3_ACCESS_KEY_ID: '${AGENTCONNECT_OBJECT_STORE_ACCESS_KEY:?set AGENTCONNECT_OBJECT_STORE_ACCESS_KEY before enabling HTTPS}'
-      S3_SECRET_ACCESS_KEY: '${AGENTCONNECT_OBJECT_STORE_SECRET_KEY:?set AGENTCONNECT_OBJECT_STORE_SECRET_KEY before enabling HTTPS}'
       # The Control Plane reads the bucket through Caddy, so it trusts Caddy's internal root.
       NODE_EXTRA_CA_CERTS: /caddy-root/root.crt
     depends_on:

@@ -898,10 +898,11 @@ end
 store_name = 'example-agentconnect-source-cache-store'
 store_docs_of = ->(docs) { docs.select { |doc| doc.dig('metadata', 'name').to_s.start_with?(store_name) } }
 abort('the bundled store must not render without a host') unless store_docs_of.call(documents).empty? && store_docs_of.call(defaults_documents).empty?
-store_rendered, store_error, store_status = Open3.capture3(
+store_base = [
   *command, '--set', 'sourceCache.store.host=objects.example.test', '--set', 'sourceCache.prefix=agentconnect',
   '--set', 'publicUrl=https://console.example.test'
-)
+]
+store_rendered, store_error, store_status = Open3.capture3(*store_base)
 abort("helm template (bundled store) failed:\n#{store_error}") unless store_status.success?
 store_documents = YAML.load_stream(store_rendered).compact
 store_kinds = store_docs_of.call(store_documents).map { |doc| [doc['kind'], doc.dig('metadata', 'name')] }.sort
@@ -930,10 +931,30 @@ abort('members and the Control Plane must mount the store Secret') unless
 abort('store keys must reach members and the Control Plane as files, never env') if [store_member, store_cp].any? do |c|
   c.fetch('env').any? { |item| item.dig('valueFrom', 'secretKeyRef', 'name') == store_name }
 end
+store_icon_env = store_cp.fetch('env').select { |item| item['name'].start_with?('S3_') }
+abort("uploaded icons must share the bundled bucket by its public base alone: #{store_icon_env}") unless
+  store_icon_env == [{ 'name' => 'S3_PUBLIC_BASE_URL', 'value' => 'https://objects.example.test/agentconnect-source-cache' }]
 store_route = store_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.dig('metadata', 'name') == store_name }
 abort('the store route must serve its host from the store Service') unless
   store_route.dig('spec', 'hostnames') == ['objects.example.test'] &&
   store_route.dig('spec', 'rules', 0, 'backendRefs') == [{ 'name' => store_name, 'port' => 9000 }]
+abort('the store route must stop browsers sniffing public icons') unless
+  store_route.dig('spec', 'rules', 0, 'filters') == [{
+    'type' => 'ResponseHeaderModifier',
+    'responseHeaderModifier' => { 'set' => [{ 'name' => 'X-Content-Type-Options', 'value' => 'nosniff' }] }
+  }]
+icon_override_rendered, icon_override_error, icon_override_status = Open3.capture3(
+  *store_base, '--set', 'objectStore.endpoint=https://icons.example.test', '--set', 'objectStore.bucket=icons',
+  '--set', 'objectStore.publicBaseUrl=https://cdn.example.test'
+)
+abort("helm template (bundled store, explicit objectStore) failed:\n#{icon_override_error}") unless icon_override_status.success?
+_, icon_override_cp = control_plane_of.call(YAML.load_stream(icon_override_rendered).compact)
+icon_override_env = icon_override_cp.fetch('env').to_h { |item| [item['name'], item['value']] }
+abort('an explicit objectStore must take precedence over the bundled store for icons') unless
+  icon_override_env['S3_ENDPOINT'] == 'https://icons.example.test' && icon_override_env['S3_PUBLIC_BASE_URL'] == 'https://cdn.example.test'
+_, icon_collision_error, icon_collision_status = Open3.capture3(*store_base, '--set', 'controlPlane.extraEnv.S3_PUBLIC_BASE_URL=https://cdn.example.test')
+abort('extraEnv S3_PUBLIC_BASE_URL must not silently collide with the bundled icon default') if
+  icon_collision_status.success? || !icon_collision_error.include?('collides with the bundled store')
 store_job = store_documents.find { |doc| doc['kind'] == 'Job' && doc.dig('metadata', 'name') == "#{store_name}-setup" }
 store_cors = store_job.dig('spec', 'template', 'spec', 'containers', 0, 'env').find { |item| item['name'] == 'AC_STORE_CORS_ORIGIN' }
 abort('the store must admit the console origin') unless store_cors && store_cors['value'] == 'https://console.example.test'
