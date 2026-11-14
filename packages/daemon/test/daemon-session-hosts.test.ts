@@ -198,6 +198,52 @@ describe.each(['srt', 'microsandbox'])('sandbox.env (%s)', (backend) => {
 })
 
 it.skipIf(process.platform === 'win32')(
+  "carries glab's placeholder config in a VM launch, keyed by the instance's host and prefix",
+  async () => {
+    const root = withRuntimes(
+      scaffold({ runtime: 'codex-acp', workspace: { mode: 'from-scratch', path: 'workspace' } }),
+      { 'codex-acp': { command: 'node', args: ['unused'] } }
+    )
+    const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      useMicrosandbox(daemon)
+      const d = daemon as any
+      const agent = d.agents.get('bot-a')
+      agent.gitlabHost = 'https://gitlab.example.test/gitlab'
+      Object.assign(agent.workspace, {
+        mode: 'gitlab',
+        gitCredential: 'gitlab',
+        gitRepo: 'https://gitlab.example.test/gitlab/group/project.git',
+        gitlabProjectId: '7'
+      })
+      const key = KEY('glab-state')
+      const cwd = join(agent.dir, 'sessions', sessionKeyDirName(key), 'workspace')
+      mkdirSync(cwd, { recursive: true })
+      const { opts } = d.buildAcpHost(agent, d.cfg, {
+        hostKey: sessionHostKey(agent.id, key),
+        strategy: 'microsandbox',
+        cwd
+      }).host
+      const env = { ...opts.env, ...opts.codehost.env }
+      expect(env.GITLAB_TOKEN).toBe(env.AC_CODEHOST_CREDENTIAL)
+      expect(dirname(env.GLAB_CONFIG_DIR)).toBe(join(env.HOME, CLI_STATE_DIR))
+      expect(opts.clearDirs).toContain(env.GLAB_CONFIG_DIR)
+      const config = opts.files.find(
+        (file: { root: string; relPath: string[] }) =>
+          file.root === env.GLAB_CONFIG_DIR && file.relPath[0] === 'config.yml'
+      )
+      expect(config.content).toContain(
+        `    gitlab.example.test/gitlab:\n        token: "${env.AC_CODEHOST_CREDENTIAL}"\n`
+      )
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
+it.skipIf(process.platform === 'win32')(
   'keeps proxied CLI state inside the HOME writable by Codex VM tools',
   async () => {
     const root = withRuntimes(

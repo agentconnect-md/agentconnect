@@ -30,6 +30,7 @@ import {
   type GitCredRequest
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { resolveCommandPath } from '../src/runtimes/probe.js'
 import { agentHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { secretsShimDir } from '../src/cp/secrets-shim.js'
 import {
@@ -253,6 +254,9 @@ function sessionEnv(d: any, agentId: string): { own: Record<string, string>; chi
   return { own, child: { ...process.env, ...own, GIT_CONFIG_NOSYSTEM: '1' } }
 }
 
+/** Whether this machine has the CLI, which only the CLI-reading checks need. */
+const hasCommand = (command: string): boolean => resolveCommandPath(command, process.env) !== undefined
+
 /** Stand in for the daemon's real helper: whatever it answers is the real token. */
 function stubRealHelper(root: string): void {
   const helper = gitcredShimPath(root)
@@ -330,6 +334,31 @@ describe('a host session with the credential proxy on', () => {
     expect(helpers.toString()).toBe('\n')
   })
 
+  it('hands gh the placeholder through its own config in a child whose runtime drops GH_TOKEN', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITHUB_AGENT, githubSpec())
+    const { own, child } = sessionEnv(d, GITHUB_AGENT)
+    const placeholder = own.AC_CODEHOST_CREDENTIAL!
+    expect(own.GH_TOKEN).toBe(placeholder)
+    const dir = own.GH_CONFIG_DIR!
+    expect(readFileSync(join(dir, 'config.yml'), 'utf8')).toBe('version: "1"\n')
+    expect(readFileSync(join(dir, 'hosts.yml'), 'utf8')).toContain(`oauth_token: "${placeholder}"`)
+    if (!hasCommand('gh')) return
+    const scrubbed = Object.fromEntries(Object.entries(child).filter(([name]) => !/TOKEN/i.test(name)))
+    const token = execFileSync('gh', ['auth', 'token', '--hostname', 'github.com'], {
+      env: { ...scrubbed, GH_PROMPT_DISABLED: '1' }
+    })
+    expect(token.toString().trim()).toBe(placeholder)
+  })
+
+  it('leaves gh to a GH_TOKEN the agent was configured with', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITHUB_AGENT, { ...githubSpec(), env: { GH_TOKEN: 'agent-own' } } as unknown as AgentSpec)
+    const { own } = sessionEnv(d, GITHUB_AGENT)
+    expect(own.GH_TOKEN).toBe('agent-own')
+    expect(own.GH_CONFIG_DIR).toBeUndefined()
+  })
+
   // POSIX only: the stand-in helper is a shell script.
   it.skipIf(process.platform === 'win32')(
     "hands git the placeholder in the agent's checkout, whose own pin names no helper",
@@ -368,6 +397,18 @@ describe('a host session with the credential proxy on', () => {
       expect(JSON.stringify(own)).not.toMatch(/ghs_|glpat/)
       // No glab wrapper to fetch a token: glab presents the placeholder itself, at the spec's instance.
       expect(own.GITLAB_HOST).toBe(instance)
+      // A runtime that drops GITLAB_TOKEN still leaves glab the placeholder, keyed by host and prefix.
+      const config = readFileSync(join(own.GLAB_CONFIG_DIR!, 'config.yml'), 'utf8')
+      expect(config).toContain(`    gitlab.example.test:8443/gitlab:\n        token: "${placeholder}"\n`)
+      expect(config).not.toContain('api_host')
+      expect(config).toMatch(/^check_update: false\n/)
+      if (hasCommand('glab')) {
+        const scrubbed = Object.fromEntries(Object.entries(child).filter(([name]) => !/TOKEN/i.test(name)))
+        const token = execFileSync('glab', ['config', 'get', 'token', '--host', 'gitlab.example.test:8443/gitlab'], {
+          env: scrubbed
+        })
+        expect(token.toString().trim()).toBe(placeholder)
+      }
       expect(own.PATH!.split(':')).not.toContain(TOKEN_WRAPPER_DIR(root))
       expect(own.PATH!.split(':')).toContain(secretsShimDir(root))
     }

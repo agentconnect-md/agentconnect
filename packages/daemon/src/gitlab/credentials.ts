@@ -42,6 +42,20 @@ export const gitlabCredentials: CodeHostCredentialModule = {
       spec.gitlabHost
     )
   },
+  // glab reads the placeholder from its config when a runtime drops GITLAB_TOKEN; a host keys by host and prefix, and no update check calls gitlab.com.
+  cli: {
+    command: 'glab',
+    ownTokenEnv: ['GITLAB_TOKEN'],
+    env: ({ stateDir }) => ({ GLAB_CONFIG_DIR: stateDir }),
+    stateFiles: ({ placeholder, hosts }) => {
+      const token = JSON.stringify(placeholder)
+      const entries = [...new Set(hosts.map((host) => host.baseUrl))].map((baseUrl) => {
+        const url = new URL(baseUrl)
+        return `    ${url.host}${url.pathname.replace(/\/$/, '')}:\n        token: ${token}\n        api_protocol: ${url.protocol.slice(0, -1)}\n        git_protocol: https\n`
+      })
+      return { 'config.yml': `check_update: false\nhosts:\n${entries.join('')}` }
+    }
+  },
   // A gitlab row is repo-bearing by construction (§24.4), so its scope pins the instance's credential path.
   secondaryCredentialScope: (spec: CodeHostSpecHosts): ManagedCredentialScope => ({
     host: gitlabManagedHost(spec.gitlabHost),

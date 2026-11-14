@@ -39,6 +39,21 @@ export const githubCredentials: CodeHostCredentialModule = {
   secondaryCloneUrl: (repoFullName) =>
     authorizeWorkspaceGitUrl(normalizeGithubRepoUrl(`https://github.com/${repoFullName}`)),
   secondaryCredentialScope: () => GITHUB_SCOPE,
+  // gh reads the placeholder from its config when a runtime drops GH_TOKEN; `version: "1"` skips a migration that asks the API who the user is.
+  cli: {
+    command: 'gh',
+    ownTokenEnv: ['GH_TOKEN'],
+    env: ({ stateDir }) => ({ GH_CONFIG_DIR: stateDir }),
+    stateFiles: ({ placeholder, hosts }) => {
+      const token = JSON.stringify(placeholder)
+      const entries = [...new Set(hosts.map((host) => new URL(host.baseUrl).host))].map(
+        (host) =>
+          `${host}:\n    git_protocol: https\n    users:\n        x-access-token:\n            oauth_token: ${token}\n` +
+          `    oauth_token: ${token}\n    user: x-access-token\n`
+      )
+      return { 'config.yml': 'version: "1"\n', 'hosts.yml': entries.join('') }
+    }
+  },
   // Read per call, so the switch is the process environment alone.
   get proxyOnly(): boolean {
     const raw = process.env[GITHUB_GIT_PROXY_ENV]?.trim().toLowerCase()
