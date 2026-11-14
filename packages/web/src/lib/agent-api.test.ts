@@ -137,7 +137,7 @@ it('gates AHP availability on server runtime capability and distinguishes pilot 
   expect(ahpDeploymentAccess()).toBe('public')
   const example = ahpQuickstart('wss://relay.test/ahp/agents/agent')
   expect(compile(example.file, example.code).diagnostics).toEqual([])
-  expect(example.code).toContain('@microsoft/agent-host-protocol@1.0.0')
+  expect(example.code).toContain('@microsoft/agent-host-protocol@1.1.0')
   expect(example.code).toContain('Authorization:')
   expect(example.code).not.toContain('?token=')
   vi.unstubAllGlobals()

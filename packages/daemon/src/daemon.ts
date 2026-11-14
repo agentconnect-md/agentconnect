@@ -524,7 +524,11 @@ import { personCouldActivate } from './assistant/place-askers.js'
 import { sharedWithOutsiders } from './assistant/standing-summary.js'
 import {
   BOARD_HERE_LINES,
+  SIBLING_LINES,
+  readOpenWork,
+  renderSiblingWork,
   renderWorkBoard,
+  siblingWork,
   workBoardView,
   type BoardPlace,
   type BoardView,
@@ -1797,6 +1801,11 @@ export class Daemon {
   private gitCreds!: GitCredentialCache
   /** §14.2 structured mutation brokers by provider — allowlisted effects run under a daemon-held lease; a host without one fails closed. */
   private readonly codeHostBrokers = new Map<CodeHostProvider, CodeHostEffectBroker>()
+  /** A host whose push credential cannot authenticate its API leases a proxied API write from its broker's effect credential, at the same tier. */
+  private readonly apiWriteLeases = new Map<
+    CodeHostProvider,
+    (agentId: string, repoId: string) => Promise<MintedCredential>
+  >()
   /** §16 run projection — the only writer of the service-account status note for a merge-request head. */
   private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
@@ -4335,6 +4344,15 @@ export class Daemon {
       },
       invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
     })
+    this.apiWriteLeases.set('gitlab', async (agentId, projectId) => {
+      const entry = await this.gitCreds.getGitlabEffectToken(agentId, projectId)
+      return {
+        username: entry.username,
+        token: entry.token,
+        access: entry.access,
+        invalidate: () => this.gitCreds.invalidateGitlabEffect(agentId, projectId, entry.token)
+      }
+    })
     this.codeHostBrokers.set('gitlab', {
       execute: (target, op) =>
         gitlabBroker.execute(
@@ -5981,6 +5999,7 @@ export class Daemon {
           input.place,
           this.askersOfKey(input.sessionKey, input.place.integrationId)
         ),
+      siblingWorkFor: (input) => this.siblingWorkOf(input.agentId, input.sessionKey, input.place),
       senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
       startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
       notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
@@ -7252,6 +7271,8 @@ export class Daemon {
     if (!provider || provider === IMPLICIT_CREDENTIAL_PROVIDER || !repository) {
       throw new Error(`${ask.repo ?? `repository ${ask.repoId ?? '(none)'}`} is not authorized for this agent`)
     }
+    const apiWrite = ask.write && !ask.skill ? this.apiWriteLeases.get(provider) : undefined
+    if (apiWrite) return await apiWrite(agentId, repository.repoId)
     const lease: ProxyLeaseAsk = {
       provider,
       externalRepoId: repository.repoId,
@@ -9629,16 +9650,19 @@ export class Daemon {
             ...env
           })
         : undefined
+    // What the session's own env sets, read before the proxy's placeholders join it.
+    const ownEnv = new Set([...Object.keys(env), ...Object.keys(runtimeEnv)])
+    const ownsEnv = (name: string): boolean => ownEnv.has(name)
     if (proxied && this.credentialProxy) {
       // Each provider CLI's variables beside git's placeholder, here alone, since they name this machine's paths (azure-devops-integration.md §6.4).
       const cli = localProxyRoute
         ? codeHostCliEnv({
-            providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
+            hosts: this.credentialProxyHosts(agent.id),
             placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
             home: privateRuntimeHomeFor(agent.dir, opts.hostKey),
             hostKey: opts.hostKey,
             config: cfg,
-            own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
+            own: ownsEnv
           })
         : {}
       Object.assign(
@@ -9702,6 +9726,7 @@ export class Daemon {
     const providerSpawn: Partial<ProviderSpawn> = {}
     let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
     let cliStateDirs: string[] = []
+    let cliStateFiles: SpawnFile[] = []
     // Writable roots come from the trusted agent dir, never agent.json's workspace.path, and an un-sandboxable layout (SandboxError) refuses rather than runs unconfined.
     let launch: ReturnType<typeof prepareRuntimeLaunch>
     let launchRuntime = runtime
@@ -9838,14 +9863,15 @@ export class Daemon {
       launchRuntime = assembled.runtime
       if (this.credentialProxy && !localProxyRoute && (proxied || guestCodehost)) {
         const cli = codeHostCliLaunch({
-          providers: this.credentialProxyHosts(agent.id).map((host) => host.provider),
+          hosts: this.credentialProxyHosts(agent.id),
           placeholder: this.credentialProxy.proxy.placeholderFor(agent.id),
           root: launch.runtimeHome ?? remoteRoots?.runtimeRoot ?? DEFAULT_SHIM_RUNTIME_ROOT,
           hostKey: opts.hostKey,
-          own: (name) => env[name] !== undefined || runtimeEnv[name] !== undefined
+          own: ownsEnv
         })
         Object.assign(codehostSpawn?.env ?? launch.env, cli.env)
         cliStateDirs = cli.clearDirs
+        cliStateFiles = cli.files
       }
       if (codehostSpawn && this.credentialProxy) {
         const noProxy = this.credentialProxy.proxy.sessionNoProxy(agent.id, launch.env.NO_PROXY ?? launch.env.no_proxy)
@@ -9918,7 +9944,8 @@ export class Daemon {
               }
             ]
           : []),
-        ...(launchConfigFiles?.files ?? [])
+        ...(launchConfigFiles?.files ?? []),
+        ...cliStateFiles
       ],
       clearDirs: [...(launchConfigFiles ? [launchConfigFiles.dir] : []), ...cliStateDirs],
       ...(codehostSpawn ? { codehost: codehostSpawn } : {}),
@@ -13716,6 +13743,26 @@ export class Daemon {
       if (name) names.set(task.id, name)
     }
     return renderWorkBoard(view, names)
+  }
+
+  /** The other work of a threaded task's conversation as its turn is told it (assistant-mode.md §5.18 ⑥); undefined for a session that is no coordinator's task. */
+  private async siblingWorkOf(
+    agentId: string,
+    sessionKey: string,
+    place: BoardPlace
+  ): Promise<RenderedBoard | undefined> {
+    const row = await this.store.assistantSubsessions.get(agentId, sessionKey)
+    if (!row || row.mode === 'watch' || !isCoordinatorSessionKey(row.parentSessionKey)) return undefined
+    // A task is its coordinator's by the row alone, so the place only tells the stores' other kinds of work apart.
+    const owner = { sessionId: row.parentSessionId, key: row.parentSessionKey }
+    const here = (await readOpenWork(this.store, agentId, owner, place)).filter((task) => task.here)
+    const siblings = siblingWork(here, sessionKey, this.clock.now())
+    const names = new Map<string, string>()
+    for (const task of siblings.slice(0, SIBLING_LINES)) {
+      const name = task.row ? await this.taskOwnerName(task.row).catch(() => undefined) : undefined
+      if (name) names.set(task.id, name)
+    }
+    return renderSiblingWork(siblings, names)
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */

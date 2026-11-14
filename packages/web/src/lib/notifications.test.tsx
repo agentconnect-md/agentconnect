@@ -115,7 +115,47 @@ describe('syncNotificationSourceSnapshot', () => {
     ])
   })
 
-  it('marks an absent source resolved and creates a new item only after recurrence', () => {
+  it('reopens a row that recurs within an hour of resolving, without another item or toast', () => {
+    const first = syncNotificationSourceSnapshot(
+      emptyNotificationState(),
+      'sessions-access',
+      [quotaItem],
+      '2026-08-06T01:00:00.000Z',
+      () => 'notification-1'
+    )
+    const resolved = syncNotificationSourceSnapshot(first.state, 'sessions-access', [], '2026-08-06T01:10:00.000Z')
+    const read: NotificationStoreState = {
+      ...resolved.state,
+      notifications: resolved.state.notifications.map((item) => ({ ...item, read: true }))
+    }
+    const recurrence = syncNotificationSourceSnapshot(
+      read,
+      'sessions-access',
+      [quotaItem],
+      '2026-08-06T02:10:00.000Z',
+      () => 'must-not-be-used'
+    )
+    expect(recurrence.added).toEqual([])
+    expect(recurrence.state.notifications).toEqual([
+      expect.objectContaining({
+        id: 'notification-1',
+        timestamp: '2026-08-06T02:10:00.000Z',
+        read: false,
+        action: quotaItem.action
+      })
+    ])
+    expect(recurrence.state.notifications[0]?.resolvedAt).toBeUndefined()
+  })
+
+  it('marks a self-clearing item read on resolution while keeping its text', () => {
+    const transient = { ...quotaItem, sourceKey: 'sessions:generic:unavailable', resolution: { read: true } }
+    const first = syncNotificationSourceSnapshot(emptyNotificationState(), 'sessions-access', [transient])
+    const resolved = syncNotificationSourceSnapshot(first.state, 'sessions-access', [])
+    expect(resolved.state.notifications[0]).toMatchObject({ read: true, title: quotaItem.title })
+    expect(resolved.state.notifications[0]?.resolvedAt).toBeTruthy()
+  })
+
+  it('marks an absent source resolved and creates a new item for a recurrence past the reopen window', () => {
     const first = syncNotificationSourceSnapshot(
       emptyNotificationState(),
       'sessions-access',
@@ -141,7 +181,7 @@ describe('syncNotificationSourceSnapshot', () => {
       resolved.state,
       'sessions-access',
       [quotaItem],
-      '2026-08-06T03:00:00.000Z',
+      '2026-08-06T03:00:00.001Z',
       () => 'notification-2'
     )
     expect(recurrence.added.map((item) => item.id)).toEqual(['notification-2'])
@@ -214,7 +254,7 @@ describe('syncNotificationSourceSnapshot', () => {
       resolved,
       'sessions-access',
       [quotaItem],
-      '2026-08-06T04:00:00.000Z',
+      '2026-08-06T04:00:00.001Z',
       () => 'notification-2'
     )
     expect(recurrence.added.map((item) => item.id)).toEqual(['notification-2'])

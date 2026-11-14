@@ -2520,7 +2520,9 @@ export function buildContainer(
     bots: repos.bot,
     botSecrets: repos.botSecret,
     clock,
-    ...(logtoIdentity ? { identity: logtoIdentity } : {})
+    ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+    // Lazy over `http.log` (assigned below; only ever called at resolve time).
+    log: { warn: (o: object, m: string) => http.log.warn(o, m) }
   }
   // The deployment's Chat app (google-chat-integration.md §10.10): its key stays on the CP and relay, so its rows' member checks use it from here.
   const googleChatSessionAccess = new GoogleChatSessionAccessService(

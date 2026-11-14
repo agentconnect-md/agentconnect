@@ -28,18 +28,6 @@ function srtBridge(shimEnv: Record<string, string | undefined>): { url: string; 
   }
 }
 
-/** Append command-scope Git config to whatever `GIT_CONFIG_*` pairs the env already carries. */
-export function appendGitConfig(env: Record<string, string>, pairs: ReadonlyArray<readonly [string, string]>): void {
-  const count = Number(env.GIT_CONFIG_COUNT)
-  let next = Number.isSafeInteger(count) && count > 0 ? count : 0
-  for (const [key, value] of pairs) {
-    env[`GIT_CONFIG_KEY_${next}`] = key
-    env[`GIT_CONFIG_VALUE_${next}`] = value
-    next += 1
-  }
-  env.GIT_CONFIG_COUNT = String(next)
-}
-
 /** A runtime's env inside SRT: the bridge's variables over the launch's, and Basic proxy auth so Git never asks its credential helper for the proxy. */
 export function applySrtProxyEnv(env: Record<string, string>, shimEnv: Record<string, string | undefined>): void {
   const bridge = srtBridge(shimEnv)
@@ -48,7 +36,8 @@ export function applySrtProxyEnv(env: Record<string, string>, shimEnv: Record<st
     const value = shimEnv[name]
     if (value) env[name] = value
   }
-  if (bridge.authenticated) appendGitConfig(env, [['http.proxyAuthMethod', 'basic']])
+  // Git's own variable: a runtime that drops every name containing KEY would break an indexed GIT_CONFIG_KEY_n.
+  if (bridge.authenticated) env.GIT_HTTP_PROXY_AUTHMETHOD = 'basic'
 }
 
 /** A holder's Git env inside SRT: its empty proxy pins name the bridge instead, and every other setting it sent stays as sent. */

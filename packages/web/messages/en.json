@@ -1412,6 +1412,7 @@
     "callback": {
       "genericError": "sign-in failed",
       "failed": "Sign-in failed: {error}",
+      "cancelled": "Sign-in was cancelled or could not finish.",
       "backToLogin": "Back to sign in",
       "signingIn": "Signing you in…"
     },

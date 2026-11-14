@@ -418,11 +418,18 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     signal: AbortSignal
   ): Promise<Verdict> {
     if (!botConversationScope(scope)) return { decision: 'deny' }
-    const bot = await this.recordingBotFor(scope)
-    if (!bot) return unresolved('bot_unresolved')
+    let bot: BotRecord | null
+    try {
+      // A gone recording bot hands over to the realm's checker: it reads a public channel, and Slack denies a private one it is not in.
+      bot = (await this.recordingBotFor(scope)) ?? (await this.designatedChecker(scope.orgId, scope.realmKey))
+    } catch {
+      return unresolved('bot_unresolved')
+    }
+    // No live credential left in the realm can ever ask again: a settled deny, not an outage to report.
+    if (!bot) return { decision: 'deny' }
     let unknownReason: DegradedReason | undefined
     for (const principal of principals) {
-      const key = [scope.id, scope.aclRevision.toString(), bot.credentialRevision, principal.key].join(':')
+      const key = [scope.id, scope.aclRevision.toString(), bot.id, bot.credentialRevision, principal.key].join(':')
       let verdict = this.cache.get(key)
       if (!verdict) {
         verdict = await this.checkAccess(scope, principal, bot.id, bot.credentialRevision, signal)

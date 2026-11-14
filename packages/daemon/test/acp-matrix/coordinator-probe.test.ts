@@ -82,6 +82,15 @@ describe('runtime matrix coordinator probe', () => {
     expect(judgeCoordinator(scenario('status-reply'), vague, '')).toMatchObject({ verdict: 'DEGRADED' })
   })
 
+  // A request that waits on its sender's answer belongs to a task, which holds the question open (auto-session-mode.md §4.2).
+  it('fails a reply that asks and waits, and passes a task opened for it', () => {
+    const [ask] = scopeOf('ask-then-wait').messages
+    const opened = recorded('ask-then-wait', [{ action: 'delegateTask', messageId: ask, title: 'Status line wording' }])
+    expect(judgeCoordinator(scenario('ask-then-wait'), opened, '').verdict).toBe('PASS')
+    expect(judgeCoordinator(scenario('ask-then-wait'), [], 'Which wording do you want?').verdict).toBe('FAIL')
+    expect(coordinatorPrompt()).toContain('never use it to ask something you would then wait on')
+  })
+
   it('degrades a corrected refusal and serves the tools over HTTP MCP', async () => {
     const [id] = scopeOf('new-work').messages
     const calls = recorded('new-work', [

@@ -110,7 +110,8 @@ describe('sessionAccessNotifications', () => {
         severity: 'warning',
         sourceKey: 'sessions:generic:unavailable',
         title: 'Session access checks unavailable',
-        message: 'Affected sessions are hidden until access can be verified.'
+        message: 'Affected sessions are hidden until access can be verified.',
+        resolution: { read: true }
       }
     ])
   })
@@ -149,7 +150,8 @@ describe('sessionAccessNotifications', () => {
         severity: 'warning',
         sourceKey: 'sessions:generic:unavailable',
         title: 'Session access checks unavailable',
-        message: 'Affected sessions are hidden until access can be verified.'
+        message: 'Affected sessions are hidden until access can be verified.',
+        resolution: { read: true }
       }
     ])
   })

@@ -726,7 +726,7 @@ export default function UsageView() {
             </div>
           ))}
       </div>
-      {featureFlagEnabled('computer-use') && <ComputerUsageSection range={range} />}
+      <ComputerUsageSection range={range} />
     </div>
   )
 }

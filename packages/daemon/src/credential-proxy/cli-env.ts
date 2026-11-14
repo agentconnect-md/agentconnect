@@ -1,9 +1,11 @@
 // What a provider's own CLI reads in a proxied session on this machine (azure-devops-integration.md §6.4), from its credential module's `cli` member.
 import { createHash } from 'node:crypto'
-import { lstatSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import { codeHostCredentials, type CodeHostCli } from '../codehost/credentials.js'
 import type { Config } from '../config/config-schema.js'
+import type { SpawnFile } from '../acp/spawn-driver.js'
+import type { ManagedCredentialHost } from '../gitcred/managed-hosts.js'
 
 /** The parent of every CLI state directory under a private HOME. */
 export const CLI_STATE_DIR = '.agentconnect-cli'
@@ -64,33 +66,49 @@ export function reclaimCliStateDirs(home: string): void {
   }
 }
 
-/** A remote CLI's environment and state directories, prepared through the launch's existing materialize channel. */
+/** Each CLI the hosts' providers declare, with that provider's hosts, unless the session's own env carries the agent's own token for it. */
+function clisFor(
+  hosts: readonly ManagedCredentialHost[],
+  own: (name: string) => boolean
+): { provider: string; cli: CodeHostCli; hosts: ManagedCredentialHost[] }[] {
+  const byProvider = new Map<string, ManagedCredentialHost[]>()
+  for (const host of hosts) byProvider.set(host.provider, [...(byProvider.get(host.provider) ?? []), host])
+  return [...byProvider].flatMap(([provider, hosts]) => {
+    const cli = codeHostCredentials(provider)?.cli
+    if (!cli || cli.ownTokenEnv?.some(own)) return []
+    return [{ provider, cli, hosts }]
+  })
+}
+
+/** A remote CLI's environment, state directories and state files, prepared through the launch's existing materialize channel. */
 export function codeHostCliLaunch(opts: {
-  providers: Iterable<string>
+  hosts: readonly ManagedCredentialHost[]
   placeholder: string
   root: string
   hostKey: string
   own: (name: string) => boolean
-}): { env: Record<string, string>; clearDirs: string[] } {
+}): { env: Record<string, string>; clearDirs: string[]; files: SpawnFile[] } {
   const env: Record<string, string> = {}
   const clearDirs: string[] = []
-  for (const provider of new Set(opts.providers)) {
-    const cli = codeHostCredentials(provider)?.cli
-    if (!cli) continue
+  const files: SpawnFile[] = []
+  for (const { provider, cli, hosts } of clisFor(opts.hosts, opts.own)) {
     const stateDir = posix.join(opts.root, CLI_STATE_DIR, stateLeaf(provider, opts.hostKey))
     clearDirs.push(stateDir)
     const vars = cli.env({
       placeholder: opts.placeholder,
+      hosts,
       stateDir
     })
     for (const [name, value] of Object.entries(vars)) if (!opts.own(name)) env[name] = value
+    for (const [name, content] of Object.entries(cli.stateFiles?.({ placeholder: opts.placeholder, hosts }) ?? {}))
+      files.push({ root: stateDir, relPath: [name], content })
   }
-  return { env, clearDirs }
+  return { env, clearDirs, files }
 }
 
-/** The CLI variables of each of `providers` that has a CLI, a fresh state directory each; one the session's own env sets is left to it. */
+/** The CLI variables of each of the hosts' providers that has a CLI, a fresh state directory each; one the session's own env sets is left to it. */
 export function codeHostCliEnv(opts: {
-  providers: Iterable<string>
+  hosts: readonly ManagedCredentialHost[]
   placeholder: string
   /** The host's private HOME, which a confined session's directory holds. */
   home: string
@@ -100,14 +118,20 @@ export function codeHostCliEnv(opts: {
   own: (name: string) => boolean
 }): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const provider of new Set(opts.providers)) {
-    const cli = codeHostCredentials(provider)?.cli
-    if (!cli) continue
-    const extensionDir = cli.extensionDir(opts.config)
+  for (const { provider, cli, hosts } of clisFor(opts.hosts, opts.own)) {
+    const extensionDir = cli.extensionDir?.(opts.config)
+    const stateDir = freshCliStateDir(opts.home, provider, opts.hostKey)
+    for (const [name, content] of Object.entries(cli.stateFiles?.({ placeholder: opts.placeholder, hosts }) ?? {})) {
+      const file = join(stateDir, name)
+      writeFileSync(file, content, { mode: 0o600 })
+      // A CLI that refuses a readable config (glab) is not left to the umask.
+      chmodSync(file, 0o600)
+    }
     const vars = cli.env({
       placeholder: opts.placeholder,
-      stateDir: freshCliStateDir(opts.home, provider, opts.hostKey),
-      ...(isDirectory(extensionDir) ? { extensionDir } : {})
+      hosts,
+      stateDir,
+      ...(extensionDir !== undefined && isDirectory(extensionDir) ? { extensionDir } : {})
     })
     for (const [name, value] of Object.entries(vars)) if (!opts.own(name)) out[name] = value
   }
@@ -122,6 +146,6 @@ export function codeHostCliReads(
   const clis = clisOf(providers)
   return {
     commands: clis.map((cli) => cli.command),
-    paths: clis.map((cli) => cli.extensionDir(config)).filter(isDirectory)
+    paths: clis.flatMap((cli) => cli.extensionDir?.(config) ?? []).filter(isDirectory)
   }
 }

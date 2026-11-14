@@ -11,8 +11,18 @@ import type {
   SessionAccessViewer
 } from '../http/session-access-plugin.js'
 
-type Decision = { allowed: boolean; issue?: SessionAccessIssue }
+// `cause` names why a check could not answer, for the operator's degraded warn only.
+type Decision = { allowed: boolean; issue?: SessionAccessIssue; cause?: string }
 type Check = { token: string; bot: BotRecord; resource: string; member: string; signal: AbortSignal }
+
+const CHECK_BUDGET_MS = 5_000
+const CHECK_CONCURRENCY = 4
+
+function failureCause(error: unknown): string {
+  if (error instanceof BotAccessError) return error.reason
+  const name = error instanceof Error ? error.name : ''
+  return name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'error'
+}
 
 export class BotAccessError extends Error {
   constructor(readonly reason: SessionAccessIssue['reason']) {
@@ -26,6 +36,7 @@ export interface BotSessionAccessDeps {
   clock: Clock
   identity?: Pick<LogtoIdentityService, 'chatIdentitiesFor'>
   configured: boolean
+  log?: { warn: (obj: object, msg: string) => void }
 }
 
 // Bot credentials prove conversation access; verified global account ids identify the viewer.
@@ -50,7 +61,8 @@ export class BotSessionAccessService implements SessionAccessPlugin {
           options.ttl = 5_000
           return {
             allowed: false,
-            issue: { provider, reason: error instanceof BotAccessError ? error.reason : 'unavailable' }
+            issue: { provider, reason: error instanceof BotAccessError ? error.reason : 'unavailable' },
+            cause: failureCause(error)
           }
         }
       }
@@ -83,44 +95,63 @@ export class BotSessionAccessService implements SessionAccessPlugin {
       .map((identity) => identity.slice(prefix.length))
     const allowedScopes: SessionAccessResult['allowedScopes'] = []
     const issues = new Map<string, SessionAccessIssue>()
-    const signal = AbortSignal.timeout(5_000)
-    for (let start = 0; start < scopes.length; start += 4) {
-      if (signal.aborted) {
-        issues.set('unavailable', { provider: this.provider, reason: 'unavailable' })
-        break
+    // Per scope, the first reason its check could not answer; viewer-side `authorization` is not an operator fault.
+    const causes = new Map<string, string>()
+    const signal = AbortSignal.timeout(CHECK_BUDGET_MS)
+    const check = async (scope: ExternalScopeRecord) => {
+      if (
+        scope.orgId !== viewer.orgId ||
+        scope.provider !== this.provider ||
+        scope.resourceKind !== 'conversation' ||
+        scope.revokedAt !== null ||
+        scope.credentialKind !== 'bot' ||
+        !scope.credentialId
+      )
+        return
+      if (!this.available || members.length === 0) {
+        issues.set('authorization', { provider: this.provider, reason: 'authorization' })
+        return
       }
-      await Promise.all(
-        scopes.slice(start, start + 4).map(async (scope) => {
-          if (
-            scope.orgId !== viewer.orgId ||
-            scope.provider !== this.provider ||
-            scope.resourceKind !== 'conversation' ||
-            scope.revokedAt !== null ||
-            scope.credentialKind !== 'bot' ||
-            !scope.credentialId
-          )
-            return
-          if (!this.available || members.length === 0) {
-            issues.set('authorization', { provider: this.provider, reason: 'authorization' })
-            return
-          }
-          const bot = await this.deps.bots.getUnscoped(BotId(scope.credentialId))
-          if (!bot || bot.orgId !== viewer.orgId || bot.platform !== this.provider || bot.revokedAt !== null) return
-          const secret = await this.deps.botSecrets.get(viewer.orgId, bot.id)
-          if (!secret || this.realm(secret.botToken, bot) !== scope.realmKey) return
-          for (const member of members) {
-            const key = [scope.id, scope.aclRevision, bot.credentialRevision, member].join(':')
-            const result = await this.decisions.fetch(key, {
-              context: { token: secret.botToken, bot, resource: scope.resourceKey, member, signal }
-            })
-            if (result?.allowed) {
-              allowedScopes.push({ id: scope.id, aclRevision: scope.aclRevision })
-              return
-            }
-            const issue = result?.issue
-            if (issue) issues.set(issue.reason, issue)
-          }
+      const bot = await this.deps.bots.getUnscoped(BotId(scope.credentialId))
+      if (!bot || bot.orgId !== viewer.orgId || bot.platform !== this.provider || bot.revokedAt !== null) return
+      const secret = await this.deps.botSecrets.get(viewer.orgId, bot.id)
+      if (!secret || this.realm(secret.botToken, bot) !== scope.realmKey) return
+      for (const member of members) {
+        const key = [scope.id, scope.aclRevision, bot.credentialRevision, member].join(':')
+        const result = await this.decisions.fetch(key, {
+          context: { token: secret.botToken, bot, resource: scope.resourceKey, member, signal }
         })
+        if (result?.allowed) {
+          allowedScopes.push({ id: scope.id, aclRevision: scope.aclRevision })
+          return
+        }
+        const issue = result?.issue
+        if (issue) {
+          issues.set(issue.reason, issue)
+          if (!causes.has(scope.id)) causes.set(scope.id, result.cause ?? issue.reason)
+        }
+      }
+    }
+    // A worker pool, not lock-step batches: one slow conversation holds only its own worker, not every scope after it.
+    let next = 0
+    const worker = async () => {
+      while (next < scopes.length) {
+        const scope = scopes[next++]!
+        if (signal.aborted) {
+          issues.set('unavailable', { provider: this.provider, reason: 'unavailable' })
+          causes.set(scope.id, 'deadline')
+          continue
+        }
+        await check(scope)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, scopes.length) }, worker))
+    if (causes.size > 0) {
+      const counts: Record<string, number> = {}
+      for (const cause of causes.values()) counts[cause] = (counts[cause] ?? 0) + 1
+      this.deps.log?.warn(
+        { provider: this.provider, degradedScopes: causes.size, totalScopes: scopes.length, causes: counts },
+        `${this.provider} access check degraded — affected sessions are hidden until access can be verified`
       )
     }
     return { allowedScopes, degraded: issues.size > 0, accessIssues: [...issues.values()] }

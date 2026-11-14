@@ -1,6 +1,6 @@
 # Public AHP client example
 
-`ahp-client.mjs` uses the official `@microsoft/agent-host-protocol` **1.0.0** client,
+`ahp-client.mjs` uses the official `@microsoft/agent-host-protocol` **1.1.0** client,
 WebSocket transport and chat reducer. Node `ws` **8.22.0** supplies the HTTP
 authorization header that the browser-style WebSocket constructor cannot set.
 The example imports no AgentConnect application, registry or Webchat code.
@@ -29,7 +29,7 @@ To run outside this repository, copy `ahp-client.mjs` into an empty directory an
 install its exact dependencies there:
 
 ```sh
-npm install --save-exact @microsoft/agent-host-protocol@1.0.0 ws@8.22.0
+npm install --save-exact @microsoft/agent-host-protocol@1.1.0 ws@8.22.0
 node ahp-client.mjs --help
 ```
 

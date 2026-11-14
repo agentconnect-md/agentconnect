@@ -526,6 +526,74 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   })
 
+  // A scheduled run has no audience to hand down, so the thread its callAgent post opens binds where the post landed.
+  it('binds a scheduled run’s channel-root self wake to the channel it posted in', async () => {
+    const { factory, host } = replyingHost('here is my answer')
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+
+    // The scheduled run's own turn has no trusted destination, so it binds local.
+    await (daemon as any).dispatch('bot-a', agentMsg('100', 'scheduled context'))
+    const conn = makeRoutable(daemon)
+    const org = '00000000-0000-0000-0000-0000000000a1'
+    const self = {
+      agentId: 'bot-a',
+      daemonId: 'local-daemon',
+      orgId: org,
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: []
+    }
+    ;(daemon as any).cpCollab.replace({
+      generation: 0,
+      channels: [{ orgId: org, platform: 'slack', channelId: 'C2', agents: [self] }],
+      agents: [self]
+    })
+
+    // …then opens its post with callAgent to itself: sendMessage posted the root, and this is its paired wake.
+    const res = await (daemon as any).collab.messageAgent({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: 'T1',
+      callerTransportScope: TRANSPORT_SCOPE,
+      toAgentId: 'bot-a',
+      text: 'Is it working?',
+      channel: 'C2',
+      thread: '300.1',
+      transcriptTs: '300.1',
+      agentCallDeliveryId: 'paired-self-1'
+    })
+    expect(res).toMatchObject({ delivered: true })
+    const childKey = res.targetSession as string
+    await vi.waitFor(async () => {
+      expect(await (daemon as any).store.getSession(childKey)).toMatchObject({ sourceBindingKind: 'external' })
+    }, WAIT)
+    expect(await (daemon as any).store.getSession(childKey)).toMatchObject({
+      directDestination: 1,
+      externalProvider: 'slack',
+      externalRealmKey: 'T1',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C2'
+    })
+
+    const reply = { ...channelMsg('400', 'why did CPT jump?'), msgId: 'slack:C2:400', channel: 'C2', thread: '300.1' }
+    await (daemon as any).dispatch('bot-a', reply, 'int-a')
+
+    expect(conn.postMessage).not.toHaveBeenCalledWith(
+      'C2',
+      expect.stringContaining('already belongs to a session created from another source'),
+      '300.1'
+    )
+    expect(host.prompt).toHaveBeenCalledTimes(3)
+    await daemon.stop()
+  })
+
   // session-visibility.md §5.1: managed memory is agent-scoped and shared across
   // users, so a private conversation must never be distilled into it. A DM is
   // private from its first turn, with no CP round-trip.

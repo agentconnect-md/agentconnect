@@ -73,7 +73,7 @@ import {
   standingSummaryFor,
   taskSummaryReminder
 } from '../assistant/standing-summary.js'
-import { boardDigest, boardDue, type RenderedBoard } from '../assistant/work-board.js'
+import { boardDigest, boardDue, siblingWorkDue, type RenderedBoard } from '../assistant/work-board.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
 import type { DecisionRuntimeTarget, RuntimeCommand, TaskInitiator } from '@agentconnect.md/protocol'
@@ -315,6 +315,12 @@ export class SessionManager {
         sessionId?: string
         place: { platform: string; channel: string; transportScope: string | null; integrationId?: string }
       }) => Promise<RenderedBoard>
+      /** The other work of a threaded task's conversation (assistant-mode.md §5.18 ⑥); undefined for a session that is no coordinator's task. */
+      siblingWorkFor?: (input: {
+        agentId: string
+        sessionKey: string
+        place: { platform: string; channel: string; transportScope: string | null }
+      }) => Promise<RenderedBoard | undefined>
       /** The time zone in the turn's sender's platform profile, for every agent's local time (product-conventions.md "Local time"). */
       senderTimeZoneFor?: (msg: NormalizedMessage, integrationId?: string) => Promise<string | undefined>
       /** The zone of whoever the read rule says started a turn no person is behind: a run's, a report's, another agent's call's. */
@@ -1200,6 +1206,17 @@ export class SessionManager {
         if (boardDue(board, this.boardShown.get(key), { opening, reminded }))
           promptPrelude.push({ type: 'text', text: board.text })
         this.boardShown.set(key, boardDigest(board.text))
+      }
+    }
+    if (threadedTask && this.deps.siblingWorkFor) {
+      // What it cannot read this turn is left for a later one, as a coordinator's board is.
+      const siblings = await this.deps.siblingWorkFor({ agentId, sessionKey: key, place }).catch(() => undefined)
+      if (siblings) {
+        const shown = this.boardShown.get(key)
+        if (siblingWorkDue(siblings, shown, { opening, reminded })) {
+          promptPrelude.push({ type: 'text', text: siblings.text })
+          this.boardShown.set(key, boardDigest(siblings.text))
+        }
       }
     }
     // A task counts its turns and is reminded of a missing or stale summary (auto-session-mode.md §6.7); a failed read skips it.

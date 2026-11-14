@@ -162,7 +162,7 @@ export default function DaemonsView() {
         </>
       )}
       {/* The desktops agents operate (computer-use.md §10), beside the machines agents run on. */}
-      {featureFlagEnabled('computer-use') && <ComputersSection />}
+      <ComputersSection />
       <ProviderKeysSection />
     </div>
   )

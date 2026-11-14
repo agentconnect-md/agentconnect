@@ -7,12 +7,14 @@ import {
   codexGatewayAuthRequest,
   objectFromJson
 } from '../runtimes/codex-config.js'
+import { signalProcessTree } from '../acp/process-tree.js'
 import { applySessionTrust } from '../credential-proxy/trust-bundle.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_PATHBIN_DIR } from './sandbox-paths.js'
 import { SHIM_RUNTIME_MARK_ENV, type ShimEvent } from './protocol.js'
 import { seedEnv } from './seed-env.js'
+import { seedTeaLogin } from './tea-login.js'
 import { applySrtProxyEnv } from './srt-route.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
@@ -194,6 +196,7 @@ export class AcpRunner {
       const env = { ...payload.env }
       applySrtProxyEnv(env, this.deps.podEnv ?? {})
       this.fillHints(payload, env)
+      seedTeaLogin(env, this.deps.log)
       return this.spawnChild(this.deps.resolveCommand?.(payload.command, env) ?? payload.command, payload, env)
     }
     // The POD's own filesystem and locale basics, under whatever the daemon sent. The daemon
@@ -256,6 +259,7 @@ export class AcpRunner {
       })
       if (bundle) spawnPayload = { ...payload, args: [...payload.args, '--bundle', bundle] }
     }
+    seedTeaLogin(env, this.deps.log)
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     return this.spawnChild(command, spawnPayload, env, seedEnv(podEnv))
   }
@@ -321,17 +325,7 @@ export class AcpRunner {
     if (child.exitCode !== null || child.signalCode !== null) return
     // A child that never spawned has no pid, and child.kill() would signal pid 0 — this shim's own process group.
     if (child.pid === undefined) return
-    const kill = (signal: NodeJS.Signals): void => {
-      if (child.pid && process.platform !== 'win32') {
-        try {
-          process.kill(-child.pid, signal)
-          return
-        } catch {
-          /* group gone — fall back to the child */
-        }
-      }
-      child.kill(signal)
-    }
+    const kill = (signal: NodeJS.Signals): void => signalProcessTree(child, signal)
     try {
       child.stdin?.end()
     } catch {

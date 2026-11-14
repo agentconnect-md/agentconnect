@@ -646,9 +646,22 @@ placeholder through its pod's codehost proxy route.
   needs no command-scope override of its own.
 - No `gh` or `glab` wrapper stands in front of the real CLI: `GH_TOKEN` and
   `GITLAB_TOKEN` carry the placeholder, and `GITLAB_HOST` names the spec's
-  instance for every GitLab-credentialed session. `agentconnect-secrets` has
-  its own directory on the `PATH`; a shim (`srt`, a VM, a pod, an executor)
-  puts its own copy first.
+  instance for every GitLab-credentialed session.
+- Each CLI's configuration directory holds the placeholder too, because some
+  runtimes remove every variable named like a credential (`KEY`, `PASSWORD`,
+  `SECRET`, `TOKEN`) from the children they spawn. `GH_CONFIG_DIR` and
+  `GLAB_CONFIG_DIR` name a state directory of the host's own, emptied and
+  rewritten at each start the way `AZURE_CONFIG_DIR` is
+  ([azure-devops-integration.md §6.4](azure-devops-integration.md)). Its
+  `hosts.yml` (gh) or `config.yml` (glab) names each of the provider's proxied
+  hosts with the placeholder; glab keys a host by its host and path prefix, and
+  its update check is off. The variable still wins where it survives, and a
+  `GH_TOKEN` or `GITLAB_TOKEN` the agent was configured with leaves that CLI
+  without a directory. Gitea's `tea` has no such variable, so a shim writes its
+  login into the runtime's own HOME instead
+  ([gitea-integration.md §9](gitea-integration.md#9-git-access)).
+  `agentconnect-secrets` has its own directory on the `PATH`; a shim (`srt`, a
+  VM, a pod, an executor) puts its own copy first.
 - A session that does not reach the proxy holds no code-host credential: the
   proxy did not start, its executor's shim serves no `codehost` listener, its
   executor's `srt` boundary does not route all of the agent's code hosts, or
@@ -740,11 +753,17 @@ own socket only for that agent's.
   gets Basic with the grant's user name; the API gets the header and scheme
   the client used (`PRIVATE-TOKEN` or `Bearer` on GitLab, `token`, `Bearer` or
   Basic on Gitea).
-- The API is read-only on both hosts: a GitLab API read takes the read
-  credential of the `glab` plane, a write is refused
-  with an error naming the host's effect tools, and a read naming no
-  repository uses the workspace's credential. `glab` receives the placeholder
-  as `GITLAB_TOKEN`.
+- An API read takes the repository's read credential, and a read naming no
+  repository uses the workspace's. An API write on an authorized repository is
+  served at the agent's `write` tier, as a push is: GitHub scopes the token to
+  that tier, while a GitLab or Gitea token reaches further than the agent's
+  grant, so the proxy refuses what only a maintainer or administrator changes
+  on either host (the project or repository itself, its members, protections,
+  webhooks, secrets and variables, transfer and forks) at every tier, and the
+  secret-bearing subresources to a read as well. A GitLab write uses the
+  broker's effect credential, because the push credential cannot authenticate
+  the API. A write outside a repository is refused. `glab` receives the
+  placeholder as `GITLAB_TOKEN`.
 
 **The placeholder.** The environment's credential is sealed by the daemon: it
 names the agent and the hosts it may be presented to, under an HMAC with a

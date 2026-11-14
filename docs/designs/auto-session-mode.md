@@ -207,12 +207,12 @@ Approved proposals stay a kind of their own.
 
 ### 4.2 Four outcomes
 
-| Outcome                  | How                                                                                                                                                                                              |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| (a) Hand to an open task | `messageTask {taskId, messageId}`: the message's thread is attached to that task, which answers there                                                                                            |
-| (b) Open a new task      | `delegateTask {messageId, title}`: a new task opens for the message, with its thread attached                                                                                                    |
-| (c) Ignore               | `ignoreMessage {messageId, reason}`: nothing is posted for the message, whatever the turn writes; the reason stays in the coordinator's transcript                                               |
-| (d) Reply directly       | The turn's final text, or `replyToMessage {messageId, message}` in a turn of several messages, posted in the message's thread. The thread stays unowned, so replies come back to the coordinator |
+| Outcome                  | How                                                                                                                                                                                                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a) Hand to an open task | `messageTask {taskId, messageId}`: the message's thread is attached to that task, which answers there                                                                                                                                                                               |
+| (b) Open a new task      | `delegateTask {messageId, title}`: a new task opens for the message, with its thread attached. Also for a request that waits on its sender's answer, however small the work                                                                                                         |
+| (c) Ignore               | `ignoreMessage {messageId, reason}`: nothing is posted for the message, whatever the turn writes; the reason stays in the coordinator's transcript                                                                                                                                  |
+| (d) Reply directly       | The turn's final text, or `replyToMessage {messageId, message}` in a turn of several messages, posted in the message's thread. The thread stays unowned, so replies come back to the coordinator. A reply closes its message and never asks something the coordinator would wait on |
 
 (d) is for what needs no session of its own: greetings, thanks, a question about a task's status.
 The reply is the coordinator's response, so on Slack it carries the attribution footer a turn's
@@ -408,7 +408,8 @@ is judged again on every page. Every entry also names the message its task was o
 or merge requests it opened. Both lists hold open tasks only; a task's id is its key cut before the
 agent's id where that names it alone, which every task tool takes beside the whole key.
 
-`readTask {taskId, after?}` is offered wherever `listTasks` is. It reads one task, open or closed
+`readTask {taskId, after?}` is offered wherever `listTasks` is, and to a coordinator's task, whose
+turns open with its conversation's other work ([assistant-mode.md](assistant-mode.md) §5.18 ⑥). It reads one task, open or closed
 within its window (§6.5), without waking it: its title, summary and `summaryAt`, mode and status, the
 message it was opened for, the pull requests it opened with the follow-ups watching them, and a page
 of its latest words, continued by a cursor. It is judged like `recall` of the task's place, with the

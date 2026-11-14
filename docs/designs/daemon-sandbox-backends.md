@@ -1244,9 +1244,11 @@ command once its runtime root exists.
   them from its own environment over the launch's in both environment modes, but
   only when SRT marked the shim (`SANDBOX_RUNTIME=1`): inside that namespace the
   bridge is the only route out. SRT's bridge asks for credentials, so the runner also
-  appends `http.proxyAuthMethod=basic` to the launch's `GIT_CONFIG_*` pairs; without
-  it Git answers the proxy's 407 by asking the runtime's credential helper. Pods and
-  VMs are unchanged.
+  sets `GIT_HTTP_PROXY_AUTHMETHOD=basic`; without it Git answers the proxy's 407 by
+  asking the runtime's credential helper. It is Git's own variable rather than a
+  `GIT_CONFIG_*` pair, because some runtimes remove every variable named like a
+  credential from the children they spawn, and a dropped `GIT_CONFIG_KEY_n` beside
+  its count makes every Git command fail. Pods and VMs are unchanged.
 - **The holder's Git takes the same route.** Workspace Git strips proxy variables and
   pins `http.<url>.proxy` and `remote.<name>.proxy` to empty, so nothing a checkout or
   the host configures reroutes its egress. Inside SRT that would leave it no route at

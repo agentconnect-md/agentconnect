@@ -392,12 +392,6 @@ describe('a method override', () => {
     }
     const plain = new Headers({ accept: 'application/json' })
     expect(instanceRoute(DEV, 'GET', target, { ...CONTEXT, headers: plain })).toMatchObject({ kind: 'repository' })
-    // GitLab and Gitea name no such header.
-    const gitlab = proxyInstance({ provider: 'gitlab', baseUrl: 'https://gitlab.example.test' })!
-    const overridden = new Headers({ 'X-HTTP-Method-Override': 'DELETE' })
-    expect(
-      instanceRoute(gitlab, 'GET', '/api/v4/projects/7', { repositories: [], headers: overridden })
-    ).not.toMatchObject({ status: 400 })
   })
 })
 

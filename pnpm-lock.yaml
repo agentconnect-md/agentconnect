@@ -14,7 +14,7 @@ pnpmfileChecksum: sha256-yhrtow4uYXdBwgBbzJFJ4wA8s3O9UECr9QpwYpWeDfE=
 
 patchedDependencies:
   '@anthropic-ai/sandbox-runtime@0.0.81': 7bbcc7e666536d629c477e2974d7e2dfe9724e1478e1e96d3b644aecff8d7abb
-  '@microsoft/agent-host-protocol@1.0.0': 03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510
+  '@microsoft/agent-host-protocol@1.1.0': 03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510
 
 importers:
 
@@ -375,8 +375,8 @@ importers:
         specifier: ^1.76.0
         version: 1.76.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
       '@microsoft/agent-host-protocol':
-        specifier: 1.0.0
-        version: 1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)
+        specifier: 1.1.0
+        version: 1.1.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)
       '@modelcontextprotocol/client':
         specifier: 2.4.0
         version: 2.4.0
@@ -780,8 +780,8 @@ importers:
         specifier: ^3.1.2
         version: 3.1.2
       '@microsoft/agent-host-protocol':
-        specifier: 1.0.0
-        version: 1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)
+        specifier: 1.1.0
+        version: 1.1.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)
       '@opentelemetry/api':
         specifier: ^1.10.0
         version: 1.10.0
@@ -2130,8 +2130,8 @@ packages:
   '@microsandbox/types@0.7.14':
     resolution: {integrity: sha512-MsSL1bthxaeIj/bIN5JIy1SvYZ6Bo3Fww6iAdhLdse5H3m3a9kUbM1JCHQWn746zeEch4hws9XSk9idsQcPDMw==}
 
-  '@microsoft/agent-host-protocol@1.0.0':
-    resolution: {integrity: sha512-swjikGoqZ/bv3Mn4vkkLzwpmS/j9tV7Aas7ruD2a/R3KVsUlokwCJNSET57mdsmZLMnrawDaCr/ctufbpjE4iA==}
+  '@microsoft/agent-host-protocol@1.1.0':
+    resolution: {integrity: sha512-6LXOqqXWGwMtrGxhIquNW9ECDPSHuW4yOpnIrOperBQuVZeRqbbmIGYn6ZZK3Q41/8heOi2LUlP9x9Wrsru3Eg==}
 
   '@modelcontextprotocol/client@2.4.0':
     resolution: {integrity: sha512-LgrD2OphHuG12vfKFKz6SOnq7bKHQmhGJIAYdD+MZBn2npHEyry6uD8zvktodtl5CQM85MO0anUyD9JwmUmxww==}
@@ -11058,7 +11058,7 @@ snapshots:
 
   '@microsandbox/types@0.7.14': {}
 
-  '@microsoft/agent-host-protocol@1.0.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)': {}
+  '@microsoft/agent-host-protocol@1.1.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)': {}
 
   '@modelcontextprotocol/client@2.4.0':
     dependencies:

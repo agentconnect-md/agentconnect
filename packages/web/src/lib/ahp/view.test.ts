@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { chatReducer } from '@microsoft/agent-host-protocol'
 import type { ChatState, SessionState } from '@microsoft/agent-host-protocol'
 import { ahpAnswer, ahpSteps, ahpToolTitle, ahpUsageFields } from './view'
 const chat = (parts: unknown[]): ChatState =>
@@ -178,6 +179,24 @@ describe('standard AHP view', () => {
       }
     })
     expect(ahpSteps(state, 'agent').at(-1)?.elicit?.fields).toHaveLength(2)
+  })
+  it('reads pending steering from the shared pending list, and a legacy snapshot from its own field', () => {
+    const message = (id: string) => ({ id, message: { text: id } })
+    const reduced = chatReducer(chat([]), {
+      type: 'chat/pendingMessageSet',
+      kind: 'steering',
+      id: 'steer',
+      message: { text: 'steer' }
+    } as never)
+    const steers = (state: ChatState) =>
+      ahpSteps(state, 'agent')
+        .filter((step) => step.steer)
+        .map((step) => step.turnId)
+    expect(steers(reduced)).toEqual(['steer'])
+    const listed = ['a', 'b'].map((id) => ({ ...message(id), kind: 'steering' }))
+    expect(steers({ ...chat([]), queuedMessages: [...listed, message('later')] } as ChatState)).toEqual(['a', 'b'])
+    expect(steers({ ...chat([]), queuedMessages: [message('later')] } as ChatState)).toEqual([])
+    expect(steers({ ...chat([]), steeringMessage: message('old') } as ChatState)).toEqual(['old'])
   })
   it('shows consumed steering and optional apps without a private reducer', () => {
     const state = chat([

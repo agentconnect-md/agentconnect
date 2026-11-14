@@ -504,9 +504,9 @@ the shim's own bundle, and the changes the probe found are in:
   daemon's death;
 - the ACP runner copies SRT's proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`,
   `ALL_PROXY`, `NO_PROXY`, their lowercase forms and `NODE_USE_ENV_PROXY`) from its
-  own environment over the launch's, only when SRT marked it, and adds
-  `http.proxyAuthMethod=basic` to the runtime's Git config for the bridge's
-  credentials; the holder's Git takes the same route, its empty proxy pins pointed at
+  own environment over the launch's, only when SRT marked it, and sets
+  `GIT_HTTP_PROXY_AUTHMETHOD=basic` for the bridge's credentials; the holder's Git
+  takes the same route, its empty proxy pins pointed at
   the bridge where it runs, since workspace Git is otherwise pinned to no proxy;
 - the policy denies nothing under `.git`.
 

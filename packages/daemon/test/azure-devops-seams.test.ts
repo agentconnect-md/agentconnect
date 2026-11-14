@@ -187,6 +187,8 @@ describe('where a host of an agent with Azure DevOps repositories may start', ()
 
 describe('the Azure CLI in a proxied session', () => {
   const PLACEHOLDER = 'acph1_example.tag'
+  const AZURE = { provider: 'azure-devops', baseUrl: 'https://dev.azure.com' }
+  const GITEA = { provider: 'gitea', baseUrl: 'https://gitea.example.test' }
   let root: string
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'ac-azure-cli-'))
@@ -195,7 +197,7 @@ describe('the Azure CLI in a proxied session', () => {
 
   function cliEnv(overrides: Partial<Parameters<typeof codeHostCliEnv>[0]> = {}) {
     return codeHostCliEnv({
-      providers: ['github', 'azure-devops', 'azure-devops'],
+      hosts: [AZURE, AZURE],
       placeholder: PLACEHOLDER,
       home: join(root, 'home'),
       hostKey: AGENT,
@@ -223,9 +225,9 @@ describe('the Azure CLI in a proxied session', () => {
     expect(second.AZURE_EXTENSION_DIR).toBe(join(root, 'cliextensions'))
     // Another host of the agent keeps its own.
     expect(cliEnv({ hostKey: `${AGENT}\u0000session-1` }).AZURE_CONFIG_DIR).not.toBe(first.AZURE_CONFIG_DIR)
-    // A variable the session's own env sets is left to it, and a provider with no CLI adds nothing.
+    // A variable the session's own env sets is left to it, and each provider adds only its own CLI's.
     expect(cliEnv({ own: (name) => name === 'AZURE_DEVOPS_EXT_PAT' })).not.toHaveProperty('AZURE_DEVOPS_EXT_PAT')
-    expect(cliEnv({ providers: ['github', 'gitlab', 'gitea'] })).toEqual({})
+    expect(cliEnv({ hosts: [GITEA] })).toEqual({ GITEA_TOKEN: PLACEHOLDER, GITEA_INSTANCE_URL: `${GITEA.baseUrl}/` })
   })
 
   // POSIX only: the planted link is a symbolic link.
@@ -244,19 +246,19 @@ describe('the Azure CLI in a proxied session', () => {
   })
 
   it('defaults the extensions to the daemon user’s, and has an OS sandbox read the CLI and the extensions that exist', () => {
-    expect(codeHostCredentials('azure-devops')!.cli!.extensionDir({})).toBe(join(homedir(), '.azure', 'cliextensions'))
+    expect(codeHostCredentials('azure-devops')!.cli!.extensionDir!({})).toBe(join(homedir(), '.azure', 'cliextensions'))
     const missing = { azureDevOps: { cliExtensionDir: join(root, 'missing') } }
     expect(codeHostCliReads(['azure-devops'], missing)).toEqual({ commands: ['az'], paths: [] })
     expect(codeHostCliReads(['github', 'azure-devops'], { azureDevOps: { cliExtensionDir: root } })).toEqual({
-      commands: ['az'],
+      commands: ['gh', 'az'],
       paths: [root]
     })
-    expect(codeHostCliReads(['github', 'gitlab', 'gitea'], {})).toEqual({ commands: [], paths: [] })
+    expect(codeHostCliReads(['github', 'gitlab', 'gitea'], {})).toEqual({ commands: ['gh', 'glab', 'tea'], paths: [] })
   })
 
   it('plans remote CLI state in the target filesystem without reading or creating holder paths', () => {
     const opts = {
-      providers: ['github', 'azure-devops', 'azure-devops'],
+      hosts: [AZURE, AZURE],
       placeholder: PLACEHOLDER,
       root: '/run/agentconnect',
       hostKey: AGENT,
@@ -273,7 +275,11 @@ describe('the Azure CLI in a proxied session', () => {
     })
     expect(planned.env.AZURE_EXTENSION_DIR).toBe(`${planned.env.AZURE_CONFIG_DIR}/cliextensions`)
     expect(planned.clearDirs).toEqual([planned.env.AZURE_CONFIG_DIR])
-    expect(codeHostCliLaunch({ ...opts, providers: ['github'] })).toEqual({ env: {}, clearDirs: [] })
+    expect(planned.files).toEqual([])
+    expect(codeHostCliLaunch({ ...opts, hosts: [GITEA] })).toMatchObject({
+      env: { GITEA_TOKEN: PLACEHOLDER, GITEA_INSTANCE_URL: `${GITEA.baseUrl}/` },
+      files: []
+    })
     expect(codeHostCliLaunch({ ...opts, hostKey: `${AGENT}\u0000session-1` }).clearDirs).not.toEqual(planned.clearDirs)
     const supplied = codeHostCliLaunch({
       ...opts,
