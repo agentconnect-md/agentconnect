@@ -567,7 +567,11 @@ permission is involved: both directions use links Teams pre-authorizes.
   accept and decline contexts carry only the daemon's ID for the file, whose
   bytes the connection holds in memory for an hour, bounded in count and total
   bytes. The share succeeds once the card is posted, with a note that the
-  person must allow the file.
+  person must allow the file. The card needs the app added for that person:
+  in a 1:1 chat where the bot was present but the app was not (Teams offered
+  "Add it for yourself"), the card named an unknown app and **Allow** failed in
+  the client, with no invoke sent; after the person added the app, the same
+  card worked (**measured**).
 - **The answer.** The relay forwards the `fileConsent/invoke` from a 1:1 chat
   as a `platform_action` (ticketed like a card click) and answers the invoke
   with an empty 200 at once. The daemon acks and settles after: on accept it
@@ -1030,8 +1034,11 @@ can serve any call, since every relay holds the same key and credential.
 
 ### 8.6 More agents in one tenant
 
-Status: **proposed**. The provider behavior is **measured** end to end from one
-tenant acting on a second; the product change is not built.
+Status: **implemented**. The provider behavior is **measured** end to end from
+one tenant acting on a second, and the built flow is **measured** in a test
+tenant: two further agents connected from the Console, published by an
+administrator in the Teams admin center, answered in 1:1 chats and joined a
+team when mentioned in a channel.
 
 The deployment app's bot serves one agent per tenant (§8.2). This section gives
 every other agent in that tenant a bot of its own, with its own name, icon,
@@ -1173,6 +1180,16 @@ All **measured**, unless marked.
   by app permission policy" for a time that has measured from under a minute
   to more than twelve. The connect therefore tries again on a widening
   interval for about a quarter of an hour, after it has answered.
+- **Delivery after the approval.** Once an administrator published a new agent
+  bot, the catalog listed it within minutes, the Teams client offered it and
+  opened a 1:1 chat with it, and the waiting request finished. Teams then
+  delivered nothing to the bot for a while: no installation event and no
+  message reached the relay, and the messages sent meanwhile were never
+  delivered later. The window was about nine hours for one bot and about eight
+  and a half for another, while a third bot, published in the same minute as
+  the second, answered at once. The silent bot's registration and identity
+  matched the third's in every field the deployment sets. Nothing on the
+  deployment's side shortens or detects the window.
 - **The catalog** enforces only a unique manifest `id`: two packages with one
   display name are both accepted and both listed.
 - **Limits** (documented). A blueprint may hold 250 agent identities in one
@@ -1465,6 +1482,9 @@ The daemon needs no change: its spec already names `egress: relay` and a
 - **1:1 chats.** The connect flow installs into teams only (§8.6.2, personal
   scope); people add the agent to a 1:1 chat from **Built for your org**, as
   §8.3 already says.
+- **The first hours after an approval.** The Console shows a new agent bot as
+  connected once its request finishes, while Teams may not deliver to it for
+  hours (§8.6.2); a message sent then is lost, not queued.
 - **The limit of 250.** A tenant that adds and removes agents often can reach
   it below 250 live agents, since the blueprint cannot purge what it deleted.
 - **Sponsors.** An identity whose sponsor has left keeps working (**measured**
@@ -1475,8 +1495,8 @@ The daemon needs no change: its spec already names `egress: relay` and a
 #### 8.6.9 Unverified
 
 - An administrator installing into a team they do not belong to.
-- The stored-token chain of §8.6.6 end to end: its parts are measured, a
-  redemption after days is not.
+- The stored-token chain of §8.6.6 after several days: a request approved
+  about a day after it was submitted finished on its own (**measured**).
 - A link that opens the pending app's own page in the Teams admin center
   rather than the list.
 - A tenant that restricts agent identities, other than by disabling the
@@ -1584,14 +1604,15 @@ tenant:
 - Edits stay within the per-conversation budget; 429 responses back off.
 - The Control Plane never receives a message body.
 
-For agent bots (§8.6), once built:
+For agent bots (§8.6):
 
 - An organization connects a second agent to a tenant; both appear in Teams
   under their own names, and a mention of one never starts a turn of the other.
   The built-in agent's connect and a Store install behave as before.
-- A member with no administrator role adds a further agent: the entry shows
-  **Waiting for approval** with its link, and after the approval the agent is
-  installed into the team they picked without the member returning.
+- A further agent's request shows **Waiting for approval** with its link; after
+  an administrator publishes it, the request finishes without the member
+  returning, and the agent answers in a 1:1 chat and joins a team when
+  mentioned in one of its channels.
 - The same member in a tenant no administrator has connected is told that an
   administrator must connect first; a guest and a person outside the team are
   refused the install with the reason.
