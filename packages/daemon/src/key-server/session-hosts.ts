@@ -24,13 +24,6 @@ import {
   type KeyGrant
 } from './client.js'
 
-// Whether the running grant stays valid for a whole further check interval after the next refresh.
-function outlivesNextCheck(running: KeyGrant, fresh: KeyGrant, nowMs: number): boolean {
-  if (running.expiresAtMs === undefined) return true
-  if (fresh.refreshAtMs === undefined) return false
-  return running.expiresAtMs > fresh.refreshAtMs + (fresh.refreshAtMs - nowMs)
-}
-
 // The issuer's verdict on the organization itself (key-server.md §6), which no degradation window outlasts.
 function standingDenied(error: unknown): boolean {
   return error instanceof KeyServerError && (error.code === 'org_suspended' || error.code === 'quota_denied')
@@ -290,8 +283,10 @@ export class ModelSessionHostPool {
       entry = undefined
     }
 
-    if (!entry || refreshDue || expired) {
-      let grant: KeyGrant
+    // Starting or resuming a runtime always asks the issuer, so an organization it now denies cannot come back.
+    const resuming = entry !== undefined && !entry.host && !entry.starting
+    let grant: KeyGrant | undefined
+    if (!entry || refreshDue || expired || resuming) {
       try {
         grant = await this.issueKey(agent, target, sessionKey)
       } catch (error) {
@@ -299,20 +294,14 @@ export class ModelSessionHostPool {
           // The runtime can reach endpoints the gateway never sees, so a denied org keeps no host here.
           this.log.warn(`key-server denied session ${sessionKey}; stopping its model host (${formatErr(error)})`)
           await this.release(sessionKey).catch((e) => this.log.warn(`model host release failed (${formatErr(e)})`))
-        } else if (entry?.host && !expired) {
-          this.log.warn(`key-server refresh deferred for session ${sessionKey} (${formatErr(error)})`)
-          return this.selectedTurnHost(entry, entry.host)
         }
-        throw error
+        if (!entry || expired || standingDenied(error)) throw error
+        // An unreachable issuer is no verdict: the unexpired grant carries the session through its window (§6).
+        this.log.warn(`key-server check deferred for session ${sessionKey} (${formatErr(error)})`)
+        if (entry.host) return this.selectedTurnHost(entry, entry.host)
       }
-      if (entry?.host && !expired && outlivesNextCheck(entry.grant, grant, now)) {
-        // A standing check, not a rotation: the running grant stays good past the next one, so keep the host.
-        entry.grant = { ...entry.grant, refreshAtMs: grant.refreshAtMs }
-        void keyServer
-          .revoke(grant.keyId)
-          .catch((e) => this.log.warn(`key-server revoke failed for ${grant.keyId} (${formatErr(e)})`))
-        return this.selectedTurnHost(entry, entry.host)
-      }
+    }
+    if (grant) {
       if (entry) {
         const staleKeyId = entry.grant.keyId
         try {
@@ -333,6 +322,7 @@ export class ModelSessionHostPool {
       entry = { agentId: agent.id, sessionKey, target, grant }
       this.entries.set(sessionKey, entry)
     }
+    if (!entry) throw new Error(`model session ${sessionKey} has no credential`)
 
     const owner = entry
     let host = owner.host

@@ -171,15 +171,11 @@ and rotating the signing key.
 
 The per-request question only sees traffic that goes through the gateway, and a runtime in a sandbox
 can reach any other HTTPS endpoint: through its own configuration, or by running code. So an issuer
-that bills an organization must also answer for its standing at issuance. It refuses `IssueKey` with
-`quota_denied` or `org_suspended` once the organization may not run, and returns a `refreshInSeconds`
-so a running session asks again. The daemon re-issues on the first turn after that hint has passed
-and stops the session's host when the answer is a denial (§6). When the running grant stays valid
-for a whole further interval past the new grant's refresh time, a successful answer is only a standing
-check: the host keeps its credential, the new issuance is revoked at once, and the next check moves to
-the new refresh time. So a short refresh hint on a long-lived grant costs one `IssueKey` per interval,
-not a runtime restart. Gateway metering decides what a turn costs. Issuance decides whether a turn
-runs on this install at all.
+that bills an organization also answers for its standing at issuance, refusing `IssueKey` with
+`quota_denied` or `org_suspended` once the organization may not run. The daemon asks it every time a
+session's runtime starts: for a new session, and to resume one whose runtime stopped, even while the
+session still holds an unexpired grant. A denial refuses the turn and releases the session (§6). A
+runtime that is already running is not asked again between turns.
 
 That is the default, not the rule. `--key-server-ttl <seconds>` / `KEY_SERVER_TTL_SECONDS` sets the
 requested window per deployment, for an install that would rather have sessions end at a deadline
