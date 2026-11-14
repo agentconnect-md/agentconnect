@@ -1,4 +1,0 @@
-test/**
-.vscodeignore
-*.vsix
-node_modules/**

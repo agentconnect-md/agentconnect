@@ -471,6 +471,32 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.version }}
         run: node scripts/publish-npm.mjs "$RELEASE_TAG"
 
+  publish-vsix:
+    name: Attach the VS Code extension
+    needs: prepare
+    # VS Code installs only a plain version, and `releases/latest/download` serves stable releases.
+    if: ${{ !cancelled() && inputs.create_release && needs.prepare.outputs.latest == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      # One asset name across releases keeps the `latest/download` link stable.
+      - name: Package and attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.version }}
+        run: |
+          node packages/vscode/scripts/package.mjs "$RELEASE_TAG" "$RUNNER_TEMP/agentconnect-vscode.vsix"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/agentconnect-vscode.vsix" --clobber
+
   build-images:
     name: Build & push ${{ matrix.target }}
     needs: prepare
