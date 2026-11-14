@@ -890,14 +890,8 @@ route:
     namespace: default
     sectionName: http
 
-# Uploaded-icon object store — a NEUTRAL S3-compatible target (R2, MinIO, S3 itself;
-# nothing here is vendor-bound).
-# Non-secret config lives here; the access key id + secret ride the namespace Secret
-# (secrets.s3* below). Empty `endpoint` ⇒ the CP leaves the feature OFF: the upload
-# routes are unmounted, the console hides Upload, and icons stay glyph-only. The CP gate
-# is deliberately forgiving — a partial group (this block set but the Secret keys not yet
-# added, or vice-versa) also leaves it off rather than crash-looping, so the two Secret
-# keys and this block can roll out in either order.
+# Uploaded-icon object store: any S3-compatible bucket; its keys ride the namespace Secret (secrets.s3* below).
+# Empty `endpoint` => icons use the bundled Source Cache store's public-read icon/ prefix, or stay glyph-only without one.
 objectStore:
   # Full S3 API origin, e.g. https://<accountId>.r2.cloudflarestorage.com (NOT an account id).
   endpoint: ''

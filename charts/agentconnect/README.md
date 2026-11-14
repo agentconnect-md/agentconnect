@@ -145,12 +145,19 @@ because every signature covers it.
 The chart generates the store's key pair in the Secret `<release>-source-cache-store` and
 reuses it on upgrade. RustFS starts with it, and members and the Control Plane mount it as
 their bucket credentials. RustFS offers no simple way to create a narrower user, so these
-are the store's root keys. The store holds nothing but this release's cache and transfers.
+are the store's root keys. The store holds nothing but this release's cache, transfers and
+uploaded icons.
 
 A post-install and post-upgrade Job runs
 [`files/object-store-setup.sh`](files/object-store-setup.sh). It creates the bucket, applies
-the [lifecycle rules](#bucket-lifecycle-rules), and sets the browser CORS rule. It is safe
-to run repeatedly. Members check the lifecycle rules at start. A member that started before the Job's first
+the [lifecycle rules](#bucket-lifecycle-rules), sets the browser CORS rule, and grants
+anonymous reads on `icon/*` alone. It is safe to run repeatedly.
+
+While `objectStore.endpoint` is empty, uploaded agent and organization icons live in this
+bucket under `icon/` and are served from `https://<host>/<bucket>/icon/...`. The console and
+chat platforms load them by plain URL, so the host must be reachable from the internet for
+chat avatars to show. The route sends `X-Content-Type-Options: nosniff` on every response.
+Set `objectStore` to keep icons in another bucket instead. Members check the lifecycle rules at start. A member that started before the Job's first
 run writes no bundles until its next check, up to 6 hours later. Restart the pool after the
 first install to start writing at once.
 

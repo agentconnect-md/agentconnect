@@ -50,6 +50,13 @@ The non-secret values and the two secret keys are supplied through runtime
 configuration. Objects are stored under an `icon/` prefix:
 `icon/agents/<id>`, `icon/orgs/<id>`.
 
+When the deployment bundles an object store (the chart's `sourceCache.store`, the
+Compose HTTPS overlay) and no `S3_*` group is set explicitly, the group points at
+that store's bucket: its setup grants anonymous `GetObject` on `icon/*` alone and
+its route sends `X-Content-Type-Options: nosniff`. The bucket's lifecycle rules
+match only tagged objects under `src/`, so icons never expire. An explicit
+`objectStore` (chart) or `S3_*` group (other deployments) takes precedence.
+
 ## Failure consistency (object store ↔ DB descriptor)
 
 The blob write and the owner-row `icon` update are two systems, so ordering is chosen so a
