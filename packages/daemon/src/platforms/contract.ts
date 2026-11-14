@@ -583,8 +583,6 @@ export interface DaemonPlatformModule {
   readonly botAdds?: RelayBotAdds
   /** Answers to files the bot offered, arriving as relayed `platform_action`s and settled after the ack; absent ⇒ none do. */
   readonly fileConsents?: RelayFileConsents
-  /** Whether `mentionedBots` names bots only, so a mention of none of this agent's settles a coordinator's message unread; absent ⇒ it may name people too. */
-  readonly mentionsOnlyBots?: boolean
   /** Features this module adds to the daemon's registration, which the CP reads before sending it this platform's integrations; absent ⇒ none. */
   readonly registrationFeatures?: readonly string[]
 }

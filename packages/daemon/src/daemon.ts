@@ -600,8 +600,7 @@ import {
 import {
   COORDINATOR_FILTER_QUESTION,
   coordinatorFilterAdmits,
-  screensCoordinatorMessage,
-  addressedToAnotherBot
+  screensCoordinatorMessage
 } from './auto-session/coordinator-filter.js'
 import { webchatCoordinatorTask } from './auto-session/webchat-task.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
@@ -22973,29 +22972,15 @@ export class Daemon {
     })
   }
 
-  /** Screen a message before its coordinator reads it (auto-session-mode.md §4.7, §9): a mention of only other bots, or the filter's No, settles it silently, as an ignored message is. */
+  /** Screen an unaddressed message before its coordinator reads it (auto-session-mode.md §4.7): the verdict holds the entry, and a skip settles it silently, as an ignored message is. */
   private screenForCoordinator(entry: QueueEntry): void {
     const agent = this.agents.get(entry.agentId)
-    if (!agent || !isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return
-    if (addressedToAnotherBot(entry, this.ownBotIdWhereMentionsAreBots(entry))) {
-      this.log.info(`coordinator: ${entry.msg.msgId} for ${agent.id} skipped, it mentions only other bots`)
-      // A hold already on the entry is still awaited, so nothing it owns is left unsettled.
-      const held = entry.admissionWait
-      entry.admissionWait = held ? held.then(() => false) : Promise.resolve(false)
-      return
-    }
-    const filter = agent.coordinatorFilter
-    if (!filter || !screensCoordinatorMessage(entry)) return
+    const filter = agent?.coordinatorFilter
+    if (!agent || !filter || !isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return
+    if (!screensCoordinatorMessage(entry)) return
     const verdict = this.coordinatorFilterVerdict(entry, agent, filter)
     const prior = entry.admissionWait
     entry.admissionWait = prior ? Promise.all([prior, verdict]).then(([held, admits]) => held && admits) : verdict
-  }
-
-  /** The entry's own bot id, only where the platform's `mentionedBots` names bots alone. */
-  private ownBotIdWhereMentionsAreBots(entry: QueueEntry): string | undefined {
-    if (entry.integrationId === undefined || !this.platformModules.get(entry.msg.platform)?.mentionsOnlyBots) return
-    const int = this.integrationConfigById(entry.integrationId)
-    return this.botUserIds[entry.integrationId] ?? (int ? integrationRouting(int).staticBotUserId : undefined)
   }
 
   /** Ask the filter's model about one message; a failure of any kind lets it through (decisions.md §5). */

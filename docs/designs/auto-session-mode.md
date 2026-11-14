@@ -187,8 +187,7 @@ Approved proposals stay a kind of their own.
 
 - Every **root message** of the conversation, and every message in an **unowned thread** (a thread
   under a message the coordinator replied to itself, or one whose task has closed).
-- A message that mentions the agent may not be ignored. One that mentions only other bots is not
-  delivered at all (§9).
+- A message that mentions the agent may not be ignored.
 - **A thread it meets part-way.** A message in a thread the coordinator was admitted no earlier
   message of comes with a `<thread>` block ahead of the batch: the thread's messages before it,
   read through the platform's thread-history port as a thread session's catch-up reads them
@@ -1134,12 +1133,6 @@ decided before §6.9's homes are built for it.
 Each agent has its own coordinator, and each decides independently. The prompt lists the other
 agents in the conversation, by name and description, so a message for one of them is recognized as
 not addressed to this agent. Cost grows with the number of agents.
-
-A person's message that mentions bots, none of them this agent's, never reaches its coordinator: the
-daemon settles it as an ignored message (§4.2 (c)) before any turn, at the root or in an unowned
-thread, whether or not the mentioned bot is on the list yet. It decides this only on a platform whose
-module declares that its mention list names bots alone (`mentionsOnlyBots`), so a mention of a person
-there still reaches the coordinator; a DM, a report, an agent's call, a hook and webchat are unchanged.
 
 The list holds the agents that answer in the conversation. An agent whose bot has left it is no
 longer listed, and neither is a paused agent: a coordinator that still deferred to one would leave
