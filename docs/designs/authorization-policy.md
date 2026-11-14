@@ -32,6 +32,18 @@ The request pipeline remains layered:
    visibility, and session ownership.
 4. The handler executes only after the applicable decisions pass.
 
+Console sign-in is social or SSO only. When Logto management credentials are
+configured, `humanAuth` enforces that rule rather than trusting the sign-in
+experience to: the first time a CP process sees an OIDC subject, before it
+provisions a local user, it asks Logto whether the account links a social or
+SSO identity. An account that links neither is refused with
+`403 SIGN_IN_IDENTITY_REQUIRED`, whether or not it was provisioned earlier, and
+the refusal is remembered for a minute. The reason is that Logto still accepts
+a registration with no identifier, a username, or a code-verified email when
+the sign-up identifiers are empty, and an email alone does not separate those
+accounts from real ones: Microsoft and Telegram sign-ins can carry none.
+Deployments without management credentials do not run the check.
+
 The policy does not absorb unrelated trust domains:
 
 - daemon and relay WebSocket authentication;

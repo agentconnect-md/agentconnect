@@ -140,6 +140,17 @@ export type AdmitOidcSubject = (oidcSubject: string) => Promise<boolean>
 
 class SubjectRefused extends Error {}
 class AdmissionUnavailable extends Error {}
+const REFUSAL_TTL_MS = 60_000
+const MAX_REFUSED_SUBJECTS = 10_000
+
+function identityRequired(reply: FastifyReply): FastifyReply {
+  return reply.code(403).send({
+    error: 'Forbidden',
+    statusCode: 403,
+    message: 'this account has no linked sign-in identity',
+    code: 'SIGN_IN_IDENTITY_REQUIRED'
+  })
+}
 
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
@@ -272,6 +283,15 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // per request so org switches (x-ac-org-id), role edits and removals take
   // effect immediately.
   const resolved = new Map<string, Promise<{ userId: string }>>()
+  // Short negative memo so a refused subject costs no upstream check per request; a 503 is never remembered.
+  const refused = new Map<string, number>()
+  function rememberRefusal(sub: string): void {
+    const now = Date.now()
+    for (const [key, until] of refused) if (until <= now) refused.delete(key)
+    refused.delete(sub)
+    refused.set(sub, now + REFUSAL_TTL_MS)
+    if (refused.size > MAX_REFUSED_SUBJECTS) refused.delete(refused.keys().next().value!)
+  }
   // Subjects whose local account was found deleted, and WHEN (epoch seconds) — a
   // cutoff: every token issued at or before it is refused, for good. The memo
   // eviction alone would let the very next request with the same bearer re-run JIT
@@ -410,6 +430,8 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // Resolve to a LOCAL user id when a resolver is wired; else fall back to
       // the raw `sub` (no DB). The in-flight promise is cached synchronously so
       // parallel first requests coalesce into ONE signup.
+      const refusedUntil = refused.get(sub)
+      if (refusedUntil !== undefined && Date.now() < refusedUntil) return identityRequired(reply)
       let pending = resolved.get(sub)
       if (!pending) {
         pending = (async () => {
@@ -438,13 +460,9 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         identity = await pending
       } catch (err) {
         if (err instanceof SubjectRefused) {
+          rememberRefusal(sub)
           req.log.warn({ sub }, 'humanAuth: subject has no linked sign-in identity — refused')
-          return reply.code(403).send({
-            error: 'Forbidden',
-            statusCode: 403,
-            message: 'this account has no linked sign-in identity',
-            code: 'SIGN_IN_IDENTITY_REQUIRED'
-          })
+          return identityRequired(reply)
         }
         if (err instanceof AdmissionUnavailable) {
           req.log.warn({ err: err.cause }, 'humanAuth: could not check the sign-in identity — refusing for now')

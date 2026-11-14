@@ -87,6 +87,14 @@ does not mean that every authority has a CP-controlled expiry:
 | External channel or Git provider | Retries are bounded and idempotent where supported; permanent failure remains observable                          |
 | Slow or disconnected consumer    | Buffers are bounded, backpressure is enforced, and overflow has an explicit outcome                               |
 
+The Logto Management API is a hard dependency of first-sight console sign-in
+when its credentials are configured: a CP process admits an OIDC subject it has
+not seen only after Logto confirms a linked social or SSO identity
+([authorization policy §2](authorization-policy.md#2-boundary)). While that
+check fails, those requests get a `503` and the next request checks again;
+subjects the process already admitted are unaffected, but a restarted or new
+replica cannot admit anyone until the Management API answers.
+
 ## Reliability Requirements
 
 ### Detection and observability

@@ -345,15 +345,19 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
     expect(warm).toHaveBeenCalledTimes(1)
   })
 
-  it('refuses a subject with no linked sign-in identity before provisioning it', async () => {
+  it('refuses a subject with no linked sign-in identity before provisioning it, and remembers the refusal', async () => {
     const resolveUser = vi.fn(async () => ({ userId: 'local-bare' }))
-    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, admitSubject: async () => false, resolveUser })
+    const admitSubject = vi.fn(async () => false)
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, admitSubject, resolveUser })
     const headers = { authorization: `Bearer ${await mintBearer('bare')}` }
 
     const response = await app.inject({ method: 'GET', url: '/api/v1/probe', headers })
+    const again = await app.inject({ method: 'GET', url: '/api/v1/probe', headers })
 
     expect(response.statusCode).toBe(403)
     expect(response.json().code).toBe('SIGN_IN_IDENTITY_REQUIRED')
+    expect(again.json().code).toBe('SIGN_IN_IDENTITY_REQUIRED')
+    expect(admitSubject).toHaveBeenCalledTimes(1)
     expect(resolveUser).not.toHaveBeenCalled()
   })
 
