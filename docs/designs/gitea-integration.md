@@ -593,7 +593,23 @@ sends it. A write outside a repository is refused.
 
 There is no CLI wrapper. The agent reads issues, pull requests, diffs, and
 statuses through the provider read tools and mutates through the effect
-broker (§10.2). A user-supplied Gitea token in the environment is outside the
+broker (§10.2). Gitea's own CLI, `tea`, holds the placeholder too:
+`GITEA_TOKEN` carries it and `GITEA_INSTANCE_URL` names the spec's instance
+with a trailing slash, because `tea` matches a remote to its login by string
+prefix and a sibling path such as `/forge-other` must not match `/forge`.
+`tea` sends `Authorization: token <placeholder>`, which the proxy exchanges like
+any other scheme. Some runtimes remove every variable named like a credential
+from the children they spawn, and `tea` has no configuration-directory
+variable, only `$XDG_CONFIG_HOME/tea/config.yml`. So the shim that launches a
+runtime in an execution environment (`srt`, a VM, a Cloud pod, a remote
+executor) writes that file in the runtime's own HOME before it spawns: a login
+named `agentconnect` holding the placeholder, first and default, with every
+other login in the file kept. It writes only a `GITEA_TOKEN` equal to the
+session's code-host placeholder, never a real token, and replaces a link at
+the path rather than following it. An unconfined session on the daemon's own
+machine shares the daemon user's HOME, so it gets the variables alone. A
+`GITEA_TOKEN` or `GITEA_INSTANCE_URL` the agent was configured with leaves
+`tea` to the agent. A user-supplied Gitea token in the environment is outside the
 managed guarantee, matching the GitHub and GitLab pass-through.
 
 ## 10. Output Ownership

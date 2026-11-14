@@ -14,6 +14,7 @@ import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_PATHBIN_DIR } from './sandbox-paths.js'
 import { SHIM_RUNTIME_MARK_ENV, type ShimEvent } from './protocol.js'
 import { seedEnv } from './seed-env.js'
+import { seedTeaLogin } from './tea-login.js'
 import { applySrtProxyEnv } from './srt-route.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
@@ -195,6 +196,7 @@ export class AcpRunner {
       const env = { ...payload.env }
       applySrtProxyEnv(env, this.deps.podEnv ?? {})
       this.fillHints(payload, env)
+      seedTeaLogin(env, this.deps.log)
       return this.spawnChild(this.deps.resolveCommand?.(payload.command, env) ?? payload.command, payload, env)
     }
     // The POD's own filesystem and locale basics, under whatever the daemon sent. The daemon
@@ -257,6 +259,7 @@ export class AcpRunner {
       })
       if (bundle) spawnPayload = { ...payload, args: [...payload.args, '--bundle', bundle] }
     }
+    seedTeaLogin(env, this.deps.log)
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     return this.spawnChild(command, spawnPayload, env, seedEnv(podEnv))
   }

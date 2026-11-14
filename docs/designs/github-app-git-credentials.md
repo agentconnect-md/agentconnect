@@ -657,9 +657,11 @@ placeholder through its pod's codehost proxy route.
   hosts with the placeholder; glab keys a host by its host and path prefix, and
   its update check is off. The variable still wins where it survives, and a
   `GH_TOKEN` or `GITLAB_TOKEN` the agent was configured with leaves that CLI
-  without a directory. `agentconnect-secrets` has
-  its own directory on the `PATH`; a shim (`srt`, a VM, a pod, an executor)
-  puts its own copy first.
+  without a directory. Gitea's `tea` has no such variable, so a shim writes its
+  login into the runtime's own HOME instead
+  ([gitea-integration.md §9](gitea-integration.md#9-git-access)).
+  `agentconnect-secrets` has its own directory on the `PATH`; a shim (`srt`, a
+  VM, a pod, an executor) puts its own copy first.
 - A session that does not reach the proxy holds no code-host credential: the
   proxy did not start, its executor's shim serves no `codehost` listener, its
   executor's `srt` boundary does not route all of the agent's code hosts, or
