@@ -164,6 +164,32 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.revoke).toHaveBeenCalledWith('key-1')
   })
 
+  it('checks standing at each refresh of a long-lived grant without restarting the runtime', async () => {
+    const h = harness([
+      { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000, expiresAtMs: 1_000_000 },
+      { keyId: 'key-2', key: 'probe', requestedAtMs: 2_000, refreshAtMs: 3_000, expiresAtMs: 1_001_000 }
+    ])
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
+    h.clock.advance(1_000)
+
+    const checked = await h.daemon.modelSessions.ensure(agent, 'session-a')
+    expect(checked.host).toBe(h.firstHost)
+    expect(h.issue).toHaveBeenCalledTimes(2)
+    expect(h.firstHost.stop).not.toHaveBeenCalled()
+    expect(h.starts).toHaveBeenCalledOnce()
+    expect(h.revoke).toHaveBeenCalledWith('key-2')
+
+    // The next check is due at the probe's refresh time, and a denial there stops the host.
+    h.issue.mockRejectedValueOnce(new KeyServerError('Out of credits', 'quota_denied', 402))
+    h.clock.advance(500)
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
+    expect(h.issue).toHaveBeenCalledTimes(2)
+    h.clock.advance(500)
+    await expect(h.daemon.modelSessions.ensure(agent, 'session-a')).rejects.toThrow('Out of credits')
+    expect(h.firstHost.stop).toHaveBeenCalledOnce()
+    expect(h.revoke).toHaveBeenCalledWith('key-1')
+  })
+
   it('keeps the host through a refresh the key server could not answer', async () => {
     const h = harness([{ keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000, expiresAtMs: 4_000 }])
     await h.daemon.modelSessions.ensure(agent, 'session-a')
@@ -360,7 +386,7 @@ describe('daemon model-key session lifecycle', () => {
 
   it('revokes the fresh grant when replacing the superseded host fails', async () => {
     const h = harness([
-      { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000 },
+      { keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000, expiresAtMs: 4_000 },
       { keyId: 'key-2', key: 'new', requestedAtMs: 2_000 }
     ])
     await h.daemon.modelSessions.ensure(agent, 'session-a')
