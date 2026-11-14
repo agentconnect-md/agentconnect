@@ -35,6 +35,21 @@ type CatalogMethod = 'root/sessionAdded' | 'root/sessionRemoved' | 'root/session
 export type AhpCatalogNotification = {
   [K in CatalogMethod]: { method: K; params: ServerNotificationMap[K]['params'] }
 }[CatalogMethod]
+export interface AhpWorkspaceEntry {
+  name: string
+  type: 'file' | 'directory'
+}
+export interface AhpWorkspaceStat {
+  type: 'file' | 'directory'
+  size?: number
+  mtime?: string
+}
+/** Read-only access to the workspaces of the sessions this attachment holds, addressed by `file:` URI; undefined is "not there". */
+export interface AhpWorkspacePort {
+  list(uri: string): Promise<AhpWorkspaceEntry[] | undefined>
+  stat(uri: string): Promise<AhpWorkspaceStat | undefined>
+  read(uri: string): Promise<Buffer | 'too-large' | undefined>
+}
 export interface AhpHostPort {
   provider: AgentInfo
   journal: AhpActionJournal
@@ -49,6 +64,7 @@ export interface AhpHostPort {
   fetchTurns?(params: FetchTurnsParams): Promise<ChatTurnsLoadedAction | undefined>
   customRequest?(method: AhpCustomMethod, params: unknown): Promise<unknown>
   readFileEdit?(ref: FileEditRef): Promise<string | undefined>
+  workspace?: AhpWorkspacePort
   subscribeNotification?(listener: (notification: AhpCatalogNotification) => void, wanted: () => boolean): () => void
 }
 
@@ -97,10 +113,10 @@ const fetchTurns = z.object({
   channel: channel.refine((value) => value.startsWith('ahp-chat:/')),
   cursor: cursor.optional()
 })
-const resourceRead = rootParams.extend({
-  uri: z.string().min(1).max(32768),
-  encoding: z.enum(['base64', 'utf-8']).optional()
-})
+const resourceUri = z.string().min(1).max(32768)
+const resourceRead = rootParams.extend({ uri: resourceUri, encoding: z.enum(['base64', 'utf-8']).optional() })
+const resourceList = rootParams.extend({ uri: resourceUri })
+const resourceResolve = rootParams.extend({ uri: resourceUri, followSymlinks: z.boolean().optional() })
 const dispatch = z.object({
   channel,
   clientSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -315,18 +331,44 @@ export class AhpHostConnection {
       case 'resourceRead': {
         const params = parse(resourceRead, message.params)
         const ref = parseFileEditUri(params.uri)
-        if (!ref || !this.port.readFileEdit) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
-        await this.prepare(ref.sessionUri)
-        const text = await this.port.readFileEdit(ref)
-        this.assertAuthorized()
-        if (text === undefined) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
-        const result =
-          params.encoding === 'base64'
-            ? { data: Buffer.from(text).toString('base64'), encoding: 'base64', contentType: 'text/plain' }
-            : { data: text, encoding: 'utf-8', contentType: 'text/plain' }
-        if (!this.fits({ jsonrpc: '2.0', id: message.id, result }))
-          throw new AhpProtocolError(JsonRpcErrorCodes.InvalidRequest, 'Resource exceeds the message limit')
+        let result
+        if (ref) {
+          if (!this.port.readFileEdit) throw notFound()
+          await this.prepare(ref.sessionUri)
+          const text = await this.port.readFileEdit(ref)
+          this.assertAuthorized()
+          if (text === undefined) throw notFound()
+          result =
+            params.encoding === 'base64'
+              ? { data: Buffer.from(text).toString('base64'), encoding: 'base64', contentType: 'text/plain' }
+              : { data: text, encoding: 'utf-8', contentType: 'text/plain' }
+        } else {
+          const bytes = await this.port.workspace?.read(params.uri)
+          this.assertAuthorized()
+          if (bytes === undefined) throw notFound()
+          if (bytes === 'too-large') throw tooLarge()
+          result =
+            params.encoding === 'utf-8'
+              ? { data: bytes.toString('utf8'), encoding: 'utf-8' }
+              : { data: bytes.toString('base64'), encoding: 'base64' }
+        }
+        if (!this.fits({ jsonrpc: '2.0', id: message.id, result })) throw tooLarge()
         return result
+      }
+      case 'resourceList': {
+        const entries = await this.port.workspace?.list(parse(resourceList, message.params).uri)
+        this.assertAuthorized()
+        if (!entries) throw notFound()
+        if (!this.fits({ jsonrpc: '2.0', id: message.id, result: { entries } })) throw tooLarge()
+        return { entries }
+      }
+      case 'resourceResolve': {
+        // The workspace reader never follows a link out of its root, so the requested URI is already the canonical one.
+        const { uri } = parse(resourceResolve, message.params)
+        const stat = await this.port.workspace?.stat(uri)
+        this.assertAuthorized()
+        if (!stat) throw notFound()
+        return { uri, ...stat }
       }
       case 'agentconnect/appRpc':
       case 'agentconnect/appClose':
@@ -448,6 +490,8 @@ export class AhpHostConnection {
   }
 }
 
+const notFound = () => new AhpProtocolError(AhpErrorCodes.NotFound, 'Resource not found')
+const tooLarge = () => new AhpProtocolError(JsonRpcErrorCodes.InvalidRequest, 'Resource exceeds the message limit')
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value)
   if (!result.success) throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Invalid method parameters')

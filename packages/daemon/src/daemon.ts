@@ -16,7 +16,7 @@ import {
   AhpErrorCodes,
   JsonRpcErrorCodes
 } from '@microsoft/agent-host-protocol'
-import { AhpService, chatChannel } from './ahp/service.js'
+import { AhpService, chatChannel, type AhpServiceOptions } from './ahp/service.js'
 import { AhpApplication, ahpElicitValue } from './ahp/application.js'
 import { dispatchAhpAction, type AhpDispatchEnvironment } from './ahp/dispatch.js'
 import { LocalAhpCheckpoints } from './ahp/checkpoint-store.js'
@@ -251,7 +251,7 @@ import {
   type ManagedWorkspaceRepo
 } from './codehost/credentials.js'
 import { tmpdir } from 'node:os'
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm } from 'node:fs/promises'
 import { setTimeout as sleepFor } from 'node:timers/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
@@ -1041,7 +1041,7 @@ import { z } from 'zod'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { promptSuggestionOf } from './session/prompt-suggestion.js'
 import { codeHostReplySnapshot, sessionReplyRoute, sessionWakeFields } from './session/reply-route.js'
-import { WorkspaceConflictError } from './cp/workspace-reader.js'
+import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
 import { createWorkspaceScope } from './cp/workspace-scope.js'
 import { sessionPodOf } from './cp/agent-wake.js'
 import { createWorkspaceFileLinkResolver, type WorkspaceFileLinkResolver } from './messages/workspace-file-links.js'
@@ -3688,6 +3688,8 @@ export class Daemon {
         )
         return body === undefined ? undefined : this.maskAgentSecrets(auth.agentId, body)
       },
+      mask: (agentId, text) => this.maskAgentSecrets(agentId, text),
+      workspace: this.ahpWorkspace(),
       customRequest: (method, params, context, isCurrent) =>
         method === 'agentconnect/fillSubmit' || method === 'agentconnect/fillOpen'
           ? this.answerAhpFillCard(method, params, context, isCurrent)
@@ -8077,6 +8079,96 @@ export class Daemon {
   /** Where a session is placed, or undefined for one that runs on this machine. */
   private placedSession(sessionKey: string | undefined): PlacedSession | undefined {
     return sessionKey === undefined ? undefined : this.executorPlane?.placementOf(sessionKey)
+  }
+
+  /** A session's workspace for AHP clients: the same reader, containment and read-only scope the console's file browser uses. */
+  private ahpWorkspace(): NonNullable<AhpServiceOptions['workspace']> {
+    type Workspace = NonNullable<AhpServiceOptions['workspace']>
+    const scope = createWorkspaceScope({
+      workspaces: this.workspaces,
+      agentOf: (id) => this.agents.get(id),
+      sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
+      runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
+    })
+    const reader = createWorkspaceReader(
+      this.workspaces,
+      scope.location,
+      (id, write) => this.withWorkspaceFileWrite(id, write),
+      (id, at) => this.workspaceFilesFor(id, at)
+    )
+    // An isolated session reads its own worktree; any other reads the agent's shared checkout, which takes no session id.
+    const target = async (sessionId: string, agentId: string) => {
+      const isolated = await scope.location(agentId, sessionId).catch(() => undefined)
+      const location = isolated ?? (await scope.location(agentId).catch(() => undefined))
+      return { location, request: { agentId, ...(isolated ? { sessionId } : {}) } }
+    }
+    // What the reader refuses (a link out of the root, a sandbox that is not running) is absent to a client, not a failed host.
+    const guarded =
+      <A extends unknown[], T>(operation: (...args: A) => Promise<T | undefined>) =>
+      (...args: A): Promise<T | undefined> =>
+        operation(...args).catch((error: unknown) => {
+          if (error instanceof WorkspaceViolationError) return undefined
+          throw error
+        })
+    const list: Workspace['list'] = async (binding, auth, path) => {
+      const { location, request } = await target(binding.sessionId, auth.agentId)
+      if (!location) return undefined
+      const entries: { name: string; type: 'file' | 'directory' }[] = []
+      let cursor: string | undefined
+      do {
+        const page = await reader.list({ ...request, path, limit: 500, ...(cursor ? { cursor } : {}) })
+        if (!page.exists) return undefined
+        for (const entry of page.entries)
+          if (entry.type === 'dir' || entry.type === 'file')
+            entries.push({ name: entry.name, type: entry.type === 'dir' ? 'directory' : 'file' })
+        cursor = page.nextCursor
+      } while (cursor && entries.length < 2000)
+      return entries
+    }
+    const stat: Workspace['stat'] = async (binding, auth, path) => {
+      const { location, request } = await target(binding.sessionId, auth.agentId)
+      if (!location) return undefined
+      if (!path) return { type: 'directory' }
+      const head = await reader.read({ ...request, path, offset: 0, limit: 1, encoding: 'base64' })
+      if (!head.exists) return undefined
+      if (head.type === 'dir') return { type: 'directory' }
+      return {
+        type: 'file',
+        ...(head.size === undefined ? {} : { size: head.size }),
+        ...(head.mtime ? { mtime: head.mtime } : {})
+      }
+    }
+    const read: Workspace['read'] = async (binding, auth, path, maxBytes) => {
+      const { location, request } = await target(binding.sessionId, auth.agentId)
+      if (!location || !path) return undefined
+      const slices: Buffer[] = []
+      for (let offset = 0; ;) {
+        const slice = await reader.read({ ...request, path, offset, limit: 65536, encoding: 'base64' })
+        if (!slice.exists || slice.type === 'dir') return undefined
+        if ((slice.size ?? 0) > maxBytes) return 'too-large'
+        slices.push(Buffer.from(slice.content ?? '', 'base64'))
+        if (!slice.truncated || slice.nextOffset === undefined || slice.nextOffset <= offset) break
+        offset = slice.nextOffset
+      }
+      return Buffer.concat(slices)
+    }
+    return {
+      // Canonical, because a runtime reports the paths it edits that way; a root not on this disk yet resolves through its nearest ancestor.
+      root: async (binding, auth) => {
+        const root = (await target(binding.sessionId, auth.agentId)).location?.root
+        for (let head = root, tail = ''; head;) {
+          const real = await realpath(head).catch(() => undefined)
+          if (real) return join(real, tail)
+          if (dirname(head) === head) break
+          tail = join(basename(head), tail)
+          head = dirname(head)
+        }
+        return root
+      },
+      list: guarded(list),
+      stat: guarded(stat),
+      read: guarded(read)
+    }
   }
 
   private workspaceFilesFor(agentId: string, scope?: Omit<PlaneScope, 'agentId'>) {

@@ -144,11 +144,24 @@ the session's subscribers and never forwards them to the runtime.
 When a runtime reports a file change as ACP `diff` content, the completed tool
 call carries a `fileEdit` result whose before and after snapshots use
 `session-db:` content URIs, which VS Code reads without a stat request. The daemon
-answers `resourceRead` only for those URIs: it authorizes the URI's session like a
-subscription, then reads the text from that tool call's transcript body, so
-snapshots survive daemon restarts and never pass through the CP. A snapshot
-larger than one AHP message is refused rather than truncated. Other
-`resource*` methods and the workspace file system are not served.
+authorizes such a URI's session like a subscription, then reads the text from that
+tool call's transcript body, so snapshots survive daemon restarts and never pass
+through the CP. A runtime usually reports only the replaced fragment. While the
+file in the workspace still holds that fragment in exactly one place, the daemon
+answers with whole-file snapshots: the file as it is now, and the same file with
+the fragment put back. Otherwise, and for a file larger than one AHP message, it
+answers with the fragment as reported.
+
+A session's state names its workspace in `workingDirectories` as a `file:` URI.
+The daemon serves that tree read-only through `resourceList`, `resourceResolve`
+and `resourceRead`, using the reader, containment and sandbox reach of the
+console's file browser. A URI outside the workspace of a session the connection
+holds answers `NotFound`, as a missing file does. Directory listings leave out
+symbolic links. File content is not masked, as in the console. A file of more
+than about 44 KiB is refused, because one AHP message carries at most 64 KiB;
+ranged reads are not served. Writes and change notifications
+(`createResourceWatch`) are not served, so a file open in a client does not
+refresh.
 
 AHP has no task-list or cost channel. The session's `_meta['agentconnect.md']`
 carries the latest turn's ACP plan as `plan` (at most 50 entries of 500
@@ -311,8 +324,13 @@ settlement from a refused ordinary caller's attempt: the latter retains the
 pending card and shows a private rejection notice without an optimistic confirmed
 echo. Legacy escalation remains a separate parity requirement.
 
-**Independent-client gate: pending.** No completed VS Code validation is recorded
-here. Test a real independently maintained client without an AgentConnect reducer
+`pnpm --filter @agentconnect.md/daemon test:vscode` runs an installed VS Code
+against a local daemon with a scripted runtime and fails on a request the daemon
+does not support ([harness](../packages/daemon/test/ahp/vscode/README.md)). It
+covers the daemon's protocol surface, not the relay, sign-in or a deployment.
+
+**Independent-client gate: pending.** No completed VS Code validation against a
+deployment is recorded here. Test a real independently maintained client without an AgentConnect reducer
 or plugin, publish its version and required capabilities, and keep public access
 restricted until that release decision is supported. The minimal official SDK
 example has a regression fixture crossing the real relay endpoint and daemon

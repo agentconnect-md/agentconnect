@@ -3,7 +3,7 @@ import { observeChatTurn } from '../src/session/chat-observer.js'
 import type { MaskedChatEvent } from '../src/session/chat-events.js'
 import type { ChatTurnOutput } from '../src/session/chat-turn.js'
 import { emitChatUpdate } from '../src/session/chat-output.js'
-import { toolEditsOf, toolEditText } from '../src/session/tool-edits.js'
+import { toolEditsOf, toolEditText, wholeFileEdit } from '../src/session/tool-edits.js'
 
 const edit = { type: 'diff', path: '/work/src/a.ts', oldText: 'one\ntwo\nthree\n', newText: 'one\n2\nthree\nfour\n' }
 const create = { type: 'diff', path: '/work/new.md', newText: '# New\n' }
@@ -65,5 +65,22 @@ describe('ACP diff content as tool edits', () => {
       undefined,
       []
     ])
+  })
+
+  it('rebuilds whole-file snapshots from a fragment edit only when the fragment pins one place', () => {
+    const fragment = { type: 'diff', path: '/work/a.txt', oldText: 'two\n', newText: '2\n' }
+    const body = { content: [fragment, create] }
+    const at = { index: 0, path: '/work/a.txt' }
+    expect(wholeFileEdit(body, at, 'one\n2\nthree\n')).toEqual({
+      before: 'one\ntwo\nthree\n',
+      after: 'one\n2\nthree\n'
+    })
+    // Replacement text is literal, never a pattern.
+    const dollars = { content: [{ ...fragment, oldText: '$&$1\n' }] }
+    expect(wholeFileEdit(dollars, at, 'one\n2\n')?.before).toBe('one\n$&$1\n')
+    for (const file of ['one\nthree\n', '2\n2\n']) expect(wholeFileEdit(body, at, file)).toBeUndefined()
+    expect(wholeFileEdit(body, { index: 1, path: '/work/new.md' }, '# New\n')).toBeUndefined()
+    expect(wholeFileEdit(body, { index: 0, path: '/work/other.txt' }, 'one\n2\n')).toBeUndefined()
+    expect(wholeFileEdit({ content: [{ ...fragment, newText: '' }] }, at, 'one\n')).toBeUndefined()
   })
 })

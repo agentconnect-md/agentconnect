@@ -1,5 +1,7 @@
 import type { AhpCustomMethod } from './apps.js'
 import { randomUUID } from 'node:crypto'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   AhpSessionUri,
   type AhpAttachmentAuthorization,
@@ -30,9 +32,15 @@ import type { MaskedChatEvent } from '../session/chat-events.js'
 import type { ChatOutput } from '../session/chat-turn.js'
 import { AhpActionJournal } from './action-journal.js'
 import { AhpAgentState, AhpStateCapacityError, type AhpCheckpointStore } from './agent-state.js'
-import { AhpHostConnection, AhpProtocolError, type AhpHostPort } from './connection.js'
+import {
+  AhpHostConnection,
+  AhpProtocolError,
+  type AhpHostPort,
+  type AhpWorkspaceEntry,
+  type AhpWorkspaceStat
+} from './connection.js'
 import type { FileEditRef } from './file-edits.js'
-import { toolEditText } from '../session/tool-edits.js'
+import { toolEditText, wholeFileEdit } from '../session/tool-edits.js'
 
 export type BoundAhpSession = AhpSessionBinding & { sessionId: string }
 export interface AhpActionContext {
@@ -68,6 +76,27 @@ export interface AhpServiceOptions {
   ): Promise<{ turns: Turn[]; nextCursor?: string }>
   dispatch(params: DispatchActionParams, origin: ActionOrigin, context: AhpActionContext): Promise<void>
   toolBody?(binding: BoundAhpSession, auth: AhpAttachmentAuthorization, toolCallId: string): Promise<string | undefined>
+  /** Read-only view of a session's workspace by root-relative POSIX path; `read` answers `too-large` past `maxBytes`. */
+  workspace?: {
+    root(binding: BoundAhpSession, auth: AhpAttachmentAuthorization): Promise<string | undefined>
+    list(
+      binding: BoundAhpSession,
+      auth: AhpAttachmentAuthorization,
+      path: string
+    ): Promise<AhpWorkspaceEntry[] | undefined>
+    stat(
+      binding: BoundAhpSession,
+      auth: AhpAttachmentAuthorization,
+      path: string
+    ): Promise<AhpWorkspaceStat | undefined>
+    read(
+      binding: BoundAhpSession,
+      auth: AhpAttachmentAuthorization,
+      path: string,
+      maxBytes: number
+    ): Promise<Buffer | 'too-large' | undefined>
+  }
+  mask?(agentId: string, text: string): string
   customRequest?(
     method: AhpCustomMethod,
     params: unknown,
@@ -79,6 +108,8 @@ interface Attachment {
   id: string
   authorization: AhpAttachmentAuthorization
   bindings: Map<string, BoundAhpSession>
+  /** Each held session's workspace root, which is what scopes a `file:` resource request to a session. */
+  roots: Map<string, string>
   state?: AhpAgentState
   connection?: AhpHostConnection
   timer?: ReturnType<typeof setTimeout>
@@ -104,6 +135,7 @@ export class AhpService {
       id: input.attachmentId,
       authorization: input.authorization,
       bindings: new Map(),
+      roots: new Map(),
       close: wire.close
     }
     this.attachments.set(key, attachment)
@@ -130,10 +162,16 @@ export class AhpService {
         allowed.set(bound.sessionUri, bound)
         try {
           const loaded = state.binding(bound.sessionUri)
+          // A workspace that cannot be located yet is simply not advertised; the session itself still loads.
+          const workspaceRoot = await this.options.workspace
+            ?.root(bound, attachment.authorization)
+            .catch(() => undefined)
+          if (workspaceRoot) attachment.roots.set(bound.sessionUri, workspaceRoot)
           await state.add(
             bound,
             loaded ? [] : await this.options.history(bound, attachment.authorization),
-            loaded ? undefined : await this.options.sessionConfig?.(bound, attachment.authorization)
+            loaded ? undefined : await this.options.sessionConfig?.(bound, attachment.authorization),
+            workspaceRoot ? [pathToFileURL(workspaceRoot).href] : undefined
           )
           if (!valid()) throw denied()
           return bound
@@ -141,6 +179,7 @@ export class AhpService {
           // A disconnected attachment already queued its release behind this serialized installation.
           if (acquired && valid()) {
             allowed.delete(bound.sessionUri)
+            attachment.roots.delete(bound.sessionUri)
             state.release(bound.sessionUri)
           }
           throw error
@@ -194,6 +233,14 @@ export class AhpService {
           state,
           isCurrent: valid
         }
+      }
+      // A URI outside every held session's root reads as absent, so it is no oracle for the host's filesystem.
+      const located = (uri: string) => {
+        for (const [sessionUri, workspaceRoot] of attachment.roots) {
+          const path = allowed.has(sessionUri) ? workspacePath(workspaceRoot, uri) : undefined
+          if (path !== undefined) return { context: context(sessionUri), path }
+        }
+        return undefined
       }
       const port: AhpHostPort = {
         provider: state.provider,
@@ -283,10 +330,51 @@ export class AhpService {
                 const current = context(ref.sessionUri)
                 const body = await this.options.toolBody!(current.binding, current.authorization, ref.toolCallId)
                 if (body === undefined) return undefined
+                let parsed: unknown
                 try {
-                  return toolEditText(JSON.parse(body), ref, ref.side)
+                  parsed = JSON.parse(body)
                 } catch {
                   return undefined
+                }
+                // A runtime reports the replaced fragment; the file still on disk turns it back into whole-file snapshots.
+                const located = workspacePath(attachment.roots.get(ref.sessionUri), ref.path)
+                const file =
+                  located === undefined
+                    ? undefined
+                    : await this.options.workspace
+                        ?.read(current.binding, current.authorization, located, MAX_RESOURCE_BYTES)
+                        .catch(() => undefined)
+                const whole =
+                  Buffer.isBuffer(file) && wholeFileEdit(parsed, ref, this.mask(current, file.toString('utf8')))
+                const side = whole ? whole[ref.side] : undefined
+                return side !== undefined && Buffer.byteLength(side) <= MAX_RESOURCE_BYTES
+                  ? side
+                  : toolEditText(parsed, ref, ref.side)
+              }
+            }
+          : {}),
+        ...(this.options.workspace
+          ? {
+              workspace: {
+                list: async (uri) => {
+                  const at = located(uri)
+                  return at && this.options.workspace!.list(at.context.binding, at.context.authorization, at.path)
+                },
+                stat: async (uri) => {
+                  const at = located(uri)
+                  return at && this.options.workspace!.stat(at.context.binding, at.context.authorization, at.path)
+                },
+                read: async (uri) => {
+                  const at = located(uri)
+                  return (
+                    at &&
+                    this.options.workspace!.read(
+                      at.context.binding,
+                      at.context.authorization,
+                      at.path,
+                      MAX_RESOURCE_BYTES
+                    )
+                  )
                 }
               }
             }
@@ -500,6 +588,10 @@ export class AhpService {
     }
     return state
   }
+  private mask(context: AhpActionContext, text: string): string {
+    return this.options.mask?.(context.authorization.agentId, text) ?? text
+  }
+
   private warn(attachment: Attachment, message: string): void {
     this.options.warn?.(
       `ahp: attachment ${attachment.id} (agent ${attachment.authorization.agentId}) overloaded: ${message}`
@@ -544,6 +636,25 @@ export class AhpService {
         this.remove(key, attachment, reason)
   }
 }
+// Base64 of this many bytes, with its envelope, stays inside one AHP message.
+const MAX_RESOURCE_BYTES = 44 * 1024
+
+/** The root-relative POSIX path a `file:` URI or a runtime-reported path names, when it lies inside `root`. */
+function workspacePath(root: string | undefined, target: string): string | undefined {
+  if (!root) return undefined
+  let path = target
+  if (target.startsWith('file:')) {
+    try {
+      path = fileURLToPath(target)
+    } catch {
+      return undefined
+    }
+  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return undefined
+  const inside = relative(root, isAbsolute(path) ? path : resolve(root, path))
+  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return undefined
+  return inside.split(sep).join('/')
+}
+
 function registryResult<T extends { ok: boolean }>(result: T): Extract<T, { ok: true }> {
   if (result.ok) return result as Extract<T, { ok: true }>
   const reason = (result as { reason?: string }).reason

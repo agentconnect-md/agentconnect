@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Scripted ACP runtime for AHP acceptance: no AHP, application, or authorization implementation lives here.
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
 const logPath = process.argv[2]
@@ -10,6 +11,7 @@ const log = (entry) => {
 }
 const requests = new Map()
 const running = new Map()
+const cwds = new Map()
 let sequence = 0
 let sessions = 0
 function ask(method, params) {
@@ -86,6 +88,22 @@ async function prompt(id, params) {
     })
     update(params.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'fixture-edit', status: 'completed' })
   }
+  // A real file in the session's working directory, reported as the fragment a search-and-replace tool reports.
+  if (!run.cancelled && input.includes('[ahp:write]')) {
+    const cwd = cwds.get(params.sessionId) ?? process.cwd()
+    mkdirSync(join(cwd, 'docs'), { recursive: true })
+    const path = join(cwd, 'docs', 'notes.txt')
+    writeFileSync(path, 'alpha\nBRAVO\ncharlie\n')
+    update(params.sessionId, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'fixture-write',
+      title: 'Edit notes',
+      kind: 'edit',
+      status: 'in_progress',
+      content: [{ type: 'diff', path, oldText: 'bravo\n', newText: 'BRAVO\n' }]
+    })
+    update(params.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'fixture-write', status: 'completed' })
+  }
   if (!run.cancelled) {
     update(params.sessionId, {
       sessionUpdate: 'tool_call',
@@ -128,10 +146,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           }
         })
         return
-      case 'session/new':
-        send({ id, result: { sessionId: `fixture-session-${++sessions}` } })
+      case 'session/new': {
+        const sessionId = `fixture-session-${++sessions}`
+        cwds.set(sessionId, params.cwd)
+        send({ id, result: { sessionId } })
         return
+      }
       case 'session/load':
+        cwds.set(params.sessionId, params.cwd)
         send({ id, result: {} })
         return
       case 'session/prompt':
