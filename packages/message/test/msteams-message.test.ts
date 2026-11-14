@@ -3,8 +3,6 @@ import { NormalizedPlatformMessageSchema, manifestFor, type NormalizedPlatformMe
 import { isThreadRootMessage, nativeMessageCoordinates } from '../src/wire-coordinates.js'
 import {
   msTeamsActivityTenantId,
-  msTeamsBotMention,
-  msTeamsOutgoingText,
   normalizeMsTeamsActivity,
   type MsTeamsActivity,
   type MsTeamsActivityResult
@@ -143,27 +141,7 @@ describe('Microsoft Teams normalization', () => {
     other.entities = [
       { type: 'mention', mentioned: { id: OTHER_BOT_ID, name: 'Other Bot' }, text: '<at>Other Bot</at>' }
     ]
-    expect(messageOf(other)).toMatchObject({
-      text: `<@${OTHER_BOT_ID}|Other Bot> run the build`,
-      mentionedBots: [OTHER_BOT_ID]
-    })
-  })
-
-  it('keeps a person’s mention as a name, which no bot is told apart by', () => {
-    const person = { ...channelReply, text: 'ask <at>Example Person</at> first' }
-    person.entities = [
-      { type: 'mention', mentioned: { id: USER, name: 'Example Person' }, text: '<at>Example Person</at>' }
-    ]
-    expect(messageOf(person)).toMatchObject({ text: 'ask @Example Person first', mentionedBots: [] })
-  })
-
-  it('writes another bot’s mention back as plain `@label` text', () => {
-    const named = msTeamsBotMention(OTHER_BOT_ID, 'Other | <Bot>')
-    expect(named).toBe(`<@${OTHER_BOT_ID}|Other  Bot>`)
-    expect(msTeamsOutgoingText(`${named} and ${named}: done. <@${OTHER_BOT_ID}> and <@U123> stay.`)).toBe(
-      `@Other  Bot and @Other  Bot: done. <@${OTHER_BOT_ID}> and <@U123> stay.`
-    )
-    expect(msTeamsOutgoingText('plain text')).toBe('plain text')
+    expect(messageOf(other)).toMatchObject({ text: '@Other Bot run the build', mentionedBots: [OTHER_BOT_ID] })
   })
 
   it('keeps a bare mention and notes an attachment it cannot read', () => {

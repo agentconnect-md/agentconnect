@@ -148,20 +148,7 @@ export function msTeamsActivityTenantId(activity: unknown): string | undefined {
   return str(obj(obj(a?.channelData)?.tenant)?.id) ?? str(obj(a?.conversation)?.tenantId)
 }
 
-const BOT_MENTION = /<@(28:[^\s|<>]+)\|([^|<>\n]+)>/g
-
-/** Another bot's mention as normalized text holds it (§4.1): its `28:` ID, which tells bots apart, and its label. */
-export function msTeamsBotMention(id: string, label?: string): string {
-  const name = label?.replace(/[|<>\n]/g, '').trim()
-  return name ? `<@${id}|${name}>` : `<@${id}>`
-}
-
-/** Outgoing text with each labelled {@link msTeamsBotMention} written as `@<label>`: a bot never receives another bot's message, so no mention is sent. */
-export function msTeamsOutgoingText(text: string): string {
-  return text.replace(BOT_MENTION, (_, _id: string, label: string) => `@${label.trim()}`)
-}
-
-// Removes the bot's own mention spans, renders another bot's as its ID and label and a person's as `@Name`; a span the text does not hold is skipped, so no user content is erased.
+// Removes the bot's own mention spans and renders every other one as `@Name`; a span the text does not hold is skipped, so no user content is erased.
 function resolveMentions(text: string, entities: Obj[], botId: string): { text: string; mentionedBots: string[] } {
   const mentionedBots = new Set<string>()
   let out = ''
@@ -177,8 +164,7 @@ function resolveMentions(text: string, entities: Obj[], botId: string): { text: 
     if (at < 0) continue
     const label = /^<at>([\s\S]*)<\/at>$/.exec(span)?.[1]?.trim()
     const isBot = id.toLowerCase() === botId
-    const other = id.startsWith('28:') ? msTeamsBotMention(id.toLowerCase(), label) : label ? `@${label}` : span
-    out += text.slice(cursor, at) + (isBot ? '' : other)
+    out += text.slice(cursor, at) + (isBot ? '' : label ? `@${label}` : span)
     cursor = at + span.length
     // A removed span between two words leaves one space, not two.
     if (isBot && (!out || /\s$/.test(out)) && /[ \t]/.test(text[cursor] ?? '')) cursor++
