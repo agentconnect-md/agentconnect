@@ -22,16 +22,7 @@ export const COORDINATOR_FILTER_SKIP_BELOW = 0.25
 export interface ScreenedEntry {
   msg: Pick<
     NormalizedMessage,
-    | 'source'
-    | 'platform'
-    | 'trigger'
-    | 'thread'
-    | 'msgId'
-    | 'transcriptTs'
-    | 'transcriptPostId'
-    | 'mentionedBots'
-    | 'isDm'
-    | 'parentReport'
+    'source' | 'platform' | 'trigger' | 'thread' | 'msgId' | 'transcriptTs' | 'transcriptPostId'
   >
   webchat?: unknown
   callMeta?: unknown
@@ -49,25 +40,6 @@ export function screensCoordinatorMessage(entry: ScreenedEntry): boolean {
     entry.callMeta === undefined &&
     entry.hookContext === undefined &&
     !inThread(msg)
-  )
-}
-
-/** A person's message that mentions bots but not this agent's is someone else's (auto-session-mode.md §9); an unknown own bot never skips. */
-export function addressedToAnotherBot(entry: ScreenedEntry, ownBotId: string | undefined): boolean {
-  const { msg } = entry
-  return (
-    ownBotId !== undefined &&
-    ownBotId !== '' &&
-    msg.source === 'user' &&
-    msg.trigger !== 'mention' &&
-    !msg.isDm &&
-    msg.parentReport !== true &&
-    msg.platform !== 'webchat' &&
-    entry.webchat === undefined &&
-    entry.callMeta === undefined &&
-    entry.hookContext === undefined &&
-    msg.mentionedBots.length > 0 &&
-    !msg.mentionedBots.includes(ownBotId)
   )
 }
 
