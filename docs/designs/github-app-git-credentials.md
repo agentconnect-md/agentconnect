@@ -806,17 +806,20 @@ routes (each SaaS name on 443, a self-managed instance on its own port) and
 the proxy's CA certificate:
 
 - The executor's shim shares the machine's loopback with other shims, so it
-  serves `codehost` as an HTTP proxy on an ephemeral loopback port, with a
-  proxy credential of its own, and reports the port, the credential and a
-  trust bundle (that machine's roots and the CA) back. The session's
-  `HTTPS_PROXY` names that listener, `NO_PROXY` names loopback, and its trust
-  variables name that bundle.
+  serves `codehost` as an HTTP proxy on an ephemeral loopback port and
+  reports the port, a credential and a trust bundle (that machine's roots and
+  the CA) back. The session's `HTTPS_PROXY` names that listener with the
+  credential, `NO_PROXY` names loopback, and its trust variables name that
+  bundle. The listener does not require the credential, for the reasons the
+  host listener takes none (Listeners, above): a client that drops proxy
+  credentials, or tries without them first, is served alike. The same holds
+  for the listener in a VM's or pod's shim.
 - A CONNECT to one of the routes enters the tunnel as a fresh CONNECT with
   no client header; any other host is connected directly, as the session
   would without a proxy, since `HTTPS_PROXY` cannot be scoped to some hosts.
-- Ordinary HTTP proxy requests to other authorities are authenticated and
-  forwarded directly, with request and response streaming and no proxy credentials
-  forwarded upstream. A credential-tunnel authority requires CONNECT; an HTTP
+- Ordinary HTTP proxy requests to other authorities are forwarded directly,
+  with request and response streaming and no proxy credentials forwarded
+  upstream. A credential-tunnel authority requires CONNECT; an HTTP
   request never downgrades that route to a direct connection.
 - On the holder, the tunnel ends at a Unix socket of the agent's own that
   honors only that agent's placeholder and refuses a CONNECT to anything but

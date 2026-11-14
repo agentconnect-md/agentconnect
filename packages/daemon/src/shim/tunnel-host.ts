@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import {
   createServer as createHttpServer,
@@ -70,6 +70,7 @@ interface QueuedConnect {
 interface ProxyListener {
   server: Server
   port: number
+  /** Reported in the listen reply for the session's proxy URL, but never required: a client that drops proxy credentials is served alike. */
   token: string
   /** `host:port` authorities forwarded into each tunnel, lower-cased; code-host routes are matched first. */
   routes: Record<ProxyTunnelName, Set<string>>
@@ -117,16 +118,6 @@ export function connectAuthority(target: string | undefined): ConnectAuthority |
   return { host, port, key: `${match[1] ? `[${host}]` : host}:${port}` }
 }
 
-/** Whether a Proxy-Authorization header carries this listener's token as its Basic password. */
-function proxyAuthorized(header: string | undefined, token: string): boolean {
-  const [scheme, encoded] = (header ?? '').trim().split(/\s+/)
-  if (scheme?.toLowerCase() !== 'basic' || !encoded) return false
-  const decoded = Buffer.from(encoded, 'base64').toString('utf8')
-  const presented = Buffer.from(decoded.slice(decoded.indexOf(':') + 1))
-  const expected = Buffer.from(token)
-  return presented.length === expected.length && timingSafeEqual(presented, expected)
-}
-
 /** Where a shim writes the bundle its sessions trust the proxy CA by: beside its codehost socket path. */
 export function codehostTrustBundleBeside(codehostSocketPath: string): string {
   return join(dirname(codehostSocketPath), 'codehost-trust.pem')
@@ -163,8 +154,7 @@ export function writeCodehostTrustBundle(
 }
 
 function refuseConnect(socket: Socket, status: number, reason: string): void {
-  const challenge = status === 407 ? 'Proxy-Authenticate: Basic realm="agentconnect"\r\n' : ''
-  socket.end(`HTTP/1.1 ${status} ${reason}\r\n${challenge}Content-Length: 0\r\nConnection: close\r\n\r\n`)
+  socket.end(`HTTP/1.1 ${status} ${reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`)
 }
 
 export interface TunnelHostDeps {
@@ -473,15 +463,10 @@ export class TunnelHost {
   // Ordinary HTTP targets retain their direct route; credential-tunnel authorities require CONNECT.
   private proxyHttp(listener: ProxyListener, request: IncomingMessage, response: ServerResponse): void {
     const refuse = (status: number) => {
-      response.writeHead(status, {
-        connection: 'close',
-        'content-length': '0',
-        ...(status === 407 ? { 'proxy-authenticate': 'Basic realm="agentconnect"' } : {})
-      })
+      response.writeHead(status, { connection: 'close', 'content-length': '0' })
       response.end()
     }
     if (this.closed) return refuse(503)
-    if (!proxyAuthorized(request.headers['proxy-authorization'], listener.token)) return refuse(407)
     const target = URL.parse(request.url ?? '')
     if (!target || target.protocol !== 'http:' || target.username || target.password || target.hash) return refuse(400)
     const authority = connectAuthority(`${target.hostname}:${target.port || 80}`)
@@ -515,8 +500,6 @@ export class TunnelHost {
   private proxyConnect(listener: ProxyListener, request: IncomingMessage, socket: Socket, head: Buffer): void {
     socket.on('error', () => socket.destroy())
     if (this.closed) return refuseConnect(socket, 503, 'Service Unavailable')
-    if (!proxyAuthorized(request.headers['proxy-authorization'], listener.token))
-      return refuseConnect(socket, 407, 'Proxy Authentication Required')
     const authority = connectAuthority(request.url)
     if (!authority) return refuseConnect(socket, 400, 'Bad Request')
     const tunnel = (['codehost', 'provider'] as const).find((name) => listener.routes[name].has(authority.key))

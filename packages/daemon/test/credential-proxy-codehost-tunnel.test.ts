@@ -296,11 +296,10 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
       expect(await connectThrough({ socketPath }, elsewhere)).not.toBe(200)
   })
 
-  it('requires the listener’s credential, so it is no open proxy to the machine’s other users', async () => {
-    const { listening, tunnel } = await placedSession()
-    expect(await connectThrough({ host: '127.0.0.1', port: listening.port }, gitlab())).toBe(407)
-    expect(await connectThrough(shimDial(listening, 'w'.repeat(32)), gitlab())).toBe(407)
-    expect(tunnel.streamCount()).toBe(0)
+  it('serves a CONNECT without the listener’s credential or with a wrong one, for clients that drop proxy credentials', async () => {
+    const { listening } = await placedSession()
+    expect(await connectThrough({ host: '127.0.0.1', port: listening.port }, gitlab())).toBe(200)
+    expect(await connectThrough(shimDial(listening, 'w'.repeat(32)), gitlab())).toBe(200)
   })
 
   it('sends a CONNECT to any other host straight out, never into the tunnel', async () => {
@@ -369,10 +368,10 @@ describe.skipIf(process.platform === 'win32')('an executor-placed session’s co
     expect(tunnel.streamCount()).toBe(0)
   })
 
-  it('authenticates HTTP requests and refuses malformed targets or a credential route in cleartext', async () => {
+  it('refuses malformed HTTP targets or a credential route in cleartext', async () => {
     const { listening, tunnel } = await placedSession()
     const cases: [Dial, string, Record<string, string>, number][] = [
-      [{ host: '127.0.0.1', port: listening.port }, 'http://example.test/', {}, 407],
+      [{ host: '127.0.0.1', port: listening.port }, '/relative', {}, 400],
       [shimDial(listening), '/relative', {}, 400],
       [shimDial(listening), 'https://example.test/', {}, 400],
       [shimDial(listening), 'http://user:password@example.test/', {}, 400],
