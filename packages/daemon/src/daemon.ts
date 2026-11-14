@@ -524,7 +524,11 @@ import { personCouldActivate } from './assistant/place-askers.js'
 import { sharedWithOutsiders } from './assistant/standing-summary.js'
 import {
   BOARD_HERE_LINES,
+  SIBLING_LINES,
+  readOpenWork,
+  renderSiblingWork,
   renderWorkBoard,
+  siblingWork,
   workBoardView,
   type BoardPlace,
   type BoardView,
@@ -5981,6 +5985,7 @@ export class Daemon {
           input.place,
           this.askersOfKey(input.sessionKey, input.place.integrationId)
         ),
+      siblingWorkFor: (input) => this.siblingWorkOf(input.agentId, input.sessionKey, input.place),
       senderTimeZoneFor: (msg, integrationId) => this.profileTimeZone(integrationId, msg.sender.id),
       startedByTimeZone: (agentId, key) => this.startedByTimeZone(agentId, key),
       notePersonTimeZone: (key, zone) => this.notePersonTimeZone(key, zone),
@@ -13722,6 +13727,26 @@ export class Daemon {
       if (name) names.set(task.id, name)
     }
     return renderWorkBoard(view, names)
+  }
+
+  /** The other work of a threaded task's conversation as its turn is told it (assistant-mode.md §5.18 ⑥); undefined for a session that is no coordinator's task. */
+  private async siblingWorkOf(
+    agentId: string,
+    sessionKey: string,
+    place: BoardPlace
+  ): Promise<RenderedBoard | undefined> {
+    const row = await this.store.assistantSubsessions.get(agentId, sessionKey)
+    if (!row || row.mode === 'watch' || !isCoordinatorSessionKey(row.parentSessionKey)) return undefined
+    // A task is its coordinator's by the row alone, so the place only tells the stores' other kinds of work apart.
+    const owner = { sessionId: row.parentSessionId, key: row.parentSessionKey }
+    const here = (await readOpenWork(this.store, agentId, owner, place)).filter((task) => task.here)
+    const siblings = siblingWork(here, sessionKey, this.clock.now())
+    const names = new Map<string, string>()
+    for (const task of siblings.slice(0, SIBLING_LINES)) {
+      const name = task.row ? await this.taskOwnerName(task.row).catch(() => undefined) : undefined
+      if (name) names.set(task.id, name)
+    }
+    return renderSiblingWork(siblings, names)
   }
 
   /** A sub-session reads as the people whose turn opened it; a restart forgets them, so it then reads as nobody. */
