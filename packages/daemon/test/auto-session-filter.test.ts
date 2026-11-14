@@ -13,6 +13,7 @@ import {
   screensCoordinatorMessage
 } from '../src/auto-session/coordinator-filter.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { PlatformModuleRegistry } from '../src/platforms/registry.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -214,6 +215,34 @@ describe('a coordinator with a filter', () => {
       question: COORDINATOR_FILTER_QUESTION
     })
     expect(detail.input.currentMessage.text).toBe('chatter about lunch')
+    await daemon.stop()
+  })
+
+  it('opens no turn for a message that mentions only another bot, where mentions name bots alone', async () => {
+    const prompts: string[] = []
+    const { daemon, d, route, asked } = await boot(async (blocks) => {
+      prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+      return 'end_turn'
+    })
+    const other = slack('3.1', { text: '<@U_OTHER_BOT> reply with pong', mentionedBots: ['U_OTHER_BOT'] })
+    // Where the mention list may name people, the message reaches the coordinator as before.
+    await route(other)
+    await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    d.platformModules = new PlatformModuleRegistry([{ platformId: 'slack', mentionsOnlyBots: true }])
+    asked.length = 0
+    await route({ ...other, msgId: 'slack:C1:3.2', thread: '3.2' })
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    expect(prompts).toHaveLength(1)
+    // The filter is never asked about it.
+    expect(asked).toEqual([])
+    await route(
+      slack('3.3', { text: '<@U_OTHER_BOT> <@U_FAKE_BOT> both of you', mentionedBots: ['U_OTHER_BOT', 'U_FAKE_BOT'] })
+    )
+    // A mention of this agent beside another bot is still its coordinator's to decide.
+    await vi.waitFor(() => expect(prompts.some((prompt) => prompt.includes('id="msg-3.3"'))).toBe(true), WAIT)
+    await vi.waitFor(() => expect(d.inflight.size).toBe(0), WAIT)
+    expect(prompts.some((prompt) => prompt.includes('msg-3.2'))).toBe(false)
     await daemon.stop()
   })
 
