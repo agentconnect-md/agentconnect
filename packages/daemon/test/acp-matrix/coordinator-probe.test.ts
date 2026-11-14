@@ -5,6 +5,7 @@ import {
   CO_SCENARIOS,
   coordinatorFixture,
   coordinatorPrompt,
+  coordinatorToolsWithReminders,
   decide,
   decideIgnore,
   judgeCoordinator,
@@ -113,6 +114,66 @@ describe('runtime matrix coordinator probe', () => {
       const tasks = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'listTasks' } })
       expect(tasks.result.content[0].text).toContain(CO_IDS.checkoutTask)
       expect(fixture.calls('k').map((call) => call.tool)).toEqual(['listTasks'])
+    } finally {
+      fixture.server.close()
+    }
+  })
+
+  it('fails a scheduling request answered with a reminder or a refusal, and passes a task', () => {
+    const [id] = scopeOf('schedule-recurring-work').messages
+    const task = recorded('schedule-recurring-work', [{ action: 'delegateTask', messageId: id, title: 'PR summary' }])
+    expect(judgeCoordinator(scenario('schedule-recurring-work'), task, '').verdict).toBe('PASS')
+    const reminder: CoRecordedCall = { tool: 'remind', args: { messageId: id, at: 'x', message: 'PR summary' } }
+    expect(judgeCoordinator(scenario('schedule-recurring-work'), [reminder], 'Reminder set.')).toMatchObject({
+      verdict: 'FAIL',
+      notes: expect.arrayContaining([`${id}: called remind`])
+    })
+    expect(judgeCoordinator(scenario('schedule-by-tool'), [], 'I have no saveSchedule tool.').verdict).toBe('FAIL')
+  })
+
+  it('passes a reminder only when the reply comes with the call that set it', () => {
+    const [id] = scopeOf('reminder-fixed-text').messages
+    const set: CoRecordedCall = { tool: 'remind', args: { messageId: id, at: 'x', message: 'Send the release notes' } }
+    expect(judgeCoordinator(scenario('reminder-fixed-text'), [set], 'Reminder set for 15:00.').verdict).toBe('PASS')
+    expect(judgeCoordinator(scenario('reminder-fixed-text'), [], 'Reminder set for 15:00.')).toMatchObject({
+      verdict: 'FAIL',
+      notes: [`${id}: reply without a remind call`]
+    })
+    const task = recorded('reminder-fixed-text', [{ action: 'delegateTask', messageId: id, title: 'Reminder' }])
+    expect(judgeCoordinator(scenario('reminder-fixed-text'), task, '').verdict).toBe('DEGRADED')
+  })
+
+  it('lists and answers the reminder tools only in a session that holds them', async () => {
+    const fixture = await coordinatorFixture()
+    try {
+      const post = (url: string, body: unknown) =>
+        fetch(url, { method: 'POST', body: JSON.stringify(body) }).then((res) => res.json() as Promise<any>)
+      const [id] = scopeOf('reminder-fixed-text').messages
+      const held = fixture.descriptor('held', {
+        ...scopeOf('reminder-fixed-text'),
+        tools: coordinatorToolsWithReminders()
+      })
+      const bare = fixture.descriptor('bare', scopeOf('reminder-fixed-text'))
+      const listed = await post((held as { url: string }).url, { jsonrpc: '2.0', id: 1, method: 'tools/list' })
+      const names = listed.result.tools.map((tool: { name: string }) => tool.name)
+      expect(names).toEqual([
+        'sendMessage',
+        'ignoreMessage',
+        'listTasks',
+        'readTask',
+        'remind',
+        'listReminders',
+        'cancelReminder'
+      ])
+      // The coordinator's `remind` names the message it acts for.
+      expect(listed.result.tools[4].inputSchema.required).toContain('messageId')
+      const call = (url: string, args: unknown) =>
+        post(url, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'remind', arguments: args } })
+      const args = { messageId: id, at: '2027-03-01T15:00:00+08:00', message: 'Send the release notes' }
+      expect((await call((held as { url: string }).url, args)).result.isError).toBeUndefined()
+      expect((await call((held as { url: string }).url, { ...args, messageId: 'nope' })).result.isError).toBe(true)
+      expect((await call((bare as { url: string }).url, args)).result.content[0].text).toContain('not available')
+      expect(fixture.calls('held').map((entry) => entry.error === undefined)).toEqual([true, false])
     } finally {
       fixture.server.close()
     }

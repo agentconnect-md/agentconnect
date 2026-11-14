@@ -216,6 +216,10 @@ Approved proposals stay a kind of their own.
 | (d) Reply directly       | The turn's final text, or `replyToMessage {messageId, message}` in a turn of several messages, posted in the message's thread. The thread stays unowned, so replies come back to the coordinator. A reply closes its message and never asks something the coordinator would wait on |
 
 (d) is for what needs no session of its own: greetings, thanks, a question about a task's status.
+(b) also takes what the coordinator has no tool for. A task holds every tool the agent has, so a
+change to the agent's own setup (a scheduled task, access it lacks) opens a task, and the
+coordinator never answers that it lacks a tool. Work to do on a schedule is such a request even
+where the coordinator holds `remind`, which only posts fixed words once.
 The reply is the coordinator's response, so on Slack it carries the attribution footer a turn's
 reply does, linking the coordinator's session.
 
@@ -1285,7 +1289,7 @@ its `here` and `elsewhere` lists, and `readTask`) into a real runtime session ov
 turn with the work board the daemon would send ([assistant-mode.md](assistant-mode.md) §5.18),
 delivers channel messages in the format of §4.3, and judges each message's outcome. Its scenarios:
 new work, a message for an open task, a status question, a greeting, chatter between people, a
-request to another agent, a thread follow-up for another app's bot (`ignore-other-bot-thread`), twelve turns of messages that are not for the agent in one session before a greeting that is (`ignore-streak`), a vague mention, a small edit the coordinator must not do itself, two mixed
+request to another agent, a thread follow-up for another app's bot (`ignore-other-bot-thread`), twelve turns of messages that are not for the agent in one session before a greeting that is (`ignore-streak`), a vague mention, a small edit the coordinator must not do itself, a schedule asked for by the name of a tool only a task holds (`schedule-by-tool`) and in plain words (`schedule-recurring-work`), a change to the agent's own tools (`own-setup-change`), a reminder of fixed words that stays the coordinator's own call (`reminder-fixed-text`), two mixed
 batches, a follow-up's report (§3.4), a batch of one message and two reports, one worth telling
 and one with nothing new, a request for work another channel's task already has open, a question
 about another channel's task that only its latest words answer, a run report from a task holding

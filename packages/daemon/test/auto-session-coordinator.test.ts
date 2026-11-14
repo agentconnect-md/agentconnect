@@ -143,6 +143,14 @@ describe('the coordinator prompt and batch', () => {
     expect(prompt).toContain('Never write a plan or ask for approval')
   })
 
+  it('sends a request that needs a tool it lacks, or work on a schedule, to a task', () => {
+    const prompt = coordinatorPrompt({ agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] })
+    expect(prompt).toContain("a change to this agent's own setup, such as a scheduled task or access it lacks")
+    expect(prompt).toContain('a request that needs a tool you were not given goes to a task too')
+    expect(prompt).toContain('is a scheduled task, which a new task sets up. A reminder is not that')
+    expect(prompt).toContain('- Never reply that you lack a tool, or that you cannot do what a task could')
+  })
+
   it('tells the model an attachment is only a label to it and belongs to a task', () => {
     const prompt = coordinatorPrompt({ agentName: 'bot-a', platform: 'Slack', channelId: 'C1', peers: [] })
     expect(prompt).toContain('[attached: chart.png (image/png)] is all you see of a file')

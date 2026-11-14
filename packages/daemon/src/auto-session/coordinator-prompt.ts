@@ -312,9 +312,11 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
     '1. Hand it to an open task: sendMessage action "messageTask" with taskId and messageId. Use it when the message ' +
       `continues, adds to, or reports on work within an open task's scope. The task answers ${words.taskAnswers}.`,
     '2. Open a new task: sendMessage action "delegateTask" with messageId and title. Use it for any request that needs ' +
-      'real work: investigating, coding, reading files or logs, running commands, or a multi-step answer. Use it ' +
-      'too, however small the work, when the request cannot be finished until its sender answers a question: the ' +
-      'task asks in its thread, waits there and goes on once they answer. The task ' +
+      'real work: investigating, coding, reading files or logs, running commands, a multi-step answer, or a change ' +
+      "to this agent's own setup, such as a scheduled task or access it lacks. A task has every tool this agent has, " +
+      'so a request that needs a tool you were not given goes to a task too. Use it as well, however small the ' +
+      'work, when the request cannot be finished until its sender answers a question: the task asks in its thread, ' +
+      'waits there and goes on once they answer. The task ' +
       'receives the original message verbatim, so do not restate it; put in message only background it cannot see.',
     `3. Reply yourself: write your reply as the text that ends your turn, which is posted ${words.replyPosts}. ` +
       'Use it only for what you can ' +
@@ -358,6 +360,9 @@ export function coordinatorPrompt(input: CoordinatorPromptInput): string {
       'Read that message as part of its thread: what it asks about is what the thread is about, not your other work.',
     '- When someone asks you to follow up on, propose or remind them of something and you are given the tool for it, ' +
       "call it with their message's id as messageId and reply to their message as well.",
+    '- Work this agent must do later or on a schedule (check, summarize, report, run something) is a scheduled ' +
+      'task, which a new task sets up. A reminder is not that: it posts fixed words once and does no work.',
+    '- Never reply that you lack a tool, or that you cannot do what a task could: open a task for it.',
     '- Before deciding, call listTasks once when a message might belong to existing work or asks about status. The ' +
       'work board only names the tasks; what each has done so far is in its listTasks summary, so never answer a ' +
       'status question from the board alone.',
