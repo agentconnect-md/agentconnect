@@ -22885,7 +22885,9 @@ export class Daemon {
     if (!agent || !isCoordinatorCoordinate(sessionThreadOf(entry.msg))) return
     if (addressedToAnotherBot(entry, this.ownBotIdWhereMentionsAreBots(entry))) {
       this.log.info(`coordinator: ${entry.msg.msgId} for ${agent.id} skipped, it mentions only other bots`)
-      entry.admissionWait = Promise.resolve(false)
+      // A hold already on the entry is still awaited, so nothing it owns is left unsettled.
+      const held = entry.admissionWait
+      entry.admissionWait = held ? held.then(() => false) : Promise.resolve(false)
       return
     }
     const filter = agent.coordinatorFilter
