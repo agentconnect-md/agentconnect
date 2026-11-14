@@ -16,7 +16,18 @@ import {
   type ModelProviderTarget,
   type StaticModelCredentials
 } from '../runtimes/model-provider-config.js'
-import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, parseModelKeyTtlSeconds, type KeyGrant } from './client.js'
+import {
+  DEFAULT_MODEL_KEY_TTL_SECONDS,
+  KeyServerClient,
+  KeyServerError,
+  parseModelKeyTtlSeconds,
+  type KeyGrant
+} from './client.js'
+
+// A refusal of this session's request for its organization or a limit (key-server.md §6), which no degradation window outlasts.
+function standingDenied(error: unknown): boolean {
+  return error instanceof KeyServerError && (error.code === 'org_suspended' || error.code === 'quota_denied')
+}
 
 /** The daemon-internal session keys that address a credential lifecycle with no chat session
  *  behind it. Constructors rather than literals so the `internal:` namespace has one owner. */
@@ -272,17 +283,25 @@ export class ModelSessionHostPool {
       entry = undefined
     }
 
-    if (!entry || refreshDue || expired) {
-      let grant: KeyGrant
+    // Starting or resuming a runtime always asks the issuer, so an organization it now denies cannot come back.
+    const resuming = entry !== undefined && !entry.host && !entry.starting
+    let grant: KeyGrant | undefined
+    if (!entry || refreshDue || expired || resuming) {
       try {
         grant = await this.issueKey(agent, target, sessionKey)
       } catch (error) {
-        if (entry?.host && !expired) {
-          this.log.warn(`key-server refresh deferred for session ${sessionKey} (${formatErr(error)})`)
-          return this.selectedTurnHost(entry, entry.host)
+        if (entry && standingDenied(error)) {
+          // The runtime can reach endpoints the gateway never sees, so a denied org keeps no host here.
+          this.log.warn(`key-server denied session ${sessionKey}; stopping its model host (${formatErr(error)})`)
+          await this.release(sessionKey).catch((e) => this.log.warn(`model host release failed (${formatErr(e)})`))
         }
-        throw error
+        if (!entry || expired || standingDenied(error)) throw error
+        // An unreachable issuer is no verdict: the unexpired grant carries the session through its window (§6).
+        this.log.warn(`key-server check deferred for session ${sessionKey} (${formatErr(error)})`)
+        if (entry.host) return this.selectedTurnHost(entry, entry.host)
       }
+    }
+    if (grant) {
       if (entry) {
         const staleKeyId = entry.grant.keyId
         try {
@@ -303,6 +322,7 @@ export class ModelSessionHostPool {
       entry = { agentId: agent.id, sessionKey, target, grant }
       this.entries.set(sessionKey, entry)
     }
+    if (!entry) throw new Error(`model session ${sessionKey} has no credential`)
 
     const owner = entry
     let host = owner.host

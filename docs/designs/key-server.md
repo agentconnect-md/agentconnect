@@ -169,6 +169,13 @@ org's standing rather than anything about the credential. The tradeoff this acce
 in flight, and the per-request question is org-level — so the levers against one are stopping the org
 and rotating the signing key.
 
+The per-request question only sees traffic that goes through the gateway, and a runtime in a sandbox
+can reach any other HTTPS endpoint: through its own configuration, or by running code. So an issuer
+that tracks whether an organization may run also answers for it at issuance (§6). The daemon asks it
+every time a session's runtime starts: for a new session, and to resume one whose runtime stopped,
+even while the session still holds an unexpired grant. A denial refuses the turn and releases the
+session. A runtime that is already running is not asked again between turns.
+
 That is the default, not the rule. `--key-server-ttl <seconds>` / `KEY_SERVER_TTL_SECONDS` sets the
 requested window per deployment, for an install that would rather have sessions end at a deadline
 than leave a leaked credential usable for as long as its org is. Lowering it always binds; raising it
@@ -292,7 +299,8 @@ and refuses a selection requiring an unavailable credential.
   what it hands out, and daemons converge as sessions turn over.
 - **Expiring keys lapse.** The daemon replaces one once its refresh hint has passed,
   before the session's next activation; if refresh fails before expiry, the current
-  host remains usable for the rest of its granted window. Live SDK background work
+  host remains usable for the rest of its granted window, unless the failure is a
+  denial of the organization's standing, which stops the host (§6). Live SDK background work
   pins the host to its start-time credential: rotation never terminates work in flight,
   and past expiry the pinned host keeps running on the lapsed grant until the session
   becomes quiescent — a request the issuer has stopped honouring fails upstream, which
@@ -324,19 +332,31 @@ Errors are machine-readable (`KeyServerErrorBody`), and the daemon's obligation
 is to keep them attributable — a suspended org must surface as "organization
 suspended", never as a generic internal error:
 
-| Code              | HTTP | Daemon behavior                                                           |
-| ----------------- | ---- | ------------------------------------------------------------------------- |
-| `org_suspended`   | 403  | Surface as an org-level, user-visible condition; do not retry blindly.    |
-| `quota_denied`    | 403  | Surface as a limit condition with the issuer's message.                   |
-| `unauthorized`    | 401  | Credential problem between daemon and key server; operator-facing.        |
-| `unavailable`     | 503  | Enter the degradation window below; retry with backoff.                   |
-| `invalid_request` | 400  | The request itself is malformed; a retry of the same body cannot succeed. |
+| Code              | HTTP | Daemon behavior                                                                     |
+| ----------------- | ---- | ----------------------------------------------------------------------------------- |
+| `org_suspended`   | 403  | Surface as an org-level condition; stop the session that asked and revoke its key.  |
+| `quota_denied`    | 403  | Surface the issuer's limit message; stop the session that asked and revoke its key. |
+| `unauthorized`    | 401  | Credential problem between daemon and key server; operator-facing.                  |
+| `unavailable`     | 503  | Enter the degradation window below; retry with backoff.                             |
+| `invalid_request` | 400  | The request itself is malformed; a retry of the same body cannot succeed.           |
+
+An issuer that tracks whether an organization may run (billing, suspension) MUST refuse `IssueKey`
+with `org_suspended` while the organization may not run, and MUST NOT issue a credential in that
+state. `org_suspended` is reserved for that organization-wide verdict. `quota_denied` refuses a
+specific request or limit, such as a limit that applies to one session, and says nothing about the
+organization's other sessions. An issuer that does not track organization standing does not enforce
+it; its `IssueKey` can still fail for other reasons.
+
+Today the daemon acts on either code only for the session whose request was refused, at its start,
+resume or refresh: that session's turn fails, its host stops, and its key is revoked. An
+organization-wide check would act on `org_suspended` alone, stopping every session of the
+organization on the member; a `quota_denied` answer to such a check refuses nothing but the check.
 
 `invalid_request` exists because the other four describe the **org's standing**,
-so an issuer that rejected a malformed body had no truthful code to answer with.
-What it then reached for was an internal fault — the exact inversion the table
-above is here to prevent, and one that points an operator at the issuer's health
-rather than at the caller's request.
+its limits, or the issuer itself, so an issuer that rejected a malformed body had
+no truthful code to answer with. What it then reached for was an internal fault —
+the exact inversion the table above is here to prevent, and one that points an
+operator at the issuer's health rather than at the caller's request.
 
 **Degradation window.** An issued credential stays usable for its granted
 `expiresInSeconds` from the anchor of §3 — never longer, since that anchor
@@ -345,6 +365,9 @@ contractual answer to "how long does a session keep working through an issuer
 outage", and an implementation sizes it as its own tradeoff between revocation
 latency and outage tolerance. Only starting or refreshing past that horizon needs
 the server back.
+The window covers an issuer the daemon could not reach. It does not cover an
+issuer that answered with a denial: `org_suspended` and `quota_denied` stop the
+host at once, because the runtime may be calling endpoints the gateway never meters.
 
 ## 7. What this replaces, and what it does not
 
