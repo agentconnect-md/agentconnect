@@ -786,6 +786,105 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  describe('from a scheduled run’s own post', () => {
+    const scheduled = async (channelId: string) => {
+      const f = await fixture(false)
+      f.api.create.mockResolvedValue({ channel_id: channelId })
+      const invite = vi.spyOn(f.app.client.conversations, 'invite')
+      const handOff = vi.fn(async (_channel: string, _task: string): Promise<void> => {})
+      const env = { ...f.env, originMsgId: undefined, scheduleAnchor: { channel: 'C1', ts: '1.005' }, handOff }
+      const run = (args: Record<string, unknown>) =>
+        SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task', ...args }, env)
+      return { ...f, invite, handOff, env, run }
+    }
+
+    it('links the channel to the anchor, adds the people named and starts the task there', async () => {
+      const f = await scheduled('C_SCHED_1')
+      const result = await f.run({ invite: ['<@U1>', 'U2', 'U1'], task: 'Pick up the next ticket' })
+      expect(f.judgeWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'new', users: ['U1', 'U2'], anchoredIn: 'C1' })
+      )
+      expect(f.api.create).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ origin_channel_id: 'C1', origin_message_ts: '1.005' })
+      )
+      expect(f.invite.mock.calls.map(([args]) => args)).toEqual([
+        { channel: 'C_SCHED_1', users: 'U1' },
+        { channel: 'C_SCHED_1', users: 'U2' }
+      ])
+      expect(f.handOff).toHaveBeenCalledExactlyOnceWith('C_SCHED_1', 'Pick up the next ticket')
+      expect(result).toMatchObject({ channel_id: 'C_SCHED_1', invited: ['U1', 'U2'], handedOff: true })
+      await f.conn.stop()
+    })
+
+    it('needs someone to invite and a task before anything is judged or made', async () => {
+      const f = await scheduled('C_SCHED_2')
+      await expect(f.run({})).rejects.toThrow('at least one person')
+      await expect(f.run({ invite: ['U1'] })).rejects.toThrow('`task`')
+      await expect(f.run({ task: 'Do it' })).rejects.toThrow('`invite`')
+      expect(f.judgeWrite).not.toHaveBeenCalled()
+      expect(f.api.create).not.toHaveBeenCalled()
+      await f.conn.stop()
+    })
+
+    it('archives a channel nobody could be added to, and starts nothing in it', async () => {
+      const f = await scheduled('C_SCHED_3')
+      f.invite.mockRejectedValue(Object.assign(new Error('cant_invite'), { data: { error: 'cant_invite' } }))
+      await expect(f.run({ invite: ['U1'], task: 'Do it' })).rejects.toThrow('archived')
+      expect(f.api.archive).toHaveBeenCalledExactlyOnceWith({ channel_id: 'C_SCHED_3' })
+      expect(f.handOff).not.toHaveBeenCalled()
+      await f.conn.stop()
+    })
+
+    it('reports who could not be added, and counts someone already there as added', async () => {
+      const f = await scheduled('C_SCHED_4')
+      f.invite.mockImplementation(async (args) => {
+        const code = (args as { users: string }).users === 'U1' ? 'already_in_channel' : 'user_not_found'
+        throw Object.assign(new Error(code), { data: { error: code } })
+      })
+      expect(await f.run({ invite: ['U1', 'U9'], task: 'Do it' })).toMatchObject({
+        invited: ['U1'],
+        notInvited: ['U9'],
+        handedOff: true
+      })
+      expect(f.api.archive).not.toHaveBeenCalled()
+      await f.conn.stop()
+    })
+
+    it('starts the task once when the creation is retried', async () => {
+      const f = await scheduled('C_SCHED_5')
+      await f.run({ invite: ['U1'], task: 'Do it' })
+      expect(await f.run({ invite: ['U1'], task: 'Do it' })).toMatchObject({ handedOff: true })
+      expect(f.handOff).toHaveBeenCalledOnce()
+      await f.conn.stop()
+    })
+
+    it('keeps the channel and says to work in the origin when the task cannot be started there', async () => {
+      const f = await scheduled('C_SCHED_6')
+      f.handOff.mockRejectedValue(new Error('not reachable'))
+      expect(await f.run({ invite: ['U1'], task: 'Do it' })).toMatchObject({
+        invited: ['U1'],
+        handedOff: false,
+        next: expect.stringContaining('not reachable')
+      })
+      expect(f.api.archive).not.toHaveBeenCalled()
+      await f.conn.stop()
+    })
+
+    it('keeps a person’s message as the origin, judged without the schedule’s rule', async () => {
+      const f = await scheduled('C_SCHED_7')
+      const env = { ...f.env, originMsgId: 'slack:C1:1.002' }
+      await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, env)
+      expect(f.judgeWrite).toHaveBeenCalledWith(expect.not.objectContaining({ anchoredIn: expect.anything() }))
+      expect(f.api.create).toHaveBeenCalledWith(expect.objectContaining({ origin_message_ts: '1.002' }))
+      expect(f.invite).not.toHaveBeenCalled()
+      expect(f.handOff).not.toHaveBeenCalled()
+      await expect(
+        SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task', invite: ['U1'] }, env)
+      ).rejects.toThrow('for a scheduled run')
+      await f.conn.stop()
+    })
+  })
+
   it('hands the channel it makes to the session as a room keyed on the channel (auto-session-mode.md §6.8)', async () => {
     const f = await fixture(false)
     const rooms: unknown[] = []

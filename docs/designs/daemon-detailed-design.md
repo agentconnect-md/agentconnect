@@ -1341,7 +1341,9 @@ new (`createConversation`, a canvas outside any conversation) for an asker who i
 there, opened only with such members; a canvas or a list as a write into every conversation the
 platform's `documentReach` lists (Slack's `files.info`), and as something new where the whole
 workspace may open it or none holds it. A turn
-no person is behind writes only to its own conversation. A target the integration lists as external
+no person is behind writes only to its own conversation, except a Slack code channel made from the
+turn's own `scheduleAnchor` with people invited (`anchoredIn`, slack-code-channels.md "Agent tools").
+A target the integration lists as external
 (or, in assistant mode, one `PlaceTrust.confirm` cannot confirm internal) takes a post only as a
 draft (`AssistantDrafts.interceptPost`, for every agent; outside assistant mode only the asker who
 is a full member may approve, else the post is refused) and refuses any other write. An opaque

@@ -95,6 +95,10 @@ export interface PlatformSessionToolEnv {
   readonly deliveryChannel: string
   readonly deliveryThread: string
   readonly originMsgId?: string
+  /** The post a schedule anchored this turn to, while the turn is that schedule's alone. */
+  readonly scheduleAnchor?: { channel: string; ts: string }
+  /** Start this agent's work in a room the turn just made, which no person's message will start; resolves once delivered. */
+  readonly handOff?: (channel: string, task: string) => Promise<void>
   /** Make a room of the session's own for its work: a task's session holds it as one more thread, and a message there waits while it is attached (auto-session-mode.md §6.8). */
   readonly makeRoom?: <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => Promise<T>
   /** Publication is fenced by the live turn and the existing place write rule. */

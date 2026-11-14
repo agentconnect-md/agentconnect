@@ -101,7 +101,14 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
   message. Slack matches origin privacy and invites its author. An origin-derived
   idempotency key prevents duplicate channels when a call is retried. Creation inside
   an existing code channel returns that channel without creating another one, including
-  when the copied origin request arrives under a new message timestamp.
+  when the copied origin request arrives under a new message timestamp. A scheduled run
+  anchored to a channel may use its own anchor post as the origin, and then names who joins
+  (`invite`) and what to do there (`task`). The anchor's author is the bot, so Slack adds
+  nobody and its copy of the post starts nothing: the daemon invites the people named and
+  starts the task there as it starts a fire, with a post of the task and a turn of the same
+  schedule's. A channel nobody could be added to is archived rather than left without an
+  owner. Each fire makes at most one channel, keyed on its anchor, and a retried creation
+  starts the task once.
 - `setSlackCodeView`: publish a unified diff, self-contained HTML preview, PR tab, or
   existing Canvas with comment access using `type: canvas`, `canvasId` and `viewKey`.
   Attaching checks both conversation and document write authority. HTML and Canvas keys
@@ -137,7 +144,14 @@ ownership and resolve the channel-wide session before opening the modal. Subsequ
 settings changes retain the existing actor and session authorization checks.
 
 Tools use the session's own bot connection and the existing place write rule. Creating
-something new requires an eligible human asker. Cross-channel view/context/archive
+something new requires an eligible human asker. The one exception is a code channel a
+scheduled run no person is behind makes from its own anchor, because the people it invites
+own it. The write rule reads the anchor from the live turn, not from the tool, and needs it
+in the session's own conversation, on the agent's own bot, not shared with another
+organization; at least one person invited; every one of them a full member of the workspace;
+and, unless the anchor is confirmed public, a member of the anchor conversation, since Slack
+keeps its privacy. A schedule that records a person passes the same checks and is then judged
+as that person. A message folded into the turn removes the anchor. Cross-channel view/context/archive
 writes require that every asker may access the target, and the provider must report
 that this bot owns it. Tools never accept a privacy override or an arbitrary origin.
 

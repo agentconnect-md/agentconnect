@@ -591,6 +591,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('code channels')
   }
 
+  async inviteToCodeChannel(): Promise<never> {
+    this.unmodelled('code channels')
+  }
+
   async archiveCodeChannel(): Promise<never> {
     this.unmodelled('code channels')
   }

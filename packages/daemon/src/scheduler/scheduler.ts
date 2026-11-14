@@ -110,6 +110,42 @@ export function isHeadlessCronSession(rec: { channel: string; triggeredBy?: stri
   return rec.triggeredBy?.startsWith('cron:') === true && rec.channel === rec.triggeredBy
 }
 
+/** The post a schedule's fire was anchored to; a headless or unanchored fire has none, and a folded-in message makes the turn no longer the schedule's alone. */
+export function scheduleAnchorOf(
+  msg: Pick<NormalizedMessage, 'source' | 'channel' | 'transcriptTs' | 'headless'>,
+  foldedMessages: number
+): { channel: string; ts: string } | undefined {
+  if (msg.source !== 'cron' || msg.headless === true || msg.transcriptTs === undefined || foldedMessages > 0)
+    return undefined
+  return { channel: msg.channel, ts: msg.transcriptTs }
+}
+
+/** A schedule's task as it starts in a room its fire made: the same schedule's turn, in that room, reporting no run of its own. */
+export function scheduleRoomMessage(
+  fire: NormalizedMessage,
+  channel: string,
+  task: string,
+  traceId: string
+): NormalizedMessage {
+  const title = deriveTitle(task)
+  const id = `${fire.msgId}:room:${channel}`
+  return {
+    msgId: id,
+    traceId,
+    source: 'cron',
+    platform: fire.platform,
+    channel,
+    thread: id, // replaced by the task post's ts when posted
+    sender: fire.sender,
+    text: task,
+    ...(fire.scheduleTimeZone ? { scheduleTimeZone: fire.scheduleTimeZone } : {}),
+    ...(title ? { initialSessionTitle: title } : {}),
+    mentionedBots: [],
+    isDm: false,
+    trigger: 'cron'
+  }
+}
+
 /** Staleness cap on a catch-up: past this, a swallowed moment is history rather than a late fire. */
 const CATCH_UP_GRACE_CAP_MS = 60 * 60 * 1_000
 

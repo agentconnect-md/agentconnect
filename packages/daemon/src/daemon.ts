@@ -790,6 +790,8 @@ import {
   Scheduler,
   buildSyntheticMessage,
   cronAnchorText,
+  scheduleAnchorOf,
+  scheduleRoomMessage,
   missedOccurrence,
   scheduleFingerprint,
   type ScheduleDefinition
@@ -5712,6 +5714,23 @@ export class Daemon {
       // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
       // synchronous budget, and the provenance row. All coordinates come from the active
       // turn — the model supplies only a workspace-relative path and a caption.
+      scheduleAnchor: (ctx) => {
+        const live = this.activeGateEntries.get(this.sessionKeyOf(ctx))
+        return live ? scheduleAnchorOf(live.msg, live.foldedMessages?.length ?? 0) : undefined
+      },
+      // A schedule's post wakes nobody in the room it made, so its task is posted and dispatched there as a fire is.
+      startInRoom: async (ctx, channel, task) => {
+        const live = this.activeGateEntries.get(this.sessionKeyOf(ctx))
+        if (!live || !scheduleAnchorOf(live.msg, live.foldedMessages?.length ?? 0))
+          throw new Error('only a schedule’s own turn starts its task in a room it made')
+        const room = { channel, ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}) }
+        const fire = scheduleRoomMessage(live.msg, channel, task, randomUUID())
+        const { message } = await this.anchorTrigger(ctx.agentId, fire, room, task, `schedule room ${channel}`)
+        if (!message?.transcriptTs) throw new Error('the task could not be posted there')
+        void this.dispatch(ctx.agentId, message, ctx.integrationId).catch((err) =>
+          this.log.warn(`schedule room ${channel}: task turn failed: ${formatErr(err)}`)
+        )
+      },
       searchOrigin: (ctx): string | undefined =>
         this.activeTurnSearchOrigin.get(
           sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)

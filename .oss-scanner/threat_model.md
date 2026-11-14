@@ -145,6 +145,13 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   getting-to-know task and no join introduction (`heldByTask`, `gettingToKnowPlaceRefusal`
   `task-workspace`). Routing, commands, steering and the run report must not let a message in the
   channel reach another session, another task, or a turn answering in the origin thread.
+- **A schedule's code channel** (`slack-code-channels.md` "Agent tools"): the one thing a turn no person
+  is behind may make outside its own conversation. `judgePlaceWrite` admits a `new` target with
+  `anchoredIn` only when the live turn's own `scheduleAnchor` (a cron fire with nothing folded in) names
+  the session's conversation, on the agent's own bot, not shared with another organization, with at least
+  one invitee, each a full workspace member and, unless the anchor is confirmed public, a member of it.
+  The invitees are model input, so a run reading untrusted content can choose among those people but
+  cannot widen the audience past them; a tool's `anchoredIn` alone admits nothing.
 - **Thread reads** (`webchat-threads.md` §7.1): `GET /sessions/:id/messages?view=roots` and
   `GET /sessions/:id/threads/:rootId/messages` show a coordinator conversation's threads, including
   observations, messages people wrote in the channel without addressing an agent, to whoever may view

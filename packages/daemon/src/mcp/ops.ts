@@ -243,6 +243,8 @@ export interface OpsDeps
    *  through — ANY platform's, unlike `gatewayFor`, whose reply-surface registry deliberately
    *  omits a platform with no free-text surface (Linear). Absent ⇒ those tools cannot run. */
   sessionToolConnectionFor?: (integrationId: string) => unknown
+  /** Start a schedule's task in a room its own turn just made: posted there and run as that schedule's turn; rejects when nothing was posted. */
+  startInRoom?: (ctx: SessionContext, channel: string, task: string) => Promise<void>
   /** Make a room for the session's work, which a task holds as one more thread (auto-session-mode.md §6.8). */
   sessionToolRoomFor?: (ctx: SessionContext) => PlatformSessionToolEnv['makeRoom']
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
@@ -610,11 +612,16 @@ async function executeRegisteredTool(
     const deliveryThread = deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread
     const deliveryChannel = deps.deliveryChannelNow?.(ctx) ?? ctx.channel
     const makeRoom = deps.sessionToolRoomFor?.(ctx)
+    const scheduleAnchor = deps.scheduleAnchor?.(ctx)
     return await owner.sessionTools.execute(name, ctx, args, {
       connection: conn,
       deliveryChannel,
       deliveryThread,
       ...(makeRoom ? { makeRoom } : {}),
+      ...(scheduleAnchor ? { scheduleAnchor } : {}),
+      ...(scheduleAnchor && deps.startInRoom
+        ? { handOff: (channel, task) => deps.startInRoom!(ctx, channel, task) }
+        : {}),
       originMsgId: deps.searchOrigin?.(ctx),
       judgeWrite: (target) => authorizeSessionPublication(ctx, name, target, deps),
       postIdentity: () => ({
