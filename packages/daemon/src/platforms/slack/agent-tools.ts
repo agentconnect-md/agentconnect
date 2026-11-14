@@ -283,6 +283,10 @@ const SCHEDULED_NEEDS =
 const NOBODY_JOINED =
   'Nobody named in `invite` could be added, so the code channel was archived rather than left without an owner. ' +
   'Do the work in this conversation instead.'
+const nobodyJoinedUnarchived = (channel: string): string =>
+  `Nobody named in \`invite\` could be added to the code channel ${channel}, and archiving it failed, so it still ` +
+  `exists without an owner. Archive it with manageSlackCodeChannel {"channelId":"${channel}","action":"archive"}; ` +
+  'if that fails too, say in this conversation that it needs archiving. Do the work here instead.'
 
 /** Rooms a scheduled run already handed its task to, so a retried creation does not start the work twice. */
 const handedOff = new Set<string>()
@@ -298,8 +302,12 @@ async function ownAndStart(
 ): Promise<Record<string, unknown>> {
   const invited = await conn.inviteToCodeChannel(channel, invite)
   if (invited.length === 0) {
-    await conn.codeChannelApi('archive', { channel_id: channel }).catch(() => undefined)
-    throw new Error(NOBODY_JOINED)
+    // Archived is claimed only once Slack has said so; otherwise the channel is named so that it can still be closed.
+    const archived = await conn.codeChannelApi('archive', { channel_id: channel }).then(
+      () => true,
+      () => false
+    )
+    throw new Error(archived ? NOBODY_JOINED : nobodyJoinedUnarchived(channel))
   }
   const notInvited = invite.filter((user) => !invited.includes(user))
   const outcome = { invited, ...(notInvited.length ? { notInvited } : {}) }

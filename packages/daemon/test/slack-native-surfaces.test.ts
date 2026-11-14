@@ -835,6 +835,18 @@ describe('Slack native surfaces', () => {
       await f.conn.stop()
     })
 
+    it('names the channel as still open when nobody joined and it could not be archived', async () => {
+      const f = await scheduled('C_SCHED_8')
+      f.invite.mockRejectedValue(Object.assign(new Error('cant_invite'), { data: { error: 'cant_invite' } }))
+      f.api.archive.mockRejectedValue(new Error('slack is down'))
+      const refusal = await f.run({ invite: ['U1'], task: 'Do it' }).catch((err: Error) => err.message)
+      expect(refusal).toContain('archiving it failed')
+      expect(refusal).toContain('"channelId":"C_SCHED_8","action":"archive"')
+      expect(refusal).not.toContain('was archived')
+      expect(f.handOff).not.toHaveBeenCalled()
+      await f.conn.stop()
+    })
+
     it('reports who could not be added, and counts someone already there as added', async () => {
       const f = await scheduled('C_SCHED_4')
       f.invite.mockImplementation(async (args) => {
