@@ -197,7 +197,7 @@ describe('the Azure CLI in a proxied session', () => {
 
   function cliEnv(overrides: Partial<Parameters<typeof codeHostCliEnv>[0]> = {}) {
     return codeHostCliEnv({
-      hosts: [GITEA, AZURE, AZURE],
+      hosts: [AZURE, AZURE],
       placeholder: PLACEHOLDER,
       home: join(root, 'home'),
       hostKey: AGENT,
@@ -225,9 +225,9 @@ describe('the Azure CLI in a proxied session', () => {
     expect(second.AZURE_EXTENSION_DIR).toBe(join(root, 'cliextensions'))
     // Another host of the agent keeps its own.
     expect(cliEnv({ hostKey: `${AGENT}\u0000session-1` }).AZURE_CONFIG_DIR).not.toBe(first.AZURE_CONFIG_DIR)
-    // A variable the session's own env sets is left to it, and a provider with no CLI adds nothing.
+    // A variable the session's own env sets is left to it, and each provider adds only its own CLI's.
     expect(cliEnv({ own: (name) => name === 'AZURE_DEVOPS_EXT_PAT' })).not.toHaveProperty('AZURE_DEVOPS_EXT_PAT')
-    expect(cliEnv({ hosts: [GITEA] })).toEqual({})
+    expect(cliEnv({ hosts: [GITEA] })).toEqual({ GITEA_TOKEN: PLACEHOLDER, GITEA_INSTANCE_URL: `${GITEA.baseUrl}/` })
   })
 
   // POSIX only: the planted link is a symbolic link.
@@ -253,12 +253,12 @@ describe('the Azure CLI in a proxied session', () => {
       commands: ['gh', 'az'],
       paths: [root]
     })
-    expect(codeHostCliReads(['github', 'gitlab', 'gitea'], {})).toEqual({ commands: ['gh', 'glab'], paths: [] })
+    expect(codeHostCliReads(['github', 'gitlab', 'gitea'], {})).toEqual({ commands: ['gh', 'glab', 'tea'], paths: [] })
   })
 
   it('plans remote CLI state in the target filesystem without reading or creating holder paths', () => {
     const opts = {
-      hosts: [GITEA, AZURE, AZURE],
+      hosts: [AZURE, AZURE],
       placeholder: PLACEHOLDER,
       root: '/run/agentconnect',
       hostKey: AGENT,
@@ -276,7 +276,10 @@ describe('the Azure CLI in a proxied session', () => {
     expect(planned.env.AZURE_EXTENSION_DIR).toBe(`${planned.env.AZURE_CONFIG_DIR}/cliextensions`)
     expect(planned.clearDirs).toEqual([planned.env.AZURE_CONFIG_DIR])
     expect(planned.files).toEqual([])
-    expect(codeHostCliLaunch({ ...opts, hosts: [GITEA] })).toEqual({ env: {}, clearDirs: [], files: [] })
+    expect(codeHostCliLaunch({ ...opts, hosts: [GITEA] })).toMatchObject({
+      env: { GITEA_TOKEN: PLACEHOLDER, GITEA_INSTANCE_URL: `${GITEA.baseUrl}/` },
+      files: []
+    })
     expect(codeHostCliLaunch({ ...opts, hostKey: `${AGENT}\u0000session-1` }).clearDirs).not.toEqual(planned.clearDirs)
     const supplied = codeHostCliLaunch({
       ...opts,

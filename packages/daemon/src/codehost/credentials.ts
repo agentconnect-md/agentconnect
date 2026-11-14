@@ -119,8 +119,13 @@ export interface CodeHostCli {
   readonly ownTokenEnv?: readonly string[]
   /** Where the operator installed the CLI's extensions: the daemon config's directory, else the CLI's default under the daemon user's home. */
   extensionDir?(config: Pick<Config, 'azureDevOps'>): string
-  /** The variables the CLI reads: the placeholder it presents, a fresh state directory of the session's own, and the extensions when they exist. */
-  env(session: { placeholder: string; stateDir: string; extensionDir?: string }): Record<string, string>
+  /** The variables the CLI reads: the placeholder it presents, the provider's hosts, a fresh state directory of the session's own, and the extensions when they exist. */
+  env(session: {
+    placeholder: string
+    hosts: readonly ManagedCredentialHost[]
+    stateDir: string
+    extensionDir?: string
+  }): Record<string, string>
   /** Files written into that state directory, by name, holding the placeholder for each of the provider's hosts; a runtime that drops token-named variables still reads them. */
   stateFiles?(session: { placeholder: string; hosts: readonly ManagedCredentialHost[] }): Record<string, string>
 }

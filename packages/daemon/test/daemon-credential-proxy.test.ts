@@ -31,6 +31,7 @@ import {
   type GitCredRequest
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { giteaCredentials } from '../src/gitea/credentials.js'
 import { resolveCommandPath } from '../src/runtimes/probe.js'
 import { agentHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { secretsShimDir } from '../src/cp/secrets-shim.js'
@@ -852,6 +853,29 @@ describe('a Gitea agent behind the credential proxy', () => {
       })
     ).rejects.toThrow(/example-org\/unlisted is not authorized for this agent/)
     expect(asked).toHaveLength(2)
+  })
+
+  it('hands tea the placeholder at the spec’s instance, with a slash so a sibling path never matches', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITEA_AGENT, giteaSpec())
+    const { own } = sessionEnv(d, GITEA_AGENT)
+    expect(own.GITEA_TOKEN).toBe(own.AC_CODEHOST_CREDENTIAL)
+    expect(own.GITEA_INSTANCE_URL).toBe('https://gitea.com/')
+    expect(
+      giteaCredentials.cli!.env({
+        placeholder: 'acph1_x.y',
+        hosts: [{ provider: 'gitea', baseUrl: 'https://gitea.example.test:8443/forge' }],
+        stateDir: '/state'
+      })
+    ).toEqual({ GITEA_TOKEN: 'acph1_x.y', GITEA_INSTANCE_URL: 'https://gitea.example.test:8443/forge/' })
+  })
+
+  it('leaves tea to Gitea variables the agent was configured with', async () => {
+    const { d } = await startDaemon()
+    await admit(d, GITEA_AGENT, { ...giteaSpec(), env: { GITEA_TOKEN: 'agent-own' } } as unknown as AgentSpec)
+    const { own } = sessionEnv(d, GITEA_AGENT)
+    expect(own.GITEA_TOKEN).toBe('agent-own')
+    expect(own.GITEA_INSTANCE_URL).toBeUndefined()
   })
 })
 

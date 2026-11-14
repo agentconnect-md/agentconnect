@@ -27,6 +27,17 @@ export const giteaCredentials: CodeHostCredentialModule = {
   resolvesByName: false,
   // §9: the bot token reaches every repository the bot can, whatever the agent's grant, so only the proxy and the daemon's own Git present it.
   proxyOnly: true,
+  // tea logs in from these two; its config has no directory variable, so a shim writes the same login under its own HOME (shim/tea-login.ts).
+  cli: {
+    command: 'tea',
+    // An agent's own Gitea variables leave tea entirely to it, as an env login always wins in tea.
+    ownTokenEnv: ['GITEA_TOKEN', 'GITEA_INSTANCE_URL'],
+    env: ({ placeholder, hosts }): Record<string, string> => {
+      const host = hosts[0]
+      // The trailing slash keeps tea's remote match (a string prefix) off a sibling path such as `/forge-other`.
+      return host ? { GITEA_TOKEN: placeholder, GITEA_INSTANCE_URL: `${host.baseUrl.replace(/\/+$/, '')}/` } : {}
+    }
+  },
   placeSecondaryRoot: (row): SecondaryRootPlacement | undefined => {
     // `repos/_gitea/<repository id>` — the id, because a rename or a transfer moves the path.
     const [owner, repo, ...rest] = row.repoFullName.split('/')

@@ -96,6 +96,7 @@ export function codeHostCliLaunch(opts: {
     clearDirs.push(stateDir)
     const vars = cli.env({
       placeholder: opts.placeholder,
+      hosts,
       stateDir
     })
     for (const [name, value] of Object.entries(vars)) if (!opts.own(name)) env[name] = value
@@ -128,6 +129,7 @@ export function codeHostCliEnv(opts: {
     }
     const vars = cli.env({
       placeholder: opts.placeholder,
+      hosts,
       stateDir,
       ...(extensionDir !== undefined && isDirectory(extensionDir) ? { extensionDir } : {})
     })
