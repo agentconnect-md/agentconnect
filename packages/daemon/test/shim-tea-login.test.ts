@@ -49,7 +49,8 @@ describe("tea's login in a shim's HOME", () => {
       { name: 'agentconnect', url: INSTANCE_URL, token: PLACEHOLDER, default: true },
       { name: 'own', url: 'https://other.example.test', token: 'own-token', default: true }
     ])
-    expect(statSync(configAt(dir)).mode & 0o777).toBe(0o600)
+    // Windows has no POSIX mode bits to check.
+    if (process.platform !== 'win32') expect(statSync(configAt(dir)).mode & 0o777).toBe(0o600)
   })
 
   it('writes under XDG_CONFIG_HOME when the session names one', () => {
