@@ -41,6 +41,7 @@ export const GITHUB_APP_PERMISSIONS = {
   pull_requests: 'write',
   actions: 'write',
   checks: 'write',
+  statuses: 'read',
   workflows: 'write',
   deployments: 'read',
   emails: 'read',

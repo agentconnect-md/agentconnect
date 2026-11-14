@@ -150,11 +150,11 @@ Every mint is for one repository and one permission set determined by the
 authorization row. Wire `capabilities` describes categories; the Control Plane
 chooses levels:
 
-| Access    | contents | workflows | issues | pull_requests | actions | Scenario                                                               |
-| --------- | -------- | --------- | ------ | ------------- | ------- | ---------------------------------------------------------------------- |
-| `read`    | read     | None      | read   | read          | None    | Reference repository: clone, fetch, `gh issue view`                    |
-| `comment` | read     | None      | write  | write         | None    | Hook watching and `gh issue comment` replies                           |
-| `write`   | write    | write     | write  | write         | write   | Secondary working repository: push, edit workflows, run GitHub Actions |
+| Access    | contents | workflows | issues | pull_requests | checks, statuses | actions | Scenario                                                               |
+| --------- | -------- | --------- | ------ | ------------- | ---------------- | ------- | ---------------------------------------------------------------------- |
+| `read`    | read     | None      | read   | read          | read             | None    | Reference repository: clone, fetch, `gh issue view`, `gh pr checks`    |
+| `comment` | read     | None      | write  | write         | read             | None    | Hook watching and `gh issue comment` replies                           |
+| `write`   | write    | write     | write  | write         | read             | write   | Secondary working repository: push, edit workflows, run GitHub Actions |
 
 The workspace retains `gitAccess: read|write`, corresponding to the read and
 write rows. It has no additional-repository comment level. The only exception,
@@ -163,10 +163,21 @@ hook authorizes fixed `{issues: write, pull_requests: write}` with no contents,
 so an always-on hook reply works in a read workspace without letting the agent
 push.
 
+`checks` and `statuses` are not wire capabilities. They ride along as `read`
+whenever a mint carries `pull_requests`, so `gh pr checks` and `gh pr view`
+can read the pull request's CI results, and the git plane's contents-only
+token stays narrow. Each is asked for only when the installation has granted
+it, because GitHub refuses the whole token for a permission the installation
+lacks. Writing either stays with the Control Plane's own reporter
+([github-pr-review-checks.md](github-pr-review-checks.md)).
+
 Using `actions:write` and `workflows:write` requires the deployment GitHub App
 to declare **Actions: Read and write** and **Workflows: Read and write**, and
-each installation owner to approve the permission change. An installation token
-can only narrow approved App permissions; it cannot expand them.
+each installation owner to approve the permission change. Reading commit
+statuses likewise needs **Commit statuses: Read-only**, which new Apps request;
+an existing App gains it when an administrator adds it in the App's settings and
+the installation owner approves. An installation token can only narrow approved
+App permissions; it cannot expand them.
 
 ## Security boundary
 
