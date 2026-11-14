@@ -8083,6 +8083,7 @@ export class Daemon {
 
   /** A session's workspace for AHP clients: the same reader, containment and read-only scope the console's file browser uses. */
   private ahpWorkspace(): NonNullable<AhpServiceOptions['workspace']> {
+    type Workspace = NonNullable<AhpServiceOptions['workspace']>
     const scope = createWorkspaceScope({
       workspaces: this.workspaces,
       agentOf: (id) => this.agents.get(id),
@@ -8101,6 +8102,56 @@ export class Daemon {
       const location = isolated ?? (await scope.location(agentId).catch(() => undefined))
       return { location, request: { agentId, ...(isolated ? { sessionId } : {}) } }
     }
+    // What the reader refuses (a link out of the root, a sandbox that is not running) is absent to a client, not a failed host.
+    const guarded =
+      <A extends unknown[], T>(operation: (...args: A) => Promise<T | undefined>) =>
+      (...args: A): Promise<T | undefined> =>
+        operation(...args).catch((error: unknown) => {
+          if (error instanceof WorkspaceViolationError) return undefined
+          throw error
+        })
+    const list: Workspace['list'] = async (binding, auth, path) => {
+      const { location, request } = await target(binding.sessionId, auth.agentId)
+      if (!location) return undefined
+      const entries: { name: string; type: 'file' | 'directory' }[] = []
+      let cursor: string | undefined
+      do {
+        const page = await reader.list({ ...request, path, limit: 500, ...(cursor ? { cursor } : {}) })
+        if (!page.exists) return undefined
+        for (const entry of page.entries)
+          if (entry.type === 'dir' || entry.type === 'file')
+            entries.push({ name: entry.name, type: entry.type === 'dir' ? 'directory' : 'file' })
+        cursor = page.nextCursor
+      } while (cursor && entries.length < 2000)
+      return entries
+    }
+    const stat: Workspace['stat'] = async (binding, auth, path) => {
+      const { location, request } = await target(binding.sessionId, auth.agentId)
+      if (!location) return undefined
+      if (!path) return { type: 'directory' }
+      const head = await reader.read({ ...request, path, offset: 0, limit: 1, encoding: 'base64' })
+      if (!head.exists) return undefined
+      if (head.type === 'dir') return { type: 'directory' }
+      return {
+        type: 'file',
+        ...(head.size === undefined ? {} : { size: head.size }),
+        ...(head.mtime ? { mtime: head.mtime } : {})
+      }
+    }
+    const read: Workspace['read'] = async (binding, auth, path, maxBytes) => {
+      const { location, request } = await target(binding.sessionId, auth.agentId)
+      if (!location || !path) return undefined
+      const slices: Buffer[] = []
+      for (let offset = 0; ;) {
+        const slice = await reader.read({ ...request, path, offset, limit: 65536, encoding: 'base64' })
+        if (!slice.exists || slice.type === 'dir') return undefined
+        if ((slice.size ?? 0) > maxBytes) return 'too-large'
+        slices.push(Buffer.from(slice.content ?? '', 'base64'))
+        if (!slice.truncated || slice.nextOffset === undefined || slice.nextOffset <= offset) break
+        offset = slice.nextOffset
+      }
+      return Buffer.concat(slices)
+    }
     return {
       // Canonical, because a runtime reports the paths it edits that way; a root not on this disk yet resolves through its nearest ancestor.
       root: async (binding, auth) => {
@@ -8114,48 +8165,9 @@ export class Daemon {
         }
         return root
       },
-      list: async (binding, auth, path) => {
-        const { location, request } = await target(binding.sessionId, auth.agentId)
-        if (!location) return undefined
-        const entries: { name: string; type: 'file' | 'directory' }[] = []
-        let cursor: string | undefined
-        do {
-          const page = await reader.list({ ...request, path, limit: 500, ...(cursor ? { cursor } : {}) })
-          if (!page.exists) return undefined
-          for (const entry of page.entries)
-            if (entry.type === 'dir' || entry.type === 'file')
-              entries.push({ name: entry.name, type: entry.type === 'dir' ? 'directory' : 'file' })
-          cursor = page.nextCursor
-        } while (cursor && entries.length < 2000)
-        return entries
-      },
-      stat: async (binding, auth, path) => {
-        const { location, request } = await target(binding.sessionId, auth.agentId)
-        if (!location) return undefined
-        if (!path) return { type: 'directory' }
-        const head = await reader.read({ ...request, path, offset: 0, limit: 1, encoding: 'base64' })
-        if (!head.exists) return undefined
-        if (head.type === 'dir') return { type: 'directory' }
-        return {
-          type: 'file',
-          ...(head.size === undefined ? {} : { size: head.size }),
-          ...(head.mtime ? { mtime: head.mtime } : {})
-        }
-      },
-      read: async (binding, auth, path, maxBytes) => {
-        const { location, request } = await target(binding.sessionId, auth.agentId)
-        if (!location || !path) return undefined
-        const slices: Buffer[] = []
-        for (let offset = 0; ;) {
-          const slice = await reader.read({ ...request, path, offset, limit: 65536, encoding: 'base64' })
-          if (!slice.exists || slice.type === 'dir') return undefined
-          if ((slice.size ?? 0) > maxBytes) return 'too-large'
-          slices.push(Buffer.from(slice.content ?? '', 'base64'))
-          if (!slice.truncated || slice.nextOffset === undefined || slice.nextOffset <= offset) break
-          offset = slice.nextOffset
-        }
-        return Buffer.concat(slices)
-      }
+      list: guarded(list),
+      stat: guarded(stat),
+      read: guarded(read)
     }
   }
 

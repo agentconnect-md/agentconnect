@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -353,6 +362,17 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
       await expect(request('resourceResolve', outside)).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
     }
     await expect(request('resourceList', 'file:///')).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    // A link out of the workspace is refused by the reader itself, and that refusal reads as absence too.
+    const directory = fileURLToPath(workspace!)
+    symlinkSync(join(files.root, 'config.json'), join(directory, 'docs', 'escape.json'))
+    symlinkSync(files.root, join(directory, 'outside'))
+    await expect(request('resourceRead', `${workspace}/docs/escape.json`)).rejects.toMatchObject({
+      code: AhpErrorCodes.NotFound
+    })
+    await expect(request('resourceList', `${workspace}/outside`)).rejects.toMatchObject({
+      code: AhpErrorCodes.NotFound
+    })
+    expect(viewer.closed()).toBe(false)
 
     const tool = viewer
       .state()!
