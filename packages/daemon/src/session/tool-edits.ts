@@ -80,3 +80,17 @@ export function toolEditText(
   if (item?.path !== edit.path) return undefined
   return side === 'after' ? item.newText : (item.oldText ?? undefined)
 }
+
+// Turns a fragment edit into whole-file snapshots from the file as it is now; undefined when the fragment no longer pins one place.
+export function wholeFileEdit(
+  body: unknown,
+  edit: { index: number; path: string },
+  file: string
+): { before: string; after: string } | undefined {
+  const content = body && typeof body === 'object' ? (body as { content?: unknown }).content : undefined
+  const item = diffItems(content).slice(0, MAX_EDITS)[edit.index]
+  if (item?.path !== edit.path || item.oldText == null || !item.newText) return undefined
+  const at = file.indexOf(item.newText)
+  if (at < 0 || file.indexOf(item.newText, at + 1) >= 0) return undefined
+  return { before: file.slice(0, at) + item.oldText + file.slice(at + item.newText.length), after: file }
+}

@@ -23,7 +23,8 @@ import {
   type ActionEnvelope,
   type ChatAction,
   type ChatState,
-  type RootState
+  type RootState,
+  type SessionState
 } from '@microsoft/agent-host-protocol'
 import type {
   AhpAttachmentAuthorization,
@@ -306,6 +307,65 @@ describe('actual Daemon AHP acceptance with official SDK and an ACP process', ()
     await expect(
       read(edit.after!.content.uri.replace(Buffer.from(uri).toString('hex'), Buffer.from(`${uri}x`).toString('hex')))
     ).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    expect(viewer.closed()).toBe(false)
+  })
+
+  it('serves the session workspace read-only and turns a fragment edit into whole-file snapshots', async () => {
+    const files = scaffold()
+    const host = await boot(files.root, registry())
+    const viewer = await host.connect()
+    await viewer.client.initialize({ clientId: 'viewer', protocolVersions: ['1.0.0'] })
+    await viewer.client.request('createSession', { channel: uri, provider: agentId })
+    const session = (await viewer.client.subscribe(uri)).result.snapshot!.state as SessionState
+    const [workspace] = session.workingDirectories ?? []
+    expect(workspace).toMatch(/^file:\/\/\/.*\/workspace$/)
+    await viewer.subscribe()
+    viewer.send(randomUUID(), '[ahp:write]')
+    await expect.poll(() => viewer.state()?.turns.length, WAIT).toBe(1)
+
+    const request = <T>(method: string, target: string, extra: object = {}) =>
+      viewer.client.request(method as 'resourceRead', { channel: 'ahp-root://', uri: target, ...extra }) as Promise<T>
+    expect(await request('resourceList', workspace!)).toEqual({ entries: [{ name: 'docs', type: 'directory' }] })
+    expect(await request('resourceList', `${workspace}/docs`)).toEqual({
+      entries: [{ name: 'notes.txt', type: 'file' }]
+    })
+    expect(await request('resourceResolve', `${workspace}/docs`)).toEqual({
+      uri: `${workspace}/docs`,
+      type: 'directory'
+    })
+    expect(await request('resourceResolve', `${workspace}/docs/notes.txt`)).toMatchObject({ type: 'file', size: 20 })
+    expect(await request('resourceRead', `${workspace}/docs/notes.txt`)).toEqual({
+      data: Buffer.from('alpha\nBRAVO\ncharlie\n').toString('base64'),
+      encoding: 'base64'
+    })
+    expect(await request('resourceRead', `${workspace}/docs/notes.txt`, { encoding: 'utf-8' })).toEqual({
+      data: 'alpha\nBRAVO\ncharlie\n',
+      encoding: 'utf-8'
+    })
+    // Nothing outside the session's root is reachable, by a sibling path, a traversal or another scheme.
+    for (const outside of [
+      `${workspace}/../agent.json`,
+      `${workspace}-sibling/x`,
+      'file:///etc/hosts',
+      `${workspace}/docs/missing.txt`
+    ]) {
+      await expect(request('resourceRead', outside)).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+      await expect(request('resourceResolve', outside)).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    }
+    await expect(request('resourceList', 'file:///')).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+
+    const tool = viewer
+      .state()!
+      .turns[0]!.responseParts.find(
+        (part) => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === 'runtime:fixture-write'
+      )
+    if (tool?.kind !== ResponsePartKind.ToolCall || tool.toolCall.status !== ToolCallStatus.Completed)
+      throw new Error('Missing completed edit')
+    const edit = tool.toolCall.content?.find((item) => item.type === ToolResultContentType.FileEdit)
+    if (edit?.type !== ToolResultContentType.FileEdit) throw new Error('Missing file edit')
+    expect(edit.after!.uri).toBe(`${workspace}/docs/notes.txt`)
+    expect(await request('resourceRead', edit.before!.content.uri)).toMatchObject({ data: 'alpha\nbravo\ncharlie\n' })
+    expect(await request('resourceRead', edit.after!.content.uri)).toMatchObject({ data: 'alpha\nBRAVO\ncharlie\n' })
     expect(viewer.closed()).toBe(false)
   })
 

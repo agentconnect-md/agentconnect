@@ -444,6 +444,44 @@ describe('AHP recovery and authorization boundary', () => {
     expect(warn).toHaveBeenCalledWith('unsupported AHP method "sessionConfigCompletions"')
   })
 
+  it('lists, resolves and reads workspace resources, and reports an absent or oversized one without closing', async () => {
+    const files: Record<string, Buffer | 'too-large'> = {
+      'file:///work/a.txt': Buffer.from('h\u00e9llo'),
+      'file:///work/big.bin': 'too-large',
+      'file:///work/wide.bin': Buffer.alloc(60 * 1024, 1)
+    }
+    const { client, closed } = await fixture({
+      workspace: {
+        list: async (uri) => (uri === 'file:///work' ? [{ name: 'a.txt', type: 'file' }] : undefined),
+        stat: async (uri) => (uri === 'file:///work' ? { type: 'directory' } : files[uri] && { type: 'file', size: 6 }),
+        read: async (uri) => files[uri]
+      }
+    })
+    await client.initialize({ clientId: 'one', protocolVersions: ['1.0.0'] })
+    const ask = (method: string, uri: string, extra: object = {}) =>
+      client.request(method as 'resourceRead', { channel: root, uri, ...extra })
+    expect(await ask('resourceList', 'file:///work')).toEqual({ entries: [{ name: 'a.txt', type: 'file' }] })
+    expect(await ask('resourceResolve', 'file:///work')).toEqual({ uri: 'file:///work', type: 'directory' })
+    expect(await ask('resourceResolve', 'file:///work/a.txt')).toEqual({
+      uri: 'file:///work/a.txt',
+      type: 'file',
+      size: 6
+    })
+    expect(await ask('resourceRead', 'file:///work/a.txt')).toEqual({
+      data: Buffer.from('h\u00e9llo').toString('base64'),
+      encoding: ContentEncoding.Base64
+    })
+    expect(await ask('resourceRead', 'file:///work/a.txt', { encoding: 'utf-8' })).toEqual({
+      data: 'h\u00e9llo',
+      encoding: ContentEncoding.Utf8
+    })
+    for (const method of ['resourceList', 'resourceResolve', 'resourceRead'])
+      await expect(ask(method, 'file:///elsewhere')).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    for (const uri of ['file:///work/big.bin', 'file:///work/wide.bin'])
+      await expect(ask('resourceRead', uri)).rejects.toMatchObject({ code: -32600 })
+    expect(closed).not.toHaveBeenCalled()
+  })
+
   it('accepts opaque 2048-byte cursors and only exposes explicitly supported extension methods', async () => {
     const list = vi.fn(async () => ({ items: [] }))
     const custom = vi.fn(async () => ({ ok: true }))

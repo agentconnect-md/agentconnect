@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "name": "ahp-harness-driver",
+  "version": "0.0.1",
+  "main": "./extension.js",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "displayName": "AHP harness driver",
+  "publisher": "agentconnect"
+}

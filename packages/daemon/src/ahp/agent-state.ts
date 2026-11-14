@@ -141,7 +141,8 @@ export class AhpAgentState {
   async add(
     binding: Binding,
     history: readonly MaskedChatEvent[] | ChatState = [],
-    config?: SessionConfigState
+    config?: SessionConfigState,
+    workingDirectories?: string[]
   ): Promise<void> {
     const current = this.entries.get(binding.sessionId)
     if (current?.binding) {
@@ -188,6 +189,7 @@ export class AhpAgentState {
         chats: [summaryOf(chat)],
         defaultChat: resource,
         config,
+        ...(workingDirectories?.length ? { workingDirectories } : {}),
         _meta: {
           ...restored.presentation,
           'agentconnect.md': {
