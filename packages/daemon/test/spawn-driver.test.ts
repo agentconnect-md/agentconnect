@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AcpHost } from '../src/acp/acp-host.js'
 import { LocalDriver } from '../src/acp/spawn-driver.js'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../src/acp/spawn-driver.js'
+import { WAIT } from './wait-support.js'
 
 /**
  * The seam's whole purpose: `AcpHost` speaks ACP over a byte-stream pair and a
@@ -230,7 +231,40 @@ describe('LocalDriver stop with an EOF grace window', () => {
     void reader.cancel()
     const started = Date.now()
     await runtime.stop(5000)
-    expect(Date.now() - started).toBeLessThan(300)
+    // Windows ends the tree through taskkill, which walks the process table before it kills.
+    expect(Date.now() - started).toBeLessThan(process.platform === 'win32' ? 3000 : 300)
+  })
+})
+
+describe('LocalDriver stop behind a launcher', () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  /** A launcher that runs its real program as a child and reports that child's pid, as a onefile binary does. */
+  const launcher = [
+    '-e',
+    `const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+     process.stdin.resume(); setInterval(() => {}, 1000); process.stdout.write(child.pid + '\\n')`
+  ]
+
+  it("ends the launcher's child along with the launcher", async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({ command: process.execPath, args: launcher, env: {} })
+    const reader = (runtime.fromAgent as ReadableStream<Uint8Array>).getReader()
+    const pid = Number(new TextDecoder().decode((await reader.read()).value))
+    void reader.cancel()
+    try {
+      expect(alive(pid)).toBe(true)
+      await runtime.stop(5000)
+      await vi.waitFor(() => expect(alive(pid)).toBe(false), WAIT)
+    } finally {
+      if (alive(pid)) process.kill(pid, 'SIGKILL')
+    }
   })
 })
 
