@@ -3954,6 +3954,12 @@ finds that out.
   coordinator's delegated tasks and approved proposals that are running or changed within a day,
   never itself, a follow-up or a getting-to-know task. One line each, as a Here line of the board
   reads: kind, status, title, who asked, id. At most ten, the rest counted.
+- **Each sibling's own status.** Under a sibling's line comes the first sentence of its summary,
+  which states its status on its own ([auto-session-mode.md](auto-session-mode.md) §6.7), with when
+  it was written. It is read from the task's row, so no session relays it. The list says that this
+  status stands where it differs from what the task was told. A coordinator opening a task
+  describes other tasks from what it remembers, and on the test deployment a task repeated such a
+  description after the sibling had moved on, with `readTask` offered and never called.
 - **Narrower than the board on purpose.** A task opened days ago and only waiting to close says
   nothing to a task that starts now, and other places' work is not listed, since what collided was
   two tasks of one place. That keeps the list short where a coordinator's board is always full,
@@ -5675,3 +5681,8 @@ neither the board nor a way to read another task. A coordinator's task is now to
 running or recently changed tasks of its own conversation, is offered `readTask`, and is told to
 look before it changes something others share. Tasks read each other and never message or stop one
 another.
+
+**Hundred-and-eleventh revision (2026-11-14)**: a sibling's line carries the first sentence of its
+own summary and when it was written (§5.18 ⑥ "Each sibling's own status"). A task had only a
+sibling's title and whether it was running, and took the rest from what its coordinator told it,
+which can be older than the sibling's own account.
