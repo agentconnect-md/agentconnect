@@ -3,7 +3,7 @@ import { sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
-import { DEFAULT_MODEL_KEY_TTL_SECONDS } from '../src/key-server/client.js'
+import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerError } from '../src/key-server/client.js'
 import { offClusterPlaintext } from '../src/key-server/session-hosts.js'
 
 function harness(grants: Array<Record<string, unknown>>, opts: Record<string, unknown> = {}) {
@@ -163,6 +163,34 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
     expect(h.revoke).toHaveBeenCalledWith('key-1')
   })
+
+  it('keeps the host through a refresh the key server could not answer', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000, expiresAtMs: 4_000 }])
+    await h.daemon.modelSessions.ensure(agent, 'session-a')
+    h.issue.mockRejectedValueOnce(new KeyServerError('down', 'unavailable', 503))
+    h.clock.advance(1_000)
+
+    const kept = await h.daemon.modelSessions.ensure(agent, 'session-a')
+    expect(kept.host).toBe(h.firstHost)
+    expect(h.firstHost.stop).not.toHaveBeenCalled()
+    expect(h.revoke).not.toHaveBeenCalled()
+  })
+
+  it.each(['quota_denied', 'org_suspended'] as const)(
+    'stops the host and refuses the turn when a refresh is denied with %s',
+    async (code) => {
+      const h = harness([{ keyId: 'key-1', key: 'old', requestedAtMs: 1_000, refreshAtMs: 2_000 }])
+      await h.daemon.modelSessions.ensure(agent, 'session-a')
+      h.issue.mockRejectedValueOnce(new KeyServerError('Out of credits', code, 403))
+      h.clock.advance(1_000)
+
+      // A host kept past the denial would let the runtime keep calling an endpoint outside the gateway.
+      await expect(h.daemon.modelSessions.ensure(agent, 'session-a')).rejects.toThrow('Out of credits')
+      expect(h.firstHost.stop).toHaveBeenCalledOnce()
+      expect(h.revoke).toHaveBeenCalledWith('key-1')
+      expect(h.daemon.modelSessions.has('session-a')).toBe(false)
+    }
+  )
 
   it('defers a non-expired refresh until live SDK work becomes quiescent', async () => {
     const h = harness([

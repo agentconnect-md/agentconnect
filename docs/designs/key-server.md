@@ -169,6 +169,14 @@ org's standing rather than anything about the credential. The tradeoff this acce
 in flight, and the per-request question is org-level — so the levers against one are stopping the org
 and rotating the signing key.
 
+The per-request question only sees traffic that goes through the gateway, and a runtime in a sandbox
+can reach any other HTTPS endpoint: through its own configuration, or by running code. So an issuer
+that bills an organization must also answer for its standing at issuance. It refuses `IssueKey` with
+`quota_denied` or `org_suspended` once the organization may not run, and returns a `refreshInSeconds`
+so a running session asks again. The daemon re-issues on the first turn after that hint has passed
+and stops the session's host when the answer is a denial (§6). Gateway metering decides what a turn
+costs. Issuance decides whether a turn runs on this install at all.
+
 That is the default, not the rule. `--key-server-ttl <seconds>` / `KEY_SERVER_TTL_SECONDS` sets the
 requested window per deployment, for an install that would rather have sessions end at a deadline
 than leave a leaked credential usable for as long as its org is. Lowering it always binds; raising it
@@ -292,7 +300,8 @@ and refuses a selection requiring an unavailable credential.
   what it hands out, and daemons converge as sessions turn over.
 - **Expiring keys lapse.** The daemon replaces one once its refresh hint has passed,
   before the session's next activation; if refresh fails before expiry, the current
-  host remains usable for the rest of its granted window. Live SDK background work
+  host remains usable for the rest of its granted window, unless the failure is a
+  denial of the organization's standing, which stops the host (§6). Live SDK background work
   pins the host to its start-time credential: rotation never terminates work in flight,
   and past expiry the pinned host keeps running on the lapsed grant until the session
   becomes quiescent — a request the issuer has stopped honouring fails upstream, which
@@ -326,8 +335,8 @@ suspended", never as a generic internal error:
 
 | Code              | HTTP | Daemon behavior                                                           |
 | ----------------- | ---- | ------------------------------------------------------------------------- |
-| `org_suspended`   | 403  | Surface as an org-level, user-visible condition; do not retry blindly.    |
-| `quota_denied`    | 403  | Surface as a limit condition with the issuer's message.                   |
+| `org_suspended`   | 403  | Surface as an org-level, user-visible condition; stop the session's host. |
+| `quota_denied`    | 403  | Surface as a limit condition with the issuer's message; stop the host.    |
 | `unauthorized`    | 401  | Credential problem between daemon and key server; operator-facing.        |
 | `unavailable`     | 503  | Enter the degradation window below; retry with backoff.                   |
 | `invalid_request` | 400  | The request itself is malformed; a retry of the same body cannot succeed. |
@@ -345,6 +354,9 @@ contractual answer to "how long does a session keep working through an issuer
 outage", and an implementation sizes it as its own tradeoff between revocation
 latency and outage tolerance. Only starting or refreshing past that horizon needs
 the server back.
+The window covers an issuer the daemon could not reach. It does not cover an
+issuer that answered with a denial: `org_suspended` and `quota_denied` stop the
+host at once, because the runtime may be calling endpoints the gateway never meters.
 
 ## 7. What this replaces, and what it does not
 

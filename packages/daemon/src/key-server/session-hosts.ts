@@ -16,7 +16,18 @@ import {
   type ModelProviderTarget,
   type StaticModelCredentials
 } from '../runtimes/model-provider-config.js'
-import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, parseModelKeyTtlSeconds, type KeyGrant } from './client.js'
+import {
+  DEFAULT_MODEL_KEY_TTL_SECONDS,
+  KeyServerClient,
+  KeyServerError,
+  parseModelKeyTtlSeconds,
+  type KeyGrant
+} from './client.js'
+
+// The issuer's verdict on the organization itself (key-server.md §6), which no degradation window outlasts.
+function standingDenied(error: unknown): boolean {
+  return error instanceof KeyServerError && (error.code === 'org_suspended' || error.code === 'quota_denied')
+}
 
 /** The daemon-internal session keys that address a credential lifecycle with no chat session
  *  behind it. Constructors rather than literals so the `internal:` namespace has one owner. */
@@ -277,7 +288,11 @@ export class ModelSessionHostPool {
       try {
         grant = await this.issueKey(agent, target, sessionKey)
       } catch (error) {
-        if (entry?.host && !expired) {
+        if (entry && standingDenied(error)) {
+          // The runtime can reach endpoints the gateway never sees, so a denied org keeps no host here.
+          this.log.warn(`key-server denied session ${sessionKey}; stopping its model host (${formatErr(error)})`)
+          await this.release(sessionKey).catch((e) => this.log.warn(`model host release failed (${formatErr(e)})`))
+        } else if (entry?.host && !expired) {
           this.log.warn(`key-server refresh deferred for session ${sessionKey} (${formatErr(error)})`)
           return this.selectedTurnHost(entry, entry.host)
         }
