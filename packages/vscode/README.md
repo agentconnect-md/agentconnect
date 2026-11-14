@@ -6,21 +6,20 @@ VS Code opens an agent as a remote agent host, but it signs in to one only throu
 provider it already has. This extension is that provider: it signs you in through the Control Plane's
 OAuth server in your browser and hands VS Code the token.
 
-It is a preview distributed as a VSIX. It uses VS Code's proposed `authIssuers` API, which VS Code
+It is a preview distributed as a VSIX on the repository's releases. It uses VS Code's proposed `authIssuers` API, which VS Code
 allows only for extensions you name at startup, so it cannot be published to the Marketplace yet.
 
 ## Install
 
-1. Build the VSIX from this directory:
-
-   ```bash
-   pnpm --filter agentconnect-vscode package
-   ```
+1. Download `agentconnect-vscode.vsix` from the
+   [latest release](https://github.com/agentconnect-md/agentconnect/releases/latest/download/agentconnect-vscode.vsix).
+   Each stable release carries it under its own version. To build it from a checkout instead, run
+   `pnpm --filter agentconnect-vscode package`, which needs the `zip` command.
 
 2. Install it:
 
    ```bash
-   code --install-extension agentconnect-vscode-0.1.0.vsix
+   code --install-extension agentconnect-vscode.vsix
    ```
 
 3. Allow its proposed API. Run **Preferences: Configure Runtime Arguments** and add the extension's id to

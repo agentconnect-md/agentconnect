@@ -11,7 +11,7 @@
   },
   "main": "./extension.js",
   "scripts": {
-    "package": "pnpm dlx @vscode/vsce@3 package --no-dependencies",
+    "package": "node scripts/package.mjs",
     "test": "node --test",
     "test:unit": "node --test"
   },

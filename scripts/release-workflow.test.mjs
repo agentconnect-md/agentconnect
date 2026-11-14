@@ -58,6 +58,21 @@ test('one release/prepare job starts npm, images, and chart in parallel and all 
   assert.equal(jobs['publish-npm'].permissions['id-token'], 'write')
 })
 
+test('a stable release attaches the VS Code extension under one asset name', () => {
+  const job = workflows['build.yaml'].jobs['publish-vsix']
+  assert.equal(job.needs, 'prepare')
+  assert.match(job.if, /inputs\.create_release/)
+  assert.match(job.if, /needs\.prepare\.outputs\.latest == 'true'/)
+  assert.deepEqual(job.permissions, { contents: 'write' })
+  assert.equal(job.steps[0].with.ref, '${{ needs.prepare.outputs.version }}')
+  const attach = job.steps.at(-1).run
+  assert.match(
+    attach,
+    /packages\/vscode\/scripts\/package\.mjs "\$RELEASE_TAG" "\$RUNNER_TEMP\/agentconnect-vscode\.vsix"/
+  )
+  assert.match(attach, /gh release upload "\$RELEASE_TAG" "\$RUNNER_TEMP\/agentconnect-vscode\.vsix" --clobber/)
+})
+
 test(
   'hook installation leaves CI alone and still installs hooks in a local clone',
   { skip: process.platform === 'win32' },
