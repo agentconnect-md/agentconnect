@@ -29,6 +29,18 @@ time, by hand, as "Unknown method".
 VS Code reads files and snapshots only when something asks for them, so after the turns the driver asks
 through `vscode.workspace.fs` and `openTextDocument`, which is the path the UI takes.
 
+## Sign-in
+
+`pnpm --filter @agentconnect.md/daemon test:vscode:sign-in` puts the relay's own AHP endpoint in front of
+the daemon, with a stand-in for the Control Plane's OAuth server, and loads
+[the AgentConnect extension](../../../../vscode/README.md). It then also checks that:
+
+- The extension registered a client, ran the authorization and exchanged the code.
+- The relay admitted VS Code with the token the extension issued.
+- The extension added the agent's workspace to the Explorer.
+
+The driver passes the sign-in command a fetch in place of the browser, so nothing opens outside VS Code.
+
 The run also prints every method VS Code sent, which is the list to compare against the daemon's
 `switch` when VS Code updates.
 
@@ -46,8 +58,10 @@ The run also prints every method VS Code sent, which is the list to compare agai
 
 - It opens a VS Code window while it runs, and stops VS Code with `pkill`, so it runs on macOS and Linux
   and is not part of `pnpm test` or CI.
-- It covers the daemon's protocol surface only. The relay's pre-authentication window and sign-in are
-  outside it.
+- The Control Plane is a stand-in: its token rules, consent page and the relay's grant renewal against
+  it are outside the run.
+- It drives an editor window. The Agents window also asks the host for a terminal (`createTerminal`),
+  which the daemon does not serve.
 - It does not answer approval or input prompts, so `[ahp:approve]` and `[ahp:input]` turns do not finish.
 - A file change is reported from the agent's own edits, so a file changed by a shell command or by
   another process does not refresh in VS Code.

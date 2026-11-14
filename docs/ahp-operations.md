@@ -182,9 +182,10 @@ because a card settled or reopened between turns is not updated there.
 Set `AHP_AUTHORIZATION_SERVER` to the `issuer` the CP serves at
 `/.well-known/oauth-authorization-server` (the `PUBLIC_MCP_URL` origin when set,
 otherwise `PUBLIC_CP_URL`), and set the CP's `PUBLIC_RELAY_URL` to the relay
-origin clients dial. A client such as VS Code then registers itself, opens the
+origin clients dial. A client then registers itself, opens the
 console's consent page, and receives an hourly access token for the `ahp` scope
-([design](designs/ahp-client-sign-in.md)):
+([design](designs/ahp-client-sign-in.md)). VS Code does this through
+[the AgentConnect extension](../packages/vscode/README.md), since it has no sign-in of its own for an agent host:
 
 - The grant is bound to the endpoint the relay advertised, so each agent needs its
   own consent, and the CP refuses a resource that is not an agent endpoint on
