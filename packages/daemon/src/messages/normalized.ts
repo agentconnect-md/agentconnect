@@ -59,6 +59,8 @@ export interface NormalizedMessage extends Omit<
   source: 'user' | 'cron' | 'agent' | 'hook' | 'system'
   /** CP-owned schedule run identity, retained with an interrupted inbox delivery. */
   cronRun?: { cronId: string; firedAt: string }
+  /** The CP-owned schedule whose fire started this turn in a room it made: it reads as that schedule's person, and reports no run. */
+  roomOfCron?: string
   // S1a open reader (integration-plugin-architecture.md §6.2): the wire reads
   // platform as an open string, so the runtime model matches. Writers still
   // produce only the legacy ids; unknown ids are handled fail-closed where the

@@ -790,6 +790,8 @@ import {
   Scheduler,
   buildSyntheticMessage,
   cronAnchorText,
+  scheduleAnchorOf,
+  scheduleRoomMessage,
   missedOccurrence,
   scheduleFingerprint,
   type ScheduleDefinition
@@ -5708,6 +5710,27 @@ export class Daemon {
         } catch {
           return undefined
         }
+      },
+      scheduleAnchor: (ctx) => {
+        const live = this.liveTurn(ctx)
+        return live ? scheduleAnchorOf(live.msg, live.foldedMessages?.length ?? 0) : undefined
+      },
+      // A schedule's post wakes nobody in the room it made, so its task is posted and dispatched there as a fire is.
+      startInRoom: async (ctx, channel, task) => {
+        const live = this.liveTurn(ctx)
+        if (!live || !scheduleAnchorOf(live.msg, live.foldedMessages?.length ?? 0))
+          throw new Error('only a schedule’s own turn starts its task in a room it made')
+        const room = { channel, ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}) }
+        const fire = scheduleRoomMessage(live.msg, channel, task, randomUUID())
+        const { message } = await this.anchorTrigger(ctx.agentId, fire, room, task, `schedule room ${channel}`)
+        if (!message?.transcriptTs) throw new Error('the task could not be posted there')
+        // A room that is one session keys on itself, so the task joins the session a reply there reaches.
+        const gw = (ctx.integrationId !== undefined ? this.gatewayForIntegration(ctx.integrationId) : undefined) as
+          Pick<MessageGateway, 'roomThread'> | undefined
+        const thread = (await gw?.roomThread?.(channel).catch(() => undefined)) ?? message.thread
+        void this.dispatch(ctx.agentId, { ...message, thread }, ctx.integrationId).catch((err) =>
+          this.log.warn(`schedule room ${channel}: task turn failed: ${formatErr(err)}`)
+        )
       },
       // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
       // synchronous budget, and the provenance row. All coordinates come from the active
@@ -13607,7 +13630,7 @@ export class Daemon {
 
   /** The read rule's view of a queued message: its bot, whether the console sent it, and a schedule's person. */
   private turnMessageOf(entry: QueueEntry): TurnMessage {
-    const cronId = entry.msg.source === 'cron' ? entry.msg.cronRun?.cronId : undefined
+    const cronId = entry.msg.source === 'cron' ? (entry.msg.cronRun?.cronId ?? entry.msg.roomOfCron) : undefined
     const userId = cronId ? this.cpCrons?.askerOf(cronId) : undefined
     return {
       msg: entry.msg,

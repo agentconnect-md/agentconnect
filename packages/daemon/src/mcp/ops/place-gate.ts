@@ -68,6 +68,8 @@ export interface PlaceAccessDeps extends GatewayDeps {
   readAskers?: (ctx: SessionContext) => Promise<TurnAskers>
   /** The live lookups the read rule asks for one agent; absent ⇒ none confirms anything. */
   readLookups?: (agentId: string) => ReadLookups
+  /** The post a schedule anchored the live turn to, while the turn is that schedule's alone; absent ⇒ none. */
+  scheduleAnchor?: (ctx: SessionContext) => { channel: string; ts: string } | undefined
 }
 
 const KIND_STRICTNESS: Record<PlaceKind, number> = { channel: 1, group_dm: 2, dm: 3, webchat: 3 }
@@ -279,7 +281,7 @@ export async function judgeSessionParticipation(input: {
 /** Where a platform write lands: a conversation (a direct message by its recipient), something new with these people, or a hosted document. */
 export type WriteTarget =
   | { kind: 'conversation'; platform: string; integrationId?: string; channel: string; recipient?: string }
-  | { kind: 'new'; platform: string; integrationId?: string; users: readonly string[] }
+  | { kind: 'new'; platform: string; integrationId?: string; users: readonly string[]; anchoredIn?: string }
   | { kind: 'document'; platform: string; integrationId?: string; documentId: string }
 
 /** What the write rule lets through: `post` goes out now, `draft` waits for an internal member's approval. */
@@ -302,6 +304,16 @@ const NEW_NOT_MEMBER =
 const DOCUMENT_UNKNOWN =
   'the conversations this document is in could not be confirmed, so it was not changed. Nothing was changed.'
 
+const ROOM_NOT_ANCHORED =
+  'a scheduled run opens a code channel only from its own post in its own conversation, on its own bot, where ' +
+  "that conversation isn't shared with another organization, and this could not be confirmed. Nothing was created."
+const ROOM_EMPTY =
+  'a scheduled run opens a code channel only with at least one person invited, so that it has an owner. Name ' +
+  'who should join in `invite`. Nothing was created.'
+const ROOM_AUDIENCE =
+  'the schedule is anchored to a private conversation, so its code channel takes only members of that ' +
+  'conversation, and someone named could not be confirmed as one. Nothing was created.'
+
 const refused = (tool: string, why: string): Error => new Error(`${tool}: ${why}`)
 
 /** A person the platform counts in the organization: a full member of the bot's workspace where it can tell; fails closed. */
@@ -312,8 +324,35 @@ async function inOrganization(
   lookups: ReadLookups
 ): Promise<boolean> {
   if (!tellsWorkspaceMembers(platform)) return true
-  const id = /^<@([^>]+)>$/.exec(user)?.[1] ?? user
-  return bot !== undefined && (await lookups.fullMember(bot, id).catch(() => false))
+  return bot !== undefined && (await lookups.fullMember(bot, bareUserId(user)).catch(() => false))
+}
+
+const bareUserId = (user: string): string => /^<@([^>]+)>$/.exec(user)?.[1] ?? user
+
+/** Why a room may not be made from the live turn's own schedule anchor, or undefined when it may: its conversation, its bot, not shared outside, someone invited, and no wider than a private anchor; fails closed. */
+async function anchoredRoomRefusal(
+  ctx: SessionContext,
+  target: Extract<WriteTarget, { kind: 'new' }>,
+  channel: string,
+  bot: string | undefined,
+  lookups: ReadLookups,
+  deps: PlaceAccessDeps
+): Promise<string | undefined> {
+  const place = { platform: target.platform, channel }
+  // The gate's own proof that the turn is a schedule's alone, never the caller's word for it.
+  if (bot === undefined || deps.scheduleAnchor?.(ctx)?.channel !== channel) return ROOM_NOT_ANCHORED
+  if (!samePlace({ platform: ctx.platform, channel: ctx.channel }, place)) return ROOM_NOT_ANCHORED
+  const described = await describePlace(place, undefined, bot, deps)
+  if (described.kind !== 'channel' || described.external === true) return ROOM_NOT_ANCHORED
+  const external = deps.targetExternal?.(ctx.agentId, bot, channel, false) ?? Promise.resolve(true)
+  if (await external.catch(() => true)) return ROOM_NOT_ANCHORED
+  // The anchor's author is the bot, so nobody joins unless the run names them.
+  if (target.users.length === 0) return ROOM_EMPTY
+  // The platform keeps the anchor's privacy, so a room from one not confirmed public reaches only its members.
+  if (described.private === false) return undefined
+  for (const user of target.users)
+    if (!(await lookups.member(bot, channel, bareUserId(user)).catch(() => false))) return ROOM_AUDIENCE
+  return undefined
 }
 
 /** Whether an asker could make something new in that bot's workspace: its own full member, or a person linked as one, where the platform can tell. */
@@ -332,10 +371,7 @@ async function workspaceMember(
   return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, userId).catch(() => false))
 }
 
-/**
- * The one choke point every platform write passes, for every agent: the current conversation always, anything else
- * only where every person asking may go; a post that needs approval comes back `draft`, and any other refusal throws.
- */
+/** The one choke point for every platform write: the current conversation always, elsewhere only where every asker may go; `draft` awaits approval, other refusals throw. */
 export async function judgePlaceWrite(
   ctx: SessionContext,
   tool: string,
@@ -359,9 +395,17 @@ export async function judgePlaceWrite(
     if (!(await inOrganization(target.platform, bot, user, lookups)))
       throw refused(tool, target.kind === 'new' ? NEW_OUTSIDE : DM_OUTSIDE)
   }
+  // A room from a schedule's anchor passes the anchor's checks whoever is asking, a schedule's recorded person included.
+  const anchoredIn = target.kind === 'new' ? target.anchoredIn : undefined
+  if (target.kind === 'new' && anchoredIn !== undefined) {
+    const why = await anchoredRoomRefusal(ctx, target, anchoredIn, bot, lookups, deps)
+    if (why) throw refused(tool, why)
+  }
   const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
   // A run no person started writes only to its own conversation, which is an anchored hook's or schedule's target.
   if (askers.nobody || askers.people.length === 0) {
+    // Its one other write is a code channel from its own anchor, which the people it invites then own.
+    if (anchoredIn !== undefined && askers.people.length === 0) return 'post'
     if (post && deps.assistantModeFor?.(ctx.agentId) === true && deps.draftPost) return 'draft'
     throw refused(tool, NOBODY_WRITES)
   }

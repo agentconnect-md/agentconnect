@@ -1313,6 +1313,22 @@ export class SlackConnection implements PlatformConnection {
     slot.canvasId = canvasId
   }
 
+  /** Invite people to a code channel this bot made, one by one, and name those now in it; a failed invite is left out, never thrown. */
+  async inviteToCodeChannel(channel: string, users: readonly string[]): Promise<string[]> {
+    const joined: string[] = []
+    for (const user of users) {
+      try {
+        await this.queue.enqueue(() => this.app.client.conversations.invite({ channel, users: user }))
+        joined.push(user)
+      } catch (err) {
+        const code = (err as { data?: { error?: unknown } } | undefined)?.data?.error
+        if (code === 'already_in_channel') joined.push(user)
+        else this.deps.log?.debug(`slack: conversations.invite failed (ch=${channel}): ${(err as Error).message}`)
+      }
+    }
+    return joined
+  }
+
   async codeChannelApi<
     K extends 'create' | 'setView' | 'setProperties' | 'archive' | 'listViews' | 'removeView' | 'getCanvas'
   >(method: K, args: Parameters<WebClient['agents']['conversations'][K]>[0], signal?: AbortSignal): Promise<unknown> {

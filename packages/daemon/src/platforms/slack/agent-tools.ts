@@ -159,7 +159,21 @@ const descriptor: ToolDescriptor = {
   inputSchema: z.toJSONSchema(reportArgs, { unrepresentable: 'any' }) as ToolDescriptor['inputSchema']
 }
 
-const createArgs = z.object({ name: text.max(255) }).strict()
+const createArgs = z
+  .object({
+    name: text.max(255),
+    invite: z
+      .array(text.max(64))
+      .min(1)
+      .max(20)
+      .optional()
+      .describe('Scheduled runs only: Slack user ids of the people to add, at least one.'),
+    task: text
+      .max(12000)
+      .optional()
+      .describe('Scheduled runs only: the full task to start in the new channel, with everything needed to do it.')
+  })
+  .strict()
 const viewArgs = z
   .object({
     channelId: text.optional(),
@@ -245,7 +259,7 @@ const codeTools: ToolDescriptor[] = [
   {
     name: 'createSlackCodeChannel',
     description:
-      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. Follow-ups there share one channel session. If creation is unavailable, use the ordinary task workflow here.',
+      'Start requested coding work needing several steps, edits, tests or a PR in a dedicated Slack channel, unless the user asks to stay here or the task needs earlier discussion that would be lost. Quick questions stay here. Slack preserves origin privacy, invites its author and copies only the originating message into the new channel. Repeating the same trigger returns the same channel; inside a code channel this reuses the current channel. After creating one, link it and end this turn without duplicating work or asking the user to repeat the task. Follow-ups there share one channel session. A scheduled run posted into a channel may create one from its own post: pass `invite`, the people its instructions name, and `task`, which is delivered there to start the work, then link the channel and end this turn. If creation is unavailable, use the ordinary task workflow here.',
     inputSchema: z.toJSONSchema(createArgs) as ToolDescriptor['inputSchema']
   },
   {
@@ -262,6 +276,58 @@ const codeTools: ToolDescriptor[] = [
   }
 ]
 
+const SLACK_TS = /^\d+\.\d+$/
+const SCHEDULED_NEEDS =
+  'A scheduled run opens a code channel with `invite`, the Slack user ids of at least one person to add, and ' +
+  '`task`, the full task to start there. Nothing was created.'
+const NOBODY_JOINED =
+  'Nobody named in `invite` could be added, so the code channel was archived rather than left without an owner. ' +
+  'Do the work in this conversation instead.'
+const nobodyJoinedUnarchived = (channel: string): string =>
+  `Nobody named in \`invite\` could be added to the code channel ${channel}, and archiving it failed, so it still ` +
+  `exists without an owner. Archive it with manageSlackCodeChannel {"channelId":"${channel}","action":"archive"}; ` +
+  'if that fails too, say in this conversation that it needs archiving. Do the work here instead.'
+
+/** Rooms a scheduled run already handed its task to, so a retried creation does not start the work twice. */
+const handedOff = new Set<string>()
+
+/** Add the people a scheduled run named and start its task there; a channel nobody joined is archived, never left ownerless. */
+async function ownAndStart(
+  conn: SlackConnection,
+  env: PlatformSessionToolEnv,
+  agentId: string,
+  channel: string,
+  invite: readonly string[],
+  task: string
+): Promise<Record<string, unknown>> {
+  const invited = await conn.inviteToCodeChannel(channel, invite)
+  if (invited.length === 0) {
+    // Archived is claimed only once Slack has said so; otherwise the channel is named so that it can still be closed.
+    const archived = await conn.codeChannelApi('archive', { channel_id: channel }).then(
+      () => true,
+      () => false
+    )
+    throw new Error(archived ? NOBODY_JOINED : nobodyJoinedUnarchived(channel))
+  }
+  const notInvited = invite.filter((user) => !invited.includes(user))
+  const outcome = { invited, ...(notInvited.length ? { notInvited } : {}) }
+  const key = `${agentId}:${channel}`
+  if (handedOff.has(key)) return { ...outcome, handedOff: true }
+  try {
+    await env.handOff!(channel, task)
+  } catch (err) {
+    const why = (err as Error).message
+    return {
+      ...outcome,
+      handedOff: false,
+      next: `The task could not be started in ${channel} (${why}). Do the work in this conversation instead, and say so in ${channel}.`
+    }
+  }
+  if (handedOff.size >= 1000) handedOff.delete(handedOff.keys().next().value!)
+  handedOff.add(key)
+  return { ...outcome, handedOff: true }
+}
+
 async function execute(
   name: string,
   ctx: SessionContext,
@@ -273,20 +339,45 @@ async function execute(
     const a = parseArgs(createArgs, args)
     const here = env.deliveryChannel
     const origin = env.originMsgId?.split(':')
-    if (origin?.length !== 3 || origin[0] !== 'slack' || origin[1] !== here || !/^\d+\.\d+$/.test(origin[2]!))
-      throw new Error('A code channel requires a live Slack message as its origin')
+    const asked =
+      origin?.length === 3 && origin[0] === 'slack' && origin[1] === here && SLACK_TS.test(origin[2]!)
+        ? origin[2]!
+        : undefined
+    // A schedule's own post stands in for a person's message only in the channel it was anchored to.
+    const anchor = env.scheduleAnchor
+    const anchored =
+      asked === undefined && !ctx.isDm && anchor?.channel === here && SLACK_TS.test(anchor.ts) ? anchor.ts : undefined
+    const ts = asked ?? anchored
+    if (ts === undefined) throw new Error('A code channel requires a live Slack message as its origin')
+    const invite = [...new Set((a.invite ?? []).map((user) => /^<@([^>]+)>$/.exec(user)?.[1] ?? user))]
+    if (anchored === undefined && (a.invite !== undefined || a.task !== undefined))
+      throw new Error(
+        '`invite` and `task` are for a scheduled run; Slack already adds the person who asked. Omit them.'
+      )
+    if (anchored !== undefined && (invite.length === 0 || a.task === undefined || !env.handOff))
+      throw new Error(SCHEDULED_NEEDS)
     const make = async () => {
       const created = await createCodeChannel(
         conn,
-        { agentId: ctx.agentId, channel: here, ts: origin[2]!, isDm: ctx.isDm && here === ctx.channel },
+        { agentId: ctx.agentId, channel: here, ts, isDm: ctx.isDm && here === ctx.channel },
         a.name,
-        () => env.judgeWrite({ kind: 'new', platform: ctx.platform, integrationId: ctx.integrationId, users: [] })
+        () =>
+          env.judgeWrite({
+            kind: 'new',
+            platform: ctx.platform,
+            integrationId: ctx.integrationId,
+            users: invite,
+            ...(anchored !== undefined ? { anchoredIn: here } : {})
+          })
       )
       // A code channel's one session keys on the channel itself (slack-code-channels.md), the coordinate a task holds it by.
       const id = created.existing ? undefined : created.channelId
-      return { result: created.response, ...(id ? { room: { channel: id, thread: id } } : {}) }
+      return { result: { response: created.response, id }, ...(id ? { room: { channel: id, thread: id } } : {}) }
     }
-    return env.makeRoom ? await env.makeRoom(make) : (await make()).result
+    const made = env.makeRoom ? await env.makeRoom(make) : (await make()).result
+    if (anchored === undefined || !made.id) return made.response
+    // Slack adds a message's author and its copy starts the work; a schedule's post has neither. Done once the room is attached, so the task's turn does not wait on it.
+    return { ...(made.response as object), ...(await ownAndStart(conn, env, ctx.agentId, made.id, invite, a.task!)) }
   }
   if (name === 'setSlackCodeView' || name === 'manageSlackCodeChannel') {
     const a = name === 'setSlackCodeView' ? parseArgs(viewArgs, args) : parseArgs(manageArgs, args)
