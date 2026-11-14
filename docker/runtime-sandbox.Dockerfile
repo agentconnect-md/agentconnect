@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261029-233713@sha256:c6aab2632b8fa5c8dba84b891b05a21d5bd810b3d42b0333983b887dbb6055c9
-ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261029-233713@sha256:15374558d1ec9e99d752e62eeac89008e93d03a3a9b00009ccb05eea3cae2ec7
+ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261114-073312@sha256:919d383ef0ac249725d9665cc99a33ac3ab34929ab85f6c2ae3b6fcb3ccf8663
+ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261114-073312@sha256:fa834a1a2e7f9ec951c964d9b1a305585980113b9fa37da15297ec80a4de2b63
 
 ARG AGENT_BROWSER_VERSION=0.43.0
 ARG CLAUDE_ACP_VERSION=0.107.0
