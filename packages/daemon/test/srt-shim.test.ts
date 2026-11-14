@@ -366,7 +366,8 @@ describe('the srt boundary around a shim', () => {
           GIT_TRACE2_EVENT: '1',
           // Compare the disposable sandbox's generated proxy credentials as well as its address.
           GIT_TRACE2_REDACT: '0',
-          GIT_TRACE2_CONFIG_PARAMS: 'http.*.proxy,http.proxyAuthMethod'
+          GIT_TRACE2_CONFIG_PARAMS: 'http.*.proxy',
+          GIT_TRACE2_ENV_VARS: 'GIT_HTTP_PROXY_AUTHMETHOD'
         }
       })) as GitExecResult
       expect(pinned.code).toBe(0)
@@ -381,7 +382,7 @@ describe('the srt boundary around a shim', () => {
             param: 'http.https://example.test/example-org/example-repo.git.proxy',
             value: seen.env.HTTPS_PROXY
           }),
-          expect.objectContaining({ event: 'def_param', param: 'http.proxyauthmethod', value: 'basic' })
+          expect.objectContaining({ event: 'def_param', param: 'GIT_HTTP_PROXY_AUTHMETHOD', value: 'basic' })
         ])
       )
 
