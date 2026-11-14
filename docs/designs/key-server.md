@@ -171,11 +171,10 @@ and rotating the signing key.
 
 The per-request question only sees traffic that goes through the gateway, and a runtime in a sandbox
 can reach any other HTTPS endpoint: through its own configuration, or by running code. So an issuer
-that bills an organization also answers for its standing at issuance, refusing `IssueKey` with
-`quota_denied` or `org_suspended` once the organization may not run. The daemon asks it every time a
-session's runtime starts: for a new session, and to resume one whose runtime stopped, even while the
-session still holds an unexpired grant. A denial refuses the turn and releases the session (§6). A
-runtime that is already running is not asked again between turns.
+that tracks whether an organization may run also answers for it at issuance (§6). The daemon asks it
+every time a session's runtime starts: for a new session, and to resume one whose runtime stopped,
+even while the session still holds an unexpired grant. A denial refuses the turn and releases the
+session. A runtime that is already running is not asked again between turns.
 
 That is the default, not the rule. `--key-server-ttl <seconds>` / `KEY_SERVER_TTL_SECONDS` sets the
 requested window per deployment, for an install that would rather have sessions end at a deadline
@@ -333,19 +332,31 @@ Errors are machine-readable (`KeyServerErrorBody`), and the daemon's obligation
 is to keep them attributable — a suspended org must surface as "organization
 suspended", never as a generic internal error:
 
-| Code              | HTTP | Daemon behavior                                                           |
-| ----------------- | ---- | ------------------------------------------------------------------------- |
-| `org_suspended`   | 403  | Surface as an org-level, user-visible condition; stop the session's host. |
-| `quota_denied`    | 403  | Surface as a limit condition with the issuer's message; stop the host.    |
-| `unauthorized`    | 401  | Credential problem between daemon and key server; operator-facing.        |
-| `unavailable`     | 503  | Enter the degradation window below; retry with backoff.                   |
-| `invalid_request` | 400  | The request itself is malformed; a retry of the same body cannot succeed. |
+| Code              | HTTP | Daemon behavior                                                                     |
+| ----------------- | ---- | ----------------------------------------------------------------------------------- |
+| `org_suspended`   | 403  | Surface as an org-level condition; stop the session that asked and revoke its key.  |
+| `quota_denied`    | 403  | Surface the issuer's limit message; stop the session that asked and revoke its key. |
+| `unauthorized`    | 401  | Credential problem between daemon and key server; operator-facing.                  |
+| `unavailable`     | 503  | Enter the degradation window below; retry with backoff.                             |
+| `invalid_request` | 400  | The request itself is malformed; a retry of the same body cannot succeed.           |
+
+An issuer that tracks whether an organization may run (billing, suspension) MUST refuse `IssueKey`
+with `org_suspended` while the organization may not run, and MUST NOT issue a credential in that
+state. `org_suspended` is reserved for that organization-wide verdict. `quota_denied` refuses a
+specific request or limit, such as a limit that applies to one session, and says nothing about the
+organization's other sessions. An issuer that does not track organization standing does not enforce
+it; its `IssueKey` can still fail for other reasons.
+
+Today the daemon acts on either code only for the session whose request was refused, at its start,
+resume or refresh: that session's turn fails, its host stops, and its key is revoked. An
+organization-wide check would act on `org_suspended` alone, stopping every session of the
+organization on the member; a `quota_denied` answer to such a check refuses nothing but the check.
 
 `invalid_request` exists because the other four describe the **org's standing**,
-so an issuer that rejected a malformed body had no truthful code to answer with.
-What it then reached for was an internal fault — the exact inversion the table
-above is here to prevent, and one that points an operator at the issuer's health
-rather than at the caller's request.
+its limits, or the issuer itself, so an issuer that rejected a malformed body had
+no truthful code to answer with. What it then reached for was an internal fault —
+the exact inversion the table above is here to prevent, and one that points an
+operator at the issuer's health rather than at the caller's request.
 
 **Degradation window.** An issued credential stays usable for its granted
 `expiresInSeconds` from the anchor of §3 — never longer, since that anchor

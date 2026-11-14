@@ -24,7 +24,7 @@ import {
   type KeyGrant
 } from './client.js'
 
-// The issuer's verdict on the organization itself (key-server.md §6), which no degradation window outlasts.
+// A refusal of this session's request for its organization or a limit (key-server.md §6), which no degradation window outlasts.
 function standingDenied(error: unknown): boolean {
   return error instanceof KeyServerError && (error.code === 'org_suspended' || error.code === 'quota_denied')
 }
