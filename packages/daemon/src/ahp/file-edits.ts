@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url'
 import { ToolResultContentType, type ToolResultFileEditContent } from '@microsoft/agent-host-protocol'
 import type { ToolEdit } from '../session/tool-edits.js'
 
@@ -34,8 +35,15 @@ export function parseFileEditUri(uri: string): FileEditRef | undefined {
   return ref.sessionUri && ref.toolCallId && ref.path ? ref : undefined
 }
 
+/** A runtime-reported path as a `file:` URI; a drive-letter path is a Windows one wherever this daemon runs. */
+function fileUri(path: string): string {
+  const windows = /^[a-zA-Z]:[\\/]/.test(path)
+  if (windows || path.startsWith('/')) return pathToFileURL(path, { windows }).href
+  return `file:///${path.split('/').map(encodeURIComponent).join('/')}`
+}
+
 export function fileEditContent(sessionUri: string, toolCallId: string, edit: ToolEdit): ToolResultFileEditContent {
-  const file = `file://${edit.path.startsWith('/') ? '' : '/'}${edit.path.split('/').map(encodeURIComponent).join('/')}`
+  const file = fileUri(edit.path)
   const side = (name: FileEditSide, sizeHint: number) => ({
     uri: file,
     content: {
