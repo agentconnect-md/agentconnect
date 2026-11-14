@@ -53,7 +53,9 @@ describe('Microsoft Teams normalization', () => {
       mentionedBots: [],
       isDm: true,
       platformTimeMs: 1767225610123,
-      adapterExt: { msteams: { serviceUrl: SERVICE_URL, conversationId: PERSONAL, userId: USER } }
+      adapterExt: {
+        msteams: { serviceUrl: SERVICE_URL, conversationId: PERSONAL, userId: USER, botName: 'Example Bot' }
+      }
     })
     expect(manifestFor('msteams').dmChannelPattern?.test(message.channel)).toBe(true)
     expect(nativeMessageCoordinates(message)).toEqual({ channel: PERSONAL, messageId: '1767225610123' })
@@ -142,6 +144,23 @@ describe('Microsoft Teams normalization', () => {
       { type: 'mention', mentioned: { id: OTHER_BOT_ID, name: 'Other Bot' }, text: '<at>Other Bot</at>' }
     ]
     expect(messageOf(other)).toMatchObject({ text: '@Other Bot run the build', mentionedBots: [OTHER_BOT_ID] })
+  })
+
+  it('names whom else a message mentions as Teams shows them, and the receiving bot', () => {
+    const both = { ...channelReply, text: '<at>Example Bot</at> <at>Other Bot</at> ask <at>Example Person</at>' }
+    both.entities = [
+      { type: 'mention', mentioned: { id: BOT_ID, name: 'Example Bot' }, text: '<at>Example Bot</at>' },
+      { type: 'mention', mentioned: { id: OTHER_BOT_ID, name: 'Other Bot' }, text: '<at>Other Bot</at>' },
+      { type: 'mention', mentioned: { id: USER, name: 'Example Person' }, text: '<at>Example Person</at>' }
+    ]
+    const message = messageOf(both)
+    expect(message.mentionNames).toEqual([
+      { id: OTHER_BOT_ID, name: 'Other Bot' },
+      { id: USER, name: 'Example Person' }
+    ])
+    expect(message.adapterExt?.msteams).toMatchObject({ botName: 'Example Bot' })
+    // A message that names no one else carries no names.
+    expect(messageOf({ ...channelPost, text: '<at>Example Bot</at> hi' }).mentionNames).toBeUndefined()
   })
 
   it('keeps a bare mention and notes an attachment it cannot read', () => {

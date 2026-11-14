@@ -117,6 +117,7 @@ export function coordinatorView(message: DeliveredMessage, text: string): Coordi
     id: message.id,
     from: msg.sender.id,
     mentionsYou: message.mentionsYou,
+    ...(msg.mentionNames?.length ? { mentions: msg.mentionNames.map((mention) => mention.name) } : {}),
     text,
     ...(inThread(msg) ? { thread: coordinatorMessageId(msg.thread!) } : {})
   }

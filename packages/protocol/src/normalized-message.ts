@@ -144,6 +144,11 @@ export const NormalizedPlatformMessageSchema = z.object({
     .array(z.object({ id: z.string().min(1).max(256), text: z.string().min(1).max(256) }))
     .max(20)
     .optional(),
+  /** Whom else a message mentions, by the name the platform shows, where the message carries it: a coordinator reads whom a message addresses from these (auto-session-mode.md §4.3). */
+  mentionNames: z
+    .array(z.object({ id: z.string().min(1).max(256), name: z.string().min(1).max(256) }))
+    .max(20)
+    .optional(),
   /** An EXTRA dedup dimension for two arrivals that describe the SAME platform message.
    *
    * A streamed agent reply is posted once and then closed by an edit, and both events

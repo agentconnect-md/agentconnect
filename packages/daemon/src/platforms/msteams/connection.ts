@@ -308,6 +308,11 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   readonly tenantId: string
   /** The bot's own `28:<appId>`, the ID a mention entity names (§4.1). */
   readonly botUserId: string
+  /** The bot's name as Teams shows it, learned from the latest activity's recipient (§4.1). */
+  private botName: string | undefined
+  get selfName(): string | undefined {
+    return this.botName
+  }
   /** Teams deep links come from the client, so the console URL is the fallback. */
   readonly workspaceUrl = ''
   private readonly api: MsTeamsApi
@@ -475,7 +480,9 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const kind = msg.isDm ? 'personal' : target.conversationId.includes(';messageid=') ? 'channel' : 'chat'
     const known = this.conversations.get(msg.channel)
     const name = kind === 'personal' ? msg.sender.name : known?.name
-    const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as { teamId?: unknown; teamTicket?: unknown } | undefined
+    const ext = msg.adapterExt?.[MSTEAMS_PLATFORM] as
+      { teamId?: unknown; teamTicket?: unknown; botName?: unknown } | undefined
+    if (typeof ext?.botName === 'string' && ext.botName) this.botName = ext.botName
     const teamId = kind === 'channel' && typeof ext?.teamId === 'string' ? ext.teamId : known?.teamId
     // The latest activity's tickets replace older ones, since they vouch for the serviceUrl it carried.
     const teamTicket =

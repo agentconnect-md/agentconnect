@@ -35,7 +35,12 @@ function post(channel: string): NormalizedMessage {
     isDm: false,
     sender: { id: '29:sender', isBot: false },
     adapterExt: {
-      msteams: { serviceUrl: SERVICE_URL, conversationId: `${channel};messageid=1700000000000`, teamId: TEAM }
+      msteams: {
+        serviceUrl: SERVICE_URL,
+        conversationId: `${channel};messageid=1700000000000`,
+        teamId: TEAM,
+        botName: 'Example Bot'
+      }
     }
   } as unknown as NormalizedMessage
 }
@@ -50,8 +55,11 @@ describe('Teams channel names', () => {
         ]
       })
     )
+    expect(conn.selfName).toBeUndefined()
     conn.noteMessage(post(TEAM))
     conn.noteMessage(post(DESIGN))
+    // The bot learns its own name from the activity's recipient (§4.1).
+    expect(conn.selfName).toBe('Example Bot')
     expect(await conn.getChannelInfo(TEAM)).toMatchObject({ id: TEAM, name: 'General', isIm: false })
     expect(await conn.getChannelInfo(DESIGN)).toMatchObject({ name: 'Design' })
     expect(reads()).toEqual([`${SERVICE_URL}v3/teams/${encodeURIComponent(TEAM)}/conversations`])

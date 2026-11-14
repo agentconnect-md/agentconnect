@@ -200,7 +200,11 @@ one.
 A mention arrives as a `mention` entity whose `mentioned.id` is the bot
 (`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
 (**measured**). The normalizer removes exactly that span and sets
-`mentionedBots`, lower-casing a `28:` ID; a display name is never matched. The
+`mentionedBots`, lower-casing a `28:` ID; a display name is never matched. It
+also records whom else the message mentions, bot or person, by the entity's
+`mentioned.name` (`mentionNames`), and the receiving bot's own name from the
+activity's `recipient.name`, which the connection keeps for a coordinator's
+instructions ([auto-session-mode.md](auto-session-mode.md) §4.3). The
 relay reads a mention as addressing the bot only through the assignment's
 `28:<appId>`, so a channel's first contact is a mention: it reaches the daemon,
 which registers the channel for the Console, Off where the agent is gated.

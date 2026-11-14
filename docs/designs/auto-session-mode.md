@@ -282,6 +282,19 @@ morning all
 The id is the platform message id behind a `msg-` prefix. A bare Slack timestamp reads as a number,
 and some models pass it as one, which drops its trailing zeros (§12).
 
+Where the platform shows a mention as a name rather than an address, as Teams does, a message also
+names whom else it mentions, taken from the message itself, and the instructions give the agent its
+own name there:
+
+```text
+<message id="msg-1700000900300" from="example-user" mentions-you="no" mentions="Other Bot">
+@Other Bot can you add retry with backoff to the webhook sender?
+</message>
+```
+
+The names come from the message, not from the list of other agents, so a mention of a bot that joins
+through that very message is still named. Whether to answer stays the coordinator's call.
+
 A message that mentions the agent and is left unanswered when the turn ends, by `ignoreMessage` or
 with neither a call nor a reply in text, takes the fallback of §4.5: a task opens for it.
 
