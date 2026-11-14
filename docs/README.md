@@ -11,6 +11,8 @@ cross-references inside it.
 
 - [product-conventions.md](product-conventions.md) — User-facing product behavior every implementation must preserve.
 - [GLOSSARY.md](../GLOSSARY.md) — Agreed domain terms, including shared images, previews and original delivery.
+- [ahp-vscode.md](ahp-vscode.md) — Using an agent from VS Code over AHP: connecting, what the chat shows, and the current limits.
+- [ahp-operations.md](ahp-operations.md) — Deployment controls, credentials, recovery and release checks for the AHP endpoint.
 - [capability-matrices.md](capability-matrices.md) — Integration ingress and sharing boundaries, and daemon-reported ACP runtime capabilities.
 - [config-file-secrets.md](config-file-secrets.md) — The `*_DATA` secret convention for file-shaped credentials (Docker config, kubeconfig).
 - [self-host-caddy-https.md](self-host-caddy-https.md) — Publishing a self-hosted stack behind Caddy HTTPS.
