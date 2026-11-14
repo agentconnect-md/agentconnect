@@ -1,5 +1,5 @@
 #!/bin/sh
-# Idempotent setup of the bundled RustFS store: the bucket, its Source Cache lifecycle rules, and browser CORS; curl signs SigV4 itself.
+# Idempotent setup of the bundled RustFS store: the bucket, its Source Cache lifecycle rules, browser CORS and public icon reads; curl signs SigV4 itself.
 set -eu
 
 : "${AC_STORE_URL:?AC_STORE_URL is required}"
@@ -40,4 +40,8 @@ s3 -o /dev/null -X PUT "${bucket_url}?lifecycle" \
 s3 -o /dev/null -X PUT "${bucket_url}?cors" \
   --data-binary "<CORSConfiguration><CORSRule><AllowedOrigin>${AC_STORE_CORS_ORIGIN}</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedMethod>POST</AllowedMethod><AllowedHeader>x-amz-checksum-sha256</AllowedHeader><AllowedHeader>x-amz-tagging</AllowedHeader><AllowedHeader>content-type</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3600</MaxAgeSeconds></CORSRule></CORSConfiguration>"
 
-echo "object store ready: bucket ${AC_STORE_BUCKET}, lifecycle rules under ${src}"
+# Uploaded icons are public by design (console <img>, chat avatars); anonymous reads reach icon/ alone.
+s3 -o /dev/null -X PUT "${bucket_url}?policy" -H 'content-type: application/json' \
+  --data-binary "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"ac-public-icons\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::${AC_STORE_BUCKET}/icon/*\"]}]}"
+
+echo "object store ready: bucket ${AC_STORE_BUCKET}, lifecycle rules under ${src}, public reads under icon/"

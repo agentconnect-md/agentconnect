@@ -233,6 +233,13 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      # Public icons are served straight from the store, so their stored image type must never be sniffed.
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: X-Content-Type-Options
+                value: nosniff
       backendRefs:
         - name: {{ $name }}
           port: 9000

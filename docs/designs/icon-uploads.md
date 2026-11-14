@@ -21,7 +21,7 @@ CP has no blob store of its own to fall back on. The contract here is:
   (a cloud object store in prod, a local one in dev/CI) works by pointing `S3_ENDPOINT` at
   it. Nothing is vendor-bound.
 - **Config-gated / opt-in.** The store is assembled only when the full `S3_*` group is
-  present; **absent ⇒ the upload routes aren't mounted and the console hides the Upload
+  present, or the public base alone with a file transfer bucket to share (below); **absent ⇒ the upload routes aren't mounted and the console hides the Upload
   button** (icons stay glyph-only — i.e. today's behavior). This mirrors how every other
   optional CP capability is wired (OIDC / GitHub App / relay). The gate is deliberately
   **forgiving, not fail-fast**: secret keys and non-secret config may roll out
@@ -49,6 +49,17 @@ S3_REGION             "auto" for stores that ignore region (default)
 The non-secret values and the two secret keys are supplied through runtime
 configuration. Objects are stored under an `icon/` prefix:
 `icon/agents/<id>`, `icon/orgs/<id>`.
+
+With `S3_PUBLIC_BASE_URL` set and no `S3_ENDPOINT`, icons share the console file
+transfer bucket (`AC_FILE_TRANSFER`): its endpoint, addressing, region and
+credential source, so mounted keys or a web identity are reused and no key enters
+the environment. Icon keys stay at the bucket root, outside the transfer prefix.
+A deployment that bundles an object store (the chart's `sourceCache.store`, the
+Compose HTTPS overlay) sets only that public base when no explicit group is
+configured. Its setup grants anonymous `GetObject` on `icon/*` alone, and its route
+sends `X-Content-Type-Options: nosniff`. The bucket's lifecycle rules match only
+tagged objects under `<prefix>/src/`, so icons never expire. A full `S3_*` group
+(the chart's `objectStore`) takes precedence.
 
 ## Failure consistency (object store ↔ DB descriptor)
 

@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { sha256Hex, signHeaders } from '@agentconnect.md/object-store'
-import { createIconStore, type IconStoreConfig } from './icon-store.js'
+import { createIconStore, resolveIconStoreConfig, type IconStoreConfig } from './icon-store.js'
 
+const KEYS = { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'example-secret-key' }
 const CFG: IconStoreConfig = {
   endpoint: 'https://objects.example.test',
-  accessKeyId: 'AKIDEXAMPLE',
-  secretAccessKey: 'example-secret-key',
+  credentials: { source: 'static', get: () => Promise.resolve(KEYS) },
   bucket: 'icons',
   region: 'auto',
   publicBaseUrl: 'https://cdn.example.test/'
@@ -43,7 +43,7 @@ function expectSignedAsSent(call: Captured, cfg: IconStoreConfig = CFG) {
     host: url.host,
     path: decodeURIComponent(url.pathname),
     headers,
-    credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
+    credentials: KEYS,
     region: cfg.region,
     datetime: headers['x-amz-date']!,
     payloadHash: headers['x-amz-content-sha256']!
@@ -112,5 +112,73 @@ describe('S3 icon store', () => {
   it('serves public URLs from the public base', () => {
     const { store } = storeWith(CFG, () => new Response(null))
     expect(store.publicUrl('icon/agents/a1', 7)).toBe('https://cdn.example.test/icon/agents/a1?v=7')
+  })
+
+  it('reads credentials per request and sends a session token', async () => {
+    const session = { ...KEYS, sessionToken: 'example-session-token' }
+    const asked: number[] = []
+    const cfg: IconStoreConfig = {
+      ...CFG,
+      credentials: { source: 'webIdentity', get: (ms) => (asked.push(ms), Promise.resolve(session)) }
+    }
+    const { store, calls } = storeWith(cfg, () => new Response(null, { status: 200 }))
+    await store.put('icon/agents/a1', new Uint8Array([1]), 'image/png')
+    expect(asked).toHaveLength(1)
+    expect(calls[0]!.headers['x-amz-security-token']).toBe('example-session-token')
+    expect(calls[0]!.headers.authorization).toContain('x-amz-security-token')
+  })
+
+  it('addresses a virtual-hosted bucket when path style is off', async () => {
+    const cfg = { ...CFG, endpoint: 'https://s3.us-east-1.amazonaws.com', forcePathStyle: false }
+    const { store, calls } = storeWith(cfg, () => new Response(null, { status: 200 }))
+    await store.put('icon/agents/a1', new Uint8Array([1]), 'image/png')
+    expect(calls[0]!.url).toBe('https://icons.s3.us-east-1.amazonaws.com/icon/agents/a1')
+  })
+})
+
+describe('resolveIconStoreConfig', () => {
+  const env = {
+    S3_ENDPOINT: 'https://s3.example.test',
+    S3_ACCESS_KEY_ID: 'AKIDEXAMPLE',
+    S3_SECRET_ACCESS_KEY: 'example-secret-key',
+    S3_BUCKET: 'icons',
+    S3_PUBLIC_BASE_URL: 'https://cdn.example.test',
+    S3_REGION: 'auto'
+  }
+  const shared = {
+    location: {
+      region: 'us-east-1',
+      bucket: 'transfers',
+      forcePathStyle: true,
+      endpoint: 'https://objects.example.test'
+    },
+    credentials: { source: 'static' as const, get: () => Promise.resolve(KEYS) }
+  }
+
+  it('uses the full S3_* group with its own keys, ahead of a shared bucket', async () => {
+    const cfg = resolveIconStoreConfig(env, shared)!
+    expect(cfg).toMatchObject({ endpoint: 'https://s3.example.test', bucket: 'icons', region: 'auto' })
+    expect(cfg.forcePathStyle).toBeUndefined()
+    expect(await cfg.credentials.get(0)).toEqual(KEYS)
+  })
+
+  it('leaves upload off for a partial explicit group, even with a shared bucket', () => {
+    expect(resolveIconStoreConfig({ ...env, S3_SECRET_ACCESS_KEY: undefined }, shared)).toBeUndefined()
+    expect(resolveIconStoreConfig({ ...env, S3_PUBLIC_BASE_URL: undefined }, shared)).toBeUndefined()
+  })
+
+  it('shares the transfer bucket and its credentials when only the public base is set', () => {
+    const only = { S3_PUBLIC_BASE_URL: 'https://objects.example.test/transfers', S3_REGION: 'auto' }
+    expect(resolveIconStoreConfig(only, shared)).toEqual({
+      endpoint: 'https://objects.example.test',
+      credentials: shared.credentials,
+      bucket: 'transfers',
+      region: 'us-east-1',
+      publicBaseUrl: 'https://objects.example.test/transfers',
+      forcePathStyle: true
+    })
+    const regional = { ...shared, location: { region: 'eu-west-1', bucket: 'transfers', forcePathStyle: false } }
+    expect(resolveIconStoreConfig(only, regional)?.endpoint).toBe('https://s3.eu-west-1.amazonaws.com')
+    expect(resolveIconStoreConfig(only)).toBeUndefined()
   })
 })

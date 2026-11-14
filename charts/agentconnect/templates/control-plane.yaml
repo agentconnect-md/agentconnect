@@ -176,10 +176,7 @@ spec:
               value: {{ printf "http://%s-open-connector:%v" (include "agentconnect.fullname" .) .Values.openConnector.port | quote }}
             {{- end }}
             {{- if .Values.objectStore.endpoint }}
-            # Uploaded-icon object store (agentconnect-md/agentconnect docs/designs/icon-uploads.md): non-secret S3 config from the
-            # `objectStore` block; the access key id + secret ride the namespace Secret with
-            # optional:true, so the pod starts even before they're added — the CP then just
-            # leaves icon upload off (its gate needs the full group) instead of crash-looping.
+            # Uploaded-icon store (docs/designs/icon-uploads.md); optional Secret keys leave upload off until both exist.
             - name: S3_ENDPOINT
               value: {{ .Values.objectStore.endpoint | quote }}
             - name: S3_BUCKET
@@ -200,6 +197,15 @@ spec:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.s3SecretAccessKeyKey }}
                   optional: true
+            {{- else if include "agentconnect.sourceCacheStore" . }}
+            {{- range list "S3_ENDPOINT" "S3_PUBLIC_BASE_URL" }}
+            {{- if hasKey $.Values.controlPlane.extraEnv . }}
+            {{- fail (printf "controlPlane.extraEnv.%s collides with the bundled store's icon default: set objectStore instead" .) }}
+            {{- end }}
+            {{- end }}
+            # Uploaded icons share the file transfer bucket and its mounted keys; its icon/ prefix is public-read.
+            - name: S3_PUBLIC_BASE_URL
+              value: {{ printf "https://%s/%s" .Values.sourceCache.store.host .Values.sourceCache.store.bucket | quote }}
             {{- end }}
             {{- if .Values.daemonPool.enabled }}
             # The control plane's cluster-access switch: it asserts the CP runs in-cluster (the

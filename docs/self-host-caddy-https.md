@@ -216,8 +216,17 @@ Clients that download a file follow a link to the store's origin. Browsers and
 daemons must therefore trust the Caddy CA for that port as well as for the
 console.
 
+The same bucket holds uploaded agent and organization icons under `icon/`
+([design](designs/icon-uploads.md)). The setup step grants anonymous reads on
+that prefix alone, because the console and chat platforms load icons by plain
+URL. Caddy sends `X-Content-Type-Options: nosniff` on the store's port. A chat
+platform fetches an icon from its own servers, so it shows uploaded icons only
+when the store's origin is publicly reachable with a certificate that platform
+trusts; Caddy's internal CA is not one.
+
 The Source Cache for Git bundles is a feature of the Kubernetes daemon pool.
-Compose runs no pool members, so this overlay enables file transfer only.
+Compose runs no pool members, so this overlay enables file transfer and icon
+uploads only.
 
 ## Trust the Caddy internal CA
 
