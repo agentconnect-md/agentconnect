@@ -587,6 +587,56 @@ describe('SlackSessionAccessService', () => {
     }
   )
 
+  describe('when the recording bot is gone', () => {
+    const checker = () => bot({ id: SECOND_BOT_ID, createdAt: new Date(600) })
+    const fleet = { bots: [checker()], tokens: { [SECOND_BOT_ID]: 'xoxb-checker' } }
+
+    it('lets the workspace checker answer a public channel', async () => {
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        expect(tokenOf(init)).toBe('Bearer xoxb-checker')
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        throw new Error(`unexpected Slack request: ${url}`)
+      })
+
+      await expect(
+        service(fetchImpl, undefined, fleet).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      ).resolves.toEqual({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false,
+        accessIssues: []
+      })
+    })
+
+    it('denies a private conversation the checker is not in, without degrading', async () => {
+      const fetchImpl = vi.fn(async () => json({ ok: false, error: 'channel_not_found' }))
+      const warn = vi.fn()
+
+      await expect(
+        service(fetchImpl, { warn }, fleet).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      ).resolves.toEqual({ allowedScopes: [], degraded: false, accessIssues: [] })
+      expect(warn).not.toHaveBeenCalled()
+    })
+
+    it('denies without degrading or calling Slack when no live bot is left in the workspace', async () => {
+      const fetchImpl = vi.fn(async () => json({ ok: true }))
+      const warn = vi.fn()
+      const revokedOnly = { bots: [bot({ revokedAt: new Date(EPOCH) })] }
+
+      for (const bots of [revokedOnly, { bots: [] }]) {
+        await expect(
+          service(fetchImpl, { warn }, bots).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+        ).resolves.toEqual({ allowedScopes: [], degraded: false, accessIssues: [] })
+      }
+      expect(fetchImpl).not.toHaveBeenCalled()
+      expect(warn).not.toHaveBeenCalled()
+    })
+  })
+
   it('denies without degrading when the member list no longer contains the workspace user', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes('conversations.info')) {

@@ -175,6 +175,11 @@ enum VisibilitySource {
   bots in that conversation do not change its ACL revision. When the recorded
   bot no longer meets those conditions, a report from another bot replaces the
   locator and advances the revision, invalidating grants made before the handover.
+  Until such a report arrives, a Slack check whose recorded bot is deleted, revoked
+  or moved is answered by the workspace's designated checker: it can read a public
+  channel, and Slack refuses a private conversation it is not in, which is a deny.
+  With no live bot left in the workspace the scope denies; nothing can verify it
+  again, so it is not reported as degraded.
   Slack/Feishu/Lark conversation-access and GitHub repository-access decisions are bounded
   in-process cache entries, leased by verdict (session-access-cold-visit.md §2): per-user
   decisions stay short-lived (`SESSION_ACCESS_RECHECK_SEC`, default 2 minutes), while a
