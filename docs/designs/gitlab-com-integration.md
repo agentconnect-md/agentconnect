@@ -459,11 +459,11 @@ accounts.
 
 ### 7.3 Three Credential Purposes
 
-| Purpose     | Service-account PAT scopes    | Consumer                                                                                                    | Agent-visible                                              |
-| ----------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `read`      | `read_api`, `read_repository` | Credential proxy for clone/fetch and the read-only provider CLI; the daemon's own Git and reads on its host | Never; a private skill source's credential window excepted |
-| `git_write` | `write_repository`            | Credential proxy for push; the daemon's own Git on its host                                                 | Never                                                      |
-| `effect`    | `api`                         | Trusted daemon broker for external effects; Control Plane broker for allowlisted metadata/policy reads      | Never                                                      |
+| Purpose     | Service-account PAT scopes    | Consumer                                                                                                                                                          | Agent-visible                                              |
+| ----------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `read`      | `read_api`, `read_repository` | Credential proxy for clone/fetch and the read-only provider CLI; the daemon's own Git and reads on its host                                                       | Never; a private skill source's credential window excepted |
+| `git_write` | `write_repository`            | Credential proxy for push; the daemon's own Git on its host                                                                                                       | Never                                                      |
+| `effect`    | `api`                         | Trusted daemon broker for external effects; the credential proxy for an API write at the `write` tier; Control Plane broker for allowlisted metadata/policy reads | Never                                                      |
 
 The separation matters because a service-account personal access token with
 `api` can perform broad API operations within the project and can also access

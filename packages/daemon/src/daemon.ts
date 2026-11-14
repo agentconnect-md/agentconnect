@@ -1797,6 +1797,11 @@ export class Daemon {
   private gitCreds!: GitCredentialCache
   /** §14.2 structured mutation brokers by provider — allowlisted effects run under a daemon-held lease; a host without one fails closed. */
   private readonly codeHostBrokers = new Map<CodeHostProvider, CodeHostEffectBroker>()
+  /** A host whose push credential cannot authenticate its API leases a proxied API write from its broker's effect credential, at the same tier. */
+  private readonly apiWriteLeases = new Map<
+    CodeHostProvider,
+    (agentId: string, repoId: string) => Promise<MintedCredential>
+  >()
   /** §16 run projection — the only writer of the service-account status note for a merge-request head. */
   private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
@@ -4334,6 +4339,15 @@ export class Daemon {
         return { token: entry.token, access: entry.access }
       },
       invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
+    })
+    this.apiWriteLeases.set('gitlab', async (agentId, projectId) => {
+      const entry = await this.gitCreds.getGitlabEffectToken(agentId, projectId)
+      return {
+        username: entry.username,
+        token: entry.token,
+        access: entry.access,
+        invalidate: () => this.gitCreds.invalidateGitlabEffect(agentId, projectId, entry.token)
+      }
     })
     this.codeHostBrokers.set('gitlab', {
       execute: (target, op) =>
@@ -7252,6 +7266,8 @@ export class Daemon {
     if (!provider || provider === IMPLICIT_CREDENTIAL_PROVIDER || !repository) {
       throw new Error(`${ask.repo ?? `repository ${ask.repoId ?? '(none)'}`} is not authorized for this agent`)
     }
+    const apiWrite = ask.write && !ask.skill ? this.apiWriteLeases.get(provider) : undefined
+    if (apiWrite) return await apiWrite(agentId, repository.repoId)
     const lease: ProxyLeaseAsk = {
       provider,
       externalRepoId: repository.repoId,

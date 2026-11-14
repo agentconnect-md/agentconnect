@@ -1,4 +1,4 @@
-// Gitea's routes in the credential proxy (gitea-integration.md §9): the bot token reaches every repository the bot can, so a request is served only on one of the agent's own repositories or a short allowlist.
+// Gitea's routes in the credential proxy (gitea-integration.md §9): the bot token reaches every repository the bot can, so a request is served only on one of the agent's own repositories, a write at its `write` tier.
 import {
   gitServicePrefix,
   isGitPush,
@@ -8,8 +8,8 @@ import {
   type ProxyRouteDescriptor
 } from '../credential-proxy/route-descriptor.js'
 
-const WRITE_REFUSAL =
-  'Gitea API writes are not available with this agent’s credential. Use the giteaPullRequest, giteaIssue or giteaComment tool.'
+const NO_REPOSITORY_WRITE_REFUSAL =
+  'a Gitea API write outside a repository is not available with this agent’s credential'
 const NO_REPOSITORY_REFUSAL =
   'a Gitea API read that names no repository is not available with this agent’s credential; name the repository as /api/v1/repos/{owner}/{repo}/…'
 const SETTINGS_REFUSAL = 'repository settings are not available with this agent’s credential'
@@ -33,8 +33,22 @@ function adminSetting(rest: readonly string[]): boolean {
   return first === 'actions' && (second === 'secrets' || second === 'variables' || second === 'runners')
 }
 
+/** Repository subresources only an administrator changes: who reaches the repository, how it is protected, and where it lives. */
+const ADMIN_WRITES: ReadonlySet<string> = new Set([
+  'avatar',
+  'branch_protections',
+  'collaborators',
+  'forks',
+  'generate',
+  'mirror-sync',
+  'tag_protections',
+  'teams',
+  'transfer'
+])
+
 export const giteaProxyRoute: ProxyRouteDescriptor = {
   provider: 'gitea',
+  refusedHeaders: ['x-http-method-override', 'x-http-method', 'x-method-override'],
   route: (instance, method, target, { repositories }) => {
     const stripped = underInstance(instance, target)
     // Another application beside the instance on the same host is not the agent's code host.
@@ -48,9 +62,10 @@ export const giteaProxyRoute: ProxyRouteDescriptor = {
     }
     if (segments[0] !== 'api') return { kind: 'anonymous' }
     if (segments[1] !== 'v1') return { kind: 'deny', status: 400, reason: 'only API v1 is available' }
-    if (!READS.has(method.toUpperCase())) return { kind: 'deny', status: 403, reason: WRITE_REFUSAL }
+    const reads = READS.has(method.toUpperCase())
     const rest = segments.slice(2)
     if (rest[0] !== 'repos') {
+      if (!reads) return { kind: 'deny', status: 403, reason: NO_REPOSITORY_WRITE_REFUSAL }
       // The instance's version needs no credential; the bot's own profile shows no repository, so the workspace's lease reads it.
       if (rest.length === 1 && rest[0] === 'version') return { kind: 'anonymous' }
       const workspace = repositories.find((row) => row.workspace)
@@ -59,13 +74,18 @@ export const giteaProxyRoute: ProxyRouteDescriptor = {
       }
       return { kind: 'deny', status: 403, reason: NO_REPOSITORY_REFUSAL }
     }
-    if (rest.length < 3) return { kind: 'deny', status: 403, reason: NO_REPOSITORY_REFUSAL }
+    if (rest.length < 3)
+      return { kind: 'deny', status: 403, reason: reads ? NO_REPOSITORY_REFUSAL : NO_REPOSITORY_WRITE_REFUSAL }
     const named = rest.slice(1, 3)
     const repo = /\.git$/i.test(named[1] ?? '') ? undefined : repositoryPath(named, false)
     if (!repo) return { kind: 'deny', status: 400, reason: 'the API path does not name a repository' }
     const under = rest.slice(3)
     if (under.some(ambiguousSegment)) return { kind: 'deny', status: 400, reason: NOT_A_PLAIN_PATH }
     if (adminSetting(under)) return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
-    return { kind: 'repository', plane: 'api', repo }
+    if (reads) return { kind: 'repository', plane: 'api', repo }
+    // The repository itself is its settings: editing or deleting it, like the administrator subresources, is not the agent's.
+    if (under.length === 0 || ADMIN_WRITES.has(decodeURIComponent(under[0]!).toLowerCase()))
+      return { kind: 'deny', status: 403, reason: SETTINGS_REFUSAL }
+    return { kind: 'repository', plane: 'api', repo, readOnly: false, write: true }
   }
 }

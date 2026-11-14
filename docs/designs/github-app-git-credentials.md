@@ -740,11 +740,17 @@ own socket only for that agent's.
   gets Basic with the grant's user name; the API gets the header and scheme
   the client used (`PRIVATE-TOKEN` or `Bearer` on GitLab, `token`, `Bearer` or
   Basic on Gitea).
-- The API is read-only on both hosts: a GitLab API read takes the read
-  credential of the `glab` plane, a write is refused
-  with an error naming the host's effect tools, and a read naming no
-  repository uses the workspace's credential. `glab` receives the placeholder
-  as `GITLAB_TOKEN`.
+- An API read takes the repository's read credential, and a read naming no
+  repository uses the workspace's. An API write on an authorized repository is
+  served at the agent's `write` tier, as a push is: GitHub scopes the token to
+  that tier, while a GitLab or Gitea token reaches further than the agent's
+  grant, so the proxy refuses what only a maintainer or administrator changes
+  on either host (the project or repository itself, its members, protections,
+  webhooks, secrets and variables, transfer and forks) at every tier, and the
+  secret-bearing subresources to a read as well. A GitLab write uses the
+  broker's effect credential, because the push credential cannot authenticate
+  the API. A write outside a repository is refused. `glab` receives the
+  placeholder as `GITLAB_TOKEN`.
 
 **The placeholder.** The environment's credential is sealed by the daemon: it
 names the agent and the hosts it may be presented to, under an HMAC with a

@@ -634,7 +634,7 @@ describe('routing a GitLab or Gitea request', () => {
     expect(instanceRoute(gitlab, 'GET', '/gitlab/group/project/-/merge_requests')).toEqual({ kind: 'anonymous' })
   })
 
-  it('reads GitLab API projects by id or encoded path, and refuses every API write naming the tools', () => {
+  it('reads GitLab API projects by id or encoded path, and writes one at the write tier', () => {
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests')).toEqual({
       kind: 'repository',
       plane: 'api',
@@ -654,18 +654,71 @@ describe('routing a GitLab or Gitea request', () => {
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/group%2F..%2Fx')).toMatchObject({ kind: 'deny' })
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v4/projects/project')).toMatchObject({ kind: 'deny' })
     expect(instanceRoute(gitlab, 'GET', '/gitlab/api/v3/user')).toMatchObject({ kind: 'deny', status: 400 })
-    for (const target of [
-      '/gitlab/api/v4/projects/42/merge_requests',
-      '/gitlab/api/v4/user/keys',
-      '/gitlab/api/graphql'
-    ]) {
-      const route = instanceRoute(gitlab, 'POST', target)
-      expect(route).toMatchObject({ kind: 'deny' })
-      if (target.includes('/v4/')) expect((route as { reason: string }).reason).toContain('gitlabMergeRequest')
-    }
+    // A write on a project needs the agent's write tier there, as a push does.
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/api/v4/projects/42/merge_requests')).toEqual({
+      kind: 'repository',
+      plane: 'api',
+      repoId: '42',
+      readOnly: false,
+      write: true
+    })
+    expect(
+      instanceRoute(gitlab, 'PUT', '/gitlab/api/v4/projects/group%2Fsub%2Fproject/repository/files/docs%2Fa.md')
+    ).toMatchObject({ kind: 'repository', repo: 'group/sub/project', write: true })
+    // A write outside a project, and GraphQL, are refused.
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/api/v4/user/keys', context)).toMatchObject({
+      kind: 'deny',
+      status: 403
+    })
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/api/v4/projects', context)).toMatchObject({
+      kind: 'deny',
+      status: 403
+    })
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/api/graphql')).toMatchObject({ kind: 'deny' })
   })
 
-  it('reads a Gitea repository as owner and name only, and refuses an API write naming the tools', () => {
+  it('refuses GitLab project secrets at every tier, and project settings and members to a write', () => {
+    for (const rest of [
+      'hooks',
+      'hooks/1',
+      'variables',
+      'Variables/KEY',
+      'deploy_tokens',
+      'access_tokens',
+      'triggers'
+    ]) {
+      for (const method of ['GET', 'POST', 'DELETE']) {
+        expect(instanceRoute(gitlab, method, `/gitlab/api/v4/projects/42/${rest}`)).toMatchObject({
+          kind: 'deny',
+          status: 403
+        })
+      }
+    }
+    for (const [method, rest] of [
+      ['PUT', ''],
+      ['DELETE', ''],
+      ['POST', 'members'],
+      ['POST', 'protected_branches'],
+      ['POST', 'transfer'],
+      ['POST', 'fork'],
+      ['PUT', 'push_rule']
+    ] as const) {
+      const target = `/gitlab/api/v4/projects/42${rest ? `/${rest}` : ''}`
+      expect(instanceRoute(gitlab, method, target)).toMatchObject({ kind: 'deny', status: 403 })
+      expect(instanceRoute(gitlab, 'GET', target)).toMatchObject({ kind: 'repository', repoId: '42' })
+    }
+    // An empty, dot or encoded segment never slips a subresource past the check.
+    for (const rest of ['/hooks', './hooks', 'issues/../hooks', '%68ooks', 'issues/%2e%2e/variables']) {
+      expect(instanceRoute(gitlab, 'POST', `/gitlab/api/v4/projects/42/${rest}`)).toMatchObject({ kind: 'deny' })
+    }
+    // A method override would run another method than the one routed.
+    const override = { repositories: [], headers: new Headers({ 'x-http-method-override': 'DELETE' }) }
+    expect(instanceRoute(gitlab, 'POST', '/gitlab/api/v4/projects/42/issues', override)).toMatchObject({
+      kind: 'deny'
+    })
+  })
+
+  it('reads a Gitea repository as owner and name only, and writes one at the write tier', () => {
     expect(instanceRoute(gitea, 'GET', '/forge/owner/repo.git/info/refs?service=git-upload-pack')).toEqual({
       kind: 'repository',
       plane: 'git',
@@ -679,9 +732,26 @@ describe('routing a GitLab or Gitea request', () => {
       repo: 'owner/repo'
     })
     expect(instanceRoute(gitea, 'GET', '/forge/api/v1/repos/owner/..')).toMatchObject({ kind: 'deny' })
-    const write = instanceRoute(gitea, 'PATCH', '/forge/api/v1/repos/owner/repo/issues/1')
-    expect(write).toMatchObject({ kind: 'deny', status: 403 })
-    expect((write as { reason: string }).reason).toContain('giteaPullRequest')
+    expect(instanceRoute(gitea, 'PATCH', '/forge/api/v1/repos/owner/repo/issues/1')).toEqual({
+      kind: 'repository',
+      plane: 'api',
+      repo: 'owner/repo',
+      readOnly: false,
+      write: true
+    })
+    // The repository itself and who reaches it are its administrator's, as is anything outside a repository.
+    for (const [method, target] of [
+      ['PATCH', '/forge/api/v1/repos/owner/repo'],
+      ['DELETE', '/forge/api/v1/repos/owner/repo'],
+      ['PUT', '/forge/api/v1/repos/owner/repo/collaborators/someone'],
+      ['POST', '/forge/api/v1/repos/owner/repo/transfer'],
+      ['POST', '/forge/api/v1/repos/owner/repo/branch_protections'],
+      ['POST', '/forge/api/v1/repos/owner/repo/hooks'],
+      ['POST', '/forge/api/v1/user/repos'],
+      ['POST', '/forge/api/v1/repos/migrate']
+    ] as const) {
+      expect(instanceRoute(gitea, method, target)).toMatchObject({ kind: 'deny', status: 403 })
+    }
   })
 })
 
@@ -917,13 +987,39 @@ describe('the decision on a self-managed instance', () => {
     })
   })
 
-  it('refuses an API write, another port, another agent’s instance, and plain HTTP; strips the placeholder outside the prefix', async () => {
-    const { proxy, mint, key, placeholder } = setup()
-    const write = new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/42/merge_requests', {
-      method: 'POST',
+  it('writes through the API at the write tier alone', async () => {
+    const { proxy, mint, placeholder } = setup()
+    const write = () =>
+      new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/7/merge_requests', {
+        method: 'POST',
+        headers: { 'private-token': placeholder }
+      })
+    expect(await proxy.decide(write(), at(8443))).toEqual({
+      action: 'allow',
+      setHeaders: [['private-token', 'glpat_minted']]
+    })
+    expect(mint).toHaveBeenLastCalledWith(AGENT, {
+      provider: 'gitlab',
+      repoId: '7',
+      plane: 'api',
+      readOnly: false,
+      write: true
+    })
+    for (const access of ['read', 'comment'] as const) {
+      mint.mockResolvedValueOnce({ ...minted, access })
+      expect(await proxy.decide(write(), at(8443))).toMatchObject({ action: 'deny', status: 403 })
+    }
+    const settings = new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/7', {
+      method: 'DELETE',
       headers: { 'private-token': placeholder }
     })
-    expect(await proxy.decide(write, at(8443))).toMatchObject({ action: 'deny', status: 403 })
+    mint.mockClear()
+    expect(await proxy.decide(settings, at(8443))).toMatchObject({ action: 'deny', status: 403 })
+    expect(mint).not.toHaveBeenCalled()
+  })
+
+  it('refuses another port, another agent’s instance, and plain HTTP; strips the placeholder outside the prefix', async () => {
+    const { proxy, mint, key, placeholder } = setup()
     const elsewhere = new Request('https://gitlab.example.test/gitlab/api/v4/user', {
       headers: { 'private-token': placeholder }
     })
@@ -1040,15 +1136,21 @@ describe('the proxy end to end on a self-managed GitLab', () => {
           `PRIVATE-TOKEN: ${placeholder}`,
           'Content-Length: 0'
         ])
-        expect([git, api, write]).toEqual([200, 200, 403])
+        // The project's settings are refused before anything is minted or forwarded.
+        const settings = await exchange({ socketPath }, host, ca.certPem, [
+          'DELETE /gitlab/api/v4/projects/group%2Fsub%2Fproject HTTP/1.1',
+          `PRIVATE-TOKEN: ${placeholder}`
+        ])
+        expect([git, api, write, settings]).toEqual([200, 200, 200, 403])
         expect(seen).toEqual([
           {
             url: '/gitlab/group/sub/project.git/info/refs?service=git-upload-pack',
             authorization: `Basic ${Buffer.from('service-account:glpat_minted').toString('base64')}`
           },
+          { url: '/gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests', privateToken: 'glpat_minted' },
           { url: '/gitlab/api/v4/projects/group%2Fsub%2Fproject/merge_requests', privateToken: 'glpat_minted' }
         ])
-        expect(mint).toHaveBeenCalledTimes(2)
+        expect(mint).toHaveBeenCalledTimes(3)
       } finally {
         await proxy.stop()
         await new Promise<void>((resolve) => upstream.close(() => resolve()))

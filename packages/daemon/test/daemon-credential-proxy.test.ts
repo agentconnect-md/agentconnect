@@ -25,6 +25,7 @@ import {
   AZURE_DEVOPS_HOOKS_V1_FEATURE,
   AZURE_DEVOPS_V1_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
+  GITLAB_EFFECT_V1_FEATURE,
   type AgentSpec,
   type GitCredGrant,
   type GitCredRequest
@@ -220,10 +221,15 @@ const MINTS: Record<string, { username: string; token: string; repo: string }> =
 }
 
 /** A control plane that mints every repository at `access`, echoing what a provider-qualified ask named. */
-function fakeControlPlane(d: any, access: 'read' | 'write', gitlabHost?: string): GitCredRequest[] {
+function fakeControlPlane(
+  d: any,
+  access: 'read' | 'write',
+  gitlabHost?: string,
+  features: readonly string[] = []
+): GitCredRequest[] {
   const asked: GitCredRequest[] = []
   d.cpClient = {
-    supportsServerFeature: (feature: string) => feature === GITCRED_PROVIDER_V2_FEATURE,
+    supportsServerFeature: (feature: string) => feature === GITCRED_PROVIDER_V2_FEATURE || features.includes(feature),
     requestGitCred: async (payload: GitCredRequest): Promise<GitCredGrant> => {
       asked.push(payload)
       const gitlab = payload.provider === 'gitlab'
@@ -348,6 +354,22 @@ describe('a host session with the credential proxy on', () => {
       expect(fill(cwd, child, 'github.com', 'example-org/example-repo.git')).toBe(own.AC_CODEHOST_CREDENTIAL)
     }
   )
+
+  it("leases a GitLab API write from the broker's effect credential, and a read or a push from the project's own", async () => {
+    const instance = 'https://gitlab.example.test:8443/gitlab'
+    const { d } = await startDaemon()
+    await admit(d, GITLAB_AGENT, gitlabSpec(instance))
+    const asked = fakeControlPlane(d, 'write', instance, [GITLAB_EFFECT_V1_FEATURE])
+    const ask = { provider: 'gitlab', repoId: '4455667', plane: 'api' }
+    expect(await d.credentialProxyMint(GITLAB_AGENT, { ...ask, readOnly: false, write: true })).toMatchObject({
+      access: 'write'
+    })
+    expect(asked.at(-1)).toMatchObject({ provider: 'gitlab', externalRepoId: '4455667', purpose: 'gitlab_effect' })
+    await d.credentialProxyMint(GITLAB_AGENT, { ...ask, readOnly: true })
+    expect(asked.at(-1)?.purpose).not.toBe('gitlab_effect')
+    await d.credentialProxyMint(GITLAB_AGENT, { ...ask, plane: 'git', push: true })
+    expect(asked.at(-1)?.purpose).not.toBe('gitlab_effect')
+  })
 
   it.skipIf(process.platform === 'win32')(
     'hands git the placeholder for a self-managed GitLab instance the spec names, and glab the same',
