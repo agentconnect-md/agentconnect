@@ -255,7 +255,7 @@ export function availableApiProtocols(): typeof API_PROTOCOLS {
 export function ahpQuickstart(url: string): QuickstartFile {
   return {
     file: 'connect.ts',
-    code: `// npm i @microsoft/agent-host-protocol@1.0.0 ws
+    code: `// npm i @microsoft/agent-host-protocol@1.1.0 ws
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { WebSocket } from "ws";
