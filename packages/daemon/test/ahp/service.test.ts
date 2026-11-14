@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
   SessionStatus,
@@ -8,6 +10,7 @@ import {
   MessageKind
 } from '@microsoft/agent-host-protocol'
 import type { AhpAttachmentAuthorization, AhpSessionBinding, RdAhpOpen } from '@agentconnect.md/protocol'
+import { fileEditUri } from '../../src/ahp/file-edits.js'
 import { AhpService, chatChannel, type AhpServiceOptions } from '../../src/ahp/service.js'
 
 const disposals: (() => void)[] = []
@@ -177,6 +180,59 @@ it('creates a session a client asks for with its own folders, config and tools, 
   })
   expect(created.error).toBeUndefined()
   expect(options.registry.reserve).toHaveBeenCalled()
+})
+
+it('scopes file resources to the workspace of a held session, masks their text, and rebuilds an edit as whole files', async () => {
+  // A root and its URI as this platform names them: a drive letter on Windows.
+  const root = resolve('/work')
+  const base = pathToFileURL(root).href
+  const files: Record<string, Buffer> = {
+    'src/a.ts': Buffer.from('one\nkey = sk-secret\n2\nthree\n'),
+    'logo.bin': Buffer.from([0xff, 0xfe, 0x00, 0x73, 0x6b])
+  }
+  const read = vi.fn(async (_binding: unknown, _auth: unknown, path: string) => files[path])
+  const edit = { type: 'diff', path: join(root, 'src', 'a.ts'), oldText: 'two\n', newText: '2\n' }
+  const { binding, connect } = fixture({
+    workspace: {
+      root: async () => root,
+      list: async (_binding, _auth, path) => (path === '' ? [{ name: 'src', type: 'directory' }] : undefined),
+      stat: async (_binding, _auth, path) => (path === '' ? { type: 'directory' } : undefined),
+      read
+    },
+    mask: (_agent, text) => text.replaceAll('sk-secret', '***'),
+    toolBody: async () => JSON.stringify({ content: [edit] })
+  })
+  const peer = await connect()
+  await peer.initialize()
+  const ask = (method: string, uri: string, extra: object = {}) =>
+    peer.request(method, { channel: 'ahp-root://', uri, ...extra })
+  // Nothing is readable until the connection holds a session whose workspace covers the URI.
+  expect((await ask('resourceList', base)).error).toMatchObject({ code: AhpErrorCodes.NotFound })
+  const session = await peer.request('subscribe', { channel: binding.sessionUri })
+  expect(session.result.snapshot.state.workingDirectories).toEqual([base])
+  expect((await ask('resourceList', base)).result).toEqual({ entries: [{ name: 'src', type: 'directory' }] })
+  expect((await ask('resourceRead', `${base}/src/a.ts`, { encoding: 'utf-8' })).result.data).toBe(
+    'one\nkey = ***\n2\nthree\n'
+  )
+  expect((await ask('resourceRead', `${base}/logo.bin`)).result.data).toBe(files['logo.bin']!.toString('base64'))
+  for (const outside of [`${base}/../etc/passwd`, `${base}space/a.ts`, 'https://example.test/work/src/a.ts'])
+    expect((await ask('resourceRead', outside)).error).toMatchObject({ code: AhpErrorCodes.NotFound })
+  expect(read.mock.calls.map((call) => call[2])).toEqual(['src/a.ts', 'logo.bin'])
+
+  const snapshot = async (side: 'before' | 'after') =>
+    (
+      await ask(
+        'resourceRead',
+        fileEditUri({ sessionUri: binding.sessionUri, toolCallId: 'call', index: 0, path: edit.path, side })
+      )
+    ).result.data
+  expect(await snapshot('before')).toBe('one\nkey = ***\ntwo\nthree\n')
+  expect(await snapshot('after')).toBe('one\nkey = ***\n2\nthree\n')
+  // Once the fragment is gone from the file, the snapshot is the fragment the runtime reported.
+  files['src/a.ts'] = Buffer.from('rewritten\n')
+  expect(await snapshot('before')).toBe('two\n')
+  expect(await snapshot('after')).toBe('2\n')
+  expect(peer.close).not.toHaveBeenCalled()
 })
 
 it('discovers catalogs without installing history or retaining every session', async () => {

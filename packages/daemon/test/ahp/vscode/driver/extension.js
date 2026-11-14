@@ -16,7 +16,8 @@ const text = async (uri) => Buffer.from(await vscode.workspace.fs.readFile(uri))
 
 exports.activate = async () => {
   const out = process.env.AHP_DRIVER_OUT
-  if (!out) return
+  // Adding a folder restarts the extension host; the run that added it is the one that counts.
+  if (!out || vscode.workspace.workspaceFolders?.some((folder) => folder.uri.scheme === 'vscode-agent-host')) return
   const report = (entry) => fs.appendFileSync(out, `${JSON.stringify({ at: Date.now(), ...entry })}\n`)
   try {
     const [host] = vscode.workspace.getConfiguration().get('chat.workspaceRemoteAgentHosts') ?? []
@@ -54,6 +55,16 @@ exports.activate = async () => {
       )
     }
     report({ step: 'browsed', entries, size: stat.size, document: document.getText(), refs })
+    // The runner now has the agent edit the open file; VS Code reloads it when the host reports the change.
+    const opened = document.getText()
+    for (let waited = 0; document.getText() === opened && waited < 40; waited++) await sleep(500)
+    report({ step: 'refreshed', document: document.getText() })
+    // Optional, for looking at the window: the agent's workspace as a folder in the Explorer.
+    if (process.env.AHP_DRIVER_MOUNT) {
+      const count = vscode.workspace.workspaceFolders?.length ?? 0
+      const mounted = vscode.workspace.updateWorkspaceFolders(count, 0, { uri: at(workspace), name: 'Agent workspace' })
+      report({ step: 'mounted', mounted })
+    }
   } catch (error) {
     report({ step: 'error', message: String(error?.stack ?? error) })
   }

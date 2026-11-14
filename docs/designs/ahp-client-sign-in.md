@@ -13,6 +13,16 @@ key: it only sends one through a test-only setting honored under
 `--enable-smoke-test-driver`. Without that flag every request answers
 `AuthRequired` and session creation fails.
 
+> **Correction (VS Code 1.146).** The paragraph below does not hold for an agent
+> host. VS Code resolves a required protected resource only through an
+> authentication provider it already has for the advertised authorization server,
+> and asks it silently. Dynamic client registration and the browser flow exist in
+> its MCP server path, and its interactive sign-in for an agent host is the GitHub
+> one. Against this server it logs `No signed-in session resolved` and every
+> request answers `AuthRequired`. An extension that registers an authentication
+> provider for the CP's issuer closes the gap; it needs the proposed `authIssuers`
+> API. The server side of this design is unchanged and verified by that route.
+
 VS Code already implements the standard path. When `initialize` advertises a
 required `AgentInfo.protectedResources` entry with `authorization_servers`, it
 discovers that server (RFC 8414), registers itself (Client ID Metadata Document if

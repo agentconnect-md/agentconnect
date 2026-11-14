@@ -23,6 +23,8 @@ time, by hand, as "Unknown method".
 - VS Code's own log has no chat error and records a successful first response.
 - With the default prompts, VS Code's agent-host filesystem lists the workspace, an editor opens a file
   from it, and the edit's before and after snapshots read back as whole files.
+- A second client then has the agent edit that file, and the editor VS Code holds open shows the new
+  content.
 
 VS Code reads files and snapshots only when something asks for them, so after the turns the driver asks
 through `vscode.workspace.fs` and `openTextDocument`, which is the path the UI takes.
@@ -36,6 +38,9 @@ The run also prints every method VS Code sent, which is the list to compare agai
   The runtime's `[ahp:…]` markers are in `test/fixtures/ahp-acp-agent.mjs`.
 - `VSCODE_BIN` names the `code` launcher when it is not at the macOS default or on `PATH`.
 - `AHP_HARNESS_KEEP=1` keeps the profile, including VS Code's logs, and prints its path.
+- To look at the window itself, `AHP_HARNESS_DEBUG_PORT=<port>` opens a DevTools port on that VS Code
+  and `AHP_HARNESS_HOLD_MS=<ms>` keeps it open after the checks. A DevTools client can then screenshot
+  and click that window alone. `AHP_DRIVER_MOUNT=1` also adds the agent's workspace to the Explorer.
 
 ## Limits
 
@@ -44,5 +49,5 @@ The run also prints every method VS Code sent, which is the list to compare agai
 - It covers the daemon's protocol surface only. The relay's pre-authentication window and sign-in are
   outside it.
 - It does not answer approval or input prompts, so `[ahp:approve]` and `[ahp:input]` turns do not finish.
-- `createResourceWatch` is tolerated as unsupported: the daemon serves files read-only without change
-  notifications, so a file open in VS Code does not refresh when the agent edits it.
+- A file change is reported from the agent's own edits, so a file changed by a shell command or by
+  another process does not refresh in VS Code.

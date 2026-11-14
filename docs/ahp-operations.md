@@ -156,12 +156,18 @@ A session's state names its workspace in `workingDirectories` as a `file:` URI.
 The daemon serves that tree read-only through `resourceList`, `resourceResolve`
 and `resourceRead`, using the reader, containment and sandbox reach of the
 console's file browser. A URI outside the workspace of a session the connection
-holds answers `NotFound`, as a missing file does. Directory listings leave out
-symbolic links. File content is not masked, as in the console. A file of more
-than about 44 KiB is refused, because one AHP message carries at most 64 KiB;
-ranged reads are not served. Writes and change notifications
-(`createResourceWatch`) are not served, so a file open in a client does not
-refresh.
+holds answers `NotFound`, as a missing file does, and so does anything the
+reader refuses, such as a symbolic link that leaves the workspace. Directory
+listings leave out symbolic links, which the reader does not open. Text content
+has the agent's secret values masked, as tool output does. A file of more than
+about 44 KiB is refused, because one AHP message carries at most 64 KiB and VS
+Code reads a file in one request. Writes are not served.
+
+`createResourceWatch` is served from the agent's own work: when a tool call
+completes with file edits, each watch covering an edited file receives
+`resourceWatch/changed`, so a file a client holds open refreshes. Nothing
+watches the disk, so a change made by a shell command or another process is not
+reported.
 
 AHP has no task-list or cost channel. The session's `_meta['agentconnect.md']`
 carries the latest turn's ACP plan as `plan` (at most 50 entries of 500

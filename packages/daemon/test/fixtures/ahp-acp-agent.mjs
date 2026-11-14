@@ -104,6 +104,20 @@ async function prompt(id, params) {
     })
     update(params.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'fixture-write', status: 'completed' })
   }
+  // A later edit of the same file, for clients that hold it open.
+  if (!run.cancelled && input.includes('[ahp:rewrite]')) {
+    const path = join(cwds.get(params.sessionId) ?? process.cwd(), 'docs', 'notes.txt')
+    writeFileSync(path, 'alpha\nBRAVO\nCHARLIE\n')
+    update(params.sessionId, {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'fixture-rewrite',
+      title: 'Edit notes again',
+      kind: 'edit',
+      status: 'in_progress',
+      content: [{ type: 'diff', path, oldText: 'charlie\n', newText: 'CHARLIE\n' }]
+    })
+    update(params.sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'fixture-rewrite', status: 'completed' })
+  }
   if (!run.cancelled) {
     update(params.sessionId, {
       sessionUpdate: 'tool_call',
