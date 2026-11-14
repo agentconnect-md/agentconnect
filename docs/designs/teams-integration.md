@@ -200,22 +200,8 @@ one.
 A mention arrives as a `mention` entity whose `mentioned.id` is the bot
 (`28:<appId>`) and whose `text` is the `<at>…</at>` span in the activity text
 (**measured**). The normalizer removes exactly that span and sets
-`mentionedBots`, lower-casing a `28:` ID; a display name is never matched.
-
-A mention of another bot stays in the text as `<@28:<appId>|<label>>`, and a
-person's as `@<label>`. Every bot installed in a channel receives its messages,
-and under session mode `auto` each one's coordinator reads them all, so the
-text has to say which bot a message names: a label alone does not, because an
-agent is not told the name Teams shows for it or for another bot. The
-coordinator is told its own `<@28:<appId>>`, taken from its connection, and
-compares the two. A reply that carries the `<@28:<appId>|<label>>` form is sent
-as plain `@<label>`; the form without a label is sent as written. No mention
-entity goes out: Teams delivers no bot's message to another bot, so a mention
-could not reach it, and an `<at>` span with its `mention` entity, sent as
-`extendedmarkdown` (§4.3), was shown as plain text without the `@`
-(**measured**). Another agent is reached through `callAgent`.
-
-The relay reads a mention as addressing the bot only through the assignment's
+`mentionedBots`, lower-casing a `28:` ID; a display name is never matched. The
+relay reads a mention as addressing the bot only through the assignment's
 `28:<appId>`, so a channel's first contact is a mention: it reaches the daemon,
 which registers the channel for the Console, Off where the agent is gated.
 

@@ -1,6 +1,5 @@
 // One Teams bot's daemon connection (teams-integration.md §3, §4.3): relay-terminated ingress, Bot Connector egress, no socket.
 import { createHash, randomUUID } from 'node:crypto'
-import { msTeamsBotMention, msTeamsOutgoingText } from '@agentconnect.md/message'
 import {
   MSTEAMS_PLATFORM,
   type IntegrationMsTeamsConfig,
@@ -309,8 +308,6 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
   readonly tenantId: string
   /** The bot's own `28:<appId>`, the ID a mention entity names (§4.1). */
   readonly botUserId: string
-  /** The bot's own ID as a message's text writes another bot's (§4.1). */
-  readonly selfMentionAddress: string
   /** Teams deep links come from the client, so the console URL is the fallback. */
   readonly workspaceUrl = ''
   private readonly api: MsTeamsApi
@@ -364,7 +361,6 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     this.appId = group.config.appId.toLowerCase()
     this.tenantId = group.config.tenantId.toLowerCase()
     this.botUserId = `28:${this.appId}`
-    this.selfMentionAddress = msTeamsBotMention(this.botUserId)
     this.now = deps.now ?? (() => Date.now())
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.sendIntervalMs = deps.sendIntervalMs ?? MSTEAMS_CONVERSATION_INTERVAL_MS
@@ -963,7 +959,7 @@ export class MsTeamsConnection implements PlatformConnection, MsTeamsReplyPort, 
     const uploadId = randomUUID()
     this.offered.set(uploadId, { channel, bytes: file.bytes, at: this.now() })
     this.pruneOffered()
-    const description = comment?.trim() ? msTeamsOutgoingText(comment.trim()).slice(0, 1000) : file.name
+    const description = comment?.trim() ? comment.trim().slice(0, 1000) : file.name
     try {
       const messageId = await this.write(target, () =>
         this.api.postActivity(target, fileConsentActivityOf(file.name, file.bytes.length, description, uploadId))
@@ -1164,9 +1160,8 @@ function newestFirst(a: MsTeamsGraphMessage, b: MsTeamsGraphMessage): number {
   return b.createdMs - a.createdMs
 }
 
-// Another bot named as it was named to the agent goes out as `@<label>` (§4.1).
 function activityOf(text: string): Record<string, unknown> {
-  return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text: msTeamsOutgoingText(text) }
+  return { type: 'message', textFormat: MSTEAMS_TEXT_FORMAT, text }
 }
 
 // A raw conversation ID's normalized channel: a channel thread drops its `;messageid=` suffix.
