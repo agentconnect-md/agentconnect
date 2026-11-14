@@ -7,6 +7,7 @@ import {
   codexGatewayAuthRequest,
   objectFromJson
 } from '../runtimes/codex-config.js'
+import { signalProcessTree } from '../acp/process-tree.js'
 import { applySessionTrust } from '../credential-proxy/trust-bundle.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
@@ -321,17 +322,7 @@ export class AcpRunner {
     if (child.exitCode !== null || child.signalCode !== null) return
     // A child that never spawned has no pid, and child.kill() would signal pid 0 — this shim's own process group.
     if (child.pid === undefined) return
-    const kill = (signal: NodeJS.Signals): void => {
-      if (child.pid && process.platform !== 'win32') {
-        try {
-          process.kill(-child.pid, signal)
-          return
-        } catch {
-          /* group gone — fall back to the child */
-        }
-      }
-      child.kill(signal)
-    }
+    const kill = (signal: NodeJS.Signals): void => signalProcessTree(child, signal)
     try {
       child.stdin?.end()
     } catch {

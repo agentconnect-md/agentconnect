@@ -6,6 +6,7 @@ import type { EffortOption } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { RuntimeCatalogMetaRecord, RuntimeModelCapRecord } from '../store/local-store.js'
+import { signalProcessTree } from '../acp/process-tree.js'
 import { curatedProbeEnvironment } from './runtime-prober.js'
 import { resolveCommandPath } from './probe.js'
 
@@ -512,24 +513,9 @@ export function codexModelsFromListResult(result: unknown): DriverCatalog {
   return { models, ...(defaultModel ? { defaultModel } : {}) }
 }
 
-/** SIGKILL the driver child's whole process group (detached spawn) so wrapper
- *  grandchildren die too; direct kill is the Windows / already-gone fallback. */
+/** SIGKILL the driver child and its descendants, so a wrapper's grandchildren die too. */
 function killDriverTree(child: ChildProcess): void {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  const pid = child.pid
-  if (pid !== undefined && process.platform !== 'win32') {
-    try {
-      process.kill(-pid, 'SIGKILL')
-      return
-    } catch {
-      // Group already reaped or never ours — fall through to the direct kill.
-    }
-  }
-  try {
-    child.kill('SIGKILL')
-  } catch {
-    // Already exited.
-  }
+  signalProcessTree(child, 'SIGKILL')
 }
 
 /** codex native catalog: `codex app-server` speaks newline-delimited JSON-RPC on

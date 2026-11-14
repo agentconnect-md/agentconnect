@@ -3,6 +3,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { Readable, Writable } from 'node:stream'
 import { LocalFileSink, type FileSink } from '../shim/file-sink.js'
 import { resolveCommandPath, resolveLocalInvocation } from '../runtimes/probe.js'
+import { signalProcessTree } from './process-tree.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { HostKey } from './host-key.js'
 import type { Logger } from '../log.js'
@@ -228,19 +229,8 @@ class LocalSpawnedRuntime implements SpawnedRuntime {
     if (this.stopped) return
     this.stopped = true
     const child = this.child
-    // Group signal when the child has its own group (detached spawn); fall back to
-    // the direct child on win32 or once the group is gone (ESRCH).
-    const kill = (sig: NodeJS.Signals) => {
-      if (child.pid && process.platform !== 'win32') {
-        try {
-          process.kill(-child.pid, sig)
-          return
-        } catch {
-          /* group already gone — try the direct child */
-        }
-      }
-      child.kill(sig)
-    }
+    // The whole tree, not the one pid: the real adapter is often a child of the launcher we spawned.
+    const kill = (sig: NodeJS.Signals) => signalProcessTree(child, sig)
     // A child that already exited on its own has emitted 'exit' already: once('exit')
     // below would never fire and stop() would hang the daemon forever, kill() being a
     // no-op on a reaped pid. No group sweep here — the child may have been dead for
