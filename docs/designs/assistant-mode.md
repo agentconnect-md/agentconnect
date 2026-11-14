@@ -4169,6 +4169,11 @@ four hours per place. A task of the place is listed when all of these hold:
 A place with nothing to list gets no turn, so a look costs a model call only where something is
 quiet.
 
+A question the coordinator asks in a reply of its own is never listed, since no task holds it.
+So its prompt keeps such questions out of its own replies: a request that cannot be finished until
+its sender answers goes to a task, however small the work, and the task asks, waits and is looked
+back at ([auto-session-mode.md](auto-session-mode.md) §4.2).
+
 **What the coordinator receives.** One item per listed task, delivered as a task's report is
 (auto-session-mode.md §3.4): `<report id task kind="look back" title>`, in the thread the task
 last replied in. The items of one look arrive together, so they are one batch and one turn, and a
@@ -5616,3 +5621,10 @@ one that went quiet under it, so the first look after an upgrade, or after an ag
 would have listed every quiet task of the past week in every place. Store version 83 marks the
 tasks that exist at the upgrade as left six looks in a row, so each is listed again only once it
 runs a round.
+
+**Hundred-and-ninth revision (2026-11-14)**: a request that waits on its sender's answer goes to a
+task (§5.20 "What is listed", [auto-session-mode.md](auto-session-mode.md) §4.2). On the test
+deployment a coordinator asked such a question in a reply of its own, where no task holds it and
+no look lists it. Its prompt now opens a task for a request that cannot be finished until the
+sender answers, and keeps a question it would wait on out of its own reply. Nothing is added to
+the daemon: the rule only moves the question to where looking back already reaches.

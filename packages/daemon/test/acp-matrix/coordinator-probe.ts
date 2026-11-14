@@ -597,6 +597,7 @@ export type CoScenarioId =
   | 'ignore-streak'
   | 'mention-vague'
   | 'no-self-work'
+  | 'ask-then-wait'
   | 'batch-mixed'
   | 'batch-route-and-new'
   | 'report-reply'
@@ -781,6 +782,21 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
     tasks: [],
     messages: [msg('msg-1700000800.000100', CO_IDS.alice, true, "please fix the typo 'recieve' in README.md")],
     expect: { 'msg-1700000800.000100': { kind: 'delegate' } }
+  },
+  {
+    // The work is one line, but it waits on the sender's answer: a task holds that question open, a reply does not.
+    id: 'ask-then-wait',
+    tasks: [],
+    messages: [
+      msg(
+        'msg-1700000850.000100',
+        CO_IDS.alice,
+        true,
+        'I need one status line posted in this thread, but only after I pick its wording. Ask me whether I want ' +
+          '"All good." or "Nothing to report.", wait for my answer, then post the one I chose.'
+      )
+    ],
+    expect: { 'msg-1700000850.000100': { kind: 'delegate' } }
   },
   {
     id: 'batch-mixed',
