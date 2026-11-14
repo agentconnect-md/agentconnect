@@ -384,7 +384,8 @@ jobs:
     needs: scope
     # The repository variable CI_SKIP_APT_JOBS set to `true` skips every apt-installing job while apt is unreachable.
     if: ${{ needs.scope.outputs.code == 'true' && vars.CI_SKIP_APT_JOBS != 'true' }}
-    runs-on: ubuntu-latest
+    # Pinned to the release the .debs in scripts/ci-apt-debs were built for.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -414,9 +415,12 @@ jobs:
       # and `pnpm -r` would now reach a control plane this install deliberately left out.
       - name: Install
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
-      # The only apt on the critical path: the script survives either the runner's mirror or upstream being unreachable.
+      # The only apt on the critical path: pinned .debs from the repository variable's URL first, apt only as a fallback.
       - name: Install and enable the Linux kernel sandbox
         timeout-minutes: 5
+        env:
+          CI_APT_DEBS_URL: ${{ vars.CI_APT_DEBS_URL }}
+          CI_APT_DEBS: scripts/ci-apt-debs/sandbox.sha256
         run: |
           sh scripts/ci-apt-install.sh bubblewrap ripgrep socat
           # Ubuntu 24.04 runners restrict unprivileged userns via AppArmor; bwrap (so the SRT sandbox) needs them.
@@ -608,7 +612,8 @@ jobs:
     needs: scope
     # Skipped by CI_SKIP_APT_JOBS, for the reason the Sandbox (Linux) job gives.
     if: ${{ needs.scope.outputs.computer == 'true' && vars.CI_SKIP_APT_JOBS != 'true' }}
-    runs-on: ubuntu-latest
+    # Pinned to the release the .debs in scripts/ci-apt-debs were built for.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -632,6 +637,9 @@ jobs:
       # Xvfb is the display; xterm is the window the suite types into and xdotool reads X's own pointer.
       - name: Install Xvfb
         timeout-minutes: 5
+        env:
+          CI_APT_DEBS_URL: ${{ vars.CI_APT_DEBS_URL }}
+          CI_APT_DEBS: scripts/ci-apt-debs/xvfb.sha256
         run: sh scripts/ci-apt-install.sh xvfb xauth xterm xdotool xfonts-base
       - name: Xvfb integration suite
         env:
