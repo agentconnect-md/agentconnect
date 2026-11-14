@@ -156,6 +156,37 @@ describe('Logto ADMIN claim', () => {
   })
 })
 
+describe('Logto named connectors', () => {
+  it('reads Disable Email Sync from the connector form, not from a stored key Logto ignores', async () => {
+    const oauth = (name: string, config: Record<string, unknown>, formKeys: string[]) => ({
+      id: `${name.toLowerCase()}-connector`,
+      connectorId: 'oauth2',
+      target: name.toLowerCase(),
+      metadata: { target: name.toLowerCase(), name: { en: name } },
+      config: { clientId: `${name}-client`, ...config },
+      formItems: formKeys.map((key) => ({ key }))
+    })
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oidc/token') return response({ access_token: 'management-token', expires_in: 3600 })
+      if (url.pathname === '/api/connectors') {
+        return response([
+          oauth('Off', { disableEmailSync: true }, ['clientId', 'disableEmailSync']),
+          oauth('On', {}, ['clientId', 'disableEmailSync']),
+          oauth('Old', { disableEmailSync: true }, ['clientId'])
+        ])
+      }
+      return response({}, 404)
+    }
+
+    const named = await new LogtoAdminClaimClient(config, fetcher).resolveConnectorsByName(['Off', 'On', 'Old'])
+
+    expect(named.Off?.emailSync).toBe('off')
+    expect(named.On?.emailSync).toBe('on')
+    expect(named.Old?.emailSync).toBe('unsupported')
+  })
+})
+
 describe('Logto setup reconciliation', () => {
   it('creates the managed SPA, social connectors, sign-in method, and ADMIN role idempotently', async () => {
     let application: Record<string, unknown> | undefined

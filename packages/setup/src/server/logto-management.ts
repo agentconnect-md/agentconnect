@@ -92,6 +92,7 @@ interface LogtoConnector {
   name: string | null
   isDemo: boolean
   config: Record<string, unknown>
+  formItemKeys: string[]
 }
 
 interface LogtoSignInExperience {
@@ -121,6 +122,8 @@ export interface LogtoNamedConnector {
   target: string
   name: string
   clientId: string | null
+  /** `unsupported` when the installed connector offers no Disable Email Sync setting (Logto before 1.46). */
+  emailSync: 'on' | 'off' | 'unsupported'
 }
 
 export interface LogtoConfigurationDiff {
@@ -265,7 +268,13 @@ function parseConnector(value: unknown): LogtoConnector | null {
     target,
     name: typeof name === 'string' ? name : null,
     isDemo: row.isDemo === true || DEMO_CONNECTOR_IDS.includes(row.connectorId),
-    config: asRecord(row.config)
+    config: asRecord(row.config),
+    formItemKeys: Array.isArray(row.formItems)
+      ? row.formItems.flatMap((item) => {
+          const key = asRecord(item).key
+          return typeof key === 'string' ? [key] : []
+        })
+      : []
   }
 }
 
@@ -453,7 +462,13 @@ export class LogtoAdminClaimClient {
               connectorId: connector.connectorId,
               target: connector.target,
               name,
-              clientId: typeof connector.config.clientId === 'string' ? connector.config.clientId : null
+              clientId: typeof connector.config.clientId === 'string' ? connector.config.clientId : null,
+              // Older Logto stores an unknown `disableEmailSync` key but ignores it, so trust the form, not the config.
+              emailSync: !connector.formItemKeys.includes('disableEmailSync')
+                ? 'unsupported'
+                : connector.config.disableEmailSync === true
+                  ? 'off'
+                  : 'on'
             }
           ]
         ]

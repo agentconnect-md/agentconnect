@@ -45,7 +45,7 @@ services:
     restart: 'no'
 
   logto:
-    image: ghcr.io/logto-io/logto:${LOGTO_VERSION:-1.45.0}
+    image: ghcr.io/logto-io/logto:${LOGTO_VERSION:-1.46.0}
     depends_on:
       logto-db-init:
         condition: service_completed_successfully
