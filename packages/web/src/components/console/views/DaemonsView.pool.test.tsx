@@ -264,9 +264,8 @@ describe('DaemonsView pool', () => {
     expect(html).toContain('No daemons connected')
   })
 
-  it('lists Computers only where the computer-use flag is on', () => {
-    expect(render()).not.toContain('data-computers-section')
-    setFlags('daemon-pool,managed,computer-use')
+  it('lists Computers without any console flag', () => {
+    setFlags('')
     expect(render()).toContain('data-computers-section')
   })
 })
