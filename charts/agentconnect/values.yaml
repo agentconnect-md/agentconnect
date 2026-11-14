@@ -156,8 +156,6 @@ features:
   googleChatDeploymentApp: false
   # The By decision checkout for additional repositories; off hides it for new choices, existing ones stay shown.
   repositoryDecision: false
-  # Computers in the console (Infra's section, a Computer's page, the agent's Computers card, their usage); off hides them all.
-  computerUse: false
   # Capability requests: agents ask for a setting or tool they lack and people complete it in the console; set false to turn the server side off.
   capabilityRequests: true
   # GitHub proxy-only on the pool: a pod's managed GitHub Git goes through the daemon's credential proxy, and no GitHub token reaches a pod's helper.
