@@ -21,6 +21,11 @@ export default function AuthCallback() {
       router.replace('/')
       return
     }
+    // Logto returns a cancelled or failed direct sign-in here as `access_denied`.
+    if (new URLSearchParams(window.location.search).get('error') === 'access_denied') {
+      setError(t('cancelled'))
+      return
+    }
     completeLogin()
       .then(async () => {
         // Social sign-in can link an identity without passing through the Control Plane.
@@ -33,14 +38,14 @@ export default function AuthCallback() {
         if (stashed && stashed.startsWith('/') && !stashed.startsWith('//')) dest = stashed
         router.replace(dest)
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : t('genericError')))
+      .catch((e: unknown) => setError(t('failed', { error: e instanceof Error ? e.message : t('genericError') })))
   }, [router, t])
 
   return (
     <div className="authpage">
       <div className="m-auto flex max-w-[640px] flex-col items-center gap-[18px] px-6 text-center font-sans text-[14px] font-normal leading-normal text-(--text-secondary)">
         {!error && <Spinner size={48} />}
-        {error ? t('failed', { error }) : t('signingIn')}
+        {error ?? t('signingIn')}
         {error && <Button onClick={() => void redirectExpiredSession()}>{t('backToLogin')}</Button>}
       </div>
     </div>

@@ -1572,6 +1572,19 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
               expected: regionalApp.loginAppId
             })
           }
+          // A tenant admin sets the address Feishu and Lark return, so it must not become the account email.
+          if (connector.emailSync !== 'off') {
+            connectorStatus = 'mismatch'
+            connectorDiff.push(
+              connector.emailSync === 'unsupported'
+                ? {
+                    field: 'Logto version',
+                    current: 'OAuth 2.0 connector without Disable Email Sync',
+                    expected: 'Logto 1.46.0 or later'
+                  }
+                : { field: 'Logto connector Disable Email Sync', current: 'Off', expected: 'On' }
+            )
+          }
         }
       } catch (error) {
         connectorStatus =
