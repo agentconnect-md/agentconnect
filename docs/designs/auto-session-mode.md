@@ -408,7 +408,8 @@ is judged again on every page. Every entry also names the message its task was o
 or merge requests it opened. Both lists hold open tasks only; a task's id is its key cut before the
 agent's id where that names it alone, which every task tool takes beside the whole key.
 
-`readTask {taskId, after?}` is offered wherever `listTasks` is. It reads one task, open or closed
+`readTask {taskId, after?}` is offered wherever `listTasks` is, and to a coordinator's task, whose
+turns open with its conversation's other work ([assistant-mode.md](assistant-mode.md) §5.18 ⑥). It reads one task, open or closed
 within its window (§6.5), without waking it: its title, summary and `summaryAt`, mode and status, the
 message it was opened for, the pull requests it opened with the follow-ups watching them, and a page
 of its latest words, continued by a cursor. It is judged like `recall` of the task's place, with the

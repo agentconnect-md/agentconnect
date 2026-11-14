@@ -224,6 +224,8 @@ export function stopTaskToolsFor(session: {
   return [
     ...(reach === 'delegate' ? [LIST_TASKS_TOOL, READ_TASK_TOOL, STOP_TASK_TOOL] : []),
     ...(reach === 'assistant' ? [ASSISTANT_LIST_TASKS_TOOL, READ_TASK_TOOL, ASSISTANT_STOP_TASK_TOOL] : []),
+    // A coordinator's task reads its siblings, never lists, messages or stops them (assistant-mode.md §5.18 ⑥).
+    ...(reach === 'none' && session.threadedTask === true ? [READ_TASK_TOOL] : []),
     ...(keepsTaskSummaryAt(session.thread) || session.threadedTask === true ? [UPDATE_TASK_TOOL] : [])
   ]
 }

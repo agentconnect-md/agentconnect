@@ -3822,7 +3822,8 @@ Choices the text above leaves open:
   sentence states the current status on its own. The stale-summary reminder says the same, and so
   does the coordinator's prompt. No tool and no model call is added.
 - **`readTask {taskId, after?}`** is offered wherever `listTasks` is: to a coordinator, to a session
-  that delegates, and to an assistant-mode place's session that does not. It resolves the id among
+  that delegates, and to an assistant-mode place's session that does not; a coordinator's task is
+  offered it alone (⑥). It resolves the id among
   the agent's tasks, open or closed within the window, and judges it as `recall` judges a place
   named to it: `judgePlaceRead` of the task's place (a follow-up's place, else its owner's
   conversation) with the task's own sessions, for every asker of the turn, on the first page and on
@@ -3940,6 +3941,51 @@ DM is on his board, and `recall` refuses as today. A guest present only in one s
 channel sees that channel's work on their board and nothing from `#eng-platform`, which
 `askerMayRead` refuses them, and the fold counts nothing they cannot see.
 
+**⑥ A task sees its conversation's other work.** The board is the coordinator's, and a task
+learned of no other work at all: it was offered neither the board nor `listTasks` nor `readTask`.
+So two tasks opened for two messages with one cause each worked it alone. Two alerts minutes
+apart, about two systems that share a node, each got a task; each diagnosed the node, changed the
+same setting on a branch of its own and asked for its own approval, and one later reported that
+"someone" had already deployed the fix. The coordinator could not have joined them: when the
+second alert arrived nobody knew the cause was shared, and only a task that looks at the world
+finds that out.
+
+- **What a task is told.** Its turn opens with the other work of its own conversation: its
+  coordinator's delegated tasks and approved proposals that are running or changed within a day,
+  never itself, a follow-up or a getting-to-know task. One line each, as a Here line of the board
+  reads: kind, status, title, who asked, id. At most ten, the rest counted.
+- **Each sibling's own status.** Under a sibling's line comes the first sentence of its summary,
+  which states its status on its own ([auto-session-mode.md](auto-session-mode.md) §6.7), with when
+  it was written. It is read from the task's row, so no session relays it. The list says that this
+  status stands where it differs from what the task was told. A coordinator opening a task
+  describes other tasks from what it remembers, and on the test deployment a task repeated such a
+  description after the sibling had moved on, with `readTask` offered and never called.
+- **Narrower than the board on purpose.** A task opened days ago and only waiting to close says
+  nothing to a task that starts now, and other places' work is not listed, since what collided was
+  two tasks of one place. That keeps the list short where a coordinator's board is always full,
+  and re-sent only when its own conversation's work changes.
+- **When.** On the task's opening turn when there is anything to list, again once the list
+  changes, and after a restart or a compaction, as the board is. A list that empties is taken back
+  with one line; a task that never had siblings is told nothing.
+- **Reading one.** A coordinator's task is offered `readTask`, judged for the turn's askers as it
+  is everywhere. It is not offered `listTasks`, and it never messages or stops another task: tasks
+  read each other, and anything between them still goes through people or the coordinator.
+- **The rule it is given.** Before it changes something others share, such as a configuration, a
+  deployment or a request for approval, it looks at the list. Where another task may cover the same
+  cause it reads that task, and if it does, says so in its own thread and does only what the other
+  does not cover, or stops.
+
+**As shipped** (2026-11-14). `siblingWork` and `renderSiblingWork` (`assistant/work-board.ts`) read
+the coordinator's Here lines of `readOpenWork` for the task's own coordinator, by the task's row
+alone; `siblingWorkDue` decides the turn, and the session manager keeps what it last sent beside
+the board's. The rule is `TASK_SIBLING_RULE`, in a threaded task's standing instructions and a
+task's in a room without threads. Every Auto coordinator's tasks get it, in assistant mode or not.
+
+What it does not cover: two tasks that start within moments of each other, where neither has
+written what it found, are caught only by the rule's "before you change something"; a sibling
+pushed past ten lines by newer work is not shown; and another agent's work in the same
+conversation is on nobody's list.
+
 **Failure modes.** A daemon restart loses the record of what was last sent, so the first turn after
 it re-sends the view. Duty moves carry both stores as today; the Control Plane stores no task
 summary (auto-session-mode.md §6.7). An access lookup that fails drops the line for that turn and
@@ -3966,7 +4012,7 @@ coordinator, and with it a coordinator in a DM whose platform has no threads (Te
 Feishu, whose whole DM is one thread); a coordinator model of its own; automatic context rollover (with rules in the system prompt, open
 work on the board and the rest behind tools, a compaction loses nothing the next board view and
 `listTasks` do not restore, so the compaction re-send above is the whole requirement); cross-place
-`messageTask`; any change for sessions that are not coordinators.
+`messageTask`; any change for sessions that are neither coordinators nor their tasks (⑥).
 
 ### 5.19 A channel's Work canvas (Slack)
 
@@ -5628,3 +5674,15 @@ deployment a coordinator asked such a question in a reply of its own, where no t
 no look lists it. Its prompt now opens a task for a request that cannot be finished until the
 sender answers, and keeps a question it would wait on out of its own reply. Nothing is added to
 the daemon: the rule only moves the question to where looking back already reaches.
+
+**Hundred-and-tenth revision (2026-11-14)**: a task sees its conversation's other work (§5.18 ⑥).
+Two tasks opened for two messages with one cause each fixed it alone, since a task was offered
+neither the board nor a way to read another task. A coordinator's task is now told the other
+running or recently changed tasks of its own conversation, is offered `readTask`, and is told to
+look before it changes something others share. Tasks read each other and never message or stop one
+another.
+
+**Hundred-and-eleventh revision (2026-11-14)**: a sibling's line carries the first sentence of its
+own summary and when it was written (§5.18 ⑥ "Each sibling's own status"). A task had only a
+sibling's title and whether it was running, and took the rest from what its coordinator told it,
+which can be older than the sibling's own account.

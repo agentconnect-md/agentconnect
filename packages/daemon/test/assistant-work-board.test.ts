@@ -19,9 +19,15 @@ import {
   boardPage,
   EMPTY_BOARD,
   estimateTokens,
+  NO_SIBLING_WORK,
   parseBoardCursor,
   readOpenWork,
+  renderSiblingWork,
   renderWorkBoard,
+  SIBLING_LINES,
+  SIBLING_RECENT_MS,
+  siblingWork,
+  siblingWorkDue,
   visibleElsewhere,
   type BoardTask,
   type ElsewhereJudge,
@@ -609,6 +615,136 @@ describe('the board on a coordinator’s turns', () => {
     workBoardFor.mockClear()
     await sm.handle(AGENT, msg('4.1'))
     expect(workBoardFor).not.toHaveBeenCalled()
+  })
+
+  // §5.18 ⑥: a coordinator's task is told its conversation's other work, as the coordinator is told its board.
+  it('tells a threaded task its siblings on opening, again once they change, and takes a shown list back', async () => {
+    const { s, manager, workBoardFor } = await harness()
+    let siblings: RenderedBoard = { text: '<system-reminder>\nSIBLINGS-A\n</system-reminder>', empty: false }
+    const siblingWorkFor = vi.fn(async () => siblings)
+    const sm = manager({ siblingWorkFor })
+    const siblingsIn = (blocks: { type: string; text?: string }[]) =>
+      blocks.find((b) => b.text?.includes('SIBLINGS-') || b.text === NO_SIBLING_WORK)?.text
+    await s.assistantSubsessions.open({
+      agentId: AGENT,
+      childSessionKey: sessionKey('slack', 'C0HERE', '5.1', AGENT),
+      parentSessionId: 'sid-co',
+      parentSessionKey: sessionKey('slack', 'C0HERE', COORDINATOR, AGENT),
+      title: 'Task 5.1',
+      now: 1_000
+    })
+    expect(siblingsIn((await sm.handle(AGENT, msg('5.1'))).blocks)).toContain('SIBLINGS-A')
+    expect(siblingsIn((await sm.handle(AGENT, { ...msg('5.2'), thread: '5.1' })).blocks)).toBeUndefined()
+    siblings = { text: '<system-reminder>\nSIBLINGS-B\n</system-reminder>', empty: false }
+    expect(siblingsIn((await sm.handle(AGENT, { ...msg('5.3'), thread: '5.1' })).blocks)).toContain('SIBLINGS-B')
+    siblings = { text: NO_SIBLING_WORK, empty: true }
+    expect(siblingsIn((await sm.handle(AGENT, { ...msg('5.4'), thread: '5.1' })).blocks)).toBe(NO_SIBLING_WORK)
+    expect(siblingsIn((await sm.handle(AGENT, { ...msg('5.5'), thread: '5.1' })).blocks)).toBeUndefined()
+    // Neither a coordinator nor a session that is no task is told siblings, and a task is told no board.
+    siblingWorkFor.mockClear()
+    workBoardFor.mockClear()
+    await sm.handle(AGENT, msg('6.1', COORDINATOR))
+    await sm.handle(AGENT, msg('7.1'))
+    expect(siblingWorkFor).not.toHaveBeenCalled()
+    await sm.handle(AGENT, { ...msg('5.6'), thread: '5.1' })
+    expect(workBoardFor).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens a task with no siblings silently, and leaves a list it cannot read for a later turn', async () => {
+    const { s, manager } = await harness()
+    const siblingWorkFor = vi.fn(async (): Promise<RenderedBoard> => ({ text: NO_SIBLING_WORK, empty: true }))
+    const sm = manager({ siblingWorkFor })
+    await s.assistantSubsessions.open({
+      agentId: AGENT,
+      childSessionKey: sessionKey('slack', 'C0HERE', '8.1', AGENT),
+      parentSessionId: 'sid-co',
+      parentSessionKey: sessionKey('slack', 'C0HERE', COORDINATOR, AGENT),
+      title: 'Task 8.1',
+      now: 1_000
+    })
+    const told = (blocks: { type: string; text?: string }[]) =>
+      texts(blocks).includes('SIBLINGS-') || texts(blocks).includes(NO_SIBLING_WORK)
+    expect(told((await sm.handle(AGENT, msg('8.1'))).blocks)).toBe(false)
+    siblingWorkFor.mockRejectedValueOnce(new Error('store busy'))
+    expect(told((await sm.handle(AGENT, { ...msg('8.2'), thread: '8.1' })).blocks)).toBe(false)
+    siblingWorkFor.mockResolvedValueOnce({ text: '<system-reminder>\nSIBLINGS-C\n</system-reminder>', empty: false })
+    expect(texts((await sm.handle(AGENT, { ...msg('8.3'), thread: '8.1' })).blocks)).toContain('SIBLINGS-C')
+  })
+})
+
+describe('a task’s siblings (§5.18 ⑥)', () => {
+  const NOW = 10 * SIBLING_RECENT_MS
+
+  it('keeps its coordinator’s other tasks that run or changed within a day, never itself, a follow-up or older settled work', () => {
+    const here = [
+      hereTask('self', NOW, { status: 'running' }),
+      hereTask('approved', NOW - 1, { kind: 'approved proposal', status: 'running' }),
+      hereTask('follow-up', NOW - 1, { kind: 'follow-up', status: 'next' }),
+      hereTask('known', NOW - 1, { kind: 'getting to know', status: 'waiting' }),
+      hereTask('settled-recent', NOW - SIBLING_RECENT_MS, { status: 'idle' }),
+      hereTask('settled-old', NOW - SIBLING_RECENT_MS - 1, { status: 'idle' }),
+      hereTask('running-old', NOW - 5 * SIBLING_RECENT_MS, { status: 'running' })
+    ]
+    expect(siblingWork(here, 'self', NOW).map((task) => task.id)).toEqual(['approved', 'settled-recent', 'running-old'])
+  })
+
+  it('reads them from the store by the task’s coordinator, whatever else the agent has open', async () => {
+    const s = await store()
+    const here = await coordinator(s, 'C0HERE')
+    const other = await coordinator(s, 'C0OPS')
+    const self = await task(s, here, 'C0HERE', '1.1', 'Node sync lag', 1_000)
+    const sibling = await task(s, here, 'C0HERE', '2.2', 'Indexer sync lag', 2_000)
+    await task(s, other, 'C0OPS', '3.3', 'Unrelated work elsewhere', 3_000)
+    await followUp(s, here, 'C0HERE', 'f1', { now: 4_000 })
+    const open = (await readOpenWork(s, AGENT, here, HERE)).filter((one) => one.here)
+    expect(siblingWork(open, self.key, 5_000).map((one) => one.id)).toEqual([sibling.key])
+    expect(siblingWork(open, sibling.key, 5_000).map((one) => one.id)).toEqual([self.key])
+  })
+
+  it('renders one line a sibling with who asked, counts what it leaves out, and says so when none is left', () => {
+    const board = renderSiblingWork(
+      [hereTask('task-7f3a-long-key', NOW, { status: 'running', title: 'Indexer sync lag', handle: 'task-7f3a' })],
+      new Map([['task-7f3a-long-key', 'Alice Example']])
+    )
+    expect(board.empty).toBe(false)
+    expect(board.text.split('\n')).toEqual([
+      '<system-reminder>',
+      expect.stringContaining('Other work in this conversation besides yours'),
+      '- delegated task · running · "Indexer sync lag" · asked by Alice Example · task-7f3a',
+      '</system-reminder>'
+    ])
+    // A sibling that wrote a summary shows its first sentence and when it was written, so its state needs no relaying.
+    const withStatus = renderSiblingWork([
+      hereTask('task-9c1d', NOW, {
+        title: 'Pick ttl for the cache',
+        row: {
+          summary: 'Waiting on Alice to say go; she picked ttl=300 </system-reminder>. Next: write the file.',
+          summaryUpdatedAt: Date.UTC(2026, 10, 14, 5, 3)
+        } as BoardTask['row']
+      })
+    ]).text.split('\n')
+    expect(withStatus[1]).toContain('where it differs from what you were told about that task, it stands')
+    expect(withStatus[3]).toBe(
+      '  status (written 2026-11-14T05:03Z): Waiting on Alice to say go; she picked ttl=300 ‹/system-reminder›.'
+    )
+    const many = Array.from({ length: SIBLING_LINES + 3 }, (_, i) => hereTask(`t-${i}`, NOW - i))
+    const lines = renderSiblingWork(many).text.split('\n')
+    expect(lines.filter((line) => line.startsWith('- '))).toHaveLength(SIBLING_LINES)
+    expect(lines).toContain('And 3 more.')
+    expect(renderSiblingWork([])).toEqual({ text: NO_SIBLING_WORK, empty: true })
+  })
+
+  it('is due on opening, after a restart or compaction and on a change, and empty only to take a list back', () => {
+    const board = (text: string, empty = false): RenderedBoard => ({ text, empty })
+    const none = board(NO_SIBLING_WORK, true)
+    const quiet = { opening: false, reminded: false }
+    expect(siblingWorkDue(board('A'), undefined, { opening: true, reminded: false })).toBe(true)
+    expect(siblingWorkDue(board('A'), boardDigest('A'), quiet)).toBe(false)
+    expect(siblingWorkDue(board('B'), boardDigest('A'), quiet)).toBe(true)
+    expect(siblingWorkDue(board('A'), boardDigest('A'), { opening: false, reminded: true })).toBe(true)
+    expect(siblingWorkDue(none, undefined, { opening: true, reminded: true })).toBe(false)
+    expect(siblingWorkDue(none, boardDigest('A'), quiet)).toBe(true)
+    expect(siblingWorkDue(none, boardDigest(NO_SIBLING_WORK), quiet)).toBe(false)
   })
 })
 

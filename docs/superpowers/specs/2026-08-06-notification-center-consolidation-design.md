@@ -51,8 +51,9 @@ The provider accepts an atomic `syncSourceSnapshot(scope, items)` operation. `sc
 
 - The first observation of an active source creates one unread history item and one toast.
 - Repeated observations update the active item without creating another history item or toast, while preserving its read state and original timestamp.
-- A successful observation that no longer contains the source sets `resolvedAt` and retains the history item.
-- A later recurrence creates a new unread history item and toast.
+- A successful observation that no longer contains the source sets `resolvedAt` and retains the history item. The generic "access checks unavailable" item clears on its own and asks nothing of the reader, so its resolution also marks it read.
+- A recurrence within one hour of that resolution reopens the same history item: it becomes unread, moves to the top with the recurrence time, and emits no toast. A condition that flaps therefore occupies one row instead of one per flap.
+- A recurrence after that window creates a new unread history item and toast.
 - Session and Usage keys remain distinct because their user-visible impacts differ.
 
 Active source keys are persisted separately from the visible 50-item history. `clearAll` clears visible history and toasts but deliberately preserves the active-source set. History eviction also leaves active-source state intact. Therefore an issue that remains active after explicit clearing or retention eviction does not reappear or emit another toast; it becomes eligible for a new item only after a trustworthy snapshot resolves it and a later snapshot reports a recurrence.

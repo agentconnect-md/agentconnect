@@ -17,8 +17,8 @@ const SOURCE_SCOPES: readonly NotificationSourceScope[] = [
 
 /** What a snapshot item becomes once its source vanishes; absent ⇒ it keeps its text and read state and only gains `resolvedAt`. */
 export interface NotificationResolution {
-  title: string
-  message: string
+  title?: string
+  message?: string
   severity?: NotificationSeverity
   /** Flip to read on resolution — for an item whose only job was to get someone to act. */
   read?: boolean
@@ -72,6 +72,8 @@ const NotificationContext = createContext<NotificationContextValue | null>(null)
 const BASE_STORAGE_KEY = 'agentconnect_notifications_v1'
 const ACTIVE_STORAGE_KEY = 'agentconnect_notification_sources_v1'
 const MAX_NOTIFICATIONS = 50
+/** How soon after resolving a recurrence still counts as the same episode. */
+const REOPEN_WINDOW_MS = 60 * 60_000
 
 function getStorageKey(base: string, orgId?: string | null): string {
   return orgId ? `${base}_${orgId}` : base
@@ -164,6 +166,15 @@ export function syncNotificationSourceSnapshot(
       continue
     }
 
+    // A condition that flaps back soon after resolving reopens its own row instead of minting another one and a toast.
+    const resolvedIndex = notifications.findIndex((item) => item.sourceKey === sourceKey && item.resolvedAt)
+    const resolved = notifications[resolvedIndex]
+    if (resolved && Date.parse(now) - Date.parse(resolved.resolvedAt!) <= REOPEN_WINDOW_MS) {
+      notifications.splice(resolvedIndex, 1)
+      notifications.unshift({ ...input, id: resolved.id, timestamp: now, read: false })
+      continue
+    }
+
     const notification: NotificationItem = {
       ...input,
       id: makeId(),
@@ -185,8 +196,8 @@ export function syncNotificationSourceSnapshot(
         resolvedAt: now,
         ...(resolution
           ? {
-              title: resolution.title,
-              message: resolution.message,
+              ...(resolution.title ? { title: resolution.title } : {}),
+              ...(resolution.message ? { message: resolution.message } : {}),
               ...(resolution.severity ? { severity: resolution.severity } : {}),
               ...(resolution.read ? { read: true } : {})
             }

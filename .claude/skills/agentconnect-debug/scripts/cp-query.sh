@@ -29,9 +29,10 @@ function loadPg() {
   const bases = [process.cwd(), '/app/packages/control-plane']
   try { bases.push(dirname(require.resolve('@prisma/adapter-pg/package.json', { paths: bases }))) } catch {}
   try { return require(require.resolve('pg', { paths: bases })) } catch {}
-  const found = execSync("find / -maxdepth 10 -type d -name pg -path '*node_modules*' -not -path '*/pg/*' 2>/dev/null | head -1", { encoding: 'utf8' }).trim()
+  // Match the package itself: a bare `-name pg` also matches `@types/pg`, which has no runtime code.
+  const found = execSync("find / -maxdepth 12 -path '*/node_modules/pg/package.json' -not -path '/proc/*' 2>/dev/null | head -1", { encoding: 'utf8' }).trim()
   if (!found) throw new Error('pg driver not found in this image')
-  return require(found)
+  return require(dirname(found))
 }
 const { Client } = loadPg()
 const client = new Client({ connectionString: process.env.DATABASE_URL, statement_timeout: 60000 })

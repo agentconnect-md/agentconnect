@@ -12,6 +12,7 @@ import { stopTaskToolsFor } from '../src/mcp/ops/assistant-subsessions.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import {
   buildStandingContext,
+  TASK_SIBLING_RULE,
   THREADED_TASK_APPEND,
   THREADLESS_ROOM_TASK_APPEND
 } from '../src/session/turn/standing-context.js'
@@ -186,10 +187,12 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
       'stopTask',
       'updateTask'
     ])
-    // §5.1: once only the coordinator delegates, a task keeps its summary and nothing else.
+    // §5.1: once only the coordinator delegates, a task keeps its summary and may read a task, never list, message or stop one.
     expect(stopTaskToolsFor({ ...thread, threadedTask: true, reach: 'none' }).map((tool) => tool.name)).toEqual([
+      'readTask',
       'updateTask'
     ])
+    expect(stopTaskToolsFor({ ...thread, reach: 'none' }).map((tool) => tool.name)).toEqual([])
     const base = {
       agentName: 'bot-a',
       agentId: 'bot-a',
@@ -214,6 +217,31 @@ describe('a threaded task (auto-session-mode.md §6)', () => {
     expect(threadless).toContain(THREADLESS_ROOM_TASK_APPEND)
     expect(threadless).not.toContain(THREADED_TASK_APPEND)
     expect(THREADLESS_ROOM_TASK_APPEND).toContain('people cannot reply to you directly')
+    // assistant-mode.md §5.18 ⑥: either kind of task is told to look at its conversation's other work before touching what is shared.
+    for (const append of [THREADED_TASK_APPEND, THREADLESS_ROOM_TASK_APPEND]) {
+      expect(append).toContain(TASK_SIBLING_RULE)
+      expect(append).toContain('Before you change something others share')
+    }
+  })
+
+  // assistant-mode.md §5.18 ⑥: a task's turn opens with its coordinator's other tasks, so two tasks on one cause can find each other.
+  it('is told the other work of its conversation, and nothing of itself', async () => {
+    const { daemon, index, scope, coordinatorKey, turns, route, idle } = await boot()
+    await index.open({
+      agentId: 'bot-a',
+      childSessionKey: sessionKey('slack', 'C1', '9.1', 'bot-a', scope),
+      parentSessionId: 'sid-coordinator',
+      parentSessionKey: coordinatorKey,
+      title: 'Indexer sync lag',
+      now: 2
+    })
+    await route(slack('5.2', { thread: '5.1', text: 'is it fixed?' }))
+    await vi.waitFor(() => expect(turns).toHaveLength(1), WAIT)
+    await idle()
+    expect(turns[0]!.text).toContain('Other work in this conversation besides yours')
+    expect(turns[0]!.text).toMatch(/- delegated task · running · "Indexer sync lag"/)
+    expect(turns[0]!.text).not.toContain('"Flaky test"')
+    await daemon.stop()
   })
 
   it('settles a turn left running without reporting it to the coordinator', async () => {
