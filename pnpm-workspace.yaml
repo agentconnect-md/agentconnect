@@ -35,6 +35,8 @@ overrides:
   'promptfoo@0.125.1>@opentelemetry/api': 1.9.1
   # Promptfoo pins the vulnerable 2.1.5 exactly; remove when it moves past 2.1.6.
   'promptfoo@0.125.1>@hono/node-server': 2.1.8
+  # It imports only `zod/v3`, which zod 4 still ships; remove when it depends on zod 4 itself.
+  '@anthropic-ai/sandbox-runtime@0.0.81>zod': 4.6.7
 
 patchedDependencies:
   # Its TLS-terminated upstream leg ignores parentProxy (an upstream TODO); remove when upstream honors it.
