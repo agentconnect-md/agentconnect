@@ -1,10 +1,12 @@
 import type { AhpCustomMethod } from './apps.js'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
   ActionType,
   AhpErrorCodes,
   JsonRpcErrorCodes,
   negotiateProtocolVersion,
+  type ActionEnvelope,
   type ActionOrigin,
   type AgentInfo,
   type CreateSessionParams,
@@ -117,6 +119,9 @@ const resourceUri = z.string().min(1).max(32768)
 const resourceRead = rootParams.extend({ uri: resourceUri, encoding: z.enum(['base64', 'utf-8']).optional() })
 const resourceList = rootParams.extend({ uri: resourceUri })
 const resourceResolve = rootParams.extend({ uri: resourceUri, followSymlinks: z.boolean().optional() })
+const resourceWatch = rootParams.extend({ uri: resourceUri, recursive: z.boolean().optional() }).passthrough()
+const WATCH_CHANNEL = 'ahp-resource-watch:/'
+const MAX_WATCHES = 64
 const dispatch = z.object({
   channel,
   clientSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -139,6 +144,8 @@ export class AhpHostConnection {
   private pending: Promise<unknown> = Promise.resolve()
   private readonly historyCursors = new Map<string, string | undefined>()
   private pendingOrigin?: { channel: string; clientSeq: number }
+  /** Watches this client created, by channel; the file edits of a turn are the changes they report. */
+  private readonly watches = new Map<string, { root: string; recursive: boolean }>()
   private readonly unsubscribe: () => void
   private readonly unsubscribeNotification?: () => void
 
@@ -152,6 +159,7 @@ export class AhpHostConnection {
           envelope.channel === this.pendingOrigin?.channel
         if (this.clientId && (this.subscriptions.has(envelope.channel) || own))
           this.send({ jsonrpc: '2.0', method: 'action', params: envelope })
+        if (this.clientId && this.watches.size) this.reportChanges(envelope)
       },
       () => this.stop('unavailable')
     )
@@ -231,6 +239,7 @@ export class AhpHostConnection {
     this.disposed = true
     this.subscriptions.clear()
     this.historyCursors.clear()
+    this.watches.clear()
     this.unsubscribe?.()
     this.unsubscribeNotification?.()
   }
@@ -279,6 +288,13 @@ export class AhpHostConnection {
         const params = parse(subscription, message.params)
         if (!this.subscriptions.has(params.channel) && this.subscriptions.size >= 128)
           throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Subscription limit reached')
+        const watch = this.watches.get(params.channel)
+        if (watch) {
+          this.subscriptions.add(params.channel)
+          return {
+            snapshot: { resource: params.channel, state: watch, fromSeq: this.port.journal.currentSequence }
+          }
+        }
         await this.prepare(params.channel)
         const snapshot = this.snapshot(params.channel)
         if (!snapshot) throw new AhpProtocolError(AhpErrorCodes.NotFound, 'Channel not found')
@@ -289,6 +305,7 @@ export class AhpHostConnection {
         const { channel } = parse(subscription, message.params)
         this.subscriptions.delete(channel)
         this.historyCursors.delete(channel)
+        this.watches.delete(channel)
         return undefined
       }
       case 'listSessions':
@@ -362,6 +379,17 @@ export class AhpHostConnection {
         if (!this.fits({ jsonrpc: '2.0', id: message.id, result: { entries } })) throw tooLarge()
         return { entries }
       }
+      case 'createResourceWatch': {
+        const params = parse(resourceWatch, message.params)
+        const stat = await this.port.workspace?.stat(params.uri)
+        this.assertAuthorized()
+        if (!stat) throw notFound()
+        if (this.watches.size >= MAX_WATCHES)
+          throw new AhpProtocolError(JsonRpcErrorCodes.InvalidParams, 'Watch limit reached')
+        const channel = `${WATCH_CHANNEL}${randomUUID()}`
+        this.watches.set(channel, { root: params.uri.replace(/\/+$/, ''), recursive: params.recursive ?? false })
+        return { channel }
+      }
       case 'resourceResolve': {
         // The workspace reader never follows a link out of its root, so the requested URI is already the canonical one.
         const { uri } = parse(resourceResolve, message.params)
@@ -403,6 +431,35 @@ export class AhpHostConnection {
       this.send({ jsonrpc: '2.0', method: 'action', params: envelope })
     } finally {
       this.pendingOrigin = undefined
+    }
+  }
+
+  // Nothing watches the disk, in a sandbox least of all: a completed tool call's file edits are the changes, sent outside the journal.
+  private reportChanges(envelope: ActionEnvelope): void {
+    if (envelope.rejectionReason !== undefined || envelope.action.type !== ActionType.ChatToolCallComplete) return
+    const content: unknown = (envelope.action as { result?: { content?: unknown } }).result?.content
+    if (!Array.isArray(content)) return
+    const edits = content.flatMap((item: { type?: string; before?: { uri?: string }; after?: { uri?: string } }) => {
+      const uri = item?.type === 'fileEdit' ? (item.after?.uri ?? item.before?.uri) : undefined
+      return uri ? [{ uri, type: !item.before ? 'added' : !item.after ? 'deleted' : 'updated' }] : []
+    })
+    for (const [channel, watch] of this.watches) {
+      if (!this.subscriptions.has(channel)) continue
+      const items = edits.filter(({ uri }) => {
+        if (uri === watch.root) return true
+        if (!uri.startsWith(`${watch.root}/`)) return false
+        return watch.recursive || !uri.slice(watch.root.length + 1).includes('/')
+      })
+      if (items.length)
+        this.send({
+          jsonrpc: '2.0',
+          method: 'action',
+          params: {
+            channel,
+            action: { type: ActionType.ResourceWatchChanged, changes: { items } },
+            serverSeq: this.port.journal.currentSequence
+          }
+        })
     }
   }
 

@@ -1,13 +1,14 @@
 // Runs the installed VS Code against a local daemon AHP host and fails on any request the daemon does not support.
 import { execFile, execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startVsCodeHost, type HostRecord } from './host.js'
 
 const METHOD_NOT_FOUND = -32601
-// Refusals VS Code survives: its diagnostics probe, and file watching, without which an open file does not refresh.
-const TOLERATED_UNSUPPORTED = new Set(['getNetworkDiagnosticsInfo', 'createResourceWatch'])
+// VS Code's own diagnostics probe; it logs the refusal and carries on.
+const TOLERATED_UNSUPPORTED = new Set(['getNetworkDiagnosticsInfo'])
 // The second default turn writes `docs/notes.txt` and reports the edit as a fragment, as a search-and-replace tool does.
 const prompts = process.argv.slice(2).length
   ? process.argv.slice(2)
@@ -27,6 +28,41 @@ const code =
   ['/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code'].find((path) => existsSync(path)) ??
   'code'
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Sends one turn on an existing chat as a second AHP client, which is how another member's message arrives. */
+async function rewriteFrom(url: string, chat: string): Promise<void> {
+  const socket = new WebSocket(url)
+  await new Promise((resolve, reject) => {
+    socket.addEventListener('open', resolve)
+    socket.addEventListener('error', reject)
+  })
+  const call = (id: number, method: string, params: object) =>
+    new Promise<void>((resolve) => {
+      const answered = (event: MessageEvent) => {
+        if ((JSON.parse(String(event.data)) as { id?: number }).id !== id) return
+        socket.removeEventListener('message', answered)
+        resolve()
+      }
+      socket.addEventListener('message', answered)
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+    })
+  await call(1, 'initialize', {
+    channel: 'ahp-root://',
+    clientId: 'harness-second-client',
+    protocolVersions: ['1.0.0']
+  })
+  await call(2, 'subscribe', { channel: chat })
+  const action = {
+    type: 'chat/turnStarted',
+    turnId: randomUUID(),
+    startedAt: new Date().toISOString(),
+    message: { text: '[ahp:rewrite]', origin: { kind: 'user' } }
+  }
+  socket.send(
+    JSON.stringify({ jsonrpc: '2.0', method: 'dispatchAction', params: { channel: chat, clientSeq: 1, action } })
+  )
+  await sleep(4000)
+  socket.close()
+}
 async function until(done: () => boolean, timeoutMs: number): Promise<boolean> {
   for (const deadline = Date.now() + timeoutMs; Date.now() < deadline; await sleep(250)) if (done()) return true
   return done()
@@ -52,6 +88,8 @@ try {
       `--user-data-dir=${profile}`,
       `--extensions-dir=${join(scratch, 'extensions')}`,
       '--disable-workspace-trust',
+      // For looking at the window itself: a DevTools port to attach to, and a pause before teardown.
+      ...(process.env.AHP_HARNESS_DEBUG_PORT ? [`--remote-debugging-port=${process.env.AHP_HARNESS_DEBUG_PORT}`] : []),
       '--skip-welcome',
       '--skip-release-notes',
       `--extensionDevelopmentPath=${fileURLToPath(new URL('./driver', import.meta.url))}`,
@@ -74,8 +112,14 @@ try {
           .map((line) => JSON.parse(line) as DriverEntry)
       : []
   const finished = () => driver().some((entry) => ['done', 'failed', 'error'].includes(entry.step))
-  const completed = () =>
-    host.records.filter((entry) => entry.dir === 'out' && entry.action === 'chat/turnComplete').length
+  // Per connection, since a second client receives each turn's actions as well; VS Code's is the one that saw the most.
+  const completed = () => {
+    const seen = new Map<number, number>()
+    for (const entry of host.records)
+      if (entry.dir === 'out' && entry.action === 'chat/turnComplete')
+        seen.set(entry.connection, (seen.get(entry.connection) ?? 0) + 1)
+    return Math.max(0, ...seen.values())
+  }
   await until(finished, 120_000 + prompts.length * 10_000)
   await until(() => completed() >= prompts.length, 30_000)
   await sleep(2000)
@@ -88,6 +132,13 @@ try {
     await until(() => driver().some((entry) => ['browsed', 'error'].includes(entry.step)), 60_000)
   }
   const browsed = driver().find((entry) => entry.step === 'browsed')
+  // A second client has the agent edit the file VS Code now holds open.
+  const session = host.records.find((entry) => entry.dir === 'in' && entry.method === 'createSession')
+  if (browsed && session?.dir === 'in' && session.channel) {
+    await rewriteFrom(host.url, `${session.channel.replace('ahp-session:', 'ahp-chat:')}/main`)
+    await until(() => driver().some((entry) => ['refreshed', 'error'].includes(entry.step)), 40_000)
+  }
+  const refreshed = driver().find((entry) => entry.step === 'refreshed')
   const side = (name: string) => Object.entries(browsed?.refs ?? {}).find(([ref]) => ref.includes(`/${name}/`))?.[1]
 
   const requests = new Map<string, Extract<HostRecord, { dir: 'in' }>>()
@@ -139,6 +190,11 @@ try {
         `${browsed?.size ?? '?'} bytes`
       ],
       [
+        'an open file refreshes when the agent edits it',
+        refreshed?.document === 'alpha\nBRAVO\nCHARLIE\n',
+        JSON.stringify(refreshed?.document ?? null)
+      ],
+      [
         'the edit reads back as whole files',
         side('before') === 'alpha\nbravo\ncharlie\n' && side('after') === 'alpha\nBRAVO\ncharlie\n',
         `${contentRefs.length} content refs`
@@ -155,6 +211,10 @@ try {
   for (const [name, ok, detail] of checks) {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`)
     failed ||= !ok
+  }
+  if (process.env.AHP_HARNESS_HOLD_MS) {
+    console.log(`\nHolding VS Code open for ${process.env.AHP_HARNESS_HOLD_MS} ms`)
+    await sleep(Number(process.env.AHP_HARNESS_HOLD_MS))
   }
 } finally {
   // VS Code can outlive a polite stop while it is still starting helpers, so a hard stop follows.

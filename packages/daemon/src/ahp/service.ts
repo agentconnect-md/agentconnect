@@ -366,15 +366,18 @@ export class AhpService {
                 },
                 read: async (uri) => {
                   const at = located(uri)
-                  return (
+                  const bytes =
                     at &&
-                    this.options.workspace!.read(
+                    (await this.options.workspace!.read(
                       at.context.binding,
                       at.context.authorization,
                       at.path,
                       MAX_RESOURCE_BYTES
-                    )
-                  )
+                    ))
+                  if (!at || !Buffer.isBuffer(bytes)) return bytes
+                  // Text leaves masked, as tool output and edit snapshots do; bytes that are not text have no secret to find.
+                  const text = bytes.toString('utf8')
+                  return Buffer.from(text).equals(bytes) ? Buffer.from(this.mask(at.context, text)) : bytes
                 }
               }
             }

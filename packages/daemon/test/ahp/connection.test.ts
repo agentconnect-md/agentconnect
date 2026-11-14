@@ -482,6 +482,62 @@ describe('AHP recovery and authorization boundary', () => {
     expect(closed).not.toHaveBeenCalled()
   })
 
+  it('reports the file edits of a completed tool call to the watches that cover them', async () => {
+    const { client, port, frames } = await fixture({
+      workspace: {
+        list: async () => undefined,
+        stat: async (uri) => (uri.startsWith('file:///work') ? { type: 'directory' } : undefined),
+        read: async () => undefined
+      }
+    })
+    await client.initialize({ clientId: 'one', protocolVersions: ['1.0.0'] })
+    const watch = (uri: string, recursive?: boolean) =>
+      client.request(
+        'createResourceWatch' as 'resourceRead',
+        { channel: root, uri, recursive } as never
+      ) as Promise<unknown> as Promise<{ channel: string }>
+    await expect(watch('file:///elsewhere')).rejects.toMatchObject({ code: AhpErrorCodes.NotFound })
+    const shallow = await watch('file:///work/')
+    const deep = await watch('file:///work', true)
+    const unsubscribed = await watch('file:///work', true)
+    expect((await client.subscribe(shallow.channel)).result.snapshot?.state).toEqual({
+      root: 'file:///work',
+      recursive: false
+    })
+    await client.subscribe(deep.channel)
+    const side = (uri: string) => ({ uri, content: { uri: 'session-db://x' } })
+    await port.journal.append({
+      channel: chat,
+      action: {
+        type: ActionType.ChatToolCallComplete,
+        turnId: 'turn',
+        toolCallId: 'call',
+        result: {
+          success: true,
+          pastTenseMessage: 'Edited',
+          content: [
+            { type: 'fileEdit', before: side('file:///work/a.txt'), after: side('file:///work/a.txt') },
+            { type: 'fileEdit', after: side('file:///work/src/new.ts') },
+            { type: 'fileEdit', after: side('file:///other/b.txt') }
+          ]
+        }
+      } as never
+    })
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.includes('resourceWatch/changed'))).toHaveLength(2))
+    const changes = Object.fromEntries(
+      frames
+        .filter((frame) => frame.includes('resourceWatch/changed'))
+        .map((frame) => JSON.parse(frame).params)
+        .map((params) => [params.channel, params.action.changes.items])
+    )
+    expect(changes[shallow.channel]).toEqual([{ uri: 'file:///work/a.txt', type: 'updated' }])
+    expect(changes[deep.channel]).toEqual([
+      { uri: 'file:///work/a.txt', type: 'updated' },
+      { uri: 'file:///work/src/new.ts', type: 'added' }
+    ])
+    expect(changes[unsubscribed.channel]).toBeUndefined()
+  })
+
   it('accepts opaque 2048-byte cursors and only exposes explicitly supported extension methods', async () => {
     const list = vi.fn(async () => ({ items: [] }))
     const custom = vi.fn(async () => ({ ok: true }))
