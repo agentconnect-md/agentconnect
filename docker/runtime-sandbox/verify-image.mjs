@@ -57,7 +57,7 @@ const PATHBIN_DIR = '/opt/agentconnect/pathbin'
 const GH_PATH = '/usr/local/bin/gh'
 // The pinned glab, which reads the placeholder from GITLAB_TOKEN or its config directory.
 const GLAB_PATH = '/usr/local/bin/glab'
-// The pinned tea, Gitea's CLI, whose API reads go through the credential proxy.
+// The pinned tea, Gitea's CLI, which presents the credential proxy's placeholder.
 const TEA_PATH = '/usr/local/bin/tea'
 // Must match SANDBOX_SECRETS_ENTRY in sandbox-paths.ts and SECRETS_WRAPPER_NAME in cp/secrets-shim.ts (capability-requests.md §4.9.2).
 const SECRETS_WRAPPER_PATH = '/opt/agentconnect/pathbin/agentconnect-secrets'

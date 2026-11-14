@@ -123,7 +123,7 @@ RUN mkdir -p /opt/agentconnect/bin \
 COPY --from=gh-cli --chown=0:0 /out/gh /usr/local/bin/gh
 # The pinned glab, which reads the placeholder from GITLAB_TOKEN or the config GLAB_CONFIG_DIR names.
 COPY --from=glab-cli --chown=0:0 /out/glab /usr/local/bin/glab
-# The pinned tea, Gitea's CLI, whose API reads go through the credential proxy.
+# The pinned tea, Gitea's CLI, which presents the credential proxy's placeholder.
 COPY --from=tea-cli --chown=0:0 /out/tea /usr/local/bin/tea
 
 # Only /opt/agentconnect/pathbin is prepended to runtime PATH; the final image supplies agentconnect-secrets.
