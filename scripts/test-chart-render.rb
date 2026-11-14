@@ -132,15 +132,15 @@ git_origins = env['AC_WORKSPACE_GIT_ALLOWED_ORIGINS'] ||
 abort("clone origins must be one comma-separated value, got #{git_origins.inspect}") unless
   git_origins == 'https://github.com,https://gitlab.example.test'
 
-# GitHub proxy-only is the features block's switch alone: off by default, on as one literal, and never from extraEnv.
-abort('GitHub proxy-only must be off unless features.githubGitProxy is set') if env.key?('AC_GITHUB_GIT_PROXY')
-rendered_proxy, error_proxy, status_proxy = Open3.capture3(*command, '--set', 'features.githubGitProxy=true')
-abort("helm template with features.githubGitProxy failed:\n#{error_proxy}") unless status_proxy.success?
+# GitHub proxy-only is the features block's switch alone: on by default as one literal, off when the switch is, and never from extraEnv.
+abort('GitHub proxy-only must be on by default') unless env['AC_GITHUB_GIT_PROXY'] == 'true'
+rendered_proxy, error_proxy, status_proxy = Open3.capture3(*command, '--set', 'features.githubGitProxy=false')
+abort("helm template with features.githubGitProxy=false failed:\n#{error_proxy}") unless status_proxy.success?
 proxy_member = YAML.load_stream(rendered_proxy).compact
                    .find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-daemon-pool' }
 proxy_env = proxy_member.dig('spec', 'template', 'spec', 'containers').find { |item| item['name'] == 'daemon-pool' }
                         .fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
-abort('features.githubGitProxy must set AC_GITHUB_GIT_PROXY on the pool') unless proxy_env['AC_GITHUB_GIT_PROXY'] == 'true'
+abort('features.githubGitProxy=false must leave AC_GITHUB_GIT_PROXY off the pool') if proxy_env.key?('AC_GITHUB_GIT_PROXY')
 _, refused_proxy, refused_proxy_status = Open3.capture3(*command, '--set', 'daemonPool.extraEnv.AC_GITHUB_GIT_PROXY=true')
 abort('daemonPool.extraEnv.AC_GITHUB_GIT_PROXY must be refused') if refused_proxy_status.success?
 abort("refusal for AC_GITHUB_GIT_PROXY must say why:\n#{refused_proxy}") unless refused_proxy.include?('features.githubGitProxy')

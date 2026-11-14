@@ -1259,8 +1259,9 @@ The first delivery can select proxy preparation at the common operation seam usi
 the target provider's existing `proxyOnly` contract. Do not inspect whether the
 agent has _any_ Azure repository or branch on provider names in execution planes.
 GitHub's `proxyOnly` alone is a deployment switch, `features.githubGitProxy` in the
-chart (`AC_GITHUB_GIT_PROXY` on the pool's members), so it can be turned on in one
-environment first; every other part of the contract is the same selector. The
+chart (`AC_GITHUB_GIT_PROXY` on the pool's members). It was turned on in one
+environment first and is now on by default; an environment can still turn it off.
+Every other part of the contract is the same selector. The
 selector is temporary: once ordinary
 managed workspace Git inside execution environments is migrated, every such target
 takes the shared path. The owning daemon's host-side path remains deferred.
@@ -1364,8 +1365,8 @@ Git must not silently claim that the Azure CLI is installed in every image.
 2. **Other ordinary managed repositories:** after the measured capacity gate below,
    move GitHub in-environment workspace/review and supported nested-repository
    network calls to that same path; Gitea and GitLab moved earlier. Host-side canonical clones
-   stay unchanged. GitHub moves behind `features.githubGitProxy`, which a pool turns on
-   once its runtime image carries the proxied merge watcher and skill path. Under the
+   stay unchanged. GitHub moves behind `features.githubGitProxy`, which is on by default
+   now that the runtime image carries the proxied merge watcher and skill path. Under the
    switch the proxy mints GitHub's token from the credential cache as the `proxy`
    consumer, since GitHub's grant still resolves a repository by name; the daemon's
    own Git and its own skill window ask as the `daemon` consumer; and the agent channel
