@@ -100,6 +100,45 @@ describe('GitCredentialCache', () => {
     expect(h.calls()).toBe(2)
   })
 
+  describe('a retryable RATE_LIMITED from the CP mint budget', () => {
+    const rateLimited = () =>
+      Object.assign(new Error('gitcred mint rate exceeded — backing off'), { code: 'RATE_LIMITED', retryable: true })
+
+    function buildSleeping(responder: (n: number) => GitCredGrant) {
+      let calls = 0
+      const slept: number[] = []
+      const cache = new GitCredentialCache({
+        request: async () => responder(++calls),
+        log: { warn: () => {} },
+        monoNow: () => 0,
+        sleep: async (ms) => {
+          slept.push(ms)
+        }
+      })
+      return { cache, calls: () => calls, slept }
+    }
+
+    it('waits at least one 5s budget refill and re-asks once, so a burst of cold starts still clones', async () => {
+      const h = buildSleeping((n) => {
+        if (n === 1) throw rateLimited()
+        return grant(`ghs_${n}`, 3540)
+      })
+      expect((await h.cache.get(AGENT, 'clone')).token).toBe('ghs_2')
+      expect(h.calls()).toBe(2)
+      expect(h.slept).toHaveLength(1)
+      expect(h.slept[0]).toBeGreaterThanOrEqual(5000)
+      expect(h.slept[0]).toBeLessThan(7000)
+    })
+
+    it('fails after the single re-ask while the budget stays spent', async () => {
+      const h = buildSleeping(() => {
+        throw rateLimited()
+      })
+      await expect(h.cache.get(AGENT, 'clone')).rejects.toBeInstanceOf(GitCredUnavailableError)
+      expect(h.calls()).toBe(2)
+    })
+  })
+
   it('treats SCOPE_DENIED as terminal until a new spec clears it', async () => {
     const h = build((n) => {
       if (n === 1) throw Object.assign(new Error('agent is not placed on this daemon'), { code: 'SCOPE_DENIED' })
