@@ -84,7 +84,6 @@ describe('cardSavedKind', () => {
   it('explains only the outcomes that have something to explain', () => {
     expect(cardSavedKind('granted')).toBe('granted')
     expect(cardSavedKind('card_used')).toBe('card_used')
-    expect(cardSavedKind('wallet')).toBe('wallet')
   })
 
   it('reads an org that already had its credit, a switched-off offer, and an unknown outcome as a plain save', () => {

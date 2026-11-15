@@ -44,10 +44,10 @@ export function afterCardSetupPollError(setupId: string, attempt: number, error:
 }
 
 /** How a saved card reads. `plain` covers every outcome with nothing to explain: the org already had its credit, the offer is off, or an outcome this build has not heard of. */
-export type CardSavedKind = 'granted' | 'card_used' | 'wallet' | 'plain'
+export type CardSavedKind = 'granted' | 'card_used' | 'plain'
 
 export function cardSavedKind(promoOutcome: string | null): CardSavedKind {
-  if (promoOutcome === 'granted' || promoOutcome === 'card_used' || promoOutcome === 'wallet') return promoOutcome
+  if (promoOutcome === 'granted' || promoOutcome === 'card_used') return promoOutcome
   return 'plain'
 }
 

@@ -1331,7 +1331,6 @@ export default function BillingView() {
           orgName={activeOrg?.name ?? activeOrg?.slug ?? ''}
           canManage={myRole === 'owner'}
           outOfCredit={acct != null && acct.balanceMicro <= 0}
-          onEnterCardNumber={() => setCardDialog(true)}
           onAddCredits={focusAddCredits}
           onRetry={cardReturn.retry}
           onDismiss={cardReturn.dismiss}

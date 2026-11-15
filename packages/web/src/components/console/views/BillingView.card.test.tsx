@@ -126,19 +126,18 @@ describe('payment method card', () => {
 })
 
 describe('card return', () => {
-  it('checks the setup instead of trusting the redirect, then explains a wallet card', async () => {
+  it('checks the setup instead of trusting the redirect, then explains a card that already claimed the credit', async () => {
     mocks.search = 'cardSetup=success&setup=cs_1'
     mocks.fetchCardSetup
       .mockResolvedValueOnce({ id: 'cs_1', status: 'pending', promoOutcome: null, card: null })
-      .mockResolvedValue({ id: 'cs_1', status: 'completed', promoOutcome: 'wallet', card: CARD })
+      .mockResolvedValue({ id: 'cs_1', status: 'completed', promoOutcome: 'card_used', card: CARD })
     await render()
     expect(host.innerHTML).toContain('Checking your card')
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_500)
     })
     expect(host.innerHTML).toContain('Card saved')
-    expect(host.innerHTML).toContain('Type the card number in to claim it')
-    expect(button('Enter card number')).toBeDefined()
+    expect(host.innerHTML).toContain('This card already claimed the free credit')
     // No credit and none earned: paying for some is the other way forward.
     expect(button('Add credits')).toBeDefined()
   })
