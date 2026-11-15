@@ -23,12 +23,22 @@ const mocks = vi.hoisted(() => ({
   updateOrg: vi.fn(),
   push: vi.fn(),
   replace: vi.fn(),
-  skipOnboarding: vi.fn()
+  skipOnboarding: vi.fn(),
+  search: '',
+  account: {} as Record<string, unknown>,
+  fetchCardSetup: vi.fn<() => Promise<unknown>>()
 }))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ slug: 'acme' }),
+  usePathname: () => '/acme/onboarding',
+  useSearchParams: () => new URLSearchParams(mocks.search),
   useRouter: () => ({ push: mocks.push, replace: mocks.replace })
+}))
+vi.mock('@/lib/billing-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/billing-api')>()),
+  fetchBillingAccount: async () => mocks.account,
+  fetchBillingCardSetup: mocks.fetchCardSetup
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
@@ -567,5 +577,75 @@ describe('onboarding — managed Cloud fork', () => {
     await click('Continue')
     expect(host.textContent).toContain('Run the daemon')
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Managed Cloud with billing: Cloud runs on credit, so an org with none and no card gets one more step.
+describe('onboarding — Cloud card step', () => {
+  const CARD = { brand: 'visa', last4: '4242', expMonth: 8, expYear: 2028 }
+  let n = 0
+  beforeEach(() => {
+    setFlags('daemon-pool,managed,billing')
+    // A fresh org id per test: the account rides the global SWR cache, keyed by org.
+    mocks.org = { id: `org-card-${++n}`, slug: 'acme', name: 'Acme', role: 'owner', onboardingCompleted: false }
+    mocks.search = ''
+    mocks.account = { orgId: 'org-1', balanceMicro: 0, state: 'suspended', card: null, cardPromoAvailable: true }
+    mocks.fetchCardSetup.mockReset()
+    mocks.daemons = [{ daemonId: 'pool-pod-1', pool: true, status: 'online', name: 'ac-cloud-7f9', runtimeModels: [] }]
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: 'pool', placementKind: 'set' }]
+  })
+  afterEach(() => {
+    mocks.search = ''
+  })
+
+  it('adds the card step for an org with no credit and no card, and Skip leads to the daemon path', async () => {
+    await render()
+    await act(async () => {})
+    expect(host.textContent).toContain('Step 2 of 3')
+    expect(host.textContent).toContain('Free credit with a card')
+    await click('Continue')
+    expect(host.textContent).toContain('Step 3 of 3')
+    expect(host.textContent).toContain('Add a card')
+    expect(mocks.updateOrg).not.toHaveBeenCalled()
+    await click('Skip')
+    expect(host.textContent).not.toContain('Add a card')
+    expect(mocks.updateOrg).not.toHaveBeenCalled()
+  })
+
+  it('finishes at the fork when the org already has credit', async () => {
+    mocks.account = { ...mocks.account, balanceMicro: 5_000_000, state: 'active', cardPromoAvailable: false }
+    await render()
+    await act(async () => {})
+    expect(host.textContent).toContain('Step 2 of 2')
+    expect(host.textContent).not.toContain('Free credit with a card')
+    await click('Finish')
+    expect(mocks.updateOrg).toHaveBeenCalledWith(mocks.org!.id, { onboardingCompleted: true })
+  })
+
+  it('lands back on the card step from the hosted page and finishes once the card is confirmed', async () => {
+    mocks.search = 'cardSetup=success&setup=cs_1'
+    mocks.fetchCardSetup.mockResolvedValue({ id: 'cs_1', status: 'completed', promoOutcome: 'granted', card: CARD })
+    await render()
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(host.textContent).toContain('Card saved')
+    expect(host.textContent).toContain('Free credit was added to Acme')
+    await click('Finish')
+    expect(mocks.updateOrg).toHaveBeenCalledWith(mocks.org!.id, { onboardingCompleted: true })
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
+  })
+
+  it('sends a card that earned no credit to Add credits or the daemon path, not to Finish', async () => {
+    mocks.search = 'cardSetup=success&setup=cs_1'
+    mocks.fetchCardSetup.mockResolvedValue({ id: 'cs_1', status: 'completed', promoOutcome: 'card_used', card: CARD })
+    await render()
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(host.textContent).toContain('This card already claimed the free credit')
+    expect(host.textContent).not.toContain('Finish')
+    await click('Add credits')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/billing')
   })
 })

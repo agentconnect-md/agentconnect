@@ -1830,7 +1830,8 @@
       "cloudDescription": "最轻松的开始方式。注册即送免费额度，无需安装。",
       "clusterDescription": "使用组织已有的 Daemon 池，无需安装。",
       "daemon": "Daemon",
-      "daemonDescription": "使用你自己的服务商凭证和机器。"
+      "daemonDescription": "使用你自己的服务商凭证和机器。",
+      "freeCreditBadge": "绑卡领取免费额度"
     },
     "runtime": {
       "runtime": "Runtime",
@@ -1871,6 +1872,38 @@
       "continues": "此页面会自动继续",
       "runtimeQuestion": "Agent 应使用哪个 Runtime？",
       "setupGuide": "Daemon 未显示？阅读设置指南"
+    },
+    "card": {
+      "title": "添加一张卡",
+      "description": "我们用它来验证你的账户，不会扣费。",
+      "back": "返回",
+      "skip": "跳过",
+      "addCard": "添加卡",
+      "tryAnother": "换一张卡",
+      "opening": "正在打开 Stripe…",
+      "finish": "完成",
+      "finishing": "正在完成…",
+      "checkingTitle": "正在检查你的卡",
+      "checkingDescription": "通常只需几秒，请不要关闭此页面。",
+      "stillCheckingTitle": "仍在检查你的卡",
+      "stillCheckingDescription": "你可以现在完成。卡确认后会显示在账单页。",
+      "confirming": "正在向 Stripe 确认",
+      "nothingCharged": "没有任何扣费。",
+      "checkAgain": "再检查一次",
+      "savedTitle": "卡已保存",
+      "saved": "已保存",
+      "grantedDescription": "免费额度已计入 {org}。",
+      "noCreditDescription": "没有发放免费额度，{org} 目前没有余额。",
+      "plainDescription": "充值时会自动填好。",
+      "cardUsedTitle": "这张卡已经领取过免费额度",
+      "cardUsedBody": "一张卡只能在一个组织领取一次。充值后即可启动 Cloud 智能体，或者在自己的机器上运行。",
+      "walletTitle": "钱包绑定的卡不参与免费额度",
+      "walletBody": "直接输入卡号即可领取，这会替换掉 Apple Pay 或 Google Pay 的那张卡。",
+      "enterCardNumber": "输入卡号",
+      "useDaemon": "改用 daemon",
+      "addCredits": "充值",
+      "notSavedTitle": "卡没有保存",
+      "notSavedBody": "绑卡步骤没有完成，没有任何扣费。"
     }
   },
   "Integrations": {
@@ -5268,6 +5301,71 @@
       "postedFrom": "起始 {time}",
       "expand": "展开",
       "collapse": "收起"
+    },
+    "card": {
+      "title": "支付方式",
+      "offerTitle": "添加一张卡，领取免费额度",
+      "offerBody": "除非你自己充值，否则不会扣费。",
+      "emptyTitle": "尚未保存卡",
+      "emptyBody": "先保存一张，充值时就不用再输。",
+      "addCard": "添加卡",
+      "ending": "{brand}，尾号 {last4}",
+      "expires": "有效期至 {date}",
+      "replace": "更换",
+      "remove": "移除",
+      "removing": "正在移除…",
+      "removeError": "卡没有移除成功，仍然保存着，请重试。",
+      "ownersOnly": "只有所有者可以更改这张卡。",
+      "hostedNote": "卡信息在 Stripe 的页面上填写，不会经过 AgentConnect。",
+      "prefillNote": "充值时会在 Stripe 的页面上自动填好。不会自动扣费。",
+      "facts": {
+        "creditTitle": "免费额度",
+        "creditBody": "卡验证通过后计入 {org}。请直接输入卡号，Apple Pay 和 Google Pay 不参与。",
+        "noChargeTitle": "不会扣费",
+        "noChargeBody": "除非你自己选择充值。",
+        "securedTitle": "由 Stripe 保障安全",
+        "securedBody": "我们看不到完整卡号。"
+      },
+      "dialog": {
+        "title": "添加卡",
+        "replaceTitle": "更换卡",
+        "body": "我们用它来验证你的账户，不会扣费。",
+        "replaceBody": "新卡验证通过后生效，不会扣费。",
+        "cancel": "取消",
+        "addCard": "添加卡",
+        "opening": "正在打开 Stripe…"
+      },
+      "result": {
+        "checkingTitle": "正在检查你的卡",
+        "checkingBody": "通常只需几秒，没有任何扣费。",
+        "stillCheckingTitle": "仍在检查你的卡",
+        "stillCheckingBody": "确认后会显示在“支付方式”里，可以放心离开此页面。",
+        "notSavedTitle": "卡没有保存",
+        "notSavedBody": "绑卡步骤没有完成，没有任何扣费。",
+        "errorTitle": "无法检查这张卡",
+        "errorBody": "{message}。如果卡已保存，它仍会显示在“支付方式”里；你也可以现在再检查一次。",
+        "savedTitle": "卡已保存",
+        "grantedBody": "免费额度已计入 {org}。",
+        "cardUsedBody": "这张卡已经领取过免费额度。一张卡只能在一个组织领取一次。",
+        "walletBody": "通过 Apple Pay 和 Google Pay 绑定的卡不参与免费额度。直接输入卡号即可领取。",
+        "plainBody": "下次充值时会自动填好。",
+        "enterCardNumber": "输入卡号",
+        "addCredits": "充值",
+        "checkAgain": "再检查一次",
+        "dismiss": "关闭"
+      }
+    },
+    "gate": {
+      "outOfCredit": "余额已用完。",
+      "noCreditYet": "还没有余额。",
+      "addCreditsBody": "你仍然可以输入；充值后 {agent} 才会回复。",
+      "addCardBody": "添加一张卡即可领取免费额度，不会扣费。",
+      "askOwnerBody": "需要所有者充值。",
+      "checkingCard": "正在检查你的卡…",
+      "addCredits": "充值",
+      "addCard": "添加卡",
+      "copyBillingLink": "复制账单页链接",
+      "copied": "已复制"
     }
   },
   "Settings": {

@@ -1830,7 +1830,8 @@
       "cloudDescription": "Easiest start. Free credits on signup, nothing to install.",
       "clusterDescription": "The daemon pool your org already runs. Nothing to install.",
       "daemon": "Daemon",
-      "daemonDescription": "Bring your own provider credentials, and your own machine."
+      "daemonDescription": "Bring your own provider credentials, and your own machine.",
+      "freeCreditBadge": "Free credit with a card"
     },
     "runtime": {
       "runtime": "Runtime",
@@ -1871,6 +1872,38 @@
       "continues": "this page continues on its own",
       "runtimeQuestion": "What should the agent run on?",
       "setupGuide": "Daemon not showing up? Read the setup guide"
+    },
+    "card": {
+      "title": "Add a card",
+      "description": "We use it to verify your account. You won't be charged.",
+      "back": "Back",
+      "skip": "Skip",
+      "addCard": "Add card",
+      "tryAnother": "Try another card",
+      "opening": "Opening Stripe…",
+      "finish": "Finish",
+      "finishing": "Finishing…",
+      "checkingTitle": "Checking your card",
+      "checkingDescription": "This usually takes a few seconds. Keep this page open.",
+      "stillCheckingTitle": "Still checking your card",
+      "stillCheckingDescription": "You can finish now. The card shows in Billing once it's confirmed.",
+      "confirming": "Confirming with Stripe",
+      "nothingCharged": "Nothing has been charged.",
+      "checkAgain": "Check again",
+      "savedTitle": "Card saved",
+      "saved": "Saved",
+      "grantedDescription": "Free credit was added to {org}.",
+      "noCreditDescription": "No free credit was added, so {org} has no credit yet.",
+      "plainDescription": "It's filled in for you when you add credits.",
+      "cardUsedTitle": "This card already claimed the free credit",
+      "cardUsedBody": "A card can claim it once, in one org. Add credits to start a Cloud agent, or run on your own machine.",
+      "walletTitle": "Wallet cards don't get the free credit",
+      "walletBody": "Type the card number in to claim it. That replaces the Apple Pay or Google Pay card.",
+      "enterCardNumber": "Enter card number",
+      "useDaemon": "Use a daemon instead",
+      "addCredits": "Add credits",
+      "notSavedTitle": "Card wasn't saved",
+      "notSavedBody": "The card step wasn't finished. Nothing was charged."
     }
   },
   "Integrations": {
@@ -5268,6 +5301,71 @@
       "postedFrom": "from {time}",
       "expand": "Expand",
       "collapse": "Collapse"
+    },
+    "card": {
+      "title": "Payment method",
+      "offerTitle": "Add a card to get free credit",
+      "offerBody": "You won't be charged unless you add credits yourself.",
+      "emptyTitle": "No card on file",
+      "emptyBody": "Save one to have it ready when you add credits.",
+      "addCard": "Add card",
+      "ending": "{brand} ending in {last4}",
+      "expires": "Expires {date}",
+      "replace": "Replace",
+      "remove": "Remove",
+      "removing": "Removing…",
+      "removeError": "Couldn't remove the card. It's still on file — try again.",
+      "ownersOnly": "Only owners can change the card.",
+      "hostedNote": "Entered on Stripe's page. Card details never touch AgentConnect.",
+      "prefillNote": "Filled in for you on Stripe's page when you add credits. Never charged on its own.",
+      "facts": {
+        "creditTitle": "Free credit",
+        "creditBody": "Added to {org} once your card is verified. Type the card number in — Apple Pay and Google Pay don't qualify.",
+        "noChargeTitle": "You won't be charged",
+        "noChargeBody": "Unless you choose to add credits yourself.",
+        "securedTitle": "Secured by Stripe",
+        "securedBody": "We never see your full card number."
+      },
+      "dialog": {
+        "title": "Add a card",
+        "replaceTitle": "Replace card",
+        "body": "We use it to verify your account. You won't be charged.",
+        "replaceBody": "The new card takes over once it's verified. You won't be charged.",
+        "cancel": "Cancel",
+        "addCard": "Add card",
+        "opening": "Opening Stripe…"
+      },
+      "result": {
+        "checkingTitle": "Checking your card",
+        "checkingBody": "This usually takes a few seconds. Nothing has been charged.",
+        "stillCheckingTitle": "Still checking your card",
+        "stillCheckingBody": "It shows under Payment method once it's confirmed. Safe to leave this page.",
+        "notSavedTitle": "Card wasn't saved",
+        "notSavedBody": "The card step wasn't finished. Nothing was charged.",
+        "errorTitle": "Could not check the card",
+        "errorBody": "{message} — if the card was saved, it still shows under Payment method; you can also check again now.",
+        "savedTitle": "Card saved",
+        "grantedBody": "Free credit was added to {org}.",
+        "cardUsedBody": "This card already claimed the free credit — a card can claim it once, in one org.",
+        "walletBody": "Apple Pay and Google Pay cards don't get the free credit. Type the card number in to claim it.",
+        "plainBody": "It's filled in for you the next time you add credits.",
+        "enterCardNumber": "Enter card number",
+        "addCredits": "Add credits",
+        "checkAgain": "Check again",
+        "dismiss": "Dismiss"
+      }
+    },
+    "gate": {
+      "outOfCredit": "Out of credit.",
+      "noCreditYet": "No credit yet.",
+      "addCreditsBody": "You can still write; {agent} replies after credit is added.",
+      "addCardBody": "Add a card to get free credit. You won't be charged.",
+      "askOwnerBody": "An owner needs to add credits.",
+      "checkingCard": "Checking your card…",
+      "addCredits": "Add credits",
+      "addCard": "Add card",
+      "copyBillingLink": "Copy billing link",
+      "copied": "Copied"
     }
   },
   "Settings": {

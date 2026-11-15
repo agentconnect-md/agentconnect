@@ -42,6 +42,37 @@ export interface BillingAccount {
   state?: 'active' | 'suspended' | 'unknown' | null
   /** Warn below this balance. 0, absent or null ⇒ no warning configured. */
   lowBalanceMicro?: number | null
+  /** The card on file, which top-ups prefill. Null ⇒ none; ABSENT ⇒ a service that predates cards. */
+  card?: BillingCard | null
+  /** Saving a card now would earn the one-time free credit. Absent or null ⇒ an older service: offer nothing. */
+  cardPromoAvailable?: boolean | null
+}
+
+/** Display facts only — the console never holds a card number, and nothing here can charge one. */
+export interface BillingCard {
+  /** The payment network's own slug (`visa`, `mastercard`, …); an unfamiliar one renders as sent. */
+  brand: string
+  last4: string
+  expMonth: number
+  expYear: number
+}
+
+/** `pending` until the service confirms the card was saved; the return redirect is UX only. */
+export type BillingCardSetupStatus = 'pending' | 'completed' | 'expired'
+const CARD_SETUP_STATUSES: readonly string[] = ['pending', 'completed', 'expired']
+
+export interface BillingCardSetup {
+  id: string
+  status: BillingCardSetupStatus
+  /** Why the free credit was or was not added; null until `completed`. A string, not a union: an outcome this build has not heard of still means the card was saved. */
+  promoOutcome: string | null
+  card: BillingCard | null
+}
+
+export interface BillingCardSetupCreated {
+  setupId: string
+  /** Hosted page that verifies the card without charging it; the console full-page redirects to it. */
+  url: string
 }
 
 // The history merges both ledger sides, so a row is one of two shapes and `type` says
@@ -216,6 +247,40 @@ export function assertAccount(body: unknown): asserts body is BillingAccount {
   }
   // A hint with a documented off value: throwing would drop the card AND the Add-credits form.
   if (b.lowBalanceMicro != null && !isFiniteNumber(b.lowBalanceMicro)) throw new BillingShapeError('account')
+  // Absent is the older contract; a card this build cannot read must not render as "no card on file".
+  if (b.card != null && !isCard(b.card)) throw new BillingShapeError('account')
+  if (b.cardPromoAvailable != null && typeof b.cardPromoAvailable !== 'boolean') throw new BillingShapeError('account')
+}
+
+function isCard(v: unknown): v is BillingCard {
+  const c = v as Partial<BillingCard> | null
+  return (
+    !!c &&
+    typeof c.brand === 'string' &&
+    typeof c.last4 === 'string' &&
+    isFiniteNumber(c.expMonth) &&
+    isFiniteNumber(c.expYear)
+  )
+}
+
+export function assertCardSetup(body: unknown): asserts body is BillingCardSetup {
+  const b = body as Partial<BillingCardSetup> | null
+  // Status is checked against the known set for the reason a purchase's is: polling branches on it.
+  if (
+    !b ||
+    typeof b.id !== 'string' ||
+    typeof b.status !== 'string' ||
+    !CARD_SETUP_STATUSES.includes(b.status) ||
+    !(b.promoOutcome === null || typeof b.promoOutcome === 'string') ||
+    !(b.card === null || isCard(b.card))
+  ) {
+    throw new BillingShapeError('card setup')
+  }
+}
+
+export function assertCardSetupCreated(body: unknown): asserts body is BillingCardSetupCreated {
+  const b = body as Partial<BillingCardSetupCreated> | null
+  if (!b || typeof b.setupId !== 'string' || typeof b.url !== 'string') throw new BillingShapeError('card setup')
 }
 
 export function assertPurchase(body: unknown): asserts body is BillingPurchase {
@@ -294,12 +359,12 @@ export function assertTransactionsPage(
   }
 }
 
-async function request<T>(path: string, init?: { method: 'POST'; body: unknown }): Promise<T> {
+async function request<T>(path: string, init?: { method: 'POST'; body: unknown } | { method: 'DELETE' }): Promise<T> {
   const base = billingBase()
   if (!base) throw new BillingError('billing is not configured for this deployment', 0)
 
   const headers: Record<string, string> = {}
-  if (init) headers['content-type'] = 'application/json'
+  if (init && 'body' in init) headers['content-type'] = 'application/json'
   const token = await getToken()
   if (token) headers.authorization = `Bearer ${token}`
   const email = (await getUser())?.email
@@ -310,7 +375,7 @@ async function request<T>(path: string, init?: { method: 'POST'; body: unknown }
   const res = await fetch(`${base}/api/v1${path}`, {
     cache: 'no-store',
     headers,
-    ...(init ? { method: init.method, body: JSON.stringify(init.body) } : {})
+    ...(init ? { method: init.method, ...('body' in init ? { body: JSON.stringify(init.body) } : {}) } : {})
   })
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { message?: string }
@@ -382,6 +447,30 @@ export async function fetchBillingPurchase(orgId: string, id: string): Promise<B
   const body = await request<unknown>(`${orgPath(orgId)}/purchases/${encodeURIComponent(id)}`)
   assertPurchase(body)
   return body
+}
+
+/** Start saving a card: the service persists the setup and hands back a hosted page that
+ *  verifies the card without charging it. With a card already on file this replaces it once
+ *  the new one is confirmed. The browser returns to `returnPath` with
+ *  `?cardSetup=success|cancel&setup=<id>` — which, like a checkout return, proves nothing. */
+export async function createBillingCardSetup(
+  orgId: string,
+  args: { idempotencyKey: string; returnPath: string }
+): Promise<BillingCardSetupCreated> {
+  const body = await request<unknown>(`${orgPath(orgId)}/card-setup`, { method: 'POST', body: args })
+  assertCardSetupCreated(body)
+  return body
+}
+
+export async function fetchBillingCardSetup(orgId: string, id: string): Promise<BillingCardSetup> {
+  const body = await request<unknown>(`${orgPath(orgId)}/card-setup/${encodeURIComponent(id)}`)
+  assertCardSetup(body)
+  return body
+}
+
+/** Remove the card on file. Idempotent; a failure leaves the card exactly as it was. Credit it earned stays. */
+export async function removeBillingCard(orgId: string): Promise<void> {
+  await request<unknown>(`${orgPath(orgId)}/card`, { method: 'DELETE' })
 }
 
 const MICRO_PER_USD = 1_000_000

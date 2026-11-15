@@ -6,6 +6,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertAccount,
+  assertCardSetup,
+  assertCardSetupCreated,
   assertPurchase,
   assertPurchaseCreated,
   assertTransactionsPage,
@@ -195,6 +197,45 @@ describe('assertPurchase', () => {
     expect(() => assertPurchase({ ...purchase, amountMicro: '50' })).toThrow(BillingShapeError)
     expect(() => assertPurchase({ ...purchase, receiptUrl: undefined })).toThrow(BillingShapeError)
     expect(() => assertPurchase(null)).toThrow(BillingShapeError)
+  })
+})
+
+describe('the saved card on an account', () => {
+  const card = { brand: 'visa', last4: '4242', expMonth: 8, expYear: 2028 }
+
+  it('accepts a card, no card, and a service that predates cards', () => {
+    expect(() => assertAccount({ ...ACCOUNT, card, cardPromoAvailable: false })).not.toThrow()
+    expect(() => assertAccount({ ...ACCOUNT, card: null, cardPromoAvailable: true })).not.toThrow()
+    expect(() => assertAccount(ACCOUNT)).not.toThrow()
+  })
+
+  it('refuses a card it cannot read rather than rendering it as “no card on file”', () => {
+    expect(() => assertAccount({ ...ACCOUNT, card: { brand: 'visa' } })).toThrow(BillingShapeError)
+    expect(() => assertAccount({ ...ACCOUNT, cardPromoAvailable: 'yes' })).toThrow(BillingShapeError)
+  })
+})
+
+describe('assertCardSetup', () => {
+  const card = { brand: 'visa', last4: '4242', expMonth: 8, expYear: 2028 }
+  const ok = { id: 'cs_1', status: 'completed', promoOutcome: 'granted', card }
+
+  it('accepts the documented shape, pending and completed', () => {
+    expect(() => assertCardSetup(ok)).not.toThrow()
+    expect(() => assertCardSetup({ id: 'cs_1', status: 'pending', promoOutcome: null, card: null })).not.toThrow()
+  })
+
+  it('tolerates an outcome this build has not heard of — the card was still saved', () => {
+    expect(() => assertCardSetup({ ...ok, promoOutcome: 'something_new' })).not.toThrow()
+  })
+
+  it('refuses an unknown status — the poll branches on it, so an unknown value would spin forever', () => {
+    expect(() => assertCardSetup({ ...ok, status: 'failed' })).toThrow(BillingShapeError)
+  })
+
+  it('refuses a malformed card and a body without the redirect URL', () => {
+    expect(() => assertCardSetup({ ...ok, card: { last4: '4242' } })).toThrow(BillingShapeError)
+    expect(() => assertCardSetupCreated({ setupId: 'cs_1', url: 'https://checkout.example/x' })).not.toThrow()
+    expect(() => assertCardSetupCreated({ setupId: 'cs_1' })).toThrow(BillingShapeError)
   })
 })
 

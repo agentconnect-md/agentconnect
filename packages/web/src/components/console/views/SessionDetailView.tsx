@@ -206,6 +206,7 @@ import {
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { approvalNotice, raisedIn, WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
+import { CloudCreditGate } from '@/components/console/billing/CloudCreditGate'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { HOST_STRATEGY, strategyUsesImage } from '@/lib/execution-strategy'
 import {
@@ -4411,6 +4412,7 @@ export default function SessionDetailView() {
               {taskListAvailable && filesAgentId && tasksSessionId ? (
                 <RunningCommandsDock agentId={filesAgentId} sessionId={tasksSessionId} turnActive={focusBusy} />
               ) : null}
+              <CloudCreditGate agent={owner} agentName={owner ? agentLabel(owner) : ''} />
               {/* Composer card (design "achero"): textarea on top, a toolbar row below
                   the divider — attach · model pill (fast toggle in its menu) · effort ·
                   permission · context ring · send. Tokens/cost live in the header's

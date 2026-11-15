@@ -89,3 +89,15 @@ export function balanceBanner(
   // Active, no usage yet, and a service too old to report `state` all land here.
   return null
 }
+
+/** What the composer of a Cloud agent offers when the org cannot run it, or null when it can.
+ *  `add-card` while the org can still earn free credit by saving one; otherwise the fix is paying for some. */
+export type CloudCreditGate = 'add-card' | 'add-credits' | 'ask-owner'
+
+export function cloudCreditGate(acct: BillingAccount, owner: boolean): CloudCreditGate | null {
+  // The gateway's own call first; a service too old to report one is read off the balance instead.
+  const blocked = acct.state === 'suspended' || (acct.state == null && acct.balanceMicro <= 0)
+  if (!blocked) return null
+  if (!owner) return 'ask-owner'
+  return acct.cardPromoAvailable === true && acct.card === null ? 'add-card' : 'add-credits'
+}

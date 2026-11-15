@@ -50,6 +50,8 @@ import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
 import { AgentIconView, LoadingState, MarkSlot, ModelMark, modelProviderSlug } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import { AddCardDialog, CardReturnBanner, PaymentMethodCard } from '@/components/console/billing/CardBinding'
+import { useCardSetupReturn } from '@/lib/use-card-setup-return'
 
 // Fixed tracks keep each `.row` grid aligned with its header; mobile scrolls the card sideways.
 // Usage columns: expand toggle · agent · models · amount · posted.
@@ -1170,6 +1172,9 @@ export default function BillingView() {
     // with the table right beside it until a refocus or a reload.
     if (orgId) for (const r of ACTIVITY_RANGES) void mutateKey(consoleKeys.billingActivity(orgId, r.key))
   }, [account.mutate, ledger.mutate, mutateKey, orgId])
+  // A confirmed card can post free credit, so it refreshes everything a settled purchase does.
+  const cardReturn = useCardSetupReturn({ orgId, enabled: offered, onSaved: refreshMoney })
+  const [cardDialog, setCardDialog] = useState(false)
   useEffect(() => {
     if (!orgId || checkout?.phase !== 'confirming') return
     const { purchaseId, attempt } = checkout
@@ -1301,11 +1306,37 @@ export default function BillingView() {
         ? { label: t(`statePill.${acct.state}`), color: STATE_COLOR[acct.state] }
         : null
 
+  // Leads INTO the inline form (the design's modal equivalent): scroll to it, blink the card, focus the amount.
+  const focusAddCredits = () => {
+    const card = document.getElementById('add-credits')
+    if (!card) return
+    // A scripted scroll dodges the CSS reduced-motion block; 'instant' never animates, 'auto' would defer to CSS.
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    card.scrollIntoView({ behavior: reduced ? 'instant' : 'smooth', block: 'center' })
+    card.querySelector('input')?.focus({ preventScroll: true })
+    card.classList.remove('card-flash')
+    void card.offsetWidth // restart the animation on repeat clicks
+    card.classList.add('card-flash')
+  }
+
   return (
     <div className="wrap">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
         <p className="psub mt-0 flex-1">{t('description')}</p>
       </div>
+
+      {cardReturn.state && (
+        <CardReturnBanner
+          state={cardReturn.state}
+          orgName={activeOrg?.name ?? activeOrg?.slug ?? ''}
+          canManage={myRole === 'owner'}
+          outOfCredit={acct != null && acct.balanceMicro <= 0}
+          onEnterCardNumber={() => setCardDialog(true)}
+          onAddCredits={focusAddCredits}
+          onRetry={cardReturn.retry}
+          onDismiss={cardReturn.dismiss}
+        />
+      )}
 
       {checkout && (
         <CheckoutBanner
@@ -1341,20 +1372,7 @@ export default function BillingView() {
             // funded the moment someone pressed Top-ups.
             hasHistory={ledgerHistory(ledger.data)}
             canPay={myRole === 'owner'}
-            // The banner's CTA leads INTO the inline form (the design's modal equivalent):
-            // scroll to it, blink the card, and land focus in the amount field.
-            onAddCredits={() => {
-              const card = document.getElementById('add-credits')
-              if (!card) return
-              // A scripted scroll dodges the CSS reduced-motion block, so honor it here.
-              // 'instant', not 'auto': auto defers to CSS scroll-behavior, instant never animates.
-              const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-              card.scrollIntoView({ behavior: reduced ? 'instant' : 'smooth', block: 'center' })
-              card.querySelector('input')?.focus({ preventScroll: true })
-              card.classList.remove('card-flash')
-              void card.offsetWidth // restart the animation on repeat clicks
-              card.classList.add('card-flash')
-            }}
+            onAddCredits={focusAddCredits}
           />
           <div className="mb-[18px] grid items-stretch gap-[18px] desktop:grid-cols-2">
             {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
@@ -1398,6 +1416,24 @@ export default function BillingView() {
               <MembersDontPayCard />
             ) : null}
           </div>
+
+          <PaymentMethodCard
+            orgId={orgId}
+            acct={acct}
+            canManage={myRole === 'owner'}
+            onAddCard={() => setCardDialog(true)}
+            onRemoved={() => void account.mutate()}
+          />
+          {cardDialog && (
+            <AddCardDialog
+              orgId={orgId}
+              orgName={activeOrg?.name ?? activeOrg?.slug ?? ''}
+              returnPath={pathname}
+              promoAvailable={acct.cardPromoAvailable === true}
+              replacing={acct.card != null}
+              onClose={() => setCardDialog(false)}
+            />
+          )}
 
           {/* Design: the chart only appears once the ledger has something to draw — an
               unfunded org gets the banner and the empty table, not an empty plot. */}
