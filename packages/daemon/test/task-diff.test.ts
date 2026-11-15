@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gitFor } from '../src/workspace/git-injection.js'
@@ -100,6 +100,30 @@ describe('task diff against a fixed baseline', () => {
     await expect(openTaskDiff(sources, 'old-task', false)).rejects.toThrow('no saved starting point')
     writeFileSync(join(root, 'app.js'), 'unrelated change\n')
     await expect(openTaskDiff(sources, 'new-task', true)).rejects.toThrow('already has changes')
+  })
+
+  it('leaves untracked files in a skipped directory out, at the repository root only, and keeps tracked ones', async () => {
+    const root = repository()
+    mkdirSync(join(root, 'uploads'))
+    mkdirSync(join(root, 'agent', 'uploads'), { recursive: true })
+    writeFileSync(join(root, 'uploads', 'tracked.txt'), 'before\n')
+    git(root, ['add', '.'])
+    git(root, ['commit', '-qm', 'a tracked file in uploads'])
+    const source = { git: hostGitRunner(root), name: 'project', skipUntracked: 'uploads' }
+    const snapshot = await openTaskDiff([source], 'task-uploads', true)
+    for (let index = 0; index < 101; index++) writeFileSync(join(root, 'uploads', `clip-${index}.mp4`), 'saved bytes')
+    expect(await snapshot.read()).toBe('')
+    writeFileSync(join(root, 'uploads', 'tracked.txt'), 'after\n')
+    writeFileSync(join(root, 'agent', 'uploads', 'nested.txt'), 'nested work\n')
+    writeFileSync(join(root, 'uploads.txt'), 'sibling work\n')
+    const patch = await snapshot.read()
+    expect(patch).toContain('+after')
+    expect(patch).toContain('+nested work')
+    expect(patch).toContain('+sibling work')
+    expect(patch).not.toContain('saved bytes')
+    // A root that names no such directory still reports the same files, so secondary repositories are unaffected.
+    const plain = await openTaskDiff([{ git: hostGitRunner(root), name: 'project' }], 'task-uploads', false)
+    await expect(plain.read()).rejects.toThrow('too many new files')
   })
 
   it('refuses an oversized diff instead of publishing a partial patch', async () => {

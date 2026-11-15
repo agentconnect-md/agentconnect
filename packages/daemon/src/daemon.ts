@@ -206,7 +206,8 @@ import {
   WebchatPromptSuggestion,
   type TaskInitiator,
   type TaskLinkFacts,
-  type UserTurnBody
+  type UserTurnBody,
+  WORKSPACE_UPLOADS_DIR
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
@@ -23413,7 +23414,7 @@ export class Daemon {
       sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
       runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
     })
-    const roots: Array<{ path: string; name: string; title?: string; branch: string }> = []
+    const roots: Array<{ path: string; name: string; title?: string; branch: string; skipUntracked?: string }> = []
     if (agent.workspace.mode === 'git-repo') {
       const primary = await scope.location(agent.id, p.outwardSessionId)
       if (primary)
@@ -23421,7 +23422,9 @@ export class Daemon {
           path: primary.root,
           name: 'workspace',
           title: 'the working directory',
-          branch: agent.workspace.gitBranch
+          branch: agent.workspace.gitBranch,
+          // Saved chat attachments land here; they are copies of chat files, not task changes.
+          skipUntracked: WORKSPACE_UPLOADS_DIR
         })
     }
     for (const root of await this.workspaces.sessionAdditionalRoots(agent, {

@@ -101,7 +101,10 @@ new tool surface, no new mount, no reach problem.
   visible in the git status panel, no hidden directory, no automatic exclude. If the point
   of the upload is "commit this", the agent moves it and commits it; if not, it stays
   untracked and dies with the worktree. Magic exclusions would hide exactly the file the
-  user just asked the agent to handle.
+  user just asked the agent to handle. The one reader that leaves `uploads/` out is the
+  task diff published to a chat thread: it skips untracked files there, because a saved
+  attachment is a copy of a chat file rather than a change the task made. Tracked files
+  under `uploads/` still appear in it.
 
 ### 2.2 Timing and scope
 
