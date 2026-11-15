@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { IssueKeyRequest, IssueKeyResponse, keyGrantViolation, RevokeKeyRequest } from './key-server.js'
+import {
+  IssueKeyRequest,
+  IssueKeyResponse,
+  keyGrantViolation,
+  OrgStandingRequest,
+  OrgStandingResponse,
+  RevokeKeyRequest
+} from './key-server.js'
 
 const request = IssueKeyRequest.parse({
   orgId: 'org-1',
@@ -58,5 +65,14 @@ describe('agentconnect.key-server/v1 schemas', () => {
     const unbounded = IssueKeyRequest.parse({ ...request, ttlSeconds: undefined })
     expect(keyGrantViolation(unbounded, grant())).toBeNull()
     expect(keyGrantViolation(unbounded, grant(60))).toBeNull()
+  })
+
+  it('asks an org’s standing with the org alone, and answers only an allowance', () => {
+    expect(OrgStandingRequest.parse({ orgId: 'org-1' })).toEqual({ orgId: 'org-1' })
+    expect(() => OrgStandingRequest.parse({ orgId: 'org-1', agentId: 'agent-1' })).toThrow()
+    expect(() => OrgStandingRequest.parse({ orgId: '' })).toThrow()
+    expect(OrgStandingResponse.parse({ allowed: true })).toEqual({ allowed: true })
+    expect(() => OrgStandingResponse.parse({ allowed: false })).toThrow()
+    expect(() => OrgStandingResponse.parse({ allowed: true, balance: 0 })).toThrow()
   })
 })

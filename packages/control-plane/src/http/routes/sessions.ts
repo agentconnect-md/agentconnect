@@ -63,6 +63,7 @@ import {
   type ContinuationHostRefusal
 } from '../session-continuation.js'
 import { Tag } from '../plugins/openapi.js'
+import { refuseUnfundedCloudPlacement } from '../org-standing.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { autoMergeSetRequest } from '../../orchestrator/autoMerge.js'
 import { ConnectionClosed } from '../../ws/registry.js'
@@ -1985,10 +1986,10 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Hold this session’s sandbox while its page is open',
           description:
-            'Renews an open console page’s lease on the agent’s sandbox pod, so the idle sweep does not suspend work the page is watching. The DAEMON decides whether to hold, from facts the console cannot assert: uncommitted files in this session’s worktree, or an armed merge-when-ready watcher — which for a cluster agent is a process inside the pod it was armed in, so a suspend would silently disarm it. The answer says which reasons applied and for how long the hold stands; the console renews inside that window while its document is visible, and the hold lapses within one TTL when the page closes, the tab goes to the background, or the machine sleeps. Nothing is persisted, there is nothing to release, and a suspended pod is never woken by this call (`asleep: true`). `placement: daemon` means the agent runs no sandbox at all, which is an answer rather than an error. 404 mirrors the session reads; 409 when no daemon serves the agent or it is too old to hold a lease; 503 when its daemon is unreachable.',
+            'Renews an open console page’s lease on the agent’s sandbox pod, so the idle sweep does not suspend work the page is watching. The DAEMON decides whether to hold, from facts the console cannot assert: uncommitted files in this session’s worktree, or an armed merge-when-ready watcher — which for a cluster agent is a process inside the pod it was armed in, so a suspend would silently disarm it. The answer says which reasons applied and for how long the hold stands; the console renews inside that window while its document is visible, and the hold lapses within one TTL when the page closes, the tab goes to the background, or the machine sleeps. Nothing is persisted, there is nothing to release, and a suspended pod is never woken by this call (`asleep: true`). `placement: daemon` means the agent runs no sandbox at all, which is an answer rather than an error. 404 mirrors the session reads; 409 when no daemon serves the agent or it is too old to hold a lease; 402 (`ORG_SUSPENDED`, the key server’s message) for a managed pool agent when the organization may not run Cloud compute; 503 when its daemon is unreachable, or a pool agent’s organization standing cannot be confirmed (`ORG_STANDING_UNAVAILABLE`).',
           operationId: 'keepSessionSandboxAlive',
           params: IdParam,
-          response: { 200: SessionSandboxKeepAliveDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: SessionSandboxKeepAliveDto, 402: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -2011,6 +2012,8 @@ export function sessionRoutes(deps: HttpDeps) {
             code: 'DAEMON_FEATURE_MISSING'
           })
         }
+        // Holding a pool pod keeps Cloud compute running, so it needs an org that may run it.
+        if (await refuseUnfundedCloudPlacement(deps, orgOf(req), agent, reply)) return
         try {
           const held = await deps.control.sandboxKeepAlive(agent.daemonId, orgOf(req), {
             agentId: agent.id,

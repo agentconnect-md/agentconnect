@@ -89,6 +89,7 @@ import type { ComputerService } from '../registry/computerService.js'
 import type { ComputerAuditLog } from '../registry/computerAuditLog.js'
 import type { ComputerChannelGrants } from '../registry/computerChannelGrants.js'
 import type { ComputerPool } from '../registry/computerPool.js'
+import type { OrgStanding } from '../key-server/org-standing.js'
 import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
 import type { ComputerPlan } from '../registry/computerPlan.js'
 import type { ComputerScreenshots } from '../registry/computerScreenshots.js'
@@ -480,6 +481,8 @@ export interface HttpDeps {
     ComputerPool,
     'createManual' | 'remove' | 'acquire' | 'available' | 'wakeNow' | 'sleepNow' | 'resetNow'
   >
+  /** The key server's org standing, asked before Cloud compute starts (key-server.md §2.3); absent gates nothing. */
+  orgStanding?: OrgStanding
   /** Who holds each Computer's lease and who waits (computer-use.md §4.4), for the console. */
   computerLeases?: Pick<ComputerLeaseService, 'occupancy'>
   /** The per-Computer audit the desktop daemons report (computer-use.md §8.2). */

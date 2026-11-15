@@ -9,6 +9,7 @@ import type {
   ComputerPoolRefusal
 } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
+import { standingRefusal, type OrgStanding, type StandingRefusal } from '../key-server/org-standing.js'
 import { AgentId, ComputerId, type OrgId } from '../domain/ids.js'
 import {
   computerGrantsAgent,
@@ -74,6 +75,8 @@ export interface ComputerPoolDeps {
   members: ComputerPoolMembers
   /** Quotas checked before a desktop starts, and the metering each sweep does (§15.5); absent enforces and meters nothing. */
   plan?: Pick<ComputerPlan, 'desktopRefusal' | 'accrue'>
+  /** The key server's org standing, asked before any desktop starts or is used (key-server.md §2.3); absent gates nothing. */
+  standing?: OrgStanding
   clock: Clock
   timings?: Partial<ComputerPoolTimings>
   /** How often the controller sweeps; 0 arms no timer. */
@@ -106,13 +109,16 @@ export type ComputerPoolCommandResult =
   | { ok: true; computer: ComputerRecord }
   | {
       ok: false
-      code: 'not_found' | 'not_allowed' | 'in_use' | 'no_pool' | 'volume_missing' | 'quota_exceeded'
+      code: 'not_found' | 'not_allowed' | 'in_use' | 'no_pool' | 'volume_missing' | 'quota_exceeded' | StandingCode
       message: string
     }
 
 /** A user's new `manual` computer, or why the pool cannot make it. */
 export type ComputerPoolCreateResult =
-  { ok: true; computer: ComputerRecord } | { ok: false; code: 'no_pool' | 'quota_exceeded'; message: string }
+  | { ok: true; computer: ComputerRecord }
+  | { ok: false; code: 'no_pool' | 'quota_exceeded' | StandingCode; message: string }
+
+type StandingCode = StandingRefusal['code']
 
 const refused = (
   code: Extract<ComputerPoolCommandResult, { ok: false }>['code'],
@@ -146,6 +152,10 @@ const failed = (code: ComputerPoolRefusal, message: string): ComputerPoolAcquire
   code,
   message: message.slice(0, 500)
 })
+
+// A daemon hears a suspended org as a definite denial, and an unanswered standing check as a failure.
+const standingFailed = (refusal: StandingRefusal): ComputerPoolAcquireResult =>
+  failed(refusal.code === 'org_suspended' ? 'denied' : 'failed', refusal.message)
 
 export class ComputerPool {
   private readonly timings: ComputerPoolTimings
@@ -182,6 +192,9 @@ export class ComputerPool {
     if (req.computerId) return await this.wakeGranted(orgId, agent, req.computerId, req.sessionId)
     const mode = agent.computerUse?.managed?.mode
     if (!mode) return failed('not_configured', 'this agent has no managed computer setting')
+    // Cloud compute regardless of where the asking agent runs, so it is gated for every daemon.
+    const standing = await this.standingRefusal(orgId)
+    if (standing) return standingFailed(standing)
     const key: ManagedComputerKey =
       mode === 'per-agent'
         ? { allocation: 'per-agent', ownerAgentId: agent.id }
@@ -220,6 +233,8 @@ export class ComputerPool {
       message: 'this deployment cannot start managed computers now'
     } as const
     if (!this.deps.members.available()) return noPool
+    const standing = await this.standingRefusal(orgId)
+    if (standing) return { ok: false, ...standing }
     const refusal = await this.deps.plan?.desktopRefusal(orgId, { allocation: 'manual', adding: true })
     if (refusal) return { ok: false, code: 'quota_exceeded', message: refusal.message }
     const row = await this.deps.repo.createManaged({
@@ -257,6 +272,8 @@ export class ComputerPool {
     if (!row) return refused('not_found', 'computer not found')
     if (!actionsOf(row).wake) return refused('not_allowed', 'this computer cannot be woken now')
     if (!this.deps.members.available()) return refused('no_pool', 'no pool member can wake this computer now')
+    const standing = await this.standingRefusal(orgId)
+    if (standing) return refused(standing.code, standing.message)
     const result = await this.use(row)
     if (result.state === 'failed' && (result.code === 'volume_missing' || result.code === 'quota_exceeded'))
       return refused(result.code, result.message)
@@ -310,6 +327,8 @@ export class ComputerPool {
     if (!row) return refused('not_found', 'computer not found')
     if (!actionsOf(row).reset) return refused('not_allowed', 'this computer cannot be reset now')
     if (!this.deps.members.available()) return refused('no_pool', 'no pool member can reset this computer now')
+    const standing = await this.standingRefusal(orgId)
+    if (standing) return refused(standing.code, standing.message)
     // A reset starts a running pod, so a sleeping or failed desktop needs room for it like a wake.
     if ((row.poolPhase === 'sleeping' || row.poolPhase === 'failed') && row.allocation) {
       const refusal = await this.deps.plan?.desktopRefusal(orgId, { allocation: row.allocation, adding: false })
@@ -515,7 +534,13 @@ export class ComputerPool {
       return failed('denied', 'this computer belongs to another session')
     if (c.poolPhase === 'reclaiming') return failed('failed', 'this computer is being removed')
     if (isRevoked(c)) return failed('failed', 'this computer is revoked')
+    const standing = await this.standingRefusal(orgId)
+    if (standing) return standingFailed(standing)
     return await this.use(c)
+  }
+
+  private async standingRefusal(orgId: OrgId): Promise<StandingRefusal | null> {
+    return await standingRefusal(this.deps.standing, orgId, this.deps.log)
   }
 
   // Bring a found row toward ready and say where it stands.

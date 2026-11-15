@@ -1,8 +1,8 @@
 # Key Server — Dynamic Provider-Credential Issuance
 
-**Status:** implemented by the cloud daemon (`--k8s`) and declared by
-`@agentconnect.md/protocol` `key-server.ts`. This document records the semantics that
-the schema cannot carry.
+**Status:** implemented by the cloud daemon (`--k8s`) and the Control Plane's org standing
+check (§2.3), and declared by `@agentconnect.md/protocol` `key-server.ts`. This document
+records the semantics that the schema cannot carry.
 
 ## 1. Why a seam
 
@@ -31,7 +31,7 @@ the seam.
 
 ## 2. Operations
 
-Two RPC-style **plain HTTPS request/response** operations, JSON bodies, schemas in
+Three RPC-style **plain HTTPS request/response** operations, JSON bodies, schemas in
 [`packages/protocol/src/key-server.ts`](../../packages/protocol/src/key-server.ts).
 This is deliberately not the daemon↔CP WebSocket or a frame group: issuance is a
 low-frequency, stateless exchange, and a bare REST surface lets any deployment
@@ -41,6 +41,13 @@ implement the server without speaking AgentConnect's wire protocol.
 | ----------- | --------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `IssueKey`  | `POST /v1/issue-key`  | `{orgId, agentId, sessionId, provider, ttlSeconds?}` → `{keyId, key, expiresInSeconds?, refreshInSeconds?}` |
 | `RevokeKey` | `POST /v1/revoke-key` | `{keyId}` → `{}`                                                                                            |
+
+The daemon calls `IssueKey` and `RevokeKey`. The Control Plane calls a third, read-only operation before it
+starts Cloud compute (§2.3):
+
+| Operation     | Route                   | Body → Response                                                                    |
+| ------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| `OrgStanding` | `POST /v1/org-standing` | `{orgId}` → `{allowed: true}`, or a `KeyServerErrorBody` with `org_suspended` (§6) |
 
 **Caller authentication rides the transport, never the body.** Configured with a
 token source, the daemon sends `Authorization: Bearer <token>`; configured with
@@ -121,6 +128,50 @@ adapter appends `v1/systemone` and sends the returned key as a Bearer credential
 No provider request, answer, or credential enters an ACP process or the CP's
 message path. The live evaluator is callable independently; chat admission and
 Console preview remain separate consumers to connect.
+
+### 2.3 Org standing: the Control Plane's question before Cloud compute
+
+The model gateway stops an organization that may not run: `IssueKey` answers `org_suspended` and an
+issued credential is refused upstream. Cloud compute that makes no model call is invisible to both, so
+an organization with no credit could still start pool sandboxes and managed desktops. `OrgStanding`
+closes that gap. It reads the same verdict `IssueKey` enforces (§6) and issues nothing.
+
+**Who asks, and when.** The Control Plane asks before every start of Cloud compute:
+
+- creating an agent on the managed pool, or moving one onto it (`POST /agents`, `PUT /agents/:id/daemon`;
+  a same-target retry starts nothing and is not asked);
+- waking a pool agent's sandbox (`POST /agents/:id/wake`) and holding a pool pod for an open page
+  (`POST /sessions/:id/sandbox-keep-alive`);
+- creating, waking or resetting a pool Computer, and opening its viewer (`POST /computers/pool`,
+  `POST /computers/:id/{wake,reset,viewer}`);
+- an agent's `computer-pool/acquire`, whichever daemon the agent runs on. The desktop is Cloud compute
+  even when the agent's own daemon is self-hosted and calls models with its own key.
+
+An agent on a self-hosted daemon, or on an organization's own member set, is never asked about. Only the
+org-less pool and the Computers it runs are Cloud.
+
+**Answers.** `200 {allowed: true}` lets the start through. `org_suspended` refuses it: the console gets
+HTTP 402 with `code: ORG_SUSPENDED` and the key server's message as written, which names where to add
+credit; a daemon's acquire gets `failed` with code `denied` and the same message. The refusal's HTTP
+status on this operation is the key server's own choice, as on `IssueKey`; the Control Plane answers
+402 whatever it is. Every other answer means the key server cannot say: `unavailable`, any other error
+code, a malformed body, a timeout or a network failure. The Control Plane then **fails closed**, like the
+gateway: HTTP 503 with `code: ORG_STANDING_UNAVAILABLE`, or `failed` with code `failed` for an acquire.
+
+**Caching.** An `allowed` or `org_suspended` answer stands for 30 seconds per organization, on the
+Control Plane's injectable clock, so a storm of wakes and keep-alives asks once per window. Concurrent
+questions for one organization share a request. A refusal is never held longer than that window, so an
+organization that adds credit can start again within 30 seconds. A question that got no answer is not
+cached.
+
+**Configuration.** The Control Plane reads `KEY_SERVER_URL` (http or https) and `KEY_SERVER_TOKEN_PATH`.
+The bearer file is read for every request, as on the daemon (§2.1); without a token path the request has
+no `Authorization` header. **With `KEY_SERVER_URL` unset there is no gate at all**: open-source and
+self-hosted installs start compute exactly as before.
+
+**Out of scope.** Pods and desktops already running when an organization runs out are not reclaimed. The
+gate refuses the next start; what runs keeps running until it idles out or a person stops it. The model
+gateway still refuses its model calls.
 
 ## 3. Validity: durations, and the narrowing rule
 
@@ -353,6 +404,10 @@ failure notice carries the issuer's message as written, links included: it is wo
 it refuses, so the daemon does not shorten it or redact its addresses as it does other start failures. An
 organization-wide check would act on `org_suspended` alone, stopping every session of the
 organization on the member; a `quota_denied` answer to such a check refuses nothing but the check.
+
+`OrgStanding` (§2.3) uses only `org_suspended` from this table as a verdict. An issuer that tracks
+organization standing MUST give it the same answer `IssueKey` would. Any other code from it means the
+key server cannot say, and the Control Plane treats it like `unavailable`.
 
 `invalid_request` exists because the other four describe the **org's standing**,
 its limits, or the issuer itself, so an issuer that rejected a malformed body had

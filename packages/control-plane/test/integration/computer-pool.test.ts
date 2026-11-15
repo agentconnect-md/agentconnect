@@ -48,6 +48,7 @@ import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import { ComputerId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../src/config/defaults.js'
+import { FakeOrgStanding, SUSPENDED, SUSPENDED_MESSAGE, UNAVAILABLE } from '../fakes/org-standing.js'
 
 const PEPPER = 'computer-pool-pepper-0123456789abcdefghijk'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -218,7 +219,10 @@ function frame(type: string, payload: Record<string, unknown>): AnyFrame {
 }
 
 /** The pool as one CP replica runs it, with a clock the test can move forward, and an agent daemon's end of the wire. */
-function harness(cluster: FakeCluster, opts: { plan?: ComputerPlan; quotaAware?: boolean } = {}) {
+function harness(
+  cluster: FakeCluster,
+  opts: { plan?: ComputerPlan; quotaAware?: boolean; standing?: FakeOrgStanding } = {}
+) {
   let offset = 0
   const clock: Clock = { ...systemClock, now: () => Date.now() + offset }
   const computerRepo = new PgComputerRepo(prisma)
@@ -241,6 +245,7 @@ function harness(cluster: FakeCluster, opts: { plan?: ComputerPlan; quotaAware?:
     leases,
     members: cluster,
     ...(opts.plan ? { plan: opts.plan } : {}),
+    ...(opts.standing ? { standing: opts.standing } : {}),
     clock,
     advanceThrottleMs: 0
   })
@@ -334,8 +339,11 @@ function computerOf(result: Awaited<ReturnType<ComputerPool['createManual']>>) {
 }
 
 /** The console as one user sees it, its routes driving the test's pool. */
-function consoleAs(pool: ComputerPool, userId: string = DEFAULT_OWNER_ID): HttpApp {
-  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, undefined, undefined, { computerPool: pool })
+function consoleAs(pool: ComputerPool, userId: string = DEFAULT_OWNER_ID, standing?: FakeOrgStanding): HttpApp {
+  const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, undefined, undefined, {
+    computerPool: pool,
+    ...(standing ? { orgStanding: standing } : {})
+  })
   consoles.push(app)
   return app
 }
@@ -992,6 +1000,71 @@ describe('managed computers in the pool', () => {
     })
     expect(await h.acquireOnce(AGENT, S1)).toMatchObject({ state: 'failed', code: 'quota_exceeded' })
     expect(await row(first.computerId)).toMatchObject({ poolPhase: 'sleeping' })
+  })
+
+  it('starts no Cloud desktop for a suspended org, whichever daemon its agent runs on', async () => {
+    await seed('per-agent', 'per-agent')
+    const { app, base } = await start()
+    const cluster = new FakeCluster(app, base)
+    const standing = new FakeOrgStanding()
+    const h = harness(cluster, { standing })
+    const org = OrgId(DEFAULT_ORG_ID)
+    const first = (await h.acquire(AGENT, S1)) as { computerId: string }
+    expect(first).toMatchObject({ state: 'ready' })
+    const id = ComputerId(first.computerId)
+    expect(await h.pool.sleepNow(org, id)).toMatchObject({ ok: true })
+    const opsBefore = cluster.ops.length
+
+    standing.verdict = SUSPENDED
+    // These agents run on a self-hosted daemon, and the desktop they ask for is Cloud compute all the same.
+    expect(await h.acquireOnce(OTHER_AGENT, S1)).toEqual({
+      state: 'failed',
+      code: 'denied',
+      message: SUSPENDED_MESSAGE
+    })
+    expect(await prisma.computer.count({ where: { ownerAgentId: OTHER_AGENT } })).toBe(0)
+    expect(await h.acquireOnce(AGENT, S1)).toMatchObject({ state: 'failed', code: 'denied' })
+    expect(await h.acquireOnce(AGENT, S1, id)).toMatchObject({ state: 'failed', code: 'denied' })
+    expect(await h.pool.createManual(org, { name: 'Desk', ownerUserId: DEFAULT_OWNER_ID })).toEqual({
+      ok: false,
+      code: 'org_suspended',
+      message: SUSPENDED_MESSAGE
+    })
+    expect(await h.pool.wakeNow(org, id)).toMatchObject({ ok: false, code: 'org_suspended' })
+    expect(await h.pool.resetNow(org, id)).toMatchObject({ ok: false, code: 'org_suspended' })
+
+    // The console hears 402 with the key server's words, for a start and for the viewer alike.
+    const owner = consoleAs(h.pool, DEFAULT_OWNER_ID, standing)
+    const post = (url: string, payload?: Record<string, unknown>) =>
+      owner.app.inject({ method: 'POST', url: `${ORG}${url}`, ...(payload ? { payload } : {}) })
+    for (const res of [
+      await post(`/computers/${id}/wake`),
+      await post(`/computers/${id}/reset`),
+      await post('/computers/pool', { name: 'Desk' }),
+      await post(`/computers/${id}/viewer`)
+    ]) {
+      expect(res.statusCode).toBe(402)
+      expect(res.json()).toEqual({
+        error: 'Payment Required',
+        statusCode: 402,
+        message: SUSPENDED_MESSAGE,
+        code: 'ORG_SUSPENDED'
+      })
+    }
+    expect(await prisma.computer.count({ where: { allocation: 'manual' } })).toBe(0)
+    expect(await row(id)).toMatchObject({ poolPhase: 'sleeping' })
+    expect(cluster.pods.get(id)!.running).toBe(false)
+    expect(cluster.ops.length).toBe(opsBefore)
+
+    // A key server that cannot say fails closed, and an allowed org starts again.
+    standing.verdict = UNAVAILABLE
+    const unknown = await post(`/computers/${id}/wake`)
+    expect(unknown.statusCode).toBe(503)
+    expect(unknown.json()).toMatchObject({ code: 'ORG_STANDING_UNAVAILABLE' })
+    expect(await h.acquireOnce(AGENT, S1)).toMatchObject({ state: 'failed', code: 'failed' })
+    standing.verdict = { allowed: true }
+    expect(await h.pool.wakeNow(org, id)).toMatchObject({ ok: true })
+    expect(await h.acquire(AGENT, S1)).toMatchObject({ state: 'ready', computerId: id })
   })
 
   it('meters running and sleeping time and the kept volume on every sweep', async () => {

@@ -2067,6 +2067,14 @@ calls answer 429 with `code: COMPUTER_QUOTA_EXCEEDED`. A lower limit stops nothi
 start, and resetting a sleeping or failed desktop starts one, so it is held like a wake. The checks read counts and
 are not transactional, so concurrent allocations can pass a limit by the few that raced it.
 
+**Organization standing.** Where the deployment configures a key server (`KEY_SERVER_URL`), every start of a managed
+desktop also asks it whether the organization may run Cloud compute ([key-server.md §2.3](key-server.md)): the
+console's create, wake, reset and viewer calls, and every `computer-pool/acquire`, whichever daemon the asking agent
+runs on. A suspended organization gets HTTP 402 with `code: ORG_SUSPENDED` and the key server's message, and an
+acquire gets `failed` with code `denied`; a key server that cannot answer is a 503 (`ORG_STANDING_UNAVAILABLE`), or
+`failed` with code `failed`. Self-hosted Computers are never asked about, and desktops already running are not
+stopped. With no key server configured nothing is asked.
+
 **Metering.** Each pool sweep (30 s) bills a managed desktop's time since its `poolMeteredAt` (stamped at the upgrade
 for desktops older than metering) to the phase it is in, with a compare-and-set on that column so replicas bill an interval once, and so does every phase change the
 controller makes: `provisioning`, `registering`, `awake`, `waking` and `resetting` are running, `sleeping` and `failed`
