@@ -139,6 +139,32 @@ describe('KeyServerOrgStanding', () => {
     expect(flaky.calls).toHaveLength(2)
   })
 
+  it('allows when the key server predates the operation (404), caching it and reporting once per TTL', async () => {
+    const clock = new FakeClock(1_000)
+    const errors: unknown[] = []
+    const server = keyServer({ status: 404, body: 'Not Found' })
+    const client = new KeyServerOrgStanding('http://key-server.example.test:8080', {
+      clock,
+      fetch: server.fetch,
+      log: { error: (obj) => errors.push(obj) }
+    })
+
+    expect(await client.check('org-1')).toEqual({ allowed: true })
+    expect(await client.check('org-1')).toEqual({ allowed: true })
+    expect(await client.check('org-2')).toEqual({ allowed: true })
+    expect(server.calls).toHaveLength(2)
+    expect(errors).toHaveLength(1)
+    clock.advance(ORG_STANDING_TTL_MS)
+    expect(await client.check('org-1')).toEqual({ allowed: true })
+    expect(server.calls).toHaveLength(3)
+    expect(errors).toHaveLength(2)
+
+    // A JSON 404 body is the same missing route; a suspension stays a suspension whatever its status.
+    const json404 = keyServer({ status: 404, body: { message: 'route not found' } })
+    expect(await standing(json404.fetch).check('org-1')).toEqual({ allowed: true })
+    expect(await standing(keyServer(suspended(404)).fetch).check('org-1')).toMatchObject({ reason: 'suspended' })
+  })
+
   it('joins concurrent checks for one org into one request', async () => {
     const server = keyServer(allowed)
     const client = standing(server.fetch)

@@ -154,9 +154,17 @@ org-less pool and the Computers it runs are Cloud.
 HTTP 402 with `code: ORG_SUSPENDED` and the key server's message as written, which names where to add
 credit; a daemon's acquire gets `failed` with code `denied` and the same message. The refusal's HTTP
 status on this operation is the key server's own choice, as on `IssueKey`; the Control Plane answers
-402 whatever it is. Every other answer means the key server cannot say: `unavailable`, any other error
-code, a malformed body, a timeout or a network failure. The Control Plane then **fails closed**, like the
-gateway: HTTP 503 with `code: ORG_STANDING_UNAVAILABLE`, or `failed` with code `failed` for an acquire.
+402 whatever it is. Apart from a missing route (below), every other answer means the key server
+cannot say: `unavailable`, any other error code, a malformed body, a timeout, a network failure or an
+unreadable token. The Control Plane then **fails closed**, like the gateway: HTTP 503 with
+`code: ORG_STANDING_UNAVAILABLE`, or `failed` with code `failed` for an acquire.
+
+**Version skew.** The Control Plane and the key server deploy on different trains, so a key server
+may not have `OrgStanding` yet. An HTTP 404 that is not an `org_suspended` body means the route does
+not exist, and the Control Plane **allows** the start. It caches that answer like an allowance and logs
+an error at most once per 30-second window, so the misdeployment shows without a log line per request.
+Failing closed there would stop all Cloud compute for every organization until the key server caught up.
+The model gateway still refuses a suspended organization's model calls in the meantime.
 
 **Caching.** An `allowed` or `org_suspended` answer stands for 30 seconds per organization, on the
 Control Plane's injectable clock, so a storm of wakes and keep-alives asks once per window. Concurrent

@@ -52,12 +52,15 @@ export interface KeyServerOrgStandingOpts {
   fetch?: typeof globalThis.fetch
   ttlMs?: number
   timeoutMs?: number
+  /** Where a key server without the operation is reported, at most once per TTL. */
+  log?: { error(obj: unknown, msg?: string): void }
 }
 
 export class KeyServerOrgStanding implements OrgStanding {
   private readonly baseUrl: URL
   private readonly cache = new Map<string, { verdict: OrgStandingVerdict; until: number }>()
   private readonly inflight = new Map<string, Promise<OrgStandingVerdict>>()
+  private unsupportedReportedAt: number | undefined
 
   constructor(
     address: string,
@@ -125,6 +128,7 @@ export class KeyServerOrgStanding implements OrgStanding {
     try {
       json = await response.json()
     } catch {
+      if (response.status === 404) return this.unsupported()
       return unavailable(`key server returned non-JSON HTTP ${response.status}`, response.status)
     }
     if (response.ok) {
@@ -141,8 +145,23 @@ export class KeyServerOrgStanding implements OrgStanding {
         message: refusal.data.error.message ?? SUSPENDED_FALLBACK
       }
     }
+    // A key server older than the operation has no route for it: allow, since its gateway still refuses model calls.
+    if (response.status === 404) return this.unsupported()
     // Any other refusal is the key server unable to say, which fails closed like an outage.
     const code = refusal.success ? ` (${refusal.data.error.code})` : ''
     return unavailable(`key server answered HTTP ${response.status}${code}`, response.status)
+  }
+
+  private unsupported(): OrgStandingVerdict {
+    const now = this.opts.clock.now()
+    const ttl = this.opts.ttlMs ?? ORG_STANDING_TTL_MS
+    if (this.unsupportedReportedAt === undefined || now - this.unsupportedReportedAt >= ttl) {
+      this.unsupportedReportedAt = now
+      this.opts.log?.error(
+        { path: KEY_SERVER_ORG_STANDING_PATH },
+        'key server does not implement org standing (404); Cloud compute starts are not gated until it does'
+      )
+    }
+    return { allowed: true }
   }
 }

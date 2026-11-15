@@ -1347,6 +1347,7 @@ export function buildContainer(
     (config.KEY_SERVER_URL
       ? new KeyServerOrgStanding(config.KEY_SERVER_URL, {
           clock,
+          log: { error: (o, m) => http.log.error(o, m) },
           ...(config.KEY_SERVER_TOKEN_PATH ? { tokenPath: config.KEY_SERVER_TOKEN_PATH } : {})
         })
       : undefined)
