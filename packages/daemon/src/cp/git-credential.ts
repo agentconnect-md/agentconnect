@@ -72,8 +72,15 @@ type CachePlane = CredPlane | 'gh-actions' | 'gh-research'
  *  (the GH_KEY precedent). GitHub is the EMPTY provider segment whether the request went out
  *  v1-shaped or github-qualified: one logical credential must stay one entry across a CP up- or
  *  downgrade, and the request shape is a wire negotiation, not part of the credential's identity. */
-const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: QualifiedCodeHostProvider): string =>
-  `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}\u0000${provider ?? ''}`
+const keyOf = (
+  agentId: string,
+  plane: CachePlane,
+  repo?: string,
+  provider?: QualifiedCodeHostProvider,
+  requestedAccess?: 'read' | 'write'
+): string =>
+  // A read-only ask is its own token: shared with the agent's tier, a cached read token would refuse a later write.
+  `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}\u0000${provider ?? ''}${requestedAccess === 'read' ? '\u0000read' : ''}`
 
 /** Cache key for a repo-targeted COMMENT token (the GithubPoster's — issues/PR
  *  only, no contents requested; its capability set differs from both planes so
@@ -248,7 +255,7 @@ export class GitCredentialCache {
     }
     const withActions = plane === 'gh' && this.deps.actionsSupported?.() === true
     const cachePlane = withActions ? 'gh-actions' : plane
-    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo, opts.provider), agentId, {
+    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo, opts.provider, opts.requestedAccess), agentId, {
       agentId,
       reason,
       ...(plane === 'gh' && opts.provider === undefined
@@ -567,11 +574,14 @@ export class GitCredentialCache {
   ): void {
     const plane = opts.plane ?? 'git'
     const cachePlane = plane === 'gh' && this.deps.actionsSupported?.() === true ? 'gh-actions' : plane
-    const key = keyOf(agentId, cachePlane, opts.repo, opts.provider)
-    const entry = this.entries.get(key)
-    if (!entry) return
-    if (presentedPassword !== undefined && entry.token !== presentedPassword) return
-    this.entries.delete(key)
+    // The erase names no access, so the tier's entry and the read-only one are both checked against the presented token.
+    for (const access of [undefined, 'read'] as const) {
+      const key = keyOf(agentId, cachePlane, opts.repo, opts.provider, access)
+      const entry = this.entries.get(key)
+      if (!entry) continue
+      if (presentedPassword !== undefined && entry.token !== presentedPassword) continue
+      this.entries.delete(key)
+    }
   }
 
   /** agent/remove: drop the orphaned bearer tokens with the agent dir. */
