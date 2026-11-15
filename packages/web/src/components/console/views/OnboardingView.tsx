@@ -312,6 +312,7 @@ export default function OnboardingView() {
           orgName={activeOrg.name ?? activeOrg.slug}
           returnPath={pathname}
           promoAvailable={acct?.cardPromoAvailable === true}
+          hasCredit={acct != null && acct.balanceMicro > 0}
           state={cardReturn.state}
           finishing={finishing}
           err={saveErr}
@@ -552,6 +553,7 @@ function CardStep({
   orgName,
   returnPath,
   promoAvailable,
+  hasCredit,
   state,
   finishing,
   err,
@@ -566,6 +568,8 @@ function CardStep({
   orgName: string
   returnPath: string
   promoAvailable: boolean
+  /** The org's balance, off the account: a saved card that earned nothing leaves it where it was. */
+  hasCredit: boolean
   /** Null until the browser has been to the hosted card page and back. */
   state: CardSetupReturn | null
   finishing: boolean
@@ -646,7 +650,8 @@ function CardStep({
 
   if (state?.phase === 'saved') {
     const kind = cardSavedKind(state.setup.promoOutcome)
-    const noCredit = kind === 'card_used' || kind === 'wallet'
+    // Funded is the balance's answer, not the outcome's: only `granted` is known to have added any.
+    const noCredit = kind !== 'granted' && !hasCredit
     return (
       <StepFrame
         stepLabel={stepLabel}

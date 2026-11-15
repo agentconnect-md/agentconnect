@@ -648,4 +648,20 @@ describe('onboarding — Cloud card step', () => {
     await click('Add credits')
     expect(mocks.push).toHaveBeenCalledWith('/acme/billing')
   })
+
+  it('keeps Add credits and the daemon path for a plain save that left the org with no credit', async () => {
+    // Offer off, or already claimed and spent: the card is saved, and Cloud still has nothing to run on.
+    mocks.account = { ...mocks.account, cardPromoAvailable: false }
+    mocks.search = 'cardSetup=success&setup=cs_1'
+    mocks.fetchCardSetup.mockResolvedValue({ id: 'cs_1', status: 'completed', promoOutcome: 'disabled', card: CARD })
+    await render()
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(host.textContent).toContain('Card saved')
+    expect(host.textContent).not.toContain('Finish')
+    expect(host.textContent).toContain('Use a daemon instead')
+    await click('Add credits')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/billing')
+  })
 })
