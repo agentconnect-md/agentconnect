@@ -65,6 +65,13 @@ and the pool member puts the real key back on the way out, so a command an agent
 it; a key sent over plain HTTP, and a key-server grant, reach the sandbox as they are. A `modelEgress.clients.<client>.apiKey` on an HTTPS endpoint
 is therefore no longer rendered into the sandbox template.
 
+With `daemonPool.keyServer.url` set, pool members fetch per-session model credentials from that key
+server, and the control plane asks the same key server `POST /v1/org-standing` before it starts Cloud
+compute (pool agents and managed computers), refusing an organization the key server reports suspended.
+Both present projected ServiceAccount tokens for `daemonPool.keyServer.tokenAudience`, so the key server
+must admit the control plane's ServiceAccount for that read as well as the pool's. A key server without
+the route answers 404, which the control plane logs and treats as allowed.
+
 A slimmer install turns the extras off explicitly — for example, no agent execution in
 this cluster and no public ingress:
 

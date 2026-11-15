@@ -2,6 +2,7 @@
 {{- $sourceCacheCredentials := $sourceCache.credentials | default dict }}
 {{- $transferSecret := and $sourceCache.enabled (eq $sourceCacheCredentials.source "secret") }}
 {{- $transferIdentity := and $sourceCache.enabled (eq $sourceCacheCredentials.source "serviceAccount") (($sourceCacheCredentials.serviceAccount | default dict).roleArn) }}
+{{- $keyServer := and .Values.daemonPool.enabled .Values.daemonPool.keyServer.url }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -224,6 +225,23 @@ spec:
               value: {{ .Values.computerPool.sleepIdleSeconds | quote }}
             {{- end }}
             {{- end }}
+            {{- if $keyServer }}
+            {{- range list "KEY_SERVER_URL" "KEY_SERVER_TOKEN_PATH" "NODE_EXTRA_CA_CERTS" }}
+            {{- if hasKey $.Values.controlPlane.extraEnv . }}
+            {{- fail (printf "controlPlane.extraEnv.%s collides with the chart-owned daemonPool.keyServer values" .) }}
+            {{- end }}
+            {{- end }}
+            # The pool's key server answers org standing before Cloud compute starts (key-server.md §2.3), with the CP's own token.
+            - name: KEY_SERVER_URL
+              value: {{ .Values.daemonPool.keyServer.url | quote }}
+            - name: KEY_SERVER_TOKEN_PATH
+              value: /var/run/ac-key-server/token
+            {{- if .Values.daemonPool.keyServer.caSecret }}
+            # A private CA is trusted explicitly, never by disabling verification.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/ac-key-server-ca/ca.crt
+            {{- end }}
+            {{- end }}
             {{- if hasKey $.Values.controlPlane.extraEnv "CAPABILITY_REQUESTS_ENABLED" }}
             {{- fail "controlPlane.extraEnv.CAPABILITY_REQUESTS_ENABLED collides with the features block: flip features.capabilityRequests instead" }}
             {{- end }}
@@ -353,7 +371,7 @@ spec:
                 command: ["/bin/sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.controlPlane.resources | nindent 12 }}
-          {{- if or $transferSecret $transferIdentity }}
+          {{- if or $transferSecret $transferIdentity $keyServer }}
           volumeMounts:
             {{- if $transferSecret }}
             - name: source-cache-credentials
@@ -365,8 +383,18 @@ spec:
               mountPath: /var/run/ac-source-cache-identity
               readOnly: true
             {{- end }}
+            {{- if $keyServer }}
+            - name: key-server-identity
+              mountPath: /var/run/ac-key-server
+              readOnly: true
+            {{- if .Values.daemonPool.keyServer.caSecret }}
+            - name: key-server-ca
+              mountPath: /var/run/ac-key-server-ca
+              readOnly: true
+            {{- end }}
+            {{- end }}
           {{- end }}
-      {{- if or $transferSecret $transferIdentity }}
+      {{- if or $transferSecret $transferIdentity $keyServer }}
       volumes:
         {{- if $transferSecret }}
         # No items: an optional session-token key need not exist in the Secret.
@@ -385,6 +413,22 @@ spec:
                   path: token
                   audience: {{ $sourceCacheCredentials.serviceAccount.audience | default "sts.amazonaws.com" | quote }}
                   expirationSeconds: 3600
+        {{- end }}
+        {{- if $keyServer }}
+        # The CP's identity toward the key server, under the pool's key-server audience; the key server must admit this ServiceAccount for the standing read.
+        - name: key-server-identity
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ .Values.daemonPool.keyServer.tokenAudience | quote }}
+                  expirationSeconds: 3600
+        {{- if .Values.daemonPool.keyServer.caSecret }}
+        - name: key-server-ca
+          secret:
+            secretName: {{ .Values.daemonPool.keyServer.caSecret }}
+        {{- end }}
         {{- end }}
       {{- end }}
 ---
