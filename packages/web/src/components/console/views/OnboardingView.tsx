@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, usePathname, useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
+import useSWR from 'swr'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
@@ -26,6 +27,11 @@ import {
 } from '@/lib/data'
 import type { DaemonRow } from '@/lib/data'
 import type { AgentPlacementTarget, DaemonConnectDto } from '@/lib/api'
+import { fetchBillingAccount } from '@/lib/billing-api'
+import { cardSavedKind, type CardSetupReturn } from '@/lib/card-setup'
+import { consoleKeys } from '@/lib/swr-keys'
+import { openCardSetup, useCardSetupReturn } from '@/lib/use-card-setup-return'
+import { CardFacts, CardLine } from '@/components/console/billing/CardBinding'
 
 // Onboarding wizard (design: "AgentConnect Onboarding v2 (forked)") — owner-only, runs
 // once per org. Creating/naming the org was step 1 (/welcome or the create-org entry),
@@ -33,13 +39,14 @@ import type { AgentPlacementTarget, DaemonConnectDto } from '@/lib/api'
 // copy-paste connect step (mint a real join command, poll until it's online) with the runtime
 // pickers inline. A SELF-HOSTED cluster adds the pickers alone — nothing to install, but the
 // operator's own pool image decides what it can run. Managed Cloud runs AgentConnect's image, so
-// its preset is born configured and the fork is the last step.
+// its preset is born configured and the fork is the last step — unless the org has no credit
+// and no card yet, where Cloud adds one step to save a card (credit is what Cloud runs on).
 // Finish AND skip both persist the org's `onboardingCompleted` flag — re-entering the
 // org never bounces back here once either happened. Rendered full-screen (no rail) by
 // the shell on the /onboarding route.
 
 type DaemonCommand = Pick<DaemonConnectDto, 'daemonId' | 'command'>
-type Step = 'where' | 'run'
+type Step = 'where' | 'card' | 'run'
 
 export default function OnboardingView() {
   const router = useRouter()
@@ -84,13 +91,35 @@ export default function OnboardingView() {
   const daemonReady = machines.some(daemonCompletesOnboarding)
   const servingDaemon = machines.find((d) => d.status === 'online') ?? machines.find(daemonCompletesOnboarding)
 
+  // Cloud runs on credit, so a managed deployment with billing reads the org's account here.
+  const pathname = usePathname()
+  const cardsOffered = poolOffered && featureFlagEnabled('managed') && featureFlagEnabled('billing')
+  const orgId = activeOrg?.id ?? null
+  const account = useSWR(cardsOffered && orgId && !notOwner ? consoleKeys.billingAccount(orgId) : null, () =>
+    fetchBillingAccount(orgId!)
+  )
+  const acct = account.data
+  const cardReturn = useCardSetupReturn({ orgId, enabled: cardsOffered, onSaved: () => void account.mutate() })
+  // Back from the hosted card page the wizard remounts on the fork, so the return puts it back on the card step.
+  const returned = cardReturn.state !== null
+  useEffect(() => {
+    if (!returned) return
+    setChoice('pool')
+    setStep('card')
+  }, [returned])
+  // Offered only when it can matter: no credit, no card, and a service that knows about cards (`card` present).
+  const needsCard = acct != null && acct.card === null && acct.balanceMicro <= 0
+  const cardStep = cardsOffered && choice === 'pool' && (returned || needsCard)
+  // A failed account read costs the card step, never the wizard; an unanswered one holds Continue for a moment.
+  const accountPending = cardsOffered && !acct && !account.error
+
   // Auth mode counts org creation (/welcome, already behind us) as step 1.
   const orgStepsBefore = authOn ? 1 : 0
   // Cloud's preset is born on its pool with the deployment's runtime, so there is nothing left to
   // ask: the fork finishes. Every other path has a step of its own after it.
-  const lastStepExists = choice === 'daemon' || !featureFlagEnabled('managed')
+  const lastStepExists = choice === 'daemon' || !featureFlagEnabled('managed') || cardStep
   const total = Math.max(orgStepsBefore + 1, orgStepsBefore + (poolOffered ? 1 : 0) + (lastStepExists ? 1 : 0))
-  const stepNumbers: Record<Step, number> = { where: orgStepsBefore + 1, run: total }
+  const stepNumbers: Record<Step, number> = { where: orgStepsBefore + 1, card: total, run: total }
 
   // ── finish / skip: persist the flag, then leave ─────────────────────────────────
   // Called only AFTER the step's own work (agent runtime + placement) succeeded, so the
@@ -99,7 +128,7 @@ export default function OnboardingView() {
   const [finishing, setFinishing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
-  const finish = async () => {
+  const finish = async (dest = '/home') => {
     setFinishing(true)
     setSaveErr(null)
     try {
@@ -115,7 +144,7 @@ export default function OnboardingView() {
     await cleanupPending()
     // Latch this tab so the redirect hook can't bounce back while navigation lands.
     skipOnboarding(orgKey)
-    router.push(orgPath('/home'))
+    router.push(orgPath(dest))
   }
 
   // ── built-in agent setup: runtime/model + placement, ordered by what the CP accepts ──
@@ -271,9 +300,31 @@ export default function OnboardingView() {
           choice={choice}
           onChoice={setChoice}
           finishHere={!lastStepExists}
+          finishing={finishing || (choice === 'pool' && accountPending)}
+          freeCredit={cardsOffered && acct?.cardPromoAvailable === true}
+          err={saveErr}
+          onNext={() => (cardStep ? setStep('card') : lastStepExists ? setStep('run') : void finish())}
+        />
+      ) : step === 'card' ? (
+        <CardStep
+          stepLabel={t('step', { current: stepNumbers.card, total })}
+          orgId={activeOrg.id}
+          orgName={activeOrg.name ?? activeOrg.slug}
+          returnPath={pathname}
+          promoAvailable={acct?.cardPromoAvailable === true}
+          hasCredit={acct != null && acct.balanceMicro > 0}
+          state={cardReturn.state}
           finishing={finishing}
           err={saveErr}
-          onNext={() => (lastStepExists ? setStep('run') : void finish())}
+          onBack={() => setStep('where')}
+          // Skipping the card leaves Cloud with no credit, so it goes on to the path that needs none.
+          onDaemon={() => {
+            setChoice('daemon')
+            setStep('run')
+          }}
+          onRetry={cardReturn.retry}
+          onFinish={() => void finish()}
+          onAddCredits={() => void finish('/billing')}
         />
       ) : choice === 'pool' ? (
         <ClusterStep
@@ -370,6 +421,7 @@ function WhereCard({
   desc,
   icon,
   mark,
+  badge,
   selected,
   onSelect
 }: {
@@ -378,6 +430,8 @@ function WhereCard({
   icon: string
   /** A brand mark to draw instead of the lucide glyph — it carries its own colours. */
   mark?: ReactNode
+  /** One short promise under the description, e.g. free credit. */
+  badge?: string
   selected: boolean
   onSelect: () => void
 }) {
@@ -410,6 +464,12 @@ function WhereCard({
         />
       </div>
       <span className="font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">{desc}</span>
+      {badge && (
+        <span className="inline-flex h-[22px] items-center gap-[5px] self-start rounded-full border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-brand)">
+          <Icon name="gift" size={12} />
+          {badge}
+        </span>
+      )}
     </button>
   )
 }
@@ -420,6 +480,7 @@ function WhereStep({
   onChoice,
   finishHere,
   finishing,
+  freeCredit,
   err,
   onNext
 }: {
@@ -429,6 +490,8 @@ function WhereStep({
   /** Cloud selected: its preset needs nothing picked, so the fork IS the last step. */
   finishHere: boolean
   finishing: boolean
+  /** The org can still earn free credit by saving a card — Cloud says so. */
+  freeCredit: boolean
   err: string | null
   onNext: () => void
 }) {
@@ -466,6 +529,7 @@ function WhereStep({
           // A self-hosted pool IS a Kubernetes cluster, so it is named by the thing the
           // operator actually runs rather than by a generic box glyph.
           mark={managed ? undefined : <KubernetesMark />}
+          badge={freeCredit ? t('freeCreditBadge') : undefined}
           selected={choice === 'pool'}
           onSelect={() => onChoice('pool')}
         />
@@ -478,6 +542,212 @@ function WhereStep({
         />
       </div>
       <SaveError err={err} />
+    </StepFrame>
+  )
+}
+
+// ── Cloud only: save a card. Every state of the hosted page's return renders in this one frame ──
+function CardStep({
+  stepLabel,
+  orgId,
+  orgName,
+  returnPath,
+  promoAvailable,
+  hasCredit,
+  state,
+  finishing,
+  err,
+  onBack,
+  onDaemon,
+  onRetry,
+  onFinish,
+  onAddCredits
+}: {
+  stepLabel: string
+  orgId: string
+  orgName: string
+  returnPath: string
+  promoAvailable: boolean
+  /** The org's balance, off the account: a saved card that earned nothing leaves it where it was. */
+  hasCredit: boolean
+  /** Null until the browser has been to the hosted card page and back. */
+  state: CardSetupReturn | null
+  finishing: boolean
+  err: string | null
+  onBack: () => void
+  onDaemon: () => void
+  onRetry: () => void
+  onFinish: () => void
+  onAddCredits: () => void
+}) {
+  const t = useTranslations('Onboarding.card')
+  const [opening, setOpening] = useState(false)
+  const [openErr, setOpenErr] = useState<string | null>(null)
+  const open = async () => {
+    if (opening) return
+    setOpening(true)
+    setOpenErr(null)
+    try {
+      await openCardSetup(orgId, returnPath)
+      // `opening` stays true — the page is navigating away.
+    } catch (e) {
+      setOpenErr(e instanceof Error ? e.message : String(e))
+      setOpening(false)
+    }
+  }
+  const finishButton = (
+    <Button disabled={finishing} onClick={onFinish}>
+      <Icon name="check" size={15} />
+      {finishing ? t('finishing') : t('finish')}
+    </Button>
+  )
+  const note = (icon: string, title: string, body: string) => (
+    <div className="flex gap-3 border-t border-(--border-subtle) px-4 py-3.5 first:border-t-0">
+      <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-md bg-(--surface-sunken) text-(--text-secondary)">
+        <Icon name={icon} size={16} />
+      </span>
+      <div className="min-w-0">
+        <div className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">{title}</div>
+        <div className="mt-0.5 font-sans text-[13px] font-normal leading-[1.5] text-(--text-secondary)">{body}</div>
+      </div>
+    </div>
+  )
+
+  if (state?.phase === 'checking' || state?.phase === 'still-checking' || state?.phase === 'error') {
+    const waiting = state.phase === 'checking'
+    return (
+      <StepFrame
+        stepLabel={stepLabel}
+        title={waiting ? t('checkingTitle') : t('stillCheckingTitle')}
+        sub={waiting ? t('checkingDescription') : t('stillCheckingDescription')}
+        footer={
+          <>
+            <div className="flex-1" />
+            {!waiting && (
+              <Button variant="ghost" disabled={finishing} onClick={onRetry}>
+                {t('checkAgain')}
+              </Button>
+            )}
+            {/* Nothing to finish on while the answer is seconds away; past that, the card shows in Billing on its own. */}
+            <Button disabled={waiting || finishing} onClick={onFinish}>
+              <Icon name="check" size={15} />
+              {finishing ? t('finishing') : t('finish')}
+            </Button>
+          </>
+        }
+      >
+        <div role="status" className="mt-6 rounded-[10px] border border-(--border-subtle) bg-(--surface-card)">
+          {note(
+            waiting ? 'loader-circle' : 'clock',
+            t('confirming'),
+            state.phase === 'error' ? state.message : t('nothingCharged')
+          )}
+        </div>
+        <SaveError err={err} />
+      </StepFrame>
+    )
+  }
+
+  if (state?.phase === 'saved') {
+    const kind = cardSavedKind(state.setup.promoOutcome)
+    // Funded is the balance's answer, not the outcome's: only `granted` is known to have added any.
+    const noCredit = kind !== 'granted' && !hasCredit
+    return (
+      <StepFrame
+        stepLabel={stepLabel}
+        title={t('savedTitle')}
+        sub={
+          kind === 'granted'
+            ? t('grantedDescription', { org: orgName })
+            : noCredit
+              ? t('noCreditDescription', { org: orgName })
+              : t('plainDescription')
+        }
+        footer={
+          noCredit ? (
+            <>
+              <Button variant="ghost" disabled={finishing || opening} onClick={onDaemon}>
+                {t('useDaemon')}
+              </Button>
+              <div className="flex-1" />
+              {kind === 'wallet' && (
+                <Button variant="secondary" disabled={finishing || opening} onClick={() => void open()}>
+                  {opening ? t('opening') : t('enterCardNumber')}
+                </Button>
+              )}
+              <Button disabled={finishing || opening} onClick={onAddCredits}>
+                {t('addCredits')}
+                <Icon name="arrow-right" size={15} />
+              </Button>
+            </>
+          ) : (
+            <>
+              <div className="flex-1" />
+              {finishButton}
+            </>
+          )
+        }
+      >
+        <div className="mt-6 rounded-[10px] border border-(--border-subtle) bg-(--surface-card)">
+          {state.setup.card && (
+            <div className="px-4 py-3.5">
+              <CardLine card={state.setup.card}>
+                <span className="inline-flex h-[22px] items-center gap-[5px] rounded-full bg-(--status-online-soft) px-2 font-sans text-[11.5px] font-medium leading-normal text-(--status-online)">
+                  <Icon name="check" size={12} />
+                  {t('saved')}
+                </span>
+              </CardLine>
+            </div>
+          )}
+          {kind === 'card_used' && note('info', t('cardUsedTitle'), t('cardUsedBody'))}
+          {kind === 'wallet' && note('info', t('walletTitle'), t('walletBody'))}
+        </div>
+        <SaveError err={openErr ?? err} />
+      </StepFrame>
+    )
+  }
+
+  const notSaved = state?.phase === 'not-saved'
+  return (
+    <StepFrame
+      stepLabel={stepLabel}
+      title={t('title')}
+      sub={t('description')}
+      footer={
+        <>
+          <Button variant="ghost" disabled={opening} onClick={onBack}>
+            {t('back')}
+          </Button>
+          <div className="flex-1" />
+          <Button variant="ghost" disabled={opening} onClick={onDaemon}>
+            {t('skip')}
+          </Button>
+          <Button disabled={opening} onClick={() => void open()}>
+            {opening ? t('opening') : notSaved ? t('tryAnother') : t('addCard')}
+            <Icon name="arrow-up-right" size={15} />
+          </Button>
+        </>
+      }
+    >
+      {notSaved ? (
+        <div
+          role="status"
+          className="mt-6 flex items-start gap-3 rounded-[10px] border border-(--status-error) bg-(--status-error-soft) px-4 py-3.5"
+        >
+          <Icon name="credit-card" size={17} color="var(--status-error)" className="mt-[1px] flex-none" />
+          <div>
+            <div className="font-sans text-[13.5px] font-semibold leading-normal">{t('notSavedTitle')}</div>
+            <div className="mt-0.5 font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+              {t('notSavedBody')}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-6">
+          <CardFacts orgName={orgName} promoAvailable={promoAvailable} />
+        </div>
+      )}
+      <SaveError err={openErr ?? err} />
     </StepFrame>
   )
 }
