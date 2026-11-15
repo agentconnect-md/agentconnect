@@ -598,18 +598,18 @@ describe('onboarding — Cloud card step', () => {
     mocks.search = ''
   })
 
-  it('adds the card step for an org with no credit and no card, and Skip leads to the daemon path', async () => {
+  it('adds the card step for an org with no credit and no card, and Skip finishes into the console', async () => {
     await render()
     await act(async () => {})
     expect(host.textContent).toContain('Step 2 of 3')
-    expect(host.textContent).toContain('Free credit with a card')
+    expect(host.textContent).toContain('Free credit when you add a card')
     await click('Continue')
     expect(host.textContent).toContain('Step 3 of 3')
     expect(host.textContent).toContain('Add a card')
     expect(mocks.updateOrg).not.toHaveBeenCalled()
     await click('Skip')
-    expect(host.textContent).not.toContain('Add a card')
-    expect(mocks.updateOrg).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith(mocks.org!.id, { onboardingCompleted: true })
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
   it('finishes at the fork when the org already has credit', async () => {
@@ -617,7 +617,7 @@ describe('onboarding — Cloud card step', () => {
     await render()
     await act(async () => {})
     expect(host.textContent).toContain('Step 2 of 2')
-    expect(host.textContent).not.toContain('Free credit with a card')
+    expect(host.textContent).not.toContain('Free credit')
     await click('Finish')
     expect(mocks.updateOrg).toHaveBeenCalledWith(mocks.org!.id, { onboardingCompleted: true })
   })

@@ -1827,11 +1827,12 @@
       "continue": "Continue",
       "cloud": "Cloud",
       "cluster": "Cluster",
-      "cloudDescription": "Easiest start. Free credits on signup, nothing to install.",
+      "cloudDescription": "Easiest start. Nothing to install.",
+      "cloudDescriptionFreeCredit": "Easiest start. Free credit when you add a card, nothing to install.",
       "clusterDescription": "The daemon pool your org already runs. Nothing to install.",
       "daemon": "Daemon",
       "daemonDescription": "Bring your own provider credentials, and your own machine.",
-      "freeCreditBadge": "Free credit with a card"
+      "freeCreditBadge": "Free credit"
     },
     "runtime": {
       "runtime": "Runtime",
@@ -1897,9 +1898,6 @@
       "plainDescription": "It's filled in for you when you add credits.",
       "cardUsedTitle": "This card already claimed the free credit",
       "cardUsedBody": "A card can claim it once, in one org. Add credits to start a Cloud agent, or run on your own machine.",
-      "walletTitle": "Wallet cards don't get the free credit",
-      "walletBody": "Type the card number in to claim it. That replaces the Apple Pay or Google Pay card.",
-      "enterCardNumber": "Enter card number",
       "useDaemon": "Use a daemon instead",
       "addCredits": "Add credits",
       "notSavedTitle": "Card wasn't saved",
@@ -5320,7 +5318,7 @@
       "prefillNote": "Filled in for you on Stripe's page when you add credits. Never charged on its own.",
       "facts": {
         "creditTitle": "Free credit",
-        "creditBody": "Added to {org} once your card is verified. Type the card number in — Apple Pay and Google Pay don't qualify.",
+        "creditBody": "Added to {org} once your card is verified.",
         "noChargeTitle": "You won't be charged",
         "noChargeBody": "Unless you choose to add credits yourself.",
         "securedTitle": "Secured by Stripe",
@@ -5347,9 +5345,7 @@
         "savedTitle": "Card saved",
         "grantedBody": "Free credit was added to {org}.",
         "cardUsedBody": "This card already claimed the free credit — a card can claim it once, in one org.",
-        "walletBody": "Apple Pay and Google Pay cards don't get the free credit. Type the card number in to claim it.",
         "plainBody": "It's filled in for you the next time you add credits.",
-        "enterCardNumber": "Enter card number",
         "addCredits": "Add credits",
         "checkAgain": "Check again",
         "dismiss": "Dismiss"

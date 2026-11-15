@@ -1827,11 +1827,12 @@
       "continue": "继续",
       "cloud": "云端",
       "cluster": "集群",
-      "cloudDescription": "最轻松的开始方式。注册即送免费额度，无需安装。",
+      "cloudDescription": "最轻松的开始方式。无需安装。",
+      "cloudDescriptionFreeCredit": "最轻松的开始方式。绑卡即送免费额度，无需安装。",
       "clusterDescription": "使用组织已有的 Daemon 池，无需安装。",
       "daemon": "Daemon",
       "daemonDescription": "使用你自己的服务商凭证和机器。",
-      "freeCreditBadge": "绑卡领取免费额度"
+      "freeCreditBadge": "免费额度"
     },
     "runtime": {
       "runtime": "Runtime",
@@ -1897,9 +1898,6 @@
       "plainDescription": "充值时会自动填好。",
       "cardUsedTitle": "这张卡已经领取过免费额度",
       "cardUsedBody": "一张卡只能在一个组织领取一次。充值后即可启动 Cloud 智能体，或者在自己的机器上运行。",
-      "walletTitle": "钱包绑定的卡不参与免费额度",
-      "walletBody": "直接输入卡号即可领取，这会替换掉 Apple Pay 或 Google Pay 的那张卡。",
-      "enterCardNumber": "输入卡号",
       "useDaemon": "改用 daemon",
       "addCredits": "充值",
       "notSavedTitle": "卡没有保存",
@@ -5320,7 +5318,7 @@
       "prefillNote": "充值时会在 Stripe 的页面上自动填好。不会自动扣费。",
       "facts": {
         "creditTitle": "免费额度",
-        "creditBody": "卡验证通过后计入 {org}。请直接输入卡号，Apple Pay 和 Google Pay 不参与。",
+        "creditBody": "卡验证通过后计入 {org}。",
         "noChargeTitle": "不会扣费",
         "noChargeBody": "除非你自己选择充值。",
         "securedTitle": "由 Stripe 保障安全",
@@ -5347,9 +5345,7 @@
         "savedTitle": "卡已保存",
         "grantedBody": "免费额度已计入 {org}。",
         "cardUsedBody": "这张卡已经领取过免费额度。一张卡只能在一个组织领取一次。",
-        "walletBody": "通过 Apple Pay 和 Google Pay 绑定的卡不参与免费额度。直接输入卡号即可领取。",
         "plainBody": "下次充值时会自动填好。",
-        "enterCardNumber": "输入卡号",
         "addCredits": "充值",
         "checkAgain": "再检查一次",
         "dismiss": "关闭"

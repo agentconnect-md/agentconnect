@@ -317,12 +317,12 @@ export default function OnboardingView() {
           finishing={finishing}
           err={saveErr}
           onBack={() => setStep('where')}
-          // Skipping the card leaves Cloud with no credit, so it goes on to the path that needs none.
           onDaemon={() => {
             setChoice('daemon')
             setStep('run')
           }}
           onRetry={cardReturn.retry}
+          onSkip={() => void finish()}
           onFinish={() => void finish()}
           onAddCredits={() => void finish('/billing')}
         />
@@ -524,7 +524,9 @@ function WhereStep({
       <div className="mt-[26px] grid grid-cols-1 gap-3 desktop:grid-cols-2">
         <WhereCard
           name={managed ? t('cloud') : t('cluster')}
-          desc={managed ? t('cloudDescription') : t('clusterDescription')}
+          desc={
+            !managed ? t('clusterDescription') : freeCredit ? t('cloudDescriptionFreeCredit') : t('cloudDescription')
+          }
           icon="cloud"
           // A self-hosted pool IS a Kubernetes cluster, so it is named by the thing the
           // operator actually runs rather than by a generic box glyph.
@@ -560,6 +562,7 @@ function CardStep({
   onBack,
   onDaemon,
   onRetry,
+  onSkip,
   onFinish,
   onAddCredits
 }: {
@@ -577,6 +580,7 @@ function CardStep({
   onBack: () => void
   onDaemon: () => void
   onRetry: () => void
+  onSkip: () => void
   onFinish: () => void
   onAddCredits: () => void
 }) {
@@ -670,11 +674,6 @@ function CardStep({
                 {t('useDaemon')}
               </Button>
               <div className="flex-1" />
-              {kind === 'wallet' && (
-                <Button variant="secondary" disabled={finishing || opening} onClick={() => void open()}>
-                  {opening ? t('opening') : t('enterCardNumber')}
-                </Button>
-              )}
               <Button disabled={finishing || opening} onClick={onAddCredits}>
                 {t('addCredits')}
                 <Icon name="arrow-right" size={15} />
@@ -700,7 +699,6 @@ function CardStep({
             </div>
           )}
           {kind === 'card_used' && note('info', t('cardUsedTitle'), t('cardUsedBody'))}
-          {kind === 'wallet' && note('info', t('walletTitle'), t('walletBody'))}
         </div>
         <SaveError err={openErr ?? err} />
       </StepFrame>
@@ -719,7 +717,7 @@ function CardStep({
             {t('back')}
           </Button>
           <div className="flex-1" />
-          <Button variant="ghost" disabled={opening} onClick={onDaemon}>
+          <Button variant="ghost" disabled={finishing || opening} onClick={onSkip}>
             {t('skip')}
           </Button>
           <Button disabled={opening} onClick={() => void open()}>

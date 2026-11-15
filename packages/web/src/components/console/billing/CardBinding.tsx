@@ -280,8 +280,6 @@ export function cardReturnCopy(
           return { tone: 'ok', icon: 'check', title: t('savedTitle'), body: t('grantedBody', { org: orgName }) }
         case 'card_used':
           return { tone: 'neutral', icon: 'info', title: t('savedTitle'), body: t('cardUsedBody') }
-        case 'wallet':
-          return { tone: 'neutral', icon: 'info', title: t('savedTitle'), body: t('walletBody') }
         case 'plain':
           return { tone: 'ok', icon: 'check', title: t('savedTitle'), body: t('plainBody') }
       }
@@ -293,7 +291,6 @@ export function CardReturnBanner({
   orgName,
   canManage,
   outOfCredit,
-  onEnterCardNumber,
   onAddCredits,
   onRetry,
   onDismiss
@@ -303,7 +300,6 @@ export function CardReturnBanner({
   canManage: boolean
   /** No credit after a card that earned none: the next step is paying for some. */
   outOfCredit: boolean
-  onEnterCardNumber: () => void
   onAddCredits: () => void
   onRetry: () => void
   onDismiss: () => void
@@ -325,12 +321,7 @@ export function CardReturnBanner({
           {copy.body}
         </div>
         <div className="mt-2 flex flex-wrap gap-2 empty:hidden">
-          {kind === 'wallet' && canManage && (
-            <Button size="xs" onClick={onEnterCardNumber}>
-              {t('enterCardNumber')}
-            </Button>
-          )}
-          {(kind === 'wallet' || kind === 'card_used') && outOfCredit && canManage && (
+          {kind === 'card_used' && outOfCredit && canManage && (
             <Button size="xs" variant="secondary" onClick={onAddCredits}>
               {t('addCredits')}
             </Button>
