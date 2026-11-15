@@ -323,6 +323,7 @@ import {
 } from '../workspace-download.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
+import { refuseUnfundedCloudPlacement } from '../org-standing.js'
 import { buildAgentMoves } from '../agent-moves.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitlabApiError, gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
@@ -2030,13 +2031,14 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Create an agent',
           description:
-            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding; a request authenticated by an API key cannot use it. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason; absent, it is `host` where the placement runs it, else the first available sandbox. `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400.',
+            'Mint a new agent definition scoped to the caller’s org; the CP assigns its UUID. With ?connect=true, also provisions a daemon connect token and start command for onboarding; a request authenticated by an API key cannot use it. A managed memory binding is stored with its resolved home: an agent placed on a group or the managed pool keeps its memory in the Control Plane (an explicit daemon home there is refused with 409); anywhere else the given home or daemon. `execution` names the strategy sessions run in and is checked against the strategies the placement reports: one it does not offer, or offers but cannot run now, is refused with 409 and the reason; absent, it is `host` where the placement runs it, else the first available sandbox. `repositorySelector` names the Decision provider and model the per-session repository selector asks; one that does not answer Choice questions is refused with 400. Placement on the managed pool is refused with 402 (`ORG_SUSPENDED`, the key server’s message) when the organization may not start Cloud compute, and 503 (`ORG_STANDING_UNAVAILABLE`) when that cannot be confirmed.',
           operationId: 'createAgent',
           body: CreateAgentBody,
           querystring: z.object({ connect: z.stringbool().default(false) }),
           response: {
             201: AgentCreatedDto,
             400: ErrorDto,
+            402: ErrorDto,
             403: ErrorDto,
             404: ErrorDto,
             409: ErrorDto,
@@ -2060,6 +2062,7 @@ export function agentRoutes(deps: HttpDeps) {
         if (wantsSet && targetSetId === null) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member set not found' })
         }
+        if (targetSetId && (await refuseUnfundedCloudPlacement(deps, orgOf(req), { setId: targetSetId }, reply))) return
         if (req.body.modelProvider && targetSetId && (await deps.repos.memberSet.get(targetSetId))?.orgId === null) {
           return conflict(
             'provider API key selection is only available on self-hosted daemons; Cloud uses its existing credentials'
@@ -3449,11 +3452,11 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Move an agent to another daemon',
           description:
-            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto a group or the managed pool (409) until the home is switched — except an unplaced agent, which has no tree to lose and is switched to the Control Plane home in the move itself.',
+            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed; managed memory follows the agent only when its home is the Control Plane, and an agent whose memory home is the daemon is refused a move onto a group or the managed pool (409) until the home is switched — except an unplaced agent, which has no tree to lose and is switched to the Control Plane home in the move itself. A move onto the managed pool is refused with 402 (`ORG_SUSPENDED`, the key server’s message) when the organization may not start Cloud compute, and 503 (`ORG_STANDING_UNAVAILABLE`) when that cannot be confirmed.',
           operationId: 'moveAgentDaemon',
           params: IdParam,
           body: SetAgentDaemonBody,
-          response: { 200: AgentDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: AgentDto, 402: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -3513,6 +3516,13 @@ export function agentRoutes(deps: HttpDeps) {
         const samePlacementTarget = targetSetId
           ? placement.kind === 'set' && placement.setId === targetSetId
           : placement.kind === 'daemon' && placement.daemonId === req.body.daemonId
+        // A same-target retry starts nothing new; a real move onto Cloud needs an org that may run it.
+        if (
+          !samePlacementTarget &&
+          targetSetId &&
+          (await refuseUnfundedCloudPlacement(deps, orgOf(req), { setId: targetSetId }, reply))
+        )
+          return
 
         // A daemon-home tree cannot follow onto a member set (§3.2.1); a same-target retry is no move, and an unplaced agent has no tree, so the move's write switches its home.
         const ontoSet =
@@ -4656,11 +4666,11 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Wake the agent’s sandbox',
           description:
-            'Ask the daemon serving this agent to bring its cluster sandbox to Running without starting a turn, so the workspace reads become available again. Pass sessionId to wake that isolated session’s own sandbox instead of the agent’s: it is only ever resumed onto the claim it already has, so a session whose sandbox was removed answers 404 with code WORKSPACE_SANDBOX_REMOVED (its next message creates a new one), and a daemon too old to wake one session wakes the agent’s sandbox as before. A sessionId the caller cannot browse reads 404. Answers with what the daemon observed: 202 with running (reachable now) or starting (resume in flight — poll the workspace read); 200 with unsupported when there is nothing to wake (a machine-placed agent, or a daemon that runs no sandboxes). Wakes are debounced per sandbox: one in flight is joined, and one settled within the last 30 s is answered from its result. For a pool agent nobody currently serves, the wake reaches a live member, which claims the agent the way a turn would. Requires edit access; 503 when no daemon can be reached.',
+            'Ask the daemon serving this agent to bring its cluster sandbox to Running without starting a turn, so the workspace reads become available again. Pass sessionId to wake that isolated session’s own sandbox instead of the agent’s: it is only ever resumed onto the claim it already has, so a session whose sandbox was removed answers 404 with code WORKSPACE_SANDBOX_REMOVED (its next message creates a new one), and a daemon too old to wake one session wakes the agent’s sandbox as before. A sessionId the caller cannot browse reads 404. Answers with what the daemon observed: 202 with running (reachable now) or starting (resume in flight — poll the workspace read); 200 with unsupported when there is nothing to wake (a machine-placed agent, or a daemon that runs no sandboxes). Wakes are debounced per sandbox: one in flight is joined, and one settled within the last 30 s is answered from its result. For a pool agent nobody currently serves, the wake reaches a live member, which claims the agent the way a turn would. Requires edit access; 402 (`ORG_SUSPENDED`, the key server’s message) for a managed pool agent when the organization may not start Cloud compute; 503 when no daemon can be reached, or a pool agent’s organization standing cannot be confirmed (`ORG_STANDING_UNAVAILABLE`).',
           operationId: 'wakeAgent',
           params: IdParam,
           querystring: AgentWakeQueryDto,
-          response: { 200: AgentWakeDto, 202: AgentWakeDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+          response: { 200: AgentWakeDto, 202: AgentWakeDto, 402: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -4675,6 +4685,8 @@ export function agentRoutes(deps: HttpDeps) {
         if (!(await canReadWorkspaceScope(req, agent.id, sessionId))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
         }
+        // Gated before dispatch, which may itself have a pool member claim the agent.
+        if (await refuseUnfundedCloudPlacement(deps, orgOf(req), agent, reply)) return
         // DISPATCH, not serving: a set agent whose lease lapsed is served by nobody for one horizon,
         // and the wake is exactly the trigger that gives it a holder again.
         const daemonId = await deps.placementResolver.dispatchDaemon(agent)

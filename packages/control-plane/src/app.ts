@@ -26,6 +26,7 @@ import type { DeploymentConfigRuntime } from './persistence/deployment-config.js
 import type { FetchLike } from './github/api.js'
 import { makeSecretsProvider } from './secrets/providers/memory.js'
 import { buildContainer } from './container.js'
+import type { OrgStanding } from './key-server/org-standing.js'
 
 /** The seams `buildApp` injects (each swappable for a fake in tests). */
 export interface BuildAppDeps {
@@ -55,6 +56,8 @@ export interface BuildAppDeps {
   connectorsFetch?: FetchLike
   /** Linear OAuth/GraphQL fetch override — the connect funnel's suites run a stubbed Linear. */
   linearFetch?: FetchLike
+  /** Org standing override — suites run a fake key server; absent ⇒ from KEY_SERVER_URL, or no gate. */
+  orgStanding?: OrgStanding
 }
 
 /** The wired app both prod and tests drive. */
@@ -136,7 +139,8 @@ export function buildApp(deps: BuildAppDeps): App {
     ...(deps.connectorsFetch ? { connectorsFetch: deps.connectorsFetch } : {}),
     ...(deps.linearFetch ? { linearFetch: deps.linearFetch } : {}),
     ...(deps.secretCipher ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.deploymentConfig ? { deploymentConfig: deps.deploymentConfig } : {})
+    ...(deps.deploymentConfig ? { deploymentConfig: deps.deploymentConfig } : {}),
+    ...(deps.orgStanding ? { orgStanding: deps.orgStanding } : {})
   })
 
   let wss: WebSocketServer | undefined

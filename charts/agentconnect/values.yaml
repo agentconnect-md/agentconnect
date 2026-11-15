@@ -227,16 +227,19 @@ daemonPool:
   # members mint nothing and sandboxes run on the `modelEgress` floor alone. Set, each member
   # fetches a per-session credential from this endpoint and injects it into the sandbox at spawn,
   # overriding that floor — which is what lets `modelEgress.clients.*.apiKey` retire to a
-  # placeholder and then disappear.
+  # placeholder and then disappear. Set, the control plane also asks this key server
+  # `POST /v1/org-standing` before it starts Cloud compute, with its own projected token for
+  # `tokenAudience` and the same `caSecret`; the key server must admit the control plane's
+  # ServiceAccount for that read.
   keyServer:
     # http or https, whichever this deployment terminates, e.g. https://keys.example.test:8443 or
     # http://keys.example-ns.svc:8080. Plaintext to an address that does not look in-cluster warns:
     # the member's bearer then crosses the network in the clear. Over https the serving certificate
     # must chain to a CA the daemon trusts — `caSecret` below for a private CA.
     url: ''
-    # Audience of the projected ServiceAccount token each member presents. One audience per hop:
-    # deliberately NOT the control plane's, so a token minted for the CP cannot buy model
-    # credentials.
+    # Audience of the projected ServiceAccount token each member, and the control plane, presents
+    # here. One audience per hop: deliberately NOT `ac-control-plane`, the one members present to
+    # the CP, so a token minted for the CP cannot buy model credentials.
     tokenAudience: ac-key-server
     # Optional Secret (entry `ca.crt`) with the CA that signed the key server's certificate,
     # handed to Node via NODE_EXTRA_CA_CERTS. Empty ⇒ the system trust store decides.

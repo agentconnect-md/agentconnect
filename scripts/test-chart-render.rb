@@ -1097,4 +1097,64 @@ _, poolless_cp = control_plane_of.call(YAML.load_stream(poolless_rendered).compa
 abort('a computer pool without the daemon pool must leave the Control Plane pool off') if
   poolless_cp.fetch('env').any? { |item| item['name'] == 'COMPUTER_POOL_ENABLED' }
 
+# The pool's key server also answers the control plane's org-standing read (key-server.md §2.3): same url, audience and CA, the CP's own token.
+key_server_names = %w[KEY_SERVER KEY_SERVER_URL KEY_SERVER_TOKEN_PATH NODE_EXTRA_CA_CERTS]
+abort('no key server url must give the Control Plane no key-server wiring') if
+  control_plane_of.call(documents)[1].fetch('env').any? { |item| key_server_names.include?(item['name']) }
+ks_rendered, ks_error, ks_status = Open3.capture3(
+  *command, '--set', 'daemonPool.keyServer.url=https://keys.example.test:8443',
+  '--set', 'daemonPool.keyServer.caSecret=example-key-server-ca'
+)
+abort("helm template (key server) failed:\n#{ks_error}") unless ks_status.success?
+ks_docs = YAML.load_stream(ks_rendered).compact
+ks_identity = {
+  'name' => 'key-server-identity',
+  'projected' => {
+    'defaultMode' => 0o400,
+    'sources' => [{ 'serviceAccountToken' => { 'path' => 'token', 'audience' => 'ac-key-server', 'expirationSeconds' => 3600 } }]
+  }
+}
+ks_ca = { 'name' => 'key-server-ca', 'secret' => { 'secretName' => 'example-key-server-ca' } }
+ks_mounts = [
+  { 'name' => 'key-server-identity', 'mountPath' => '/var/run/ac-key-server', 'readOnly' => true },
+  { 'name' => 'key-server-ca', 'mountPath' => '/var/run/ac-key-server-ca', 'readOnly' => true }
+]
+ks_cp_pod, ks_cp = control_plane_of.call(ks_docs)
+ks_cp_env = ks_cp.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort("the Control Plane must ask the pool's key server: #{ks_cp_env.slice(*key_server_names)}") unless
+  ks_cp_env.slice(*key_server_names) == {
+    'KEY_SERVER_URL' => 'https://keys.example.test:8443',
+    'KEY_SERVER_TOKEN_PATH' => '/var/run/ac-key-server/token',
+    'NODE_EXTRA_CA_CERTS' => '/var/run/ac-key-server-ca/ca.crt'
+  }
+abort('the Control Plane must mount its own key-server token and CA') unless
+  ks_cp.fetch('volumeMounts').select { |m| m['name'].start_with?('key-server') } == ks_mounts
+abort('the Control Plane key-server token must use the pool audience') unless
+  ks_cp_pod.fetch('volumes').select { |v| v['name'].start_with?('key-server') } == [ks_identity, ks_ca]
+ks_pool_pod = ks_docs.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-daemon-pool' }
+                     .dig('spec', 'template', 'spec')
+ks_pool = ks_pool_pod.fetch('containers').find { |item| item['name'] == 'daemon-pool' }
+ks_pool_env = ks_pool.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('pool members must fetch grants from the key server') unless
+  ks_pool_env.slice(*key_server_names) == {
+    'KEY_SERVER' => 'https://keys.example.test:8443',
+    'KEY_SERVER_TOKEN_PATH' => '/var/run/ac-key-server/token',
+    'NODE_EXTRA_CA_CERTS' => '/var/run/ac-key-server-ca/ca.crt'
+  }
+abort('pool members must project the same key-server identity') unless
+  ks_pool_pod.fetch('volumes').select { |v| v['name'].start_with?('key-server') } == [ks_identity, ks_ca]
+# No pool, no Cloud compute to gate: the url alone wires nothing into the Control Plane.
+nopool_rendered, nopool_error, nopool_status = Open3.capture3(
+  *command, '--set', 'daemonPool.enabled=false', '--set', 'daemonPool.keyServer.url=https://keys.example.test:8443'
+)
+abort("helm template (key server without pool) failed:\n#{nopool_error}") unless nopool_status.success?
+abort('a key server without the daemon pool must not reach the Control Plane') if
+  control_plane_of.call(YAML.load_stream(nopool_rendered).compact)[1].fetch('env').any? { |item| key_server_names.include?(item['name']) }
+ks_refused, ks_refused_status = Open3.capture2e(
+  *command, '--set', 'daemonPool.keyServer.url=https://keys.example.test:8443',
+  '--set', 'controlPlane.extraEnv.KEY_SERVER_URL=https://other.example.test'
+)
+abort('controlPlane.extraEnv.KEY_SERVER_URL must be refused beside daemonPool.keyServer') if ks_refused_status.success?
+abort("key server collision must say why:\n#{ks_refused}") unless ks_refused.include?('collides with the chart-owned daemonPool.keyServer values')
+
 puts 'chart render contract: ok'

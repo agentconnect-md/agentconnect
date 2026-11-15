@@ -271,6 +271,7 @@ import { ComputerLeaseService } from './registry/computerLeaseService.js'
 import { ComputerAuditLog } from './registry/computerAuditLog.js'
 import { ComputerChannelGrants } from './registry/computerChannelGrants.js'
 import { ComputerPool, COMPUTER_POOL_SWEEP_MS } from './registry/computerPool.js'
+import { KeyServerOrgStanding, type OrgStanding } from './key-server/org-standing.js'
 import { ConnectedPoolMembers } from './orchestrator/computerPoolMembers.js'
 import {
   cloudflareTurn,
@@ -537,6 +538,8 @@ export interface ContainerOpts {
   secretCipher?: SecretCipher
   /** Immutable DB-backed desired state loaded by the process bootstrap. */
   deploymentConfig?: DeploymentConfigRuntime
+  /** Org standing override for tests; absent ⇒ built from KEY_SERVER_URL, and no gate when that is unset. */
+  orgStanding?: OrgStanding
 }
 
 /**
@@ -1338,6 +1341,16 @@ export function buildContainer(
     onUse: (computerId) => computerPool?.touch(computerId),
     viewerQuota: computerPlan
   })
+  // Cloud compute starts ask the key server first (key-server.md §2.3); unset ⇒ no standing gate.
+  const orgStanding: OrgStanding | undefined =
+    opts.orgStanding ??
+    (config.KEY_SERVER_URL
+      ? new KeyServerOrgStanding(config.KEY_SERVER_URL, {
+          clock,
+          log: { error: (o, m) => http.log.error(o, m) },
+          ...(config.KEY_SERVER_TOKEN_PATH ? { tokenPath: config.KEY_SERVER_TOKEN_PATH } : {})
+        })
+      : undefined)
   // Managed computers in the Kubernetes pool (computer-use.md §15.1): pool members hold the claims, this decides what they hold.
   const computerPool = config.COMPUTER_POOL_ENABLED
     ? new ComputerPool({
@@ -1347,6 +1360,7 @@ export function buildContainer(
         leases: computerLeases,
         members: new ConnectedPoolMembers(connReg, { warn: (o, m) => http.log.warn(o, m) }),
         plan: computerPlan,
+        ...(orgStanding ? { standing: orgStanding } : {}),
         clock,
         timings: {
           ephemeralIdleMs: config.COMPUTER_POOL_EPHEMERAL_IDLE_SEC * 1000,
@@ -2730,6 +2744,7 @@ export function buildContainer(
     computerLeases,
     computerPlan,
     ...(computerPool ? { computerPool } : {}),
+    ...(orgStanding ? { orgStanding } : {}),
     ...(computerScreenshots ? { computerScreenshots } : {}),
     oauth,
     webchatTokens,

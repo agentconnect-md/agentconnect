@@ -52,6 +52,7 @@ import {
   type ComputerDtoT
 } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
+import { refuseUnfundedCloud, standingRefusalBody } from '../org-standing.js'
 
 /** The registration exchange's path under the versioned API; the public form is `/v1` + this. */
 export const COMPUTER_REGISTER_PATH = '/computers/register'
@@ -422,10 +423,10 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Create a pool computer',
           description:
-            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It is visible to everyone in the organization unless `visibility` is `restricted`, whose `sharedWith` audience always includes the caller. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 429 (`COMPUTER_QUOTA_EXCEEDED`) when the organization is at a managed computer quota (`GET /computers/quotas`); 503 when the deployment runs no pool or no pool member is connected.',
+            'Creates a `manual` managed computer in the deployment’s Kubernetes pool: a Linux desktop pod with its own volume, which registers itself and appears with `kind: managed`. It is assigned to agents through its `agentAccess` (here or with `PUT /computers/{id}/agent-access`), none by default; agents with access share it one at a time under the control lease. It is visible to everyone in the organization unless `visibility` is `restricted`, whose `sharedWith` audience always includes the caller. It sleeps when idle, keeping its volume, wakes on the next use, and stays until it is deleted. The caller becomes its owner. 429 (`COMPUTER_QUOTA_EXCEEDED`) when the organization is at a managed computer quota (`GET /computers/quotas`); 402 (`ORG_SUSPENDED`) when the deployment’s key server says the organization may not start Cloud compute, with its message; 503 when the deployment runs no pool, no pool member is connected, or the organization’s standing cannot be confirmed (`ORG_STANDING_UNAVAILABLE`).',
           operationId: 'createPoolComputer',
           body: CreatePoolComputerBody,
-          response: { 201: ComputerDto, 400: ErrorDto, 403: ErrorDto, 429: ErrorDto, 503: ErrorDto }
+          response: { 201: ComputerDto, 400: ErrorDto, 402: ErrorDto, 403: ErrorDto, 429: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -465,6 +466,10 @@ export function computerRoutes(deps: HttpDeps) {
         })
         if (!created.ok && created.code === 'quota_exceeded')
           return reply.code(429).send(quotaExceeded(created.message))
+        if (!created.ok && (created.code === 'org_suspended' || created.code === 'standing_unavailable')) {
+          const body = standingRefusalBody({ code: created.code, message: created.message })
+          return reply.code(body.statusCode).send(body)
+        }
         if (!created.ok) return reply.code(503).send(unavailable)
         return reply.code(201).send(await present(req, created.computer))
       }
@@ -502,7 +507,15 @@ export function computerRoutes(deps: HttpDeps) {
             description,
             operationId,
             params: IdParam,
-            response: { 200: ComputerDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 429: ErrorDto, 503: ErrorDto }
+            response: {
+              200: ComputerDto,
+              402: ErrorDto,
+              403: ErrorDto,
+              404: ErrorDto,
+              409: ErrorDto,
+              429: ErrorDto,
+              503: ErrorDto
+            }
           }
         },
         async (req, reply) => {
@@ -523,6 +536,10 @@ export function computerRoutes(deps: HttpDeps) {
           if (result.ok) return await present(req, result.computer)
           if (result.code === 'not_found') return reply.code(404).send(notFound)
           if (result.code === 'quota_exceeded') return reply.code(429).send(quotaExceeded(result.message))
+          if (result.code === 'org_suspended' || result.code === 'standing_unavailable') {
+            const body = standingRefusalBody({ code: result.code, message: result.message })
+            return reply.code(body.statusCode).send(body)
+          }
           const status = result.code === 'no_pool' ? 503 : 409
           return reply.code(status).send({
             error: status === 503 ? 'Service Unavailable' : 'Conflict',
@@ -534,7 +551,7 @@ export function computerRoutes(deps: HttpDeps) {
     poolCommand(
       'wake',
       'Wake a pool computer',
-      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone or whose reset did not finish (reset it instead); 429 at a managed computer quota; 503 without a pool member.',
+      'Starts a sleeping (or failed) `per-agent` or `manual` managed computer again from its kept volume, with its files, browser profile and sign-ins. Returns at once; the computer is `waking` until it is back online. 409 for an ephemeral or self-hosted computer, or one whose volume is gone or whose reset did not finish (reset it instead); 429 at a managed computer quota; 402 (`ORG_SUSPENDED`) when the organization may not start Cloud compute; 503 without a pool member or when its standing cannot be confirmed (`ORG_STANDING_UNAVAILABLE`).',
       'wakeComputer',
       (orgId, id) => deps.computerPool!.wakeNow(orgId, id)
     )
@@ -548,7 +565,7 @@ export function computerRoutes(deps: HttpDeps) {
     poolCommand(
       'reset',
       'Reset a pool computer',
-      'Deletes the pod and the volume of a `per-agent` or `manual` managed computer and provisions it again, empty: its files, browser profile and sign-ins are lost, while its name, agent access and policy stay. Any control lease ends. 409 for an ephemeral or self-hosted computer; 503 without a pool member.',
+      'Deletes the pod and the volume of a `per-agent` or `manual` managed computer and provisions it again, empty: its files, browser profile and sign-ins are lost, while its name, agent access and policy stay. Any control lease ends. 409 for an ephemeral or self-hosted computer; 402 (`ORG_SUSPENDED`) when the organization may not start Cloud compute; 503 without a pool member or when its standing cannot be confirmed (`ORG_STANDING_UNAVAILABLE`).',
       'resetComputer',
       (orgId, id) => deps.computerPool!.resetNow(orgId, id)
     )
@@ -590,12 +607,13 @@ export function computerRoutes(deps: HttpDeps) {
           tags: [Tag.Computers],
           summary: 'Open a computer viewer',
           description:
-            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. With `desktop`, the token watches that agent desktop of a Computer with per-agent desktops (computer-use.md §3.9) instead of the main one. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 429 at a viewer quota (concurrent viewers, or this month’s relayed media); 503 when no relay is configured.',
+            'Mints a short-lived viewer token for the console’s embedded viewer, the relays to reach the desktop through, the relays’ STUN addresses when the Computer’s policy allows peer-to-peer media, and TURN credentials when the deployment configures TURN. Signaling and screenshots go browser → relay → desktop and media goes directly, hole-punched peer to peer, or through TURN; nothing passes through the Control Plane. Only the policy’s allowed members (always including the owner) may watch; an organization viewer gets `view` mode, anyone else `control`, which may take over input. With `desktop`, the token watches that agent desktop of a Computer with per-agent desktops (computer-use.md §3.9) instead of the main one. Call again before `expiresAt` to renew. 409 when the Computer is revoked or offline; 429 at a viewer quota (concurrent viewers, or this month’s relayed media); 402 (`ORG_SUSPENDED`) for a pool computer when the organization may not run Cloud compute; 503 when no relay is configured, or a pool computer’s organization standing cannot be confirmed (`ORG_STANDING_UNAVAILABLE`).',
           operationId: 'createComputerViewer',
           params: IdParam,
           querystring: ComputerViewerQuery,
           response: {
             200: ComputerViewerGrantDto,
+            402: ErrorDto,
             403: ErrorDto,
             404: ErrorDto,
             409: ErrorDto,
@@ -614,6 +632,9 @@ export function computerRoutes(deps: HttpDeps) {
             .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s allowed members can watch it' })
         }
         if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
+        // A pool desktop and the relayed media to it are Cloud compute; a self-hosted Computer is not gated.
+        if (c.kind === 'managed' && c.poolPhase && (await refuseUnfundedCloud(deps.orgStanding, orgOf(req), reply)))
+          return
         const mode = can(ctx, { action: AuthorizationAction.OrganizationWrite }) ? 'control' : 'view'
         const desktop = req.query.desktop
         const grant = await deps.computerViewer.grantViewer(orgOf(req), c.id, {

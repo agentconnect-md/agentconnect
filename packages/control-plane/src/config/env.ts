@@ -32,6 +32,18 @@ const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
   }
 })
 
+// An http(s) address without credentials; the operation paths are absolute, so any path here is ignored.
+const KeyServerUrlSchema = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
+    }
+    if (url.username || url.password) ctx.addIssue({ code: 'custom', message: 'must not contain credentials' })
+  })
+
 /** The env keys CORE owns. Platform keys are folded in below — this object is
  *  never exported: `AppConfigSchema` is the only schema, and it is the two
  *  halves together. */
@@ -164,6 +176,10 @@ const CoreConfigShape = {
   // Unset ⇒ that endpoint is NOT MOUNTED at all (the daemon EVT is the only ingress).
   // ≥32 chars, and .optional() so a deployment without one never fail-fasts.
   USAGE_INGEST_TOKEN: z.string().min(32).optional(),
+  // Key server asked for an org's standing before Cloud compute starts (key-server.md §2.3); unset ⇒ no standing gate.
+  KEY_SERVER_URL: KeyServerUrlSchema.optional(),
+  // Bearer file re-read per standing request; unset ⇒ requests carry no Authorization header.
+  KEY_SERVER_TOKEN_PATH: z.string().min(1).optional(),
   SECRETS_PROVIDER: z.enum(['memory', 'vault']).default('memory'),
   // ── At-rest secret encryption (docs/designs/secret-store-seams.md) — opt-in ──
   // Selects the SecretCipher every secret store seals/opens through. `none`

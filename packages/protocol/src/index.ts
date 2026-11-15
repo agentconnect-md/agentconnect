@@ -181,7 +181,7 @@ export * from './frames/remote-mcp.js'
 // ── external-memory plugin ABI (daemon-private MCP profile; not a CP wire) ──
 export * from './memory-plugin.js'
 
-// ── key-server contract (daemon-only HTTP client seam; not a CP wire) ──
+// ── key-server contract (HTTP client seam for the daemon and the CP's standing check; not a CP wire) ──
 export * from './key-server.js'
 
 // ── the union, the type map, and guards ──

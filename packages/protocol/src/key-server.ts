@@ -8,7 +8,8 @@ import { z } from 'zod'
  * frame group, or any streaming transport: issuance is a low-frequency,
  * stateless exchange, and a bare REST surface is what lets any deployment
  * implement it without speaking AgentConnect's wire protocol. The daemon is
- * the only caller; implementations range from a plain key vault that rotates
+ * the caller of IssueKey and RevokeKey, and the Control Plane of the read-only
+ * OrgStanding question before it starts Cloud compute; implementations range from a plain key vault that rotates
  * real provider keys to a managed LLM egress layer that issues short-lived
  * session-scoped credentials and meters usage on its own data path. The
  * daemon treats the returned key as opaque — it never knows which kind it
@@ -21,6 +22,7 @@ export const KEY_SERVER_PROFILE = 'agentconnect.key-server/v1' as const
 // RPC-style POST routes, mirroring the operation names. JSON bodies both ways.
 export const KEY_SERVER_ISSUE_KEY_PATH = '/v1/issue-key' as const
 export const KEY_SERVER_REVOKE_KEY_PATH = '/v1/revoke-key' as const
+export const KEY_SERVER_ORG_STANDING_PATH = '/v1/org-standing' as const
 
 // `Authorization: Bearer <token>`, sent only when a token source is configured; with none,
 // the request carries no auth header at all. The token is opaque to the daemon.
@@ -87,6 +89,13 @@ export type RevokeKeyRequest = z.infer<typeof RevokeKeyRequest>
 // Tolerant like IssueKeyResponse: the daemon wants "it is dead", not a shape check.
 export const RevokeKeyResponse = z.object({})
 export type RevokeKeyResponse = z.infer<typeof RevokeKeyResponse>
+
+// Read-only: may this org start Cloud compute now? A refusal is a KeyServerErrorBody with org_suspended at the stop's own status.
+export const OrgStandingRequest = z.object({ orgId: z.string().min(1) }).strict()
+export type OrgStandingRequest = z.infer<typeof OrgStandingRequest>
+
+export const OrgStandingResponse = z.object({ allowed: z.literal(true) }).strict()
+export type OrgStandingResponse = z.infer<typeof OrgStandingResponse>
 
 /** Machine-readable denial reasons the daemon surfaces as attributable errors, never as internal faults. */
 // The other four describe the ORG's standing, so a malformed request had no truthful code and issuers answered it as an internal fault — the one case this enum exists to prevent.
