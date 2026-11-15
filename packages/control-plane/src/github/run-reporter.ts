@@ -29,6 +29,7 @@ import {
   hookRuntimeProjectionState,
   hookIncompleteCheckGuidance,
   hookIncompleteCheckLabel,
+  isVerdictOnlyProjectionIntent,
   type ProjectionDesiredState
 } from './projection-state.js'
 import { GithubService, GitCredDeniedError } from './service.js'
@@ -207,11 +208,8 @@ export class GithubRunCoordinator {
     if (!run || run.reviewAttemptState !== 'submitted') return
     const desired = reviewDesiredState(run)
     if (!desired) return
-    // Informational R2a may project a definitive review_action_only verdict.
-    // Such turns never open queued/in_progress state. COMMENT + neutral is a
-    // conversational/non-verdict review and must not replace the current
-    // revision's existing pass/fail projection.
-    if (run.projectionIntent !== 'revision_event' && run.projectionIntent !== 'review_action_only') return
+    // A verdict-only turn projects its pass/fail without ever opening queued or in-progress state; its COMMENT + neutral never replaces the revision's verdict.
+    if (run.projectionIntent !== 'revision_event' && !isVerdictOnlyProjectionIntent(run.projectionIntent)) return
     await this.converge(run, desired, true)
   }
 
@@ -220,8 +218,9 @@ export class GithubRunCoordinator {
     const run = await this.deps.hooks.getRun(hookId, deliveryKey)
     if (!run) return
     const reviewState = run.reviewAttemptState === 'submitted' ? reviewDesiredState(run) : null
-    if (run.projectionIntent === 'review_action_only' && !reviewState) return
-    if (run.projectionIntent !== 'revision_event' && run.projectionIntent !== 'review_action_only') return
+    const verdictOnly = isVerdictOnlyProjectionIntent(run.projectionIntent)
+    if (verdictOnly && !reviewState) return
+    if (run.projectionIntent !== 'revision_event' && !verdictOnly) return
     const desired: ProjectionDesiredState =
       reviewState ?? (run.reviewErrorCode ? 'failure' : hookRuntimeProjectionState(run)) ?? 'failure'
     await this.converge(run, desired, true)
@@ -1085,7 +1084,7 @@ function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
   if (run.reviewEvent === 'REQUEST_CHANGES') return 'action_required'
   if (run.verdict === 'pass') return 'success'
   if (run.verdict === 'fail') return 'action_required'
-  if (run.projectionIntent === 'review_action_only') return null
+  if (isVerdictOnlyProjectionIntent(run.projectionIntent)) return null
   if (run.verdict === 'neutral') return 'neutral'
   return null
 }

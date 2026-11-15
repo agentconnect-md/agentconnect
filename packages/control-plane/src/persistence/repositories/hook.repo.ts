@@ -66,7 +66,7 @@ import {
   lockHookReviewOrgLifecycleScope,
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
-import { authoritativeHookProjectionState } from '../../github/projection-state.js'
+import { authoritativeHookProjectionState, isVerdictOnlyProjectionIntent } from '../../github/projection-state.js'
 import { githubHookCovers } from '../../hooks/installation-row.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
@@ -277,7 +277,7 @@ function submittedReviewProjectionState(
   if (run.reviewAttemptState !== 'submitted') return null
   if (run.reviewEvent === 'REQUEST_CHANGES' || run.verdict === 'fail') return 'action_required'
   if (run.verdict === 'pass') return 'success'
-  if (run.projectionIntent === 'review_action_only') return null
+  if (isVerdictOnlyProjectionIntent(run.projectionIntent)) return null
   if (run.verdict === 'neutral') return 'neutral'
   return null
 }
@@ -1217,7 +1217,11 @@ export class PgHookRepo implements HookRepo {
         subjectKind: 'pull_request',
         OR: [
           { projectionIntent: 'revision_event' },
-          { projectionIntent: 'review_action_only', reviewAttemptState: 'submitted', verdict: { in: ['pass', 'fail'] } }
+          {
+            projectionIntent: { in: ['review_action_only', 'review_optional'] },
+            reviewAttemptState: 'submitted',
+            verdict: { in: ['pass', 'fail'] }
+          }
         ]
       },
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }]
@@ -1269,7 +1273,7 @@ export class PgHookRepo implements HookRepo {
           AND (
             r."projectionIntent" = 'revision_event'
             OR (
-              r."projectionIntent" = 'review_action_only'
+              r."projectionIntent" IN ('review_action_only', 'review_optional')
               AND r."reviewAttemptState" = 'submitted'
               AND r.verdict IN ('pass', 'fail')
             )
@@ -1286,7 +1290,7 @@ export class PgHookRepo implements HookRepo {
               THEN 'action_required'
             WHEN latest."reviewAttemptState" = 'submitted' AND latest.verdict = 'neutral'
               THEN 'neutral'
-            WHEN latest."projectionIntent" = 'review_action_only'
+            WHEN latest."projectionIntent" IN ('review_action_only', 'review_optional')
               THEN NULL
             WHEN latest."reviewErrorCode" IS NOT NULL
               THEN 'failure'

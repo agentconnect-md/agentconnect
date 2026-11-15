@@ -490,9 +490,12 @@ export class GithubReviewBrokerService {
       reportingDaemonId,
       input.requestedEvent
     )
-    // A turn that opened no generation holds review authority only as an amendment of a sealed verdict; a
-    // reconciliation of its own reserved attempt already passed this gate and must still reach its marker.
-    if (initial.projectionIntent !== 'revision_event' && initial.reviewAttemptId !== input.attemptId) {
+    // A turn that opened no generation reviews only where a mention offered it, else as an amendment of a sealed verdict; a reconciliation of its own reserved attempt already passed this gate.
+    if (
+      initial.projectionIntent !== 'revision_event' &&
+      initial.projectionIntent !== 'review_optional' &&
+      initial.reviewAttemptId !== input.attemptId
+    ) {
       const prior = await this.amendableVerdict(initial)
       if (!prior) denied('this conversation turn has no sealed review verdict to amend')
       if (!amendmentChangesVerdict(prior.verdict, input.requestedVerdict)) {

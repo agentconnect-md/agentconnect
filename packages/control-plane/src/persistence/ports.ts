@@ -3293,7 +3293,7 @@ export type HookCommentFamily = GithubCommentFamily | 'merge_request'
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
 export type HookReportingMode = 'off' | 'check' | 'status'
 export type HookGateMode = 'informational' | 'required'
-export type HookProjectionIntent = 'none' | 'revision_event' | 'review_action_only'
+export type HookProjectionIntent = 'none' | 'revision_event' | 'review_action_only' | 'review_optional'
 export type HookReviewEvent = 'COMMENT' | 'REQUEST_CHANGES' | 'APPROVE'
 export type HookReviewVerdict = 'pass' | 'fail' | 'neutral'
 

@@ -35,7 +35,14 @@ describe('githubProjectionIntent', () => {
     )
   })
 
-  it('opens an explicit PR-comment review generation only when formal reviews are enabled', () => {
+  it('offers a mention the review without opening a generation, only when formal reviews are enabled', () => {
+    const mention = { subjectKind: 'pull_request', optionalReview: true }
+    expect(githubProjectionIntent('issue_comment:created', mention, 'full')).toBe('review_optional')
+    expect(githubProjectionIntent('issue_comment:created', mention, 'off')).toBe('review_action_only')
+    expect(githubProjectionIntent('issue_comment:created', mention)).toBe('review_action_only')
+  })
+
+  it('opens an explicit review generation only when formal reviews are enabled', () => {
     expect(
       githubProjectionIntent(
         'issue_comment:created',

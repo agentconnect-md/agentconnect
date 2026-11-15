@@ -2161,8 +2161,10 @@ describe('github ingress', () => {
       expect(h.sent[1]).toMatchObject({
         event: 'issue_comment:created',
         sessionKey: 'acme/infra#77',
-        github: { explicitReviewRequest: true }
+        github: { optionalReview: true }
       })
+      // A mention offers the review; only the Agent's own decision opens a generation.
+      expect((h.sent[1] as RdMsgHook).github?.explicitReviewRequest).toBeUndefined()
     })
 
     it('keeps the PR mention trigger while formal reviews are off', async () => {
@@ -2198,6 +2200,7 @@ describe('github ingress', () => {
       const msg = h.sent[0]!
       if (msg.source !== 'hook') throw new Error('expected hook member')
       expect(msg.github?.explicitReviewRequest).toBeUndefined()
+      expect(msg.github?.optionalReview).toBeUndefined()
       expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted', reviewPolicy: 'off' })])
     })
 
@@ -3271,6 +3274,7 @@ describe('github ingress', () => {
       const msg = h.sent[0]!
       if (msg.source !== 'hook') throw new Error('expected hook member')
       expect(msg.github?.explicitReviewRequest).toBeUndefined()
+      expect(msg.github?.optionalReview).toBeUndefined()
     })
 
     it('push ("commits") fires via the family wildcard with per-branch session affinity', async () => {

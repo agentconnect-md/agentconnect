@@ -2723,12 +2723,19 @@ maintainer starts the review with one click instead of finding nothing on the PR
 mention narrows an otherwise broader `updated` fan-out, while an event with no
 AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention
-starts a new review generation for the current revision when the integration
-allows formal reviews, so its informational Check reopens and enters in progress
-when analysis starts. Turning formal reviews off must not change trigger
-matching: selected PR events and authorized mentions still activate the agent,
-but an authorized mention no longer requests or permits a formal review, opens a
-mention-driven review generation, or requires a review verdict. Independently
+offers a formal review when the integration allows formal reviews, and never
+demands one: a mention is how people ask for a rebase, a test run, or an answer as
+often as for a review, so the Agent decides from the comment. A comment that asks
+for a review, or that mentions the Agent and asks for nothing else, is answered
+with a formal review of the current revision; any other request is answered as an
+ordinary conversation, and the Agent publishes no verdict nobody asked for. The
+mention opens no review generation of its own, so the informational Check stays as
+it is until the Agent submits a verdict, which then becomes that revision's result
+without a queued or in-progress phase. A new revision, a Check rerun, and
+`Request review` still always start a review. Turning formal reviews off must not
+change trigger matching: selected PR events and authorized mentions still activate
+the agent, but an authorized mention no longer offers or permits a formal review,
+or leads to a review verdict. Independently
 configured reporting for PR revision events remains separate. Review policy does
 not select or change the hook's reply/output path; existing delivery behavior
 continues to own that decision. The console presents review and reporting both

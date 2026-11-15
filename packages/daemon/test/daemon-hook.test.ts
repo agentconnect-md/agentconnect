@@ -1382,6 +1382,20 @@ describe('Daemon rd/msg hook fires', () => {
     expect(ordinary).toBeUndefined()
     expect(explicit).toMatchObject({ hook: explicitHook, reviewState: 'idle', pullNumber: 42 })
 
+    // A mention offers the review outright: authority without a generation, and without a sealed verdict to amend.
+    const mentionHook = { ...hook, deliveryKey: 'mention-comment', github: { ...hook.github, optionalReview: true } }
+    const mention = await (daemon as any).githubReviews.prepareGithubTurn({ hookContext: mentionHook }, 'acp-mention')
+    expect(mention).toMatchObject({ hook: mentionHook, reviewState: 'idle', pullNumber: 42 })
+    expect(mention.amendment).toBeUndefined()
+    const mentionOff = {
+      ...mentionHook,
+      deliveryKey: 'mention-comment-off',
+      snapshot: { ...hook.snapshot, reviewPolicy: 'off' }
+    }
+    expect(
+      await (daemon as any).githubReviews.prepareGithubTurn({ hookContext: mentionOff }, 'acp-mention-off')
+    ).toBeUndefined()
+
     // A conversation turn holds review authority only as the amendment the CP names at the barrier, on its own head.
     const prepare = (hookContext: unknown, sessionId: string) =>
       (daemon as any).githubReviews.prepareGithubTurn({ hookContext }, sessionId)
@@ -1559,6 +1573,85 @@ describe('Daemon rd/msg hook fires', () => {
     expect(entry.msg.turnBody.prompt).toContain('verify `git rev-parse HEAD`')
     // A session with no other root has no reference directories to speak of.
     expect(entry.msg.text).not.toContain('Additional repositories are available')
+    await daemon.stop()
+  })
+
+  it('prepares the exact workspace for a mention that may review, without a preparing phase', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-mention-review-workspace'),
+        gitRepo: 'https://github.com/acme/infra',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        pullOnNewSession: true
+      }
+    })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepareHook = vi.fn(async () => {})
+    vi.spyOn((daemon as any).githubReviews.host, 'cpClient').mockReturnValue({ prepareHook })
+    const prepare = vi.spyOn(daemon as any, 'prepareAgentWorkspace').mockResolvedValue('/agent/worktrees/review')
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Mention.', turnBody: { prompt: 'Mention.' } },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'mention-review',
+        firedAt: new Date().toISOString(),
+        event: 'issue_comment:created',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha,
+          baseSha,
+          reportSha: headSha,
+          optionalReview: true
+        }
+      }
+    }
+    const prepareWorkspace = (candidate: unknown) =>
+      (daemon as any).githubReviews.prepareGithubReviewWorkspace(
+        candidate,
+        'hook:acme/infra#461',
+        (daemon as any).agents.get(AGENT_ID)
+      )
+
+    await expect(prepareWorkspace(entry)).resolves.toEqual({
+      workspaceIsolation: 'session',
+      forceWorkspaceIsolation: true,
+      preparedWorkspaceCwd: '/agent/worktrees/review'
+    })
+    expect(prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ id: AGENT_ID }),
+      undefined,
+      expect.objectContaining({ isolation: 'session', review: { pullNumber: 461, baseSha, headSha } })
+    )
+    expect(entry.msg.turnBody.prompt).toContain('Trusted review workspace')
+    // No generation is open, so there is no preparing phase to report.
+    expect(prepareHook).not.toHaveBeenCalled()
+
+    // The same comment without the mention keeps its stable conversation worktree.
+    prepare.mockClear()
+    const { optionalReview: _offered, ...unmentioned } = entry.hookContext.github
+    await expect(
+      prepareWorkspace({ ...entry, hookContext: { ...entry.hookContext, github: unmentioned } })
+    ).resolves.toEqual({})
+    expect(prepare).not.toHaveBeenCalled()
     await daemon.stop()
   })
 
@@ -5227,7 +5320,42 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('The daemon owns the reply')
     })
 
-    it('requires a formal verdict for an authorized explicit PR review mention', async () => {
+    it.each([
+      ['full', 'APPROVE + pass', 'REQUEST_CHANGES + fail'],
+      ['comment', 'COMMENT + pass', 'COMMENT + fail']
+    ] as const)(
+      'offers a formal review on an authorized PR mention under the %s policy and leaves the decision to the agent',
+      (reviewPolicy, passing, failing) => {
+        const text = buildHookText(
+          ghFire(
+            { event: 'issue_comment', action: 'created', bodyExcerpt: '@reviewer rebase this on the default branch' },
+            {
+              reviewPolicy,
+              github: {
+                repoId: '123',
+                repoFullName: 'acme/infra',
+                sourceInstallationId: '456',
+                subjectKind: 'pull_request',
+                pullNumber: 42,
+                optionalReview: true
+              }
+            }
+          )
+        )
+        // Nothing demands a verdict: the comment may ask for other work.
+        expect(text).not.toContain('opens a review generation for the current PR revision')
+        expect(text).not.toContain('Requested action:')
+        expect(text).toContain('This delivery offers a formal review and the decision is yours')
+        expect(text).toContain(`using ${passing} when it passes or ${failing} when it has blocking findings`)
+        expect(text).toContain('Otherwise answer it as an ordinary conversation and submit no formal review.')
+        // The trusted header states the authorization before the untrusted body, for an approval reviewer.
+        const offeredAt = text.indexOf('Available action: the comment below mentions you')
+        expect(offeredAt).toBeGreaterThan(-1)
+        expect(offeredAt).toBeLessThan(text.indexOf(UNTRUSTED_CONTENT_BEGIN))
+      }
+    )
+
+    it('requires a formal verdict for an explicit review request', async () => {
       const text = buildHookText(
         ghFire(
           { event: 'issue_comment', action: 'created', bodyExcerpt: '@reviewer please review' },
@@ -5289,7 +5417,8 @@ describe('buildHookMessage', () => {
               sourceInstallationId: '456',
               subjectKind: 'pull_request',
               pullNumber: 42,
-              explicitReviewRequest: true
+              explicitReviewRequest: true,
+              optionalReview: true
             }
           }
         )
@@ -5299,6 +5428,7 @@ describe('buildHookMessage', () => {
       expect(text).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(text).not.toContain('submitCodeReview')
       expect(text).not.toContain('Requested action:')
+      expect(text).not.toContain('Available action:')
     })
 
     it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', async () => {

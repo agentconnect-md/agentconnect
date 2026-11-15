@@ -17,15 +17,20 @@ const REVISION_EVENTS = new Set([
  */
 export function githubProjectionIntent(
   event: string | undefined,
-  github: { subjectKind: string; baseChanged?: boolean; explicitReviewRequest?: boolean } | undefined,
+  github:
+    | { subjectKind: string; baseChanged?: boolean; explicitReviewRequest?: boolean; optionalReview?: boolean }
+    | undefined,
   reviewPolicy?: HookReviewPolicy
 ): HookProjectionIntent {
   if (github?.subjectKind !== 'pull_request') return 'none'
+  const formalReviews = reviewPolicy !== undefined && reviewPolicy !== 'off'
   if (
-    (reviewPolicy !== undefined && reviewPolicy !== 'off' && github.explicitReviewRequest) ||
+    (formalReviews && github.explicitReviewRequest) ||
     isGithubPullRequestRevisionEvent(event, github) ||
     REVISION_EVENTS.has(event ?? '')
   )
     return 'revision_event'
+  // A mention offers the review: its turn projects only the verdict the Agent chooses to submit.
+  if (formalReviews && github.optionalReview) return 'review_optional'
   return 'review_action_only'
 }

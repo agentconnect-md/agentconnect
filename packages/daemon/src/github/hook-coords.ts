@@ -299,7 +299,7 @@ export interface ActiveGithubTurnMeta {
   reportSha: string
   /** ACP session owning this turn, used only to build daemon-authored review attribution. */
   sessionId: string
-  /** Present on a conversation turn: the sealed verdict the CP named at `hook/start`, its only review authority. */
+  /** Present on a conversation turn no mention offered a review: the sealed verdict the CP named at `hook/start`, its only review authority. */
   amendment?: HookReviewAmendment
   reviewState: 'idle' | 'submitting' | 'done'
 }
