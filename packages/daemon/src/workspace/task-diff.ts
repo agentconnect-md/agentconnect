@@ -16,6 +16,8 @@ export interface TaskDiffRoot {
   title?: string
   /** The branch the task's checkout was cut from; its `origin/` copy is the comparison base. */
   branch?: string
+  /** A directory whose untracked files are not task work, such as the landing zone for saved chat attachments. */
+  skipUntracked?: string
 }
 
 export class TaskDiffUnavailable extends Error {}
@@ -33,7 +35,14 @@ export async function openTaskDiff(
 ): Promise<TaskDiff> {
   if (!roots.length) throw new TaskDiffIneligible('No task repository is available for automatic diff updates.')
   const ref = `refs/agentconnect/task-diff/${createHash('sha256').update(sessionKey).digest('hex')}`
-  const sources: Array<{ git: GitRunner; from: string[]; base?: string; name: string; title: string }> = []
+  const sources: Array<{
+    git: GitRunner
+    from: string[]
+    base?: string
+    name: string
+    title: string
+    skipUntracked?: string
+  }> = []
   let ineligible: TaskDiffIneligible | undefined
   for (const root of roots) {
     const git = root.git.withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
@@ -41,7 +50,7 @@ export async function openTaskDiff(
       (await git.readBounded(['rev-parse', '--verify', '--quiet', name], 256).catch(() => undefined))?.out
         .toString()
         .trim() || undefined
-    const source = { git, name: root.name, title: root.title ?? root.name }
+    const source = { git, name: root.name, title: root.title ?? root.name, skipUntracked: root.skipUntracked }
     const upstream = root.branch ? `refs/remotes/origin/${root.branch}` : undefined
     if (upstream && (await verify(upstream))) {
       sources.push({ ...source, from: ['--merge-base', upstream], base: `origin/${root.branch}` })
@@ -83,7 +92,7 @@ export async function openTaskDiff(
             'The task diff is too large to display completely in Slack; use the repository or PR to review it.'
           )
       }
-      for (const { git, from, base, name } of sources) {
+      for (const { git, from, base, name, skipUntracked } of sources) {
         signal?.throwIfAborted()
         const prefix = prefixed ? `${name}/` : ''
         const prefixes = [`--src-prefix=a/${prefix}`, `--dst-prefix=b/${prefix}`]
@@ -101,7 +110,11 @@ export async function openTaskDiff(
         const paths = await git.readBounded(['ls-files', '--others', '--exclude-standard', '-z'], PATHS_LIMIT)
         if (paths.overflow)
           throw new TaskDiffUnavailable('The task has too many new files to display completely in Slack.')
-        const files = paths.out.toString('utf8').split('\0').filter(Boolean)
+        // Filtered here rather than by pathspec, so the Git arguments every execution plane admits stay the same.
+        const files = paths.out
+          .toString('utf8')
+          .split('\0')
+          .filter((file) => file && !(skipUntracked && file.startsWith(`${skipUntracked}/`)))
         if (files.length > 100)
           throw new TaskDiffUnavailable('The task has too many new files to display completely in Slack.')
         for (const file of files) {
