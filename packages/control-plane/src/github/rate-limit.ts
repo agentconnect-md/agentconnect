@@ -1,13 +1,4 @@
-/**
- * Per-key token bucket for the gitcred mint path.
- *
- * One deployment shares ONE GitHub App across every org, so GitHub's mint
- * budget is a cross-tenant resource: a crash-looping daemon (whose ReqRep layer
- * retransmits every 5s) or a runaway agent must not be able to starve other
- * orgs into RATE_LIMITED. The service-level single-flight only coalesces
- * concurrent same-key mints; this bucket bounds distinct/serial requests
- * per daemon and per org, INDEPENDENT of the cache.
- */
+/** Per-key token bucket bounding real GitHub mints per daemon and per org, so one tenant cannot drain a shared App's mint budget. */
 import type { Clock } from '../domain/clock.js'
 
 interface BucketState {

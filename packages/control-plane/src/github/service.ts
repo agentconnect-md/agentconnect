@@ -758,11 +758,6 @@ export class GithubService {
       // github repository, but explicit per-agent grants still resolve by name.
       throw new GitCredDeniedError('agent has no default github repository', 'SCOPE_DENIED', false)
     }
-    for (const key of bucketKeys) {
-      if (!this.mintBucket.take(key)) {
-        throw new GitCredDeniedError('gitcred mint rate exceeded — backing off', 'RATE_LIMITED', true)
-      }
-    }
     const requested = requestedRepo ?? label
     if (!requested) {
       throw new GitCredDeniedError('agent has no default github repository', 'SCOPE_DENIED', false)
@@ -781,7 +776,9 @@ export class GithubService {
         resolved.installation.installationId,
         resolved.repoFullName,
         levels,
-        resolved.repoId
+        resolved.repoId,
+        false,
+        () => this.admitMint(bucketKeys)
       )
     } catch (e) {
       if (e instanceof GithubApiError) throw new GitCredDeniedError(e.message, e.code, e.retryable)
@@ -814,11 +811,6 @@ export class GithubService {
     if (!owner || !repo) {
       throw new GitCredDeniedError(`not an owner/repo reference (${repoFullName})`, 'SCOPE_DENIED', false)
     }
-    for (const key of bucketKeys) {
-      if (!this.mintBucket.take(key)) {
-        throw new GitCredDeniedError('gitcred mint rate exceeded — backing off', 'RATE_LIMITED', true)
-      }
-    }
     const ins = await this.deps.installations.liveByOrgAndAccount(agent.orgId, owner, agent.githubAppId)
     if (!ins || ins.orgId !== agent.orgId) {
       throw new GitCredDeniedError(`no live github installation covers ${owner}`, 'LEASE_DENIED', false)
@@ -839,11 +831,21 @@ export class GithubService {
         repoFullName,
         { issues: 'write', pull_requests: 'write' },
         repoId,
-        forceRefresh
+        forceRefresh,
+        () => this.admitMint(bucketKeys)
       )
     } catch (e) {
       if (e instanceof GithubApiError) throw new GitCredDeniedError(e.message, e.code, e.retryable)
       throw e
+    }
+  }
+
+  /** Spends the mint budget for one real GitHub mint; cached and coalesced grants never reach it. */
+  private admitMint(bucketKeys: readonly string[]): void {
+    for (const key of bucketKeys) {
+      if (!this.mintBucket.take(key)) {
+        throw new GitCredDeniedError('gitcred mint rate exceeded — backing off', 'RATE_LIMITED', true)
+      }
     }
   }
 
