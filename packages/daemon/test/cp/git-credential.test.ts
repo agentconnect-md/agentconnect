@@ -141,6 +141,31 @@ describe('GitCredentialCache', () => {
     expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
   })
 
+  it('keeps a read-only token apart from the tier token, so an earlier read never answers a later write', async () => {
+    const asked: Array<string | undefined> = []
+    let calls = 0
+    const cache = new GitCredentialCache({
+      request: async (payload) => {
+        calls += 1
+        asked.push(payload.requestedAccess)
+        return { ...grant(`ghs_${calls}`, 3540), access: payload.requestedAccess === 'read' ? 'read' : 'write' }
+      },
+      log: { warn: () => {} },
+      monoNow: () => 0
+    })
+    const opts = { plane: 'gh', repo: 'acme/infra' } as const
+    expect(await cache.get(AGENT, 'helper', { ...opts, requestedAccess: 'read' })).toMatchObject({ access: 'read' })
+    expect(await cache.get(AGENT, 'helper', opts)).toMatchObject({ token: 'ghs_2', access: 'write' })
+    // Each is served from its own entry afterwards.
+    expect((await cache.get(AGENT, 'helper', { ...opts, requestedAccess: 'read' })).token).toBe('ghs_1')
+    expect((await cache.get(AGENT, 'helper', opts)).token).toBe('ghs_2')
+    expect(asked).toEqual(['read', undefined])
+    // An erase names no access, and drops whichever entry holds the presented token.
+    cache.invalidate(AGENT, 'ghs_1', opts)
+    expect((await cache.get(AGENT, 'helper', { ...opts, requestedAccess: 'read' })).token).toBe('ghs_3')
+    expect((await cache.get(AGENT, 'helper', opts)).token).toBe('ghs_2')
+  })
+
   it('remove() drops the entry with the agent', async () => {
     const h = build((n) => grant(`ghs_${n}`, 3540))
     await h.cache.get(AGENT, 'clone')
