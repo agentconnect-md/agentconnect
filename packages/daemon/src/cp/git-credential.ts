@@ -56,6 +56,10 @@ const REPO_DENIAL_TTL_MS = 60 * 1000
 /** Pause before the single re-ask after a retryable INTERNAL mint failure. */
 const INTERNAL_RETRY_DELAY_MS = 250
 
+/** Pause before the single re-ask after a retryable RATE_LIMITED: one CP mint-bucket refill (5s) plus jitter so waiters spread. */
+const RATE_LIMITED_RETRY_DELAY_MS = 5000
+const RATE_LIMITED_RETRY_JITTER_MS = 2000
+
 /** The baseline scope set behind `GH_TOKEN` (P2.5 write-back): git contents plus the
  *  issue/PR scopes `gh issue comment` / `gh pr comment` need. The CP clamps
  *  every capability — the workspace repo to the agent's gitAccess, an
@@ -190,6 +194,8 @@ export interface GitCredentialCacheDeps {
   giteaHostFor?: (agentId: string) => string | undefined
   /** Monotonic ms; injectable for tests. */
   monoNow?: () => number
+  /** The pause before a re-ask; injectable for tests. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 /** The instance axis of each spec-hosted provider: which dep names the spec's host, and the value an absent one means. */
@@ -216,9 +222,11 @@ export class GitCredentialCache {
   /** Repo-keyed denials → monotonic retry-after deadline (60s negative cache) and the CP's own reason. */
   private readonly deniedRepos = new Map<string, { retryAfter: number; reason: string }>()
   private readonly monoNow: () => number
+  private readonly sleep: (ms: number) => Promise<void>
 
   constructor(private readonly deps: GitCredentialCacheDeps) {
     this.monoNow = deps.monoNow ?? (() => performance.now())
+    this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   }
 
   /**
@@ -593,16 +601,22 @@ export class GitCredentialCache {
     for (const key of [...this.refreshPosts]) if (key.includes(marker)) this.refreshPosts.delete(key)
   }
 
-  /** A retryable INTERNAL answer is a CP-side transient (e.g. the installation changed mid-mint):
-   *  the CP replied promptly, so one more ask fits inside the helper's IPC timeout. */
+  /** A retryable INTERNAL or RATE_LIMITED answer comes back promptly, so one paused re-ask still fits inside the helper's 15s IPC timeout. */
   private async requestWithRetry(payload: Parameters<GitCredentialCacheDeps['request']>[0]): Promise<GitCredGrant> {
     try {
       return await this.deps.request(payload)
     } catch (e) {
       const { code, retryable } = e as { code?: string; retryable?: boolean }
-      if (code !== 'INTERNAL' || retryable !== true) throw e
-      this.deps.log.warn(`gitcred: transient mint failure for agent ${payload.agentId} — retrying once`)
-      await new Promise((resolve) => setTimeout(resolve, INTERNAL_RETRY_DELAY_MS))
+      if (retryable !== true) throw e
+      if (code === 'INTERNAL') {
+        this.deps.log.warn(`gitcred: transient mint failure for agent ${payload.agentId} — retrying once`)
+        await this.sleep(INTERNAL_RETRY_DELAY_MS)
+      } else if (code === 'RATE_LIMITED') {
+        this.deps.log.warn(`gitcred: mint rate-limited for agent ${payload.agentId} — retrying once`)
+        await this.sleep(RATE_LIMITED_RETRY_DELAY_MS + Math.random() * RATE_LIMITED_RETRY_JITTER_MS)
+      } else {
+        throw e
+      }
       return await this.deps.request(payload)
     }
   }

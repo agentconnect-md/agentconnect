@@ -121,29 +121,16 @@ export class InstallationTokenService {
     return this.mintLevels(installationId, repoFullName, levels)
   }
 
-  /**
-   * The per-capability form ({@link CapabilityLevels}) — additional-repo grants
-   * mint asymmetric shapes (comment tier: contents:read + issues/PR:write).
-   * The grant's `access` reports the CONTENTS level (that is what the git plane
-   * consumes; absent contents ⇒ 'read'). Distinct level maps are distinct
-   * cache entries; the uniform {@link mint} collapses onto the same keyspace.
-   *
-   * `repoId` (modern workspace and additional-repo paths): when present the
-   * GitHub token is scoped by NUMERIC id (`repository_ids`), never by name — a
-   * renamed repo whose old name is reused cannot mint for the replacement.
-   * The cache key uses the id too; `repoFullName` is display metadata.
-   * `forceRefresh` bypasses both cache and single-flight for a token GitHub
-   * explicitly rejected; ownership checks prevent an older in-flight mint from
-   * overwriting the replacement when it settles late.
-   */
+  /** Per-capability mint scoped by numeric `repoId` when given; `forceRefresh` skips cache and single-flight, and `admit` runs only before a real GitHub call. */
   async mintLevels(
     installationId: bigint,
     repoFullName: string,
     levels: AgentGrantLevels,
     repoId?: bigint,
-    forceRefresh = false
+    forceRefresh = false,
+    admit?: () => void
   ): Promise<MintedGitCred> {
-    return this.mintPermissionLevels(installationId, repoFullName, levels, repoId, forceRefresh)
+    return this.mintPermissionLevels(installationId, repoFullName, levels, repoId, forceRefresh, admit)
   }
 
   /** CP-only reporter token (`pull_requests:read` backs the commit→PR barrier); `checks:write` never reaches a daemon or agent. */
@@ -167,18 +154,18 @@ export class InstallationTokenService {
     for (const key of [...this.inflight.keys()]) if (key.startsWith(prefix)) this.inflight.delete(key)
   }
 
-  /** An invalidation that crosses a mint discards its token, never the request: the
-   * next attempt mints under the new generation (or is served what it cached). */
+  /** An invalidation that crosses a mint discards its token, never the request: the next attempt re-mints or is served the cache. */
   private async mintPermissionLevels(
     installationId: bigint,
     repoFullName: string,
     levels: InternalPermissionLevels,
     repoId?: bigint,
-    forceRefresh = false
+    forceRefresh = false,
+    admit?: () => void
   ): Promise<MintedGitCred> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.mintPermissionLevelsOnce(installationId, repoFullName, levels, repoId, forceRefresh)
+        return await this.mintPermissionLevelsOnce(installationId, repoFullName, levels, repoId, forceRefresh, admit)
       } catch (err) {
         if (!(err instanceof InstallationTokenInvalidatedError) || attempt >= INVALIDATION_RETRIES) throw err
       }
@@ -190,7 +177,8 @@ export class InstallationTokenService {
     repoFullName: string,
     levels: InternalPermissionLevels,
     repoId?: bigint,
-    forceRefresh = false
+    forceRefresh = false,
+    admit?: () => void
   ): Promise<MintedGitCred> {
     const serveEpoch = this.epoch(installationId)
     const effectiveLevels: InternalPermissionLevels =
@@ -205,6 +193,7 @@ export class InstallationTokenService {
     }
     let pending = forceRefresh ? undefined : this.inflight.get(key)
     if (!pending) {
+      admit?.()
       const epoch = this.epoch(installationId)
       const pendingFresh: Promise<CacheEntry> = this.mintFresh(
         installationId,

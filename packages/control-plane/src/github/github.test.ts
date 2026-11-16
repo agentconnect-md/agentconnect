@@ -2376,3 +2376,68 @@ describe('TokenBucket', () => {
     expect(bucket.take('d1')).toBe(false)
   })
 })
+
+describe('GithubService mint budget', () => {
+  const KEYS = ['daemon:d1', 'org:org-a']
+
+  function budgetHarness() {
+    const clock = new FakeClock(1_700_000_000_000)
+    let mints = 0
+    const fetchImpl = async () => {
+      mints += 1
+      return Response.json(
+        { token: `ghs_${mints}`, expires_at: new Date(clock.now() + 3_600_000).toISOString() },
+        { status: 201 }
+      )
+    }
+    const installation = {
+      id: 'row-1',
+      orgId: 'org-a',
+      installationId: 42n,
+      accountLogin: 'acme',
+      accountType: 'Organization',
+      repositorySelection: 'all',
+      suspendedAt: null,
+      revokedAt: null,
+      createdAt: new Date(0)
+    }
+    const svc = new GithubService({
+      cfg: cfg(),
+      clock,
+      installations: { get: async () => installation, liveByOrgAndAccount: async () => installation } as never,
+      installState: { put: async () => {}, consume: async () => true },
+      pepper: 'p'.repeat(32),
+      fetchImpl
+    })
+    const agent = {
+      id: 'agent-1',
+      orgId: 'org-a',
+      workspace: {
+        mode: 'git',
+        gitRepo: 'https://github.com/acme/infra',
+        credential: { provider: 'github', installationId: 'row-1', access: 'write' }
+      }
+    } as never
+    return { svc, agent, mints: () => mints }
+  }
+
+  it('charges only real GitHub mints, never a grant the cache or an in-flight mint answers', async () => {
+    const { svc, agent, mints } = budgetHarness()
+    // Daemon retransmits of one request arrive while its mint is in flight.
+    await Promise.all(Array.from({ length: 12 }, () => svc.mintForAgent(agent, KEYS)))
+    for (let i = 0; i < 12; i++) await svc.mintForAgent(agent, KEYS)
+    expect(mints()).toBe(1)
+  })
+
+  it('still refuses real mints past the burst', async () => {
+    const { svc, agent, mints } = budgetHarness()
+    const CAPS = ['contents', 'issues', 'pull_requests', 'actions'] as const
+    const distinct = Array.from({ length: 11 }, (_, i) => CAPS.filter((_, bit) => ((i + 1) >> bit) & 1))
+    for (const caps of distinct.slice(0, 10)) await svc.mintForAgent(agent, KEYS, caps)
+    await expect(svc.mintForAgent(agent, KEYS, distinct[10])).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: true
+    })
+    expect(mints()).toBe(10)
+  })
+})
