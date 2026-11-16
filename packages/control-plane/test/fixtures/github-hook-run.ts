@@ -35,6 +35,7 @@ export function githubHookRun(input: HookRunFixtureInput): HookRunRecord {
     startedAt: new Date(0),
     preparingAt: null,
     turnStartedAt: null,
+    reviewDeclaredAt: null,
     completedAt: null,
     orphanedAt: null,
     projectionId: null,

@@ -42,7 +42,13 @@ import {
 } from '../messages/hook-message.js'
 import { appendTurnPrompt, type NormalizedMessage } from '../messages/normalized.js'
 import type { ReplyGithubReviewThreadsReq, ReplyGithubReviewThreadsResult, SubmitGithubReviewReq } from '../mcp/ops.js'
-import type { CodeHostReviewAdapter } from '../codehost/review-adapter.js'
+import {
+  NO_ACTIVE_REVIEW_TURN,
+  REVIEW_START_NOT_NEEDED,
+  type CodeHostReviewAdapter,
+  type StartCodeReviewReq,
+  type StartCodeReviewResult
+} from '../codehost/review-adapter.js'
 import { hookCoordinates, openReviewBatch, reviewSubjectLane } from '../codehost/hook-admission.js'
 import { sessionKey, type SessionRecord } from '../store/local-store.js'
 import { formatErr, formatErrWithCauses } from '../daemon/text.js'
@@ -196,7 +202,8 @@ export class GithubReviewOrchestrator {
   readonly reviewAdapter: CodeHostReviewAdapter = {
     provider: 'github',
     owns: (key, agentId) => this.host.activeGithubTurn(key)?.hook.agentId === agentId,
-    submit: (_key, req) => this.submitGithubReview(req)
+    submit: (_key, req) => this.submitGithubReview(req),
+    start: (key, req) => this.startGithubReview(key, req)
   }
 
   private get turnFinalHost(): CodeHostTurnFinalHost {
@@ -851,6 +858,7 @@ export class GithubReviewOrchestrator {
       reportSha: trusted.reportSha ?? trusted.headSha,
       sessionId,
       ...(amendment ? { amendment } : {}),
+      ...(offersReview ? { offeredReview: 'undeclared' as const } : {}),
       reviewState: hook.reviewAttemptId === undefined || recoverableAttempt ? 'idle' : 'done'
     }
     if (recoverableAttempt) await this.reconcileGithubReviewAttempt(active)
@@ -925,6 +933,47 @@ export class GithubReviewOrchestrator {
       active.reviewState = effect.state === 'ambiguous' ? 'idle' : 'done'
     } catch (err) {
       this.log.warn(`github review: replay reconciliation deferred (${formatErr(err)})`)
+    }
+  }
+
+  /** Tell the CP the Agent is starting the review a mention offered; nothing here ever blocks the review itself. */
+  async startGithubReview(key: string, req: StartCodeReviewReq): Promise<StartCodeReviewResult> {
+    const active = this.host.activeGithubTurn(key)
+    if (!active || active.hook.agentId !== req.agentId) throw new Error(NO_ACTIVE_REVIEW_TURN)
+    // A generation is already shown as running, and an amendment or an attempt already made has nothing to open.
+    if (!active.offeredReview || active.reviewState !== 'idle' || active.hook.reviewAttemptId !== undefined) {
+      return REVIEW_START_NOT_NEEDED
+    }
+    const submitNext = 'Review the revision, then record the verdict with `submitCodeReview`'
+    if (active.offeredReview === 'declared') {
+      return { state: 'already_started', note: `This review is already marked as started. ${submitNext}.` }
+    }
+    try {
+      const cp = this.host.cpClient()
+      if (!cp) throw new Error('control plane is not connected')
+      const declaration: Parameters<CpClient['declareGithubReview']>[0] = {
+        hookId: active.hook.hookId,
+        deliveryKey: active.hook.deliveryKey,
+        snapshot: active.snapshot
+      }
+      const orgId = this.host.orgForAgent(req.agentId)
+      if (orgId) await cp.declareGithubReview(declaration, orgId)
+      else await cp.declareGithubReview(declaration)
+    } catch (err) {
+      this.log.warn(`github review: start declaration not recorded (${formatErr(err)})`)
+      return {
+        state: 'not_recorded',
+        note:
+          'The start could not be recorded, so the pull request will not show this review as in progress. ' +
+          'Carry on with the review: `submitCodeReview` still records its verdict.'
+      }
+    }
+    active.offeredReview = 'declared'
+    return {
+      state: 'started',
+      note:
+        `The pull request now shows this review as in progress. ${submitNext}; ` +
+        'a started review that ends without one is reported as not completed.'
     }
   }
 

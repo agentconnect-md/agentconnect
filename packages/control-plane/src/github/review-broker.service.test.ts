@@ -117,6 +117,7 @@ function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
     latestReviewVerdictRun: vi.fn<HookRepo['latestReviewVerdictRun']>(async () => null),
     recordPreparing: vi.fn<HookRepo['recordPreparing']>(async () => true),
     recordStart: vi.fn<HookRepo['recordStart']>(async () => true),
+    recordReviewDeclared: vi.fn<HookRepo['recordReviewDeclared']>(async () => true),
     reserveReviewAttempt: vi.fn<HookRepo['reserveReviewAttempt']>(async (_hookId, _daemonId, input) => {
       currentRun = run({
         reviewAttemptId: input.attemptId,
@@ -177,6 +178,45 @@ describe('GithubReviewBrokerService', () => {
       state.service.prepare({ hookId: HOOK, agentId: AGENT, deliveryKey: 'delivery-1', ...snapshot }, OLD_DAEMON)
     ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(state.hookRepo.recordPreparing).not.toHaveBeenCalled()
+  })
+
+  it('records a declared review only for a started turn a mention offered one', async () => {
+    const state = setup()
+    const declare = () => state.service.declare({ hookId: HOOK, deliveryKey: 'delivery-1', snapshot }, DAEMON)
+    const offered = (overrides: Partial<HookRunRecord> = {}) =>
+      run({ event: 'issue_comment:created', projectionIntent: 'review_optional', ...overrides })
+
+    state.setRun(offered())
+    await declare()
+    expect(state.hookRepo.recordReviewDeclared).toHaveBeenCalledWith(HOOK, DAEMON, {
+      deliveryKey: 'delivery-1',
+      agentId: AGENT,
+      configRevision: 7n,
+      dispatchRevision: 9n,
+      dispatchDaemonId: DAEMON,
+      at: new Date(3_000)
+    })
+
+    // A repeat after the stamp is a no-op, never a second write.
+    state.hookRepo.recordReviewDeclared.mockClear()
+    state.setRun(offered({ reviewDeclaredAt: new Date(3_000) }))
+    await declare()
+
+    // A generation is already followed; an amendment turn, an unstarted turn and one that already reviewed have nothing to open.
+    for (const refused of [
+      run(),
+      run({ projectionIntent: 'review_action_only' }),
+      offered({ turnStartedAt: null }),
+      offered({ reviewAttemptId: ATTEMPT, reviewAttemptState: 'reserved' })
+    ]) {
+      state.setRun(refused)
+      await expect(declare()).rejects.toBeInstanceOf(GithubReviewBrokerError)
+    }
+    // So does a hook disabled since the turn started.
+    state.setRun(offered())
+    state.hookRepo.getUnscoped.mockResolvedValue(hook({ enabled: false }))
+    await expect(declare()).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
+    expect(state.hookRepo.recordReviewDeclared).not.toHaveBeenCalled()
   })
 
   it('records hook/start only across the exact accepted and current dispatch fence', async () => {

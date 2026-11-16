@@ -656,3 +656,14 @@ export type GithubReviewResultReport = z.infer<typeof GithubReviewResultReport>
 
 export const GithubReviewResultOk = z.object({ accepted: z.literal(true) })
 export type GithubReviewResultOk = z.infer<typeof GithubReviewResultOk>
+
+/** D→C: the Agent declared it is starting the review a mention offered, so the Check can show it in progress. */
+export const GithubReviewDeclare = z.object({
+  hookId: z.string().uuid(),
+  deliveryKey: z.string().min(1),
+  snapshot: HookConfigSnapshot
+})
+export type GithubReviewDeclare = z.infer<typeof GithubReviewDeclare>
+
+export const GithubReviewDeclareOk = z.object({ accepted: z.literal(true) })
+export type GithubReviewDeclareOk = z.infer<typeof GithubReviewDeclareOk>

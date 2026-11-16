@@ -5509,6 +5509,7 @@ export class Daemon {
       rootPostRelation: (req) => this.collab.rootPostRelation(req),
       spawnChannelRootSession: (req) => this.collab.spawnChannelRootSession(req),
       submitCodeReview: (req) => this.codeReviews.submit(req),
+      startCodeReview: (req) => this.codeReviews.start(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
       codeHostEffect: (req) => this.runCodeHostEffect(req),
       codeHostResearch: {

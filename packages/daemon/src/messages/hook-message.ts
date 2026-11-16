@@ -341,7 +341,8 @@ const REVIEW_PUBLICATION_REQUESTED =
 /** The mention's twin of the line above: publication is authorized, and whether the comment asks for it is the Agent's to judge. */
 const REVIEW_PUBLICATION_OFFERED =
   "Available action: the comment below mentions you from an account this repository's configured review trigger " +
-  'authorizes; if it asks for a review, publishing the verdict as a formal review through `submitCodeReview` is authorized.'
+  'authorizes; if it asks for a review, declaring it with `startCodeReview` and publishing the verdict as a formal ' +
+  'review through `submitCodeReview` are authorized.'
 
 /** Standing rule for a refused submission: a delivery turn has no one to answer an authorization request. */
 const REVIEW_REFUSAL_RULE =
@@ -378,7 +379,8 @@ function githubStandingContext(): string {
       'or otherwise unresolved formal attempt suppresses the ordinary comment, which is posted only when no formal review ' +
       'was attempted or the attempt definitively returns `not_submitted`. An approval or rejection from an earlier revision ' +
       'does not complete a later one; do not merely describe the verdict in your final reply. A delivery that offers a ' +
-      'review says so and leaves the decision to you; when you do review, the same tool and body rule apply. A conversation ' +
+      'review says so and leaves the decision to you; when you do review, call `startCodeReview` before you begin — it only ' +
+      'makes the pull request show the review as in progress, so carry on if it fails — and the same tool and body rule apply. A conversation ' +
       'delivery followed by a `Verdict amendment available` block may change that sealed verdict through the same tool, as ' +
       'the block says; any other delivery cannot submit a formal review.',
     REVIEW_REFUSAL_RULE,
@@ -473,9 +475,10 @@ function githubReplyHint(
   if (githubDeliveryOffersReview(c, github, reviewPolicy)) {
     return (
       `\n\nReply to this GitHub conversation on ${where}. This delivery offers a formal review and the decision is yours: ` +
-      'when the comment asks for a review — a mention that asks for nothing else does — review the current PR revision ' +
-      `and record the verdict through \`submitCodeReview\`, using ${passing} + pass when it passes or ${failing} + fail ` +
-      'when it has blocking findings. Otherwise answer it as an ordinary conversation and submit no formal review. ' +
+      'when the comment asks for a review — a mention that asks for nothing else does — call `startCodeReview` first so ' +
+      'the pull request shows the review in progress, then review the current PR revision and record the verdict through ' +
+      `\`submitCodeReview\`, using ${passing} + pass when it passes or ${failing} + fail when it has blocking findings. ` +
+      'Otherwise answer it as an ordinary conversation and call neither tool. ' +
       DAEMON_OWNS_REPLY
     )
   }

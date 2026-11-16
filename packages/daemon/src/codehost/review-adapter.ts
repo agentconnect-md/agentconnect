@@ -39,12 +39,35 @@ export interface SubmitCodeReviewReq extends CodeReviewInput {
   transportScope?: string
 }
 
+/** A `startCodeReview` call: only the caller identity, filled from the trusted MCP SessionContext. */
+export interface StartCodeReviewReq {
+  agentId: string
+  platform: string
+  channel: string
+  thread: string
+  transportScope?: string
+}
+
+/** What the declaration did; `note` is the one line the Agent reads. */
+export interface StartCodeReviewResult {
+  state: 'started' | 'already_started' | 'not_needed' | 'not_recorded'
+  note: string
+}
+
 /** One provider's publication steps behind the seam. */
 export interface CodeHostReviewAdapter {
   readonly provider: CodeHostProvider
   /** True only when THIS provider owns the active review turn for that logical session key. */
   owns(key: string, agentId: string): boolean
   submit(key: string, req: SubmitCodeReviewReq): Promise<unknown>
+  /** Present only where a delivery can offer a review the Agent may decline. */
+  start?(key: string, req: StartCodeReviewReq): Promise<StartCodeReviewResult>
+}
+
+/** The answer for a turn with nothing to declare: its review is already shown as running, or it was offered none. */
+export const REVIEW_START_NOT_NEEDED: StartCodeReviewResult = {
+  state: 'not_needed',
+  note: 'This turn needs no start declaration. Continue, and record a review with `submitCodeReview` if the turn calls for one.'
 }
 
 export const NO_ACTIVE_REVIEW_TURN =
@@ -90,5 +113,12 @@ export class CodeHostReviewRouter {
     const adapter = this.adapters.find((candidate) => candidate.owns(key, req.agentId))
     if (!adapter) return Promise.reject(new Error(NO_ACTIVE_REVIEW_TURN))
     return adapter.submit(key, req)
+  }
+
+  start(req: StartCodeReviewReq): Promise<StartCodeReviewResult> {
+    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
+    const adapter = this.adapters.find((candidate) => candidate.owns(key, req.agentId))
+    if (!adapter) return Promise.reject(new Error(NO_ACTIVE_REVIEW_TURN))
+    return adapter.start ? adapter.start(key, req) : Promise.resolve(REVIEW_START_NOT_NEEDED)
   }
 }

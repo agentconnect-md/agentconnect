@@ -2394,6 +2394,7 @@ model HookRun {
   baseChanged               Boolean?
   preparingAt               DateTime?          @db.Timestamptz(6)
   turnStartedAt             DateTime?          @db.Timestamptz(6)
+  reviewDeclaredAt          DateTime?          @db.Timestamptz(6)
   completedAt               DateTime?          @db.Timestamptz(6)
   orphanedAt                DateTime?          @db.Timestamptz(6)
   projectionId              String?            @db.Uuid

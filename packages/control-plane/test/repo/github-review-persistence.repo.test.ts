@@ -2733,6 +2733,156 @@ describe('R1/R2a persistence foundation', () => {
     expect(advanced.generation).toBe(projection.generation + 1n)
   })
 
+  it('follows a mention review like a generation once the Agent declares it', async () => {
+    await seedDaemon(prisma, D1)
+    const agentId = AgentId(randomUUID())
+    await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'git', gitCredentialProvider: 'github', workspaceRepoId: 25n, gitAccess: 'write' }
+    })
+    const repo = new PgHookRepo(prisma)
+    const hookId = HookId(randomUUID())
+    const hook = await repo.upsert({
+      hookId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      kind: 'github',
+      name: 'declared review',
+      sessionMode: 'perThread',
+      repoId: 25n,
+      repoFullName: 'acme/declared',
+      events: ['pull_request:*', 'issue_comment:*'],
+      reviewPolicy: 'full',
+      reportingMode: 'check',
+      gateMode: 'informational'
+    })
+    const mention = {
+      deliveryKey: 'delivery-mention-declared',
+      firedAt: new Date('2026-07-11T03:00:00.000Z'),
+      event: 'issue_comment:created',
+      status: 'accepted' as const,
+      agentId,
+      configRevision: hook.configRevision,
+      dispatchRevision: hook.dispatchRevision,
+      dispatchDaemonId: D1,
+      reviewPolicySnapshot: hook.reviewPolicy,
+      reportingModeSnapshot: hook.reportingMode,
+      gateModeSnapshot: hook.gateMode,
+      projectionIntent: 'review_optional' as const,
+      repoId: 25n,
+      repoFullName: 'acme/declared',
+      sourceInstallationId: 47n,
+      subjectKind: 'pull_request',
+      pullNumber: 601,
+      headSha: 'f'.repeat(40),
+      baseSha: 'e'.repeat(40),
+      reportSha: 'f'.repeat(40)
+    }
+    const declared = {
+      deliveryKey: mention.deliveryKey,
+      agentId,
+      configRevision: hook.configRevision,
+      dispatchRevision: hook.dispatchRevision,
+      dispatchDaemonId: D1,
+      at: new Date('2026-07-11T03:00:02.000Z')
+    }
+    expect(await repo.recordDelivery(hookId, mention)).toBe(true)
+    // Only a started turn can declare, and only from the daemon it was dispatched to.
+    expect(await repo.recordReviewDeclared(hookId, D1, declared)).toBe(false)
+    expect(await repo.recordStart(hookId, D1, { ...mention, startedAt: new Date('2026-07-11T03:00:01.000Z') })).toBe(
+      true
+    )
+    expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
+    expect(await repo.recordReviewDeclared(hookId, D2, declared)).toBe(false)
+    expect(await repo.recordReviewDeclared(hookId, D1, declared)).toBe(true)
+    expect(await repo.recordReviewDeclared(hookId, D1, { ...declared, at: new Date('2026-07-11T03:00:09.000Z') })).toBe(
+      true
+    )
+    const run = (await repo.getRun(hookId, mention.deliveryKey))!
+    expect(run.reviewDeclaredAt).toEqual(declared.at)
+
+    // The declaration alone makes it the revision's current generation, with no verdict yet.
+    const scope = {
+      repoId: mention.repoId,
+      projectionEpoch: run.projectionEpoch!,
+      pullNumber: mention.pullNumber,
+      reportSha: mention.reportSha
+    }
+    expect((await repo.listRunsNeedingReviewProjection()).map((candidate) => candidate.id)).toEqual([run.id])
+    expect(await repo.latestReviewVerdictRun(hookId, scope)).toMatchObject({ id: run.id, verdict: null })
+    const projection = await repo.upsertReviewProjection({
+      hookId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      agentName: 'review-agent',
+      repoId: mention.repoId,
+      repoFullName: mention.repoFullName,
+      headSha: mention.headSha,
+      reportSha: mention.reportSha,
+      projectionEpoch: run.projectionEpoch!,
+      mode: 'check',
+      gateMode: 'informational',
+      desiredState: 'in_progress',
+      currentHookRunId: run.id,
+      nextAttemptAt: declared.at
+    })
+    expect(await repo.bindRunProjection(hookId, mention.deliveryKey, projection.id, projection.generation)).toBe(true)
+    await repo.upsertReviewSubject({
+      projectionId: projection.id,
+      pullNumber: mention.pullNumber,
+      headSha: mention.headSha,
+      baseSha: mention.baseSha,
+      isOpen: true
+    })
+    expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
+
+    // Ending without a verdict fails the Check the declaration opened.
+    const endedAt = new Date('2026-07-11T03:05:00.000Z')
+    expect(
+      await repo.recordReport(
+        hookId,
+        D1,
+        {
+          deliveryKey: mention.deliveryKey,
+          status: 'success',
+          projectionDesiredState: 'failure',
+          projectionNextAttemptAt: endedAt
+        },
+        endedAt
+      )
+    ).toBe(true)
+    expect(await repo.getReviewProjection(projection.id)).toMatchObject({
+      currentHookRunId: run.id,
+      desiredState: 'failure'
+    })
+    expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
+
+    // A turn that already reviewed keeps its verdict-only reading: a late declaration is refused.
+    const reviewed = {
+      ...mention,
+      deliveryKey: 'delivery-mention-reviewed',
+      firedAt: new Date('2026-07-11T03:10:00.000Z')
+    }
+    expect(await repo.recordDelivery(hookId, reviewed)).toBe(true)
+    expect(await repo.recordStart(hookId, D1, { ...reviewed, startedAt: new Date('2026-07-11T03:10:01.000Z') })).toBe(
+      true
+    )
+    expect(
+      await repo.reserveReviewAttempt(hookId, D1, {
+        deliveryKey: reviewed.deliveryKey,
+        attemptId: randomUUID(),
+        agentId,
+        configRevision: hook.configRevision,
+        dispatchRevision: hook.dispatchRevision,
+        dispatchDaemonId: D1,
+        requestedEvent: 'COMMENT',
+        requestedVerdict: 'neutral'
+      })
+    ).toBe('reserved')
+    expect(await repo.recordReviewDeclared(hookId, D1, { ...declared, deliveryKey: reviewed.deliveryKey })).toBe(false)
+  })
+
   it.each([
     ['agent session start failure', 'session_start_failed'],
     ['provider quota exhaustion', HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED],

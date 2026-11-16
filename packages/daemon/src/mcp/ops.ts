@@ -109,6 +109,8 @@ import { shareFile, type ShareFileDeps } from './ops/share-file.js'
 import {
   replyGithubReviewThreads,
   REPLY_GITHUB_REVIEW_THREADS_ARGS,
+  startCodeReview,
+  START_CODE_REVIEW_ARGS,
   submitCodeReview,
   SUBMIT_CODE_REVIEW_ARGS,
   type GithubReviewDeps
@@ -310,6 +312,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['submitCodeReview', submitCodeReview],
   // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
   ['submitGithubReview', submitCodeReview],
+  ['startCodeReview', startCodeReview],
   ['replyGithubReviewThreads', replyGithubReviewThreads],
   ...CODE_HOST_EFFECT_TOOLS.map((tool): [string, ToolHandler<OpsDeps>] => [
     tool.descriptor.name,
@@ -383,6 +386,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['listOrgSkills', LIST_ORG_SKILLS_ARGS],
   ['submitCodeReview', SUBMIT_CODE_REVIEW_ARGS],
   ['submitGithubReview', SUBMIT_CODE_REVIEW_ARGS],
+  ['startCodeReview', START_CODE_REVIEW_ARGS],
   ['replyGithubReviewThreads', REPLY_GITHUB_REVIEW_THREADS_ARGS],
   ...CODE_HOST_EFFECT_TOOLS.map((tool): [string, ZodType] => [tool.descriptor.name, tool.args]),
   ['listCodeHostRepositories', LIST_CODE_HOST_REPOSITORIES_ARGS],

@@ -340,6 +340,14 @@ describe('R1/R2a hook control schemas', () => {
       decodeEnvelope(JSON.stringify(buildEnvelope('github/review-result/ok', { accepted: true }, { corr: result.id })))
         .ok
     ).toBe(true)
+
+    const declare = buildEnvelope('github/review-declare', { hookId: HOOK_ID, deliveryKey: 'delivery-1', snapshot })
+    expect(decodeEnvelope(JSON.stringify(declare)).ok).toBe(true)
+    expect(
+      decodeEnvelope(
+        JSON.stringify(buildEnvelope('github/review-declare/ok', { accepted: true }, { corr: declare.id }))
+      ).ok
+    ).toBe(true)
   })
 
   it('requires the requested verdict in the review authorization fence', () => {

@@ -3434,6 +3434,8 @@ export interface HookRunRecord {
   startedAt: Date
   preparingAt: Date | null
   turnStartedAt: Date | null
+  /** When the Agent declared it is starting the review a mention offered; from then the Check follows this run like a generation. */
+  reviewDeclaredAt: Date | null
   completedAt: Date | null
   orphanedAt: Date | null
   projectionId: string | null
@@ -3501,6 +3503,16 @@ export interface GithubRepoFullNameRefreshResult {
 
 /** The active daemon began preparing an accepted GitHub review. */
 export interface HookPreparingInput {
+  deliveryKey: string
+  agentId: AgentId
+  configRevision: bigint
+  dispatchRevision: bigint
+  dispatchDaemonId: DaemonId
+  at: Date
+}
+
+/** The Agent declared, inside a started mention turn, that it is reviewing. */
+export interface HookReviewDeclaredInput {
   deliveryKey: string
   agentId: AgentId
   configRevision: bigint
@@ -3773,6 +3785,8 @@ export interface HookRepo {
   recordPreparing(hookId: HookId, reportingDaemonId: DaemonId, input: HookPreparingInput): Promise<boolean>
   /** Action/start authority uses the persisted accepted tuple, not current placement. */
   recordStart(hookId: HookId, reportingDaemonId: DaemonId, input: HookStartInput): Promise<boolean>
+  /** Stamp a started `review_optional` run as a declared review; idempotent, refused once the run holds a review attempt. */
+  recordReviewDeclared(hookId: HookId, reportingDaemonId: DaemonId, input: HookReviewDeclaredInput): Promise<boolean>
   reserveReviewAttempt(
     hookId: HookId,
     reportingDaemonId: DaemonId,

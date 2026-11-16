@@ -43,6 +43,7 @@ import type {
   HookReportInput,
   HookPreparingInput,
   HookStartInput,
+  HookReviewDeclaredInput,
   HookReviewAttemptInput,
   HookReviewAttemptResult,
   HookReviewResultInput,
@@ -66,7 +67,7 @@ import {
   lockHookReviewOrgLifecycleScope,
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
-import { authoritativeHookProjectionState, isVerdictOnlyProjectionIntent } from '../../github/projection-state.js'
+import { authoritativeHookProjectionState, isVerdictOnlyRun } from '../../github/projection-state.js'
 import { githubHookCovers } from '../../hooks/installation-row.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
@@ -161,6 +162,7 @@ function toRunRecord(r: HookRun): HookRunRecord {
     startedAt: r.startedAt,
     preparingAt: r.preparingAt,
     turnStartedAt: r.turnStartedAt,
+    reviewDeclaredAt: r.reviewDeclaredAt,
     completedAt: r.completedAt,
     orphanedAt: r.orphanedAt,
     projectionId: r.projectionId,
@@ -272,12 +274,12 @@ function isProjectionDesiredState(state: string): boolean {
 }
 
 function submittedReviewProjectionState(
-  run: Pick<HookRun, 'projectionIntent' | 'reviewAttemptState' | 'reviewEvent' | 'verdict'>
+  run: Pick<HookRun, 'projectionIntent' | 'reviewDeclaredAt' | 'reviewAttemptState' | 'reviewEvent' | 'verdict'>
 ): string | null {
   if (run.reviewAttemptState !== 'submitted') return null
   if (run.reviewEvent === 'REQUEST_CHANGES' || run.verdict === 'fail') return 'action_required'
   if (run.verdict === 'pass') return 'success'
-  if (isVerdictOnlyProjectionIntent(run.projectionIntent)) return null
+  if (isVerdictOnlyRun(run)) return null
   if (run.verdict === 'neutral') return 'neutral'
   return null
 }
@@ -1201,8 +1203,7 @@ export class PgHookRepo implements HookRepo {
     return row ? toRunRecord(row) : null
   }
 
-  // Same membership and grouping as the repair CTE's `latest`: a generation, or a conversation turn that
-  // submitted pass/fail, within one `(hookId, repoId, reportSha, projectionEpoch)` projection key.
+  // Same membership and grouping as the repair CTE's `latest`, within one `(hookId, repoId, reportSha, projectionEpoch)` projection key.
   async latestReviewVerdictRun(
     hookId: HookId,
     scope: { repoId: bigint; projectionEpoch: bigint; pullNumber: number; reportSha: string }
@@ -1217,6 +1218,7 @@ export class PgHookRepo implements HookRepo {
         subjectKind: 'pull_request',
         OR: [
           { projectionIntent: 'revision_event' },
+          { projectionIntent: 'review_optional', reviewDeclaredAt: { not: null } },
           {
             projectionIntent: { in: ['review_action_only', 'review_optional'] },
             reviewAttemptState: 'submitted',
@@ -1272,6 +1274,7 @@ export class PgHookRepo implements HookRepo {
           )
           AND (
             r."projectionIntent" = 'revision_event'
+            OR (r."projectionIntent" = 'review_optional' AND r."reviewDeclaredAt" IS NOT NULL)
             OR (
               r."projectionIntent" IN ('review_action_only', 'review_optional')
               AND r."reviewAttemptState" = 'submitted'
@@ -1290,7 +1293,8 @@ export class PgHookRepo implements HookRepo {
               THEN 'action_required'
             WHEN latest."reviewAttemptState" = 'submitted' AND latest.verdict = 'neutral'
               THEN 'neutral'
-            WHEN latest."projectionIntent" IN ('review_action_only', 'review_optional')
+            WHEN latest."projectionIntent" = 'review_action_only'
+              OR (latest."projectionIntent" = 'review_optional' AND latest."reviewDeclaredAt" IS NULL)
               THEN NULL
             WHEN latest."reviewErrorCode" IS NOT NULL
               THEN 'failure'
@@ -1375,6 +1379,51 @@ export class PgHookRepo implements HookRepo {
       const changed = await tx.hookRun.updateMany({
         where: { id: run.id, status: 'running', preparingAt: null, turnStartedAt: null },
         data: { preparingAt: input.at }
+      })
+      return changed.count === 1
+    })
+  }
+
+  async recordReviewDeclared(
+    hookId: HookId,
+    reportingDaemonId: DaemonId,
+    input: HookReviewDeclaredInput
+  ): Promise<boolean> {
+    const authority = await this.dispatchAuthority(hookId)
+    return this.transaction(async (tx) => {
+      await lockHookReviewLifecycleScope(tx, hookId)
+      await lockHookDeliveryRedeliveryScope(tx, input.deliveryKey)
+      const found = await tx.hookRun.findUnique({
+        where: { hookId_deliveryKey: { hookId, deliveryKey: input.deliveryKey } }
+      })
+      if (!found) return false
+      const run = await this.lockHookRunById(tx, found.id)
+      const hook = await tx.hookDef.findUnique({ where: { id: hookId } })
+      if (
+        !run ||
+        !hook ||
+        !hook.enabled ||
+        hook.kind !== 'github' ||
+        hook.agentId !== input.agentId ||
+        hook.dispatchRevision !== input.dispatchRevision ||
+        hook.projectionEpoch !== run.projectionEpoch ||
+        run.status !== 'running' ||
+        run.projectionIntent !== 'review_optional' ||
+        run.turnStartedAt === null ||
+        run.agentId !== input.agentId ||
+        run.configRevision !== input.configRevision ||
+        run.dispatchRevision !== input.dispatchRevision ||
+        run.dispatchDaemonId !== input.dispatchDaemonId ||
+        reportingDaemonId !== input.dispatchDaemonId ||
+        !servedBy(authority, input.agentId, reportingDaemonId)
+      )
+        return false
+      if (run.reviewDeclaredAt !== null) return true
+      // A run that already holds a review attempt keeps the verdict-only reading it was submitted under.
+      if (run.reviewAttemptId !== null) return false
+      const changed = await tx.hookRun.updateMany({
+        where: { id: run.id, status: 'running', reviewDeclaredAt: null, reviewAttemptId: null },
+        data: { reviewDeclaredAt: input.at }
       })
       return changed.count === 1
     })
@@ -1677,6 +1726,7 @@ export class PgHookRepo implements HookRepo {
       if (updated.count === 1 && r.state === 'submitted' && run.projectionId && run.projectionGeneration !== null) {
         const desiredState = submittedReviewProjectionState({
           projectionIntent: run.projectionIntent,
+          reviewDeclaredAt: run.reviewDeclaredAt,
           reviewAttemptState: 'submitted',
           reviewEvent: r.event ?? null,
           verdict: r.verdict ?? null
