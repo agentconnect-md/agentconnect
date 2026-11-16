@@ -855,6 +855,25 @@ describe('GithubReviewBrokerService', () => {
       expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
     })
 
+    it('authorizes the review a mention offered with no sealed verdict to amend', async () => {
+      const { service, hookRepo, setRun } = setup()
+      const mention = (overrides: Partial<HookRunRecord> = {}) =>
+        conversation({ event: 'issue_comment:created', projectionIntent: 'review_optional', ...overrides })
+      setRun(mention())
+      hookRepo.latestReviewVerdictRun.mockResolvedValue(sealed())
+      // The offer is its authority, so the barrier names no amendment.
+      await expect(service.start({ ...startInput, event: 'issue_comment:created' }, DAEMON)).resolves.toEqual({})
+
+      setRun(mention({ turnStartedAt: new Date(6_000) }))
+      // A re-review may repeat the sealed verdict: it is not an amendment.
+      await expect(service.authorize(authorizeInput('REQUEST_CHANGES', 'fail'), DAEMON)).resolves.toMatchObject({
+        attemptId: ATTEMPT,
+        expectedHeadSha: 'head-sha'
+      })
+      expect(hookRepo.latestReviewVerdictRun).not.toHaveBeenCalled()
+      expect(hookRepo.reserveReviewAttempt).toHaveBeenCalledOnce()
+    })
+
     it('lets a conversation turn reconcile its own reserved attempt without repeating the gate', async () => {
       const { service, hookRepo, setRun } = setup()
       setRun(

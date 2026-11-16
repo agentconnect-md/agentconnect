@@ -28,11 +28,16 @@ export function hookRuntimeProjectionState(outcome: {
   return outcome.status === 'running' ? null : 'failure'
 }
 
+/** A turn that opened no generation projects only a submitted pass/fail: an amendment's, or the review a mention offered. */
+export function isVerdictOnlyProjectionIntent(intent: string | null): boolean {
+  return intent === 'review_action_only' || intent === 'review_optional'
+}
+
 function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
   if (run.reviewEvent === 'REQUEST_CHANGES') return 'action_required'
   if (run.verdict === 'pass') return 'success'
   if (run.verdict === 'fail') return 'action_required'
-  if (run.projectionIntent === 'review_action_only') return null
+  if (isVerdictOnlyProjectionIntent(run.projectionIntent)) return null
   if (run.verdict === 'neutral') return 'neutral'
   return null
 }
@@ -42,7 +47,6 @@ function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
 export function authoritativeHookProjectionState(run: HookRunRecord): ProjectionDesiredState | null {
   const reviewState = run.reviewAttemptState === 'submitted' ? reviewDesiredState(run) : null
   if (reviewState) return reviewState
-  if (run.projectionIntent === 'review_action_only') return null
   if (run.projectionIntent !== 'revision_event') return null
   if (run.reviewErrorCode) return 'failure'
   if (run.orphanedAt) return 'timed_out'

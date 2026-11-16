@@ -35,6 +35,7 @@ import type { CpClient } from '../cp/client.js'
 import type { Logger } from '../log.js'
 import {
   buildHookMessage,
+  githubOffersOptionalReview,
   githubOpensReviewGeneration,
   hookAnchorText,
   type HookPromptSupplement
@@ -531,22 +532,25 @@ export class GithubReviewOrchestrator {
     }
   }
 
-  githubFormalReviewEnabled(entry: QueueEntry): boolean {
+  /** How this delivery can review: `generation` opens one, `optional` is a mention the Agent may answer with one. */
+  githubFormalReviewKind(entry: QueueEntry): 'generation' | 'optional' | undefined {
     const hook = entry.hookContext
     const snapshot = hook?.snapshot
     const github = hook?.github
-    return Boolean(
-      hook &&
-      snapshot &&
-      github?.subjectKind === 'pull_request' &&
-      github.pullNumber !== undefined &&
-      snapshot.reviewPolicy !== 'off' &&
-      snapshot.gateMode === 'informational' &&
-      snapshot.reportingMode !== 'status' &&
-      (!this.host.daemonId() || snapshot.dispatchDaemonId === this.host.daemonId()) &&
-      githubOpensReviewGeneration(hook.event, github, snapshot.reviewPolicy) &&
-      !isGithubReviewCommentHook(hook)
+    if (
+      !hook ||
+      !snapshot ||
+      github?.subjectKind !== 'pull_request' ||
+      github.pullNumber === undefined ||
+      snapshot.reviewPolicy === 'off' ||
+      snapshot.gateMode !== 'informational' ||
+      snapshot.reportingMode === 'status' ||
+      (this.host.daemonId() && snapshot.dispatchDaemonId !== this.host.daemonId()) ||
+      isGithubReviewCommentHook(hook)
     )
+      return undefined
+    if (githubOpensReviewGeneration(hook.event, github, snapshot.reviewPolicy)) return 'generation'
+    return githubOffersOptionalReview(github, snapshot.reviewPolicy) ? 'optional' : undefined
   }
 
   /** Fill the trusted revision gap on issue_comment deliveries before either
@@ -640,10 +644,7 @@ export class GithubReviewOrchestrator {
     return effectiveSessionIsolation(agent)
   }
 
-  /** Prepare an exact, isolated checkout before a formal review generation. A
-   * formal review may use GitHub read-only inspection when its configured local
-   * repo differs, but it must never silently fall back to a stale checkout.
-   * Ordinary PR conversations preserve their stable session worktree. */
+  /** Prepare an exact, isolated checkout before a turn that reviews or may: it never silently falls back to a stale checkout, and ordinary PR conversations keep their stable session worktree. */
   async prepareGithubReviewWorkspace(
     entry: QueueEntry,
     key: string,
@@ -653,11 +654,13 @@ export class GithubReviewOrchestrator {
     forceWorkspaceIsolation?: true
     preparedWorkspaceCwd?: string
   }> {
-    if (!this.githubFormalReviewEnabled(entry)) return {}
+    const kind = this.githubFormalReviewKind(entry)
+    if (!kind) return {}
 
     const hook = entry.hookContext
     const client = this.host.cpClient()
-    if (client && hook?.snapshot) {
+    // A mention opens no generation, so it has no preparing phase for the Check to show.
+    if (kind === 'generation' && client && hook?.snapshot) {
       const payload = {
         hookId: hook.hookId,
         agentId: hook.agentId,
@@ -825,9 +828,12 @@ export class GithubReviewOrchestrator {
     if (snapshot.reviewPolicy === 'off') return undefined
     const opensGeneration =
       !isGithubReviewCommentHook(hook) && githubOpensReviewGeneration(hook.event, trusted, snapshot.reviewPolicy)
-    // A conversation turn holds review authority only as the amendment the CP named at the barrier, on its own head.
-    const amendment = opensGeneration ? undefined : started?.amendment
-    if (!opensGeneration && amendment?.reportSha !== (trusted.reportSha ?? trusted.headSha)) return undefined
+    // A mention offers the review outright; any other conversation turn holds it only as the amendment the CP named at the barrier, on its own head.
+    const offersReview =
+      !opensGeneration && !isGithubReviewCommentHook(hook) && githubOffersOptionalReview(trusted, snapshot.reviewPolicy)
+    const reviews = opensGeneration || offersReview
+    const amendment = reviews ? undefined : started?.amendment
+    if (!reviews && amendment?.reportSha !== (trusted.reportSha ?? trusted.headSha)) return undefined
     const recoverableAttempt =
       hook.reviewAttemptId !== undefined &&
       hook.reviewRequestedEvent !== undefined &&

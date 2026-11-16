@@ -291,6 +291,19 @@ export function githubOpensReviewGeneration(
   )
 }
 
+/** True when an authorized mention offers this PR delivery a formal review the Agent may decline. */
+export function githubOffersOptionalReview(
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): boolean {
+  return Boolean(
+    github?.subjectKind === 'pull_request' &&
+    github.optionalReview &&
+    reviewPolicy !== undefined &&
+    reviewPolicy !== 'off'
+  )
+}
+
 /** The verdict events a hook's review policy allows: what `submitCodeReview` may record. */
 export function reviewVerdictEvents(reviewPolicy: RdMsgHook['reviewPolicy']): { passing: string; failing: string } {
   return {
@@ -324,6 +337,11 @@ const DAEMON_OWNS_REPLY = 'The daemon owns the reply; post nothing yourself.'
 const REVIEW_PUBLICATION_REQUESTED =
   'Requested action: review this revision and publish the verdict as a formal review through `submitCodeReview`; ' +
   "this repository's configured review trigger authorizes that publication."
+
+/** The mention's twin of the line above: publication is authorized, and whether the comment asks for it is the Agent's to judge. */
+const REVIEW_PUBLICATION_OFFERED =
+  "Available action: the comment below mentions you from an account this repository's configured review trigger " +
+  'authorizes; if it asks for a review, publishing the verdict as a formal review through `submitCodeReview` is authorized.'
 
 /** Standing rule for a refused submission: a delivery turn has no one to answer an authorization request. */
 const REVIEW_REFUSAL_RULE =
@@ -359,9 +377,10 @@ function githubStandingContext(): string {
       'complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, ' +
       'or otherwise unresolved formal attempt suppresses the ordinary comment, which is posted only when no formal review ' +
       'was attempted or the attempt definitively returns `not_submitted`. An approval or rejection from an earlier revision ' +
-      'does not complete a later one; do not merely describe the verdict in your final reply. A conversation delivery ' +
-      'followed by a `Verdict amendment available` block may change that sealed verdict through the same tool, as the ' +
-      'block says; any other delivery cannot submit a formal review.',
+      'does not complete a later one; do not merely describe the verdict in your final reply. A delivery that offers a ' +
+      'review says so and leaves the decision to you; when you do review, the same tool and body rule apply. A conversation ' +
+      'delivery followed by a `Verdict amendment available` block may change that sealed verdict through the same tool, as ' +
+      'the block says; any other delivery cannot submit a formal review.',
     REVIEW_REFUSAL_RULE,
     '- A delivery that names an inline review conversation is answered there. When it lists several review threads from ' +
       'one submitted review, use the structured `replyGithubReviewThreads` tool exactly once with one answer per listed ' +
@@ -411,6 +430,20 @@ function githubDeliveryOpensReview(
   )
 }
 
+/** True when this PR-conversation mention offers a formal review instead of opening one. */
+function githubDeliveryOffersReview(
+  c: HookContext,
+  github: GithubHookMetadata | undefined,
+  reviewPolicy: RdMsgHook['reviewPolicy']
+): boolean {
+  return (
+    c.number !== undefined &&
+    c.event !== 'pull_request_review_comment' &&
+    !githubDeliveryOpensReview(c, github, reviewPolicy) &&
+    githubOffersOptionalReview(github, reviewPolicy)
+  )
+}
+
 /** The per-turn line for a github fire on a NUMBERED thread (issue/PR): what THIS delivery is and
  *  how it is answered — the standing block carries the rules. Push fires have no thread and get none. */
 function githubReplyHint(
@@ -436,10 +469,19 @@ function githubReplyHint(
       `unavailable for this review-comment event family. ${DAEMON_OWNS_REPLY}`
     )
   }
+  const { passing, failing } = reviewVerdictEvents(reviewPolicy)
+  if (githubDeliveryOffersReview(c, github, reviewPolicy)) {
+    return (
+      `\n\nReply to this GitHub conversation on ${where}. This delivery offers a formal review and the decision is yours: ` +
+      'when the comment asks for a review — a mention that asks for nothing else does — review the current PR revision ' +
+      `and record the verdict through \`submitCodeReview\`, using ${passing} + pass when it passes or ${failing} + fail ` +
+      'when it has blocking findings. Otherwise answer it as an ordinary conversation and submit no formal review. ' +
+      DAEMON_OWNS_REPLY
+    )
+  }
   if (!githubDeliveryOpensReview(c, github, reviewPolicy)) {
     return `\n\nReply to this GitHub conversation on ${where}. Formal GitHub review submission is unavailable for this delivery unless a verdict-amendment block follows. ${DAEMON_OWNS_REPLY}`
   }
-  const { passing, failing } = reviewVerdictEvents(reviewPolicy)
   return (
     '\n\nThis delivery opens a review generation for the current PR revision: record the verdict through ' +
     `\`submitCodeReview\` — use ${passing} + pass when it passes, or ${failing} + fail when it has blocking findings. ` +
@@ -479,7 +521,8 @@ function buildGithubHookText(
     ...(c.sha ? [`Commit: ${c.sha}`] : []),
     ...(c.release ? releaseHeaderLines(c.release.tag, c) : []),
     ...(c.htmlUrl ? [c.htmlUrl] : []),
-    ...(githubDeliveryOpensReview(c, github, reviewPolicy) ? [REVIEW_PUBLICATION_REQUESTED] : [])
+    ...(githubDeliveryOpensReview(c, github, reviewPolicy) ? [REVIEW_PUBLICATION_REQUESTED] : []),
+    ...(githubDeliveryOffersReview(c, github, reviewPolicy) ? [REVIEW_PUBLICATION_OFFERED] : [])
   ].join('\n')
   // Ordinary replies use the display context's number. Inline replies instead
   // use the complete, body-free PR target carried with the trusted root id.

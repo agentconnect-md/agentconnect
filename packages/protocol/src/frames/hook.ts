@@ -66,11 +66,10 @@ export const GithubHookMetadata = z
     mergeCommitSha: z.string().min(1).optional(),
     isDraft: z.boolean().optional(),
     baseChanged: z.boolean().optional(),
-    // Relay-derived from a newly-authored PR conversation comment that
-    // explicitly mentions this agent or the App while the accepted rule
-    // enables formal reviews. The body stays off the CP wire; only this
-    // trusted routing fact reopens the review generation.
+    // Relay-derived: an authorized workflow approval asks for the waiting review, which reopens the review generation.
     explicitReviewRequest: z.boolean().optional(),
+    // Relay-derived: an authorized PR-conversation mention under a rule that enables formal reviews; the Agent decides whether to review, and the body stays off the CP wire.
+    optionalReview: z.boolean().optional(),
     pullRequestReviewId: HookBigIntString.refine((value) => value !== '0').optional(),
     reviewCommentId: HookBigIntString.optional(),
     reviewThreadRootCommentId: HookBigIntString.optional(),

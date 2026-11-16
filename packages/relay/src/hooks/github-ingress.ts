@@ -607,7 +607,8 @@ export function buildTrustedGithubMetadata(
     event === 'pull_request' ||
     event === 'pull_request_review_comment' ||
     (event === 'issue_comment' && payload.issue?.pull_request !== undefined)
-  const explicitReviewRequest =
+  // A mention offers a review and never demands one: what the comment asks for is the Agent's to judge.
+  const optionalReview =
     rule.reviewPolicy !== undefined &&
     rule.reviewPolicy !== 'off' &&
     isPullRequest &&
@@ -654,7 +655,7 @@ export function buildTrustedGithubMetadata(
     ...(pr?.merge_commit_sha ? { mergeCommitSha: pr.merge_commit_sha } : {}),
     ...(pr?.draft !== undefined ? { isDraft: pr.draft } : {}),
     ...(event === 'pull_request' && payload.action === 'edited' ? { baseChanged } : {}),
-    ...(explicitReviewRequest ? { explicitReviewRequest: true } : {}),
+    ...(optionalReview ? { optionalReview: true } : {}),
     ...(pullRequestReviewId !== undefined ? { pullRequestReviewId: String(pullRequestReviewId) } : {}),
     ...(reviewCommentId !== undefined ? { reviewCommentId: String(reviewCommentId) } : {}),
     ...(reviewThreadRootCommentId !== undefined

@@ -300,6 +300,49 @@ describe('GithubRunCoordinator', () => {
     expect(hooks.setProjectionDesired).not.toHaveBeenCalled()
   })
 
+  it('projects only the verdict a mention turn chose to submit', async () => {
+    const hooks = {
+      getRun: vi.fn(async () => run({ projectionIntent: 'review_optional', turnStartedAt: new Date(NOW) })),
+      listRunsNeedingReviewProjection: vi.fn(async () => []),
+      upsertReviewProjection: vi.fn(async () => projection({ desiredState: 'failure' })),
+      bindRunProjection: vi.fn(async () => true),
+      setProjectionDesired: vi.fn(async () => true),
+      upsertReviewSubject: vi.fn(async () => {})
+    }
+    const coordinator = new GithubRunCoordinator({
+      hooks: hooks as never,
+      agents: { getUnscoped: vi.fn(async () => agent()) },
+      clock: new FakeClock(NOW)
+    })
+
+    // The mention opens no generation: its start and a turn that did other work leave the Check alone.
+    await coordinator.afterStart(hookId, 'delivery-1')
+    hooks.getRun.mockResolvedValue(
+      run({ status: 'success', completedAt: new Date(NOW + 1_000), projectionIntent: 'review_optional' })
+    )
+    await coordinator.afterReport(hookId, 'delivery-1')
+    expect(hooks.upsertReviewProjection).not.toHaveBeenCalled()
+
+    // The review it chose to submit lands as a terminal result with no in-progress phase.
+    const reviewed = run({
+      status: 'success',
+      completedAt: new Date(NOW + 1_000),
+      projectionIntent: 'review_optional',
+      reviewAttemptState: 'submitted',
+      reviewEvent: 'APPROVE',
+      verdict: 'pass'
+    })
+    hooks.getRun.mockResolvedValue(reviewed)
+    await coordinator.afterReviewResult(hookId, reviewed.deliveryKey)
+    expect(hooks.setProjectionDesired).toHaveBeenCalledWith(
+      expect.any(String),
+      1n,
+      'success',
+      expect.any(Date),
+      reviewed.id
+    )
+  })
+
   it('seals REQUEST_CHANGES over a later successful runtime report', async () => {
     const row = run({
       status: 'success',

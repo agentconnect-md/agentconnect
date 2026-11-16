@@ -2517,7 +2517,7 @@ describe('R1/R2a persistence foundation', () => {
     expect(await repo.getReviewProjection(projection.id)).not.toBeNull()
   })
 
-  it('keeps a same-revision definitive verdict current across a newer neutral conversation review', async () => {
+  it('keeps a same-revision definitive verdict current across a neutral conversation review until a mention review supersedes it', async () => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
@@ -2665,6 +2665,72 @@ describe('R1/R2a persistence foundation', () => {
       currentHookRunId: failedRun.id,
       desiredState: 'action_required'
     })
+
+    // A later mention the Agent answers with a review supersedes it, and only once that review is submitted.
+    const mention = {
+      ...revision,
+      deliveryKey: 'delivery-mention-review',
+      firedAt: new Date('2026-07-11T01:30:20.000Z'),
+      event: 'issue_comment:created',
+      projectionIntent: 'review_optional' as const
+    }
+    expect(await repo.recordDelivery(hookId, mention)).toBe(true)
+    expect(await repo.recordStart(hookId, D1, { ...mention, startedAt: new Date('2026-07-11T01:30:21.000Z') })).toBe(
+      true
+    )
+    expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
+    const passAttemptId = randomUUID()
+    expect(
+      await repo.reserveReviewAttempt(hookId, D1, {
+        deliveryKey: mention.deliveryKey,
+        attemptId: passAttemptId,
+        agentId,
+        configRevision: hook.configRevision,
+        dispatchRevision: hook.dispatchRevision,
+        dispatchDaemonId: D1,
+        requestedEvent: 'APPROVE',
+        requestedVerdict: 'pass'
+      })
+    ).toBe('reserved')
+    expect(
+      await repo.recordReviewResult(hookId, D1, {
+        deliveryKey: mention.deliveryKey,
+        attemptId: passAttemptId,
+        state: 'submitted',
+        reviewId: '1003',
+        event: 'APPROVE',
+        verdict: 'pass',
+        commitId: mention.headSha
+      })
+    ).toBe(true)
+    const mentionRun = (await repo.getRun(hookId, mention.deliveryKey))!
+    expect((await repo.listRunsNeedingReviewProjection()).map((candidate) => candidate.id)).toEqual([mentionRun.id])
+    expect(
+      await repo.latestReviewVerdictRun(hookId, {
+        repoId: revision.repoId,
+        projectionEpoch: mentionRun.projectionEpoch!,
+        pullNumber: revision.pullNumber,
+        reportSha: revision.reportSha
+      })
+    ).toMatchObject({ id: mentionRun.id, verdict: 'pass' })
+    const advanced = await repo.upsertReviewProjection({
+      hookId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      agentName: 'review-agent',
+      repoId: revision.repoId,
+      repoFullName: revision.repoFullName,
+      headSha: revision.headSha,
+      reportSha: revision.reportSha,
+      projectionEpoch: mentionRun.projectionEpoch!,
+      mode: 'check',
+      gateMode: 'informational',
+      desiredState: 'success',
+      currentHookRunId: mentionRun.id,
+      nextAttemptAt: mention.firedAt
+    })
+    expect(advanced).toMatchObject({ currentHookRunId: mentionRun.id, desiredState: 'success' })
+    expect(advanced.generation).toBe(projection.generation + 1n)
   })
 
   it.each([
