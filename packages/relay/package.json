@@ -39,7 +39,7 @@
     "@agentconnect.md/observability": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
     "@opentelemetry/api": "^1.10.0",
-    "@slack/web-api": "^8.3.0",
+    "@slack/web-api": "^8.4.0",
     "fastify": "^5.12.8",
     "jose": "^6.2.17",
     "undici": "^8.12.4",
