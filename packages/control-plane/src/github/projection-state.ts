@@ -28,16 +28,30 @@ export function hookRuntimeProjectionState(outcome: {
   return outcome.status === 'running' ? null : 'failure'
 }
 
-/** A turn that opened no generation projects only a submitted pass/fail: an amendment's, or the review a mention offered. */
-export function isVerdictOnlyProjectionIntent(intent: string | null): boolean {
-  return intent === 'review_action_only' || intent === 'review_optional'
+type ProjectionRun = { projectionIntent: string | null; reviewDeclaredAt: Date | null }
+
+/** The Check follows this run's whole lifecycle: a review generation, or a mention review the Agent declared it started. */
+export function runOpensReviewGeneration(run: ProjectionRun): boolean {
+  return (
+    run.projectionIntent === 'revision_event' ||
+    (run.projectionIntent === 'review_optional' && run.reviewDeclaredAt !== null)
+  )
 }
 
-function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
+/** A turn that opened no generation projects only a submitted pass/fail: an amendment's, or a mention review never declared. */
+export function isVerdictOnlyRun(run: ProjectionRun): boolean {
+  return (
+    run.projectionIntent === 'review_action_only' ||
+    (run.projectionIntent === 'review_optional' && run.reviewDeclaredAt === null)
+  )
+}
+
+/** What a submitted review asks of the Check; a verdict-only turn's COMMENT + neutral asks nothing. */
+export function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
   if (run.reviewEvent === 'REQUEST_CHANGES') return 'action_required'
   if (run.verdict === 'pass') return 'success'
   if (run.verdict === 'fail') return 'action_required'
-  if (isVerdictOnlyProjectionIntent(run.projectionIntent)) return null
+  if (isVerdictOnlyRun(run)) return null
   if (run.verdict === 'neutral') return 'neutral'
   return null
 }
@@ -47,7 +61,7 @@ function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
 export function authoritativeHookProjectionState(run: HookRunRecord): ProjectionDesiredState | null {
   const reviewState = run.reviewAttemptState === 'submitted' ? reviewDesiredState(run) : null
   if (reviewState) return reviewState
-  if (run.projectionIntent !== 'revision_event') return null
+  if (!runOpensReviewGeneration(run)) return null
   if (run.reviewErrorCode) return 'failure'
   if (run.orphanedAt) return 'timed_out'
   const runtimeState = hookRuntimeProjectionState(run)

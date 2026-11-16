@@ -3520,6 +3520,30 @@ describe('executeTool: submitCodeReview', () => {
   })
 })
 
+describe('executeTool: startCodeReview', () => {
+  it('names the turn only by trusted session identity, whatever the model passes', async () => {
+    const startCodeReview = vi.fn(async () => ({ state: 'started' as const, note: 'in progress' }))
+    const { deps: d } = deps(fakeGateway())
+    d.startCodeReview = startCodeReview
+
+    // An attacker-supplied target is not an argument this tool has.
+    const result = await executeTool(ctx, 'startCodeReview', { repoFullName: 'evil/repo', pullNumber: 1 }, d)
+
+    expect(result).toEqual({ state: 'started', note: 'in progress' })
+    expect(startCodeReview).toHaveBeenCalledWith({
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C_CURRENT',
+      thread: '111.1'
+    })
+  })
+
+  it('fails closed on a daemon with no review seam', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'startCodeReview', {}, d)).rejects.toThrow('formal code reviews are unavailable')
+  })
+})
+
 describe('executeTool: replyGithubReviewThreads', () => {
   it('takes session identity from trusted context and validates decimal roots', async () => {
     const replyGithubReviewThreads = vi.fn(async () => ({

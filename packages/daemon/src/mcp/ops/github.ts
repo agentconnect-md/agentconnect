@@ -9,7 +9,7 @@ import {
   requiredString,
   requiredStringAllowEmpty
 } from './args.js'
-import type { SubmitCodeReviewReq } from '../../codehost/review-adapter.js'
+import type { StartCodeReviewReq, StartCodeReviewResult, SubmitCodeReviewReq } from '../../codehost/review-adapter.js'
 
 const REVIEW_SIDES = ['LEFT', 'RIGHT'] as const
 
@@ -40,6 +40,9 @@ export const SUBMIT_CODE_REVIEW_ARGS = z.object({
     .nullish()
     .transform((comments) => comments ?? undefined)
 })
+
+/** `startCodeReview` takes nothing: the turn it declares for is never model input. */
+export const START_CODE_REVIEW_ARGS = z.object({})
 
 const REPLIES_ERROR = 'argument replies must be a non-empty array'
 
@@ -102,6 +105,8 @@ export interface GithubReviewDeps {
    * The implementation routes by the turn's code host and owns action-time CP
    * authorization and revision fencing; ordinary sessions fail closed. */
   submitCodeReview?: (req: SubmitCodeReviewReq) => Promise<unknown>
+  /** Declare that the active hook turn is starting the review its delivery offered. */
+  startCodeReview?: (req: StartCodeReviewReq) => Promise<StartCodeReviewResult>
   /** Publish the independently authored replies for one trusted inline-review batch. */
   replyGithubReviewThreads?: (req: ReplyGithubReviewThreadsReq) => Promise<ReplyGithubReviewThreadsResult>
 }
@@ -126,6 +131,22 @@ export function submitCodeReview(
     verdict,
     body,
     ...(comments ? { comments } : {})
+  })
+}
+
+// The declaration names no target either: the daemon resolves the CURRENT active hook turn from the SessionContext.
+export function startCodeReview(
+  ctx: SessionContext,
+  _args: Record<string, unknown>,
+  deps: GithubReviewDeps
+): Promise<unknown> {
+  if (!deps.startCodeReview) throw new Error('formal code reviews are unavailable on this daemon')
+  return deps.startCodeReview({
+    agentId: ctx.agentId,
+    platform: ctx.platform,
+    channel: ctx.channel,
+    thread: ctx.thread,
+    ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {})
   })
 }
 

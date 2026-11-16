@@ -82,6 +82,8 @@ import type {
   AgentReadAccessOk,
   GithubReviewResultReport,
   GithubReviewResultOk,
+  GithubReviewDeclare,
+  GithubReviewDeclareOk,
   CodeHostNoteResult,
   CodeHostNoteResultOk,
   CodeHostReviewAuthorize,
@@ -1278,6 +1280,16 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected github/review-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as GithubReviewResultOk
+  }
+
+  /** Tell the CP the Agent is starting the review a mention offered; budgeted, because the review itself never waits on this. */
+  async declareGithubReview(payload: GithubReviewDeclare, orgId?: string): Promise<GithubReviewDeclareOk> {
+    this.requireReady('github/review-declare')
+    const rep = await this.budgetedRequest('github/review-declare', payload, 5_000, orgId)
+    if (rep.type !== 'github/review-declare/ok') {
+      throw new WireError('INTERNAL', `expected github/review-declare/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as GithubReviewDeclareOk
   }
 
   /** The observed outcome of ONE desired run projection generation (gitlab-com-integration.md §16). */

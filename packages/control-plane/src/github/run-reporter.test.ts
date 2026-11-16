@@ -343,6 +343,42 @@ describe('GithubRunCoordinator', () => {
     )
   })
 
+  it('follows a mention review the Agent declared from in progress to its outcome', async () => {
+    const declared = {
+      projectionIntent: 'review_optional',
+      turnStartedAt: new Date(NOW),
+      reviewDeclaredAt: new Date(NOW + 100)
+    } as const
+    let row = run(declared)
+    const hooks = {
+      getRun: vi.fn(async () => row),
+      upsertReviewProjection: vi.fn<HookRepo['upsertReviewProjection']>(async () => projection()),
+      bindRunProjection: vi.fn(async () => true),
+      setProjectionDesired: vi.fn<HookRepo['setProjectionDesired']>(async () => true),
+      upsertReviewSubject: vi.fn(async () => {})
+    }
+    const coordinator = new GithubRunCoordinator({
+      hooks: hooks as never,
+      agents: { getUnscoped: vi.fn(async () => agent()) },
+      clock: new FakeClock(NOW)
+    })
+
+    await coordinator.afterReviewDeclared(hookId, row.deliveryKey)
+    expect(hooks.upsertReviewProjection.mock.calls[0]?.[0]).toMatchObject({
+      desiredState: 'in_progress',
+      currentHookRunId: row.id
+    })
+
+    // The neutral review it then submits is this generation's result, where an undeclared one would move nothing.
+    row = run({ ...declared, reviewAttemptState: 'submitted', reviewEvent: 'COMMENT', verdict: 'neutral' })
+    await coordinator.afterReviewResult(hookId, row.deliveryKey)
+    // A declared review that ends with no verdict fails the Check it opened.
+    row = run({ ...declared, status: 'success', completedAt: new Date(NOW + 1_000) })
+    await coordinator.afterReport(hookId, row.deliveryKey)
+
+    expect(hooks.setProjectionDesired.mock.calls.map((call) => call[2])).toEqual(['in_progress', 'neutral', 'failure'])
+  })
+
   it('seals REQUEST_CHANGES over a later successful runtime report', async () => {
     const row = run({
       status: 'success',

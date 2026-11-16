@@ -6,6 +6,8 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { GithubReviewBrokerError } from '../../github/review-broker.service.js'
+import { handleGithubReviewDeclare } from './github-review-declare.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleHookReport } from './hook-report.js'
 import { handleHookStart } from './hook-start.js'
@@ -149,6 +151,37 @@ describe('GitHub projection request barriers', () => {
     barrier.resolve()
     await handling
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'github/review-result/ok', { accepted: true })
+  })
+
+  it('does not ACK a review declaration until its Check converges, and relays a refusal', async () => {
+    const barrier = deferred()
+    const conn = fakeConn()
+    const frame = {
+      v: 1,
+      id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      type: 'github/review-declare',
+      payload: { hookId: HOOK_ID, deliveryKey: 'delivery-1', snapshot }
+    } as AnyFrame
+    const declare = vi.fn(async () => {})
+    const deps = {
+      githubReviewBroker: { declare },
+      githubRunCoordinator: { afterReviewDeclared: vi.fn(() => barrier.promise) }
+    } as unknown as DaemonWsDeps
+
+    const handling = handleGithubReviewDeclare(frame, conn, deps)
+    await vi.waitFor(() => expect(deps.githubRunCoordinator!.afterReviewDeclared).toHaveBeenCalledOnce())
+    expect(conn.replyTo).not.toHaveBeenCalled()
+
+    barrier.resolve()
+    await handling
+    expect(declare).toHaveBeenCalledWith(frame.payload, DAEMON_ID, 'org-a')
+    expect(conn.replyTo).toHaveBeenCalledWith(frame, 'github/review-declare/ok', { accepted: true })
+
+    declare.mockRejectedValueOnce(new GithubReviewBrokerError('SCOPE_DENIED', 'not offered', false))
+    await handleGithubReviewDeclare(frame, conn, deps)
+    expect(conn.sendError).toHaveBeenCalledWith(frame.id, 'SCOPE_DENIED', 'not offered', false)
+    expect(deps.githubRunCoordinator!.afterReviewDeclared).toHaveBeenCalledOnce()
   })
 
   it('recovers a completion-first target-branch change as a revision projection', async () => {

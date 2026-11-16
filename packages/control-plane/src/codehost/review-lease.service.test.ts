@@ -58,6 +58,7 @@ function run(overrides: Partial<HookRunRecord> = {}): HookRunRecord {
     startedAt: new Date(0),
     preparingAt: null,
     turnStartedAt: null,
+    reviewDeclaredAt: null,
     completedAt: null,
     orphanedAt: null,
     projectionId: null,

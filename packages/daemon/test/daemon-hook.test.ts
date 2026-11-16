@@ -1381,11 +1381,18 @@ describe('Daemon rd/msg hook fires', () => {
     expect(startHook).toHaveBeenCalledTimes(2)
     expect(ordinary).toBeUndefined()
     expect(explicit).toMatchObject({ hook: explicitHook, reviewState: 'idle', pullNumber: 42 })
+    // A generation is already shown as running: it has no review left to declare.
+    expect(explicit.offeredReview).toBeUndefined()
 
     // A mention offers the review outright: authority without a generation, and without a sealed verdict to amend.
     const mentionHook = { ...hook, deliveryKey: 'mention-comment', github: { ...hook.github, optionalReview: true } }
     const mention = await (daemon as any).githubReviews.prepareGithubTurn({ hookContext: mentionHook }, 'acp-mention')
-    expect(mention).toMatchObject({ hook: mentionHook, reviewState: 'idle', pullNumber: 42 })
+    expect(mention).toMatchObject({
+      hook: mentionHook,
+      reviewState: 'idle',
+      pullNumber: 42,
+      offeredReview: 'undeclared'
+    })
     expect(mention.amendment).toBeUndefined()
     const mentionOff = {
       ...mentionHook,
@@ -1419,6 +1426,87 @@ describe('Daemon rd/msg hook fires', () => {
     )
     startHook.mockResolvedValue({ accepted: true, amendment: { ...amendment, reportSha: 'c'.repeat(40) } })
     expect(await prepare({ ...hook, deliveryKey: 'stale-amendment' }, 'acp-stale')).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('declares a mention review to the control plane once and never blocks the review on it', async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: streamingHost().factory
+    })
+    await daemon.start()
+    const key = `hook:acme/infra:42:${AGENT_ID}`
+    const hook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'mention-declare',
+      firedAt: new Date().toISOString(),
+      event: 'issue_comment:created',
+      github: {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request',
+        pullNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        reportSha: 'a'.repeat(40),
+        optionalReview: true
+      }
+    }
+    const snapshot = {
+      configRevision: '1',
+      dispatchRevision: '1',
+      dispatchDaemonId: '44444444-4444-4444-8444-444444444444',
+      reviewPolicy: 'full',
+      reportingMode: 'check',
+      gateMode: 'informational'
+    }
+    const meta: Record<string, unknown> = {
+      entry: { inboxId: `${HOOK_ID}:mention-declare`, hookContext: hook },
+      hook,
+      snapshot,
+      repoId: '123',
+      repoFullName: 'acme/infra',
+      pullNumber: 42,
+      expectedHeadSha: 'a'.repeat(40),
+      expectedBaseSha: 'b'.repeat(40),
+      reportSha: 'a'.repeat(40),
+      sessionId: 'acp-declare',
+      offeredReview: 'undeclared',
+      reviewState: 'idle'
+    }
+    ;(daemon as any).activeGithubTurnMeta.set(key, meta)
+    const declareGithubReview = vi
+      .fn<(payload: unknown, orgId?: string) => Promise<{ accepted: true }>>()
+      .mockRejectedValueOnce(new Error('control plane unreachable'))
+      .mockResolvedValue({ accepted: true })
+    vi.spyOn((daemon as any).githubReviews.host, 'cpClient').mockReturnValue({ declareGithubReview })
+    const start = () =>
+      (daemon as any).codeReviews.start({ agentId: AGENT_ID, platform: 'hook', channel: 'acme/infra', thread: '42' })
+
+    // A lost declaration only loses the in-progress display: the Agent is told to carry on, and may try again.
+    await expect(start()).resolves.toMatchObject({ state: 'not_recorded' })
+    expect(meta.offeredReview).toBe('undeclared')
+    await expect(start()).resolves.toMatchObject({ state: 'started' })
+    expect(declareGithubReview.mock.calls.at(-1)?.[0]).toEqual({
+      hookId: HOOK_ID,
+      deliveryKey: 'mention-declare',
+      snapshot
+    })
+    await expect(start()).resolves.toMatchObject({ state: 'already_started' })
+    expect(declareGithubReview).toHaveBeenCalledTimes(2)
+
+    // A generation is already shown as running, and a turn that already reviewed has nothing to open.
+    delete meta.offeredReview
+    await expect(start()).resolves.toMatchObject({ state: 'not_needed' })
+    Object.assign(meta, { offeredReview: 'undeclared', reviewState: 'done' })
+    await expect(start()).resolves.toMatchObject({ state: 'not_needed' })
+    expect(declareGithubReview).toHaveBeenCalledTimes(2)
+
+    ;(daemon as any).activeGithubTurnMeta.delete(key)
+    await expect(start()).rejects.toThrow('only available during an authorized active')
     await daemon.stop()
   })
 
@@ -5346,12 +5434,19 @@ describe('buildHookMessage', () => {
         expect(text).not.toContain('opens a review generation for the current PR revision')
         expect(text).not.toContain('Requested action:')
         expect(text).toContain('This delivery offers a formal review and the decision is yours')
+        // Deciding to review is declared before the work, so the pull request shows it in progress.
+        expect(text).toContain(
+          'call `startCodeReview` first so the pull request shows the review in progress, then review'
+        )
         expect(text).toContain(`using ${passing} when it passes or ${failing} when it has blocking findings`)
-        expect(text).toContain('Otherwise answer it as an ordinary conversation and submit no formal review.')
+        expect(text).toContain('Otherwise answer it as an ordinary conversation and call neither tool.')
         // The trusted header states the authorization before the untrusted body, for an approval reviewer.
         const offeredAt = text.indexOf('Available action: the comment below mentions you')
         expect(offeredAt).toBeGreaterThan(-1)
         expect(offeredAt).toBeLessThan(text.indexOf(UNTRUSTED_CONTENT_BEGIN))
+        expect(text.slice(offeredAt, text.indexOf(UNTRUSTED_CONTENT_BEGIN))).toContain(
+          'declaring it with `startCodeReview` and publishing the verdict'
+        )
       }
     )
 

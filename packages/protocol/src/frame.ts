@@ -91,6 +91,8 @@ import { AgentReadAccess, AgentReadAccessOk } from './frames/read-access.js'
 import {
   GithubReviewAuthorize,
   GithubReviewAuthorized,
+  GithubReviewDeclare,
+  GithubReviewDeclareOk,
   GithubReviewResultOk,
   GithubReviewResultReport,
   HookReport,
@@ -465,6 +467,8 @@ export const FRAME_SCHEMAS = {
   'github/review-authorized': GithubReviewAuthorized,
   'github/review-result': GithubReviewResultReport,
   'github/review-result/ok': GithubReviewResultOk,
+  'github/review-declare': GithubReviewDeclare,
+  'github/review-declare/ok': GithubReviewDeclareOk,
   // ── informational run projection (gitlab-com-integration.md §16) — body-free desired/result pair ──
   'codehost/note-desired': CodeHostNoteDesired,
   'codehost/note-result': CodeHostNoteResult,
@@ -900,6 +904,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('github/review-authorized', FRAME_SCHEMAS['github/review-authorized']),
   frame('github/review-result', FRAME_SCHEMAS['github/review-result']),
   frame('github/review-result/ok', FRAME_SCHEMAS['github/review-result/ok']),
+  frame('github/review-declare', FRAME_SCHEMAS['github/review-declare']),
+  frame('github/review-declare/ok', FRAME_SCHEMAS['github/review-declare/ok']),
   frame('codehost/note-desired', FRAME_SCHEMAS['codehost/note-desired']),
   frame('codehost/note-result', FRAME_SCHEMAS['codehost/note-result']),
   frame('codehost/note-result/ok', FRAME_SCHEMAS['codehost/note-result/ok']),

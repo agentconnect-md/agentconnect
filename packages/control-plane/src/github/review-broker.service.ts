@@ -14,6 +14,7 @@ import {
   type ErrorCode,
   type GithubReviewAuthorize,
   type GithubReviewAuthorized,
+  type GithubReviewDeclare,
   type GithubReviewResultReport,
   type HookConfigSnapshot,
   type HookReviewAmendment,
@@ -59,6 +60,7 @@ export interface GithubReviewBrokerDeps {
     | 'latestReviewVerdictRun'
     | 'recordPreparing'
     | 'recordStart'
+    | 'recordReviewDeclared'
     | 'reserveReviewAttempt'
     | 'recordReviewResult'
   >
@@ -462,6 +464,33 @@ export class GithubReviewBrokerService {
     const started = (await this.deps.hook.getRun(hookId, input.deliveryKey)) ?? run
     const amendment = await this.amendableVerdict(started)
     return amendment ? { amendment } : {}
+  }
+
+  /** Record that the Agent is starting the review a mention offered; grants nothing, and only a started `review_optional` turn may. */
+  async declare(input: GithubReviewDeclare, reportingDaemonId: DaemonId, reportingOrgId?: string): Promise<void> {
+    const hookId = HookId(input.hookId)
+    const run = requireAcceptedRun(
+      await this.deps.hook.getRun(hookId, input.deliveryKey),
+      input.snapshot,
+      reportingDaemonId,
+      { started: true }
+    )
+    if (run.agentId === null) denied('accepted hook run has no agent identity')
+    if (reportingOrgId && run.orgId !== reportingOrgId) denied('organization does not match the accepted hook run')
+    if (run.projectionIntent !== 'review_optional') denied('this hook turn was not offered a review to declare')
+    if (run.reviewDeclaredAt !== null) return
+    if (run.reviewAttemptId !== null) denied('this hook turn already has a formal review attempt', 'CONFLICT')
+    // COMMENT is the weakest event: a policy edited to off since dispatch refuses the declaration as it would the review.
+    await this.requireLiveActionAuthority(hookId, run.agentId, run, reportingDaemonId, 'COMMENT')
+    const accepted = await this.deps.hook.recordReviewDeclared(hookId, reportingDaemonId, {
+      deliveryKey: input.deliveryKey,
+      agentId: run.agentId,
+      configRevision: run.configRevision!,
+      dispatchRevision: run.dispatchRevision!,
+      dispatchDaemonId: run.dispatchDaemonId!,
+      at: new Date(this.deps.clock.now())
+    })
+    if (!accepted) denied('review declaration was rejected', 'CONFLICT')
   }
 
   /** Reserve one attempt, revalidate live policy/placement, then mint its token. */

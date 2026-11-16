@@ -29,7 +29,9 @@ import {
   hookRuntimeProjectionState,
   hookIncompleteCheckGuidance,
   hookIncompleteCheckLabel,
-  isVerdictOnlyProjectionIntent,
+  isVerdictOnlyRun,
+  reviewDesiredState,
+  runOpensReviewGeneration,
   type ProjectionDesiredState
 } from './projection-state.js'
 import { GithubService, GitCredDeniedError } from './service.js'
@@ -195,9 +197,14 @@ export class GithubRunCoordinator {
     await this.afterLifecycleEdge(hookId, deliveryKey)
   }
 
+  /** The Agent declared the review a mention offered: its run now opens a Check like a generation's. */
+  async afterReviewDeclared(hookId: HookId, deliveryKey: string): Promise<void> {
+    await this.afterLifecycleEdge(hookId, deliveryKey)
+  }
+
   private async afterLifecycleEdge(hookId: HookId, deliveryKey: string): Promise<void> {
     const run = await this.deps.hooks.getRun(hookId, deliveryKey)
-    if (!run || run.status !== 'running' || run.projectionIntent !== 'revision_event') return
+    if (!run || run.status !== 'running' || !runOpensReviewGeneration(run)) return
     const desired = authoritativeHookProjectionState(run)
     if (desired) await this.converge(run, desired, true)
   }
@@ -209,7 +216,7 @@ export class GithubRunCoordinator {
     const desired = reviewDesiredState(run)
     if (!desired) return
     // A verdict-only turn projects its pass/fail without ever opening queued or in-progress state; its COMMENT + neutral never replaces the revision's verdict.
-    if (run.projectionIntent !== 'revision_event' && !isVerdictOnlyProjectionIntent(run.projectionIntent)) return
+    if (!runOpensReviewGeneration(run) && !isVerdictOnlyRun(run)) return
     await this.converge(run, desired, true)
   }
 
@@ -218,9 +225,9 @@ export class GithubRunCoordinator {
     const run = await this.deps.hooks.getRun(hookId, deliveryKey)
     if (!run) return
     const reviewState = run.reviewAttemptState === 'submitted' ? reviewDesiredState(run) : null
-    const verdictOnly = isVerdictOnlyProjectionIntent(run.projectionIntent)
+    const verdictOnly = isVerdictOnlyRun(run)
     if (verdictOnly && !reviewState) return
-    if (run.projectionIntent !== 'revision_event' && !verdictOnly) return
+    if (!runOpensReviewGeneration(run) && !verdictOnly) return
     const desired: ProjectionDesiredState =
       reviewState ?? (run.reviewErrorCode ? 'failure' : hookRuntimeProjectionState(run)) ?? 'failure'
     await this.converge(run, desired, true)
@@ -1078,15 +1085,6 @@ export class GithubRunReporter {
       keepWriteMutex
     )
   }
-}
-
-function reviewDesiredState(run: HookRunRecord): ProjectionDesiredState | null {
-  if (run.reviewEvent === 'REQUEST_CHANGES') return 'action_required'
-  if (run.verdict === 'pass') return 'success'
-  if (run.verdict === 'fail') return 'action_required'
-  if (isVerdictOnlyProjectionIntent(run.projectionIntent)) return null
-  if (run.verdict === 'neutral') return 'neutral'
-  return null
 }
 
 function checkName(projection: HookReviewProjectionRecord): string {

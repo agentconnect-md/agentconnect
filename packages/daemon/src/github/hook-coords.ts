@@ -301,6 +301,8 @@ export interface ActiveGithubTurnMeta {
   sessionId: string
   /** Present on a conversation turn no mention offered a review: the sealed verdict the CP named at `hook/start`, its only review authority. */
   amendment?: HookReviewAmendment
+  /** A mention offered this turn a review the Agent may decline; `declared` once it said it is reviewing. */
+  offeredReview?: 'undeclared' | 'declared'
   reviewState: 'idle' | 'submitting' | 'done'
 }
 

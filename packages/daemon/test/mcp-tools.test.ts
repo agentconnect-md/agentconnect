@@ -579,6 +579,15 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toContain('REQUEST_CHANGES requires verdict fail')
   })
 
+  it('review start declaration takes no arguments and says what an unfinished one costs', () => {
+    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'startCodeReview')!
+    expect(tool.inputSchema).toMatchObject({ type: 'object', properties: {}, additionalProperties: false })
+    expect(tool.description).toContain('before reviewing, and only after deciding to review')
+    expect(tool.description).toContain('ends without a submitted verdict is reported as not completed')
+    // Every session with review tools carries this descriptor, so it stays well under the runtimes' truncation limits.
+    expect(tool.description.length).toBeLessThanOrEqual(600)
+  })
+
   it('batched review replies select only trusted thread roots exposed by the prompt', () => {
     const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'replyGithubReviewThreads')!
     const properties = (tool.inputSchema.properties ?? {}) as Record<string, any>

@@ -2730,8 +2730,11 @@ for a review, or that mentions the Agent and asks for nothing else, is answered
 with a formal review of the current revision; any other request is answered as an
 ordinary conversation, and the Agent publishes no verdict nobody asked for. The
 mention opens no review generation of its own, so the informational Check stays as
-it is until the Agent submits a verdict, which then becomes that revision's result
-without a queued or in-progress phase. A new revision, a Check rerun, and
+it is while the Agent decides. Once it decides to review, it says so before doing
+the work, and from then on the Check shows that review in progress and ends with
+its result; a review started this way that ends without a verdict is reported as
+not completed, like any other. A verdict the Agent submits without having said so
+still becomes that revision's result. A new revision, a Check rerun, and
 `Request review` still always start a review. Turning formal reviews off must not
 change trigger matching: selected PR events and authorized mentions still activate
 the agent, but an authorized mention no longer offers or permits a formal review,

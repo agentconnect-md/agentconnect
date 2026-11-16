@@ -956,6 +956,16 @@ export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
     )
   },
   {
+    name: 'startCodeReview',
+    description:
+      'Declare that you are starting the formal review a pull-request delivery offered, so the pull request shows ' +
+      'the review as in progress while you work. Takes no arguments: the turn is fixed by trusted metadata. Call ' +
+      'it once, before reviewing, and only after deciding to review; then finish with `submitCodeReview`. Do not ' +
+      'call it when you will answer the comment as an ordinary conversation: a started review that ends without a ' +
+      'submitted verdict is reported as not completed.',
+    inputSchema: obj({})
+  },
+  {
     name: 'replyGithubReviewThreads',
     description:
       'Reply to every inline thread in the active batched GitHub review-comment turn. The authorized thread roots ' +
