@@ -257,12 +257,6 @@ export const linearSettingsFragments: WebBotSettingsFragments = {
     identityNoun: 'workspace',
     // Linear can genuinely reach `revokedAt`: the `OAuthApp revoked` doorbell stamps
     // it and flips every membership (§7.4), and reconnecting is what repairs it.
-    revokedHint: 'This workspace revoked the Linear app — reconnect to restore delivery',
-    // A connected workspace is definitionally multi-agent (§4.3): the provider stamps
-    // `shareable: true` structurally, so the toggle is never the operator's lever.
-    shareHint: {
-      available: 'Every connected Linear workspace serves all of its member agents',
-      unavailable: 'Every connected Linear workspace serves all of its member agents'
-    }
+    revokedHint: 'This workspace revoked the Linear app — reconnect to restore delivery'
   }
 }

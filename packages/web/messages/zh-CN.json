@@ -1929,7 +1929,6 @@
     "revoked": "已撤销",
     "rejected": "被拒绝",
     "revokedAgent": "{agent}（已撤销）",
-    "always": "始终",
     "agentConnect": "AgentConnect",
     "uninstallFirst": "请先卸载该集成",
     "defaultDispatch": "默认分发",

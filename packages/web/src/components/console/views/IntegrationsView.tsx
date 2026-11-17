@@ -51,7 +51,7 @@ import {
   botSharingEditable,
   channelListSemantics,
   platformRegistry,
-  platformSharingFixed,
+  platformSharingChoosable,
   withCredentialCode
 } from '@/components/console/platforms/registry'
 import {
@@ -80,7 +80,9 @@ function PassThrough({ children }: { children: ReactNode }) {
 }
 
 // Bot | Sharable | Agents | Created by | actions: the track fits four 28px controls, three below 480px where "Created by" drops.
-const BOT_GRID = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_136px]'
+const BOT_GRID_SHARABLE = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_136px]'
+// The same row without the Sharable track, for a platform whose bots have no sharing choice.
+const BOT_GRID_PLAIN = 'grid-cols-[3fr_1fr_100px] min-[480px]:grid-cols-[2fr_1.5fr_1fr_136px]'
 type BotRosterRow = { kind: 'workspace'; key: string; label: string } | { kind: 'bot'; key: string; bot: BotDto }
 
 // Preserve the server's bot order within each workspace. The heading is rendered
@@ -348,6 +350,9 @@ function BotsCard({
   const { label } = platformTab
   const platformBots = bots.filter((bot) => botMatchesPlatformTab(bot, platformTab))
   const shownBots = inUseOnly ? platformBots.filter((bot) => bot.agentIds.length > 0) : platformBots
+  // The Sharable column exists only where sharing is a choice, or a row still carries a flag that can be turned off.
+  const showSharable = platformSharingChoosable(platformTab.platform) || platformBots.some(botSharingEditable)
+  const BOT_GRID = showSharable ? BOT_GRID_SHARABLE : BOT_GRID_PLAIN
   const rosterRows = botRosterRows(shownBots, t('workspaceUnavailable'))
   // Per-tab totals stay UNFILTERED: they answer "where does this org have bots",
   // which the filter must not silently rewrite while you read across the strip.
@@ -454,7 +459,7 @@ function BotsCard({
         {/* `.row.h` uppercases, so the module's lower-case noun renders as the
             heading did when the host picked between two literals. */}
         <span>{noun}</span>
-        <span>{t('sharable')}</span>
+        {showSharable && <span>{t('sharable')}</span>}
         <span>{t('agents')}</span>
         <span className="whitespace-nowrap max-[479px]:hidden">{t('createdBy')}</span>
         <span />
@@ -558,34 +563,24 @@ function BotsCard({
                   ) : null}
                   {RowBadges && <RowBadges bot={b} />}
                 </div>
-                {/* The host picks the arm by transport; the module owns both
-                    sentences. A platform that declares none gets one sentence for
-                    both arms — its transport is not why sharing is unavailable.
-                    Enablement asks the same question the CP does
-                    (`botSharingEditable`): transport ALONE left Feishu's HTTP bots
-                    with a live toggle for a capability the server refuses. */}
-                <span
-                  className="flex items-center justify-self-start"
-                  title={
-                    (b.transport ?? 'socket') === 'socket' ? rowCopy.shareHint.unavailable : rowCopy.shareHint.available
-                  }
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {/* Structural sharing is not a control at all: the provider stamps
-                      the flag, so the cell states it rather than offering a toggle
-                      the CP would accept and the provider contract does not have. */}
-                  {platformSharingFixed(b.platform) ? (
-                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      {t('always')}
-                    </span>
-                  ) : (
+                {/* The host picks the tooltip arm by transport; enablement asks the CP's own question (`botSharingEditable`). */}
+                {showSharable && (
+                  <span
+                    className="flex items-center justify-self-start"
+                    title={
+                      (b.transport ?? 'socket') === 'socket'
+                        ? rowCopy.shareHint.unavailable
+                        : rowCopy.shareHint.available
+                    }
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <Toggle
                       checked={b.shareable}
                       disabled={!canWrite || botBusyId === b.id || !botSharingEditable(b)}
                       onChange={(next) => void flipShareable(b, next)}
                     />
-                  )}
-                </span>
+                  </span>
+                )}
                 {/* `isolate` keeps a revoked agent's dot above the next overlapping avatar. */}
                 <div className="isolate flex min-w-0 items-center">
                   {served.length > 0 ? (

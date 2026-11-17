@@ -1,14 +1,5 @@
 // @vitest-environment happy-dom
-/**
- * The Sharable cell, per platform. Slack's multi-agent mode is an operator opt-in and
- * keeps its toggle; Linear's is structural — the provider stamps `shareable: true` on
- * every connected workspace (linear-integration.md §4.3) — so the cell must STATE it
- * rather than offer a control.
- *
- * A disabled toggle would not do: the CP accepts a `shareable: false` PATCH on a
- * one-member bot, so the only thing standing between a workspace and a state its
- * provider contract does not have is that no switch is rendered at all.
- */
+/** The Sharable column, per platform: shown only where sharing is the operator's choice, so Linear's structural sharing and a non-sharing platform get no column and no switch. */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -110,15 +101,34 @@ describe('the retired join-public-channels switch', () => {
   })
 })
 
-describe('the Sharable cell', () => {
-  it('renders no switch at all for a Linear workspace', async () => {
+/** The Bots card's column headings, as rendered. */
+const headings = () => [...host.querySelectorAll('.row.h > span')].map((s) => s.textContent)
+
+describe('the Sharable column', () => {
+  it('is absent for a Linear workspace, whose sharing is not a choice', async () => {
     mocks.bots = [
       bot({ id: 'ws-1', platform: 'linear', name: 'Example Workspace', workspaceName: 'Example Workspace' })
     ]
     const row = await botRow('Linear', 'ws-1')
 
     expect(row.querySelector('[role="switch"]')).toBeNull()
-    expect(row.textContent).toContain('Always')
+    expect(headings()).not.toContain('Sharable')
+  })
+
+  it('is absent on a platform that cannot share a bot', async () => {
+    mocks.bots = [bot({ id: 'tg-1', platform: 'telegram', transport: 'socket', shareable: false })]
+    const row = await botRow('Telegram', 'tg-1')
+
+    expect(row.querySelector('[role="switch"]')).toBeNull()
+    expect(headings()).not.toContain('Sharable')
+  })
+
+  it('stays where a row still carries a flag that can be turned off', async () => {
+    mocks.bots = [bot({ id: 'tg-2', platform: 'telegram', shareable: true })]
+    const row = await botRow('Telegram', 'tg-2')
+
+    expect(row.querySelector('[role="switch"]')).not.toBeNull()
+    expect(headings()).toContain('Sharable')
   })
 
   it('keeps Slack’s toggle exactly as it was', async () => {
@@ -127,6 +137,7 @@ describe('the Sharable cell', () => {
 
     const toggle = row.querySelector('[role="switch"]')
     expect(toggle).not.toBeNull()
+    expect(headings()).toContain('Sharable')
     expect(toggle?.getAttribute('aria-checked')).toBe('true')
     expect((toggle as HTMLButtonElement).disabled).toBe(false)
   })
