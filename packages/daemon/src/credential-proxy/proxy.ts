@@ -68,6 +68,8 @@ export interface MintAsk {
   write?: true
   /** A skill placeholder's Git read, served only from the agent's private skill sources. */
   skill?: true
+  /** Ask the control plane again instead of serving a cached grant. */
+  recheck?: true
 }
 
 /** A minted credential and the tier its grant carries. */
@@ -564,7 +566,10 @@ export class CredentialProxy {
     if (claims.skill) Object.assign(ask, { readOnly: true, skill: true })
     const what = ask.repo ?? (ask.repoId !== undefined ? `project ${ask.repoId}` : 'the workspace repository')
     try {
-      const minted = await this.deps.mint(claims.agentId, ask)
+      let minted = await this.deps.mint(claims.agentId, ask)
+      // Raising a repository's tier replicates nothing to the daemon, so a write the cached grant refuses asks once more.
+      if ((ask.push || ask.write) && minted.access !== 'write')
+        minted = await this.deps.mint(claims.agentId, { ...ask, recheck: true })
       if (ask.push && minted.access !== 'write')
         return deny(403, `this agent has ${minted.access} access to ${what}; pushing needs write access`)
       if (ask.write && minted.access !== 'write')

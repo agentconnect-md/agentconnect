@@ -7262,6 +7262,7 @@ export class Daemon {
         plane,
         ...repo,
         ...(ask.readOnly || ask.skill ? { requestedAccess: 'read' as const } : {}),
+        ...(ask.recheck ? { recheck: true } : {}),
         ...proxyOnlyConsumer('github', 'proxy')
       })
       return {
@@ -7306,7 +7307,7 @@ export class Daemon {
       ...(repository.workspace ? {} : { repoFullName: repository.repoFullName }),
       ...(ask.readOnly || ask.skill ? { requestedAccess: 'read' as const } : {})
     }
-    const cred = await this.gitCreds.getProxyLease(agentId, lease)
+    const cred = await this.gitCreds.getProxyLease(agentId, lease, ask.recheck === true)
     return {
       username: cred.username,
       token: cred.token,

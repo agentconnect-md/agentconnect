@@ -247,6 +247,8 @@ export class GitCredentialCache {
       requestedAccess?: 'read' | 'write'
       /** Who will present it; a proxy-only provider is served to the proxy and the daemon's own Git alone. */
       consumer?: GitCredConsumer
+      /** Ask the control plane again instead of serving the cached grant, whose tier a raise since may have outdated. */
+      recheck?: boolean
     } = {}
   ): Promise<Entry> {
     const plane = opts.plane ?? 'git'
@@ -263,22 +265,27 @@ export class GitCredentialCache {
     }
     const withActions = plane === 'gh' && this.deps.actionsSupported?.() === true
     const cachePlane = withActions ? 'gh-actions' : plane
-    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo, opts.provider, opts.requestedAccess), agentId, {
+    return this.getKeyed(
+      keyOf(agentId, cachePlane, opts.repo, opts.provider, opts.requestedAccess),
       agentId,
-      reason,
-      ...(plane === 'gh' && opts.provider === undefined
-        ? { capabilities: [...GH_TOKEN_CAPABILITIES, ...(withActions ? (['actions'] as const) : [])] }
-        : {}),
-      ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
-      ...(opts.provider !== undefined ? { provider: opts.provider } : this.githubProvider()),
-      ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
-      ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {}),
-      ...(opts.consumer !== undefined ? { consumer: opts.consumer } : {})
-    })
+      {
+        agentId,
+        reason,
+        ...(plane === 'gh' && opts.provider === undefined
+          ? { capabilities: [...GH_TOKEN_CAPABILITIES, ...(withActions ? (['actions'] as const) : [])] }
+          : {}),
+        ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
+        ...(opts.provider !== undefined ? { provider: opts.provider } : this.githubProvider()),
+        ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
+        ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {}),
+        ...(opts.consumer !== undefined ? { consumer: opts.consumer } : {})
+      },
+      opts.recheck === true
+    )
   }
 
-  /** The credential proxy's lease of a proxy-only provider's repository (azure-devops-integration.md §6.1), in a keyspace of its own; after {@link invalidateProxyLease} the next one asks the CP to refresh. */
-  async getProxyLease(agentId: string, lease: ProxyLeaseAsk): Promise<Entry> {
+  /** The credential proxy's lease of a proxy-only provider's repository (azure-devops-integration.md §6.1), in a keyspace of its own; after {@link invalidateProxyLease} the next one asks the CP to refresh, and `recheck` asks it again for the same token's current tier. */
+  async getProxyLease(agentId: string, lease: ProxyLeaseAsk, recheck = false): Promise<Entry> {
     if (!isProxyOnlyProvider(lease.provider)) {
       throw new GitCredUnavailableError(`${lease.provider} credentials are not leased to the proxy alone`, false)
     }
@@ -290,16 +297,21 @@ export class GitCredentialCache {
     }
     const key = PROXY_LEASE_KEY(agentId, lease)
     const forceRefresh = this.refreshPosts.has(key)
-    const entry = await this.getKeyed(key, agentId, {
+    const entry = await this.getKeyed(
+      key,
       agentId,
-      reason: 'helper',
-      provider: lease.provider,
-      externalRepoId: lease.externalRepoId,
-      consumer: 'proxy',
-      ...(lease.repoFullName !== undefined ? { repoFullName: lease.repoFullName } : {}),
-      ...(lease.requestedAccess !== undefined ? { requestedAccess: lease.requestedAccess } : {}),
-      ...(forceRefresh ? { forceRefresh: true } : {})
-    })
+      {
+        agentId,
+        reason: 'helper',
+        provider: lease.provider,
+        externalRepoId: lease.externalRepoId,
+        consumer: 'proxy',
+        ...(lease.repoFullName !== undefined ? { repoFullName: lease.repoFullName } : {}),
+        ...(lease.requestedAccess !== undefined ? { requestedAccess: lease.requestedAccess } : {}),
+        ...(forceRefresh ? { forceRefresh: true } : {})
+      },
+      recheck
+    )
     if (forceRefresh) this.refreshPosts.delete(key)
     return entry
   }
@@ -532,7 +544,9 @@ export class GitCredentialCache {
   private async getKeyed(
     key: string,
     agentId: string,
-    payload: Parameters<GitCredentialCacheDeps['request']>[0]
+    payload: Parameters<GitCredentialCacheDeps['request']>[0],
+    // A recheck skips only the cached answer: a refresh that fails still falls back to it below.
+    recheck = false
   ): Promise<Entry> {
     if (this.denied.has(key)) {
       throw new GitCredUnavailableError('control plane denied git credentials for this agent', true, 'agent')
@@ -545,7 +559,7 @@ export class GitCredentialCache {
       this.deniedRepos.delete(key)
     }
     const cached = this.entries.get(key)
-    if (cached && cached.expiresAtMono - this.monoNow() > HANDOUT_MIN_MS) return cached
+    if (!recheck && cached && cached.expiresAtMono - this.monoNow() > HANDOUT_MIN_MS) return cached
 
     let pending = this.inflight.get(key)
     if (!pending) {

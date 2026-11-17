@@ -205,6 +205,25 @@ describe('GitCredentialCache', () => {
     expect((await cache.get(AGENT, 'helper', opts)).token).toBe('ghs_2')
   })
 
+  it('rechecks a cached grant with the control plane, so a tier raised since is served at once', async () => {
+    const h = build((n) => ({ ...grant(`ghs_${n}`, 3540), access: n === 1 ? 'read' : 'write' }))
+    expect((await h.cache.get(AGENT, 'helper')).access).toBe('read')
+    expect((await h.cache.get(AGENT, 'helper', { recheck: true })).access).toBe('write')
+    // The answer replaces the cached grant, so the next ordinary ask is served from it.
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
+    expect(h.calls()).toBe(2)
+  })
+
+  it('keeps serving the cached grant when a recheck cannot reach the control plane', async () => {
+    const h = build((n) => {
+      if (n === 1) return { ...grant('ghs_1', 3540), access: 'read' }
+      throw Object.assign(new Error('control plane unreachable'), { code: 'INTERNAL' })
+    })
+    await h.cache.get(AGENT, 'helper')
+    expect(await h.cache.get(AGENT, 'helper', { recheck: true })).toMatchObject({ token: 'ghs_1', access: 'read' })
+    expect((await h.cache.get(AGENT, 'fetch')).token).toBe('ghs_1')
+  })
+
   it('remove() drops the entry with the agent', async () => {
     const h = build((n) => grant(`ghs_${n}`, 3540))
     await h.cache.get(AGENT, 'clone')
