@@ -5475,7 +5475,10 @@
             "title": "查看者",
             "description": "只读：可查看 Agent、会话和用量。"
           }
-        }
+        },
+        "them": "该成员",
+        "chatBots": "{count, plural, other {绑定到{object}的 # 个聊天机器人将被断开。}}",
+        "chatDirectMessages": "{count, plural, other {为{object}开启的 # 个私信将被关闭。}}"
       }
     },
     "sessionAccess": {

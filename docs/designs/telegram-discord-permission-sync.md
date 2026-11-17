@@ -85,6 +85,9 @@ the organization.
   direct users to Integrations; missing identities direct them to Profile.
 - Enabling sync also limits in-chat approvals and settings to linked Agent editors,
   following the same chat-authority policy as Slack.
+- Removing a member turns Off a restricted agent's DMs with their linked accounts
+  and ends their chat authority with the membership
+  ([resource-visibility.md](resource-visibility.md) §8.3).
 - A successful provider verdict lasts at most two minutes, plus the shared
   session-access snapshot lease. Credential and scope revisions key verdicts;
   unlink invalidation and the shared policy fence continue to apply.

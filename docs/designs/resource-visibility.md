@@ -501,11 +501,45 @@ Because the repair choice is consequential, it is **shown before it happens**.
 `GET /members/:id/removal-preview` returns `replacement` plus per-kind
 `selected` and `reassigned` counts. `selected` counts affected Selected
 audiences; `reassigned` counts the subset that would otherwise become empty.
+It also returns `chat`: how many bots bound to the member and how many DM
+conversations opened for them the removal would turn off (§8.3).
 The preview takes no locks and is never an authorization input: removal
 re-derives the repair member and counts inside its transaction.
 
 A resource stays Selected throughout repair. Organization roles do not widen
 its audience afterwards.
+
+### 8.3 Chat access ends with the membership
+
+A conversation's default may be Off or private, but when the organization opened
+one for a person because they were a member, it closes when they leave. Removal
+closes two kinds of access in the same transaction as the audience pruning:
+
+- **Bots bound to the member.** A platform whose bot exists for one member
+  declares it with the provider member `boundMemberUserId`. Personal WeChat does:
+  the bot's only possible sender is whoever scanned its QR code
+  ([wechat-integration.md](wechat-integration.md) §2.1). Removal deletes such a bot
+  with every install and its secret, then sends `integration/remove` so the daemon
+  stops polling, and the Console no longer lists it.
+- **DMs opened for the member.** On an install whose provider declares
+  `chatMemberTenant`, a restricted agent's 1:1 DM whose counterpart is one of the
+  member's linked chat accounts goes back to Off with `triggerChosen` cleared. This
+  covers a row §14.8 seeded On and a row an editor turned On: without the member
+  both would be Off. The counterpart is matched the same way chat actions are, by
+  platform, the bot's tenant, and the linked member id. A shared bot's
+  conversation is gated by its owning agent and closes on every sibling row.
+  Everyone agents' DMs, channels, and group DMs are unchanged, because their
+  defaults do not depend on who left. The affected installs are re-pushed after
+  commit, so their daemons stop answering at once.
+
+The linked accounts are read from the identity provider before the transaction.
+If that read fails, the removal still commits and the DMs stay as they were:
+keeping the person a member would leave them more access, not less. With no
+sign-in configured nothing is linked and nothing was opened.
+
+Chat actions on synced platforms need no step here: approvals and in-chat
+settings are checked against current editors on every request, and a daemon
+reuses an allowed verdict for at most two minutes.
 
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
@@ -1095,7 +1129,8 @@ to turn one On and then Off again. Marking the whole backlog "chosen" would be
 safer on paper and would keep the feature from ever reaching the DMs that
 already exist, which are exactly the ones it is for.
 
-**One-way even so: a catch-up never closes a row.** A close cannot be derived
+**One-way even so: a catch-up never closes a row.** Member removal is the one
+exception, because it names who left (§8.3). A close cannot otherwise be derived
 from absence — an audience seat lost, an unlink, and an editor's own Off all
 present the same way to the reconciler. So an opened DM stays open: a gated bind
 rule is conversation-scoped (`{channel, match:'dm'}`) with no user dimension, and

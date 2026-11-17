@@ -1512,6 +1512,7 @@ export type VisibilityResourceKind =
 export interface MemberRemovalPreviewDto {
   replacement: MemberDto | null // null only when removal is refused (final organization owner)
   resources: { kind: VisibilityResourceKind; selected: number; reassigned: number }[]
+  chat: { bots: number; directMessages: number } // chat access that ends with the membership
 }
 
 export interface OrgInviteLinkDto {

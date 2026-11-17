@@ -5475,7 +5475,10 @@
             "title": "Viewer",
             "description": "Read-only — view agents, sessions and usage."
           }
-        }
+        },
+        "them": "them",
+        "chatBots": "{count, plural, one {One chat bot bound to {object} will be disconnected.} other {# chat bots bound to {object} will be disconnected.}}",
+        "chatDirectMessages": "{count, plural, one {One direct message opened for {object} will be turned off.} other {# direct messages opened for {object} will be turned off.}}"
       }
     },
     "sessionAccess": {

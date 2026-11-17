@@ -537,6 +537,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** Whether a bot whose last install was removed is deleted rather than kept freed (§10.5: a claimed customer row is released for a new claim). Absent ⇒ kept. */
   releasesFreedBot?(bot: BotRecord): boolean
 
+  /** The one member this bot exists for, so removing them from the organization deletes it with its installs; null when it is the organization's. Pure. Absent ⇒ no bot of this platform belongs to one member. */
+  boundMemberUserId?(bot: BotRecord): string | null
+
   /** Whether an HTTP row may take a relay assignment now; false ⇒ core releases it and replays nothing for it. Absent ⇒ every row may. */
   relayAssignable?(bot: BotRecord): boolean
 
