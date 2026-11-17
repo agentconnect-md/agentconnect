@@ -539,6 +539,14 @@ describe('GitCredentialCache', () => {
       ).toBe('glpat_5')
     })
 
+    it('rechecks a cached effect lease, so a tier raised since reaches the next proxied API write', async () => {
+      const h = buildEffect((n) => ({ ...effectGrant(`glpat_${n}`), access: n === 1 ? 'read' : 'write' }))
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).access).toBe('read')
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).access).toBe('read')
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT, undefined, true)).access).toBe('write')
+      expect(h.calls()).toBe(2)
+    })
+
     it('leaves a workspace-keyed git SCOPE_DENIED terminal, exactly as before', async () => {
       const h = buildEffect((n, p) => {
         if (p.purpose === undefined) throw Object.assign(new Error('not placed here'), { code: 'SCOPE_DENIED' })

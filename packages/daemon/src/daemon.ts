@@ -1807,7 +1807,7 @@ export class Daemon {
   /** A host whose push credential cannot authenticate its API leases a proxied API write from its broker's effect credential, at the same tier. */
   private readonly apiWriteLeases = new Map<
     CodeHostProvider,
-    (agentId: string, repoId: string) => Promise<MintedCredential>
+    (agentId: string, repoId: string, recheck?: boolean) => Promise<MintedCredential>
   >()
   /** §16 run projection — the only writer of the service-account status note for a merge-request head. */
   private noteProjector!: CodeHostNoteProjector
@@ -4343,14 +4343,14 @@ export class Daemon {
     // §14.2: each broker holds its host's effect lease; the agent environment never sees the token.
     const gitlabBroker = new GitlabBroker({
       apiBaseUrl: (target) => this.gitlabApiBase(target.agentId),
-      lease: async (target) => {
-        const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
+      lease: async (target, recheck) => {
+        const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId, recheck)
         return { token: entry.token, access: entry.access }
       },
       invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
     })
-    this.apiWriteLeases.set('gitlab', async (agentId, projectId) => {
-      const entry = await this.gitCreds.getGitlabEffectToken(agentId, projectId)
+    this.apiWriteLeases.set('gitlab', async (agentId, projectId, recheck) => {
+      const entry = await this.gitCreds.getGitlabEffectToken(agentId, projectId, undefined, recheck)
       return {
         username: entry.username,
         token: entry.token,
@@ -4374,8 +4374,8 @@ export class Daemon {
       'gitea',
       new GiteaBroker({
         apiBaseUrl: (target) => this.giteaApiBase(target.agentId),
-        lease: async (target) => {
-          const entry = await this.gitCreds.getGiteaEffectToken(target.agentId, target.repoId, target.hookId)
+        lease: async (target, recheck) => {
+          const entry = await this.gitCreds.getGiteaEffectToken(target.agentId, target.repoId, target.hookId, recheck)
           return { token: entry.token, access: entry.access }
         },
         invalidateLease: (target, token) => this.gitCreds.invalidateGiteaEffect(target.agentId, target.repoId, token)
@@ -4385,8 +4385,12 @@ export class Daemon {
     this.codeHostBrokers.set(
       'github',
       new GithubBroker({
-        lease: async (target) => {
-          const entry = await this.gitCreds.getGithubEffectToken(target.agentId, target.repoPath ?? target.repoId)
+        lease: async (target, recheck) => {
+          const entry = await this.gitCreds.getGithubEffectToken(
+            target.agentId,
+            target.repoPath ?? target.repoId,
+            recheck
+          )
           return { token: entry.token, access: entry.access }
         },
         invalidateLease: (target, token) =>
@@ -4400,12 +4404,13 @@ export class Daemon {
         routing: (target) =>
           this.codeHostRepositories(target.agentId, 'azure-devops').find((row) => row.repoId === target.repoId)
             ?.azureDevOps,
-        lease: (target) =>
+        lease: (target, recheck) =>
           this.proxyOnlyLease(target.agentId, {
             provider: 'azure-devops',
             repoId: target.repoId,
             plane: 'api',
-            readOnly: false
+            readOnly: false,
+            ...(recheck ? { recheck: true as const } : {})
           }),
         // §11.5: a hook turn's comment calls may ride the hook's own lease where the agent holds the repository at read.
         hookLease: async (target) => {
@@ -7300,7 +7305,7 @@ export class Daemon {
       throw new Error(`${ask.repo ?? `repository ${ask.repoId ?? '(none)'}`} is not authorized for this agent`)
     }
     const apiWrite = ask.write && !ask.skill ? this.apiWriteLeases.get(provider) : undefined
-    if (apiWrite) return await apiWrite(agentId, repository.repoId)
+    if (apiWrite) return await apiWrite(agentId, repository.repoId, ask.recheck === true)
     const lease: ProxyLeaseAsk = {
       provider,
       externalRepoId: repository.repoId,

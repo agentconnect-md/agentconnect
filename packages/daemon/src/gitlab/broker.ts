@@ -8,6 +8,7 @@ import {
   changeLists,
   compact,
   enforceCapability,
+  leaseCovering,
   idOf,
   int,
   labelNames,
@@ -88,8 +89,8 @@ export interface GitlabBrokerTarget {
 export type GitlabBrokerLease = BrokerLease
 
 export interface GitlabBrokerDeps {
-  /** Action-time effect lease (purpose `gitlab_effect`); refuses when the CP lacks the feature. */
-  lease: (target: GitlabBrokerTarget) => Promise<GitlabBrokerLease>
+  /** Action-time effect lease (purpose `gitlab_effect`); refuses when the CP lacks the feature, and `recheck` asks it past the cache. */
+  lease: (target: GitlabBrokerTarget, recheck?: boolean) => Promise<GitlabBrokerLease>
   /** Drop a cached lease GitLab just rejected (401/403) so the single retry re-mints. */
   invalidateLease?: (target: GitlabBrokerTarget, token: string) => void
   /** The instance's `/api/v4` root for THIS target's agent, resolved per turn (§24.4). */
@@ -356,8 +357,12 @@ export class GitlabBroker {
 
   async execute(target: GitlabBrokerTarget, op: GitlabBrokerOperation): Promise<unknown> {
     const program = this.program(target, op)
-    const holder: LeaseHolder = { lease: await this.deps.lease(target) }
-    this.enforceAll(holder.lease, program)
+    const holder: LeaseHolder = {
+      lease: await leaseCovering(
+        (recheck) => this.deps.lease(target, recheck),
+        (lease) => this.enforceAll(lease, program)
+      )
+    }
     return program.run((step) => {
       if (!program.endpoints.includes(step.endpoint))
         throw new Error(`broker endpoint ${step.endpoint} was not declared by this operation`)

@@ -9,6 +9,7 @@ import {
   changeLists,
   compact,
   enforceCapability,
+  leaseCovering,
   int,
   labelNames,
   limited,
@@ -52,8 +53,8 @@ export interface AzureDevOpsLease extends BrokerLease {
 }
 
 export interface AzureDevOpsBrokerDeps {
-  /** The repository's proxy lease at the agent's tier; the token is the organization's, so the allowlist is what scopes it. */
-  lease: (target: CodeHostEffectTarget) => Promise<AzureDevOpsLease>
+  /** The repository's proxy lease at the agent's tier; the token is the organization's, so the allowlist is what scopes it, and `recheck` asks the control plane past the cache. */
+  lease: (target: CodeHostEffectTarget, recheck?: boolean) => Promise<AzureDevOpsLease>
   /** §11.5: in a hook turn, the hook's own lease at `comment`, which raises a repository held at `read` for comment calls. */
   hookLease?: (target: CodeHostEffectTarget & { hookId: string }) => Promise<AzureDevOpsLease>
   /** The organization, project and repository GUIDs of the target, from the agent's spec. */
@@ -209,8 +210,9 @@ export class AzureDevOpsBroker implements CodeHostEffectBroker {
     if (!routing) throw new Error(`repository ${target.repoPath ?? target.repoId} is not authorized for this agent`)
     const plan = this.plan(target, routing, op)
     const source = await this.leaseSource(target, plan.uses)
-    const lease = await source()
-    for (const id of plan.uses) this.enforce(lease, AZURE_DEVOPS_BROKER_ENDPOINTS[id])
+    const lease = await leaseCovering(source, (held) => {
+      for (const id of plan.uses) this.enforce(held, AZURE_DEVOPS_BROKER_ENDPOINTS[id])
+    })
     return plan.run(async (call) => {
       if (!plan.uses.includes(call.endpoint)) throw new Error(`broker plan used undeclared endpoint ${call.endpoint}`)
       return this.call(target, call, lease, source)
@@ -221,8 +223,8 @@ export class AzureDevOpsBroker implements CodeHostEffectBroker {
   private async leaseSource(
     target: CodeHostEffectTarget,
     uses: AzureDevOpsBrokerEndpointId[]
-  ): Promise<() => Promise<AzureDevOpsLease>> {
-    const own = () => this.deps.lease(target)
+  ): Promise<(recheck?: boolean) => Promise<AzureDevOpsLease>> {
+    const own = (recheck?: boolean) => this.deps.lease(target, recheck)
     const hookId = target.hookId
     const hookLease = this.deps.hookLease
     const writes = uses.some((id) => AZURE_DEVOPS_BROKER_ENDPOINTS[id].capability === 'write')

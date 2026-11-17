@@ -58,7 +58,8 @@ function broker(fetchImpl: typeof fetch, access: BrokerCapability = 'write') {
 
 describe('the lease the daemon mints for the GitHub broker', () => {
   // The CP's mint reports a grant's access from its contents level, absent contents reading as `read` (installation-token.service.ts).
-  function cpMint(tier: 'read' | 'write') {
+  function cpMint(initial: 'read' | 'write') {
+    let tier = initial
     const seen: Parameters<GitCredentialCacheDeps['request']>[0][] = []
     const request: GitCredentialCacheDeps['request'] = async (payload) => {
       seen.push(payload)
@@ -73,13 +74,13 @@ describe('the lease the daemon mints for the GitHub broker', () => {
       return grant
     }
     const cache = new GitCredentialCache({ request, log: { warn: () => {} } })
-    return { cache, seen }
+    return { cache, seen, raise: () => (tier = 'write') }
   }
 
   function brokerOn(cache: GitCredentialCache, fetchImpl: typeof fetch) {
     return new GithubBroker({
-      lease: async (target) => {
-        const entry = await cache.getGithubEffectToken(target.agentId, target.repoPath ?? target.repoId)
+      lease: async (target, recheck) => {
+        const entry = await cache.getGithubEffectToken(target.agentId, target.repoPath ?? target.repoId, recheck)
         return { token: entry.token, access: entry.access }
       },
       baseUrl: BASE,
@@ -110,6 +111,18 @@ describe('the lease the daemon mints for the GitHub broker', () => {
     const { fetchImpl, calls } = fakeFetch([PULL])
     await expect(brokerOn(cache, fetchImpl).execute(TARGET, create)).rejects.toThrow('needs write authority')
     expect(calls).toEqual([])
+  })
+
+  it('opens a pull request right after the repository is raised to write, past the read lease it had cached', async () => {
+    const { cache, seen, raise } = cpMint('read')
+    const { fetchImpl, calls } = fakeFetch([PULL])
+    const gh = brokerOn(cache, fetchImpl)
+    await expect(gh.execute(TARGET, create)).rejects.toThrow('needs write authority')
+    raise()
+    await gh.execute(TARGET, create)
+    expect(calls).toMatchObject([{ method: 'POST' }])
+    // The cold lease, then one recheck per operation the cached tier refused.
+    expect(seen).toHaveLength(3)
   })
 })
 
