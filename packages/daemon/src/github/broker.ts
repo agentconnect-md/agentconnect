@@ -53,12 +53,13 @@ export const GITHUB_BROKER_ENDPOINTS = {
   'assignees.remove': { method: 'DELETE', capability: 'write', path: '/repos/:owner/:repo/issues/:number/assignees' },
   'comment.create': { method: 'POST', capability: 'comment', path: '/repos/:owner/:repo/issues/:number/comments' },
   'comment.update': { method: 'PATCH', capability: 'comment', path: '/repos/:owner/:repo/issues/comments/:commentId' },
-  // Recreating a head branch's commits so GitHub signs them.
+  // Recreating a head branch's commits so GitHub signs them; the branch moves only through `updateRefs`, which checks its old commit.
   'rules.branch': { method: 'GET', capability: 'read', path: '/repos/:owner/:repo/rules/branches/:branch' },
   'branch.ref': { method: 'GET', capability: 'read', path: '/repos/:owner/:repo/git/ref/heads/:branch' },
   compare: { method: 'GET', capability: 'read', path: '/repos/:owner/:repo/compare/:basehead' },
   'commit.create': { method: 'POST', capability: 'write', path: '/repos/:owner/:repo/git/commits' },
-  'branch.move': { method: 'PATCH', capability: 'write', path: '/repos/:owner/:repo/git/refs/heads/:branch' }
+  'repo.get': { method: 'GET', capability: 'read', path: '/repos/:owner/:repo' },
+  'branch.swap': { method: 'POST', capability: 'write', path: '/graphql' }
 } as const satisfies Record<string, BrokerEndpoint>
 
 type EndpointId = keyof typeof GITHUB_BROKER_ENDPOINTS
@@ -67,6 +68,8 @@ const TO_DRAFT =
   'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }'
 const TO_READY =
   'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }'
+const SWAP_REF =
+  'mutation($repositoryId: ID!, $updates: [RefUpdate!]!) { updateRefs(input: { repositoryId: $repositoryId, refUpdates: $updates }) { clientMutationId } }'
 
 /** A commit sha the merge must match: hex only, never free text in the body. */
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
@@ -411,7 +414,7 @@ export class GithubBroker implements CodeHostEffectBroker {
     }
     if (!requiresSignatures(rules)) return undefined
     try {
-      enforceGithub(lease, GITHUB_BROKER_ENDPOINTS['branch.move'])
+      enforceGithub(lease, GITHUB_BROKER_ENDPOINTS['branch.swap'])
       const headCommit = refCommit(await this.call(target, lease, 'branch.ref', { ...at, branch: head }))
       const listed = branchCommits(
         await this.call(target, lease, 'compare', { ...at, basehead: `${base}...${headCommit}` })
@@ -437,9 +440,26 @@ export class GithubBroker implements CodeHostEffectBroker {
       }
       const newHead = recreated.get(headCommit)
       if (!newHead) return unsigned('the head commit was not among the recreated ones')
-      if (refCommit(await this.call(target, lease, 'branch.ref', { ...at, branch: head })) !== headCommit)
-        return unsigned(`${head} moved while its commits were being recreated, so it was left as it was`)
-      await this.call(target, lease, 'branch.move', { ...at, branch: head }, { sha: newHead, force: true })
+      const repositoryId = str(record(await this.call(target, lease, 'repo.get', at)).node_id, 200)
+      if (!repositoryId) return unsigned('GitHub returned the repository without its node id')
+      const swap = { name: `refs/heads/${head}`, beforeOid: headCommit, afterOid: newHead, force: true }
+      const answer = record(
+        await this.call(
+          target,
+          lease,
+          'branch.swap',
+          {},
+          { query: SWAP_REF, variables: { repositoryId, updates: [swap] } }
+        )
+      )
+      if (Array.isArray(answer.errors) && answer.errors.length > 0) {
+        // GitHub answers a stale beforeOid with a generic error, so the branch is read again to say which it was.
+        const now = refCommit(await this.call(target, lease, 'branch.ref', { ...at, branch: head }))
+        if (now !== headCommit)
+          return unsigned(`${head} moved while its commits were being recreated, so it was left as it was`)
+        const message = str(record(answer.errors[0]).message, 200) ?? 'unknown error'
+        return unsigned(`GitHub did not move ${head} to the recreated commits: ${message}`)
+      }
       return {
         signed: true,
         recreatedCommits: plan.length,

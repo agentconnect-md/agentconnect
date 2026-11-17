@@ -47,18 +47,23 @@ interface Fake {
   rules?: unknown[] | 403
   commits?: Listed[]
   head?: string
+  /** A push that lands right after the broker first reads the branch. */
   movedTo?: string
   signs?: boolean
+  /** The ref update fails for a reason other than a stale beforeOid. */
+  swapFails?: boolean
   pull?: Record<string, unknown>
 }
 
 function fakeGithub(fake: Fake) {
   const calls: { method: string; path: string; body?: Record<string, unknown> }[] = []
+  let branch = sha(fake.head ?? '2')
   let refReads = 0
   let created = 0
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
-    const path = new URL(String(url)).pathname.slice(REPO.length)
+    const pathname = new URL(String(url)).pathname
+    const path = pathname.startsWith(REPO) ? pathname.slice(REPO.length) || '/' : pathname
     const body = init?.body === undefined ? undefined : (JSON.parse(String(init.body)) as Record<string, unknown>)
     calls.push({ method, path, ...(body ? { body } : {}) })
     const json = (value: unknown, status = 200) =>
@@ -68,8 +73,17 @@ function fakeGithub(fake: Fake) {
     }
     if (method === 'GET' && path.startsWith('/git/ref/heads/')) {
       refReads += 1
-      const at = refReads > 1 && fake.movedTo ? fake.movedTo : (fake.head ?? '2')
-      return json({ object: { sha: sha(at) } })
+      const at = branch
+      if (refReads === 1 && fake.movedTo) branch = sha(fake.movedTo)
+      return json({ object: { sha: at } })
+    }
+    if (method === 'GET' && path === '/') return json({ node_id: 'R_example' })
+    if (method === 'POST' && path === '/graphql') {
+      const [update] = (body?.variables as { updates: { beforeOid: string; afterOid: string }[] }).updates
+      // GitHub answers a stale beforeOid with a generic error and leaves the branch where it is.
+      if (fake.swapFails || update!.beforeOid !== branch) return json({ errors: [{ message: 'Something went wrong' }] })
+      branch = update!.afterOid
+      return json({ data: { updateRefs: { clientMutationId: null } } })
     }
     if (path.startsWith('/compare/')) {
       const commits = (fake.commits ?? []).map(listed)
@@ -79,11 +93,10 @@ function fakeGithub(fake: Fake) {
       created += 1
       return json({ sha: `${created}`.padStart(40, 'c'), verification: { verified: fake.signs ?? true } }, 201)
     }
-    if (method === 'PATCH' && path.startsWith('/git/refs/heads/')) return json({ object: { sha: body?.sha } })
     if (path === '/pulls' || path === '/pulls/42') return json(fake.pull ?? PULL, path === '/pulls' ? 201 : 200)
     return json({ message: 'Not Found' }, 404)
   }) as typeof fetch
-  return { fetchImpl, calls }
+  return { fetchImpl, calls, branch: () => branch }
 }
 
 const PULL = {
@@ -125,7 +138,7 @@ const create = {
 
 describe('recreating a pull request head so GitHub signs it', () => {
   it('recreates the unsigned commits in parent order, moves the branch, then opens the pull request', async () => {
-    const { fetchImpl, calls } = fakeGithub({
+    const { fetchImpl, calls, branch } = fakeGithub({
       rules: REQUIRED,
       commits: [
         { id: '1', parents: ['0'] },
@@ -139,15 +152,20 @@ describe('recreating a pull request head so GitHub signs it', () => {
       `GET /compare/main...${sha('2')}`,
       'POST /git/commits',
       'POST /git/commits',
-      'GET /git/ref/heads/feature%2Fx',
-      'PATCH /git/refs/heads/feature%2Fx',
+      'GET /',
+      'POST /graphql',
       'POST /pulls'
     ])
     const [first, second] = calls.filter((c) => c.path === '/git/commits').map((c) => c.body)
     // No author or committer, or GitHub would not sign.
     expect(first).toEqual({ message: 'commit 1\n\nwith a body', tree: tree('1'), parents: [sha('0')] })
     expect(second).toEqual({ message: 'commit 2\n\nwith a body', tree: tree('2'), parents: ['1'.padStart(40, 'c')] })
-    expect(calls.find((c) => c.method === 'PATCH')?.body).toEqual({ sha: '2'.padStart(40, 'c'), force: true })
+    // One atomic step: GitHub moves the branch only if it still points at the commit it was read at.
+    expect(calls.find((c) => c.path === '/graphql')?.body?.variables).toEqual({
+      repositoryId: 'R_example',
+      updates: [{ name: 'refs/heads/feature/x', beforeOid: sha('2'), afterOid: '2'.padStart(40, 'c'), force: true }]
+    })
+    expect(branch()).toBe('2'.padStart(40, 'c'))
     expect(calls.at(-1)?.body).toMatchObject({ head: 'feature/x', base: 'main' })
     expect(result.signedCommits).toMatchObject({
       signed: true,
@@ -182,7 +200,7 @@ describe('recreating a pull request head so GitHub signs it', () => {
       ]
     })
     const result = (await broker(fetchImpl).gh.execute(TARGET, create)) as Record<string, unknown>
-    expect(calls.some((c) => c.path === '/git/commits' || c.method === 'PATCH')).toBe(false)
+    expect(calls.some((c) => c.path === '/git/commits' || c.path === '/graphql')).toBe(false)
     expect(calls.at(-1)?.path).toBe('/pulls')
     expect(result.signedCommits).toMatchObject({ signed: false })
     expect(String((result.signedCommits as Record<string, unknown>).reason)).toContain(
@@ -190,20 +208,40 @@ describe('recreating a pull request head so GitHub signs it', () => {
     )
   })
 
-  it('leaves the branch alone when it moved while its commits were recreated', async () => {
-    const { fetchImpl, calls } = fakeGithub({ rules: REQUIRED, movedTo: '5', commits: [{ id: '2', parents: ['0'] }] })
+  it('keeps a push that lands between reading the branch and moving it', async () => {
+    const { fetchImpl, calls, branch } = fakeGithub({
+      rules: REQUIRED,
+      movedTo: '5',
+      commits: [{ id: '2', parents: ['0'] }]
+    })
     const result = (await broker(fetchImpl).gh.execute(TARGET, create)) as Record<string, unknown>
-    expect(calls.some((c) => c.method === 'PATCH')).toBe(false)
+    expect(calls.filter((c) => c.path === '/graphql')).toHaveLength(1)
+    expect(branch()).toBe(sha('5'))
     expect(result.signedCommits).toEqual({
       signed: false,
       reason: 'feature/x moved while its commits were being recreated, so it was left as it was'
+    })
+    expect(calls.at(-1)?.path).toBe('/pulls')
+  })
+
+  it('says what GitHub answered when the move fails with the branch where it was', async () => {
+    const { fetchImpl, branch } = fakeGithub({
+      rules: REQUIRED,
+      swapFails: true,
+      commits: [{ id: '2', parents: ['0'] }]
+    })
+    const result = (await broker(fetchImpl).gh.execute(TARGET, create)) as Record<string, unknown>
+    expect(branch()).toBe(sha('2'))
+    expect(result.signedCommits).toEqual({
+      signed: false,
+      reason: 'GitHub did not move feature/x to the recreated commits: Something went wrong'
     })
   })
 
   it('leaves the branch alone when GitHub does not sign a recreated commit', async () => {
     const { fetchImpl, calls } = fakeGithub({ rules: REQUIRED, signs: false, commits: [{ id: '2', parents: ['0'] }] })
     const result = (await broker(fetchImpl).gh.execute(TARGET, create)) as Record<string, unknown>
-    expect(calls.some((c) => c.method === 'PATCH')).toBe(false)
+    expect(calls.some((c) => c.path === '/graphql')).toBe(false)
     expect(result.signedCommits).toMatchObject({ signed: false })
   })
 
@@ -252,8 +290,8 @@ describe('recreating a pull request head so GitHub signs it', () => {
       'GET /git/ref/heads/feature%2Fx',
       `GET /compare/main...${sha('2')}`,
       'POST /git/commits',
-      'GET /git/ref/heads/feature%2Fx',
-      'PATCH /git/refs/heads/feature%2Fx'
+      'GET /',
+      'POST /graphql'
     ])
     expect(result.signedCommits).toMatchObject({ signed: true, recreatedCommits: 1 })
   })

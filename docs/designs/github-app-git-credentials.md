@@ -602,8 +602,12 @@ request whose head branch is in the same repository:
    since recreating makes the bot its author; one that is not leaves the
    branch alone. So does a branch of more than 100 commits, or a recreated
    commit GitHub does not answer as verified.
-4. The head ref must still point where it did; it then moves to the new head
-   with a forced update. Nothing visible changes before this step.
+4. The head ref moves to the new head through GraphQL `updateRefs`, forced,
+   with the commit it was read at as `beforeOid`. GitHub checks and moves it
+   in one step, so a push that lands meanwhile makes the move fail instead of
+   being overwritten; the REST ref update has no such check. GitHub answers a
+   stale `beforeOid` with a generic error, so the branch is read again to
+   report which it was. Nothing visible changes before this step.
 
 The result names the old and new head and tells the agent to run
 `git fetch` and `git rebase origin/<branch>`, which drops the old commits as
