@@ -544,7 +544,8 @@ const sharedBotTarget = (r: SharedBotRoute): SharedBotRouteTarget => ({
  *    gate-checked (§14), never through a binding that points at the author;
  *  - there is NO unscoped mention rung (it would starve keyword
  *    disambiguation, §10.4) — the bare @bot / DM fallback is the unscoped
- *    keyword slug (§10.2), then the CHANNEL's own default
+ *    keyword slug (§10.2), then a provider-assigned room's own mention route
+ *    (resource-visibility.md §14.10), then the CHANNEL's own default
  *    (`conversationDefaults`, linear-integration.md §6.2), then the group's
  *    `defaultAgentId` (§10.3), all gated on the bot actually being ADDRESSED;
  *  - bot senders are admitted by the platform manifest's `botSenderRouting`
@@ -680,6 +681,10 @@ export function arbitrateSharedBotResult(
   if (addressed) {
     const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && sharedBotKindMatches(r, msg, a.botUserId))
     if (kw) return hit(sharedBotTarget(kw))
+
+    // A room the platform assigns to this bot addresses it implicitly, so the room's own mention route names the recipient; above both defaults, as a channel's own seat is.
+    const ownedImplicit = conversationAddressed ? scoped.find((r) => r.match.kind === 'mention') : undefined
+    if (ownedImplicit) return hit(sharedBotTarget(ownedImplicit))
 
     // 4. Per-conversation default (linear-integration.md §6.2): the channel's own row
     //    owner, already attributed. Above the group default and below everything that

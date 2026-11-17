@@ -67,6 +67,14 @@ does not count as an explicit mention: session mute still applies, other explici
 mentions take precedence, and the conversation's Off fence remains authoritative.
 Other bots do not acquire implicit activation from this field.
 
+An agent whose conversations start Off would be fenced out of every channel it creates,
+since each has a new id. A channel made by `createSlackCodeChannel` therefore opens to the
+agent that made it as part of creation, where the originating conversation is itself
+enabled, and its first message waits for that instead of being refused
+([resource-visibility.md](resource-visibility.md) §14.10). A person's Off on the channel
+still stands. On a bot several agents share, the agent that made the channel is its owner
+whether or not it is gated, so requests there reach it and not the bot's default agent.
+
 ## Coordinator tasks
 
 In an Auto conversation ([auto-session-mode.md](auto-session-mode.md) §6.8), a task the

@@ -67,7 +67,7 @@ import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } f
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
-import { autoConversationKinds } from '../domain/conversation-defaults.js'
+import { autoConversationKinds, openConversationTrigger } from '../domain/conversation-defaults.js'
 import type { CpPlatformRegistry, CpTenantLearning } from '../platforms/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 import {
@@ -226,8 +226,13 @@ export function conversationOwnerRow(
     : undefined
 }
 
+/** How long relays hold the room-opening window when no report closes it (§14.10); a crashed creation then falls back to the Off default. */
+const ROOM_OPENING_TTL_MS = 30_000
+
 export class HttpBotOrchestrator {
   private readonly conversationMutationChains = new Map<string, Promise<unknown>>()
+  // botId → how many rooms its gated members are opening, and until when the last may still be (§14.10); per process, like the relay roster.
+  private readonly roomsOpening = new Map<string, { count: number; until: number }>()
   // daemonId → bots whose last compile held a By decision conversation because that daemon lacked the feature.
   private readonly decisionHeldBots = new Map<string, Set<string>>()
   // daemonId → bots whose routed conversations' evaluation host depends on that daemon's liveness or features.
@@ -392,6 +397,7 @@ export class HttpBotOrchestrator {
     if (this.relayReg.all().length === 0) return this.syncBot(botId) // nobody connected → defer
     const compiled = await this.compile(bot)
     if (!compiled) return this.unassign(bot)
+    const roomOpeningMs = this.roomOpeningMsFor(bot.id)
     this.broadcast((ch) =>
       ch.send(
         'rc/routes',
@@ -410,7 +416,8 @@ export class HttpBotOrchestrator {
             // update too — otherwise a connected relay keeps the old default, and the old grant.
             conversationDefaults: compiled.conversationDefaults,
             routedConversations: compiled.routedConversations,
-            ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
+            ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {}),
+            ...(roomOpeningMs ? { roomOpeningMs } : {})
           },
           ch.features,
           { ownerAsDefault: compiled.ownerAsDefault }
@@ -935,6 +942,79 @@ export class HttpBotOrchestrator {
       await this.channels.upsertConversation(install.id, reported, this.seedOptions(defaultTrigger, autoKinds, agent))
     }
     await this.syncRoutes(botId)
+  }
+
+  /** §14.10: the install making a room on a relay-hosted bot, where that leaves something to settle: its agent's conversations start closed, or the bot serves several agents and the room needs its owner. */
+  private async roomMaker(botId: string, integrationId: string) {
+    const bot = await this.bots.getUnscoped(BotId(botId))
+    if (bot?.transport !== 'http') return null
+    const installs = await this.integrations.listForBot(bot.id)
+    const owner = installs.find((install) => install.id === integrationId)
+    const agent = owner ? await this.agents.getUnscoped(owner.agentId) : null
+    if (!owner || !agent) return null
+    const gated = isGatedAgent(agent)
+    return gated || installs.length > 1 ? { bot, installs, owner, agent, gated } : null
+  }
+
+  /** §14.10: a member is about to make a room of its own, so relays hold an unplaced message in a room this bot owns instead of refusing it or handing it to another agent; false where nothing needs settling. */
+  async roomOpening(botId: string, integrationId: string): Promise<boolean> {
+    if (!(await this.roomMaker(botId, integrationId))) return false
+    const opening = this.roomsOpening.get(botId) ?? { count: 0, until: 0 }
+    this.roomsOpening.set(botId, { count: opening.count + 1, until: Date.now() + ROOM_OPENING_TTL_MS })
+    await this.syncRoutes(botId)
+    return true
+  }
+
+  /** §14.10: the room was not made, so relays stop waiting for it. */
+  async roomAbandoned(botId: string): Promise<void> {
+    if (!this.roomsOpening.has(botId)) return
+    this.roomSettled(botId)
+    await this.syncRoutes(botId)
+  }
+
+  /** One creation ended; the window stays while another of this bot's rooms is still being made. */
+  private roomSettled(botId: string): void {
+    const opening = this.roomsOpening.get(botId)
+    if (!opening) return
+    if (opening.count > 1) this.roomsOpening.set(botId, { ...opening, count: opening.count - 1 })
+    else this.roomsOpening.delete(botId)
+  }
+
+  /** §14.10: give the room a member's own turn made to that member as its owner, opening it where the member is gated; a trigger a person chose stands. False when the room is Off for it. */
+  async openRoom(botId: string, integrationId: string, channelId: string): Promise<boolean> {
+    if (!(await this.roomMaker(botId, integrationId))) return false
+    try {
+      return await this.serializeConversationMutation(botId, channelId, async () => {
+        const maker = await this.roomMaker(botId, integrationId)
+        if (!maker) return false
+        const { bot, installs, owner, agent, gated } = maker
+        const before = (await this.channels.listForBot(bot.id)).filter((row) => row.channelId === channelId)
+        if (before.some((row) => row.triggerChosen)) return false
+        const autoKinds = await this.autoConversationKinds(agent, bot.platform)
+        const row = await this.channels.upsertConversation(
+          owner.id,
+          { id: channelId, kind: 'channel' },
+          this.seedOptions(gated ? 'mention' : undefined, autoKinds, agent)
+        )
+        await this.persistConversationOwner(installs, channelId, owner, row)
+        // A gated maker's room opens on Mention; any other takes what its own new rooms start at, in place of an earlier owner's default.
+        const trigger = gated ? 'mention' : openConversationTrigger(row, agent.newConversationMode)
+        const rows = (await this.channels.listForBot(bot.id)).filter((r) => r.channelId === channelId)
+        await this.syncConversationTrigger(installs, channelId, { trigger }, rows)
+        return trigger !== 'off'
+      })
+    } finally {
+      this.roomSettled(botId)
+      await this.syncRoutes(botId)
+    }
+  }
+
+  /** §14.10: ms left in which a gated member of this bot may still be opening a room of its own. */
+  private roomOpeningMsFor(botId: string): number | undefined {
+    const left = (this.roomsOpening.get(botId)?.until ?? 0) - Date.now()
+    if (left > 0) return left
+    this.roomsOpening.delete(botId)
+    return undefined
   }
 
   /**
@@ -1844,7 +1924,8 @@ export class HttpBotOrchestrator {
       conversationDefaults: compiled.conversationDefaults,
       ownerAsDefault: compiled.ownerAsDefault,
       routedConversations: compiled.routedConversations,
-      ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
+      ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {}),
+      ...(this.roomOpeningMsFor(bot.id) ? { roomOpeningMs: this.roomOpeningMsFor(bot.id) } : {})
     }
   }
 

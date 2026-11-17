@@ -553,6 +553,23 @@ export const IntegrationTenant = z.object({
 })
 export type IntegrationTenant = z.infer<typeof IntegrationTenant>
 
+/** D→C REQ: a turn of a conversation-gated integration makes a room of its own (a Slack code channel) from `origin`, so the room opens to that agent without an editor (resource-visibility.md §14.10). */
+export const IntegrationRoomGrant = z.object({
+  integrationId: z.string().uuid(),
+  // The conversation the creating turn is live in; the room is opened only where this one is enabled.
+  origin: z.string().min(1).max(128),
+  // `opening` precedes the platform call, `opened` names the room it made, `abandoned` says it made none.
+  phase: z.enum(['opening', 'opened', 'abandoned']),
+  channel: z.string().min(1).max(128).optional()
+})
+export type IntegrationRoomGrant = z.infer<typeof IntegrationRoomGrant>
+
+/** C→D REP (corr = `integration/room-grant` id): whether the room is, or will be, open to the integration's agent. */
+export const IntegrationRoomGrantOk = z.object({
+  open: z.boolean()
+})
+export type IntegrationRoomGrantOk = z.infer<typeof IntegrationRoomGrantOk>
+
 /** C→D REP (corr = `integration/revoked` id): a committed verdict, `applied: false` meaning refused or fenced; both are terminal, only a missing reply is retried. */
 export const IntegrationRevokedOk = z.object({
   applied: z.boolean()

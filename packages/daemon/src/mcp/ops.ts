@@ -249,6 +249,8 @@ export interface OpsDeps
   startInRoom?: (ctx: SessionContext, channel: string, task: string) => Promise<void>
   /** Make a room for the session's work, which a task holds as one more thread (auto-session-mode.md §6.8). */
   sessionToolRoomFor?: (ctx: SessionContext) => PlatformSessionToolEnv['makeRoom']
+  /** Open a room the turn makes to its own agent where that agent's conversations start closed (resource-visibility.md §14.10). */
+  sessionToolRoomAdmitFor?: (ctx: SessionContext) => PlatformSessionToolEnv['admitRoom']
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
    *  Returns undefined when `name` is not an evaluation tool. Visibility and
    *  role-aware authorization live behind this seam (the daemon guarantees
@@ -616,12 +618,14 @@ async function executeRegisteredTool(
     const deliveryThread = deps.deliveryThreadNow?.(ctx) ?? ctx.deliveryThread
     const deliveryChannel = deps.deliveryChannelNow?.(ctx) ?? ctx.channel
     const makeRoom = deps.sessionToolRoomFor?.(ctx)
+    const admitRoom = deps.sessionToolRoomAdmitFor?.(ctx)
     const scheduleAnchor = deps.scheduleAnchor?.(ctx)
     return await owner.sessionTools.execute(name, ctx, args, {
       connection: conn,
       deliveryChannel,
       deliveryThread,
       ...(makeRoom ? { makeRoom } : {}),
+      ...(admitRoom ? { admitRoom } : {}),
       ...(scheduleAnchor ? { scheduleAnchor } : {}),
       ...(scheduleAnchor && deps.startInRoom
         ? { handOff: (channel, task) => deps.startInRoom!(ctx, channel, task) }

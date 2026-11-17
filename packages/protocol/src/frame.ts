@@ -120,6 +120,8 @@ import {
   IntegrationLeaveOk,
   IntegrationRevoked,
   IntegrationRevokedOk,
+  IntegrationRoomGrant,
+  IntegrationRoomGrantOk,
   IntegrationTenant
 } from './frames/integration.js'
 import { McpServerUpsert, McpServerRemove } from './frames/mcpserver.js'
@@ -492,6 +494,8 @@ export const FRAME_SCHEMAS = {
   'integration/revoked': IntegrationRevoked,
   'integration/revoked/ok': IntegrationRevokedOk,
   'integration/tenant': IntegrationTenant,
+  'integration/room-grant': IntegrationRoomGrant,
+  'integration/room-grant/ok': IntegrationRoomGrantOk,
   // ── MCP provider registry (CP-owned defs pushed to daemons; grant-key-bearing — never log) ──
   'mcpserver/upsert': McpServerUpsert,
   'mcpserver/remove': McpServerRemove,
@@ -926,6 +930,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('integration/revoked', FRAME_SCHEMAS['integration/revoked']),
   frame('integration/revoked/ok', FRAME_SCHEMAS['integration/revoked/ok']),
   frame('integration/tenant', FRAME_SCHEMAS['integration/tenant']),
+  frame('integration/room-grant', FRAME_SCHEMAS['integration/room-grant']),
+  frame('integration/room-grant/ok', FRAME_SCHEMAS['integration/room-grant/ok']),
   frame('mcpserver/upsert', FRAME_SCHEMAS['mcpserver/upsert']),
   frame('mcpserver/remove', FRAME_SCHEMAS['mcpserver/remove']),
   frame('memoryconnection/upsert', FRAME_SCHEMAS['memoryconnection/upsert']),

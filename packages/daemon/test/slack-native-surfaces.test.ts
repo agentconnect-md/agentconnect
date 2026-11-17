@@ -917,6 +917,29 @@ describe('Slack native surfaces', () => {
     await f.conn.stop()
   })
 
+  it('makes the channel through the turn’s room admission, naming its own conversation and only a channel it made (resource-visibility.md §14.10)', async () => {
+    const admitted: { origin: string; channel?: string }[] = []
+    const admitRoom = async <T>(origin: string, make: () => Promise<{ result: T; channel?: string }>) => {
+      const { result, channel } = await make()
+      admitted.push({ origin, ...(channel ? { channel } : {}) })
+      return result
+    }
+    const f = await fixture(false)
+    const result = await SLACK_SESSION_TOOLS.execute(
+      'createSlackCodeChannel',
+      ctx,
+      { name: 'Task' },
+      { ...f.env, admitRoom }
+    )
+    expect(result).toMatchObject({ channel_id: 'C2' })
+    await f.conn.stop()
+    // A turn already inside a code channel makes nothing, so it names none.
+    const inside = await fixture(true)
+    await SLACK_SESSION_TOOLS.execute('createSlackCodeChannel', ctx, { name: 'Task' }, { ...inside.env, admitRoom })
+    expect(admitted).toEqual([{ origin: 'C1', channel: 'C2' }, { origin: 'C1' }])
+    await inside.conn.stop()
+  })
+
   it('hands no room for a channel it is already in, nor when Slack refuses', async () => {
     const inside = await fixture(true)
     const rooms: unknown[] = []

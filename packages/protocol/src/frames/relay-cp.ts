@@ -1153,6 +1153,8 @@ export const RcBotAssign = z.object({
   offChannels: z.array(z.string()).default([]),
   // §14.3 gating notice in a CHANNEL: the relay that posts it, since a channel mention's two event copies may land on different pods; absent ⇒ no relay posts.
   noticeAuthority: z.string().uuid().optional(),
+  // §14.10: ms left in which a gated member's own new room may still be opening, so an unrouted message in a room this bot owns is retried rather than refused.
+  roomOpeningMs: z.number().int().positive().max(120_000).optional(),
   // linear-integration.md §6.2 — the per-conversation default rung's table, keyed by
   // channel id, and the fact the thread-affinity gate reads for a gated agent on an
   // `ownerAsDefault` platform (its grant is the default seat it holds). Empty elsewhere.
@@ -1194,6 +1196,7 @@ export const RcRoutes = z.object({
   mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
   offChannels: z.array(z.string()).default([]), // see RcBotAssign.offChannels
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
+  roomOpeningMs: z.number().int().positive().max(120_000).optional(), // §14.10 — see RcBotAssign.roomOpeningMs
   // Rides the hot update too: an owner edit converges through `syncRoutes` without a
   // re-assign, so an already-connected relay would otherwise keep the old default —
   // and with it the old grant fact — after exactly the edit this rung exists for.

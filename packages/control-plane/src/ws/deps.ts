@@ -169,6 +169,12 @@ export interface DaemonWsDeps {
   socketBotRevocation?: SocketBotRevocation
   /** Applies a daemon socket's `integration/tenant`; absent ⇒ the frame is dropped and `register/ok` does not advertise it. */
   socketBotTenant?: SocketBotTenant
+  /** §14.10 for a relay-hosted bot: tell relays a member is making a room, and give the one it made to that member; absent ⇒ such a room keeps its defaults. */
+  httpBotRooms?: {
+    opening(botId: string, integrationId: string): Promise<boolean>
+    abandoned(botId: string): Promise<void>
+    open(botId: string, integrationId: string, channelId: string): Promise<boolean>
+  }
   /** Resolves a trusted GitHub delivery's installation id to this org's
    * durable credential locator before binding a repository ExternalScope. */
   githubInstallation?: GithubInstallationRepo

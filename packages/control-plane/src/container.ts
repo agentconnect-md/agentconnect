@@ -3544,6 +3544,11 @@ export function buildContainer(
     gitlabProjectBinding: repos.gitlabProjectBinding,
     ...(gitlabAppCfg ? { gitlabBaseUrl: gitlabAppCfg.baseUrl } : {}),
     integrationChannel: repos.integrationChannel,
+    httpBotRooms: {
+      opening: (botId, integrationId) => httpBot.roomOpening(botId, integrationId),
+      abandoned: (botId) => httpBot.roomAbandoned(botId),
+      open: (botId, integrationId, channelId) => httpBot.openRoom(botId, integrationId, channelId)
+    },
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,
     approvalRoute,

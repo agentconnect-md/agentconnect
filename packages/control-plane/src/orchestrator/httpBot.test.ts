@@ -1641,6 +1641,118 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(routes.routes.some((route) => route.scope?.channel === 'C7')).toBe(false)
   })
 
+  // resource-visibility.md §14.10: a gated member's own new room opens to it without an editor.
+  describe('a room a gated member makes', () => {
+    const lastRoutes = () => ch.sends.filter((send) => send.type === 'rc/routes').at(-1)?.payload as RcBotAssign
+    const rowOf = (integrationId: IntegrationId) =>
+      channels.find((row) => row.integrationId === integrationId && row.channelId === 'C0ROOM')
+
+    it('tells relays while it is opening, then opens it to that member as its owner', async () => {
+      gatedAgents = new Set([BOB])
+      channels = []
+      const orch = makeOrch()
+
+      await orch.roomOpening(BOT, INT_B)
+      expect(lastRoutes().roomOpeningMs).toBeGreaterThan(0)
+
+      expect(await orch.openRoom(BOT, INT_B, 'C0ROOM')).toBe(true)
+      expect(rowOf(INT_B)).toMatchObject({ agentId: BOB, trigger: 'mention', triggerChosen: false })
+      expect(rowOf(INT_A)).toMatchObject({ agentId: null, trigger: 'mention', triggerChosen: false })
+      expect(lastRoutes().roomOpeningMs).toBeUndefined()
+      expect(lastRoutes().routes.filter((route) => route.scope?.channel === 'C0ROOM')).toEqual([
+        expect.objectContaining({ agentId: BOB, match: { kind: 'mention' } })
+      ])
+    })
+
+    it('takes over a room a membership report already seeded Off under the earliest agent', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C0ROOM', agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: null, trigger: 'off' })
+      ]
+
+      expect(await makeOrch().openRoom(BOT, INT_B, 'C0ROOM')).toBe(true)
+      expect(rowOf(INT_A)).toMatchObject({ agentId: null, trigger: 'mention' })
+      expect(rowOf(INT_B)).toMatchObject({ agentId: BOB, trigger: 'mention' })
+    })
+
+    it('leaves a room a person turned Off closed, and stops relays waiting for it', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: BOB, trigger: 'off', triggerChosen: true })
+      ]
+      const orch = makeOrch()
+      await orch.roomOpening(BOT, INT_B)
+
+      expect(await orch.openRoom(BOT, INT_B, 'C0ROOM')).toBe(false)
+      expect(rowOf(INT_B)).toMatchObject({ trigger: 'off', triggerChosen: true })
+      expect(lastRoutes().roomOpeningMs).toBeUndefined()
+      expect(lastRoutes().routes.some((route) => route.scope?.channel === 'C0ROOM')).toBe(false)
+    })
+
+    it('stops relays waiting when the room was never made', async () => {
+      const orch = makeOrch()
+      await orch.roomOpening(BOT, INT_B)
+      await orch.roomAbandoned(BOT)
+      expect(lastRoutes().roomOpeningMs).toBeUndefined()
+    })
+
+    it('keeps relays waiting while another of the bot’s rooms is still being made', async () => {
+      gatedAgents = new Set([BOB])
+      channels = []
+      const orch = makeOrch()
+      await orch.roomOpening(BOT, INT_B)
+      await orch.roomOpening(BOT, INT_B)
+
+      await orch.openRoom(BOT, INT_B, 'C0ROOM')
+      expect(lastRoutes().roomOpeningMs).toBeGreaterThan(0)
+      await orch.roomAbandoned(BOT)
+      expect(lastRoutes().roomOpeningMs).toBeUndefined()
+    })
+
+    it('gives an ungated member’s room to it on a bot it shares, in place of the earliest agent', async () => {
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C0ROOM', agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: null, trigger: 'mention' })
+      ]
+      const orch = makeOrch()
+
+      expect(await orch.roomOpening(BOT, INT_B)).toBe(true)
+      expect(lastRoutes().roomOpeningMs).toBeGreaterThan(0)
+      expect(await orch.openRoom(BOT, INT_B, 'C0ROOM')).toBe(true)
+
+      expect(rowOf(INT_A)).toMatchObject({ agentId: null, trigger: 'mention' })
+      expect(rowOf(INT_B)).toMatchObject({ agentId: BOB, trigger: 'mention', triggerChosen: false })
+      expect(lastRoutes().routes.filter((route) => route.scope?.channel === 'C0ROOM')).toEqual([
+        expect.objectContaining({ agentId: BOB })
+      ])
+    })
+
+    it('opens an ungated member’s room that a gated earliest agent had seeded Off', async () => {
+      gatedAgents = new Set([ALICE])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C0ROOM', agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: null, trigger: 'off' })
+      ]
+
+      expect(await makeOrch().openRoom(BOT, INT_B, 'C0ROOM')).toBe(true)
+      expect(rowOf(INT_A)).toMatchObject({ agentId: null, trigger: 'mention' })
+      expect(rowOf(INT_B)).toMatchObject({ agentId: BOB, trigger: 'mention' })
+    })
+
+    it('leaves an ungated agent that has the bot to itself alone', async () => {
+      integrations = [integration(INT_A, ALICE)]
+      channels = []
+      const orch = makeOrch()
+      const sent = ch.sends.length
+
+      expect(await orch.roomOpening(BOT, INT_A)).toBe(false)
+      expect(await orch.openRoom(BOT, INT_A, 'C0ROOM')).toBe(false)
+      expect(channels).toEqual([])
+      expect(ch.sends).toHaveLength(sent)
+    })
+  })
+
   it('rejects a queued Console update when Slack changes the authorized owner first', async () => {
     gatedAgents = new Set([BOB])
     channels = [

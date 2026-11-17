@@ -356,8 +356,8 @@ async function execute(
       )
     if (anchored !== undefined && (invite.length === 0 || a.task === undefined || !env.handOff))
       throw new Error(SCHEDULED_NEEDS)
-    const make = async () => {
-      const created = await createCodeChannel(
+    const create = () =>
+      createCodeChannel(
         conn,
         { agentId: ctx.agentId, channel: here, ts, isDm: ctx.isDm && here === ctx.channel },
         a.name,
@@ -370,6 +370,14 @@ async function execute(
             ...(anchored !== undefined ? { anchoredIn: here } : {})
           })
       )
+    const make = async () => {
+      // Where this agent's conversations start closed, a new channel opens to it as part of being made (resource-visibility.md §14.10).
+      const created = env.admitRoom
+        ? await env.admitRoom(here, async () => {
+            const result = await create()
+            return { result, ...(result.existing || !result.channelId ? {} : { channel: result.channelId }) }
+          })
+        : await create()
       // A code channel's one session keys on the channel itself (slack-code-channels.md), the coordinate a task holds it by.
       const id = created.existing ? undefined : created.channelId
       return { result: { response: created.response, id }, ...(id ? { room: { channel: id, thread: id } } : {}) }

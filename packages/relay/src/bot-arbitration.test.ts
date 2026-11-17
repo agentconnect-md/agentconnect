@@ -65,6 +65,27 @@ describe('HTTP-bot arbitration (§10)', () => {
     expect(arbitrate(a, { ...directed, conversationBotId: 'OTHER' }, empty())).toBeNull()
   })
 
+  it('routes an unmentioned human message in a provider-owned conversation to that conversation’s own mention route, ahead of the bot default', () => {
+    const a = assignment()
+    a.routes.push({
+      agentId: BOB,
+      daemonId: D2,
+      integrationId: 'iB',
+      scope: { channel: 'CR' },
+      match: { kind: 'mention' }
+    })
+    const directed = msg({ channel: 'CR', conversationBotId: BOTUSER, thread: 'CR' })
+    const bob = { agentId: BOB, daemonId: D2, integrationId: 'iB' }
+    expect(arbitrate(a, directed, empty())).toEqual(bob)
+    // A gated owner has no default to fall back on, so this route is the only thing that places the message.
+    const { defaultAgentId: _agent, defaultDaemonId: _daemon, ...gatedOnly } = a
+    expect(arbitrate({ ...gatedOnly, gatedAgentIds: [ALICE, BOB] }, directed, empty())).toEqual(bob)
+    // Another bot's room, a message naming someone else, and an Off conversation are not addressed to it.
+    expect(arbitrate(gatedOnly, { ...directed, conversationBotId: 'OTHER' }, empty())).toBeNull()
+    expect(arbitrate(gatedOnly, { ...directed, mentionedBots: ['UOTHER'] }, empty())).toBeNull()
+    expect(arbitrate({ ...a, mutedChannels: ['CR'] }, directed, empty())).toBeNull()
+  })
+
   it('channel ownership with a mention trigger routes a mentioned message to the owner', () => {
     const t = arbitrate(assignment(), msg({ channel: 'C1', text: '<@UBOT> deploy', mentionedBots: [BOTUSER] }), empty())
     expect(t).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
