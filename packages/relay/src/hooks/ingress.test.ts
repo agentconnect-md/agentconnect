@@ -12,7 +12,12 @@ import {
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
 import { HookRateLimiter } from './rate-limit.js'
-import { registerHookIngress, HOOK_BODY_EXCERPT_MAX, noticeDelivery } from './ingress.js'
+import {
+  registerHookIngress,
+  HOOK_BODY_EXCERPT_MAX,
+  HOOK_REJECTION_RETRY_DELAYS_MS,
+  noticeDelivery
+} from './ingress.js'
 
 const HOOK = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
@@ -524,6 +529,40 @@ describe('hook ingress', () => {
     h.clock.advance(12_000)
     expect(h.lookups).toHaveLength(1)
     expect(h.sent).toHaveLength(1)
+  })
+
+  it("re-sends a fire its draining daemon refused to the agent's next holder", async () => {
+    h.table.upsert(rule())
+    h.onlineDaemons.add(DAEMON_B)
+    h.ack = { msgId: 'x', accepted: false, reason: 'draining' }
+    await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'drain-1' } })
+    await flush()
+    expect(h.dispatches.map((d) => d.daemonId)).toEqual([DAEMON])
+    expect(h.reports).toHaveLength(0)
+
+    // The draining daemon hands the agent over; the next attempt reads the moved rule.
+    h.table.upsert(rule({ daemonId: DAEMON_B, dispatchDaemonId: DAEMON_B, dispatchRevision: '6' }))
+    h.ack = { msgId: 'x', accepted: true }
+    h.clock.advance(1_000)
+    await flush()
+
+    expect(h.dispatches.map((d) => d.daemonId)).toEqual([DAEMON, DAEMON_B])
+    expect(h.dispatches[1]!.msg).toMatchObject({ msgId: `${HOOK}:drain-1`, dispatchDaemonId: DAEMON_B })
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted', daemonId: DAEMON_B })])
+  })
+
+  it('reports a refusal for now once its retries run out', async () => {
+    h.table.upsert(rule())
+    h.ack = { msgId: 'x', accepted: false, reason: 'queue_full' }
+    await post('wh_tok1')
+    await flush()
+    for (const delay of HOOK_REJECTION_RETRY_DELAYS_MS) {
+      expect(h.reports).toHaveLength(0)
+      h.clock.advance(delay)
+      await flush()
+    }
+    expect(h.sent).toHaveLength(HOOK_REJECTION_RETRY_DELAYS_MS.length + 1)
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:queue_full' })])
   })
 
   it('a synchronous send failure reports dispatch_timeout once without retrying', async () => {
