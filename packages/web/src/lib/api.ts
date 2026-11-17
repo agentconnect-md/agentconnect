@@ -8023,7 +8023,7 @@ export interface AgentRepoAuthDto {
 }
 
 /** Why re-attestation suspended a grant. */
-export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed' | 'repository_unreachable'
 
 /** Which host a grant row names — an older CP omits the field and means GitHub. */
 export function repoAuthProvider(row: AgentRepoAuthDto): CodeHostProvider {

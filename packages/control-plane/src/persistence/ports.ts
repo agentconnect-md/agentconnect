@@ -5650,7 +5650,7 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 export type RepoMaterialization = 'always' | 'decision' | 'on-demand'
 
 /** Why re-attestation stopped honoring a grant (agent-multi-repo-authorization.md, Re-attestation). */
-export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed' | 'repository_unreachable'
 
 export interface AgentRepoAuthorizationRecord {
   id: string
@@ -5663,7 +5663,7 @@ export interface AgentRepoAuthorizationRecord {
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
   attestedByUserId: string | null // who vouched for the current tier; re-attestation re-checks this member
-  stale: { since: Date; reason: RepoGrantStaleReason } | null // set while the attester fails the check
+  stale: { since: Date; reason: RepoGrantStaleReason } | null // set while re-attestation does not honor the grant
   /** An `azure-devops` grant's connection and routing (azure-devops-integration.md §3.2, §4); absent on every other host. */
   connectionId?: string
   azureDevOps?: AzureDevOpsRepoRouting
@@ -5715,6 +5715,8 @@ export interface AgentRepoAuthorizationRepo {
     checkedBefore: Date,
     now: Date
   ): Promise<(AgentRepoAuthorizationRecord & { orgId: OrgId }) | null>
+  /** Make an org's grants suspended as `repository_unreachable` due for re-attestation at once; returns how many. */
+  requeueUnreachable(provider: CodeHostProvider, orgId: OrgId): Promise<number>
   /** Record a verdict (null = held) for `subject`; true when the grant's honored state flipped and the spec was advanced. */
   recordAttestation(
     id: string,

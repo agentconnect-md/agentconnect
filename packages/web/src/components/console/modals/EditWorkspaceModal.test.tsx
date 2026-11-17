@@ -3,12 +3,16 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentRepoAuthDto } from '@/lib/api'
+import { fetchGithubInstallations, type AgentRepoAuthDto, type GithubInstallationDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const repositoryModal = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }))
-const mocks = vi.hoisted(() => ({ updateAgentRepo: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  updateAgentRepo: vi.fn(),
+  syncGithubInstallations: vi.fn(async () => []),
+  fetchAgentRepos: vi.fn()
+}))
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ orgPath: (path: string) => path }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ orgSetIds: new Set<string>() }) }))
@@ -16,6 +20,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
   fetchGithubInstallUrl: vi.fn(async () => null),
+  syncGithubInstallations: mocks.syncGithubInstallations,
+  fetchAgentRepos: mocks.fetchAgentRepos,
   updateAgentRepo: mocks.updateAgentRepo
 }))
 vi.mock('@/components/console/modals/AddAgentRepoModal', () => ({
@@ -105,6 +111,9 @@ afterEach(async () => {
   root = undefined
   host = undefined
   mocks.updateAgentRepo.mockReset()
+  mocks.syncGithubInstallations.mockClear()
+  mocks.fetchAgentRepos.mockReset()
+  vi.mocked(fetchGithubInstallations).mockResolvedValue({ enabled: false, installations: [] })
 })
 
 async function render(authorized: AgentRepoAuthDto[], onAuthorizedChange = vi.fn()) {
@@ -153,6 +162,59 @@ describe('EditWorkspaceModal repository access toggle', () => {
     expect(badges).toHaveLength(1)
     expect(badges[0]?.title).toBe('The member who authorized it no longer has a linked account for this provider')
     expect(badges[0]?.parentElement?.textContent).toContain('example-org/example-repo')
+  })
+
+  it('links a row its installation no longer reaches to that installation on GitHub, and no other suspended row', async () => {
+    vi.mocked(fetchGithubInstallations).mockResolvedValue({
+      enabled: true,
+      installations: [
+        { id: 'ins-1', accountLogin: 'Example-Org', settingsUrl: 'https://github.example.test/installations/1' }
+      ] as GithubInstallationDto[]
+    })
+    await render([
+      row({ stale: { since: '2026-09-20T00:00:00.000Z', reason: 'repository_unreachable' } }),
+      row({
+        id: 'repo-auth-2',
+        repoFullName: 'example-org/second',
+        stale: { since: '2026-09-20T00:00:00.000Z', reason: 'access_lost' }
+      })
+    ])
+    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).filter((el) =>
+      el.textContent?.includes('Manage on GitHub')
+    )
+    expect(links.map((el) => el.href)).toEqual(['https://github.example.test/installations/1'])
+    expect(links[0]?.parentElement?.textContent).toContain('example-org/example-repo')
+    expect(
+      document.querySelector('span[title="The GitHub App installation no longer reaches this repository"]')
+    ).not.toBeNull()
+  })
+
+  it('syncs and reloads the rows when the member returns to a row its installation could not reach', async () => {
+    mocks.fetchAgentRepos.mockResolvedValue([row({ stale: null })])
+    const onAuthorizedChange = await render([
+      row({ stale: { since: '2026-09-20T00:00:00.000Z', reason: 'repository_unreachable' } })
+    ])
+    expect(mocks.syncGithubInstallations).not.toHaveBeenCalled()
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(mocks.syncGithubInstallations).toHaveBeenCalledOnce()
+    expect(mocks.fetchAgentRepos).toHaveBeenCalledWith('agent-a')
+    expect(onAuthorizedChange).toHaveBeenLastCalledWith([row({ stale: null })])
+    expect(document.body.textContent).not.toContain('Suspended')
+  })
+
+  it('leaves a row suspended for its member alone on focus', async () => {
+    await render([row({ stale: { since: '2026-09-20T00:00:00.000Z', reason: 'access_lost' } })])
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(mocks.syncGithubInstallations).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('Suspended')
   })
 
   it('replaces the static tier badge, pressing neither segment for a legacy comment row', async () => {

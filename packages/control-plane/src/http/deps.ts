@@ -588,6 +588,8 @@ export interface HttpDeps {
   /** The panel's second identity source: the PR a session's own head branch has, for the sessions no
    *  pull-request run owns (§12.6). Absent ⇒ only run-linked sessions resolve a PR, as before. */
   sessionPullRequestLink?: SessionPullRequestLinkService
+  /** Re-check an org's repository grants suspended as unreachable; absent ⇒ re-attestation is not configured. */
+  recheckUnreachableRepoGrants?: (orgId: OrgId) => Promise<void>
   /** Per-user repo authorization (identity assertion, open question #7); absent ⇒ the
    *  org-level model (installation coverage only) and the permission route 404s. */
   githubUserAuthz?: GithubUserAuthzService

@@ -238,6 +238,17 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
     return row ? { ...toRecord(row), orgId: OrgId(row.agent.orgId) } : null
   }
 
+  async requeueUnreachable(provider: CodeHostProvider, orgId: OrgId): Promise<number> {
+    // A cleared check stamp sorts first in the claim order, so the next sweep takes these rows before any other.
+    return this.db.$executeRaw(Prisma.sql`
+      UPDATE "agent_repo_authorization" g SET "attestationCheckedAt" = NULL
+      FROM "agent" a
+      WHERE a.id = g."agentId" AND a."orgId" = ${orgId}
+        AND g."provider" = ${provider}
+        AND g."staleReason" = 'repository_unreachable'::"RepoGrantStaleReason"
+    `)
+  }
+
   async recordAttestation(
     id: string,
     subject: RepoGrantAttestationSubject,

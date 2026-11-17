@@ -72,22 +72,33 @@ const ACCESS_TOGGLE = [
 /** A grant re-attestation suspended, named in its row with the reason on hover; `compact` keeps a narrow row's name readable. */
 export function RepositoryGrantSuspendedBadge({
   reason,
-  compact = false
+  compact = false,
+  installationUrl
 }: {
   reason: RepoGrantStaleReason
   compact?: boolean
+  /** The installation's page on GitHub, linked only for a repository the installation no longer reaches. */
+  installationUrl?: string
 }) {
   const t = useTranslations('Integrations.dialog.workspaceFields')
   return (
-    <span
-      role={compact ? 'img' : undefined}
-      aria-label={compact ? t('grantSuspended') : undefined}
-      className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
-      title={t(`grantSuspendedReason.${reason}`)}
-    >
-      <Icon name="triangle-exclamation-point" size={11} />
-      {!compact && t('grantSuspended')}
-    </span>
+    <>
+      <span
+        role={compact ? 'img' : undefined}
+        aria-label={compact ? t('grantSuspended') : undefined}
+        className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
+        title={t(`grantSuspendedReason.${reason}`)}
+      >
+        <Icon name="triangle-exclamation-point" size={11} />
+        {!compact && t('grantSuspended')}
+      </span>
+      {reason === 'repository_unreachable' && installationUrl && (
+        <a href={installationUrl} target="_blank" rel="noopener noreferrer" className="lnk flex-none text-[12px]">
+          {t('manageInstallation')}
+          <Icon name="external-link" size={12} />
+        </a>
+      )}
+    </>
   )
 }
 

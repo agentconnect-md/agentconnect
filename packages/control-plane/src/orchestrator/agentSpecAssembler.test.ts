@@ -119,7 +119,8 @@ function repoAuthWith(
     remove: unused,
     removeWithReviewProjectionCleanup: unused,
     claimDueForReattestation: unused,
-    recordAttestation: unused
+    recordAttestation: unused,
+    requeueUnreachable: unused
   }
 }
 

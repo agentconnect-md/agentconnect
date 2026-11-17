@@ -20,7 +20,7 @@ export interface RepositoryGrantReattestorConfig {
 
 export interface RepositoryGrantReattestorDeps {
   provider: CodeHostProvider
-  grants: Pick<AgentRepoAuthorizationRepo, 'claimDueForReattestation' | 'recordAttestation'>
+  grants: Pick<AgentRepoAuthorizationRepo, 'claimDueForReattestation' | 'recordAttestation' | 'requeueUnreachable'>
   attest(grant: ClaimedGrant): Promise<ReattestationVerdict>
   staleReasonText: Record<RepoGrantStaleReason, string>
   audit: Pick<AuditRepo, 'append'>
@@ -137,6 +137,12 @@ export class RepositoryGrantReattestor {
       })
     }
     return sweep
+  }
+
+  /** Re-check an org's unreachable grants now: a repository put back in its installation should not wait out the re-attestation period. */
+  async recheckUnreachable(orgId: OrgId): Promise<void> {
+    const due = await this.deps.grants.requeueUnreachable(this.deps.provider, orgId)
+    if (due > 0) await this.sweep()
   }
 
   attest(grant: ClaimedGrant): Promise<ReattestationVerdict> {
