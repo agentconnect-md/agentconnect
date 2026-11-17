@@ -322,6 +322,8 @@ export interface BrokerRequest {
   body?: Record<string, unknown>
   /** A 404 answers null instead of failing, for a lookup whose subject may not exist. */
   missingOk?: boolean
+  /** A 403 answers null instead of failing or re-minting, for a read the host's plan may not offer. */
+  forbiddenOk?: boolean
 }
 
 /** A host's non-2xx answer, carrying its status so a caller can tell one refusal from another. */
@@ -376,6 +378,7 @@ export async function brokerCall<L extends BrokerLease>(
       }
     }
     if (res.status === 404 && request.missingOk) return null
+    if (res.status === 403 && request.forbiddenOk) return null
     const authRejected = res.status === 401 || res.status === 403
     const detail = await failureDetail(res)
     if (attempt === 1 || !authRejected || !deps.invalidateLease) {
