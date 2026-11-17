@@ -907,76 +907,95 @@ mutations: `issue comment`, `issue close`, `issue create`, `pr create`,
 and an agent that has no tool for the write falls back to REST by hand.
 
 **Proposed: a mutation goes to the one repository it touches.** The proxy
-forwards a mutation with a token minted for a single repository at that
-repository's tier, as a REST write to that repository already is. Which
-repository it picks never widens access: the token lists one repository, so
-GitHub refuses any part of the mutation outside it, and a wrong pick fails the
-request instead of reaching another repository. Everything below only decides
-which single repository's token the request carries.
+forwards a mutation with a token minted for a single repository at the agent's
+tier there, as a REST write to that repository already is: the ask is not
+read-only, and GitHub's permissions for that tier decide what the mutation may
+do. Which repository the proxy picks never widens access: the token lists one
+repository, so GitHub refuses any field of the mutation that reaches outside
+it. A document with several mutation fields runs them in order, and an earlier
+field may succeed before a later one is refused; the proxy never retries a
+mutation. Everything below only decides which single repository's token the
+request carries. It covers `github.com`.
 
-The proxy parses the document and considers only the operation the request
-executes: the one `operationName` names, or the document's only operation. A
-document with several operations and no `operationName`, a subscription, or a
-document it cannot parse is refused. A query is forwarded as today.
+**Parsing.** The proxy parses the document into a syntax tree and analyzes only
+the operation the request executes: the one `operationName` names, or the
+document's only operation, with the fragments that operation references,
+directly or through other fragments, and its variables with their defaults. It
+refuses a JSON batch, a request without a document such as a persisted query,
+an `operationName` that is missing from the document or ambiguous, several
+operations without one, a subscription, a missing or cyclic fragment, a
+document or variables over a fixed size, and anything it cannot parse. A query
+is forwarded as today.
 
-`gh` names a mutation's targets by node ID, not by owner and name:
-`addComment` takes `subjectId`, `closeIssue` takes `issueId`, `createIssue` and
-`createPullRequest` take `repositoryId`, and `addLabelsToLabelable` takes
-`labelableId` and `labelIds`. It sends them as variables, under `input`, and
-names no owner or repository. So the proxy asks GitHub which repository the IDs
-belong to, and attributes a mutation in this order:
+**Candidates.** `gh` names a mutation's targets by node ID and names no owner
+or repository: `addComment` takes `subjectId`, `closeIssue` takes `issueId`,
+`createIssue` and `createPullRequest` take `repositoryId`, and
+`addLabelsToLabelable` takes `labelableId` and `labelIds`, all as variables
+under `input`. The candidates are the values at ID positions only: a string, or
+a list of strings, under an input key named `id` or ending in `Id` or `Ids`,
+whether it arrives as a variable at any depth or as an inline argument of the
+executed operation. Titles, bodies and branch names are never candidates. A
+mutation with no candidate, or with more than a fixed number, is refused.
 
-1. **Named.** The variables carry `owner` with `name` or `repo`.
-2. **Remembered.** Every candidate ID is already in the agent's node cache from
-   an earlier lookup.
-3. **Looked up.** The proxy asks GitHub which repository each remaining ID
-   belongs to with a read-only query,
-   `nodes(ids: [...]) { ... on RepositoryNode { repository { nameWithOwner } } ... on Repository { nameWithOwner } }`,
-   first with the workspace repository's read token, then with the read token
-   of each of the agent's other authorized GitHub repositories, until every ID
-   resolves or the repositories run out. A token that lists one repository
-   resolves that repository's nodes and answers each other node with `null` and
-   `NOT_FOUND`, and the rest of the answer still arrives, so each round resolves
-   one repository's nodes. A public repository's nodes resolve with any token,
-   so a node is attributed only to a repository the agent is authorized on.
+**Lookup.** The proxy asks GitHub which repository the candidates belong to,
+with a read-only query and each object's type:
 
-The candidates are the string values in the variables, at any depth, and the
-string literals in the executed operation, up to a fixed number; a request with
-more is refused. A candidate that never resolves, such as a comment body or a
-node of a repository the agent is not authorized on, is ignored. A node that
-belongs to no repository, such as a user or a team, does not count either.
-Then:
+```graphql
+nodes(ids: $ids) {
+  __typename
+  ... on Repository { nameWithOwner }
+  ... on RepositoryNode { repository { nameWithOwner } }
+  ... on Label { repository { nameWithOwner } }
+  ... on Milestone { repository { nameWithOwner } }
+  ... on Ref { repository { nameWithOwner } }
+  ... on GitObject { repository { nameWithOwner } }
+  ... on PullRequestReviewThread { repository { nameWithOwner } }
+}
+```
 
-- every repository node belongs to the same authorized repository: the proxy
-  mints that repository's token at the agent's tier and forwards;
-- no candidate belongs to an authorized repository, which covers user- and
-  organization-level mutations such as Projects: refused;
-- the candidates span two or more repositories: refused, naming REST and the
-  tools.
+`RepositoryNode` covers issues, pull requests, comments and reviews; labels,
+milestones, refs, commits and review threads carry a repository without
+implementing it, so each has its own fragment. The first round uses the
+workspace repository's read token, and each later round the read token of the
+agent's next explicitly authorized GitHub repository, stopping as soon as every
+candidate has resolved. A token that lists one repository resolves that
+repository's nodes and answers each other node with `null` and `NOT_FOUND`
+while the rest of the answer still arrives, so each round resolves one
+repository's nodes. A public repository's nodes resolve with any token, so a
+node counts only toward a repository the agent is authorized on. A round whose
+token the Control Plane refuses, as for an authorization withdrawn since the
+spec arrived, is skipped. A network error, a rate limit or an unreadable answer
+fails the request with an error; it is never read as an unresolved node.
 
-**The node cache.** Only lookups fill the cache: each ID is cached against the
-repository GitHub reported, per agent, in a bounded cache, so the first write
-to an object costs one read and later writes to it cost none. When GitHub
-answers a mutation with `NOT_FOUND` or `FORBIDDEN`, the proxy drops the cache
-entries for that request's IDs, so a transferred issue is looked up afresh next
-time. It never retries the mutation.
+**Decision.**
 
-`gh` reads the object it is about to change through a query whose variables
-name the repository (for example `repository(owner, name) { issue(number) { id } }`),
-so the proxy could learn the IDs in that response and skip the first lookup.
-That is left out: it would make the proxy read every query response, and an
-object a response reaches through another repository, such as a fork's head,
-would be cached against the wrong one. The token would still be scoped to the
-cached repository, so such an error would fail closed; it can be added later if
-the lookup's latency matters.
+- Every candidate resolved, and every node that has a repository belongs to the
+  same authorized repository: the proxy mints that repository's token and
+  forwards. Users, bots, teams, organizations and mannequins have no repository
+  and do not count.
+- A candidate resolved in no round: refused. It names an object outside the
+  agent's authorized repositories, or nothing at all.
+- A node of a type the lookup does not map to a repository, other than those
+  without one: refused, rather than read as having none.
+- No node with a repository, which covers user- and organization-level
+  mutations such as Projects: refused.
+- Nodes in two or more repositories: refused, naming REST and the tools. This
+  includes a pull request opened from another repository's branch, which names
+  both repositories, and `transferIssue`.
 
-**Limits.** Each lookup round costs one read request. An agent authorized
-across many repositories, such as through an installation-wide grant, can need
-many rounds for an ID outside its workspace, so the rounds are capped; past the
-cap the mutation is refused. A read-only token listing every authorized
-repository of an installation would resolve the same IDs in one request. Every
-repository on it is one the agent may read, so a single permission set is
-correct for all of them. Adding that is a Control Plane change and is deferred.
+**Scope of the first version.** The rounds cover the workspace and the
+repositories the agent is explicitly authorized on, which the daemon holds in
+the agent's spec. An installation-wide grant carries no repository list, so an
+object reachable only through it cannot be attributed and its mutation is
+refused; REST and the tools still reach it. Covering it needs the Control Plane
+to resolve the repository, and is deferred. There is no node cache: a mutation
+costs one lookup round when its target is in the workspace, and one more per
+other authorized repository tried. Learning IDs from query responses is left
+out too: it would make the proxy read every query response, and an object a
+response reaches through another repository, such as a fork's head, would be
+attributed to the wrong one. Either can be added later if the lookup's latency
+matters; neither changes what a token can reach.
+
 Organization-level objects such as Projects stay unavailable, and so does
 anything that needs a permission no tier grants.
 
