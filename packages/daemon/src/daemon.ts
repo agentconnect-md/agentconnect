@@ -31973,25 +31973,24 @@ export class Daemon {
     await this.clearTaskSlackHolds()
     const active = [...new Set([...this.activeDispatchesByAgent.values()].flatMap((runs) => [...runs]))]
     const pendingKeys = new Set([...this.pending.values()].map((p) => p.plan.sessionKey))
-    const coldAgents = new Set<string>()
+    const coldHosts = new Set<HostKey>()
     // A pre-Pending dispatch has no p.done to observe: abort its initialization now, keeping its row for replay.
     for (const [key, entry] of this.activeGateEntries) {
       if (pendingKeys.has(key)) continue
       entry.cancelledReason ??= 'shutdown'
       entry.initAbort.abort(new Error('daemon shutting down'))
       // A turn parked for a respawn owns no host; stopping the agent's would cut the old process's turns early.
-      if (!this.respawnHeldEntries.has(entry)) coldAgents.add(entry.agentId)
+      // Only the host this session starts on: the agent's other hosts carry turns the drain waits for.
+      if (!this.respawnHeldEntries.has(entry)) coldHosts.add(this.hostKeyFor(entry.agentId, key))
     }
-    const stopFailClosed = (agentId: string): Promise<void> =>
-      Promise.all([this.stopHost(agentId, 0)])
-        .then(() => undefined)
-        .catch((err) => {
-          this.log.error(`shutdown: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
-          // Never close the store/MCP boundary while a child that failed to stop may
-          // still be executing against it. Process termination is the final backstop.
-          return new Promise<void>(() => {})
-        })
-    const coldStops = [...coldAgents].map(stopFailClosed)
+    const stopFailClosed = (agentId: string, stop: Promise<void>): Promise<void> =>
+      stop.catch((err) => {
+        this.log.error(`shutdown: force-stop failed for agent "${agentId}": ${formatErr(err)}`)
+        // A child that failed to stop may still run against the store/MCP boundary: never close it; process exit is the backstop.
+        return new Promise<void>(() => {})
+      })
+    const coldStops = [...coldHosts].map((host) => stopFailClosed(hostKeyAgentId(host), this.stopHostByKey(host, 0)))
+    const forcedAgents = new Set<string>()
     // One cancellation pass over the in-flight work of the agents `klass` selects; idempotent.
     const cancelInFlight = async (klass: (agentId: string) => boolean, reason: string): Promise<Set<string>> => {
       const forceAgents = new Set<string>()
@@ -32057,9 +32056,9 @@ export class Daemon {
       const forceStops: Array<Promise<void>> = []
       const forceStop = (agentIds: Iterable<string>): void => {
         for (const id of agentIds) {
-          if (coldAgents.has(id)) continue
-          coldAgents.add(id)
-          forceStops.push(stopFailClosed(id))
+          if (forcedAgents.has(id)) continue
+          forcedAgents.add(id)
+          forceStops.push(stopFailClosed(id, this.stopHost(id, 0)))
         }
       }
       // Two windows: work that cannot move to a successor is cut at the local one; only

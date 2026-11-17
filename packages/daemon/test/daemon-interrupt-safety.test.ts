@@ -571,6 +571,59 @@ describe('Daemon interrupt safety gates', () => {
     }
   })
 
+  it("stops only a cold session's own host at shutdown, letting the agent's running turns finish", async () => {
+    const clock = new FakeClock()
+    let finishTurn!: (value: { stopReason: string }) => void
+    const turnRunning = new Promise<{ stopReason: string }>((resolve) => (finishTurn = resolve))
+    const runningHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-running'),
+      hasSession: vi.fn(() => true),
+      modelOptions: vi.fn(() => null),
+      prompt: vi.fn(async () => turnRunning),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    // T2 is still starting when the daemon stops: its session/new never answers.
+    const coldHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => new Promise<never>(() => {})),
+      hasSession: vi.fn(() => true),
+      modelOptions: vi.fn(() => null),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const hosts = [runningHost, coldHost]
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => hosts.shift()! as any,
+      clock
+    })
+    // Every logical session on a host of its own, as an isolated workspace gets.
+    vi.spyOn(daemon as any, 'hostKeyFor').mockImplementation((agentId: unknown, key: unknown) =>
+      key === undefined ? agentHostKey(agentId as string) : sessionHostKey(agentId as string, key as string)
+    )
+    await daemon.start()
+    const t1 = (daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '100', 'running'))
+    await vi.waitFor(() => expect(runningHost.prompt).toHaveBeenCalledTimes(1), WAIT)
+    const t2 = (daemon as any).dispatch(AGENT_ID, dm('C2', 'T2', '200', 'cold'))
+    await vi.waitFor(() => expect(coldHost.newSession).toHaveBeenCalledTimes(1), WAIT)
+
+    const stopped = daemon.stop()
+    try {
+      await vi.waitFor(() => expect(coldHost.stop).toHaveBeenCalledTimes(1), WAIT)
+      expect(runningHost.stop).not.toHaveBeenCalled()
+      finishTurn({ stopReason: 'end_turn' })
+      await expect(t1).resolves.toBe('acp-running')
+    } finally {
+      finishTurn({ stopReason: 'end_turn' })
+      await Promise.allSettled([t1, t2])
+      await stopped
+    }
+  })
+
   // The cold fence's 'initialized' site owns the created-session nulling: a session/new that
   // lands after the turn went terminal must not survive as revivable conversation state.
   it('nulls out an ACP session created after a cold cancel, and leaves a rebound row alone', async () => {
