@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { executeTool, type SessionContext } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
@@ -508,6 +509,64 @@ describe('Daemon interrupt safety gates', () => {
     } finally {
       releaseSession()
       await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0)).catch(() => {})
+      await daemon.stop()
+    }
+  })
+
+  it('gates only the stopping host when each session has a host of its own', async () => {
+    const clock = new FakeClock()
+    let releaseStop!: () => void
+    const stopBlocked = new Promise<void>((resolve) => (releaseStop = resolve))
+    // T1's host never finishes session/new, and its force-stop hangs, so the drain stays open.
+    const coldHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => new Promise<never>(() => {})),
+      hasSession: vi.fn(() => true),
+      modelOptions: vi.fn(() => null),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => stopBlocked)
+    }
+    const otherHost = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-other'),
+      hasSession: vi.fn(() => true),
+      modelOptions: vi.fn(() => null),
+      prompt: vi.fn(async () => ({ stopReason: 'end_turn' })),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const hosts = [coldHost, otherHost]
+    const factory = vi.fn(() => hosts.shift()!)
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => factory() as any,
+      clock
+    })
+    // Every logical session on a host of its own, as an isolated workspace gets.
+    vi.spyOn(daemon as any, 'hostKeyFor').mockImplementation((agentId: unknown, key: unknown) =>
+      key === undefined ? agentHostKey(agentId as string) : sessionHostKey(agentId as string, key as string)
+    )
+    await daemon.start()
+    const t1Key = sessionKey('slack', 'C1', 'T1', AGENT_ID)
+    const t1 = (daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '100', 'cold'))
+
+    try {
+      await vi.waitFor(() => expect(coldHost.newSession).toHaveBeenCalledTimes(1), WAIT)
+      await (daemon as any).interruptTurn(AGENT_ID, t1Key, 'cancel')
+      clock.advance(30_000)
+      await vi.waitFor(() => expect(coldHost.stop).toHaveBeenCalledTimes(1), WAIT)
+      expect((daemon as any).safetyDrainingAgents.has(AGENT_ID)).toBe(true)
+
+      // Another conversation runs on its own host while T1's host is still stopping.
+      await expect((daemon as any).dispatch(AGENT_ID, dm('C2', 'T2', '200', 'unrelated'))).resolves.toBe('acp-other')
+      // T1's own conversation stays gated until its host teardown settles.
+      await expect((daemon as any).dispatch(AGENT_ID, dm('C1', 'T1', '300', 'retry'))).resolves.toBeNull()
+      expect(factory).toHaveBeenCalledTimes(2)
+    } finally {
+      releaseStop()
+      await Promise.allSettled([t1])
       await daemon.stop()
     }
   })

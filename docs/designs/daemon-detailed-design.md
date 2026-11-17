@@ -824,6 +824,21 @@ if the runtime ignores it, and queued messages fail-stopped. A prompt the
 runtime rejects with "Session not found" also clears the row's `acpSessionId`,
 so the next message opens a fresh session instead of repeating the failure.
 
+**New work waits for an interrupted turn's host.** The `cancelBackstopMs`
+force-stop (for a turn still in cold initialization, the same timer on its
+`session/new`) kills the whole process of the host the turn runs on. Until every
+interrupted turn has fully unwound, the daemon therefore admits no new work on
+that host and starts no replacement for it; a live platform message for it is
+dropped, a durable replay waits. The gate's reach follows the host, not the
+conversation: a cancel or `!stop` gates the host of its session, which is only
+that conversation when the session has a host of its own (an isolated or placed
+session, among others; `hostKeyFor`) and every session of the agent when it runs
+on the agent's shared host. The loop breaker and an integration's removal
+interrupt the sessions they reach the same way, each by its host. Pause, the
+agent's removal or workspace detach, a configuration change that respawns its
+hosts and a duty handover interrupt every turn of the agent and gate all of its
+hosts.
+
 **An unanswered permission request or question.** The wait on a human does not
 count against the stall budget, but it is bounded too: once a turn's card has
 gone unanswered for `limits.agentMaxLifetimeMs` since it was asked, the ceiling
