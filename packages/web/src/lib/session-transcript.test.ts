@@ -139,6 +139,27 @@ describe('reconcilePersistedLiveSteps', () => {
     ).toEqual([])
   })
 
+  it('retires a turn whose prompt uploaded an image, whose row carries the preview the live step keeps in `images`', () => {
+    const at = 1_785_000_000_000
+    const preview = { name: 'shot.png', mimeType: 'image/webp' as const, data: 'UklGR' }
+    const text = 'look at this\n[attached: shot.png (image/png)]'
+    const turn = { turnId: `u:${at}`, agentId, thread: 'root-1' }
+    const live: SessionStep[] = [
+      { ...prompt(text, at), images: [preview], thread: 'root-1', turnComplete: true },
+      { kind: 'tool', ...turn, text: 'check', toolCallId: 'call-1', toolStatus: 'completed', observedAtMs: at + 50 },
+      { kind: 'done', ...turn, text: 'PELICAN', postId: 'post-1', observedAtMs: at + 100 }
+    ]
+    const rows: SessionMessageDto[] = [
+      { ...persistedPrompt(1, text, at + 10), attachments: [preview] },
+      { seq: 2, ts: String(at + 60), text: 'check', sender: agentId, kind: 'tool', toolCallId: 'call-1' },
+      persistedReply(3, agentId, 'PELICAN', at + 200, 'post-1')
+    ]
+    // Left unmatched, the reply alone retires and the turn's tools stay drawn below the row that replaced it.
+    expect(reconcilePersistedLiveSteps(live, rows, agentId, rows, liveThreadScope(live, 'root-1'))).toEqual([])
+    const main = live.map(({ thread: _thread, ...step }) => step)
+    expect(reconcilePersistedLiveSteps(main, rows, agentId)).toEqual([])
+  })
+
   function persistedReply(seq: number, sender: string, text: string, ts: number, postId: string): SessionMessageDto {
     return { seq, ts: String(ts), text, sender, kind: 'text', postId }
   }
