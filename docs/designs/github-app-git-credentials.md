@@ -456,9 +456,9 @@ with a revision a daemon already applied without it.
 > **Status:** Phase 1 is implemented. Phase 2 is implemented for GitHub,
 > GitLab and Gitea (#3382): the credential proxy always runs, with no switch,
 > and is the only way a session reaches a code host with a credential, over
-> the host, `srt`, executor, `microsandbox` and pool pod transports. GraphQL
-> is read-only today; forwarding a mutation to the one repository it touches,
-> and the routed-write list, are proposed. Phase 2 replaces Trust Model item 3.
+> the host, `srt`, executor, `microsandbox` and pool pod transports. A GraphQL
+> mutation is forwarded only to the one repository it touches; the routed-write
+> list is still proposed. Phase 2 replaces Trust Model item 3.
 
 Before Phase 2, agents wrote to GitHub with whatever their `gh` wrapper
 minted: a capability-clamped installation token at the repository's tier. The
@@ -474,8 +474,8 @@ two steps:
 
 1. Phase 1 adds tools for the everyday writes: pull requests, issues and
    comments, through the daemon, which adds the footer at creation time.
-2. Phase 2 would remove the token from the execution environment and make
-   GraphQL read-only, so those writes go through the tools.
+2. Phase 2 removes the token from the execution environment; the proxy
+   presents a real token only for a repository the request touches.
 
 ### Phase 1: Writes Through the Daemon
 
@@ -583,8 +583,7 @@ likewise for GitLab and Gitea. The line rides the tool context, so a session tha
 offered the tools, such as a follow-up check, does not get it.
 
 **What stays the same.** `gh` keeps working for every write, but a pull
-request or issue opened that way has no footer. Adoption of the tools is
-measured before Phase 2 makes GraphQL read-only.
+request or issue opened that way has no footer.
 
 ### Phase 2: The Daemon Credential Proxy
 
@@ -596,14 +595,13 @@ For each request the proxy would:
 
 1. resolve the session from the placeholder;
 2. select the installation and repository;
-3. apply the agent's existing tier, GraphQL's read-only rule, and the
-   routed-write list below;
+3. apply the agent's existing tier on the one repository the request touches,
+   and the routed-write list below;
 4. mint or refresh the real token; and
 5. forward the request.
 
 What an agent may do within its authorization would not shrink. Where the
-token lives would change, and a write that GraphQL carried today would go
-through a tool or REST instead.
+token lives would change.
 
 **One proxy, one transport per strategy.** Credential logic would exist once,
 in the daemon, for every execution strategy. Only how a request reaches the
@@ -892,21 +890,15 @@ loopback, private, link-local or unspecified space upstream. A self-managed
 instance may live at a private address, so its name is refused only loopback,
 link-local (cloud metadata) and unspecified space.
 
-**GraphQL is read-only today.** A GraphQL request names no repository in its
-URL, and GitHub applies a token's permissions to every repository the token
-lists, so no single token could carry each repository's own tier. The proxy
-reads the document's operation types and forwards only queries, with a
-read-tier token for the repository the query's variables name (`owner` with
-`name` or `repo`), else the workspace's. It refuses every mutation, and a
-document it cannot read, with an error naming the tool for that write; `gh`
-prints the error, so the agent sees it.
+**GraphQL.** A GraphQL request names no repository in its URL, and GitHub
+applies a token's permissions to every repository the token lists, so no single
+token could carry each repository's own tier. A query is forwarded with a
+read-tier token for the repository its variables name (`owner` with `name` or
+`repo`), else the workspace's.
 
-That refusal costs more than first expected. `gh` sends most everyday writes as
-mutations: `issue comment`, `issue close`, `issue create`, `pr create`,
-`pr edit`, `pr merge`, `pr ready` and label changes. Each first attempt fails,
-and an agent that has no tool for the write falls back to REST by hand.
-
-**Proposed: a mutation goes to the one repository it touches.** The proxy
+**A mutation goes to the one repository it touches.** `gh` sends most everyday
+writes as mutations: `issue comment`, `issue close`, `issue create`,
+`pr create`, `pr edit`, `pr merge`, `pr ready` and label changes. The proxy
 forwards a mutation with a token minted for a single repository at the agent's
 tier there, as a REST write to that repository already is: the ask is not
 read-only, and GitHub's permissions for that tier decide what the mutation may
@@ -917,25 +909,24 @@ field may succeed before a later one is refused; the proxy never retries a
 mutation. Everything below only decides which single repository's token the
 request carries. It covers `github.com`.
 
-**Parsing.** The proxy parses the document into a syntax tree and analyzes only
-the operation the request executes: the one `operationName` names, or the
-document's only operation, with the fragments that operation references,
-directly or through other fragments, and its variables with their defaults. It
-refuses a JSON batch, a request without a document such as a persisted query,
-an `operationName` that is missing from the document or ambiguous, several
-operations without one, a subscription, a missing or cyclic fragment, a
-document or variables over a fixed size, and anything it cannot parse. A query
-is forwarded as today.
+**Parsing.** The proxy reads the document's top-level operations, each one's
+type and name, and acts on the operation the request executes: the one
+`operationName` names, or the document's only operation. It refuses a JSON
+batch, a request without a document such as a persisted query, an
+`operationName` that matches no operation or several, several operations
+without one, a subscription, a body over 1 MiB, and a document it cannot read.
 
 **Candidates.** `gh` names a mutation's targets by node ID and names no owner
 or repository: `addComment` takes `subjectId`, `closeIssue` takes `issueId`,
 `createIssue` and `createPullRequest` take `repositoryId`, and
 `addLabelsToLabelable` takes `labelableId` and `labelIds`, all as variables
-under `input`. The candidates are the values at ID positions only: a string, or
-a list of strings, under an input key named `id` or ending in `Id` or `Ids`,
-whether it arrives as a variable at any depth or as an inline argument of the
-executed operation. Titles, bodies and branch names are never candidates. A
-mutation with no candidate, or with more than a fixed number, is refused.
+under `input`. The candidates are the values at ID positions in the
+variables, at any depth: a string, or a list of strings, under a key named `id`
+or ending in `Id` or `Ids`. Titles, bodies and branch names are never
+candidates. An ID written inline in the document is not read: a mutation whose
+variables name no node, or more than 50, is refused, with an error that says to
+pass the IDs as variables. An inline ID beside variable ones changes nothing,
+since the token still lists one repository.
 
 **Lookup.** The proxy asks GitHub which repository the candidates belong to,
 with a read-only query and each object's type:
@@ -990,7 +981,8 @@ object reachable only through it cannot be attributed and its mutation is
 refused; REST and the tools still reach it. Covering it needs the Control Plane
 to resolve the repository, and is deferred. There is no node cache: a mutation
 costs one lookup round when its target is in the workspace, and one more per
-other authorized repository tried. Learning IDs from query responses is left
+other authorized repository tried, up to 10 rounds; a mutation whose objects
+are still unplaced after that is refused. Learning IDs from query responses is left
 out too: it would make the proxy read every query response, and an object a
 response reaches through another repository, such as a fork's head, would be
 attributed to the wrong one. Either can be added later if the lookup's latency
@@ -1523,9 +1515,9 @@ process per pull request in the runtime container. It is long-lived and shares
 the runtime's OS user, so it holds no minting capability. The arm carries the
 pod's codehost proxy route (the listener URL and its trust bundle) and the agent's
 placeholder, and `shim/auto-merge-handler.ts` starts the watcher with them as its
-proxy environment. Each tick reads the pull request through read-only GraphQL and
+proxy environment. Each tick reads the pull request through a GraphQL query and
 merges through `PUT /repos/{owner}/{repo}/pulls/{number}/merge`, with `sha` pinned
-to the head it judged, because the proxy refuses a GraphQL mutation. The proxy
+to the head it judged, which names its repository. The proxy
 attaches the repository's token at the agent's tier, so the watcher can merge only
 what the agent's own `gh` could. An arm on a pod whose listener does not forward
 `api.github.com` is refused. An image whose watcher still asks for a capability
