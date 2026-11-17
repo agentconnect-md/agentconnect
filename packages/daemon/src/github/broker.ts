@@ -12,6 +12,7 @@ import {
   idOf,
   int,
   labelNames,
+  leaseCovering,
   MAX_NAMED,
   MAX_NOTE_BODY_CHARS,
   record,
@@ -83,8 +84,8 @@ async function commentScoped(request: Promise<unknown>): Promise<unknown> {
 }
 
 export interface GithubBrokerDeps {
-  /** The pull-request token for this target's repository, at the tier the agent's authorization earns. */
-  lease: (target: CodeHostEffectTarget) => Promise<BrokerLease>
+  /** The pull-request token for this target's repository, at the tier the agent's authorization earns; `recheck` asks the control plane past the cache. */
+  lease: (target: CodeHostEffectTarget, recheck?: boolean) => Promise<BrokerLease>
   /** Drop a cached token GitHub just rejected (401/403) so the single retry re-mints. */
   invalidateLease?: (target: CodeHostEffectTarget, token: string) => void
   baseUrl?: string
@@ -394,9 +395,12 @@ export class GithubBroker implements CodeHostEffectBroker {
 
   /** Mint the lease and check every endpoint the operation will use before its first request, so a refusal never half-applies. */
   private async lease(target: CodeHostEffectTarget, ...endpoints: EndpointId[]): Promise<BrokerLease> {
-    const lease = await this.deps.lease(target)
-    for (const endpoint of endpoints) enforceGithub(lease, GITHUB_BROKER_ENDPOINTS[endpoint])
-    return lease
+    return leaseCovering(
+      (recheck) => this.deps.lease(target, recheck),
+      (lease) => {
+        for (const endpoint of endpoints) enforceGithub(lease, GITHUB_BROKER_ENDPOINTS[endpoint])
+      }
+    )
   }
 
   /** Issue one allowlisted request; retry once, and only after a definite auth rejection. */

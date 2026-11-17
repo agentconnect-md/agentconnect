@@ -383,7 +383,7 @@ export class GitCredentialCache {
 
   /** The structured broker's effect lease (§14.2): the never-agent-visible effect PAT, authorized by the
    *  agent's GitLab workspace binding or the NAMED enabled hook, carrying the §13.1 clamp it enforces. */
-  async getGitlabEffectToken(agentId: string, projectId: string, hookId?: string): Promise<Entry> {
+  async getGitlabEffectToken(agentId: string, projectId: string, hookId?: string, recheck = false): Promise<Entry> {
     if (this.deps.providerV2Supported?.() !== true) {
       throw new GitCredUnavailableError(
         'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
@@ -395,15 +395,20 @@ export class GitCredentialCache {
     }
     const key = GITLAB_EFFECT_KEY(agentId, projectId)
     const forceRefresh = this.refreshPosts.has(key)
-    const entry = await this.getKeyed(key, agentId, {
+    const entry = await this.getKeyed(
+      key,
       agentId,
-      reason: 'helper',
-      provider: 'gitlab',
-      externalRepoId: projectId,
-      purpose: 'gitlab_effect',
-      ...(hookId !== undefined ? { hookId } : {}),
-      ...(forceRefresh ? { forceRefresh: true } : {})
-    })
+      {
+        agentId,
+        reason: 'helper',
+        provider: 'gitlab',
+        externalRepoId: projectId,
+        purpose: 'gitlab_effect',
+        ...(hookId !== undefined ? { hookId } : {}),
+        ...(forceRefresh ? { forceRefresh: true } : {})
+      },
+      recheck
+    )
     if (forceRefresh) this.refreshPosts.delete(key)
     return entry
   }
@@ -424,8 +429,8 @@ export class GitCredentialCache {
   }
 
   /** The Gitea broker's lease (§10.2): the same token, authorized by the workspace binding or the named enabled hook. */
-  getGiteaEffectToken(agentId: string, repoId: string, hookId?: string): Promise<Entry> {
-    return this.getGiteaLease(GITEA_EFFECT_KEY(agentId, repoId), agentId, repoId, 'gitea_effect', hookId)
+  getGiteaEffectToken(agentId: string, repoId: string, hookId?: string, recheck = false): Promise<Entry> {
+    return this.getGiteaLease(GITEA_EFFECT_KEY(agentId, repoId), agentId, repoId, 'gitea_effect', hookId, recheck)
   }
 
   private async getGiteaLease(
@@ -433,7 +438,8 @@ export class GitCredentialCache {
     agentId: string,
     repoId: string,
     purpose: 'gitea_hook_reply' | 'gitea_effect',
-    hookId: string | undefined
+    hookId: string | undefined,
+    recheck = false
   ): Promise<Entry> {
     if (this.deps.providerV2Supported?.() !== true) {
       throw new GitCredUnavailableError(
@@ -446,16 +452,21 @@ export class GitCredentialCache {
       throw new GitCredUnavailableError('the control plane does not support Gitea leases yet', false)
     }
     const forceRefresh = this.refreshPosts.has(key)
-    const entry = await this.getKeyed(key, agentId, {
+    const entry = await this.getKeyed(
+      key,
       agentId,
-      reason: 'helper',
-      provider: 'gitea',
-      externalRepoId: repoId,
-      purpose,
-      ...(hookId !== undefined ? { hookId } : {}),
-      consumer: 'daemon',
-      ...(forceRefresh ? { forceRefresh: true } : {})
-    })
+      {
+        agentId,
+        reason: 'helper',
+        provider: 'gitea',
+        externalRepoId: repoId,
+        purpose,
+        ...(hookId !== undefined ? { hookId } : {}),
+        consumer: 'daemon',
+        ...(forceRefresh ? { forceRefresh: true } : {})
+      },
+      recheck
+    )
     if (forceRefresh) this.refreshPosts.delete(key)
     return entry
   }
@@ -509,18 +520,23 @@ export class GitCredentialCache {
   }
 
   /** The GitHub broker's lease at the tier the agent's own authorization on `repo` earns; the runtime never sees it. */
-  async getGithubEffectToken(agentId: string, repo: string): Promise<Entry> {
+  async getGithubEffectToken(agentId: string, repo: string, recheck = false): Promise<Entry> {
     const key = GITHUB_EFFECT_KEY(agentId, repo)
     const forceRefresh = this.refreshPosts.has(key)
-    const entry = await this.getKeyed(key, agentId, {
+    const entry = await this.getKeyed(
+      key,
       agentId,
-      reason: 'helper',
-      // The CP reports a grant's access from its contents level, so contents rides along to carry the repository's tier.
-      capabilities: ['contents', 'issues', 'pull_requests'],
-      repoFullName: repo,
-      ...this.githubProvider(),
-      ...(forceRefresh ? { forceRefresh: true } : {})
-    })
+      {
+        agentId,
+        reason: 'helper',
+        // The CP reports a grant's access from its contents level, so contents rides along to carry the repository's tier.
+        capabilities: ['contents', 'issues', 'pull_requests'],
+        repoFullName: repo,
+        ...this.githubProvider(),
+        ...(forceRefresh ? { forceRefresh: true } : {})
+      },
+      recheck
+    )
     if (forceRefresh) this.refreshPosts.delete(key)
     return entry
   }

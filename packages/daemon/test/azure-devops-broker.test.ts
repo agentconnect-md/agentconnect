@@ -66,15 +66,19 @@ function fakeFetch(opts: { statuses?: number[]; bodies?: string[]; body?: string
   return { fetchImpl, calls }
 }
 
-function broker(fetchImpl: typeof fetch, opts: { access?: BrokerCapability; tokens?: string[] } = {}) {
+// `raised` is the tier the control plane answers once it is asked past the cache.
+function broker(
+  fetchImpl: typeof fetch,
+  opts: { access?: BrokerCapability; raised?: BrokerCapability; tokens?: string[] } = {}
+) {
   const tokens = opts.tokens ?? ['lease-1']
   const invalidate = vi.fn()
   let minted = 0
   const instance = new AzureDevOpsBroker({
     routing: (target) => (target.repoId === '42' ? ROUTING : undefined),
-    lease: async () => ({
+    lease: async (_target, recheck) => ({
       token: tokens[Math.min(minted++, tokens.length - 1)]!,
-      access: opts.access ?? 'write',
+      access: (recheck ? opts.raised : undefined) ?? opts.access ?? 'write',
       invalidate
     }),
     fetchImpl
@@ -228,6 +232,15 @@ describe('pull requests', () => {
       instance.execute(TARGET, { kind: 'setState', subject: 'merge_request', iid: 7, state: 'closed' })
     ).rejects.toThrow('needs write authority')
     expect(calls).toEqual([])
+  })
+
+  it('asks for the lease once more before refusing, so a tier raised since applies at once', async () => {
+    const close: CodeHostBrokerOperation = { kind: 'setState', subject: 'merge_request', iid: 7, state: 'closed' }
+    const raised = await run(close, { access: 'read', raised: 'write' })
+    expect(raised.calls[0]!.body).toEqual({ status: 'abandoned' })
+    const refused = broker(fakeFetch().fetchImpl, { access: 'read' })
+    await expect(refused.instance.execute(TARGET, close)).rejects.toThrow('needs write authority')
+    expect(refused.minted()).toBe(2)
   })
 })
 

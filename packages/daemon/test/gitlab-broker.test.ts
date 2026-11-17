@@ -52,6 +52,8 @@ function broker(
   fetchImpl: typeof fetch,
   opts: {
     access?: BrokerCapability
+    // The tier the control plane answers once it is asked past the cache.
+    raised?: BrokerCapability
     tokens?: string[]
     invalidate?: (token: string) => void
     delays?: number[]
@@ -60,7 +62,10 @@ function broker(
   const tokens = opts.tokens ?? ['glpat-effect']
   let minted = 0
   const instance = new GitlabBroker({
-    lease: async () => ({ token: tokens[Math.min(minted++, tokens.length - 1)]!, access: opts.access ?? 'write' }),
+    lease: async (_target, recheck) => ({
+      token: tokens[Math.min(minted++, tokens.length - 1)]!,
+      access: (recheck ? opts.raised : undefined) ?? opts.access ?? 'write'
+    }),
     invalidateLease: (_target, token) => opts.invalidate?.(token),
     apiBaseUrl: () => BASE,
     fetchImpl,
@@ -668,6 +673,16 @@ describe('capability classes are enforced against the clamped grant', () => {
     await expect(run(read, { access: 'write' })).resolves.toBeDefined()
     await expect(run(comment, { access: 'write' })).resolves.toBeDefined()
     await expect(run(write, { access: 'write' })).resolves.toBeDefined()
+  })
+
+  it('asks for the lease once more before refusing, so a tier raised since applies at once', async () => {
+    await expect(run(write, { access: 'read', raised: 'write' })).resolves.toBeDefined()
+    const refused = broker(fakeFetch().fetchImpl, { access: 'read' })
+    await expect(refused.instance.execute(TARGET, write)).rejects.toThrow(/needs write authority/)
+    expect(refused.minted()).toBe(2)
+    const covered = broker(fakeFetch().fetchImpl, { access: 'read' })
+    await covered.instance.execute(TARGET, read)
+    expect(covered.minted()).toBe(1)
   })
 
   it('checks the final write before spending a lookup', async () => {

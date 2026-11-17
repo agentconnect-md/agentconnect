@@ -50,12 +50,21 @@ function fakeFetch(opts: { statuses?: number[]; bodies?: string[]; body?: string
 
 function broker(
   fetchImpl: typeof fetch,
-  opts: { access?: BrokerCapability; tokens?: string[]; invalidate?: (token: string) => void } = {}
+  // `raised` is the tier the control plane answers once it is asked past the cache.
+  opts: {
+    access?: BrokerCapability
+    raised?: BrokerCapability
+    tokens?: string[]
+    invalidate?: (token: string) => void
+  } = {}
 ) {
   const tokens = opts.tokens ?? ['gitea-effect']
   let minted = 0
   const instance = new GiteaBroker({
-    lease: async () => ({ token: tokens[Math.min(minted++, tokens.length - 1)]!, access: opts.access ?? 'write' }),
+    lease: async (_target, recheck) => ({
+      token: tokens[Math.min(minted++, tokens.length - 1)]!,
+      access: (recheck ? opts.raised : undefined) ?? opts.access ?? 'write'
+    }),
     invalidateLease: (_target, token) => opts.invalidate?.(token),
     apiBaseUrl: () => BASE,
     fetchImpl
@@ -553,6 +562,13 @@ describe('capability classes are enforced against the clamped grant', () => {
     await expect(run(comment, { access: 'comment' })).resolves.toBeDefined()
     await expect(run(write, { access: 'comment' })).rejects.toThrow(/needs write authority/)
     await expect(run(write, { access: 'write' })).resolves.toBeDefined()
+  })
+
+  it('asks for the lease once more before refusing, so a tier raised since applies at once', async () => {
+    await expect(run(write, { access: 'read', raised: 'write' })).resolves.toBeDefined()
+    const refused = broker(fakeFetch().fetchImpl, { access: 'read' })
+    await expect(refused.instance.execute(TARGET, write)).rejects.toThrow(/needs write authority/)
+    expect(refused.minted()).toBe(2)
   })
 })
 

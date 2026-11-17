@@ -261,6 +261,22 @@ export function enforceCapability(lease: BrokerLease, endpoint: BrokerEndpoint, 
   )
 }
 
+/** The lease an operation runs on: a tier raise replicates nothing to the daemon, so a cached lease the operation does not fit is asked for once more. */
+export async function leaseCovering<L extends BrokerLease>(
+  lease: (recheck?: boolean) => Promise<L>,
+  enforce: (lease: L) => void
+): Promise<L> {
+  const held = await lease()
+  try {
+    enforce(held)
+    return held
+  } catch {
+    const fresh = await lease(true)
+    enforce(fresh)
+    return fresh
+  }
+}
+
 /** The session and repository (its numeric id) a brokered comment was authored in. */
 interface LedgerScope {
   sessionKey: string

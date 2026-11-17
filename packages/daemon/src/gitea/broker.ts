@@ -8,6 +8,7 @@ import {
   changeLists,
   compact,
   enforceCapability,
+  leaseCovering,
   idOf,
   int,
   labelNames,
@@ -58,8 +59,8 @@ export const GITEA_BROKER_ENDPOINTS = {
 export type GiteaBrokerEndpointId = keyof typeof GITEA_BROKER_ENDPOINTS
 
 export interface GiteaBrokerDeps {
-  /** Action-time effect lease (purpose `gitea_effect`); refuses when the CP lacks the feature. */
-  lease: (target: CodeHostEffectTarget) => Promise<BrokerLease>
+  /** Action-time effect lease (purpose `gitea_effect`); refuses when the CP lacks the feature, and `recheck` asks it past the cache. */
+  lease: (target: CodeHostEffectTarget, recheck?: boolean) => Promise<BrokerLease>
   /** Drop a cached lease Gitea just rejected (401/403) so the single retry re-mints. */
   invalidateLease?: (target: CodeHostEffectTarget, token: string) => void
   /** The instance's `/api/v1` root for THIS target's agent, resolved per turn (§11). */
@@ -355,8 +356,12 @@ export class GiteaBroker implements CodeHostEffectBroker {
 
   async execute(target: CodeHostEffectTarget, op: CodeHostBrokerOperation): Promise<unknown> {
     const plan = this.plan(target, op)
-    const lease = await this.deps.lease(target)
-    for (const id of plan.uses) this.enforce(lease, GITEA_BROKER_ENDPOINTS[id])
+    const lease = await leaseCovering(
+      (recheck) => this.deps.lease(target, recheck),
+      (held) => {
+        for (const id of plan.uses) this.enforce(held, GITEA_BROKER_ENDPOINTS[id])
+      }
+    )
     return plan.run(async (call) => {
       if (!plan.uses.includes(call.endpoint)) throw new Error(`broker plan used undeclared endpoint ${call.endpoint}`)
       return this.call(target, call, lease)
