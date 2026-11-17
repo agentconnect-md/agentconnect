@@ -93,10 +93,13 @@ export function RepositoryGrantSuspendedBadge({
         {!compact && t('grantSuspended')}
       </span>
       {reason === 'repository_unreachable' && installationUrl && (
-        <a href={installationUrl} target="_blank" rel="noopener noreferrer" className="lnk flex-none text-[12px]">
-          {t('manageInstallation')}
-          <Icon name="external-link" size={12} />
-        </a>
+        // Its own line under the name, indented past the host mark: beside the badge it squeezes the name out of a narrow row.
+        <span className="order-last basis-full pl-[26px]">
+          <a href={installationUrl} target="_blank" rel="noopener noreferrer" className="lnk text-[12px]">
+            {t('manageInstallation')}
+            <Icon name="external-link" size={12} />
+          </a>
+        </span>
       )}
     </>
   )

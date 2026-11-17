@@ -1413,7 +1413,7 @@ export default function EditWorkspaceModal({
                 authorizations.map((authorization) => (
                   <div
                     key={authorization.id}
-                    className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px] max-desktop:flex-wrap"
+                    className="flex min-w-0 flex-wrap items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
                   >
                     <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
                       <CodeHostMark provider={repoAuthProvider(authorization)} />

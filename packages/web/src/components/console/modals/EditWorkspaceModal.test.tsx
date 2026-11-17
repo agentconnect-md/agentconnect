@@ -183,7 +183,11 @@ describe('EditWorkspaceModal repository access toggle', () => {
       el.textContent?.includes('Manage on GitHub')
     )
     expect(links.map((el) => el.href)).toEqual(['https://github.example.test/installations/1'])
-    expect(links[0]?.parentElement?.textContent).toContain('example-org/example-repo')
+    // The link takes its own line of a wrapping row, so the repository's name keeps the first.
+    const linkRow = links[0]?.closest('div')
+    expect(linkRow?.textContent).toContain('example-org/example-repo')
+    expect(linkRow?.className).toContain('flex-wrap')
+    expect(links[0]?.parentElement?.className).toContain('basis-full')
     expect(
       document.querySelector('span[title="The GitHub App installation no longer reaches this repository"]')
     ).not.toBeNull()
