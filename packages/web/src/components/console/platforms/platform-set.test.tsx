@@ -184,8 +184,8 @@ describe('platform set', () => {
       'Feishu',
       'DingTalk',
       'WeCom',
-      'QQ',
       'WeChat',
+      'QQ',
       'Linear'
     ])
   })

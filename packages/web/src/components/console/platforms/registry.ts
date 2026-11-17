@@ -47,8 +47,8 @@ const MODULES: readonly WebPlatformModule[] = [
   feishuModule,
   dingTalkModule,
   weComModule,
-  QQModule,
   weChatModule,
+  QQModule,
   linearModule
 ]
 
