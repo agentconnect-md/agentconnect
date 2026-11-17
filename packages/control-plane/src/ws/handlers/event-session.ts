@@ -52,6 +52,7 @@ async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId
   const ownerUserId = webchatOwnerUserId ?? launchOwnerUserId
   const ownerIsServiceAccount = ownerUserId ? ((await deps.user?.isServiceAccount(ownerUserId)) ?? false) : false
   const platformNamesPeople = await dmPlatformNamesPeople(p, orgId, deps)
+  const dmOwnerUserId = await dmBoundOwner(p, orgId, agentId, deps)
   return classifySession({
     ...(p.platform !== undefined ? { platform: p.platform } : {}),
     ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
@@ -63,8 +64,32 @@ async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId
     webchatOwnerUserId,
     launchOwnerUserId,
     ownerIsServiceAccount,
-    ...(platformNamesPeople !== undefined ? { platformNamesPeople } : {})
+    ...(platformNamesPeople !== undefined ? { platformNamesPeople } : {}),
+    ...(dmOwnerUserId !== undefined ? { dmOwnerUserId } : {})
   })
+}
+
+/** The member the agent's own bot bound a root IM DM's sender to at install; undefined where the platform binds no one, null when nothing matched or the read failed. */
+async function dmBoundOwner(
+  p: EventSession,
+  orgId: OrgId,
+  agentId: AgentId,
+  deps: DaemonWsDeps
+): Promise<string | null | undefined> {
+  if (p.conversationKind !== 'dm' || p.parentSessionId || !p.platform || !p.triggeredBy) return undefined
+  const provider = deps.platforms?.get(p.platform)
+  if (!provider?.dmOwnerMember) return undefined
+  try {
+    for (const integration of await deps.integration.listForAgent(agentId)) {
+      if (integration.platform !== p.platform || integration.orgId !== orgId) continue
+      const bot = await deps.bot?.get(orgId, BotId(integration.botId))
+      const member = bot ? provider.dmOwnerMember(bot, p.triggeredBy) : null
+      if (member) return member
+    }
+  } catch (err) {
+    deps.log.warn?.({ err, orgId, sessionId: p.sessionId }, 'event/session: reading the DM bot binding failed')
+  }
+  return null
 }
 
 /** Whether a root IM DM's platform names its people, the same test chat actions use; undefined (stay private) when it cannot be read. */

@@ -1102,7 +1102,9 @@ and configurable.
 Who sees a DM's session in the console follows the same test as "What people can do in
 chat": where the platform's permissions are synced with the console, only the person in
 the DM; elsewhere, every member of the organization, so the session never goes unseen.
-That person can still make it private once the console recognizes them.
+That person can still make it private once the console recognizes them. A personal WeChat
+bot's chat is the exception: the member who scanned it in is its only possible sender, so
+its sessions are theirs alone from the first message.
 
 ## Group direct messages
 

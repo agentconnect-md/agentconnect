@@ -2,6 +2,7 @@
 import { z, type ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationWeChatConfig } from '@agentconnect.md/protocol'
+import type { BotRecord } from '../../persistence/ports.js'
 import type { CpPlatformProvider } from '../provider.js'
 import type { WeChatConfirmedLogin } from './login.js'
 import { WECHAT_DEFAULT_API_URL } from './ilink.js'
@@ -31,6 +32,9 @@ export function weChatBotIdentity(login: WeChatConfirmedLogin): Record<string, s
 
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined)
 
+/** The member who scanned the bot in (§2.1); the one read of the binding, behind both provider members that use it. */
+const boundMember = (bot: BotRecord): string | null => text(bot.platformConfig?.boundMemberUserId) ?? null
+
 export interface WeChatCpProviderDeps {
   apiUrl?: string
   routes?: FastifyPluginAsync[]
@@ -56,7 +60,9 @@ export function createWeChatCpProvider(deps: WeChatCpProviderDeps): CpPlatformPr
     // A WeChat bot is one person's chat with one agent: removing its install deletes it rather than freeing it for reuse.
     releasesFreedBot: () => true,
     // Its only possible sender is the member who scanned, so it leaves the organization with them (§2.3).
-    boundMemberUserId: (bot) => text(bot.platformConfig?.boundMemberUserId) ?? null,
+    boundMemberUserId: boundMember,
+    // That member owns the bot's DMs, but only those from the WeChat user the scan bound (§4.2).
+    dmOwnerMember: (bot, sender) => (text(bot.platformConfig?.wechatUserId) === sender ? boundMember(bot) : null),
     secretShape: { slots: { botToken: 'iLink bot token', appToken: 'iLink bot id' }, httpAssignRequires: [] },
     ...(deps.logins
       ? {

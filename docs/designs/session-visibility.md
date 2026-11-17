@@ -111,6 +111,9 @@ Consequences:
   or Slack and Feishu/Lark with sync off, it is `org`, so no DM becomes an
   **owner-orphan** that no console user matches and no one sees. A `private`
   DM whose sender has not linked an identity yet stays hidden until they do.
+- A DM whose bot binds its only sender to a member at install (WeChat) is
+  `private` to that member whatever the sync state, owned as `user:<id>`: the
+  install already says who the sender is, so there is no owner to fail to find.
 - When identity linking ships for a platform, those sessions become visible
   to the mapped user **automatically**, with no backfill: the stored
   `ownerIdentity` is already correct; only the viewer's identity set grows.
@@ -309,19 +312,20 @@ The CP classifies once, in the `event/session` ingest path
 (`ws/handlers/event-session.ts` → `session.recordMilestone`), first-wins like
 the other origin scalars:
 
-| Origin (how detected)                                                                                                                                          | `visibility`        | `ownerIdentity`                                                                                                                       |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Webchat or Web API launch owned by a service account ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#service-account-members)); precedes the next two rows | `org`               | `null`                                                                                                                                |
-| Webchat / Playground (`platform === 'webchat'`)                                                                                                                | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed) |
-| Web API session launch (§4.4 correlation)                                                                                                                      | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                             |
-| IM DM (`conversationKind` = `dm`) where the platform names people: the org syncs its session access and its provider matches chat members                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Other IM DM: Telegram, Discord, QQ, Google Chat (no sync), or Slack and Feishu/Lark with sync off                                                              | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                  | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                         |
-| Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                         | `org` or `external` | Initiator as provenance while sync is disabled; current conversation membership while enabled                                         |
-| GitHub hook with an accepted delivery snapshot                                                                                                                 | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                       |
-| Other IM group DM / channel (or absent kind)                                                                                                                   | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                            |
-| Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                          | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                  |
-| Automation without a trusted external destination                                                                                                              | `org`               | `null`                                                                                                                                |
+| Origin (how detected)                                                                                                                                          | `visibility`        | `ownerIdentity`                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Webchat or Web API launch owned by a service account ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#service-account-members)); precedes the next two rows | `org`               | `null`                                                                                                                                 |
+| Webchat / Playground (`platform === 'webchat'`)                                                                                                                | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed)  |
+| Web API session launch (§4.4 correlation)                                                                                                                      | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                              |
+| IM DM whose bot's install bound its sender to a member (WeChat: the member who scanned the QR code); precedes the next two rows                                | `private`           | `user:<bound member>`; no binding of the agent's bots matches the sender, or the read fails ⇒ `private`, initiator tuple (fail closed) |
+| IM DM (`conversationKind` = `dm`) where the platform names people: the org syncs its session access and its provider matches chat members                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                             |
+| Other IM DM: Telegram, Discord, QQ, Google Chat (no sync), or Slack and Feishu/Lark with sync off                                                              | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                             |
+| Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                  | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                          |
+| Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                         | `org` or `external` | Initiator as provenance while sync is disabled; current conversation membership while enabled                                          |
+| GitHub hook with an accepted delivery snapshot                                                                                                                 | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                        |
+| Other IM group DM / channel (or absent kind)                                                                                                                   | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                             |
+| Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                          | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                   |
+| Automation without a trusted external destination                                                                                                              | `org`               | `null`                                                                                                                                 |
 
 Notes:
 
@@ -339,6 +343,13 @@ Notes:
   ([product-conventions.md](../product-conventions.md#what-people-can-do-in-chat)).
   It applies to rows classified from then on; earlier rows keep their tier,
   and §4.3 still lets a recognized sender make an `org` DM private.
+- **An install-bound sender is owned by its member.** A provider that binds a
+  bot's sender to a console member at install names that member
+  (`dmOwnerMember` in `platforms/provider.ts`). Ingest reads the bindings of the
+  reporting agent's own bots for the platform and stores `user:<member>`, so
+  the owner is fixed at ingest: deleting or re-binding the bot later does not
+  hand the history to anyone else. No match or a failed read keeps the row
+  `private` to the sender's chat tuple, never `org`.
 - Webchat `triggeredBy` is the console user's **email** (set in
   `routes/webchat-token.ts`), which degrades under devAuth and is not a stable
   key — hence the `WebchatConversation` lookup rather than trusting the wire

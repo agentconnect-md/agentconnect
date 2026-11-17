@@ -4,9 +4,8 @@ Status: draft. Facts marked **documented** cite Tencent's own `openclaw-weixin` 
 (its protocol document or source); facts marked **observed** come from a live probe
 against `ilinkai.weixin.qq.com` on 2026-10-24 with one personal WeChat account; facts
 marked **unverified** still need a probe. §9.1 is implemented, with its §9.2 offline tests,
-behind the `wechat` feature flag (§6), except the session-access plugin (§4.2), which waits
-on §7. A live acceptance on 2026-11-10 ran §9.3 against the daemon; its findings are folded
-into §2.3, §3.3, §4.3, §4.5 and §4.7.
+behind the `wechat` feature flag (§6). A live acceptance on 2026-11-10 ran §9.3 against
+the daemon; its findings are folded into §2.3, §3.3, §4.3, §4.5 and §4.7.
 
 > Related: [platform modules](integration-plugin-architecture.md),
 > [QQ](qq-integration.md),
@@ -242,13 +241,14 @@ no display name, so the Console shows the bound member's own name for it.
 platform names its people. Elsewhere it opens to the organization, so that no DM becomes
 an owner-orphan. A WeChat bot names its one person at install: the scan binds the bot's
 only possible sender to the member who ran the install (§2.1). So the chat's sessions are
-**`private`**, with owner `wechat:ilink:<ilink_user_id>`.
+**`private`** to that member, owned as `user:<member>`.
 
-A WeChat session-access plugin adds that tuple to the bound member's identity set for
-every bot they bound. It reads the binding from the bot row. It needs no provider call
-and no linked sign-in identity. This is a new case for §4.2: the identity is verified by
-the install itself, not by a sign-in provider. It needs that design's owners to agree
-(§7).
+The provider names the member (`dmOwnerMember`): the bot row's `boundMemberUserId` when the
+sender is its `wechatUserId`. Session ingest reads it from the reporting agent's own WeChat
+bots and stores the member as the owner, so no viewer lookup, provider call or linked
+sign-in identity is needed, and deleting or re-scanning the bot later leaves the history
+with the member who had it. A sender no binding matches, or a failed read, keeps the
+session `private` to `wechat:ilink:<ilink_user_id>`, never open to the organization.
 
 ### 4.3 Admission
 
@@ -432,8 +432,6 @@ route never creates a WeChat integration: only a QR login proves who the counter
   Tencent presents ClawBot as a way to connect OpenClaw. Whether a client other than
   OpenClaw may use the protocol directly must be settled before the feature flag comes
   off. Several third-party clients already do so publicly.
-- **Visibility rule** (§4.2): an install-verified identity is a new basis for a
-  `private` DM and needs session-visibility's owners to agree.
 - **Bots per WeChat user.** Whether one WeChat user may hold several bots at once — one
   per agent — is **unverified**. The plugin removes a user's older accounts on re-login
   to avoid ambiguity on its own side (**documented**). If iLink allows only one bot per
@@ -486,7 +484,7 @@ The integration implements the host contracts of the
 - **Control Plane:**
   - a provider with the QR login routes and `WechatPendingLogin` with its reaper (§2.2);
   - the bot row binding and the reconnect, a QR login with `botId` (§2.3);
-  - the integration projection; the session-access plugin (§4.2) waits on §7.
+  - the integration projection, and the DM owner the binding names (§4.2).
 - **web:** the QR wizard, the bot's binding and reconnect settings, the mark, labels, and
   the `wechat` feature flag.
 
@@ -512,7 +510,8 @@ Sanitized fixtures from the probe and a fake iLink server cover:
   the connection never received refused, and no key in logs.
 - **Control Plane:** every QR status, including redirect, verification code, and
   expiry refresh; the pending row reaped; the binding persisted; re-scan replacing the
-  identity in place; and the session-access identity projected only to the bound member.
+  identity in place; and a DM owned by the bound member only, private to its sender when
+  no binding matches.
 
 ### 9.3 Live acceptance (manual; needs a personal WeChat account)
 
