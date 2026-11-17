@@ -256,6 +256,29 @@ describe('claudeSessionMeta', () => {
     )
   })
 
+  it('carries the repository auto mode rules in the flag settings', () => {
+    const autoMode = { allow: ['$defaults', 'Example rollout is pre-authorized.'] }
+    const meta = (effort?: string) =>
+      claudeSessionMeta(
+        effort,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+        [],
+        [],
+        [],
+        undefined,
+        autoMode
+      )
+    expect(meta()).toEqual(cc({ thinking: THINKING, settings: { autoMode } }))
+    expect(meta('ultracode')).toEqual(
+      cc({ thinking: THINKING, settings: { ultracode: true, enableWorkflows: true, autoMode } })
+    )
+  })
+
   it('enables the native Claude sandbox only behind an outer AgentConnect sandbox', () => {
     const credentialRoot = '/host/.claude/agentconnect-auth'
     const permissions = {

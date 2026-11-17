@@ -238,6 +238,24 @@ describe('fsck', () => {
   ])('refuses %j', (args) => refuses(args))
 })
 
+describe('cat-file', () => {
+  const oid = 'a'.repeat(40)
+  it.each([[['cat-file', 'blob', oid]], [['cat-file', 'blob', 'b'.repeat(64)]]])('admits exactly %j', (args) =>
+    admits(args)
+  )
+  it.each([
+    [['cat-file']],
+    [['cat-file', 'blob']],
+    [['cat-file', 'blob', 'HEAD']],
+    [['cat-file', 'blob', 'refs/remotes/origin/main:README.md']],
+    [['cat-file', 'blob', oid, oid]],
+    [['cat-file', '-p', oid]],
+    [['cat-file', 'commit', oid]],
+    [['cat-file', '--batch']],
+    [['cat-file', 'blob', '--textconv', oid]]
+  ])('refuses %j', (args) => refuses(args))
+})
+
 describe('refs/bundles cleanup shape', () => {
   it.each([
     [['show-ref']],

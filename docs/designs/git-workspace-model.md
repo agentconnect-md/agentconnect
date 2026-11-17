@@ -532,6 +532,10 @@ switch (`checkout --no-track -B <branch> <ref>`, the two-tree merge that carries
 uncommitted edits and lets Git refuse an overlap, which no admitted subcommand
 reproduces), with every form that would discard or restore working-tree files
 (`-f`, pathspecs, merge and patch modes) refused by the executor itself.
+`cat-file` is admitted the same way, as `cat-file blob <object id>` alone: it
+is how the daemon reads one file as a remote-tracking ref holds it (the
+repository's auto mode rules, product-conventions.md), after `rev-parse` has
+named the object, and no admitted subcommand prints a blob's bytes.
 
 ### The tier a session is born in (decided 2026-09-03)
 

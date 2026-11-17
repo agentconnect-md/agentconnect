@@ -2,6 +2,7 @@
 export const ALLOWED_GIT_SUBCOMMANDS = new Set([
   'add',
   'branch',
+  'cat-file',
   'check-ref-format',
   'checkout',
   'clean',
@@ -161,6 +162,10 @@ export function validateGitArgs(args: string[]): void {
     throw new ExecRefusedError(`git ${subcommand ?? '(none)'} is not in the permitted inventory`)
   }
   assertNoRefusedArguments(args)
+  // Exec-channel policy: one blob by object id, which is how the daemon reads a file as a trusted ref holds it.
+  if (subcommand === 'cat-file' && !(rest.length === 2 && rest[0] === 'blob' && /^[0-9a-f]{40,64}$/.test(rest[1]!))) {
+    throw new ExecRefusedError('git cat-file is admitted only as cat-file blob <object id>')
+  }
   if (subcommand !== 'checkout') return
   for (const argument of rest) {
     if (REFUSED_CHECKOUT_ARGUMENT.some((pattern) => pattern.test(argument))) {

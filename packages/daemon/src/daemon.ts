@@ -1,4 +1,5 @@
 import { initiatorName, sessionInitiator } from './codehost/initiator.js'
+import { repositoryAutoModeRules, type ClaudeAutoModeRules } from './acp/claude-auto-mode.js'
 import {
   CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
   codexSessionPermissionProfiles
@@ -9478,6 +9479,21 @@ export class Daemon {
     return built.host
   }
 
+  // The auto mode rules of the repository checked out at `cwd`; an unreadable or malformed file grants nothing and never fails the session.
+  private async repositoryAutoModeRules(
+    agent: LoadedAgent,
+    hostKey: HostKey,
+    cwd: string
+  ): Promise<ClaudeAutoModeRules | undefined> {
+    try {
+      const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, cwd, undefined, hostKeySessionKey(hostKey))
+      return git ? await repositoryAutoModeRules(git, agent.workspace.gitBranch) : undefined
+    } catch (err) {
+      this.log.warn(`acp: agent "${agent.id}" got no repository auto mode rules: ${formatErr(err)}`)
+      return undefined
+    }
+  }
+
   /**
    * Construct (do NOT memoize or start) an ACP host for `agent`.
    *
@@ -10043,6 +10059,10 @@ export class Daemon {
                 directories
               )
           }
+        : {}),
+      // A dream or research host works on content the repository's maintainers never vouched for, so it gets no repository rules.
+      ...(agent.workspace.mode === 'git-repo' && !credentialless
+        ? { claudeAutoModeRules: (cwd: string) => this.repositoryAutoModeRules(agent, opts.hostKey, cwd) }
         : {}),
       // A plane runs the runtime in a sandbox pod or a VM; with none AcpHost falls back to its LocalDriver, which is what a self-hosted daemon wants.
       ...this.planeFor(planeLaunch)?.spawnFor(planeLaunch),

@@ -21,6 +21,7 @@ import {
   type McpTransportCapabilities
 } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
+import type { ClaudeAutoModeRules } from './claude-auto-mode.js'
 import {
   augmentClaudeEfforts,
   claudeInnerSandboxSettings,
@@ -404,7 +405,8 @@ export { ULTRACODE_EFFORT }
  *    reasserts protected Anthropic profile selection after workspace settings merge;
  *    effort "ultracode" additionally carries the session-scoped flags the effort
  *    select can't reach. The adapter's CLAUDE_MODEL_CONFIG fallback is preserved in
- *    the protected settings because supplying `options.settings` replaces it.
+ *    the protected settings because supplying `options.settings` replaces it. The
+ *    repository's `autoMode` rules ride the same tier, the only one the classifier reads.
  *  - `options.sandbox` (only when the ACP runtime already has an outer
  *    AgentConnect sandbox): enables Claude's native Bash sandbox fail-closed and
  *    denies its sandboxed commands the provider credentials the parent can read.
@@ -453,6 +455,7 @@ interface ClaudeSessionSettings {
   availableModels?: unknown
   ultracode?: true
   enableWorkflows?: true
+  autoMode?: ClaudeAutoModeRules
 }
 
 export function claudeSessionMeta(
@@ -466,7 +469,8 @@ export function claudeSessionMeta(
   extraDisallowedTools: readonly string[] = [],
   sharedWriteRoots: readonly string[] = [],
   readOnlyStateRoots: readonly string[] = [],
-  model?: string
+  model?: string,
+  autoMode?: ClaudeAutoModeRules
 ):
   | {
       claudeCode: {
@@ -499,7 +503,9 @@ export function claudeSessionMeta(
     ...(protectedSettings ?? {}),
     // Claude requires custom plans inside the workspace; its default HOME/.claude/plans is protected above.
     ...(deny.length > 0 ? { permissions: { deny }, plansDirectory: './.claude/plans' } : {}),
-    ...(ultracode ? { ultracode: true, enableWorkflows: true } : {})
+    ...(ultracode ? { ultracode: true, enableWorkflows: true } : {}),
+    // The classifier reads its rules from this flag tier and never from the workspace's own settings files.
+    ...(autoMode ? { autoMode } : {})
   }
   return {
     claudeCode: {
@@ -519,7 +525,7 @@ export function claudeSessionMeta(
               )
             }
           : {}),
-        ...(protectedSettings || ultracode || deny.length > 0 ? { settings } : {})
+        ...(protectedSettings || ultracode || deny.length > 0 || autoMode ? { settings } : {})
       },
       emitRawSDKMessages: SDK_LIFECYCLE_FILTERS
     },
@@ -723,6 +729,8 @@ export class AcpHost {
       /** Native tool policy applied inside either an SRT wrapper or a VM. */
       toolSandbox?: AcpToolSandbox
       codexSessionPermissionProfiles?: (directories: readonly string[]) => Promise<Record<string, unknown> | undefined>
+      /** The auto mode rules the repository checked out at a session's cwd grants it; Claude runtimes only. */
+      claudeAutoModeRules?: (cwd: string) => Promise<ClaudeAutoModeRules | undefined>
       /** Called once when the owned adapter process reaches terminal exit. The
        *  delegated host manager uses this to tear down its fenced cell. */
       onTerminal?: () => void
@@ -1004,6 +1012,10 @@ export class AcpHost {
     extraDisallowedTools: readonly string[] = [],
     directories: readonly string[] = []
   ) {
+    const autoMode =
+      this.isClaudeRuntime() && directories[0] !== undefined
+        ? await this.opts.claudeAutoModeRules?.(directories[0])
+        : undefined
     const claudeMeta = claudeSessionMeta(
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
       this.isClaudeRuntime(),
@@ -1015,7 +1027,8 @@ export class AcpHost {
       extraDisallowedTools,
       this.opts.toolSandbox?.sharedWriteRoots,
       this.opts.toolSandbox?.readOnlyStateRoots,
-      this.opts.configPrefs?.model
+      this.opts.configPrefs?.model,
+      autoMode
     )
     const meta =
       claudeMeta ?? (this.canUseCustomInstructions ? customInstructionsMeta(systemPrompt, systemAppend) : undefined)

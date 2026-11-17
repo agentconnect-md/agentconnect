@@ -128,6 +128,42 @@ describe('AcpHost (against a fake ACP agent)', () => {
     }
   })
 
+  it('sends the auto mode rules of the session cwd on new/load, to Claude runtimes only', async () => {
+    const autoMode = { allow: ['$defaults', 'Example rollout is pre-authorized.'] }
+    const rules = vi.fn(async () => autoMode)
+    const expected = claudeSessionMeta(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      [],
+      [],
+      [],
+      undefined,
+      autoMode
+    )
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent, 'claude-acp'], env: [] },
+      { onUpdate: () => {}, claudeAutoModeRules: rules, env: { AC_EXPECT_SESSION_META: JSON.stringify(expected) } }
+    )
+    const other = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      { onUpdate: () => {}, claudeAutoModeRules: rules, env: { AC_EXPECT_SESSION_META: 'null' } }
+    )
+    await Promise.all([host.start(), other.start()])
+    try {
+      await host.newSession('/repo', [], undefined, undefined, ['/secondary'])
+      await host.loadSession('persisted-session', '/repo')
+      await other.newSession('/repo')
+      expect(rules.mock.calls).toEqual([['/repo'], ['/repo']])
+    } finally {
+      await Promise.all([host.stop(), other.stop()])
+    }
+  })
+
   it('initializes, creates a session, and streams an echoed reply', async () => {
     const updates: Array<{ sessionId: string; text: string }> = []
     const host = new AcpHost(
