@@ -188,7 +188,9 @@ export class GitCredDeniedError extends Error {
   constructor(
     message: string,
     readonly code: 'SCOPE_DENIED' | 'LEASE_DENIED' | 'RATE_LIMITED' | 'INTERNAL',
-    readonly retryable: boolean
+    readonly retryable: boolean,
+    // Set only when this service's own mint budget refused, never when GitHub rate-limited.
+    readonly bucketKey?: string
   ) {
     super(message)
     this.name = 'GitCredDeniedError'
@@ -228,8 +230,10 @@ export class GithubService {
   readonly tokens: InstallationTokenService
   private gitCommitIdentityPromise?: Promise<GitCommitIdentity | undefined>
   private readonly stateKey: Buffer
-  /** Mint-path abuse bound (shared-App blast radius): per daemon AND per org. */
-  private readonly mintBucket: TokenBucket
+  /** Bounds one agent's real mints on one daemon: a cold start needs a handful, a refresh loop needs many. */
+  private readonly agentMintBucket: TokenBucket
+  /** Bounds one org's real mints through the built-in App, whose signing identity every org shares. */
+  private readonly orgMintBucket: TokenBucket
   private outdatedInstallationsCache:
     { expiresAt: number; settingsUrlsByInstallationId: ReadonlyMap<string, string> } | undefined
   /** One picker page. `fetch` hands concurrent callers of one key the same
@@ -261,9 +265,10 @@ export class GithubService {
       }
     })
     this.stateKey = deriveInstallStateKey(deps.pepper)
-    // 10 burst / 0.2 per sec (~12/min sustained) per key — far above any honest
-    // daemon (mints are cached 45+ min per repo), far below GitHub's budget.
-    this.mintBucket = new TokenBucket(10, 0.2, deps.clock)
+    // 10 burst, one per 5 s: mints are cached 45+ min per repo and scope, so an honest agent spends a few per cold start.
+    this.agentMintBucket = new TokenBucket(10, 0.2, deps.clock)
+    // 60 burst, one per second: room for an org's agents to cold-start in the same minute.
+    this.orgMintBucket = new TokenBucket(60, 1, deps.clock)
   }
 
   /** Resolve once per CP process. A failed lookup disables attribution rather
@@ -744,7 +749,7 @@ export class GithubService {
    */
   async mintForAgent(
     agent: AgentRecord,
-    bucketKeys: string[],
+    daemonId: string,
     capabilities?: readonly GitCredCapability[],
     requestedRepo?: string,
     requestedAccess?: GitAccess
@@ -778,7 +783,7 @@ export class GithubService {
         levels,
         resolved.repoId,
         false,
-        () => this.admitMint(bucketKeys)
+        () => this.admitMint(daemonId, agent, resolved.installation)
       )
     } catch (e) {
       if (e instanceof GithubApiError) throw new GitCredDeniedError(e.message, e.code, e.retryable)
@@ -802,7 +807,7 @@ export class GithubService {
     agent: AgentRecord,
     repoFullName: string,
     repoId: bigint | undefined,
-    bucketKeys: string[],
+    daemonId: string,
     forceRefresh = false,
     // An installation row's own installation: the repository must be one of it.
     installationId?: bigint
@@ -832,7 +837,7 @@ export class GithubService {
         { issues: 'write', pull_requests: 'write' },
         repoId,
         forceRefresh,
-        () => this.admitMint(bucketKeys)
+        () => this.admitMint(daemonId, agent, ins)
       )
     } catch (e) {
       if (e instanceof GithubApiError) throw new GitCredDeniedError(e.message, e.code, e.retryable)
@@ -841,12 +846,16 @@ export class GithubService {
   }
 
   /** Spends the mint budget for one real GitHub mint; cached and coalesced grants never reach it. */
-  private admitMint(bucketKeys: readonly string[]): void {
-    for (const key of bucketKeys) {
-      if (!this.mintBucket.take(key)) {
-        throw new GitCredDeniedError('gitcred mint rate exceeded — backing off', 'RATE_LIMITED', true)
-      }
+  private admitMint(daemonId: string, agent: AgentRecord, installation: GithubInstallationRecord): void {
+    const charges: [TokenBucket, string][] = [[this.agentMintBucket, `daemon:${daemonId}:agent:${agent.id}`]]
+    // An organization App signs with its org's own key, so its mints draw on no budget another org shares.
+    if (!installation.githubAppId) charges.push([this.orgMintBucket, `org:${agent.orgId}`])
+    // Every bucket is checked before any is spent, so a refused mint costs nothing.
+    const refused = charges.find(([bucket, key]) => !bucket.has(key))
+    if (refused) {
+      throw new GitCredDeniedError('gitcred mint rate exceeded — backing off', 'RATE_LIMITED', true, refused[1])
     }
+    for (const [bucket, key] of charges) bucket.take(key)
   }
 
   /** Repo-id-first resolver for hook effects, reviews, auto-merge and Checks: the workspace's id, a row's, or one an installation grant covers. */

@@ -352,7 +352,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
             ? BigInt(externalRepoId)
             : undefined
           : (hook.repoId ?? undefined),
-        [`daemon:${conn.daemonId}`, `org:${agent.orgId}`],
+        conn.daemonId,
         forceRefresh === true,
         hook.installationId ?? undefined
       )
@@ -376,13 +376,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     // (shared-skills.md §3). GithubPoster requests take the purpose-gated path above;
     // general agent git/gh credentials stay constrained by this allowlist.
     // `requestedAccess` is the §17.1 access floor; every pre-v2 caller leaves it absent and keeps the tier.
-    const cred = await deps.github!.mintForAgent(
-      agent,
-      [`daemon:${conn.daemonId}`, `org:${agent.orgId}`],
-      capabilities,
-      repoFullName,
-      requestedAccess
-    )
+    const cred = await deps.github!.mintForAgent(agent, conn.daemonId, capabilities, repoFullName, requestedAccess)
     // This arm resolves the repo INSIDE the mint, so a named numeric id is verified on the way out —
     // the grant is discarded rather than served, exactly as a daemon discards a mismatched echo.
     if (githubRepoIdMismatch(externalRepoId, cred.repoId)) {
@@ -405,6 +399,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     })
   } catch (e) {
     if (e instanceof GitCredDeniedError) {
+      if (e.bucketKey)
+        deps.log.warn?.({ bucketKey: e.bucketKey, daemonId: conn.daemonId, agentId }, 'gitcred mint budget refused')
       conn.sendError(frame.id, e.code, e.message, e.retryable)
       return
     }

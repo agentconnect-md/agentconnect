@@ -285,7 +285,7 @@ describe('the re-attestation sweep with a fake access answer', () => {
     expect((await a.deps.repos.agentRepoAuth.get(id))?.stale).toBeNull()
     expect(spy.upserts).toEqual([])
     const agent = (await a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
-    await expect(a.deps.github!.mintForAgent(agent, [], ['contents'], 'acme/tools')).resolves.toMatchObject({
+    await expect(a.deps.github!.mintForAgent(agent, 'd1', ['contents'], 'acme/tools')).resolves.toMatchObject({
       repoFullName: 'acme/tools'
     })
   })
@@ -308,7 +308,7 @@ describe('the re-attestation sweep with a fake access answer', () => {
     expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({ additionalRepos: [] })
     expect(await prisma.auditEvent.count({ where: { agentId, kind: 'agent_repo_change' } })).toBe(1)
     const agent = (await a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
-    await expect(a.deps.github!.mintForAgent(agent, [], ['contents'], 'acme/tools')).rejects.toMatchObject({
+    await expect(a.deps.github!.mintForAgent(agent, 'd1', ['contents'], 'acme/tools')).rejects.toMatchObject({
       code: 'SCOPE_DENIED',
       message: expect.stringContaining('authorization for this agent is suspended')
     })
