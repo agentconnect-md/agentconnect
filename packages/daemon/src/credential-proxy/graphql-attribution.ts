@@ -1,4 +1,5 @@
 // Which one repository a GitHub GraphQL mutation touches, from the node IDs it names (github-app-git-credentials.md, Phase 2).
+import { argumentVariables } from './graphql-operation.js'
 
 /** More ID candidates than this refuse the mutation instead of costing a large lookup. */
 export const MAX_ID_CANDIDATES = 50
@@ -29,11 +30,17 @@ export type LookupRound =
 
 export type Attribution = { repo: string } | { refused: { status: number; reason: string } }
 
-const ID_KEY = /^(?:id|.*Ids?)$/
+const ID_KEY = /^(?:ids?|.*Ids?)$/
 
-/** The values at ID positions in a request's variables: under a key named `id` or ending in `Id` or `Ids`, at any depth. */
-export function idCandidates(variables: unknown): string[] | 'too-many' {
+/** The values at ID positions: under a key named `id` or `ids` or ending in `Id` or `Ids` at any depth, or in a variable the document passes to such an argument. */
+export function idCandidates(variables: unknown, document = ''): string[] | 'too-many' {
   const found = new Set<string>()
+  // `labelableId: $l` makes `$l` an ID whatever it is called.
+  const bound = new Set(
+    argumentVariables(document)
+      .filter(({ argument }) => ID_KEY.test(argument))
+      .map(({ variable }) => variable)
+  )
   const visit = (value: unknown, key: string | undefined): void => {
     if (Array.isArray(value)) {
       for (const item of value) visit(item, key)
@@ -46,7 +53,9 @@ export function idCandidates(variables: unknown): string[] | 'too-many' {
     if (typeof value === 'object' && value !== null)
       for (const [name, inner] of Object.entries(value as Record<string, unknown>)) visit(inner, name)
   }
-  visit(variables, undefined)
+  if (typeof variables === 'object' && variables !== null && !Array.isArray(variables))
+    for (const [name, value] of Object.entries(variables as Record<string, unknown>))
+      visit(value, bound.has(name) ? 'id' : name)
   return found.size > MAX_ID_CANDIDATES ? 'too-many' : [...found]
 }
 

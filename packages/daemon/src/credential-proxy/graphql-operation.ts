@@ -82,6 +82,28 @@ export function executedOperation(document: string, operationName: unknown): Gra
   return operations[0]!
 }
 
+/** Each `argument: $variable` pair the document writes, outside strings and comments, so a variable can be read by the argument it fills. */
+export function argumentVariables(document: string): { argument: string; variable: string }[] {
+  let code = ''
+  let i = 0
+  while (i < document.length) {
+    const c = document[i]!
+    const end = c === '#' ? commentEnd(document, i) : c === '"' ? stringEnd(document, i) : undefined
+    if (end === undefined && c === '"') return []
+    if (end !== undefined) {
+      code += ' '
+      i = end
+      continue
+    }
+    code += c
+    i += 1
+  }
+  return [...code.matchAll(/([A-Za-z_]\w*)\s*:\s*\$([A-Za-z_]\w*)/g)].map((match) => ({
+    argument: match[1]!,
+    variable: match[2]!
+  }))
+}
+
 /** The index just past a comment. */
 function commentEnd(document: string, start: number): number {
   let i = start

@@ -922,8 +922,10 @@ or repository: `addComment` takes `subjectId`, `closeIssue` takes `issueId`,
 `addLabelsToLabelable` takes `labelableId` and `labelIds`, all as variables
 under `input`. The candidates are the values at ID positions in the
 variables, at any depth: a string, or a list of strings, under a key named `id`
-or ending in `Id` or `Ids`. Titles, bodies and branch names are never
-candidates. An ID written inline in the document is not read: a mutation whose
+or `ids` or ending in `Id` or `Ids`. A variable the document passes to an
+argument with such a name is one too, whatever the variable is called:
+`labelableId: $l` makes `$l` an ID position. Titles, bodies and branch names
+are never candidates. An ID written inline in the document is not read: a mutation whose
 variables name no node, or more than 50, is refused, with an error that says to
 pass the IDs as variables. An inline ID beside variable ones changes nothing,
 since the token still lists one repository.
