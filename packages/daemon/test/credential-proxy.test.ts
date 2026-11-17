@@ -872,6 +872,34 @@ describe('a git push through the proxy', () => {
       }
     })
 
+    it('asks once more before refusing a push, and pushes when the tier was raised since', async () => {
+      const mint = vi.fn(async (_agent: string, ask: { recheck?: true }) => ({
+        username: 'x-access-token',
+        token: ask.recheck ? 'tok_raised' : 'tok_cached',
+        access: ask.recheck ? ('write' as const) : ('read' as const)
+      }))
+      const { proxy, placeholder } = proxyFor({ mint, instances: { [AGENT]: [GITHUB_MANAGED_HOST, GITLAB, GITEA] } })
+      const url = `${base}/info/refs?service=git-receive-pack`
+      expect(await proxy.decide(git(placeholder, url), info)).toEqual({
+        action: 'allow',
+        setHeaders: [['authorization', `Basic ${Buffer.from('x-access-token:tok_raised').toString('base64')}`]]
+      })
+      expect(mint).toHaveBeenCalledTimes(2)
+      expect(mint).toHaveBeenLastCalledWith(AGENT, expect.objectContaining({ provider, push: true, recheck: true }))
+    })
+
+    it('never asks again for a fetch or a push the cached grant already allows', async () => {
+      for (const [access, service] of [
+        ['read', 'git-upload-pack'],
+        ['write', 'git-receive-pack']
+      ] as const) {
+        const { proxy, mint, placeholder } = setup(access)
+        await proxy.decide(git(placeholder, `${base}/info/refs?service=${service}`), info)
+        expect(mint).toHaveBeenCalledTimes(1)
+        expect(mint).toHaveBeenLastCalledWith(AGENT, expect.not.objectContaining({ recheck: true }))
+      }
+    })
+
     it.each(['read', 'comment'] as const)('still fetches on a %s grant', async (access) => {
       const { proxy, mint, placeholder } = setup(access)
       for (const [method, url] of [
@@ -1008,8 +1036,10 @@ describe('the decision on a self-managed instance', () => {
       write: true
     })
     for (const access of ['read', 'comment'] as const) {
-      mint.mockResolvedValueOnce({ ...minted, access })
+      // The refusal stands only after the control plane, asked once more, answers the same tier.
+      mint.mockResolvedValueOnce({ ...minted, access }).mockResolvedValueOnce({ ...minted, access })
       expect(await proxy.decide(write(), at(8443))).toMatchObject({ action: 'deny', status: 403 })
+      expect(mint).toHaveBeenLastCalledWith(AGENT, expect.objectContaining({ write: true, recheck: true }))
     }
     const settings = new Request('https://gitlab.example.test:8443/gitlab/api/v4/projects/7', {
       method: 'DELETE',

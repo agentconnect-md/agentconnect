@@ -908,7 +908,12 @@ describe('a proxied host session end to end', () => {
       expect(push.status).toBe(403)
       expect(push.body).toContain('pushing needs write access')
       expect(git.seen).toEqual([])
-      expect(asked.map((ask) => ask.repoFullName)).toEqual(['example-org/example-repo', 'example-org/example-repo'])
+      // The API read, the push, and the push's one recheck of a tier that may have been raised since.
+      expect(asked.map((ask) => ask.repoFullName)).toEqual([
+        'example-org/example-repo',
+        'example-org/example-repo',
+        'example-org/example-repo'
+      ])
     }
   )
 
@@ -1110,7 +1115,7 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
       expect(hidden.status).toBe(404)
       expect(hidden.body).toContain('TF401019')
       expect(azure.seen.some((entry) => entry.url.includes('Hidden'))).toBe(false)
-      // Every lease was the proxy's: a read one for the fetch, the agent's tier for the push.
+      // Every lease was the proxy's: a read one for the fetch, the agent's tier for the push and for its one recheck.
       const leases = asked.map(({ provider, externalRepoId, consumer, requestedAccess }) => ({
         provider,
         externalRepoId,
@@ -1119,6 +1124,7 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
       }))
       expect(leases).toEqual([
         { provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy', requestedAccess: 'read' },
+        { provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy' },
         { provider: 'azure-devops', externalRepoId: '42', consumer: 'proxy' }
       ])
       // The runtime's capability, as the session holds it, is refused an Azure DevOps credential outright.
@@ -1133,7 +1139,7 @@ describe('an Azure DevOps agent behind the credential proxy', () => {
           repoFullName: 'example-org/example project/example repo'
         })
       ).toEqual(refusal)
-      expect(asked).toHaveLength(2)
+      expect(asked).toHaveLength(3)
       expect(JSON.stringify(azure.seen)).not.toContain(HELPER_TOKEN)
       // The machine's own helper never kept the placeholder, nor any other credential.
       const kept = readFileSync(machineHelperLog, { encoding: 'utf8', flag: 'a+' })
