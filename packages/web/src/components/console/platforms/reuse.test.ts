@@ -51,8 +51,8 @@ describe('platform registry', () => {
       'feishu',
       'dingtalk',
       'wecom',
-      'qq',
       'wechat',
+      'qq',
       'linear'
     ]
     expect(platformRegistry.ids()).toEqual(ids)
