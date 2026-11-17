@@ -11,7 +11,7 @@ import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
 import { loadProxyCa, operatorAuthorities, proxyTrustEnv, upstreamAuthorities } from '../src/credential-proxy/ca.js'
-import { executedOperation, graphqlOperations } from '../src/credential-proxy/graphql-operation.js'
+import { argumentVariables, executedOperation, graphqlOperations } from '../src/credential-proxy/graphql-operation.js'
 import { githubRoute, graphqlRepository } from '../src/credential-proxy/github-route.js'
 import {
   hostKey,
@@ -139,6 +139,13 @@ describe('GraphQL operations', () => {
   it.each(['{ a', 'query { a } }', 'query { a(s: "open) }', 'query', ''])('refuses %j as unreadable', (document) => {
     const operations = graphqlOperations(document)
     expect(operations === undefined || operations.length === 0).toBe(true)
+  })
+
+  it('reads each argument a variable fills, outside strings and comments', () => {
+    expect(
+      argumentVariables('mutation($a: ID!) { x(input: { subjectId: $a, body: "issueId: $b" }) { y } } # labelId: $c')
+    ).toEqual([{ argument: 'subjectId', variable: 'a' }])
+    expect(argumentVariables('query { a(s: "open) }')).toEqual([])
   })
 
   it('executes the operation operationName names, else the only one', () => {

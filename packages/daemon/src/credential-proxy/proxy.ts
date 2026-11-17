@@ -65,7 +65,7 @@ const MAX_GRAPHQL_BODY_BYTES = 1 << 20
 
 /** A mutation whose targets are not in its variables cannot be placed in a repository. */
 const GRAPHQL_NO_TARGET =
-  'this mutation names no node ID in its variables (under `id`, `…Id` or `…Ids`); pass them as variables, or use the REST API (`gh api -X POST …`) or the githubPullRequest, githubIssue or githubComment tool'
+  'this mutation names no node ID in its variables (an `id`, `ids`, `…Id` or `…Ids` key, or a variable passed to such an argument); pass them as variables, or use the REST API (`gh api -X POST …`) or the githubPullRequest, githubIssue or githubComment tool'
 
 /** What one request needs minted: a repository on an instance (none names the workspace), for git or the API. */
 export interface MintAsk {
@@ -814,7 +814,8 @@ export class CredentialProxy {
         const operation = executedOperation(body.query, body.operationName)
         if ('refused' in operation) return deny(400, operation.refused)
         if (operation.type === 'subscription') return deny(403, 'GraphQL subscriptions are not available')
-        if (operation.type === 'mutation') return await this.githubMutation(agentId, body.variables, host, port)
+        if (operation.type === 'mutation')
+          return await this.githubMutation(agentId, body.variables, body.query, host, port)
         const repo = graphqlRepository(body.variables) ?? this.deps.workspaceRepo(agentId)
         if (!repo) return deny(403, 'the GraphQL request names no repository this agent can read')
         return { provider: 'github', repo, plane: 'api', readOnly: true }
@@ -834,10 +835,11 @@ export class CredentialProxy {
   private async githubMutation(
     agentId: string,
     variables: unknown,
+    document: string,
     host: string,
     port: number
   ): Promise<MintAsk | RequestDecision> {
-    const candidates = idCandidates(variables)
+    const candidates = idCandidates(variables, document)
     if (candidates === 'too-many') return deny(400, 'this mutation names more node IDs than the proxy checks')
     if (candidates.length === 0) return deny(403, GRAPHQL_NO_TARGET)
     const workspace = this.deps.workspaceRepo(agentId)

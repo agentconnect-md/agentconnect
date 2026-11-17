@@ -34,9 +34,20 @@ describe('the node IDs a mutation names', () => {
       })
     ).toEqual(['I_1', 'L_1', 'L_2', 'X_1', 'PR_1'])
     expect(idCandidates({ input: { subjectId: 'I_1' }, again: { issueId: 'I_1' } })).toEqual(['I_1'])
+    expect(idCandidates({ ids: ['I_1', 'I_2'] })).toEqual(['I_1', 'I_2'])
     expect(idCandidates(undefined)).toEqual([])
     const many = Object.fromEntries(Array.from({ length: MAX_ID_CANDIDATES + 1 }, (_, i) => [`n${i}Id`, `I_${i}`]))
     expect(idCandidates(many)).toBe('too-many')
+  })
+
+  it('reads a variable by the argument it fills, whatever it is called', () => {
+    const document =
+      'mutation($l: ID!, $x: [ID!]!, $text: String!) { addLabelsToLabelable(input: { labelableId: $l, labelIds: $x }) { clientMutationId } addComment(input: { subjectId: "I_inline", body: $text }) { clientMutationId } }'
+    expect(idCandidates({ l: 'I_1', x: ['L_1'], text: 'I_body' }, document)).toEqual(['I_1', 'L_1'])
+    // A pair inside a string or a comment binds nothing.
+    expect(
+      idCandidates({ l: 'I_1' }, 'mutation($l: ID!) { a(input: { note: "labelableId: $l" }) { b } } # issueId: $l')
+    ).toEqual([])
   })
 
   it('reads each node’s repository, a type without one, and a type it cannot place', () => {
@@ -267,6 +278,17 @@ describe('the proxy forwarding a GitHub mutation', () => {
     } finally {
       rateLimited = false
     }
+  })
+
+  it('refuses a mutation whose variables, however named, span two repositories', async () => {
+    const { decide } = setup()
+    const refused = await decide({
+      query:
+        'mutation($l: ID!, $ids: [ID!]!) { addLabelsToLabelable(input: { labelableId: $l, labelIds: $ids }) { clientMutationId } }',
+      variables: { l: 'I_ws', ids: ['I_extra'] }
+    })
+    expect(refused).toMatchObject({ action: 'deny', status: 403 })
+    expect((refused as { reason: string }).reason).toContain('spans o/ws and o/extra')
   })
 
   it('reads the operation the request executes, and refuses a subscription', async () => {
