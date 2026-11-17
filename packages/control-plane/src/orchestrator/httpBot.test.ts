@@ -1667,8 +1667,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     it('takes over a room a membership report already seeded Off under the earliest agent', async () => {
       gatedAgents = new Set([BOB])
       channels = [
-        channel({ integrationId: INT_A, channelId: 'C0ROOM', agentId: ALICE, trigger: 'off' }),
-        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: null, trigger: 'off' })
+        channel({ integrationId: INT_A, channelId: 'C0ROOM', isCodeSession: true, agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', isCodeSession: true, agentId: null, trigger: 'off' })
       ]
 
       expect(await makeOrch().openRoom(BOT, INT_B, 'C0ROOM')).toBe(true)
@@ -1679,7 +1679,14 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     it('leaves a room a person turned Off closed, and stops relays waiting for it', async () => {
       gatedAgents = new Set([BOB])
       channels = [
-        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: BOB, trigger: 'off', triggerChosen: true })
+        channel({
+          integrationId: INT_B,
+          channelId: 'C0ROOM',
+          isCodeSession: true,
+          agentId: BOB,
+          trigger: 'off',
+          triggerChosen: true
+        })
       ]
       const orch = makeOrch()
       await orch.roomOpening(BOT, INT_B)
@@ -1712,8 +1719,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     it('gives an ungated member’s room to it on a bot it shares, in place of the earliest agent', async () => {
       channels = [
-        channel({ integrationId: INT_A, channelId: 'C0ROOM', agentId: ALICE, trigger: 'mention' }),
-        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: null, trigger: 'mention' })
+        channel({ integrationId: INT_A, channelId: 'C0ROOM', isCodeSession: true, agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', isCodeSession: true, agentId: null, trigger: 'mention' })
       ]
       const orch = makeOrch()
 
@@ -1731,13 +1738,43 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     it('opens an ungated member’s room that a gated earliest agent had seeded Off', async () => {
       gatedAgents = new Set([ALICE])
       channels = [
-        channel({ integrationId: INT_A, channelId: 'C0ROOM', agentId: ALICE, trigger: 'off' }),
-        channel({ integrationId: INT_B, channelId: 'C0ROOM', agentId: null, trigger: 'off' })
+        channel({ integrationId: INT_A, channelId: 'C0ROOM', isCodeSession: true, agentId: ALICE, trigger: 'off' }),
+        channel({ integrationId: INT_B, channelId: 'C0ROOM', isCodeSession: true, agentId: null, trigger: 'off' })
       ]
 
       expect(await makeOrch().openRoom(BOT, INT_B, 'C0ROOM')).toBe(true)
       expect(rowOf(INT_A)).toMatchObject({ agentId: null, trigger: 'mention' })
       expect(rowOf(INT_B)).toMatchObject({ agentId: BOB, trigger: 'mention' })
+    })
+
+    it('reads a member’s grant from the compiled table, not from the trigger its row repeats', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        // Alice owns C7; Bob's row repeats her trigger and holds no route there.
+        channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_B, channelId: 'C7', agentId: null, trigger: 'mention' }),
+        channel({ integrationId: INT_B, channelId: 'C8', agentId: BOB, trigger: 'mention' }),
+        channel({ integrationId: INT_B, channelId: 'C9', agentId: BOB, trigger: 'off' })
+      ]
+      const orch = makeOrch()
+
+      expect(await orch.memberGranted(BOT, INT_B, 'C7')).toBe(false)
+      expect(await orch.memberGranted(BOT, INT_A, 'C7')).toBe(true)
+      expect(await orch.memberGranted(BOT, INT_B, 'C8')).toBe(true)
+      expect(await orch.memberGranted(BOT, INT_B, 'C9')).toBe(false)
+      expect(await orch.memberGranted(BOT, INT_B, 'C0NOWHERE')).toBe(false)
+    })
+
+    it('opens nothing over an existing conversation that is not a code session', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        channel({ integrationId: INT_A, channelId: 'C7', agentId: ALICE, trigger: 'mention' }),
+        channel({ integrationId: INT_B, channelId: 'C7', agentId: null, trigger: 'mention' })
+      ]
+
+      expect(await makeOrch().openRoom(BOT, INT_B, 'C7')).toBe(false)
+      expect(channels.find((row) => row.integrationId === INT_A)).toMatchObject({ agentId: ALICE })
+      expect(channels.find((row) => row.integrationId === INT_B)).toMatchObject({ agentId: null })
     })
 
     it('leaves an ungated agent that has the bot to itself alone', async () => {

@@ -155,7 +155,7 @@ describe('integration/room-grant: a gated agent’s own new room', () => {
     const id = await gatedIntegration()
     await reportChannels(id, [
       { id: ORIGIN, name: 'deploys' },
-      { id: ROOM, name: 'task' }
+      { id: ROOM, name: 'task', isCodeSession: true }
     ])
     await channels().setTrigger(IntegrationId(id), ROOM, { trigger: 'off' }, { chosen: true })
 
@@ -187,6 +187,17 @@ describe('integration/room-grant: a gated agent’s own new room', () => {
     expect(await triggerOf(id, 'C0OTHER')).toBe('off')
   })
 
+  it('opens nothing over an existing conversation that is not a code session', async () => {
+    const id = await gatedIntegration()
+    await reportChannels(id, [
+      { id: ORIGIN, name: 'deploys' },
+      { id: 'C0OTHER', name: 'elsewhere' }
+    ])
+
+    expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opened', channel: 'C0OTHER' })).toBe(false)
+    expect(await triggerOf(id, 'C0OTHER')).toBe('off')
+  })
+
   it('refuses a daemon that does not serve the agent, and an abandoned creation', async () => {
     const id = await gatedIntegration()
     await seedDaemon(prisma, OTHER_DAEMON)
@@ -207,9 +218,13 @@ describe('integration/room-grant: a gated agent’s own new room', () => {
     /** Flip the fixture's bot to relay ingress and stand in for its orchestrator. */
     async function relayHosted(id: string): Promise<{ botId: string; asked: string[] }> {
       const { botId } = await prisma.integration.findUniqueOrThrow({ where: { id }, select: { botId: true } })
-      await prisma.bot.update({ where: { id: botId }, data: { transport: 'http' } })
+      await prisma.bot.update({ where: { id: botId }, data: { transport: 'http', shareable: true } })
       const asked: string[] = []
       relayRooms = {
+        granted: async (bot, integrationId, channelId) => {
+          asked.push(`granted ${bot} ${integrationId} ${channelId}`)
+          return false
+        },
         opening: async (bot, integrationId) => {
           asked.push(`opening ${bot} ${integrationId}`)
           return true
@@ -234,13 +249,59 @@ describe('integration/room-grant: a gated agent’s own new room', () => {
       expect(asked).toEqual([`opening ${botId} ${id}`, `open ${botId} ${id} ${ROOM}`, `abandoned ${botId}`])
     })
 
-    it('still opens a gated agent’s room only from a conversation that is enabled', async () => {
-      const id = await gatedIntegration({ originEnabled: false })
-      const { asked } = await relayHosted(id)
+    it('asks the orchestrator whether a gated agent holds a grant in the origin, and opens nothing without one', async () => {
+      const id = await gatedIntegration()
+      const { botId, asked } = await relayHosted(id)
 
       expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opening' })).toBe(false)
       expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opened', channel: ROOM })).toBe(false)
-      expect(asked).toEqual([])
+      expect(asked).toEqual([`granted ${botId} ${id} ${ORIGIN}`, `granted ${botId} ${id} ${ORIGIN}`])
+    })
+
+    // The reviewed case: on a shared bot a sibling's row repeats the owner's trigger, so only the compiled grant can say who is enabled.
+    it('opens nothing from a conversation a sibling owns, and opens the room once the gated agent owns the origin', async () => {
+      const id = await gatedIntegration()
+      const gated = await prisma.integration.findUniqueOrThrow({
+        where: { id },
+        select: { botId: true, agentId: true }
+      })
+      await prisma.bot.update({ where: { id: gated.botId }, data: { transport: 'http', shareable: true } })
+      const siblingAgent = randomUUID()
+      await seedAgent(prisma, siblingAgent, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+      const admission = await running!.deps.repos.integration.addBotMembership({
+        id: IntegrationId(randomUUID()),
+        orgId: DEFAULT_ORG_ID as never,
+        agentId: siblingAgent as never,
+        botId: gated.botId as never,
+        platform: 'slack',
+        name: 'acme-bot'
+      } as never)
+      if (!('integration' in admission)) throw new Error(`unexpected membership outcome: ${admission.outcome}`)
+      const sibling = IntegrationId(admission.integration.id)
+      const httpBot = running!.deps.httpBot
+      relayRooms = {
+        granted: (bot, integrationId, channelId) => httpBot.memberGranted(bot, integrationId, channelId),
+        opening: (bot, integrationId) => httpBot.roomOpening(bot, integrationId),
+        abandoned: (bot) => httpBot.roomAbandoned(bot),
+        open: (bot, integrationId, channelId) => httpBot.openRoom(bot, integrationId, channelId)
+      }
+
+      // The ungated sibling owns the origin; the gated agent's row still reads Mention.
+      await channels().upsertAgent(sibling, ORIGIN, siblingAgent as never)
+      expect(await triggerOf(id, ORIGIN)).toBe('mention')
+      expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opening' })).toBe(false)
+      expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opened', channel: ROOM })).toBe(false)
+      expect(await triggerOf(id, ROOM)).toBeUndefined()
+
+      // Enabled there itself, as the origin's owner, the same request opens the room to it.
+      await channels().setAgent(sibling, ORIGIN, null)
+      await channels().upsertAgent(IntegrationId(id), ORIGIN, gated.agentId as never)
+      expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opening' })).toBe(true)
+      expect(await grant({ integrationId: id, origin: ORIGIN, phase: 'opened', channel: ROOM })).toBe(true)
+      const room = await prisma.integrationChannel.findUniqueOrThrow({
+        where: { integrationId_channelId: { integrationId: id, channelId: ROOM } }
+      })
+      expect(room).toMatchObject({ trigger: 'mention', triggerChosen: false, agentId: gated.agentId })
     })
   })
 })

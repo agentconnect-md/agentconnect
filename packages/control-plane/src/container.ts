@@ -3545,6 +3545,7 @@ export function buildContainer(
     ...(gitlabAppCfg ? { gitlabBaseUrl: gitlabAppCfg.baseUrl } : {}),
     integrationChannel: repos.integrationChannel,
     httpBotRooms: {
+      granted: (botId, integrationId, channelId) => httpBot.memberGranted(botId, integrationId, channelId),
       opening: (botId, integrationId) => httpBot.roomOpening(botId, integrationId),
       abandoned: (botId) => httpBot.roomAbandoned(botId),
       open: (botId, integrationId, channelId) => httpBot.openRoom(botId, integrationId, channelId)

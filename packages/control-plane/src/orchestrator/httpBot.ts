@@ -956,6 +956,21 @@ export class HttpBotOrchestrator {
     return gated || installs.length > 1 ? { bot, installs, owner, agent, gated } : null
   }
 
+  /** §14.10: whether a member holds a grant in a conversation as the compiled table states it — a route scoped there, the conversation's default seat, or a By decision routing that can select it. A row's trigger is replicated across siblings and says nothing. */
+  async memberGranted(botId: string, integrationId: string, channelId: string): Promise<boolean> {
+    const bot = await this.bots.getUnscoped(BotId(botId))
+    if (bot?.transport !== 'http') return false
+    const installs = await this.integrations.listForBot(bot.id)
+    const agentId = installs.find((install) => install.id === integrationId)?.agentId
+    const table = agentId ? await this.plan(bot, installs) : null
+    if (!agentId || !table) return false
+    return (
+      table.routes.some((route) => route.agentId === agentId && route.scope?.channel === channelId) ||
+      table.conversationDefaults.some((seat) => seat.channel === channelId && seat.agentId === agentId) ||
+      table.routedConversations.some((c) => c.channel === channelId && c.targetAgentIds?.includes(agentId) === true)
+    )
+  }
+
   /** §14.10: a member is about to make a room of its own, so relays hold an unplaced message in a room this bot owns instead of refusing it or handing it to another agent; false where nothing needs settling. */
   async roomOpening(botId: string, integrationId: string): Promise<boolean> {
     if (!(await this.roomMaker(botId, integrationId))) return false
@@ -990,6 +1005,8 @@ export class HttpBotOrchestrator {
         const { bot, installs, owner, agent, gated } = maker
         const before = (await this.channels.listForBot(bot.id)).filter((row) => row.channelId === channelId)
         if (before.some((row) => row.triggerChosen)) return false
+        // Only a room: an id with no row yet, or one the platform reports as a code session, never an existing channel or DM.
+        if (before.length > 0 && !before.some((row) => row.isCodeSession)) return false
         const autoKinds = await this.autoConversationKinds(agent, bot.platform)
         const row = await this.channels.upsertConversation(
           owner.id,

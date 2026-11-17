@@ -1181,9 +1181,13 @@ made, on Mention and with `triggerChosen = false`. Every such room has a new id,
 "an editor enables it" would otherwise have to be repeated for each task. The room inherits
 the conversation its turn is live in and nothing wider:
 
-- Only where that conversation is itself enabled for the same integration. A turn whose own
-  conversation is Off or unknown, such as a scheduled run anchored in an Off place, opens
-  nothing and the room keeps the §14.2 default.
+- Only where that conversation is itself enabled for the same agent. A turn whose own
+  conversation is Off or unknown, such as a scheduled run anchored in a place the agent is
+  not enabled in, opens nothing and the room keeps the §14.2 default. On a bot of its own the
+  integration's row says so. On a shared bot a row's trigger is repeated across siblings and
+  says nothing about one of them, so the test is the grant the compiled route table gives
+  the agent there: a route scoped to the conversation, the conversation's default seat, or
+  a By decision routing that can select it.
 - Only the room the turn made, and only for the agent that made it. On a shared bot that
   agent becomes the room's owner; its siblings carry the replicated trigger as they do for
   any conversation and hold no route there.
@@ -1191,6 +1195,9 @@ the conversation its turn is live in and nothing wider:
   editor turned Off stays Off however often the creation is retried.
 - Only for a room the turn reports. A room that merely appears in a membership report is
   not opened, whoever the platform says it is assigned to.
+- Only for a room. The id must have no row yet, or a row the platform reports as a code
+  session, so the request can never open or re-own an existing channel or direct
+  conversation.
 
 Authorizing the room entrusts its current and later membership, as enabling any place does
 (§14.2). The platform invites the person who asked and matches the origin's privacy.

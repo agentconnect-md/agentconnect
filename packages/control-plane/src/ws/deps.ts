@@ -171,6 +171,7 @@ export interface DaemonWsDeps {
   socketBotTenant?: SocketBotTenant
   /** §14.10 for a relay-hosted bot: tell relays a member is making a room, and give the one it made to that member; absent ⇒ such a room keeps its defaults. */
   httpBotRooms?: {
+    granted(botId: string, integrationId: string, channelId: string): Promise<boolean>
     opening(botId: string, integrationId: string): Promise<boolean>
     abandoned(botId: string): Promise<void>
     open(botId: string, integrationId: string, channelId: string): Promise<boolean>

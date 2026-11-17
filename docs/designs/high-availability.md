@@ -180,7 +180,10 @@ does not preserve the listener ([pooling compatibility](https://www.pgbouncer.or
 The current Helm deployment already has surge-first rolling updates, readiness,
 `preStop`, `1012` control-socket closure, reconnect snapshots, and an acknowledged
 session-metadata outbox. It still has process-local daemon/relay registries,
-control broadcasts, SSE fan-out, and some mutation gates. Those mechanisms do
+control broadcasts, SSE fan-out, some mutation gates, and the room-opening window
+a relay-hosted bot's route table carries ([resource-visibility.md](resource-visibility.md)
+§14.10: a relay on another CP never sees it, and a route sync from another CP clears it).
+Those mechanisms do
 not yet satisfy this section; increasing `replicas` alone is insufficient.
 A relay reconnect replays MCP bindings, hook rules and memory bindings as
 snapshots: the relay keeps serving its tables during the replay and, at the

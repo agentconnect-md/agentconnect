@@ -152,6 +152,12 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   one invitee, each a full workspace member and, unless the anchor is confirmed public, a member of it.
   The invitees are model input, so a run reading untrusted content can choose among those people but
   cannot widen the audience past them; a tool's `anchoredIn` alone admits nothing.
+- **A gated agent's own code channel** (`resource-visibility.md` §14.10): the one place a restricted
+  agent's conversation gate opens without an editor. `integration/room-grant` must open only the
+  channel the agent's own turn reports (an id with no row yet, or a row the platform reports as a code
+  session), only where the agent holds a grant in the origin conversation as the compiled route table
+  states it (never the row's trigger, which a shared bot repeats across siblings), and never over a
+  `triggerChosen` row. The relay window (`roomOpeningMs`) only postpones a refusal and must grant nothing.
 - **Thread reads** (`webchat-threads.md` §7.1): `GET /sessions/:id/messages?view=roots` and
   `GET /sessions/:id/threads/:rootId/messages` show a coordinator conversation's threads, including
   observations, messages people wrote in the channel without addressing an agent, to whoever may view

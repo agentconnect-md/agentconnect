@@ -26,10 +26,13 @@ export const handleIntegrationRoomGrant: Handler = async (frame, conn, deps) => 
       return reply(false)
     }
     if (gated) {
-      const rows = await deps.integrationChannel.listForIntegration(integration.id)
-      const origin = rows.find((row) => row.channelId === p.origin)
-      // An opened room inherits its turn's conversation and nothing wider: an origin that is Off, or unknown, opens nothing.
-      if (!origin || origin.trigger === 'off') return reply(false)
+      // An opened room inherits its turn's conversation and nothing wider. On a shared bot a row's trigger is replicated across siblings, so the compiled grant decides there; a bot of its own has only its own rows.
+      const enabled = relayed
+        ? await relayed.granted(bot.id, integration.id, p.origin)
+        : (await deps.integrationChannel.listForIntegration(integration.id)).some(
+            (row) => row.channelId === p.origin && row.trigger !== 'off'
+          )
+      if (!enabled) return reply(false)
     }
     if (p.phase === 'opening') return reply(relayed ? await relayed.opening(bot.id, integration.id) : true)
     if (!p.channel) return reply(false)
@@ -38,6 +41,9 @@ export const handleIntegrationRoomGrant: Handler = async (frame, conn, deps) => 
     if (!release) return reply(false) // a placement move owns this agent; its bundle carries whatever the rows say
     let open = false
     try {
+      // Only a room: an id with no row yet, or one the platform reports as a code session, never an existing channel or DM.
+      const rows = await deps.integrationChannel.listForIntegration(integration.id)
+      if (rows.some((row) => row.channelId === p.channel && !row.isCodeSession)) return reply(false)
       const mode = owner.newConversationMode ?? null
       const features = deps.connReg.get(conn.daemonId)?.capabilities?.features
       const autoKinds = autoConversationKinds(integration.platform, features, mode, owner.coordinatorDisabled)
