@@ -1106,7 +1106,7 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     // The whole P2.5 chain hinges on this third argument actually reaching the
     // token request — a silent drop would 403 every `gh` write-back while all
     // token-service unit tests stay green.
-    await svc.mintForAgent(agent, [], ['contents', 'issues', 'pull_requests', 'actions'])
+    await svc.mintForAgent(agent, 'd1', ['contents', 'issues', 'pull_requests', 'actions'])
     expect(bodies[0]!.permissions).toEqual({
       metadata: 'read',
       contents: 'write',
@@ -1117,14 +1117,14 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     })
     // And absent capabilities keep the pre-P2.5 contents grant, with workflow
     // writes coupled to contents writes.
-    await svc.mintForAgent(agent, [])
+    await svc.mintForAgent(agent, 'd1')
     expect(bodies[1]!.permissions).toEqual({ metadata: 'read', contents: 'write', workflows: 'write' })
 
     // §17.1 access floor: a caller may ask for LESS than the write tier, and the read it gets back
     // drops the coupled workflows write with it. 'write' is a no-op — the tier is already the ceiling.
-    await svc.mintForAgent(agent, [], ['contents', 'issues'], undefined, 'read')
+    await svc.mintForAgent(agent, 'd1', ['contents', 'issues'], undefined, 'read')
     expect(bodies[2]!.permissions).toEqual({ metadata: 'read', contents: 'read', issues: 'read' })
-    await svc.mintForAgent(agent, [], ['contents'], undefined, 'write')
+    await svc.mintForAgent(agent, 'd1', ['contents'], undefined, 'write')
     expect(bodies).toHaveLength(3) // no new mint: it landed on the grant the absent-access ask cached
   })
 
@@ -1173,7 +1173,7 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     const GH_ASK = ['contents', 'issues', 'pull_requests', 'actions'] as const
 
     const full = service({ checks: 'write', statuses: 'read', pull_requests: 'write' }, 'write')
-    await full.svc.mintForAgent(full.agent, [], GH_ASK)
+    await full.svc.mintForAgent(full.agent, 'd1', GH_ASK)
     expect(bodies.at(-1)!.permissions).toEqual({
       metadata: 'read',
       contents: 'write',
@@ -1186,21 +1186,21 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     })
 
     // The git plane's contents-only token stays as narrow as it was.
-    await full.svc.mintForAgent(full.agent, [])
+    await full.svc.mintForAgent(full.agent, 'd1')
     expect(bodies.at(-1)!.permissions).toEqual({ metadata: 'read', contents: 'write', workflows: 'write' })
 
     // A read-tier agent reads CI results too.
     const reader = service({ checks: 'write', statuses: 'read' }, 'read')
-    await reader.svc.mintForAgent(reader.agent, [], GH_ASK)
+    await reader.svc.mintForAgent(reader.agent, 'd1', GH_ASK)
     expect(bodies.at(-1)!.permissions).toMatchObject({ pull_requests: 'read', checks: 'read', statuses: 'read' })
 
     // A permission the installation lacks is never asked for: GitHub refuses the whole token with 422.
     const checksOnly = service({ checks: 'write' }, 'write')
-    await checksOnly.svc.mintForAgent(checksOnly.agent, [], GH_ASK)
+    await checksOnly.svc.mintForAgent(checksOnly.agent, 'd1', GH_ASK)
     expect(bodies.at(-1)!.permissions).toMatchObject({ checks: 'read' })
     expect(bodies.at(-1)!.permissions).not.toHaveProperty('statuses')
     const neither = service({}, 'write')
-    await neither.svc.mintForAgent(neither.agent, [], GH_ASK)
+    await neither.svc.mintForAgent(neither.agent, 'd1', GH_ASK)
     expect(bodies.at(-1)!.permissions).not.toHaveProperty('checks')
     expect(bodies.at(-1)!.permissions).not.toHaveProperty('statuses')
   })
@@ -1473,7 +1473,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         rows: [],
         skillSources: { 'example-skills': skillSourceRow() }
       })
-      const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/Skills')
+      const grant = await svc.mintForAgent(SKILLS_AGENT, 'd1', CONTENTS, 'acme/Skills')
       expect(grant).toMatchObject({ repoFullName: 'acme/Skills', access: 'read' })
       expect(mintBodies).toEqual([{ repository_ids: [555], permissions: { metadata: 'read', contents: 'read' } }])
       expect(repoLookups).toEqual([]) // exact match — no name→id lookup needed
@@ -1481,7 +1481,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
 
     it('never widens: a requested write floor still clamps to read', async () => {
       const { svc, mintBodies } = harness({ rows: [], skillSources: { 'example-skills': skillSourceRow() } })
-      await svc.mintForAgent(SKILLS_AGENT, [], ['contents', 'issues', 'pull_requests'], 'acme/skills', 'write')
+      await svc.mintForAgent(SKILLS_AGENT, 'd1', ['contents', 'issues', 'pull_requests'], 'acme/skills', 'write')
       expect(mintBodies[0]).toMatchObject({
         repository_ids: [555],
         permissions: { contents: 'read', issues: 'read', pull_requests: 'read' }
@@ -1490,12 +1490,17 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
 
     it('a PUBLIC source is not a grant, and neither is a source the agent does not enable', async () => {
       const publicOnly = harness({ rows: [], skillSources: { 'example-skills': skillSourceRow({ private: false }) } })
-      await expect(publicOnly.svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills')).rejects.toMatchObject({
+      await expect(publicOnly.svc.mintForAgent(SKILLS_AGENT, 'd1', CONTENTS, 'acme/skills')).rejects.toMatchObject({
         code: 'SCOPE_DENIED'
       })
       const notEnabled = harness({ rows: [], skillSources: { 'example-skills': skillSourceRow() } })
       await expect(
-        notEnabled.svc.mintForAgent({ ...(SCRATCH_AGENT as object), skills: [] } as never, [], CONTENTS, 'acme/skills')
+        notEnabled.svc.mintForAgent(
+          { ...(SCRATCH_AGENT as object), skills: [] } as never,
+          'd1',
+          CONTENTS,
+          'acme/skills'
+        )
       ).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
       expect(publicOnly.mintBodies).toEqual([])
       expect(notEnabled.mintBodies).toEqual([])
@@ -1506,7 +1511,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         rows: [grantRow({ repoId: 555n, repoFullName: 'acme/skills', access: 'write' })],
         skillSources: { 'example-skills': skillSourceRow() }
       })
-      const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills')
+      const grant = await svc.mintForAgent(SKILLS_AGENT, 'd1', CONTENTS, 'acme/skills')
       expect(grant).toMatchObject({ access: 'write' })
       expect(mintBodies[0]).toMatchObject({ permissions: { contents: 'write' } })
     })
@@ -1518,7 +1523,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         skillSources: { 'example-skills': skillSourceRow({ source: 'acme/skills-old' }) },
         repoRefs: { 'acme/skills-old': { id: 555, full_name: 'acme/skills' } }
       })
-      const grant = await svc.mintForAgent(SKILLS_AGENT, [], CONTENTS, 'acme/skills-old')
+      const grant = await svc.mintForAgent(SKILLS_AGENT, 'd1', CONTENTS, 'acme/skills-old')
       expect(grant).toMatchObject({ access: 'read' })
       expect(mintBodies[0]).toMatchObject({ repository_ids: [555], permissions: { contents: 'read' } })
     })
@@ -1526,7 +1531,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
 
   it('a requestedRepo equal to the workspace label mints by its rename-proof repo id', async () => {
     const { svc, mintBodies, listForAgent } = harness({ rows: [grantRow()] })
-    const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'ACME/Infra')
+    const grant = await svc.mintForAgent(AGENT, 'd1', CONTENTS, 'ACME/Infra')
     // Uniform workspace shape at the agent's gitAccess — grant rows and
     // repository metadata are never consulted.
     expect(grant).toMatchObject({ repoFullName: 'acme/infra', access: 'write' })
@@ -1543,7 +1548,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       repoRefs: { 'acme/infra-renamed': { id: 777, full_name: 'acme/infra-renamed' } }
     })
 
-    const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/infra-renamed')
+    const grant = await svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/infra-renamed')
 
     expect(grant).toMatchObject({
       repoFullName: 'acme/infra-renamed',
@@ -1555,7 +1560,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
 
   it('keeps a legacy workspace name-scoped until workspaceRepoId is repaired', async () => {
     const { svc, mintBodies } = harness({ rows: [] })
-    await svc.mintForAgent(LEGACY_WORKSPACE_AGENT, [], CONTENTS)
+    await svc.mintForAgent(LEGACY_WORKSPACE_AGENT, 'd1', CONTENTS)
     expect(mintBodies[0]).toMatchObject({ repositories: ['infra'] })
   })
 
@@ -1571,7 +1576,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       repoFullName: 'acme/infra',
       access: 'write'
     })
-    await expect(svc.mintForAgent(MANUAL_WORKSPACE_AGENT, [], CONTENTS)).rejects.toMatchObject({
+    await expect(svc.mintForAgent(MANUAL_WORKSPACE_AGENT, 'd1', CONTENTS)).rejects.toMatchObject({
       code: 'SCOPE_DENIED',
       retryable: false
     })
@@ -1582,11 +1587,11 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       rows: [grantRow({ agentId: 'agent-scratch' as never, repoId: 111n, repoFullName: 'acme/tools', access: 'write' })]
     })
 
-    await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS)).rejects.toMatchObject({
+    await expect(svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS)).rejects.toMatchObject({
       code: 'SCOPE_DENIED',
       retryable: false
     })
-    const grant = await svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+    const grant = await svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')
     expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'write' })
     expect(mintBodies[0]).toMatchObject({
       repository_ids: [111],
@@ -1602,7 +1607,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     // Mint binds to the row's NUMERIC repoId (rename-immune), never the name;
     // the grant ECHOES the requested name (not the row's stored casing) so the
     // daemon's identity guard is a clean equality check.
-    const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
+    const grant = await svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')
     // …and reports that numeric id back, which is what a provider-qualified grant echoes.
     expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
     expect(mintBodies[0]).toMatchObject({
@@ -1611,7 +1616,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
     expect(mintBodies[0]).not.toHaveProperty('repositories')
     // The full capability ask mints the whole asymmetric comment shape.
-    await svc.mintForAgent(AGENT, [], ['contents', 'issues', 'pull_requests', 'actions'], 'acme/tools')
+    await svc.mintForAgent(AGENT, 'd1', ['contents', 'issues', 'pull_requests', 'actions'], 'acme/tools')
     expect(mintBodies[1]!.permissions).toEqual({
       metadata: 'read',
       contents: 'read',
@@ -1627,9 +1632,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
   it('the hook-reply poster mints issues/PR write with NO contents even for a read-only workspace', async () => {
     const { svc, mintBodies, listForAgent } = harness({ rows: [] })
 
-    const first = await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/infra', 777n, [])
-    const cached = await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/infra', 777n, [])
-    const refreshed = await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/infra', 777n, [], true)
+    const first = await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/infra', 777n, 'd1')
+    const cached = await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/infra', 777n, 'd1')
+    const refreshed = await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/infra', 777n, 'd1', true)
 
     expect(mintBodies[0]).toEqual({
       repository_ids: [777],
@@ -1644,9 +1649,11 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
   it("an installation row's reply mints only inside its own installation", async () => {
     const { svc, mintBodies } = harness({ rows: [] })
 
-    await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/tools', 777n, [], false, 42n)
+    await svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/tools', 777n, 'd1', false, 42n)
     expect(mintBodies).toHaveLength(1)
-    await expect(svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/tools', 778n, [], false, 43n)).rejects.toMatchObject({
+    await expect(
+      svc.mintForHookReply(READ_WORKSPACE_AGENT, 'acme/tools', 778n, 'd1', false, 43n)
+    ).rejects.toMatchObject({
       code: 'SCOPE_DENIED'
     })
     expect(mintBodies).toHaveLength(1)
@@ -1663,12 +1670,12 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     })
 
     // Its hook rows name its own App's installation (43), which signs the reply.
-    const grant = await svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 43n)
+    const grant = await svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, 'd1', false, 43n)
     expect(grant.token).toMatch(/^ghs_1_i43$/)
     expect(accountLookups).toEqual(['acme'])
     expect(mintBodies).toHaveLength(1)
     // The built-in App's installation on the same account stands in for nothing.
-    await expect(svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, [], false, 42n)).rejects.toMatchObject({
+    await expect(svc.mintForHookReply(REVIEW_AGENT, 'acme/tools', 777n, 'd1', false, 42n)).rejects.toMatchObject({
       code: 'SCOPE_DENIED'
     })
   })
@@ -1697,7 +1704,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' }, 'acme/tools/pulls/7': { id: 0, full_name: '' } },
       objects: { 'acme/tools/pulls/7': {} }
     })
-    await expect(own.svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).resolves.toMatchObject({
+    await expect(own.svc.mintForAgent(REVIEW_SCRATCH, 'd1', CONTENTS, 'acme/tools')).resolves.toMatchObject({
       access: 'write',
       repoId: 111n
     })
@@ -1720,7 +1727,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       installationsByAccount: byAccount,
       repoRefs: { 'acme/tools': { id: 111, full_name: 'acme/tools' } }
     })
-    await expect(other.svc.mintForAgent(REVIEW_SCRATCH, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+    await expect(other.svc.mintForAgent(REVIEW_SCRATCH, 'd1', CONTENTS, 'acme/tools')).rejects.toMatchObject({
       code: 'SCOPE_DENIED'
     })
   })
@@ -1771,7 +1778,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
   it('a general issues/PR ask still follows an additional repo comment-tier grant', async () => {
     const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'comment' })] })
 
-    await svc.mintForAgent(AGENT, [], ['issues', 'pull_requests'], 'acme/tools')
+    await svc.mintForAgent(AGENT, 'd1', ['issues', 'pull_requests'], 'acme/tools')
 
     expect(mintBodies[0]!.permissions).toEqual({ metadata: 'read', issues: 'write', pull_requests: 'write' })
     expect(mintBodies[0]).not.toHaveProperty('repositories')
@@ -1782,7 +1789,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       rows: [grantRow({ id: 'ra-2', repoId: 222n, repoFullName: 'acme/old-name', access: 'write' })],
       repoRefs: { 'acme/new-name': { id: 222, full_name: 'acme/new-name' } }
     })
-    const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/new-name')
+    const grant = await svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/new-name')
     expect(grant).toMatchObject({ repoFullName: 'acme/new-name', access: 'write' })
     // Scoped by the row's numeric id (222), not any name the daemon supplied.
     expect(mintBodies[0]).toMatchObject({
@@ -1801,7 +1808,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       rows: [grantRow({ id: 'ra-3', repoId: 222n, repoFullName: 'acme/new-name', access: 'write' })],
       repoRefs: { 'acme/old-name': { id: 222, full_name: 'acme/new-name' } }
     })
-    const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/old-name')
+    const grant = await svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/old-name')
     // The grant must report what the daemon ASKED (acme/old-name) so its
     // identity guard passes — reporting the canonical acme/new-name would loop
     // it on "control plane too old". The token is still correct (minted by id).
@@ -1812,10 +1819,10 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
   it('no grant rows — or no repoAuths wiring at all — denies SCOPE_DENIED, non-retryable', async () => {
     const scope = { code: 'SCOPE_DENIED', retryable: false }
     const none = harness({ rows: [] })
-    await expect(none.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject(scope)
+    await expect(none.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toMatchObject(scope)
     // Older harnesses without the dep behave like "no rows" (never a crash).
     const unwired = harness({ withRepoAuths: false })
-    await expect(unwired.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject(scope)
+    await expect(unwired.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toMatchObject(scope)
   })
 
   it('rows that do not match deny SCOPE_DENIED — even when the owner has no installation (no coverage oracle)', async () => {
@@ -1825,21 +1832,23 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       rows: [grantRow()],
       repoRefs: { 'acme/unrelated': { id: 555, full_name: 'acme/unrelated' } }
     })
-    await expect(wrongId.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/unrelated')).rejects.toMatchObject(scope)
+    await expect(wrongId.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/unrelated')).rejects.toMatchObject(scope)
     // The first refusal names the remedy — it is what the agent reports to its user.
-    await expect(wrongId.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/unrelated')).rejects.toThrow(
+    await expect(wrongId.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/unrelated')).rejects.toThrow(
       /acme\/unrelated is not authorized for this agent — add it under Additional repositories/
     )
     // Unknown owner, no name match: the probe must not learn whether an
     // installation covers it — SCOPE, not LEASE.
     const noOwner = harness({ rows: [grantRow()] })
-    await expect(noOwner.svc.mintForAgent(AGENT, [], CONTENTS, 'evil/repo')).rejects.toMatchObject(scope)
-    await expect(noOwner.svc.mintForAgent(AGENT, [], CONTENTS, 'evil/repo')).rejects.toThrow(/add it under Additional/)
+    await expect(noOwner.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'evil/repo')).rejects.toMatchObject(scope)
+    await expect(noOwner.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'evil/repo')).rejects.toThrow(
+      /add it under Additional/
+    )
   })
 
   it('a name-matched grant without a live (or with a suspended) installation denies LEASE_DENIED', async () => {
     const gone = harness({ rows: [grantRow()], installationsByAccount: {} })
-    await expect(gone.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+    await expect(gone.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toMatchObject({
       code: 'LEASE_DENIED',
       retryable: false
     })
@@ -1847,7 +1856,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       rows: [grantRow()],
       installationsByAccount: { acme: installation({ suspendedAt: new Date(1) }) }
     })
-    await expect(suspended.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+    await expect(suspended.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toMatchObject({
       code: 'LEASE_DENIED'
     })
   })
@@ -1870,7 +1879,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     it('refuses a stale row by name, says why, and mints nothing', async () => {
       const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'write', stale: STALE })], repoRefs: TOOLS })
 
-      const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+      const denied = svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')
 
       await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
       await expect(denied).rejects.toThrow(
@@ -1886,7 +1895,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         repoRefs: TOOLS
       })
 
-      const grant = await svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+      const grant = await svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')
 
       expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
       expect(mintBodies).toEqual([{ repository_ids: [111], permissions: { metadata: 'read', contents: 'read' } }])
@@ -1904,7 +1913,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     it('an honored row on the same repository still mints', async () => {
       const { svc, mintBodies } = harness({ rows: [grantRow({ access: 'write' })], repoRefs: TOOLS })
 
-      await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).resolves.toMatchObject({
+      await expect(svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')).resolves.toMatchObject({
         access: 'write'
       })
       expect(mintBodies[0]).toMatchObject({ repository_ids: [111], permissions: { contents: 'write' } })
@@ -1938,7 +1947,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         repoRefs: TOOLS
       })
 
-      const grant = await svc.mintForAgent(SCRATCH_AGENT, [], FULL_ASK, 'acme/Tools')
+      const grant = await svc.mintForAgent(SCRATCH_AGENT, 'd1', FULL_ASK, 'acme/Tools')
 
       expect(grant).toMatchObject({ repoFullName: 'acme/Tools', access: 'read', repoId: 111n })
       expect(repoLookups).toEqual(['acme/Tools'])
@@ -1953,7 +1962,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     it('a repository the installation does not cover is refused as not covered', async () => {
       const { svc, mintBodies } = harness({ rows: [], installationGrants: [installationGrant()], repoRefs: {} })
 
-      const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/elsewhere')
+      const denied = svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/elsewhere')
 
       await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
       await expect(denied).rejects.toThrow('acme/elsewhere is not covered by the installation')
@@ -1965,7 +1974,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         rows: [grantRow({ repoFullName: 'acme/tools', access: 'write' })],
         installationGrants: [installationGrant()]
       })
-      await exact.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
+      await exact.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')
       expect(exact.mintBodies[0]).toMatchObject({ repository_ids: [111], permissions: { contents: 'write' } })
       expect(exact.listInstallationGrants).not.toHaveBeenCalled()
 
@@ -1974,7 +1983,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         installationGrants: [installationGrant()],
         repoRefs: { 'acme/new-name': { id: 222, full_name: 'acme/new-name' } }
       })
-      await renamed.svc.mintForAgent(AGENT, [], CONTENTS, 'acme/new-name')
+      await renamed.svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/new-name')
       expect(renamed.mintBodies[0]).toMatchObject({ repository_ids: [222], permissions: { contents: 'write' } })
     })
 
@@ -1986,7 +1995,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         repoRefs: TOOLS
       })
 
-      const grant = await svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')
+      const grant = await svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')
 
       expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
       expect(mintBodies[0]).toMatchObject({ repository_ids: [111], permissions: { contents: 'read' } })
@@ -2010,7 +2019,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         repoRefs: { 'acme/infra': { id: 777, full_name: 'acme/infra' } }
       })
 
-      const grant = await svc.mintForAgent(renamedWorkspace, [], CONTENTS, 'acme/infra')
+      const grant = await svc.mintForAgent(renamedWorkspace, 'd1', CONTENTS, 'acme/infra')
 
       expect(grant).toMatchObject({ repoFullName: 'acme/infra', access: 'read' })
       expect(mintBodies[0]).toMatchObject({ permissions: { contents: 'read' } })
@@ -2026,7 +2035,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         }
       })
 
-      await expect(svc.mintForAgent(AGENT, [], CONTENTS, 'example-co/lib')).rejects.toMatchObject({
+      await expect(svc.mintForAgent(AGENT, 'd1', CONTENTS, 'example-co/lib')).rejects.toMatchObject({
         code: 'SCOPE_DENIED',
         retryable: false
       })
@@ -2045,11 +2054,11 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       const remedy = "add it under Additional repositories in the agent's workspace settings"
 
       // A scratch agent: no workspace owner makes the probe legitimate, so these are first refusals.
-      await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toThrow(
+      await expect(svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toThrow(
         `acme/tools is not authorized for this agent — ${remedy}, or authorize its installation${requestCapabilityPointer('github', 'acme/tools')}`
       )
       for (const uncovered of ['evil/repo', 'example-co/lib']) {
-        const denied = svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, uncovered)
+        const denied = svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, uncovered)
         await expect(denied).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
         // The agent is pointed at asking for exactly this repository (capability-requests.md §4.11).
         await expect(denied).rejects.toThrow(`${remedy}${requestCapabilityPointer('github', uncovered)}`)
@@ -2068,7 +2077,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
           installationGrants: [installationGrant()],
           installationsByAccount
         })
-        await expect(svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toMatchObject({
+        await expect(svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toMatchObject({
           code: 'LEASE_DENIED',
           retryable: false
         })
@@ -2081,7 +2090,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         installationsByAccount: { acme: installation({ installationId: 99n }) },
         repoRefs: TOOLS
       })
-      await expect(reinstalled.svc.mintForAgent(SCRATCH_AGENT, [], CONTENTS, 'acme/tools')).rejects.toThrow(
+      await expect(reinstalled.svc.mintForAgent(SCRATCH_AGENT, 'd1', CONTENTS, 'acme/tools')).rejects.toThrow(
         `, or authorize its installation${requestCapabilityPointer('github', 'acme/tools')}`
       )
       expect(reinstalled.repoLookups).toEqual([])
@@ -2094,7 +2103,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
         repoRefs: TOOLS
       })
 
-      await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
+      await svc.mintForAgent(AGENT, 'd1', CONTENTS, 'acme/tools')
 
       expect(updateAccountLogin).toHaveBeenCalledWith('ia-1', 'acme')
     })
@@ -2378,9 +2387,11 @@ describe('TokenBucket', () => {
 })
 
 describe('GithubService mint budget', () => {
-  const KEYS = ['daemon:d1', 'org:org-a']
+  const CAPS = ['contents', 'issues', 'pull_requests', 'actions'] as const
+  // Eleven capability sets, each its own cache entry and so its own real mint.
+  const DISTINCT = Array.from({ length: 11 }, (_, i) => CAPS.filter((_, bit) => ((i + 1) >> bit) & 1))
 
-  function budgetHarness() {
+  function budgetHarness(githubAppId: string | null = null) {
     const clock = new FakeClock(1_700_000_000_000)
     let mints = 0
     const fetchImpl = async () => {
@@ -2397,6 +2408,7 @@ describe('GithubService mint budget', () => {
       accountLogin: 'acme',
       accountType: 'Organization',
       repositorySelection: 'all',
+      githubAppId,
       suspendedAt: null,
       revokedAt: null,
       createdAt: new Date(0)
@@ -2409,35 +2421,62 @@ describe('GithubService mint budget', () => {
       pepper: 'p'.repeat(32),
       fetchImpl
     })
-    const agent = {
-      id: 'agent-1',
-      orgId: 'org-a',
-      workspace: {
-        mode: 'git',
-        gitRepo: 'https://github.com/acme/infra',
-        credential: { provider: 'github', installationId: 'row-1', access: 'write' }
-      }
-    } as never
-    return { svc, agent, mints: () => mints }
+    // Each agent has its own repository, so no agent's mint is answered from another's cache entry.
+    const agentNo = (n: number) =>
+      ({
+        id: `agent-${n}`,
+        orgId: 'org-a',
+        githubAppId,
+        workspace: {
+          mode: 'git',
+          gitRepo: `https://github.com/acme/repo-${n}`,
+          credential: { provider: 'github', installationId: 'row-1', access: 'write' }
+        }
+      }) as never
+    const coldStart = async (n: number) => {
+      for (const caps of DISTINCT.slice(0, 10)) await svc.mintForAgent(agentNo(n), 'd1', caps)
+    }
+    return { svc, agent: agentNo(1), agentNo, coldStart, mints: () => mints }
   }
 
   it('charges only real GitHub mints, never a grant the cache or an in-flight mint answers', async () => {
     const { svc, agent, mints } = budgetHarness()
     // Daemon retransmits of one request arrive while its mint is in flight.
-    await Promise.all(Array.from({ length: 12 }, () => svc.mintForAgent(agent, KEYS)))
-    for (let i = 0; i < 12; i++) await svc.mintForAgent(agent, KEYS)
+    await Promise.all(Array.from({ length: 12 }, () => svc.mintForAgent(agent, 'd1')))
+    for (let i = 0; i < 12; i++) await svc.mintForAgent(agent, 'd1')
     expect(mints()).toBe(1)
   })
 
-  it('still refuses real mints past the burst', async () => {
-    const { svc, agent, mints } = budgetHarness()
-    const CAPS = ['contents', 'issues', 'pull_requests', 'actions'] as const
-    const distinct = Array.from({ length: 11 }, (_, i) => CAPS.filter((_, bit) => ((i + 1) >> bit) & 1))
-    for (const caps of distinct.slice(0, 10)) await svc.mintForAgent(agent, KEYS, caps)
-    await expect(svc.mintForAgent(agent, KEYS, distinct[10])).rejects.toMatchObject({
+  it("refuses an agent's real mints past its burst, and leaves the next agent on that daemon its own", async () => {
+    const { svc, agentNo, coldStart, mints } = budgetHarness()
+    await coldStart(1)
+    await expect(svc.mintForAgent(agentNo(1), 'd1', DISTINCT[10])).rejects.toMatchObject({
       code: 'RATE_LIMITED',
-      retryable: true
+      retryable: true,
+      bucketKey: 'daemon:d1:agent:agent-1'
     })
     expect(mints()).toBe(10)
+    await coldStart(2)
+    expect(mints()).toBe(20)
+  })
+
+  it('bounds an org on the built-in App across its agents, and a refused mint spends nothing', async () => {
+    const { svc, agentNo, coldStart, mints } = budgetHarness()
+    for (let n = 1; n <= 6; n++) await coldStart(n)
+    expect(mints()).toBe(60)
+    // Were a refusal to spend the agent's own budget, the eleventh would name that bucket instead.
+    for (const caps of DISTINCT) {
+      await expect(svc.mintForAgent(agentNo(7), 'd1', caps)).rejects.toMatchObject({
+        code: 'RATE_LIMITED',
+        bucketKey: 'org:org-a'
+      })
+    }
+    expect(mints()).toBe(60)
+  })
+
+  it('charges no org budget for an installation its own organization App signs', async () => {
+    const { coldStart, mints } = budgetHarness('app-own')
+    for (let n = 1; n <= 7; n++) await coldStart(n)
+    expect(mints()).toBe(70)
   })
 })

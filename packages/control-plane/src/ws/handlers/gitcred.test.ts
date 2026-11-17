@@ -50,13 +50,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
     await handleGitCredRequest(frame, conn, deps)
 
-    expect(mintForAgent).toHaveBeenCalledWith(
-      PLACED_AGENT,
-      [`daemon:${DAEMON_ID}`, `org:org-a`],
-      ['contents'],
-      'acme/tools',
-      undefined
-    )
+    expect(mintForAgent).toHaveBeenCalledWith(PLACED_AGENT, DAEMON_ID, ['contents'], 'acme/tools', undefined)
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'gitcred/grant', {
       username: 'x-access-token',
       token: 'ghs_secret',
@@ -70,6 +64,29 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     // An absent repoFullName stays absent — the pre-multi-repo workspace ask.
     await handleGitCredRequest(gitcredFrame(), conn, deps)
     expect(mintForAgent).toHaveBeenLastCalledWith(PLACED_AGENT, expect.anything(), undefined, undefined, undefined)
+  })
+
+  it('logs the bucket that refused a mint, and nothing when GitHub itself rate-limited', async () => {
+    const warn = vi.fn()
+    const refusedBy = async (error: GitCredDeniedError) => {
+      const deps = {
+        agent: { get: async () => PLACED_AGENT },
+        github: { mintForAgent: vi.fn().mockRejectedValue(error) },
+        log: { warn }
+      } as unknown as DaemonWsDeps
+      const conn = fakeConn()
+      await handleGitCredRequest(gitcredFrame(), conn, deps)
+      expect(conn.sendError).toHaveBeenCalledWith(expect.anything(), 'RATE_LIMITED', error.message, true)
+    }
+
+    await refusedBy(new GitCredDeniedError('github rate limited', 'RATE_LIMITED', true))
+    expect(warn).not.toHaveBeenCalled()
+
+    await refusedBy(new GitCredDeniedError('gitcred mint rate exceeded', 'RATE_LIMITED', true, 'org:org-a'))
+    expect(warn).toHaveBeenCalledWith(
+      { bucketKey: 'org:org-a', daemonId: DAEMON_ID, agentId: AGENT_ID },
+      'gitcred mint budget refused'
+    )
   })
 
   it('uses the enabled-hook mint for a GithubPoster reply instead of the workspace gitAccess path', async () => {
@@ -107,14 +124,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
     await handleGitCredRequest(frame, conn, deps)
 
-    expect(mintForHookReply).toHaveBeenCalledWith(
-      PLACED_AGENT,
-      'acme/infra-renamed',
-      501n,
-      [`daemon:${DAEMON_ID}`, `org:org-a`],
-      true,
-      undefined
-    )
+    expect(mintForHookReply).toHaveBeenCalledWith(PLACED_AGENT, 'acme/infra-renamed', 501n, DAEMON_ID, true, undefined)
     expect(mintForAgent).not.toHaveBeenCalled()
     expect(conn.replyTo).toHaveBeenCalledWith(
       frame,
@@ -646,8 +656,6 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
  * for user-installed daemons, so every case below carries its unqualified twin as the control.
  */
 describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
-  const BUCKETS = [`daemon:${DAEMON_ID}`, `org:org-a`]
-
   function githubDeps(overrides: Record<string, unknown> = {}) {
     const mintForAgent = vi.fn(async () => ({
       token: 'ghs_secret',
@@ -674,8 +682,8 @@ describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
     await handleGitCredRequest(gitcredFrame({ provider: 'github' }), qualified, deps)
 
     // Same resolution: identical mint arguments on both calls.
-    expect(mintForAgent).toHaveBeenNthCalledWith(1, PLACED_AGENT, BUCKETS, undefined, undefined, undefined)
-    expect(mintForAgent).toHaveBeenNthCalledWith(2, PLACED_AGENT, BUCKETS, undefined, undefined, undefined)
+    expect(mintForAgent).toHaveBeenNthCalledWith(1, PLACED_AGENT, DAEMON_ID, undefined, undefined, undefined)
+    expect(mintForAgent).toHaveBeenNthCalledWith(2, PLACED_AGENT, DAEMON_ID, undefined, undefined, undefined)
 
     const v1Grant = v1.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
     const qualifiedGrant = qualified.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
@@ -706,7 +714,7 @@ describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
 
     expect(mintForAgent).toHaveBeenCalledWith(
       PLACED_AGENT,
-      BUCKETS,
+      DAEMON_ID,
       ['contents', 'issues', 'pull_requests'],
       'acme/tools',
       'read'
@@ -743,8 +751,8 @@ describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
     const qualified = fakeConn()
     await handleGitCredRequest(gitcredFrame({ ...payload, provider: 'github', externalRepoId: '501' }), qualified, deps)
 
-    expect(mintForHookReply).toHaveBeenNthCalledWith(1, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false, undefined)
-    expect(mintForHookReply).toHaveBeenNthCalledWith(2, PLACED_AGENT, 'acme/infra', 501n, BUCKETS, false, undefined)
+    expect(mintForHookReply).toHaveBeenNthCalledWith(1, PLACED_AGENT, 'acme/infra', 501n, DAEMON_ID, false, undefined)
+    expect(mintForHookReply).toHaveBeenNthCalledWith(2, PLACED_AGENT, 'acme/infra', 501n, DAEMON_ID, false, undefined)
     const v1Grant = v1.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
     const qualifiedGrant = qualified.replyTo.mock.calls[0]?.[2] as Record<string, unknown>
     expect(v1Grant.provider).toBeUndefined()
@@ -779,7 +787,7 @@ describe('handleGitCredRequest — explicit provider=github (§17.3)', () => {
     await handleGitCredRequest(frame, conn, deps)
 
     // No repository of its own to disagree with: the mint pins the named id inside the row's installation.
-    expect(mintForHookReply).toHaveBeenCalledWith(PLACED_AGENT, 'acme/tools', 777n, BUCKETS, false, 1234567n)
+    expect(mintForHookReply).toHaveBeenCalledWith(PLACED_AGENT, 'acme/tools', 777n, DAEMON_ID, false, 1234567n)
     expect(conn.sendError).not.toHaveBeenCalled()
   })
 
