@@ -16,7 +16,7 @@
  */
 import type { HttpDeps } from './deps.js'
 import type { AgentRecord, BotRecord, IntegrationRecord } from '../persistence/ports.js'
-import type { OrgId } from '../domain/ids.js'
+import { AgentId, type OrgId } from '../domain/ids.js'
 import { NoConnection } from '../orchestrator/outbound.js'
 
 /** Minimal log surface (Fastify logger in prod). */
@@ -68,6 +68,40 @@ export async function notifyIntegrationRemoved(
     if (!(err instanceof NoConnection)) throw err
     log.debug({ integrationId: integration.id, daemonId: target }, 'integration/remove skipped: daemon offline')
   })
+}
+
+/** Before an agent's delete cascades its installs away: the bots they sit on, each relay-hosted one with its conversation state replicated to the sibling installs first, as an uninstall does. */
+export async function prepareAgentBotsForDelete(
+  deps: HttpDeps,
+  agent: Pick<AgentRecord, 'id' | 'orgId'>
+): Promise<BotRecord[]> {
+  const installs = await deps.repos.integration.listForAgent(AgentId(agent.id))
+  const bots: BotRecord[] = []
+  for (const botId of new Set(installs.map((install) => install.botId))) {
+    const bot = await deps.repos.bot.get(agent.orgId, botId)
+    if (!bot) continue
+    if (bot.transport === 'http') await deps.httpBot.prepareIntegrationRemoval(bot.id)
+    bots.push(bot)
+  }
+  return bots
+}
+
+/** After that cascade, the bot-scoped half an uninstall runs: stamp a bot nobody uses as freed, and recompile a relay-hosted bot so its conversations pass to a remaining agent and relays drop the deleted one. Best-effort, since the agent is already gone. */
+export async function settleBotsAfterAgentDelete(
+  deps: HttpDeps,
+  log: TeardownLog,
+  agent: Pick<AgentRecord, 'id' | 'orgId' | 'name'>,
+  bots: readonly BotRecord[]
+): Promise<void> {
+  for (const bot of bots) {
+    try {
+      if ((await deps.repos.integration.listForBot(bot.id)).length === 0)
+        await deps.repos.bot.markFreed(agent.orgId, bot.id, new Date(), agent.name)
+      if (bot.transport === 'http') await deps.httpBot.syncBot(bot.id)
+    } catch (err) {
+      log.warn({ err, agentId: agent.id, botId: bot.id }, 'bot resync after agent delete failed')
+    }
+  }
 }
 
 /** Delete a freed bot whose platform releases it (`releasesFreedBot`) so its identity can be claimed anew; false when it is kept or still installed. */

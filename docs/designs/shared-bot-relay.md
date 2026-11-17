@@ -484,7 +484,10 @@ live member of its set, which claims the duty on receipt (the activation rendezv
 because a muted conversation is acknowledged to the platform and never redelivered.
 Only an agent no member can take is fenced.
 This also preserves state and repairs ownership when an integration is removed;
-`No default` is not an operator state.
+`No default` is not an operator state. Deleting an agent removes its integrations by
+cascade, with no uninstall running, so the delete runs the same two bot-scoped steps
+around itself: replicate before, recompile after. Without the recompile the relays keep
+routing the deleted agent's conversations to it.
 
 Each target contains `agentId`, `daemonId`, and `integrationId`. A verified
 AgentConnect-authored final is admitted through the collaboration policy and

@@ -147,6 +147,7 @@ import { memoryHomeUnavailable, SANDBOX_UNAVAILABLE_CODE } from '../../agent-mem
 import { MemoryStorePathError } from '../../agent-memory/paths.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
+import { prepareAgentBotsForDelete, settleBotsAfterAgentDelete } from '../uninstall.js'
 import {
   AuthorizationAction,
   can,
@@ -3768,10 +3769,13 @@ export function agentRoutes(deps: HttpDeps) {
               .code(409)
               .send({ error: 'Conflict', statusCode: 409, message: 'agent changed; refresh and retry the delete' })
           }
+          // The delete cascades the agent's installs with no uninstall running, so the bot-scoped half of one is run around it.
+          const bots = await prepareAgentBotsForDelete(deps, current)
           // AgentRepo holds the shared agent lifecycle lock while it captures
           // every HookDef, tombstones their durable review projections, and
           // cascades the Agent/HookDef rows in one transaction.
           const removedHooks = await deps.repos.agent.delete(orgOf(req), AgentId(req.params.id))
+          await settleBotsAfterAgentDelete(deps, app.log, current, bots)
           // WITHDRAW it from the peer directory now, the mirror of the create path above.
           // Discovery (`channel/agents`) reads the DB live while a peer WAKE is authorized
           // against the pushed snapshot, so without this every daemon in the org keeps a flat
