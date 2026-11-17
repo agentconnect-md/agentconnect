@@ -576,6 +576,48 @@ leaving normal read-access requests on their existing retry policy.
 A pull request opened this way is also recorded on its task
 (assistant-mode.md §5.18), as merge requests already are.
 
+**Signed commits.** A repository can require verified signatures on the
+branch a pull request merges into, and then GitHub blocks the merge while the
+head branch carries an unsigned commit (#3876). The daemon cannot sign one:
+GitHub verifies a signature against the keys on a user account, and an App
+has none. GitHub signs a commit itself when an App creates it through the Git
+Data API and the request names no author or committer; its author is the
+App's bot and its committer is GitHub. Any author field, even the bot's own
+identity with an earlier date, leaves the commit unsigned. So `create`
+recreates the head branch's commits that way before it opens the pull
+request, and `update` does so after its other changes, for an open pull
+request whose head branch is in the same repository:
+
+1. Only a `required_signatures` rule on the base branch
+   (`GET rules/branches/{base}`) turns this on. A plan without rulesets
+   answers 403, which reads as no rule. Classic branch protection's signature
+   setting needs administration permission to read, so it is not covered.
+2. `compare base...head`, pinned to the head ref's commit, lists the branch's
+   commits with their trees, parents, messages and verification. From the
+   first unsigned commit on, each commit is recreated in parent order
+   (`POST git/commits`) with the same tree and message, and its parents
+   mapped to the recreated ones. The trees and blobs are already on GitHub,
+   so a commit costs one request, and a merge commit keeps both parents.
+3. Every recreated commit must be authored by the agent's commit identity,
+   since recreating makes the bot its author; one that is not leaves the
+   branch alone. So does a branch of more than 100 commits, or a recreated
+   commit GitHub does not answer as verified.
+4. The head ref moves to the new head through GraphQL `updateRefs`, forced,
+   with the commit it was read at as `beforeOid`. GitHub checks and moves it
+   in one step, so a push that lands meanwhile makes the move fail instead of
+   being overwritten; the REST ref update has no such check. GitHub answers a
+   stale `beforeOid` with a generic error, so the branch is read again to
+   report which it was. Nothing visible changes before this step.
+
+The result names the old and new head and tells the agent to run
+`git fetch` and `git rebase origin/<branch>`, which drops the old commits as
+already applied. The recreated commits are dated when they are recreated. A
+commit pushed after the pull request opens is recreated on the next `update`.
+When recreating is refused or fails, the pull request is still created or
+updated, and the result says why its commits stay unsigned. A rule that
+requires signatures on the head branch itself rejects the push before any of
+this runs, and is not covered.
+
 **Guidance.** A session offered a host's tools also gets one line of guidance
 naming them: "On GitHub, open, edit and merge pull requests, file issues, and
 comment with `githubPullRequest`, `githubIssue` and `githubComment`", and

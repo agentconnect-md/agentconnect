@@ -4403,7 +4403,8 @@ export class Daemon {
           return { token: entry.token, access: entry.access }
         },
         invalidateLease: (target, token) =>
-          this.gitCreds.invalidateGithubEffect(target.agentId, target.repoPath ?? target.repoId, token)
+          this.gitCreds.invalidateGithubEffect(target.agentId, target.repoPath ?? target.repoId, token),
+        commitIdentity: (agentId) => this.commitIdentityOf(this.agents.get(agentId))
       })
     )
     // azure-devops-integration.md §6.6: the repository's proxy lease at the agent's tier, scoped by the broker's allowlist.

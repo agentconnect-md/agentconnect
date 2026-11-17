@@ -27,7 +27,9 @@ import {
   type CodeHostEffectBroker,
   type CodeHostEffectTarget
 } from '../codehost/broker.js'
+import type { GitCommitIdentity } from '@agentconnect.md/protocol'
 import { GITHUB_API_BASE, githubApiHeaders } from './rest.js'
+import { branchCommits, recreationPlan, requiresSignatures, shaOf } from './signed-commits.js'
 
 /** THE allowlist: every call renders one of these templates; draft state moves only through GraphQL. */
 export const GITHUB_BROKER_ENDPOINTS = {
@@ -50,7 +52,14 @@ export const GITHUB_BROKER_ENDPOINTS = {
   'assignees.add': { method: 'POST', capability: 'write', path: '/repos/:owner/:repo/issues/:number/assignees' },
   'assignees.remove': { method: 'DELETE', capability: 'write', path: '/repos/:owner/:repo/issues/:number/assignees' },
   'comment.create': { method: 'POST', capability: 'comment', path: '/repos/:owner/:repo/issues/:number/comments' },
-  'comment.update': { method: 'PATCH', capability: 'comment', path: '/repos/:owner/:repo/issues/comments/:commentId' }
+  'comment.update': { method: 'PATCH', capability: 'comment', path: '/repos/:owner/:repo/issues/comments/:commentId' },
+  // Recreating a head branch's commits so GitHub signs them; the branch moves only through `updateRefs`, which checks its old commit.
+  'rules.branch': { method: 'GET', capability: 'read', path: '/repos/:owner/:repo/rules/branches/:branch' },
+  'branch.ref': { method: 'GET', capability: 'read', path: '/repos/:owner/:repo/git/ref/heads/:branch' },
+  compare: { method: 'GET', capability: 'read', path: '/repos/:owner/:repo/compare/:basehead' },
+  'commit.create': { method: 'POST', capability: 'write', path: '/repos/:owner/:repo/git/commits' },
+  'repo.get': { method: 'GET', capability: 'read', path: '/repos/:owner/:repo' },
+  'branch.swap': { method: 'POST', capability: 'write', path: '/graphql' }
 } as const satisfies Record<string, BrokerEndpoint>
 
 type EndpointId = keyof typeof GITHUB_BROKER_ENDPOINTS
@@ -59,6 +68,8 @@ const TO_DRAFT =
   'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }'
 const TO_READY =
   'mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }'
+const SWAP_REF =
+  'mutation($repositoryId: ID!, $updates: [RefUpdate!]!) { updateRefs(input: { repositoryId: $repositoryId, refUpdates: $updates }) { clientMutationId } }'
 
 /** A commit sha the merge must match: hex only, never free text in the body. */
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/i
@@ -88,8 +99,27 @@ export interface GithubBrokerDeps {
   lease: (target: CodeHostEffectTarget, recheck?: boolean) => Promise<BrokerLease>
   /** Drop a cached token GitHub just rejected (401/403) so the single retry re-mints. */
   invalidateLease?: (target: CodeHostEffectTarget, token: string) => void
+  /** The bot the agent commits as; without it no commit is recreated for signing. */
+  commitIdentity?: (agentId: string) => GitCommitIdentity | undefined
   baseUrl?: string
   fetchImpl?: typeof fetch
+}
+
+/** Why a pull request's commits stay unsigned. */
+function unsigned(reason: string): Record<string, unknown> {
+  return { signed: false, reason }
+}
+
+/** The result key a recreation outcome rides under; nothing when signing did not apply. */
+function signedCommits(outcome: Record<string, unknown> | undefined): { signedCommits?: Record<string, unknown> } {
+  return outcome ? { signedCommits: outcome } : {}
+}
+
+/** The commit a branch ref points at. */
+function refCommit(raw: unknown): string {
+  const sha = shaOf(record(record(raw).object).sha)
+  if (!sha) throw new Error('GitHub returned the branch without its commit')
+  return sha
 }
 
 /** At most MAX_NAMED names from a list of labels (`name`) or users (`login`); undefined when the host sent no list. */
@@ -225,18 +255,17 @@ export class GithubBroker implements CodeHostEffectBroker {
           ...(Object.keys(people).length > 0 ? (['issue.update'] as const) : []),
           ...(reviewers !== undefined ? (['reviewers.request'] as const) : [])
         )
+        const head = branch(op.sourceBranch, 'sourceBranch')
+        const base = branch(op.targetBranch, 'targetBranch')
+        const signing = signedCommits(await this.signHead(target, lease, at, base, head))
         const created = record(
           await this.call(target, lease, 'pull.create', at, {
-            ...compact({
-              title: op.title,
-              head: branch(op.sourceBranch, 'sourceBranch'),
-              base: branch(op.targetBranch, 'targetBranch'),
-              body: op.description
-            }),
+            ...compact({ title: op.title, head, base, body: op.description }),
             ...(op.draft ? { draft: true } : {})
           })
         )
-        if (Object.keys(people).length === 0 && reviewers === undefined) return { pullRequest: pullResult(created) }
+        if (Object.keys(people).length === 0 && reviewers === undefined)
+          return { pullRequest: pullResult(created), ...signing }
         const number = idOf(created.number)
         if (!number) throw new Error('GitHub returned a pull request without a number')
         const params = { ...at, number }
@@ -246,7 +275,7 @@ export class GithubBroker implements CodeHostEffectBroker {
           pull = overlay(pull, answer, ['labels', 'assignees'])
         }
         pull = await this.requestReviewers(target, lease, pull, params, reviewers)
-        return { pullRequest: pullResult(pull) }
+        return { pullRequest: pullResult(pull), ...signing }
       }
       case 'updateMergeRequest': {
         const params = { ...at, number: numberOf(op.iid) }
@@ -290,7 +319,7 @@ export class GithubBroker implements CodeHostEffectBroker {
         }
         pull = await this.applyChanges(target, lease, pull, params, changes)
         pull = await this.requestReviewers(target, lease, pull, params, reviewers)
-        return { pullRequest: pullResult(pull) }
+        return { pullRequest: pullResult(pull), ...signedCommits(await this.signPullHead(target, lease, at, pull)) }
       }
       case 'mergeMergeRequest': {
         const params = { ...at, number: numberOf(op.iid) }
@@ -338,6 +367,108 @@ export class GithubBroker implements CodeHostEffectBroker {
       }
       default:
         throw new Error(`GitHub ${op.kind} is not available through this broker`)
+    }
+  }
+
+  /** {@link signHead} for an open pull request whose head branch lives in this repository. */
+  private async signPullHead(
+    target: CodeHostEffectTarget,
+    lease: BrokerLease,
+    at: { owner: string; repo: string },
+    pull: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const head = record(pull.head)
+    const base = record(pull.base).ref
+    const ref = head.ref
+    const sameRepo = str(record(head.repo).full_name, 300)?.toLowerCase() === `${at.owner}/${at.repo}`.toLowerCase()
+    if (pull.state !== 'open' || typeof base !== 'string' || typeof ref !== 'string' || !sameRepo) return undefined
+    let names: [string, string]
+    try {
+      names = [branch(base, 'base'), branch(ref, 'head')]
+    } catch {
+      // A branch name the broker cannot put in a path is left as it is.
+      return undefined
+    }
+    return this.signHead(target, lease, at, ...names)
+  }
+
+  /** Recreate the head branch's unsigned commits so GitHub signs them, when the base branch requires it; undefined when it does not apply. */
+  private async signHead(
+    target: CodeHostEffectTarget,
+    lease: BrokerLease,
+    at: { owner: string; repo: string },
+    base: string,
+    head: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const identity = this.deps.commitIdentity?.(target.agentId)
+    if (!identity) return undefined
+    let rules: unknown
+    try {
+      rules = await this.call(target, lease, 'rules.branch', { ...at, branch: base }, undefined, {
+        missingOk: true,
+        forbiddenOk: true
+      })
+    } catch {
+      // Unreadable rules leave the branch as it was before signing existed.
+      return undefined
+    }
+    if (!requiresSignatures(rules)) return undefined
+    try {
+      enforceGithub(lease, GITHUB_BROKER_ENDPOINTS['branch.swap'])
+      const headCommit = refCommit(await this.call(target, lease, 'branch.ref', { ...at, branch: head }))
+      const listed = branchCommits(
+        await this.call(target, lease, 'compare', { ...at, basehead: `${base}...${headCommit}` })
+      )
+      if ('refused' in listed) return unsigned(listed.refused)
+      const plan = recreationPlan(listed, identity.email)
+      if ('refused' in plan) return unsigned(plan.refused)
+      if (plan.length === 0) return undefined
+      const recreated = new Map<string, string>()
+      for (const commit of plan) {
+        // No author or committer: GitHub signs only a commit whose identity it fills in itself.
+        const answer = record(
+          await this.call(target, lease, 'commit.create', at, {
+            message: commit.message,
+            tree: commit.tree,
+            parents: commit.parents.map((parent) => recreated.get(parent) ?? parent)
+          })
+        )
+        const sha = shaOf(answer.sha)
+        if (!sha || record(answer.verification).verified !== true)
+          return unsigned('GitHub did not sign a recreated commit, so the branch was left as it was')
+        recreated.set(commit.sha, sha)
+      }
+      const newHead = recreated.get(headCommit)
+      if (!newHead) return unsigned('the head commit was not among the recreated ones')
+      const repositoryId = str(record(await this.call(target, lease, 'repo.get', at)).node_id, 200)
+      if (!repositoryId) return unsigned('GitHub returned the repository without its node id')
+      const swap = { name: `refs/heads/${head}`, beforeOid: headCommit, afterOid: newHead, force: true }
+      const answer = record(
+        await this.call(
+          target,
+          lease,
+          'branch.swap',
+          {},
+          { query: SWAP_REF, variables: { repositoryId, updates: [swap] } }
+        )
+      )
+      if (Array.isArray(answer.errors) && answer.errors.length > 0) {
+        // GitHub answers a stale beforeOid with a generic error, so the branch is read again to say which it was.
+        const now = refCommit(await this.call(target, lease, 'branch.ref', { ...at, branch: head }))
+        if (now !== headCommit)
+          return unsigned(`${head} moved while its commits were being recreated, so it was left as it was`)
+        const message = str(record(answer.errors[0]).message, 200) ?? 'unknown error'
+        return unsigned(`GitHub did not move ${head} to the recreated commits: ${message}`)
+      }
+      return {
+        signed: true,
+        recreatedCommits: plan.length,
+        previousHead: headCommit,
+        head: newHead,
+        next: `Your local ${head} still has the unsigned commits: run \`git fetch origin\` and \`git rebase origin/${head}\` before committing again.`
+      }
+    } catch (error) {
+      return unsigned(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -410,7 +541,7 @@ export class GithubBroker implements CodeHostEffectBroker {
     id: EndpointId,
     params: Record<string, string>,
     body?: Record<string, unknown>,
-    options: { missingOk?: boolean } = {}
+    options: { missingOk?: boolean; forbiddenOk?: boolean } = {}
   ): Promise<unknown> {
     const endpoint = GITHUB_BROKER_ENDPOINTS[id]
     return brokerCall(
@@ -429,7 +560,8 @@ export class GithubBroker implements CodeHostEffectBroker {
         method: endpoint.method,
         url: `${this.deps.baseUrl ?? GITHUB_API_BASE}${renderPath(endpoint.path, params)}`,
         ...(body !== undefined ? { body } : {}),
-        ...(options.missingOk ? { missingOk: true } : {})
+        ...(options.missingOk ? { missingOk: true } : {}),
+        ...(options.forbiddenOk ? { forbiddenOk: true } : {})
       }
     )
   }
