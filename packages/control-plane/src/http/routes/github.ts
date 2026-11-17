@@ -798,17 +798,16 @@ export function githubCallbackRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        // 302 target is PINNED to the configured console origin — never a
-        // request-supplied URL (open-redirect). Unset ⇒ plain-text fallback.
+        // The 302 target is pinned to the configured console origin, never a request-supplied URL; unset ⇒ plain text.
         const consoleUrl = resolveWebAppUrl(deps.config)
-        const back = (note: string) => {
+        const back = (note?: string) => {
           if (!consoleUrl) {
-            return reply.type('text/plain').send(`GitHub App: ${note}. You can close this tab and open the console.`)
+            return reply
+              .type('text/plain')
+              .send(`GitHub App: ${note ?? 'updated'}. You can close this tab and open the console.`)
           }
-          // A verified install is also a clear request to use GitHub. Continue
-          // through Profile so an unlinked user can authorize their OWN
-          // identity via Logto's state-bound flow; never infer it from the
-          // installation account (which may be an organization).
+          if (!note) return reply.redirect(`${consoleUrl}/`)
+          // A verified install continues through Profile, where an unlinked user authorizes their own identity.
           const path = note === 'installed' ? '/profile' : '/'
           return reply.redirect(`${consoleUrl}${path}?github=${encodeURIComponent(note)}`)
         }
@@ -818,9 +817,10 @@ export function githubCallbackRoutes(deps: HttpDeps) {
         // install so a signed callback, rather than an App-wide scan, claims it.
         if (req.query.setup_action === 'request') return back('pending-approval')
 
-        // State passthrough is UNDOCUMENTED GitHub behavior that has regressed
-        // before (#61291). Without it there is no tenant-binding proof, so never
-        // guess from the App-wide installation roster; ask the user to restart.
+        // An update made on GitHub's own pages claims nothing; all are answered alike, so this open route never tells which are claimed.
+        if (req.query.setup_action === 'update' && !req.query.state) return back()
+
+        // Without state there is no tenant-binding proof, and its passthrough is undocumented GitHub behavior that has regressed (#61291): ask to restart.
         if (!req.query.state || req.query.installation_id === undefined) return back('retry-install')
         try {
           const claimed = await gh.claimFromCallback(req.query.state, req.query.installation_id)
