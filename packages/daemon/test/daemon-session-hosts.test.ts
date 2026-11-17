@@ -1929,7 +1929,7 @@ function bridgeToken(call: unknown[]): string {
 
 // OpenCode keeps session mcpServers per working directory by name, so on a shared host every session's tool calls would carry the token of whichever session registered last.
 describe('one ACP host per session for a runtime whose session MCP servers are per-process', () => {
-  it.each(['opencode', 'kilo'])(
+  it.each(['opencode', 'kilo', 'dsh-acp'])(
     'resumes legacy %s sessions on separate hosts without moving their VM or HOME',
     async (runtime) => {
       const root = withRuntimes(
@@ -2042,32 +2042,36 @@ describe('one ACP host per session for a runtime whose session MCP servers are p
     }
   )
 
-  it('gives each session its own host in the shared workspace, holding only that session’s bridge token', async () => {
-    const opencode = { command: 'node', args: ['unused'] }
-    const root = withRuntimes(scaffold({ runtime: 'opencode', execution: 'host' }, 'shared'), { opencode })
-    const { daemon, hosts, factory } = await startDaemon(root)
-    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
-    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+  it.each(['opencode', 'dsh-acp'])(
+    'gives each %s session its own host in the shared workspace, holding only that session’s bridge token',
+    async (runtime) => {
+      const root = withRuntimes(scaffold({ runtime, execution: 'host' }, 'shared'), {
+        [runtime]: { command: 'node', args: ['unused'] }
+      })
+      const { daemon, hosts, factory } = await startDaemon(root)
+      await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+      await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
 
-    expect(factory).toHaveBeenCalledTimes(2)
-    expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBeUndefined()
-    for (const [index, thread] of ['T1', 'T2'].entries()) {
-      const key = sessionHostKey('bot-a', KEY(thread))
-      expect((daemon as any).hosts.get(key)).toBe(hosts[index])
-      expect((daemon as any).hostLaunch.get(key).cwd).toBe(join(root, 'agents', 'bot-a', 'workspace'))
-      expect(hosts[index]!.newSession).toHaveBeenCalledTimes(1)
-      const token = bridgeToken(hosts[index]!.newSession.mock.calls[0] as unknown[])
-      expect((daemon as any).mcp.sessions.get(token)).toMatchObject({ agentId: 'bot-a', channel: 'C1', thread })
+      expect(factory).toHaveBeenCalledTimes(2)
+      expect((daemon as any).hosts.get(agentHostKey('bot-a'))).toBeUndefined()
+      for (const [index, thread] of ['T1', 'T2'].entries()) {
+        const key = sessionHostKey('bot-a', KEY(thread))
+        expect((daemon as any).hosts.get(key)).toBe(hosts[index])
+        expect((daemon as any).hostLaunch.get(key).cwd).toBe(join(root, 'agents', 'bot-a', 'workspace'))
+        expect(hosts[index]!.newSession).toHaveBeenCalledTimes(1)
+        const token = bridgeToken(hosts[index]!.newSession.mock.calls[0] as unknown[])
+        expect((daemon as any).mcp.sessions.get(token)).toMatchObject({ agentId: 'bot-a', channel: 'C1', thread })
+      }
+
+      // A reaped session resumes its runtime session on a host of its own again.
+      await (daemon as any).stopHost('bot-a')
+      await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
+      expect((daemon as any).hosts.get(sessionHostKey('bot-a', KEY('T1')))).toBe(hosts[2])
+      expect(hosts[2]!.loadSession).toHaveBeenCalled()
+      expect(hosts[2]!.newSession).not.toHaveBeenCalled()
+      await daemon.stop()
     }
-
-    // A reaped session resumes its runtime session on a host of its own again.
-    await (daemon as any).stopHost('bot-a')
-    await (daemon as any).dispatch('bot-a', dm('300', 'resume', 'T1'), 'int-a')
-    expect((daemon as any).hosts.get(sessionHostKey('bot-a', KEY('T1')))).toBe(hosts[2])
-    expect(hosts[2]!.loadSession).toHaveBeenCalled()
-    expect(hosts[2]!.newSession).not.toHaveBeenCalled()
-    await daemon.stop()
-  })
+  )
 
   it('follows what a RuntimeDef declares over the audited scope of its id', async () => {
     const opencode = { command: 'node', args: ['unused'], sessionMcpServers: 'per-session' }
