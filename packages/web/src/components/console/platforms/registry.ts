@@ -182,6 +182,11 @@ export function platformSharingFixed(platformId?: string): boolean {
   return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === 'fixed'
 }
 
+/** Whether sharing is the operator's own choice here (`share: true`) — the only platforms that show a sharing control. */
+export function platformSharingChoosable(platformId?: string): boolean {
+  return platformSupportsSharing(platformId) && !platformSharingFixed(platformId)
+}
+
 /**
  * Whether the Settings → Bots Sharable toggle may be OPERATED for this bot —
  * the platform half of its `disabled` predicate (the viewer's write access and

@@ -1929,7 +1929,6 @@
     "revoked": "revoked",
     "rejected": "rejected",
     "revokedAgent": "{agent} — revoked",
-    "always": "Always",
     "agentConnect": "AgentConnect",
     "uninstallFirst": "Uninstall its integration first",
     "defaultDispatch": "Default dispatch",
