@@ -269,6 +269,27 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   })
 
+  it("does not replay a refusal for now, so the relay's retry of the same fire is admitted", async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as never as { cpClient: unknown }).cpClient = fakeCpClient()
+    const dispatch = vi
+      .spyOn((daemon as any).githubReviews, 'dispatchRelayHook')
+      .mockResolvedValueOnce({ msgId: `${HOOK_ID}:d-1`, accepted: false, reason: 'queue_full' })
+      .mockResolvedValueOnce({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+
+    expect(await (daemon as any).handleRelayMsg(fire(), () => {})).toMatchObject({
+      accepted: false,
+      reason: 'queue_full'
+    })
+    expect(await (daemon as any).handleRelayMsg(fire(), () => {})).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+    // An admission is replayed as before: a third copy of the fire is not dispatched again.
+    expect(await (daemon as any).handleRelayMsg(fire(), () => {})).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    await daemon.stop()
+  })
+
   it('accepts, runs headless through the turn engine, and reports success + sessionId', async () => {
     const { factory, host } = streamingHost()
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })

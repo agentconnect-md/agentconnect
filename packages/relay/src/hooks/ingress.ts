@@ -65,6 +65,12 @@ export const HOOK_BODY_EXCERPT_MAX = 64 * 1024
  * placement is checked at t=0, 1s, 4s, and 12s. */
 export const HOOK_DISPATCH_RETRY_DELAYS_MS = [0, 1_000, 3_000, 8_000] as const
 
+/** Retry cadence for a fire refused only for now: about 8 min, past a full shutdown drain and the hand-over to the next holder. */
+export const HOOK_REJECTION_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000, 60_000, 120_000, 240_000] as const
+
+/** Refusals that admitted nothing and may pass, which the daemon does not cache: the sender already has its 202 and never redelivers. */
+const RETRYABLE_HOOK_REJECTIONS = new Set(['draining', 'not_holder', 'busy', 'queue_full'])
+
 export interface HookIngressDeps {
   table: HookTable
   /** Late-bound: the rd/* server exists only after `listen()` (routes must register before). */
@@ -277,6 +283,7 @@ export async function dispatchHookFire(
 ): Promise<void> {
   await new Promise<void>((resolve) => {
     let attemptIndex = 0
+    let rejectionIndex = 0
 
     const attempt = (): void => {
       // Re-read every attempt, an installation rule as this fire's filled-in rule: a change revokes, a complete fence may move it.
@@ -322,9 +329,7 @@ export async function dispatchHookFire(
         return
       }
 
-      // Once a connection exists, dispatch exactly once. A rejection is an
-      // agent/business verdict; a throw is ambiguous delivery. Neither is a
-      // missing-connection condition, so neither enters this fast retry loop.
+      // A throw is ambiguous delivery, never re-sent; a rejection is final unless it refuses only for now.
       let ack: ReturnType<typeof conn.sendMsg>
       try {
         ack = conn.sendMsg(dispatchMsg)
@@ -335,6 +340,17 @@ export async function dispatchHookFire(
       }
       void ack.then(
         (result) => {
+          const delay = HOOK_REJECTION_RETRY_DELAYS_MS[rejectionIndex]
+          if (!result.accepted && RETRYABLE_HOOK_REJECTIONS.has(result.reason ?? '') && delay !== undefined) {
+            deps.log.info(
+              `hook dispatch: ${rule.hookId}:${msg.deliveryKey} refused (${result.reason}) — retrying in ${delay}ms`
+            )
+            rejectionIndex += 1
+            // The next holder may still be connecting: give its lookup the missing-connection cadence afresh.
+            attemptIndex = 0
+            deps.clock.setTimeout(attempt, delay)
+            return
+          }
           if (result.accepted) deps.report({ ...base, status: 'accepted' })
           else deps.report({ ...base, status: 'failed', reason: `rejected:${result.reason ?? 'unknown'}` })
           resolve()

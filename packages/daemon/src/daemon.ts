@@ -1649,6 +1649,9 @@ type HostRetirement = {
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
+
+/** Hook refusals that admitted nothing and may pass: the relay retries them, so the ack is never replayed from cache. */
+const HOOK_REFUSALS_FOR_NOW = new Set<string>(['draining', RD_ACK_NOT_HOLDER, 'busy', 'queue_full'])
 // One pod-local skill ref listing, the same bound the daemon's own ref naming has.
 const POD_SKILL_REF_TIMEOUT_MS = 10_000
 /** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
@@ -17011,7 +17014,8 @@ export class Daemon {
       })
       .then((ack) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
-        if (!ack.accepted && (ack.reason === 'draining' || ack.reason === RD_ACK_NOT_HOLDER)) return ack
+        // A refusal for now admitted nothing: not cached, so the relay's retry of the same fire is re-attempted.
+        if (!ack.accepted && HOOK_REFUSALS_FOR_NOW.has(ack.reason ?? '')) return ack
         if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
         this.relayMsgAcks.set(dedupKey, ack)
         return ack

@@ -925,16 +925,16 @@ The HTTP response only confirms that ingress accepted the delivery for
 asynchronous dispatch. It does not promise that the daemon admitted or
 completed the turn.
 
-| Failure                                 | General webhook                                                                              | GitHub hook                                                              |
-| --------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| CP unavailable                          | Existing relay rules can still dispatch; accounting and configuration changes may be delayed | Same; installation doorbells and projections may be delayed              |
-| One relay unavailable                   | Another relay with the replayed rule can accept the request                                  | Same                                                                     |
-| All relays unavailable                  | Caller receives an HTTP failure and must retry                                               | GitHub delivery reconciliation requests redelivery after recovery        |
-| Assigned daemon offline                 | Delivery records `daemon_offline`                                                            | One durable automatic retry is scheduled after a short backoff           |
-| Daemon drains or no duty holder accepts | Durable receipt replays first; only a receipt-free refusal is recorded                       | One safe retry; prior admission always wins over the lifecycle gate      |
-| Dispatch acknowledgement ambiguous      | Records terminal `dispatch_timeout`; no automatic replay                                     | Same, because the daemon may already have admitted the turn              |
-| Agent stops being served mid-turn       | Turn reports terminal `agent_handover`; no automatic replay                                  | Same; a GitHub hook additionally offers the maintainer Check retry       |
-| GitHub unavailable                      | No effect                                                                                    | Source reads, permission checks, posting, and projection may fail closed |
+| Failure                                 | General webhook                                                                                      | GitHub hook                                                                    |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| CP unavailable                          | Existing relay rules can still dispatch; accounting and configuration changes may be delayed         | Same; installation doorbells and projections may be delayed                    |
+| One relay unavailable                   | Another relay with the replayed rule can accept the request                                          | Same                                                                           |
+| All relays unavailable                  | Caller receives an HTTP failure and must retry                                                       | GitHub delivery reconciliation requests redelivery after recovery              |
+| Assigned daemon offline                 | Delivery records `daemon_offline`                                                                    | One durable automatic retry is scheduled after a short backoff                 |
+| Daemon drains or no duty holder accepts | Durable receipt replays first; the relay re-sends a refusal for now for about 8 min, then records it | Same, then one safe retry; prior admission always wins over the lifecycle gate |
+| Dispatch acknowledgement ambiguous      | Records terminal `dispatch_timeout`; no automatic replay                                             | Same, because the daemon may already have admitted the turn                    |
+| Agent stops being served mid-turn       | Turn reports terminal `agent_handover`; no automatic replay                                          | Same; a GitHub hook additionally offers the maintainer Check retry             |
+| GitHub unavailable                      | No effect                                                                                            | Source reads, permission checks, posting, and projection may fail closed       |
 
 `HookRedeliveryReconciler` compares recent GitHub App deliveries with stored
 run metadata. It requests redelivery for missing eligible deliveries and for
@@ -944,7 +944,16 @@ set contains `daemon_offline`, `rejected:draining`, and
 The daemon probes its durable hook receipt before duty and drain refusals, so
 an earlier admission whose relay report was lost replays `accepted` instead of
 entering this set. Retryable refusals are not cached as terminal daemon ACKs,
-letting the same GUID re-enter admission after recovery. Once a configured
+letting the same GUID re-enter admission after recovery.
+
+Before recording a refusal, the relay re-sends the fire itself when the daemon
+refused it only for now (`draining`, `not_holder`, `busy`, `queue_full`): at 1,
+3, 8, 15, 30, 60, 120 and 240 s, re-reading the rule each time, so a fire that
+arrives while its daemon drains reaches the agent's next holder. The sender
+already has its 202 and never redelivers, so without this a plain webhook
+refused during a restart or behind a full queue would be lost. None of these
+refusals admitted anything, and the daemon does not cache them, so a re-sent
+fire is admitted afresh and an earlier admission still replays. Once a configured
 platform anchor send is attempted, a later drain gate reports nonretryable
 `anchor_side_effect` even if the provider response was lost, because the
 external effect is then ambiguous rather than proven absent.
