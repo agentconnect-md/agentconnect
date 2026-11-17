@@ -1223,6 +1223,7 @@ enum RepoGrantStaleReason {
   access_lost // the attester no longer holds the permission the tier needs
   identity_unlinked // the attester has no linked GitHub identity to check
   attester_removed // the attester's account was deleted
+  repository_unreachable // the App installation no longer reaches the repository
 }
 
 /// Agent access to every repository a GitHub App installation covers, at one tier (agent-multi-repo-authorization.md decision 10).

@@ -20,7 +20,7 @@ export type {
 export interface RepositoryGrantReattestorDeps extends Omit<SharedDeps, 'provider' | 'attest' | 'staleReasonText'> {
   installations: Pick<GithubInstallationRepo, 'liveByOrgAndAccount'>
   agentApp?: (agentId: AgentId) => Promise<string | null>
-  github: Pick<GithubService, 'repoRefForCommentAuthz'>
+  github: Pick<GithubService, 'repoRefById'>
   authz: Pick<GithubUserAuthzService, 'assertAccess'>
 }
 
@@ -28,7 +28,8 @@ export interface RepositoryGrantReattestorDeps extends Omit<SharedDeps, 'provide
 export const STALE_REASON_TEXT: Record<RepoGrantStaleReason, string> = {
   access_lost: 'the member who authorized it no longer has that access on GitHub',
   identity_unlinked: 'the member who authorized it no longer has a linked GitHub identity',
-  attester_removed: 'the member who authorized it no longer has an account'
+  attester_removed: 'the member who authorized it no longer has an account',
+  repository_unreachable: 'the GitHub App installation could not reach the repository'
 }
 
 /** The access check's lookups with the strict error policy: only a missing subject reads as no access. */
@@ -64,9 +65,9 @@ async function attest(deps: RepositoryGrantReattestorDeps, grant: ClaimedGrant):
   const githubAppId = (await deps.agentApp?.(grant.agentId)) ?? null
   const installation = await deps.installations.liveByOrgAndAccount(grant.orgId, owner, githubAppId)
   if (!installation || installation.suspendedAt) return { kind: 'skipped', why: 'no live installation' }
-  // The numeric id is the grant's identity: a reused name is another repository, which the mint gate denies anyway.
-  const ref = await deps.github.repoRefForCommentAuthz(installation, owner, repo)
-  if (!ref || ref.repoId !== grant.repoId) return { kind: 'skipped', why: 'repository no longer resolves' }
+  // The numeric id is the grant's identity and what a mint scopes to, so the id decides whether the installation still reaches it.
+  const ref = await deps.github.repoRefById(installation, grant.repoId)
+  if (!ref) return { kind: 'stale', reason: 'repository_unreachable' }
   const [refOwner, refRepo] = ref.fullName.split('/')
   try {
     await deps.authz.assertAccess(

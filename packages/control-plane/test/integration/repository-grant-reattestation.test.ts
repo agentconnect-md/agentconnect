@@ -46,6 +46,12 @@ function stubbedGithub(): GithubService {
         { status: 201 }
       )
     }
+    const byId = /\/repositories\/(\d+)$/.exec(url)
+    if (byId) {
+      const hit = Object.values(REPOS).find((repo) => repo.id === Number(byId[1]))
+      if (!hit) return Response.json({ message: 'Not Found' }, { status: 404 })
+      return Response.json({ ...hit, private: true, default_branch: 'main' }, { status: 200 })
+    }
     const repoPath = /\/repos\/([^/]+\/[^/]+)$/.exec(url)
     if (repoPath) {
       const hit = REPOS[repoPath[1]!.toLowerCase()]
@@ -320,6 +326,56 @@ describe('the re-attestation sweep with a fake access answer', () => {
     expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({
       additionalRepos: [{ repoFullName: 'acme/tools', repoId: '111' }]
     })
+  })
+
+  it('out of the installation: the grant goes stale and leaves the spec, and returns once the repository is back', async () => {
+    await seedInstallation()
+    const agentId = await scratchAgent()
+    const id = await grantRow(agentId)
+    const answer = { current: 'held' as AccessAnswer }
+    const { a, spy } = app(answer)
+    const clock = new FakeClock(Date.now())
+    const loop = reattestor(a, clock, answer)
+    const tools = REPOS['acme/tools']!
+    delete REPOS['acme/tools']
+    try {
+      expect(await loop.sweep()).toMatchObject({ checked: 1, stale: 1, flipped: 1 })
+
+      const listed = await a.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/repos` })
+      expect(listed.json()).toEqual([
+        expect.objectContaining({ id, stale: { since: expect.any(String), reason: 'repository_unreachable' } })
+      ])
+      expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({ additionalRepos: [] })
+      const agent = (await a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+      await expect(a.deps.github!.mintForAgent(agent, 'd1', ['contents'], 'acme/tools')).rejects.toMatchObject({
+        code: 'SCOPE_DENIED',
+        message: expect.stringContaining('is not covered by the installation')
+      })
+    } finally {
+      REPOS['acme/tools'] = tools
+    }
+
+    // Back in the installation but not yet re-checked: still suspended, and the refusal says why.
+    const agent = (await a.deps.repos.agent.get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    await expect(a.deps.github!.mintForAgent(agent, 'd1', ['contents'], 'acme/tools')).rejects.toMatchObject({
+      code: 'SCOPE_DENIED',
+      message: expect.stringContaining('suspended because the GitHub App installation could not reach the repository')
+    })
+    // Not due for a day on its own; a re-check on request takes it at once, and only it.
+    const other = await grantRow(agentId, {
+      repoId: 100n,
+      repoFullName: 'acme/infra',
+      checkedAt: new Date(clock.now())
+    })
+    expect(await loop.sweep()).toMatchObject({ checked: 0 })
+    await loop.recheckUnreachable(OrgId(DEFAULT_ORG_ID))
+    expect((await a.deps.repos.agentRepoAuth.get(id))?.stale).toBeNull()
+    expect(spy.upserts.at(-1)!.spec.workspace).toMatchObject({
+      additionalRepos: expect.arrayContaining([expect.objectContaining({ repoFullName: 'acme/tools', repoId: '111' })])
+    })
+    const untouched = await prisma.agentRepoAuthorization.findUniqueOrThrow({ where: { id: other } })
+    expect(untouched.attestationCheckedAt).toEqual(new Date(clock.now()))
+    expect(await a.deps.repos.agentRepoAuth.requeueUnreachable('github', OrgId(DEFAULT_ORG_ID))).toBe(0)
   })
 
   it('host unreachable: nothing is marked stale and the sweep stops', async () => {

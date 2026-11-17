@@ -24,7 +24,8 @@
 >
 > **Re-attestation** is implemented: the Control Plane re-runs decision 8's
 > check against each GitHub row's attester on a schedule and suspends a row
-> whose attester lost the access its tier needs (see Re-attestation).
+> whose attester lost the access its tier needs, or whose repository the
+> installation no longer reaches (see Re-attestation).
 >
 > Scratch workspaces use the same explicit repository allowlist and have no
 > implicit repository. Converting a scratch workspace to GitHub makes the target
@@ -256,7 +257,7 @@ model AgentRepoAuthorization {
   attestedByUserId     String?               // who vouched for the current tier; re-attestation re-checks them
   attestationCheckedAt DateTime?             // when re-attestation last examined the row
   staleSince           DateTime?             // set while the attester fails the check
-  staleReason          RepoGrantStaleReason? // access_lost | identity_unlinked | attester_removed
+  staleReason          RepoGrantStaleReason? // access_lost | identity_unlinked | attester_removed | repository_unreachable
 
   agent      Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy  User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -472,11 +473,19 @@ Installation-Wide Rows).
 Creating a repository row or raising its tier attests the acting member
 (decision 8). `RepositoryGrantReattestor` (`github/repository-grant-reattestor.ts`)
 repeats that check on a schedule, so a grant does not outlive its attester's
-GitHub access.
+GitHub access or the installation's reach.
 
 - **Who is checked.** Each row records `attestedByUserId`: the creator, replaced
   by whoever raises the tier. A row whose attester's account was deleted is
   stale at once, without a GitHub call.
+- **The repository.** The sweep first resolves the row's numeric id through
+  the installation, because a mint scopes its token to that id. An id the
+  installation no longer reaches, whether the repository was deleted or taken
+  out of the installation's selection, marks the row stale with
+  `repository_unreachable`. Left honored, such a row would have every session
+  that clones it ask GitHub for a token GitHub can only refuse. The member is
+  then checked against the name the id resolves to now, so a renamed
+  repository stays honored.
 - **The check.** `GithubUserAuthzService.assertAccess`, the creation gate
   itself, at the tier's need: `read` and `comment` need read, `write` needs
   write. The sweep's instance reads GitHub with the strict error policy of
@@ -485,10 +494,9 @@ GitHub access.
 - **Verdicts.** Held clears the marker. `USER_NO_ACCESS` marks the row stale
   with `access_lost`, and `GITHUB_IDENTITY_REQUIRED` with `identity_unlinked`. A
   verdict lands only while the row's attester and tier are still the ones
-  checked. An owner with no live installation, or a repository that no longer
-  resolves to the row's id, is skipped, because the mint gate already denies
-  both. An upstream failure stops the sweep: nothing is marked, and the next
-  sweep resumes.
+  checked. An owner with no live installation is skipped, because the mint
+  gate already denies it without a GitHub call. An upstream failure stops the
+  sweep: nothing is marked, and the next sweep resumes.
 - **What stale means.** The row stays, listed with `stale: { since, reason }`,
   and nothing honors it. Minting by name and by id, and so reviews, auto-merge
   and Checks, the spec's `additionalRepos`, the repository selector's roster,
@@ -501,7 +509,12 @@ GitHub access.
 - **Recovery.** A later sweep that finds the attester's access clears the
   marker. A member who holds the needed permission can raise the tier, which
   makes them the attester and clears it. Revoking and authorizing again also
-  works. Either flip advances the agent's config revision, re-pushes its spec,
+  works. A `repository_unreachable` row first needs its repository back in the
+  installation, and Edit workspace links such a row to the installation's page
+  on GitHub. It does not wait out the re-attestation period: an installation
+  event from GitHub, an installation Sync from the console, and the member
+  returning to Edit workspace each put the organization's unreachable rows at
+  the front of the queue and run a sweep at once. Either flip advances the agent's config revision, re-pushes its spec,
   and audits `agent_repo_change`.
 - **Budget.** One sweep every `REPO_GRANT_REATTEST_INTERVAL_SEC` (default 600),
   at most `REPO_GRANT_REATTEST_BATCH` (default 25) grants, each re-checked once
@@ -837,7 +850,7 @@ fails with "not covered by the installation" and the hint to authorize it.
   wrapper denial output without the daemon-unreachable line and without running
   `gh`.
 - **Re-attestation:** the loop's cadence on a fake clock; held, lost-access,
-  unlinked-identity and removed-attester verdicts; an unreachable host marking
+  unlinked-identity, removed-attester and unreachable-repository verdicts; an unreachable host marking
   nothing and stopping the sweep; the claim order and stamp, the verdict fence
   on attester and tier, and the revision bump on a flip, against Postgres; a
   stale row refused by both resolvers, left out of the spec, offered through an

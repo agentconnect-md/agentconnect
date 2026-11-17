@@ -29,6 +29,7 @@ import {
   ApiError,
   setAgentWorkspace,
   fetchGithubBranches,
+  fetchAgentRepos,
   fetchGithubInstallations,
   githubInstallUrlFor,
   fetchGithubRepoRoster,
@@ -280,6 +281,29 @@ export default function EditWorkspaceModal({
     }
   }, [repositoryEditor, githubAppId])
 
+  // Back from fixing an installation on GitHub: Sync re-checks the rows it suspended, so they clear without a reload.
+  const unreachable = authorizations.some((row) => row.stale?.reason === 'repository_unreachable')
+  useEffect(() => {
+    if (repositoryEditor !== null || !unreachable) return
+    let alive = true
+    const recheck = () =>
+      void syncGithubInstallations(githubAppId)
+        .then(() => fetchAgentRepos(agent.id))
+        .then(
+          (rows) => {
+            if (!alive) return
+            setAuthorizations(rows)
+            onAuthorizedChange?.(rows)
+          },
+          () => undefined
+        )
+    window.addEventListener('focus', recheck)
+    return () => {
+      alive = false
+      window.removeEventListener('focus', recheck)
+    }
+  }, [repositoryEditor, unreachable, githubAppId, agent.id, onAuthorizedChange])
+
   useEffect(() => {
     if (repositoryEditor !== null || !gh) return
     // No App, or none installed: the roster is empty rather than pending, so the
@@ -371,6 +395,12 @@ export default function EditWorkspaceModal({
     : (picked?.installationId ??
       (gh?.installations ?? []).find((i) => i.accountLogin.toLowerCase() === pickOwner.toLowerCase())?.id ??
       null)
+  // A suspended GitHub row's installation page, where its repository is added back.
+  const installationUrlOf = (row: AgentRepoAuthDto) => {
+    if (repoAuthProvider(row) !== 'github') return undefined
+    const owner = row.repoFullName.split('/')[0]?.toLowerCase()
+    return gh?.installations.find((i) => i.accountLogin.toLowerCase() === owner)?.settingsUrl
+  }
   // Installations to bind against. None ⇒ every pick is an anonymous checkout, so
   // the covered-owner notice would be noise and the public confirmation optional.
   const appAvailable = gh?.enabled === true && gh.installations.length > 0
@@ -1394,7 +1424,12 @@ export default function EditWorkspaceModal({
                     >
                       {authorization.repoFullName}
                     </span>
-                    {authorization.stale && <RepositoryGrantSuspendedBadge reason={authorization.stale.reason} />}
+                    {authorization.stale && (
+                      <RepositoryGrantSuspendedBadge
+                        reason={authorization.stale.reason}
+                        installationUrl={installationUrlOf(authorization)}
+                      />
+                    )}
                     <RepositoryAccessToggle
                       value={authorization.access}
                       name={authorization.repoFullName}

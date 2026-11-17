@@ -203,6 +203,10 @@ export function githubRoutes(deps: HttpDeps) {
         try {
           const orgId = orgOf(req)
           const rows = await gh.sync(orgId)
+          // Sync is how a member says GitHub changed, so a repository put back in an installation is honored again now.
+          await deps
+            .recheckUnreachableRepoGrants?.(OrgId(orgId))
+            .catch((err) => req.log.warn({ err }, 'github sync: repository grant recheck failed'))
           let outdated: ReadonlyMap<string, string> | null = null
           try {
             // Explicit Sync is also the user's refresh button for permission
@@ -537,6 +541,9 @@ export function githubRoutes(deps: HttpDeps) {
           if (!app) return notFound(reply, 'github app')
           try {
             await apps.sync(orgOf(req), app.id)
+            await deps
+              .recheckUnreachableRepoGrants?.(OrgId(orgOf(req)))
+              .catch((err) => req.log.warn({ err }, 'github app sync: repository grant recheck failed'))
           } catch (e) {
             if (e instanceof GithubAppRegistrationError) return conflict(reply, e.message)
             return githubUpstreamFailure(reply, e)
