@@ -29,7 +29,7 @@ import type { Handler } from './index.js'
 
 /** Active integrations of the agents this daemon serves — a pool member is the placement of
  *  none of them, so `activeForDaemon` alone discarded every one of its reports. */
-async function activeForServedAgents(daemonId: DaemonId, deps: DaemonWsDeps): Promise<IntegrationRecord[]> {
+export async function activeForServedAgents(daemonId: DaemonId, deps: DaemonWsDeps): Promise<IntegrationRecord[]> {
   const { agents } = await servedAgents(daemonId, {
     agents: deps.agent,
     ...(deps.dutyLease ? { duties: deps.dutyLease } : {}),

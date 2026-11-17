@@ -107,6 +107,9 @@ const ACK_RETRY_MAX_MS = 60_000
 
 /** Default interval between periodic credential probes of one bot. */
 const CREDENTIAL_PROBE_INTERVAL_MS = 3_600_000
+
+/** How long an unrouted message in a room that may still be opening waits for its route before asking for a redelivery; under the platform's answer deadline. */
+const ROOM_OPENING_WAIT_MS = 1_200
 /** Each later probe lands at the interval ± this fraction, so a pod's bots drift apart. */
 const CREDENTIAL_PROBE_JITTER = 0.1
 /** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
@@ -376,6 +379,10 @@ export class RelayIngressManager {
   private readonly credentialProbeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** §14.3 notices already answered (`botId:msgId`), so a message's second event copy on this pod posts nothing more. */
   private readonly gatedNoticesSent = new Set<string>()
+  /** §14.10: until when (this pod's clock) a bot's gated member may still be opening a room of its own. */
+  private readonly roomOpeningUntil = new Map<string, number>()
+  /** Deliveries waiting for a bot's next route table (§14.10). */
+  private readonly routeWaiters = new Map<string, Set<() => void>>()
   /** Per-conversation direct-report latch (`botId:channel`) — scoped to the CURRENT
    *  bot assignment. Rows belong to the installs of that moment. */
   private readonly observedConversationsReported = new Set<string>()
@@ -798,6 +805,7 @@ export class RelayIngressManager {
       this.pendingCredentialChecks.delete(a.botId)
     }
     this.router.upsert(a)
+    this.routesArrived(a.botId, a.roomOpeningMs)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
     if (this.router.get(a.botId) !== a) return
@@ -836,6 +844,40 @@ export class RelayIngressManager {
       this.clearConversationReportLatches(botId)
     }
     this.router.updateRoutes(botId, patch)
+    this.routesArrived(botId, patch.roomOpeningMs)
+  }
+
+  /** Stamp the table's room-opening window on this pod's clock and release the deliveries waiting for it. */
+  private routesArrived(botId: string, roomOpeningMs: number | undefined): void {
+    if (roomOpeningMs) this.roomOpeningUntil.set(botId, this.deps.clock.now() + roomOpeningMs)
+    else this.roomOpeningUntil.delete(botId)
+    const waiters = this.routeWaiters.get(botId)
+    this.routeWaiters.delete(botId)
+    for (const wake of waiters ?? []) wake()
+  }
+
+  /** §14.10: is this a person's message in a room this bot owns that has no route of its own yet, while one of the bot's gated members may still be opening one? */
+  private roomMayBeOpening(botId: string, msg: WireNormalizedMessage): boolean {
+    if (msg.sender.isBot || msg.conversationBotId === undefined) return false
+    const assignment = this.router.get(botId)
+    if (!assignment || msg.conversationBotId !== assignment.botUserId) return false
+    if (assignment.routes.some((route) => route.scope?.channel === msg.channel)) return false
+    return (this.roomOpeningUntil.get(botId) ?? 0) > this.deps.clock.now()
+  }
+
+  /** Resolves on the bot's next route table, or after `ms`. */
+  private nextRoutes(botId: string, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const waiters = this.routeWaiters.get(botId) ?? new Set<() => void>()
+      this.routeWaiters.set(botId, waiters)
+      const wake = (): void => {
+        clearTimeout(timer)
+        waiters.delete(wake)
+        resolve()
+      }
+      const timer = setTimeout(wake, ms)
+      waiters.add(wake)
+    })
   }
 
   /** `rc/bot-unassign` — drop the routes + close the ingest. */
@@ -854,6 +896,7 @@ export class RelayIngressManager {
     this.clearConversationReportLatches(botId)
     this.forgetDemux(botId)
     this.router.remove(botId)
+    this.routesArrived(botId, undefined)
     this.pendingCredentialChecks.delete(botId)
     this.lastCredentialChecks.delete(botId)
     await this.stopIngest(botId)
@@ -1272,7 +1315,8 @@ export class RelayIngressManager {
     botId: string,
     msg: WireNormalizedMessage,
     sidecar: RelayIngressSidecar | undefined,
-    strict: boolean
+    strict: boolean,
+    waitedForRoom = false
   ): Promise<RelayAdmission | 'refused'> {
     // send-message-routing-rework.md §2.3/§6: agent-authored traffic takes its OWN
     // ladder and never continues into the human one. Handled BEFORE arbitration for the
@@ -1301,6 +1345,12 @@ export class RelayIngressManager {
       // Commands, !queue included, are never judged (message-intake §5 step 2); they take the command path.
       if (!command) return await this.forwardRoutedToHost(botId, msg, sidecar, routed, strict)
       return await this.forwardRoutedCommand(botId, msg, sidecar, routed.decisionId, namesThisBot, strict)
+    }
+    // §14.10: the room may be one a gated member is opening right now, so before any rung can refuse it or hand it to another agent, wait once for its route, then have the platform redeliver.
+    if (this.roomMayBeOpening(botId, msg)) {
+      if (waitedForRoom) return retry('not_ready')
+      await this.nextRoutes(botId, ROOM_OPENING_WAIT_MS)
+      return this.arbitrateAndForward(botId, msg, sidecar, strict, true)
     }
     const prior = this.router.peekAffinity(botId, sessionKey)
     const arbitration = this.router.routeResult(botId, msg)

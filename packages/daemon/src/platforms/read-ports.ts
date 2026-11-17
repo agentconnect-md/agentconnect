@@ -101,6 +101,8 @@ export interface PlatformSessionToolEnv {
   readonly handOff?: (channel: string, task: string) => Promise<void>
   /** Make a room of the session's own for its work: a task's session holds it as one more thread, and a message there waits while it is attached (auto-session-mode.md §6.8). */
   readonly makeRoom?: <T>(make: () => Promise<{ result: T; room?: { channel: string; thread: string } }>) => Promise<T>
+  /** Make a room from the conversation `origin` so that it goes to this agent, opened where its conversations start closed (resource-visibility.md §14.10); absent where neither needs settling. */
+  readonly admitRoom?: <T>(origin: string, make: () => Promise<{ result: T; channel?: string }>) => Promise<T>
   /** Publication is fenced by the live turn and the existing place write rule. */
   readonly judgeWrite: (target: WriteTarget) => Promise<unknown>
   readonly postIdentity: () => SendIdentity

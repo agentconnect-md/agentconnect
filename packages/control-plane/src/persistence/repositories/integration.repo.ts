@@ -1360,6 +1360,19 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
     })
   }
 
+  async openDefaulted(integrationId: IntegrationId, channelId: string, trigger: 'mention' | 'any'): Promise<boolean> {
+    // One conditional write, so a person's Off landing beside it is never reopened.
+    await this.db.integrationChannel.updateMany({
+      where: { integrationId, channelId, trigger: 'off', triggerChosen: false },
+      data: { trigger }
+    })
+    const row = await this.db.integrationChannel.findUnique({
+      where: { integrationId_channelId: { integrationId, channelId } },
+      select: { trigger: true }
+    })
+    return row !== null && row.trigger !== 'off'
+  }
+
   async setSessionMode(
     integrationId: IntegrationId,
     channelId: string,

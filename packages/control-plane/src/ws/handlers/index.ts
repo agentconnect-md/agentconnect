@@ -39,6 +39,7 @@ import { handleUsageReport } from './usage-report.js'
 import { handleIntegrationChannels } from './integration-channels.js'
 import { handleIntegrationRevoked } from './integration-revoked.js'
 import { handleIntegrationTenant } from './integration-tenant.js'
+import { handleIntegrationRoomGrant } from './integration-room-grant.js'
 import { handleCronReport, handleCronReportSync } from './cron-report.js'
 import { handleAgentCron } from './agent-cron.js'
 import { handleDutyRelease } from './duty-release.js'
@@ -120,6 +121,7 @@ export class FrameRouter {
       'integration/channels': handleIntegrationChannels,
       'integration/revoked': handleIntegrationRevoked,
       'integration/tenant': handleIntegrationTenant,
+      'integration/room-grant': handleIntegrationRoomGrant,
       'cron/report': handleCronReport,
       'cron/report-sync': handleCronReportSync,
       'cron/self': handleAgentCron,
@@ -210,6 +212,7 @@ export {
   handleIntegrationChannels,
   handleIntegrationRevoked,
   handleIntegrationTenant,
+  handleIntegrationRoomGrant,
   handleCronReport,
   handleCronReportSync,
   handleHookReport,

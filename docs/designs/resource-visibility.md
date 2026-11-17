@@ -1170,3 +1170,83 @@ specs after every report.
 **Known edge.** Between the bot entering a place and the membership report landing, an
 ungated agent still has its unscoped defaults there, so a mention in that window can be
 answered.
+
+### 14.10 A gated agent's own new room opens with it
+
+**Status:** Implemented.
+
+**Rule.** A room a gated agent's turn makes for its own work (a Slack code channel,
+[slack-code-channels.md](slack-code-channels.md)) opens to that agent as part of being
+made, on Mention and with `triggerChosen = false`. Every such room has a new id, so §14.2's
+"an editor enables it" would otherwise have to be repeated for each task. The room inherits
+the conversation its turn is live in and nothing wider:
+
+- Only where that conversation is itself enabled for the same agent. A turn whose own
+  conversation is Off or unknown, such as a scheduled run anchored in a place the agent is
+  not enabled in, opens nothing and the room keeps the §14.2 default. On a bot of its own the
+  integration's row says so. On a shared bot a row's trigger is repeated across siblings and
+  says nothing about one of them, so the test is the grant the compiled route table gives
+  the agent there: a route scoped to the conversation, the conversation's default seat, or
+  a By decision routing that can select it.
+- Only the room the turn made, and only for the agent that made it. On a shared bot that
+  agent becomes the room's owner; its siblings carry the replicated trigger as they do for
+  any conversation and hold no route there.
+- Never over a person's choice. A row with `triggerChosen` is left as it is, so a room an
+  editor turned Off stays Off however often the creation is retried.
+- Only for a room the turn reports. A room that merely appears in a membership report is
+  not opened, whoever the platform says it is assigned to.
+- Only for a room. The id must have no row yet, or a row the platform reports as a code
+  session, so the request can never open or re-own an existing channel or direct
+  conversation.
+
+Authorizing the room entrusts its current and later membership, as enabling any place does
+(§14.2). The platform invites the person who asked and matches the origin's privacy.
+
+**Mechanism.** The daemon asks the Control Plane in `integration/room-grant`, a request
+with three phases, behind `room-grant-v1`:
+
+1. `opening`, before the platform call. The Control Plane checks the origin and, for a
+   relay-hosted bot, stamps `roomOpeningMs` on that bot's route table.
+2. `opened`, naming the room. The Control Plane creates the row open, or opens one a
+   membership report already created at the Off default, in one conditional write that
+   skips a chosen row. It then republishes the agent's rules and replies.
+3. `abandoned`, when nothing was made. A window nobody closes lapses after 30 seconds.
+
+**The first message.** The platform copies the originating request into the room at once,
+and that copy can reach ingress before the rules do. A refusal there would be final: the
+platform redelivers only what was answered with an error. So while a room is opening,
+nothing refuses a person's message in a room the platform assigns to this bot:
+
+- **Relay:** with `roomOpeningMs` live and no route scoped to the conversation, the relay
+  waits once for the next route table, up to 1.2 seconds, and re-arbitrates. Still
+  unplaced, the delivery is answered `retry`, which has the platform redeliver it. This
+  runs ahead of every rung, so neither the notice nor a shared bot's default agent takes
+  the message first.
+- **Daemon:** a refusal in such a room waits for the rules to arrive, up to 5 seconds on
+  direct ingress and 1 second on a relay hand-off, then decides again. A hand-off still
+  unadmitted is answered `not_ready`, which the relay turns into the same `retry`.
+
+The window grants nothing. It only postpones a refusal, so a room that stays closed is
+refused and answered with the notice as before, one redelivery later.
+
+**The implicit recipient on a relay-hosted bot.** A code channel addresses its assigned
+bot without a mention. On the relay's ladder that used to reach only the bot's defaults,
+from which a gated agent is excluded, so an unmentioned request in a gated agent's own
+room placed nobody. A conversation-scoped mention route now names the recipient of a
+person's unmentioned message in a room the platform assigns to this bot, above both
+defaults. Off still fences it, and a message that names someone else is not addressed.
+
+**The room's owner on a shared bot.** A room on a bot several agents share needs an owner,
+and a membership report can only give it the bot's earliest agent. The same request
+therefore settles the owner for an ungated agent too, where the bot is relay-hosted and
+serves more than one agent: the agent that made the room owns it, and the relay holds the
+room's first message in the same window rather than hand it to the bot's default agent.
+Nothing is opened for such an agent. The row takes the trigger its own new rooms start at,
+in place of an earlier owner's default, the origin is not consulted, and a trigger a person
+chose still stands. An ungated agent that has its bot to itself sends one announcement,
+is answered that nothing needs settling, and sends nothing more.
+
+**Known edges.** The window is kept per Control Plane process, like the relay roster it
+is pushed to. During it, a person's message in another room the bot owns that has no route
+is redelivered once before it is refused. If code-channel discovery fails for a message,
+it is not recognized as being in an owned room and is refused as before.

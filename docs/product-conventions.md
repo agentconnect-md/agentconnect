@@ -923,6 +923,13 @@ A restricted agent expresses the same choice through its conversation gate, whic
 independently fail-closed: a conversation it has never been enabled in stays unroutable
 whether or not anyone set it to Off.
 
+The one conversation a restricted agent enables for itself is a code channel its own turn
+creates from a conversation it is already enabled in. Each such channel has a new id, so
+nobody could enable them one by one; the channel starts enabled for the agent that made it
+and for no other agent, and the request Slack copies into it is answered rather than
+refused. An Off a person sets on that channel still holds
+([resource-visibility.md](designs/resource-visibility.md) §14.10).
+
 Those two states read alike on the row and mean different things, so they answer an
 @-mention differently. A conversation a restricted agent was never enabled in replies
 once, telling the person to ask an admin — the bot must not look broken to someone who

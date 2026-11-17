@@ -1653,6 +1653,11 @@ const RELAY_ACK_SLOW_MS = 4000
 
 /** Hook refusals that admitted nothing and may pass: the relay retries them, so the ack is never replayed from cache. */
 const HOOK_REFUSALS_FOR_NOW = new Set<string>(['draining', RD_ACK_NOT_HOLDER, 'busy', 'queue_full'])
+// A room this daemon is opening (resource-visibility.md §14.10): how long its first message waits for the grant's rules on direct ingress and on a relay hand-off, how often it looks, and how long after the CP's reply they may still arrive.
+const ROOM_GRANT_WAIT_MS = 5_000
+const ROOM_GRANT_RELAY_WAIT_MS = 1_000
+const ROOM_GRANT_POLL_MS = 50
+const ROOM_GRANT_GRACE_MS = 3_000
 // One pod-local skill ref listing, the same bound the daemon's own ref naming has.
 const POD_SKILL_REF_TIMEOUT_MS = 10_000
 /** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
@@ -5334,6 +5339,16 @@ export class Daemon {
           },
           share?.channel === ctx.channel ? share.thread : undefined
         )
+      },
+      // A room the turn makes goes to its own agent, and opens to it where that agent is gated (resource-visibility.md §14.10).
+      sessionToolRoomAdmitFor: (ctx) => {
+        const id = ctx.integrationId
+        const int = id ? this.integrationConfigById(id) : undefined
+        if (!id || !int || !this.cpClient?.grantsRooms()) return undefined
+        // An ungated agent has only its room's owner to settle, and only on a relay-managed bot, which it may share.
+        const gated = integrationRouting(int).gated
+        if (!gated && integrationCore(int).mode !== 'shared') return undefined
+        return (origin, make) => this.admitRoom(id, origin, make, gated)
       },
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
@@ -16657,7 +16672,7 @@ export class Daemon {
     // explicitly-mentioned Off restricted channel likewise needs a pending row even
     // though no session will be created. Report-only: the notice remains gated.
     await this.discoverConversations(msg, srcIntegrationIds ?? [])
-    const routingRules = this.mergedRulesForSource(srcIntegrationIds)
+    let routingRules = this.mergedRulesForSource(srcIntegrationIds)
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
     // agent and never reach it as a prompt — intercept before routing/dispatch.
@@ -16678,7 +16693,14 @@ export class Daemon {
     }
 
     const threadOwner = await this.prefetchedThreadOwner(msg)
-    const result = routeRules(msg, routingRules, () => threadOwner)
+    let result = routeRules(msg, routingRules, () => threadOwner)
+    // §14.10: a room this daemon is opening is routed once its grant's rules land, not dropped while they are on their way.
+    for (const integrationId of result ? [] : (srcIntegrationIds ?? [])) {
+      if (!(await this.roomGrantLanded(integrationId, msg, ROOM_GRANT_WAIT_MS))) continue
+      routingRules = this.mergedRulesForSource(srcIntegrationIds)
+      result = routeRules(msg, routingRules, () => threadOwner)
+      break
+    }
     // Participant delivery is independent of whether the single-target ladder found an
     // owner. In a real multi-agent thread `threadOwner` intentionally returns null; the
     // joined agents (and every newly mentioned or channel-auto agent) still hear the
@@ -17386,7 +17408,12 @@ export class Daemon {
     // routing, but a stale relay route snapshot must not activate a private agent in
     // an Off conversation. Admission = a bindRule scoped to this conversation (the
     // CP ships a gated install's enabled set even in relay-managed mode).
-    if (!this.gatedAdmission(msg.integrationId, normalized)) {
+    if (
+      !this.gatedAdmission(msg.integrationId, normalized) &&
+      !(await this.roomGrantLanded(msg.integrationId, normalized, ROOM_GRANT_RELAY_WAIT_MS))
+    ) {
+      // §14.10: the room's grant is still landing, so the relay has the platform redeliver instead of refusing.
+      if (this.roomGrantOpen(msg.integrationId, normalized)) return imRejected(msg.msgId, false, 'not_ready', true)
       this.maybeGatedNotice(normalized, [msg.integrationId])
       this.log.debug(
         `relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (${normalized.platform} conversation ${normalized.channel} off)`
@@ -28986,6 +29013,69 @@ export class Daemon {
     const int = this.integrationConfigById(integrationId)
     if (!int) return true // unknown here — agent/integration existence is checked separately
     return conversationAdmitted(integrationRouting(int), msg.channel)
+  }
+
+  /** integrationId → rooms this daemon is opening for a conversation-gated agent (resource-visibility.md §14.10): how many are being made, and until when the last grant's rules may still be on their way. */
+  private readonly roomGrants = new Map<string, { making: number; until: number }>()
+
+  /** Make a room for a turn: tell the CP first, make it, then report it so the CP gives it to this agent, opened where the agent is gated; only a gated integration has a first message to hold meanwhile. */
+  private async admitRoom<T>(
+    integrationId: string,
+    origin: string,
+    make: () => Promise<{ result: T; channel?: string }>,
+    gated: boolean
+  ): Promise<T> {
+    const grant = (gated ? this.roomGrants.get(integrationId) : undefined) ?? { making: 0, until: 0 }
+    if (gated) this.roomGrants.set(integrationId, grant)
+    grant.making += 1
+    const ask = (phase: 'opening' | 'opened' | 'abandoned', channel?: string): Promise<boolean> =>
+      (
+        this.cpClient?.roomGrant({ integrationId, origin, phase, ...(channel ? { channel } : {}) }) ??
+        Promise.resolve(false)
+      ).catch((err) => {
+        this.log.warn(`room grant (${phase}) for integration ${integrationId} failed: ${formatErr(err)}`)
+        return false
+      })
+    let open = false
+    // Only an announcement the CP took has a window to close when nothing is made.
+    let announced = false
+    try {
+      announced = await ask('opening')
+      const made = await make()
+      // A gated room is reported even after a lost announcement, or it would stay closed; any other only where the CP took it.
+      if (made.channel && (gated || announced)) open = await ask('opened', made.channel)
+      else if (announced) await ask('abandoned')
+      return made.result
+    } catch (err) {
+      if (announced) await ask('abandoned')
+      throw err
+    } finally {
+      grant.making -= 1
+      // The CP replies once the rules are on their way; the grace covers their arrival.
+      if (open) grant.until = Date.now() + ROOM_GRANT_GRACE_MS
+      if (gated && !this.roomGrantLive(grant)) this.roomGrants.delete(integrationId)
+    }
+  }
+
+  private roomGrantLive(grant: { making: number; until: number } | undefined): boolean {
+    return grant !== undefined && (grant.making > 0 || grant.until > Date.now())
+  }
+
+  /** Is this a person's message in a room the platform says this bot owns, while the integration is opening one? */
+  private roomGrantOpen(integrationId: string, msg: NormalizedMessage): boolean {
+    if (msg.sender.isBot || msg.conversationBotId === undefined) return false
+    return this.roomGrantLive(this.roomGrants.get(integrationId))
+  }
+
+  /** Wait, bounded, for the rules of a room this daemon is opening; true once the conversation is admitted. */
+  private async roomGrantLanded(integrationId: string, msg: NormalizedMessage, capMs: number): Promise<boolean> {
+    const deadline = Date.now() + capMs
+    while (this.roomGrantOpen(integrationId, msg) && Date.now() < deadline) {
+      await sleepFor(ROOM_GRANT_POLL_MS)
+      const int = this.integrationConfigById(integrationId)
+      if (int && conversationAdmitted(integrationRouting(int), msg.channel)) return true
+    }
+    return false
   }
 
   /** Observed-conversation discovery, report-only: surface every human direct

@@ -190,6 +190,9 @@ export const SESSION_METADATA_ACK_FEATURE = 'session-metadata-ack-v1'
 /** CP accepts `integration/revoked`, a daemon socket's explicit credential-lifecycle report; an older CP rejects the frame, so the daemon keeps its reports instead. */
 export const INTEGRATION_REVOKED_FEATURE = 'integration-revoked-v1'
 
+/** CP answers `integration/room-grant`, opening a room a conversation-gated agent's own turn makes; a daemon asks only a CP advertising this. */
+export const ROOM_GRANT_FEATURE = 'room-grant-v1'
+
 /** CP accepts `integration/tenant`, the tenant a daemon socket's own traffic named; the daemon sends it only to a CP advertising this. */
 export const INTEGRATION_TENANT_FEATURE = 'integration-tenant-v1'
 

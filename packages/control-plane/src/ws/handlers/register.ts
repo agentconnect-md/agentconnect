@@ -59,6 +59,7 @@ import {
   GITLAB_EFFECT_V1_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
+  ROOM_GRANT_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -239,6 +240,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.socketBotRevocation ? [INTEGRATION_REVOKED_FEATURE] : []),
       // A daemon socket reports the tenant its traffic named only to a CP that records it.
       ...(deps.socketBotTenant ? [INTEGRATION_TENANT_FEATURE] : []),
+      // resource-visibility.md §14.10: this CP opens the room a gated agent's own turn makes.
+      ROOM_GRANT_FEATURE,
       // daemon-auto-upgrade.md §6: this CP opens the record of a daemon-chosen upgrade on `daemon/lifecycle/begin`.
       DAEMON_LIFECYCLE_BEGIN_FEATURE
     ]

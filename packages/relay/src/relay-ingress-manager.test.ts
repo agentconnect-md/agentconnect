@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   RdAck,
   RdMsg,
@@ -2809,6 +2809,123 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText.mock.calls[0]![0]).toBe('C9')
     await internals.forward(BOT_ID, mention(M2, '2.2'))
     expect(ingest.postText).toHaveBeenCalledTimes(2)
+  })
+
+  // resource-visibility.md §14.10: a gated member's own new room is held, not refused, while its route is on the way.
+  describe('a room a gated member is opening', () => {
+    const ROOM = 'C0ROOM'
+    const first = (over: Partial<WireNormalizedMessage> = {}) =>
+      dm({
+        msgId: `slack:${ROOM}:1720000000.000100`,
+        channel: ROOM,
+        isDm: false,
+        thread: ROOM,
+        text: '<@UBOT> build the thing',
+        mentionedBots: ['UBOT'],
+        conversationBotId: 'UBOT',
+        ...over
+      })
+    const opening = (routes: BotAssignment['routes'] = [], roomOpeningMs: number | undefined = 30_000) => ({
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      agents: [{ agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }],
+      routes,
+      gatedAgentIds: [AGENT_ID],
+      noticeAuthority: SELF_RELAY,
+      ...(roomOpeningMs ? { roomOpeningMs } : {})
+    })
+    const roomRoute = {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID,
+      scope: { channel: ROOM },
+      match: { kind: 'mention' as const }
+    }
+    const setup = (clock = new FakeClock(1_720_000_000_000)) => {
+      const sendMsg = vi.fn(async (msg: RdMsgIm): Promise<RdAck> => ({
+        msgId: msg.msgId,
+        accepted: true,
+        routeAdmission: 'admitted'
+      }))
+      const daemon = { sendMsg, supports: () => true } as unknown as RelayDaemonConnection
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, clock }))
+      const internals = internalsOf(manager)
+      const ingest = fakeIngest()
+      internals.router.upsert(gatedAssignment())
+      internals.slackPool.set(BOT_ID, ingest)
+      return { manager, internals, ingest, sendMsg, clock }
+    }
+    afterEach(() => vi.useRealTimers())
+
+    it('asks for a redelivery instead of answering with the notice', async () => {
+      vi.useFakeTimers()
+      const { manager, internals, ingest, sendMsg } = setup()
+      manager.updateRoutes(BOT_ID, opening())
+
+      const outcome = internals.forward(BOT_ID, first())
+      await vi.advanceTimersByTimeAsync(1_200)
+
+      expect(await outcome).toBe('retry')
+      expect(ingest.postText).not.toHaveBeenCalled()
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('delivers the message once the room’s route arrives', async () => {
+      const { manager, internals, ingest, sendMsg } = setup()
+      manager.updateRoutes(BOT_ID, opening())
+
+      const outcome = internals.forward(BOT_ID, first())
+      manager.updateRoutes(BOT_ID, opening([roomRoute], undefined))
+
+      expect(await outcome).toBe('accepted')
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, chatId: ROOM })
+      expect(ingest.postText).not.toHaveBeenCalled()
+    })
+
+    it('keeps the message from the bot’s default agent while the route is on the way', async () => {
+      const { manager, internals, sendMsg } = setup()
+      const publicRoute = {
+        agentId: OTHER_AGENT_ID,
+        daemonId: DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'keyword' as const, value: 'public' }
+      }
+      const mixed = (routes: BotAssignment['routes'], roomOpeningMs?: number) => ({
+        ...opening(routes, roomOpeningMs),
+        members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID, OTHER_AGENT_ID] }],
+        agents: [
+          { agentId: AGENT_ID, name: 'agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+          { agentId: OTHER_AGENT_ID, name: 'public', daemonId: DAEMON_ID, integrationId: OTHER_INTEGRATION_ID }
+        ],
+        defaultAgentId: OTHER_AGENT_ID,
+        defaultDaemonId: DAEMON_ID
+      })
+      manager.updateRoutes(BOT_ID, mixed([publicRoute], 30_000))
+
+      const outcome = internals.forward(BOT_ID, first({ text: 'build the thing', mentionedBots: [] }))
+      manager.updateRoutes(BOT_ID, mixed([roomRoute, publicRoute]))
+
+      expect(await outcome).toBe('accepted')
+      expect(sendMsg.mock.calls.map(([msg]) => msg.agentId)).toEqual([AGENT_ID])
+    })
+
+    it('answers with the notice again once the window has passed', async () => {
+      const { manager, internals, ingest, clock } = setup()
+      manager.updateRoutes(BOT_ID, opening())
+      clock.advance(30_001)
+
+      expect(await internals.forward(BOT_ID, first())).toBe('accepted')
+      expect(ingest.postText).toHaveBeenCalledTimes(1)
+    })
+
+    it('holds nothing in a room the bot does not own', async () => {
+      const { manager, internals, ingest } = setup()
+      manager.updateRoutes(BOT_ID, opening())
+
+      const { conversationBotId: _unowned, ...elsewhere } = first()
+      expect(await internals.forward(BOT_ID, elsewhere)).toBe('accepted')
+      expect(ingest.postText).toHaveBeenCalledTimes(1)
+    })
   })
 
   // resource-visibility.md §14.9: on a bot with no gated member, an Off still answers an address.

@@ -58,6 +58,8 @@ import type {
   IntegrationRevoked,
   IntegrationTenant,
   IntegrationRevokedOk,
+  IntegrationRoomGrant,
+  IntegrationRoomGrantOk,
   CronReport,
   HookReport,
   HookPreparing,
@@ -181,6 +183,7 @@ import {
   WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
+  ROOM_GRANT_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   KNOWLEDGE_RECORD_FEATURE,
   AGENT_MEMORY_HISTORY_READ_V1_FEATURE,
@@ -1066,6 +1069,25 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected integration/revoked/ok, got ${rep.type}`, false)
     }
     return rep.payload as IntegrationRevokedOk
+  }
+
+  /** Whether this CP opens a room a conversation-gated agent's own turn makes ({@link ROOM_GRANT_FEATURE}). */
+  grantsRooms(): boolean {
+    return this.connected() && this.supportsServerFeature(ROOM_GRANT_FEATURE)
+  }
+
+  /** D→C `integration/room-grant` REQ: whether the room is, or will be, open to the integration's agent; false from a CP that does not grant rooms. */
+  async roomGrant(payload: IntegrationRoomGrant): Promise<boolean> {
+    if (!this.grantsRooms()) return false
+    const rep = await this.request(
+      'integration/room-grant',
+      payload,
+      this.deps.orgForIntegration?.(payload.integrationId)
+    )
+    if (rep.type !== 'integration/room-grant/ok') {
+      throw new WireError('INTERNAL', `expected integration/room-grant/ok, got ${rep.type}`, false)
+    }
+    return (rep.payload as IntegrationRoomGrantOk).open
   }
 
   /**

@@ -6921,6 +6921,8 @@ export interface IntegrationChannelRepo {
     activation: ChannelActivation,
     opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null>
+  /** Open a conversation still at its Off default (resource-visibility.md §14.10); a trigger a person chose is left alone. True when the row exists and is not Off afterwards. */
+  openDefaulted(integrationId: IntegrationId, channelId: string, trigger: 'mention' | 'any'): Promise<boolean>
   /** Per-conversation session mode; returns null when the row doesn't exist. No `chosen`
    *  twin: the stored default is unambiguous, so nothing has to tell it from a decision. */
   setSessionMode(

@@ -99,6 +99,8 @@ export interface BotAssignment {
   offChannels?: string[]
   /** §14.3: the relayId that posts this bot's CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
+  /** §14.10: ms from receipt in which a gated member's own new room may still be opening. */
+  roomOpeningMs?: number
   /** Per-conversation defaults (linear-integration.md §6.2): the ladder rung between
    *  the unscoped keyword slug and `defaultAgentId`, and the grant a gated agent holds
    *  where a conversation row's owner compiles to a default instead of a route. */
@@ -125,6 +127,7 @@ export type RoutesPatch = Pick<
   | 'mutedChannels'
   | 'offChannels'
   | 'noticeAuthority'
+  | 'roomOpeningMs'
   | 'conversationDefaults'
   | 'routedConversations'
 >
@@ -144,6 +147,7 @@ export function toRoutesPatch(r: RcRoutes): RoutesPatch {
     mutedChannels: r.mutedChannels,
     offChannels: r.offChannels,
     ...(r.noticeAuthority ? { noticeAuthority: r.noticeAuthority } : {}),
+    ...(r.roomOpeningMs ? { roomOpeningMs: r.roomOpeningMs } : {}),
     conversationDefaults: r.conversationDefaults
   }
 }
@@ -277,6 +281,7 @@ export class BotArbitrationRouter {
     a.mutedChannels = patch.mutedChannels
     a.offChannels = patch.offChannels
     a.noticeAuthority = patch.noticeAuthority
+    a.roomOpeningMs = patch.roomOpeningMs
     // An owner edit converges through here, so the defaults are replaced with the routes:
     // otherwise a connected relay keeps the old default — and the old grant — forever.
     a.conversationDefaults = patch.conversationDefaults
@@ -944,6 +949,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     offChannels: a.offChannels,
     conversationDefaults: a.conversationDefaults,
     ownerAsDefault: a.ownerAsDefault,
-    ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
+    ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {}),
+    ...(a.roomOpeningMs ? { roomOpeningMs: a.roomOpeningMs } : {})
   }
 }
