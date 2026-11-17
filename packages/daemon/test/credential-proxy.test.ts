@@ -11,7 +11,7 @@ import { generateCa } from '@anthropic-ai/sandbox-runtime'
 import { createMitmCA } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-ca.js'
 import { mintLeafCert } from '@anthropic-ai/sandbox-runtime/dist/sandbox/mitm-leaf.js'
 import { loadProxyCa, operatorAuthorities, proxyTrustEnv, upstreamAuthorities } from '../src/credential-proxy/ca.js'
-import { graphqlOperationTypes } from '../src/credential-proxy/graphql-operation.js'
+import { executedOperation, graphqlOperations } from '../src/credential-proxy/graphql-operation.js'
 import { githubRoute, graphqlRepository } from '../src/credential-proxy/github-route.js'
 import {
   hostKey,
@@ -113,25 +113,47 @@ describe('the proxy CA', () => {
   })
 })
 
-describe('GraphQL operation types', () => {
+describe('GraphQL operations', () => {
   it.each([
-    ['{ viewer { login } }', ['query']],
-    ['query Q($o: String!) { repository(owner: $o) { id } }', ['query']],
-    ['mutation M { addComment(input: {}) { clientMutationId } }', ['mutation']],
-    ['query A { a } mutation B { b }', ['query', 'mutation']],
-    ['fragment F on R { id } query { ...F }', ['query']],
-    ['query { a(s: "mutation { x }") }', ['query']],
-    ['query { a(s: """ } mutation { """) }', ['query']],
-    ['# mutation { x }\n{ a }', ['query']],
-    ['query Q($i: In = {mutation: 1}) { a }', ['query']],
-    ['subscription { s }', ['subscription']]
+    ['{ viewer { login } }', [{ type: 'query' }]],
+    ['query Q($o: String!) { repository(owner: $o) { id } }', [{ type: 'query', name: 'Q' }]],
+    ['mutation M { addComment(input: {}) { clientMutationId } }', [{ type: 'mutation', name: 'M' }]],
+    [
+      'query A { a } mutation B { b }',
+      [
+        { type: 'query', name: 'A' },
+        { type: 'mutation', name: 'B' }
+      ]
+    ],
+    ['fragment F on R { id } query { ...F }', [{ type: 'query' }]],
+    ['query { a(s: "mutation { x }") }', [{ type: 'query' }]],
+    ['query { a(s: """ } mutation { """) }', [{ type: 'query' }]],
+    ['# mutation { x }\n{ a }', [{ type: 'query' }]],
+    ['query Q($i: In = {mutation: 1}) { a }', [{ type: 'query', name: 'Q' }]],
+    ['mutation # a comment\n  Named($x: ID!) { a }', [{ type: 'mutation', name: 'Named' }]],
+    ['subscription { s }', [{ type: 'subscription' }]]
   ])('reads %s', (document, expected) => {
-    expect(graphqlOperationTypes(document)).toEqual(expected)
+    expect(graphqlOperations(document)).toEqual(expected)
   })
 
   it.each(['{ a', 'query { a } }', 'query { a(s: "open) }', 'query', ''])('refuses %j as unreadable', (document) => {
-    const types = graphqlOperationTypes(document)
-    expect(types === undefined || types.length === 0).toBe(true)
+    const operations = graphqlOperations(document)
+    expect(operations === undefined || operations.length === 0).toBe(true)
+  })
+
+  it('executes the operation operationName names, else the only one', () => {
+    const both = 'query Read { a } mutation Write { b }'
+    expect(executedOperation(both, 'Write')).toEqual({ type: 'mutation', name: 'Write' })
+    expect(executedOperation(both, 'Read')).toEqual({ type: 'query', name: 'Read' })
+    expect(executedOperation('mutation { b }', null)).toEqual({ type: 'mutation' })
+    for (const [document, name] of [
+      [both, undefined],
+      [both, 'Missing'],
+      ['query A { a } query A { b }', 'A'],
+      [both, 7],
+      ['{ a', undefined]
+    ] as const)
+      expect(executedOperation(document, name)).toHaveProperty('refused')
   })
 })
 
@@ -288,7 +310,7 @@ describe('the decision for one request', () => {
     expect(mint).toHaveBeenCalledTimes(1)
   })
 
-  it('lets a GraphQL query read the repository its variables name, and refuses a mutation', async () => {
+  it('lets a GraphQL query read the repository its variables name, and refuses a mutation that names no node', async () => {
     const { proxy, mint, placeholder } = proxyFor({ workspace: 'o/ws' })
     const graphql = (body: unknown) =>
       new Request('https://api.github.com/graphql', {

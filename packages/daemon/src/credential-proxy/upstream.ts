@@ -36,16 +36,41 @@ export class UpstreamAnswerTooLarge extends Error {
 }
 
 /** GET `path` on `hostname:port` over HTTPS: through the outbound proxy unless NO_PROXY names the host, else a guarded direct dial. */
-export async function upstreamGet(
+export function upstreamGet(
   hostname: string,
   port: number,
   path: string,
   headers: Record<string, string>,
   route: UpstreamRoute
 ): Promise<UpstreamAnswer> {
+  return upstreamRequest('GET', hostname, port, path, headers, route)
+}
+
+/** POST `body` to `path` on `hostname:port` over HTTPS, by the same route as `upstreamGet`. */
+export function upstreamPost(
+  hostname: string,
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+  body: string,
+  route: UpstreamRoute
+): Promise<UpstreamAnswer> {
+  return upstreamRequest('POST', hostname, port, path, headers, route, body)
+}
+
+async function upstreamRequest(
+  method: 'GET' | 'POST',
+  hostname: string,
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+  route: UpstreamRoute,
+  body?: string
+): Promise<UpstreamAnswer> {
   const authority = port === 443 ? hostname : `${hostname}:${port}`
   const ca = route.trustedCa !== undefined && route.trustedCa.length > 0 ? { ca: route.trustedCa } : {}
-  const base: RequestOptions = { method: 'GET', path, headers: { ...headers, host: authority }, ...ca }
+  const length = body !== undefined ? { 'content-length': String(Buffer.byteLength(body)) } : {}
+  const base: RequestOptions = { method, path, headers: { ...headers, ...length, host: authority }, ...ca }
   const parent =
     route.parentProxy && !shouldBypassParentProxy(route.parentProxy, hostname)
       ? selectParentProxyUrl(route.parentProxy, { isHttps: true })
@@ -78,7 +103,7 @@ export async function upstreamGet(
       })
       req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error('the upstream did not answer in time')))
       req.on('error', reject)
-      req.end()
+      req.end(body)
     })
   } finally {
     // The tunnel is this request's alone; released even when the request failed before its TLS session took it over.

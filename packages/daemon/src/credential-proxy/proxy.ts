@@ -16,7 +16,14 @@ import {
 } from '@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js'
 import type { RequestDecision, RequestInfo } from '@anthropic-ai/sandbox-runtime/dist/sandbox/request-filter.js'
 import type { ProxyCa } from './ca.js'
-import { graphqlOperationTypes } from './graphql-operation.js'
+import { executedOperation } from './graphql-operation.js'
+import {
+  attributeMutation,
+  idCandidates,
+  nodeOwners,
+  NODE_REPOSITORY_QUERY,
+  type LookupRound
+} from './graphql-attribution.js'
 import { githubRoute, graphqlRepository } from './github-route.js'
 import {
   hostKey,
@@ -30,7 +37,13 @@ import {
   type ProxyRepository
 } from './instance-route.js'
 import { requestPath, type InstanceRoute } from './route-descriptor.js'
-import { upstreamGet, UpstreamAnswerTooLarge, type UpstreamAnswer, type UpstreamRoute } from './upstream.js'
+import {
+  upstreamGet,
+  upstreamPost,
+  UpstreamAnswerTooLarge,
+  type UpstreamAnswer,
+  type UpstreamRoute
+} from './upstream.js'
 import { looksLikePlaceholder, openPlaceholder, sealPlaceholder, type OpenedClaims } from './placeholder.js'
 import {
   providerKeyPlaceholders,
@@ -50,9 +63,9 @@ const PROVIDER_KEY_TTL_MS = 60_000
 /** A GraphQL body larger than this is refused rather than buffered. */
 const MAX_GRAPHQL_BODY_BYTES = 1 << 20
 
-/** How a write that GraphQL would carry is made instead. */
-const GRAPHQL_WRITE_REFUSAL =
-  'GraphQL writes are not available with this agent’s credential. Use the githubPullRequest, githubIssue or githubComment tool, or the REST API (`gh api -X POST …`).'
+/** A mutation whose targets are not in its variables cannot be placed in a repository. */
+const GRAPHQL_NO_TARGET =
+  'this mutation names no node ID in its variables (under `id`, `…Id` or `…Ids`); pass them as variables, or use the REST API (`gh api -X POST …`) or the githubPullRequest, githubIssue or githubComment tool'
 
 /** What one request needs minted: a repository on an instance (none names the workspace), for git or the API. */
 export interface MintAsk {
@@ -550,7 +563,7 @@ export class CredentialProxy {
     const scheme = routeDescriptor(instance.provider)?.basicAuthorization ? 'basic' : carried.authorization?.scheme
     const ask =
       instance.provider === 'github'
-        ? await this.githubAsk(request, claims.agentId, hostname, target)
+        ? await this.githubAsk(request, claims.agentId, hostname, port, target)
         : await this.instanceAsk(claims.agentId, instance, request, { hostname, port, target, scheme })
     if (ask === 'anonymous')
       return {
@@ -780,6 +793,7 @@ export class CredentialProxy {
     request: Request,
     agentId: string,
     host: string,
+    port: number,
     target: string
   ): Promise<MintAsk | RequestDecision | 'anonymous'> {
     const route = githubRoute(host, request.method, target)
@@ -796,9 +810,11 @@ export class CredentialProxy {
       case 'graphql': {
         const body = await this.graphqlBody(request)
         if (typeof body === 'string') return deny(400, body)
-        const types = typeof body.query === 'string' ? graphqlOperationTypes(body.query) : undefined
-        if (!types || types.length === 0) return deny(400, 'the GraphQL document could not be read')
-        if (types.some((type) => type !== 'query')) return deny(403, GRAPHQL_WRITE_REFUSAL)
+        if (typeof body.query !== 'string') return deny(400, 'the GraphQL request carries no document')
+        const operation = executedOperation(body.query, body.operationName)
+        if ('refused' in operation) return deny(400, operation.refused)
+        if (operation.type === 'subscription') return deny(403, 'GraphQL subscriptions are not available')
+        if (operation.type === 'mutation') return await this.githubMutation(agentId, body.variables, host, port)
         const repo = graphqlRepository(body.variables) ?? this.deps.workspaceRepo(agentId)
         if (!repo) return deny(403, 'the GraphQL request names no repository this agent can read')
         return { provider: 'github', repo, plane: 'api', readOnly: true }
@@ -814,7 +830,98 @@ export class CredentialProxy {
     }
   }
 
-  private async graphqlBody(request: Request): Promise<{ query?: unknown; variables?: unknown } | string> {
+  /** A mutation's ask: the token of the one authorized repository its node IDs belong to, at the agent's tier there (§ GraphQL writes). */
+  private async githubMutation(
+    agentId: string,
+    variables: unknown,
+    host: string,
+    port: number
+  ): Promise<MintAsk | RequestDecision> {
+    const candidates = idCandidates(variables)
+    if (candidates === 'too-many') return deny(400, 'this mutation names more node IDs than the proxy checks')
+    if (candidates.length === 0) return deny(403, GRAPHQL_NO_TARGET)
+    const workspace = this.deps.workspaceRepo(agentId)
+    const additional = (this.deps.repositoriesOf?.(agentId, 'github') ?? []).map((row) => row.repoFullName)
+    const repositories = [...new Set([...(workspace ? [workspace] : []), ...additional].map((r) => r.toLowerCase()))]
+    const attribution = await attributeMutation(candidates, repositories, (repo, ids) =>
+      this.lookupNodes(agentId, repo, ids, host, port)
+    )
+    if ('refused' in attribution) return deny(attribution.refused.status, attribution.refused.reason)
+    return { provider: 'github', repo: attribution.repo, plane: 'api', readOnly: false }
+  }
+
+  /** One lookup round: which of `ids` belong where, asked with `repo`'s read token, which resolves that repository's nodes alone. */
+  private async lookupNodes(
+    agentId: string,
+    repo: string,
+    ids: readonly string[],
+    host: string,
+    port: number
+  ): Promise<LookupRound> {
+    const body = JSON.stringify({ query: NODE_REPOSITORY_QUERY, variables: { ids } })
+    // One retry after a 401, with the rejected token dropped, as a forwarded request's next one would be.
+    for (let attempt = 0; ; attempt += 1) {
+      let minted: MintedCredential
+      try {
+        minted = await this.deps.mint(agentId, { provider: 'github', repo, plane: 'api', readOnly: true })
+      } catch (err) {
+        // An authorization withdrawn since the spec arrived: this repository answers for nothing.
+        this.deps.log.warn(`credential proxy: no read token for ${agentId} on ${repo}: ${(err as Error).message}`)
+        return { skip: true }
+      }
+      let answer: UpstreamAnswer
+      try {
+        answer = await upstreamPost(
+          host,
+          port,
+          '/graphql',
+          {
+            authorization: authorization('bearer', minted),
+            accept: 'application/json',
+            'content-type': 'application/json',
+            'user-agent': 'agentconnect-credential-proxy'
+          },
+          body,
+          this.upstreamRoute(port)
+        )
+      } catch (err) {
+        this.deps.log.warn(`credential proxy: node lookup on ${repo} failed: ${(err as Error).message}`)
+        return { fail: { status: 502, reason: 'GitHub could not be reached to check this mutation' } }
+      }
+      if (answer.status === 401 && attempt === 0) {
+        minted.invalidate?.()
+        continue
+      }
+      const after = answer.headers['retry-after']
+      if (
+        answer.status === 429 ||
+        (answer.status === 403 && (after || answer.headers['x-ratelimit-remaining'] === '0'))
+      )
+        return {
+          fail: {
+            status: 429,
+            reason: `GitHub is rate limiting this identity${after ? ` (Retry-After: ${after})` : ''}`
+          }
+        }
+      // Any other refusal of this repository's token, such as an organization's SAML enforcement: it answers for nothing.
+      if (answer.status === 403) return { skip: true }
+      if (answer.status !== 200)
+        return { fail: { status: 502, reason: `GitHub answered ${answer.status} when this mutation was checked` } }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(answer.body.toString('utf8'))
+      } catch {
+        return { fail: { status: 502, reason: 'GitHub answered this mutation check with something unreadable' } }
+      }
+      const owners = nodeOwners(parsed, ids)
+      if (!owners) return { fail: { status: 502, reason: 'GitHub answered this mutation check with an error' } }
+      return { owners }
+    }
+  }
+
+  private async graphqlBody(
+    request: Request
+  ): Promise<{ query?: unknown; variables?: unknown; operationName?: unknown } | string> {
     const length = Number(request.headers.get('content-length') ?? '0')
     if (length > MAX_GRAPHQL_BODY_BYTES) return 'the GraphQL request is too large'
     const text = await request.text()
@@ -823,7 +930,7 @@ export class CredentialProxy {
       const parsed = JSON.parse(text) as unknown
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
         return 'the GraphQL request is not a single JSON object'
-      return parsed as { query?: unknown; variables?: unknown }
+      return parsed as { query?: unknown; variables?: unknown; operationName?: unknown }
     } catch {
       return 'the GraphQL request is not JSON'
     }

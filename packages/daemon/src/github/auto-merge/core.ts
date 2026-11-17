@@ -189,7 +189,7 @@ function toCheck(node: Record<string, unknown>): PrCheck {
   return { name: String(node.name ?? ''), outcome }
 }
 
-/** Squash-merge through REST (the proxy carries GraphQL read-only), pinned by `sha` to the head judged, with nothing awaited between the last abort check and the request. */
+/** Squash-merge through REST, pinned by `sha` to the head judged, with nothing awaited between the last abort check and the request. */
 export async function squashMerge(
   access: GithubAccess,
   repoFullName: string,
