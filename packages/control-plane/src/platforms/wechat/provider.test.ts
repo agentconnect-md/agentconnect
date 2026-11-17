@@ -31,6 +31,15 @@ describe('WeChat Control Plane provider', () => {
     ).resolves.toMatchObject({ apiUrl: 'https://sz.ilinkai.weixin.qq.com' })
   })
 
+  it('names the member who scanned the bot in as the owner of its sender’s DM', () => {
+    const { dmOwnerMember } = createWeChatCpProvider({})
+    const bound = bot({ wechatUserId: 'u@im.wechat', boundMemberUserId: 'member-1' })
+    expect(dmOwnerMember?.(bound, 'u@im.wechat')).toBe('member-1')
+    expect(dmOwnerMember?.(bound, 'other@im.wechat')).toBeNull()
+    expect(dmOwnerMember?.(bot({ wechatUserId: 'u@im.wechat' }), 'u@im.wechat')).toBeNull()
+    expect(dmOwnerMember?.(bot(null), 'u@im.wechat')).toBeNull()
+  })
+
   it('withholds the payload when the binding is incomplete', async () => {
     const provider = createWeChatCpProvider({})
     await expect(provider.projectIntegrationConfig(integration, bot(null), core, secrets)).resolves.toBeUndefined()

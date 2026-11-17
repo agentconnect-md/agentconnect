@@ -12,6 +12,7 @@ import { createTelegramCpProvider } from '../../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
 import { createGoogleChatCpProvider } from '../../platforms/googlechat/provider.js'
 import { createMsTeamsCpProvider } from '../../platforms/msteams/provider.js'
+import { createWeChatCpProvider } from '../../platforms/wechat/provider.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -467,6 +468,78 @@ describe('handleEventSession', () => {
           classification: { visibility: 'private', ownerIdentity: 'user:u1', source: 'default' }
         })
       )
+    })
+  })
+
+  describe('a WeChat DM belongs to the member who bound its bot', () => {
+    const wechatBot = (platformConfig: Record<string, string>) => ({
+      id: BOT_ID,
+      orgId: ORG_ID,
+      platform: 'wechat',
+      platformConfig,
+      revokedAt: null
+    })
+    async function classifyWeChatDm(listForAgent: () => Promise<unknown>, bot: unknown = null) {
+      const recordMilestone = vi.fn().mockResolvedValue(recorded())
+      const getBot = vi.fn().mockResolvedValue(bot)
+      const deps = scopedDeps({
+        platforms: buildCpPlatformRegistry([createWeChatCpProvider({})]),
+        session: { recordMilestone, getExternalAccessPolicy: vi.fn(async () => null) },
+        integration: { listForAgent: vi.fn(listForAgent) },
+        bot: { get: getBot },
+        events: { publish: vi.fn() }
+      })
+      const frame = eventSessionFrame()
+      Object.assign(frame.payload as Record<string, unknown>, {
+        platform: 'wechat',
+        channel: 'dm:wx-user@im.wechat',
+        conversationKind: 'dm',
+        transportScope: 'ilink',
+        triggeredBy: 'wx-user@im.wechat'
+      })
+      await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+      const [call] = recordMilestone.mock.calls[0] as [{ classification: unknown }]
+      return { classification: call.classification, getBot }
+    }
+    const integration = { id: INTEGRATION_ID, agentId: AGENT_ID, botId: BOT_ID, orgId: ORG_ID, platform: 'wechat' }
+
+    it('keeps the DM private to the member who scanned the bot in', async () => {
+      const bot = wechatBot({ wechatUserId: 'wx-user@im.wechat', boundMemberUserId: 'member-1' })
+      const { classification, getBot } = await classifyWeChatDm(async () => [integration], bot)
+      expect(classification).toEqual({ visibility: 'private', ownerIdentity: 'user:member-1', source: 'default' })
+      expect(getBot).toHaveBeenCalledWith(ORG_ID, BOT_ID)
+    })
+
+    it('keeps the DM private to its sender when none of the agent’s bots binds that sender', async () => {
+      const bot = wechatBot({ wechatUserId: 'someone-else@im.wechat', boundMemberUserId: 'member-1' })
+      const { classification } = await classifyWeChatDm(async () => [integration], bot)
+      expect(classification).toEqual({
+        visibility: 'private',
+        ownerIdentity: 'wechat:ilink:wx-user@im.wechat',
+        source: 'default'
+      })
+    })
+
+    it('reads only the agent’s own WeChat integrations in its org', async () => {
+      const bot = wechatBot({ wechatUserId: 'wx-user@im.wechat', boundMemberUserId: 'member-1' })
+      const others = [
+        { ...integration, platform: 'slack' },
+        { ...integration, orgId: 'org-2' }
+      ]
+      const { classification, getBot } = await classifyWeChatDm(async () => others, bot)
+      expect(classification).toMatchObject({ visibility: 'private', ownerIdentity: 'wechat:ilink:wx-user@im.wechat' })
+      expect(getBot).not.toHaveBeenCalled()
+    })
+
+    it('keeps the DM private when the binding cannot be read', async () => {
+      const { classification } = await classifyWeChatDm(async () => {
+        throw new Error('db unavailable')
+      })
+      expect(classification).toEqual({
+        visibility: 'private',
+        ownerIdentity: 'wechat:ilink:wx-user@im.wechat',
+        source: 'default'
+      })
     })
   })
 

@@ -106,6 +106,26 @@ describe('classifySession — the §4.2 default rules', () => {
     ).toEqual({ visibility: 'private', ownerIdentity: 'slack:T024BE7LD:U0123', source: 'default' })
   })
 
+  it('classifies an IM DM private to the member its bot bound the sender to, whatever the platform names', () => {
+    const dm = { platform: 'wechat', conversationKind: 'dm' as const, transportScope: 'ilink', triggeredBy: 'wx1' }
+    expect(classifySession({ ...dm, platformNamesPeople: false, dmOwnerUserId: 'member-1' })).toEqual({
+      visibility: 'private',
+      ownerIdentity: 'user:member-1',
+      source: 'default'
+    })
+    // No binding matched: private to the sender's chat identity, never opened to the org.
+    expect(classifySession({ ...dm, platformNamesPeople: false, dmOwnerUserId: null })).toEqual({
+      visibility: 'private',
+      ownerIdentity: 'wechat:ilink:wx1',
+      source: 'default'
+    })
+    // A group conversation keeps its own rule.
+    expect(classifySession({ ...dm, conversationKind: 'channel', dmOwnerUserId: 'member-1' })).toMatchObject({
+      visibility: 'org',
+      ownerIdentity: 'wechat:ilink:wx1'
+    })
+  })
+
   it('classifies an IM DM org, still recording its sender, where the platform cannot name people', () => {
     const dm = {
       conversationKind: 'dm' as const,

@@ -52,6 +52,8 @@ export interface SessionClassificationInput {
   ownerIsServiceAccount?: boolean
   /** Whether the console can tell who this platform's chat members are; only an explicit `false` opens an owned DM to the org. */
   platformNamesPeople?: boolean
+  /** Present ⇒ the DM's bot binds its sender to a console member at install: that member, or null when no binding matched. */
+  dmOwnerUserId?: string | null
 }
 
 /** A settled classification, or the marker that the row must inherit (§4.5). */
@@ -82,6 +84,7 @@ function imOwnerIdentity(input: SessionClassificationInput): string | null {
  * | webchat / Playground          | `private`       | `user:<WebchatConversation.userId>` |
  * | Web API launch (§4.4)         | `private`       | `user:<launch principal>`        |
  * | cron / hook / dream           | `org`           | null                             |
+ * | IM DM, sender bound at install| `private`       | `user:<bound member>`            |
  * | IM DM, platform names people  | `private`       | `<platform>:<scope>:<uid>`       |
  * | IM DM, platform cannot        | `org`           | `<platform>:<scope>:<uid>`       |
  * | IM group DM / channel / absent| `org`           | `<platform>:<scope>:<uid>`       |
@@ -132,6 +135,11 @@ export function classifySession(input: SessionClassificationInput): SessionClass
   // IM: a group DM is `org` like a channel, since one owner cannot cover its participants; the owner stays for §4.3.
   const ownerIdentity = imOwnerIdentity(input)
   if (input.conversationKind !== 'dm') return { visibility: 'org', ownerIdentity, source: 'default' }
+  // A sender the install bound to a member is that member's; an unmatched one stays private to its chat identity.
+  if (input.dmOwnerUserId !== undefined) {
+    const owner = input.dmOwnerUserId ? `user:${input.dmOwnerUserId}` : ownerIdentity
+    return { visibility: 'private', ownerIdentity: owner, source: 'default' }
+  }
   // A DM is private to its sender only where the console can recognize them; elsewhere that owner would match no one.
   const visibility: SessionVisibility = ownerIdentity && input.platformNamesPeople === false ? 'org' : 'private'
   return { visibility, ownerIdentity, source: 'default' }
