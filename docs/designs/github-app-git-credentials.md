@@ -922,13 +922,13 @@ document it cannot parse is refused. A query is forwarded as today.
 `gh` names a mutation's targets by node ID, not by owner and name:
 `addComment` takes `subjectId`, `closeIssue` takes `issueId`, `createIssue` and
 `createPullRequest` take `repositoryId`, and `addLabelsToLabelable` takes
-`labelableId` and `labelIds`. It sends them as variables, under `input`. Before
-the mutation, it reads the object through a query whose variables name the
-repository (for example `repository(owner, name) { issue(number) { id } }`).
-So the proxy attributes a mutation to a repository in this order:
+`labelableId` and `labelIds`. It sends them as variables, under `input`, and
+names no owner or repository. So the proxy asks GitHub which repository the IDs
+belong to, and attributes a mutation in this order:
 
 1. **Named.** The variables carry `owner` with `name` or `repo`.
-2. **Remembered.** Every candidate ID is already in the agent's node cache.
+2. **Remembered.** Every candidate ID is already in the agent's node cache from
+   an earlier lookup.
 3. **Looked up.** The proxy asks GitHub which repository each remaining ID
    belongs to with a read-only query,
    `nodes(ids: [...]) { ... on RepositoryNode { repository { nameWithOwner } } ... on Repository { nameWithOwner } }`,
@@ -954,14 +954,21 @@ Then:
 - the candidates span two or more repositories: refused, naming REST and the
   tools.
 
-**The node cache.** IDs a lookup resolved, and IDs in the response to a query
-whose variables name an authorized repository, are cached against that
-repository, per agent, in a bounded cache. An ID learned from a response may in
-fact belong to another repository, such as a fork's head; the token is still
-scoped to the cached one, so such an error fails closed. When GitHub answers a
-mutation with `NOT_FOUND` or `FORBIDDEN`, the proxy drops the cache entries
-for that request's IDs, so a transferred issue is looked up afresh next time.
-It never retries the mutation.
+**The node cache.** Only lookups fill the cache: each ID is cached against the
+repository GitHub reported, per agent, in a bounded cache, so the first write
+to an object costs one read and later writes to it cost none. When GitHub
+answers a mutation with `NOT_FOUND` or `FORBIDDEN`, the proxy drops the cache
+entries for that request's IDs, so a transferred issue is looked up afresh next
+time. It never retries the mutation.
+
+`gh` reads the object it is about to change through a query whose variables
+name the repository (for example `repository(owner, name) { issue(number) { id } }`),
+so the proxy could learn the IDs in that response and skip the first lookup.
+That is left out: it would make the proxy read every query response, and an
+object a response reaches through another repository, such as a fork's head,
+would be cached against the wrong one. The token would still be scoped to the
+cached repository, so such an error would fail closed; it can be added later if
+the lookup's latency matters.
 
 **Limits.** Each lookup round costs one read request. An agent authorized
 across many repositories, such as through an installation-wide grant, can need
