@@ -15,7 +15,8 @@ import type { AzureDevOpsUserAuthzService } from './user-authz.js'
 export const AZURE_STALE_REASON_TEXT: Record<RepoGrantStaleReason, string> = {
   access_lost: 'the member who authorized it no longer has that access on Azure DevOps',
   identity_unlinked: 'the member who authorized it no longer has a linked Microsoft identity',
-  attester_removed: 'it has no recorded authorizer; save the workspace or authorize the repository again'
+  attester_removed: 'it has no recorded authorizer; save the workspace or authorize the repository again',
+  repository_unreachable: 'the repository can no longer be reached'
 }
 
 interface AzureDevOpsReattestorDeps extends Omit<

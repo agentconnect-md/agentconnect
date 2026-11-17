@@ -524,7 +524,7 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** The tenant this bot's chat members are matched to console accounts under (Slack's workspace, Feishu/Lark's region), against the identities a user linked at sign-in; null when the bot asserts none. Pure. Absent ⇒ this platform's chat members cannot be matched, so anyone in a conversation takes chat actions there even while its session access is synced. */
   chatMemberTenant?(bot: BotRecord): string | null
 
-  /** The console member a DM from `sender` belongs to because this bot's install bound them; null when it binds no member to that sender. Pure. Absent ⇒ a DM's owner is only its sender's chat identity (session-visibility.md §4.2). */
+  /** The console member a DM from `sender` belongs to because this bot's install bound them; null when it binds no member to that sender. Per sender, unlike {@link boundMemberUserId}: a bot may belong to one member yet take DMs from others. Pure. Absent ⇒ a DM's owner is only its sender's chat identity (session-visibility.md §4.2). */
   dmOwnerMember?(bot: BotRecord, sender: string): string | null
 
   // Recognize conversations from daemons predating this platform's source binding.
@@ -539,6 +539,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
 
   /** Whether a bot whose last install was removed is deleted rather than kept freed (§10.5: a claimed customer row is released for a new claim). Absent ⇒ kept. */
   releasesFreedBot?(bot: BotRecord): boolean
+
+  /** The one member this bot exists for, so removing them from the organization deletes it with its installs; null when it is the organization's. Pure. Absent ⇒ no bot of this platform belongs to one member. */
+  boundMemberUserId?(bot: BotRecord): string | null
 
   /** Whether an HTTP row may take a relay assignment now; false ⇒ core releases it and replays nothing for it. Absent ⇒ every row may. */
   relayAssignable?(bot: BotRecord): boolean

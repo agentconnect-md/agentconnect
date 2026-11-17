@@ -1512,6 +1512,7 @@ export type VisibilityResourceKind =
 export interface MemberRemovalPreviewDto {
   replacement: MemberDto | null // null only when removal is refused (final organization owner)
   resources: { kind: VisibilityResourceKind; selected: number; reassigned: number }[]
+  chat: { bots: number; directMessages: number } // chat access that ends with the membership
 }
 
 export interface OrgInviteLinkDto {
@@ -8023,7 +8024,7 @@ export interface AgentRepoAuthDto {
 }
 
 /** Why re-attestation suspended a grant. */
-export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed'
+export type RepoGrantStaleReason = 'access_lost' | 'identity_unlinked' | 'attester_removed' | 'repository_unreachable'
 
 /** Which host a grant row names — an older CP omits the field and means GitHub. */
 export function repoAuthProvider(row: AgentRepoAuthDto): CodeHostProvider {

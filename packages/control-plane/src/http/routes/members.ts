@@ -33,6 +33,7 @@ import {
   type MemberDtoT
 } from '../dto/index.js'
 import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
+import { announceMemberChatRelease, planMemberChatRelease } from '../member-chat-release.js'
 
 function toDto(m: OrgMemberRecord, currentUserId: string, deps: HttpDeps): MemberDtoT {
   return {
@@ -117,7 +118,7 @@ export function memberRoutes(deps: HttpDeps) {
           tags: [Tag.Members],
           summary: 'Preview a leave or removal',
           description:
-            'What DELETE /members/:id would do to Selected audiences: which current member would be added only where the audience would otherwise become empty, and per-resource-kind counts for all affected and reassigned audiences. Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives the replacement inside the transaction.',
+            'What DELETE /members/:id would do: which current member would be added to Selected audiences that would otherwise become empty, per-resource-kind counts for all affected and reassigned audiences, and how many chat bots bound to the member and direct messages opened for them would be turned off. Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives everything inside the transaction.',
           operationId: 'previewMemberRemoval',
           params: IdParam,
           response: { 200: MemberRemovalPreviewDto, 403: ErrorDto, 404: ErrorDto }
@@ -125,10 +126,18 @@ export function memberRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyMemberRemoval(req, reply, req.params.id)) return
-        const preview = await deps.repos.user.previewMemberRemoval(req.orgCtx!.orgId, req.params.id, req.orgCtx!.userId)
+        const orgId = req.orgCtx!.orgId
+        const plan = await planMemberChatRelease(deps, orgId, req.params.id, req.log)
+        const preview = await deps.repos.user.previewMemberRemoval(
+          orgId,
+          req.params.id,
+          req.orgCtx!.userId,
+          plan.release
+        )
         return {
           replacement: preview.replacement ? toDto(preview.replacement, req.orgCtx!.userId, deps) : null,
-          resources: preview.resources
+          resources: preview.resources,
+          chat: preview.chat
         }
       }
     )
@@ -140,7 +149,7 @@ export function memberRoutes(deps: HttpDeps) {
           tags: [Tag.Members],
           summary: 'Leave or remove a member',
           description:
-            'Any member can remove their own membership to leave the org. Only owners can remove another member. The last owner can’t leave, which would orphan the org.',
+            'Any member can remove their own membership to leave the org. Only owners can remove another member. The last owner can’t leave, which would orphan the org. Chat bots bound to the member are deleted, and direct messages a restricted agent opened for their linked chat accounts are turned off.',
           operationId: 'removeMember',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -151,9 +160,12 @@ export function memberRoutes(deps: HttpDeps) {
         const userId = req.params.id
         const actingUserId = req.orgCtx!.userId
         if (denyMemberRemoval(req, reply, userId)) return
-        const affected = await deps.repos.user.removeMember(orgId, userId, actingUserId)
+        const plan = await planMemberChatRelease(deps, orgId, userId, req.log)
+        const removed = await deps.repos.user.removeMember(orgId, userId, actingUserId, plan.release)
         // The removal revoked their Computers; their live channels close now and the agents that had them get new specs.
-        await deps.computers.memberRemoved(orgId, userId, affected)
+        await deps.computers.memberRemoved(orgId, userId, removed.computerAgents)
+        // Their bound bots and the DMs opened for them are gone; their daemons drop or re-gate them now.
+        await announceMemberChatRelease(deps, req.log, orgId, plan, removed)
         return reply.code(204).send(null)
       }
     )

@@ -66,6 +66,7 @@ function setup(
     installation?: GithubInstallationRecord | null
     repoId?: bigint | null
     flipped?: boolean
+    requeued?: number
     cfg?: Partial<RepositoryGrantReattestorConfig>
   } = {}
 ) {
@@ -79,6 +80,7 @@ function setup(
   }> = []
   const needs: Array<{ userId: string; need: 'read' | 'write'; repo: string }> = []
   const audits: unknown[] = []
+  const requeues: Array<{ provider: string; orgId: string }> = []
   const reproject = vi.fn(async () => {})
   const repoLookups = vi.fn(async () =>
     opts.repoId === null
@@ -95,12 +97,16 @@ function setup(
         recordAttestation: async (id, subject, verdict) => {
           recorded.push({ id, subject, verdict })
           return opts.flipped ?? false
+        },
+        requeueUnreachable: async (provider, orgId) => {
+          requeues.push({ provider, orgId })
+          return opts.requeued ?? 0
         }
       },
       installations: {
         liveByOrgAndAccount: async () => (opts.installation === undefined ? installation() : opts.installation)
       },
-      github: { repoRefForCommentAuthz: repoLookups },
+      github: { repoRefById: repoLookups },
       authz: {
         assertAccess: async (userId, _ins, owner, repo, need) => {
           needs.push({ userId, need, repo: `${owner}/${repo}` })
@@ -118,7 +124,7 @@ function setup(
     },
     { intervalMs: INTERVAL_MS, reattestAfterMs: AFTER_MS, batch: 25, ...opts.cfg }
   )
-  return { clock, reattestor, claims, recorded, needs, audits, reproject, repoLookups }
+  return { clock, reattestor, claims, recorded, needs, audits, requeues, reproject, repoLookups }
 }
 
 describe('RepositoryGrantReattestor', () => {
@@ -209,17 +215,53 @@ describe('RepositoryGrantReattestor', () => {
     expect(claims).toHaveLength(1)
   })
 
-  it('a missing installation or a repository that no longer resolves is left to the mint gate', async () => {
+  it('a missing or suspended installation is left to the mint gate', async () => {
     const noInstallation = setup({ installation: null })
     const suspended = setup({ installation: installation({ suspendedAt: new Date(0) }) })
-    const reused = setup({ repoId: 999n })
-    const gone = setup({ repoId: null })
 
-    for (const run of [noInstallation, suspended, reused, gone]) {
+    for (const run of [noInstallation, suspended]) {
       expect(await run.reattestor.sweep()).toMatchObject({ checked: 1, skipped: 1 })
       expect(run.recorded).toEqual([])
+      expect(run.repoLookups).not.toHaveBeenCalled()
       expect(run.needs).toEqual([])
     }
+  })
+
+  it('a repository the installation no longer reaches goes stale by its id, without asking about the member', async () => {
+    const { reattestor, recorded, repoLookups, needs, audits, reproject } = setup({ repoId: null, flipped: true })
+
+    expect(await reattestor.sweep()).toMatchObject({ checked: 1, stale: 1, flipped: 1 })
+
+    expect(repoLookups).toHaveBeenCalledWith(expect.objectContaining({ installationId: 42n }), 111n)
+    expect(recorded.map((r) => r.verdict)).toEqual(['repository_unreachable'])
+    expect(needs).toEqual([])
+    expect(audits).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('the GitHub App installation could not reach the repository'),
+        details: expect.objectContaining({ staleReason: 'repository_unreachable' })
+      })
+    ])
+    expect(reproject).toHaveBeenCalledWith(ORG, 'agent-1')
+  })
+
+  it('checks the member against the name the id resolves to now, so a renamed repository stays honored', async () => {
+    const { reattestor, recorded, needs } = setup({ queue: [grant({ repoFullName: 'acme/old-name' })] })
+
+    expect(await reattestor.sweep()).toMatchObject({ checked: 1, held: 1 })
+
+    expect(needs.map((n) => n.repo)).toEqual(['acme/tools'])
+    expect(recorded.map((r) => r.verdict)).toEqual([null])
+  })
+
+  it('re-checks an org on request only when it has an unreachable grant to put back in line', async () => {
+    const none = setup({ requeued: 0 })
+    await none.reattestor.recheckUnreachable(ORG)
+    expect(none.requeues).toEqual([{ provider: 'github', orgId: ORG }])
+    expect(none.claims).toEqual([])
+
+    const one = setup({ requeued: 1 })
+    await one.reattestor.recheckUnreachable(ORG)
+    expect(one.recorded.map((r) => r.verdict)).toEqual([null])
   })
 
   it('checks at most `batch` grants per sweep', async () => {

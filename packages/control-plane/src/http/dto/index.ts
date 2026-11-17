@@ -2760,11 +2760,11 @@ export const AgentRepoAuthDto = z.object({
   materialize: RepoMaterializationDto,
   createdBy: z.string().nullable(), // app_user id (member directory resolves display)
   createdAt: z.string(), // ISO-8601
-  /** Set while re-attestation finds the member who vouched for the grant below its tier; the grant is not honored meanwhile. */
+  /** Set while re-attestation finds the grant's attester below its tier or its repository out of the installation's reach; the grant is not honored meanwhile. */
   stale: z
     .object({
       since: z.string(), // ISO-8601
-      reason: z.enum(['access_lost', 'identity_unlinked', 'attester_removed'])
+      reason: z.enum(['access_lost', 'identity_unlinked', 'attester_removed', 'repository_unreachable'])
     })
     .nullable(),
   /** The connection an `azure-devops` grant is served through (azure-devops-integration.md §3.2); absent on every other host. */
@@ -3084,7 +3084,9 @@ export const MemberRemovalPreviewDto = z.object({
       // The subset with no other current member; `replacement` is added to these.
       reassigned: z.number().int()
     })
-  )
+  ),
+  // Chat access that ends with the membership: bots bound to the member, and DM conversations opened for them.
+  chat: z.object({ bots: z.number().int(), directMessages: z.number().int() })
 })
 
 /** `PATCH /members/:id` — change a member's role (owner-only; multiple owners OK). */

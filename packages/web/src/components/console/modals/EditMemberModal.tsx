@@ -77,6 +77,20 @@ export default function EditMemberModal({
       .map((resource) => t('resourceCount', { count: resource.selected, kind: labels[resource.kind] }))
       .join(', ')
   }
+  const chatSentence = ({ chat }: MemberRemovalPreviewDto, leaving: boolean) => {
+    const object = leaving ? t('you') : t('them')
+    return [
+      chat.bots > 0 ? t('chatBots', { count: chat.bots, object }) : '',
+      chat.directMessages > 0 ? t('chatDirectMessages', { count: chat.directMessages, object }) : ''
+    ]
+      .filter(Boolean)
+      .join(' ')
+  }
+  // A refused removal (the final owner) turns nothing off, so it says only why.
+  const removalSentence = (nextPreview: MemberRemovalPreviewDto, leaving: boolean) =>
+    nextPreview.replacement
+      ? [audienceSentence(nextPreview, leaving), chatSentence(nextPreview, leaving)].filter(Boolean).join(' ')
+      : audienceSentence(nextPreview, leaving)
   const audienceSentence = (nextPreview: MemberRemovalPreviewDto, leaving: boolean) => {
     const replacement = nextPreview.replacement
     if (!replacement) return t('ownerRequired')
@@ -203,7 +217,7 @@ export default function EditMemberModal({
             </div>
             <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
               {preview
-                ? audienceSentence(preview, Boolean(onLeave))
+                ? removalSentence(preview, Boolean(onLeave))
                 : onLeave
                   ? t('leaveFallback')
                   : t('removeFallback')}

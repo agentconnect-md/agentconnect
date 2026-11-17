@@ -2308,8 +2308,10 @@
         "grantSuspendedReason": {
           "access_lost": "授权它的成员已没有这个仓库权限",
           "identity_unlinked": "授权它的成员已不再关联对应的平台账号",
-          "attester_removed": "授权它的成员账号已不存在"
+          "attester_removed": "授权它的成员账号已不存在",
+          "repository_unreachable": "GitHub App 的安装已访问不到这个仓库"
         },
+        "manageInstallation": "在 GitHub 上管理",
         "githubWriteAccess": "推送、创建 PR 并运行 GitHub Actions",
         "repositoryAccess": "仓库访问权限",
         "selectRepositoryFirst": "请先选择仓库",
@@ -5473,7 +5475,10 @@
             "title": "查看者",
             "description": "只读：可查看 Agent、会话和用量。"
           }
-        }
+        },
+        "them": "该成员",
+        "chatBots": "{count, plural, other {绑定到{object}的 # 个聊天机器人将被断开。}}",
+        "chatDirectMessages": "{count, plural, other {为{object}开启的 # 个私信将被关闭。}}"
       }
     },
     "sessionAccess": {

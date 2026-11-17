@@ -2396,6 +2396,10 @@ export function buildContainer(
           github.invalidateRepositoryRoster(installationId)
           await wakeGithubReviewProjections(installationId, orgId)
           githubRunReporter?.kick()
+          // The event may be a repository added back to the installation; never held up by the re-check.
+          void httpDeps.recheckUnreachableRepoGrants?.(orgId).catch((err: unknown) => {
+            http.log.warn({ err, orgId }, 'doorbell: repository grant recheck failed')
+          })
         },
         clock,
         log: {
@@ -3032,6 +3036,9 @@ export function buildContainer(
           repoGrantReattestorConfig
         )
       : undefined
+  if (repositoryGrantReattestor) {
+    httpDeps.recheckUnreachableRepoGrants = (orgId) => repositoryGrantReattestor.recheckUnreachable(orgId)
+  }
 
   // One-time preset backfill (preset-agents.md §3.2): existing orgs receive the
   // `agentconnect` general preset; the preset_agent row is the per-org marker, so
