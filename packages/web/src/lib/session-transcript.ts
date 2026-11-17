@@ -37,7 +37,9 @@ export function mergeSessionMessages(
 // The daemon persists a prompt with a synthetic `[attached: …]` file list the live step never shows.
 const ATTACHED_NOTE = /(?:^|\n)\[attached: [^\n]*\]$/
 
-function promptKey(text: string, image?: SessionImage): string {
+function promptKey(text: string, shown?: SessionImage): string {
+  // A prompt with files is known by its words: its row carries an upload's preview, which the live step holds apart from `image`.
+  const image = ATTACHED_NOTE.test(text) ? undefined : shown
   return JSON.stringify([
     text.replace(ATTACHED_NOTE, '').trim(),
     image?.name ?? null,

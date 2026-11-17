@@ -225,6 +225,8 @@ If AgentConnect looks useful, here's how you can support the project:
 
 - ⭐ **[Star this repo](https://github.com/agentconnect-md/agentconnect)** to
   help more teams discover the project.
+- 📝 [Review AgentConnect on G2](https://www.g2.com/products/e21b99b1-6b5d-4050-95e8-3f1489bdc206/review_modalities/new)
+  to help other teams learn from your experience.
 - 💬 [Join the Slack community](https://slack.agentconnect.md) for questions,
   ideas, and product discussions.
 - 📣 Share AgentConnect on
