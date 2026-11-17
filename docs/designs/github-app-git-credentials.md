@@ -457,8 +457,8 @@ with a revision a daemon already applied without it.
 > GitLab and Gitea (#3382): the credential proxy always runs, with no switch,
 > and is the only way a session reaches a code host with a credential, over
 > the host, `srt`, executor, `microsandbox` and pool pod transports. GraphQL
-> is read-only; the routed-write list is still proposed. Phase 2 replaces
-> Trust Model item 3.
+> is read-only today; forwarding a mutation to the one repository it touches,
+> and the routed-write list, are proposed. Phase 2 replaces Trust Model item 3.
 
 Before Phase 2, agents wrote to GitHub with whatever their `gh` wrapper
 minted: a capability-clamped installation token at the repository's tier. The
@@ -892,23 +892,91 @@ loopback, private, link-local or unspecified space upstream. A self-managed
 instance may live at a private address, so its name is refused only loopback,
 link-local (cloud metadata) and unspecified space.
 
-**GraphQL is read-only.** A GraphQL request names no repository in its URL,
-and GitHub applies a token's permissions to every repository the token lists,
-so no single token could carry each repository's own tier. The proxy would
-therefore reads the document's operation types and forwards only queries,
-with a read-tier token for the repository the query's variables name (`owner`
-with `name` or `repo`), else the workspace's. It refuses every mutation, and a
+**GraphQL is read-only today.** A GraphQL request names no repository in its
+URL, and GitHub applies a token's permissions to every repository the token
+lists, so no single token could carry each repository's own tier. The proxy
+reads the document's operation types and forwards only queries, with a
+read-tier token for the repository the query's variables name (`owner` with
+`name` or `repo`), else the workspace's. It refuses every mutation, and a
 document it cannot read, with an error naming the tool for that write; `gh`
 prints the error, so the agent sees it.
 
-This keeps one rule on every host: GitLab's CLI is already read-only and its
-writes already go through the daemon. Features that exist only in GraphQL,
-such as Projects and Discussions, become unavailable until a tool covers them.
+That refusal costs more than first expected. `gh` sends most everyday writes as
+mutations: `issue comment`, `issue close`, `issue create`, `pr create`,
+`pr edit`, `pr merge`, `pr ready` and label changes. Each first attempt fails,
+and an agent that has no tool for the write falls back to REST by hand.
 
-**Writes through tools.** `gh` sends most pull-request and issue writes over
-GraphQL (`pr edit`, `pr merge`, `pr ready`, `issue create`, `pr comment`).
-Phase 1's tools carry those writes, so the refusal names the tool, and the
-agent retries there. An agent's first attempt with `gh` costs that one round.
+**Proposed: a mutation goes to the one repository it touches.** The proxy
+forwards a mutation with a token minted for a single repository at that
+repository's tier, as a REST write to that repository already is. Which
+repository it picks never widens access: the token lists one repository, so
+GitHub refuses any part of the mutation outside it, and a wrong pick fails the
+request instead of reaching another repository. Everything below only decides
+which single repository's token the request carries.
+
+The proxy parses the document and considers only the operation the request
+executes: the one `operationName` names, or the document's only operation. A
+document with several operations and no `operationName`, a subscription, or a
+document it cannot parse is refused. A query is forwarded as today.
+
+`gh` names a mutation's targets by node ID, not by owner and name:
+`addComment` takes `subjectId`, `closeIssue` takes `issueId`, `createIssue` and
+`createPullRequest` take `repositoryId`, and `addLabelsToLabelable` takes
+`labelableId` and `labelIds`. It sends them as variables, under `input`. Before
+the mutation, it reads the object through a query whose variables name the
+repository (for example `repository(owner, name) { issue(number) { id } }`).
+So the proxy attributes a mutation to a repository in this order:
+
+1. **Named.** The variables carry `owner` with `name` or `repo`.
+2. **Remembered.** Every candidate ID is already in the agent's node cache.
+3. **Looked up.** The proxy asks GitHub which repository each remaining ID
+   belongs to with a read-only query,
+   `nodes(ids: [...]) { ... on RepositoryNode { repository { nameWithOwner } } ... on Repository { nameWithOwner } }`,
+   first with the workspace repository's read token, then with the read token
+   of each of the agent's other authorized GitHub repositories, until every ID
+   resolves or the repositories run out. A token that lists one repository
+   resolves that repository's nodes and answers each other node with `null` and
+   `NOT_FOUND`, and the rest of the answer still arrives, so each round resolves
+   one repository's nodes. A public repository's nodes resolve with any token,
+   so a node is attributed only to a repository the agent is authorized on.
+
+The candidates are the string values in the variables, at any depth, and the
+string literals in the executed operation, up to a fixed number; a request with
+more is refused. A candidate that never resolves, such as a comment body or a
+node of a repository the agent is not authorized on, is ignored. A node that
+belongs to no repository, such as a user or a team, does not count either.
+Then:
+
+- every repository node belongs to the same authorized repository: the proxy
+  mints that repository's token at the agent's tier and forwards;
+- no candidate belongs to an authorized repository, which covers user- and
+  organization-level mutations such as Projects: refused;
+- the candidates span two or more repositories: refused, naming REST and the
+  tools.
+
+**The node cache.** IDs a lookup resolved, and IDs in the response to a query
+whose variables name an authorized repository, are cached against that
+repository, per agent, in a bounded cache. An ID learned from a response may in
+fact belong to another repository, such as a fork's head; the token is still
+scoped to the cached one, so such an error fails closed. When GitHub answers a
+mutation with `NOT_FOUND` or `FORBIDDEN`, the proxy drops the cache entries
+for that request's IDs, so a transferred issue is looked up afresh next time.
+It never retries the mutation.
+
+**Limits.** Each lookup round costs one read request. An agent authorized
+across many repositories, such as through an installation-wide grant, can need
+many rounds for an ID outside its workspace, so the rounds are capped; past the
+cap the mutation is refused. A read-only token listing every authorized
+repository of an installation would resolve the same IDs in one request. Every
+repository on it is one the agent may read, so a single permission set is
+correct for all of them. Adding that is a Control Plane change and is deferred.
+Organization-level objects such as Projects stay unavailable, and so does
+anything that needs a permission no tier grants.
+
+**Writes through tools.** The tools stay the place for writes that carry
+product behavior: the attribution footer on a pull request, a formal review, a
+reply in a delivery turn. With mutations forwarded, `gh` no longer fails on
+the first attempt for other writes.
 
 **REST stays tiered.** A REST write names its repository, so the proxy would
 forward it with that repository's token. `gh api` thereby covers any write no
@@ -923,8 +991,9 @@ name the tool that owns each one:
 | opening a pull request             | `githubPullRequest`                                  |
 | comments and review-thread replies | the daemon's final reply, `replyGithubReviewThreads` |
 
-The third row would apply only while a delivery turn is active. GraphQL needs
-no rows, since it carries no writes.
+The third row would apply only while a delivery turn is active. Once mutations
+are forwarded, the list applies to them too, matched by mutation field
+(`addPullRequestReview`, `createPullRequest`, `addComment`).
 
 The list is not a security control: authority comes from the tier. A write
 the list misses produces the wrong product behavior, never excess access.
