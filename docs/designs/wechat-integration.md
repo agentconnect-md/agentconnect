@@ -142,7 +142,9 @@ scope still follows the bot id, because it names one physical connection, so a r
 closes the chat's session and the next message opens a new one (**observed**). The owner
 `wechat:ilink:<ilink_user_id>` is unchanged, so the closed session stays the member's.
 
-Unbinding in the Console calls `msg/notifystop` and deletes the bot. Whether iLink offers
+Unbinding in the Console calls `msg/notifystop` and deletes the bot. Removing the
+bound member from the organization deletes it the same way, because its only
+sender has left ([resource-visibility.md](resource-visibility.md) §8.3). Whether iLink offers
 a call that releases the binding on Tencent's side is **unverified**; the user can also
 remove the ClawBot plugin in WeChat.
 

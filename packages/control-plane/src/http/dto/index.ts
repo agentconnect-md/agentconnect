@@ -3084,7 +3084,9 @@ export const MemberRemovalPreviewDto = z.object({
       // The subset with no other current member; `replacement` is added to these.
       reassigned: z.number().int()
     })
-  )
+  ),
+  // Chat access that ends with the membership: bots bound to the member, and DM conversations opened for them.
+  chat: z.object({ bots: z.number().int(), directMessages: z.number().int() })
 })
 
 /** `PATCH /members/:id` — change a member's role (owner-only; multiple owners OK). */

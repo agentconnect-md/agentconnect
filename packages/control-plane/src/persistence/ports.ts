@@ -7307,6 +7307,34 @@ export interface MemberRemovalPreview {
      *  `replacement` added during removal. */
     reassigned: number
   }>
+  /** The chat access the given {@link MemberChatRelease} still closes: bound bots that exist, and DM conversations still open. */
+  chat: { bots: number; directMessages: number }
+}
+
+/** One integration's conversation row. */
+export interface IntegrationChannelKey {
+  integrationId: IntegrationId
+  channelId: string
+}
+
+/** Chat access that exists only because one person was a member (resource-visibility.md §8.3); planned before removal, applied inside it. */
+export interface MemberChatRelease {
+  /** Bots their provider says exist for this member alone (`boundMemberUserId`), deleted with every install. */
+  botIds: BotId[]
+  /** 1:1 DM rows of a restricted agent whose counterpart is this member's linked chat identity; a shared bot lists every sibling row. */
+  directMessages: IntegrationChannelKey[]
+}
+
+export const NO_MEMBER_CHAT_RELEASE: MemberChatRelease = { botIds: [], directMessages: [] }
+
+/** What a removal committed, for the caller's post-commit notifications. */
+export interface MemberRemovalResult {
+  /** Agents whose derived Computer lists lost the member's Computers. */
+  computerAgents: 'all' | string[]
+  /** Installs deleted with the member's bound bots. */
+  removedIntegrationIds: IntegrationId[]
+  /** DM rows that were still open and are now Off. */
+  closedDirectMessages: IntegrationChannelKey[]
 }
 
 /** The caller's own profile (the console `/me` surface). */
@@ -7439,21 +7467,21 @@ export interface UserRepo {
    */
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
 
-  /**
-   * Let a member leave, or let an owner remove another member. Prunes the
-   * departing member from Selected audiences and adds a deterministic replacement
-   * only where the audience would otherwise become empty. Rechecks membership
-   * and, when removing another member, the acting owner's role. Refuses to remove
-   * the final owner before committing. Returns the agents whose derived Computer lists lost the member's Computers.
-   */
-  removeMember(orgId: string, userId: string, actingUserId: string): Promise<'all' | string[]>
+  /** Leave, or remove another member as an owner: prune Selected audiences (repairing any that would empty), revoke their Computers, apply `chat`, then delete the membership; refuses the final owner. */
+  removeMember(
+    orgId: string,
+    userId: string,
+    actingUserId: string,
+    chat?: MemberChatRelease
+  ): Promise<MemberRemovalResult>
 
-  /**
-   * Dry-run of `removeMember` for the confirmation dialog: the same replacement
-   * rule, plus which Selected audiences include that member. Racy by nature
-   * (nothing is locked) — advisory display only, never an authorization input.
-   */
-  previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview>
+  /** Unlocked dry-run of `removeMember` for the confirmation dialog — advisory display only, never an authorization input. */
+  previewMemberRemoval(
+    orgId: string,
+    userId: string,
+    actingUserId: string,
+    chat?: MemberChatRelease
+  ): Promise<MemberRemovalPreview>
 
   /** Attach a known user to an org. */
   addMember(orgId: string, userId: string, role: OrgMemberRole): Promise<void>

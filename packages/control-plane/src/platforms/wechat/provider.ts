@@ -55,6 +55,8 @@ export function createWeChatCpProvider(deps: WeChatCpProviderDeps): CpPlatformPr
     projectBotIdentity: (input) => (input.platformConfig ? { platformConfig: input.platformConfig } : {}),
     // A WeChat bot is one person's chat with one agent: removing its install deletes it rather than freeing it for reuse.
     releasesFreedBot: () => true,
+    // Its only possible sender is the member who scanned, so it leaves the organization with them (§2.3).
+    boundMemberUserId: (bot) => text(bot.platformConfig?.boundMemberUserId) ?? null,
     secretShape: { slots: { botToken: 'iLink bot token', appToken: 'iLink bot id' }, httpAssignRequires: [] },
     ...(deps.logins
       ? {

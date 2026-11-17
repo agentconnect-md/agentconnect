@@ -19,19 +19,24 @@ import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
   type ProvisionOidcUserInput,
+  type IntegrationChannelKey,
+  type MemberChatRelease,
   type MemberRemovalPreview,
+  type MemberRemovalResult,
   type OrgMemberRecord,
   type OrgMemberRole,
   type VisibilityResourceKind,
   type UserProfileRecord,
   type ServiceAccountRecord,
   type ServiceAccountRole,
+  NO_MEMBER_CHAT_RELEASE,
   SERVICE_ACCOUNT_EMAIL_DOMAIN,
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
 } from '../ports.js'
 import { OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
 import { bumpAgentsLosingComputersTx } from './computer.repo.js'
+import { IntegrationId } from '../../domain/ids.js'
 
 const RESOURCE_AUDIENCE_TABLES = [
   'agent',
@@ -266,13 +271,14 @@ async function assertUserKind(
   if (row && row.kind !== kind) throw new OrgMembershipMissing()
 }
 
-// Prune Selected audiences, repair only ones that would empty, then delete the membership; createdByUserId stays.
+// Prune Selected audiences, repair only ones that would empty, close the member's chat access, then delete the membership; createdByUserId stays.
 async function removeMembershipTx(
   tx: Prisma.TransactionClient,
   orgId: string,
   userId: string,
-  actingUserId: string
-): Promise<'all' | string[]> {
+  actingUserId: string,
+  chat: MemberChatRelease = NO_MEMBER_CHAT_RELEASE
+): Promise<MemberRemovalResult> {
   await lockOrgOwnerTransition(tx, orgId)
   const membershipSnapshot = await tx.membership.findMany({
     where: { orgId },
@@ -298,10 +304,69 @@ async function removeMembershipTx(
     await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
   }
   // A departing member's own desktops leave with them: revoke the Computers and their keys (computer-use.md §3.6).
-  const affected = await revokeOwnedComputersTx(tx, orgId, userId)
+  const computerAgents = await revokeOwnedComputersTx(tx, orgId, userId)
+  const removedIntegrationIds = await deleteBoundBotsTx(tx, orgId, chat.botIds)
+  const closedDirectMessages = await closeDirectMessagesTx(tx, orgId, chat.directMessages)
   // A membership-delete trigger ends GitLab OAuth authority (§9.4) on every removal path.
   await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
-  return affected
+  return { computerAgents, removedIntegrationIds, closedDirectMessages }
+}
+
+// A bot bound to the departing member goes with every install; its secret cascades (resource-visibility.md §8.3).
+async function deleteBoundBotsTx(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  botIds: readonly string[]
+): Promise<IntegrationId[]> {
+  if (botIds.length === 0) return []
+  const where = { orgId, botId: { in: [...botIds] } }
+  const installs = await tx.integration.findMany({ where, select: { id: true, status: true } })
+  await tx.integration.deleteMany({ where })
+  await tx.bot.deleteMany({ where: { orgId, id: { in: [...botIds] } } })
+  return installs.filter((i) => i.status === 'active').map((i) => IntegrationId(i.id))
+}
+
+// DM rows opened for the departing member go back to Off, unchosen, so a later re-share can open them again (§14.8).
+async function closeDirectMessagesTx(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  rows: readonly IntegrationChannelKey[]
+): Promise<IntegrationChannelKey[]> {
+  const closed: IntegrationChannelKey[] = []
+  for (const { integrationId, channelId } of rows) {
+    const res = await tx.integrationChannel.updateMany({
+      where: { integrationId, channelId, kind: 'im', trigger: { not: 'off' }, integration: { orgId } },
+      data: {
+        trigger: 'off',
+        triggerChosen: false,
+        decisionBinding: Prisma.DbNull,
+        decisionId: null,
+        decisionNeedsReview: false
+      }
+    })
+    if (res.count > 0) closed.push({ integrationId, channelId })
+  }
+  return closed
+}
+
+// What removal would still change of `chat`: bound bots that exist, and distinct DM conversations still open.
+async function chatReleaseCounts(
+  db: PrismaLike,
+  orgId: string,
+  chat: MemberChatRelease
+): Promise<MemberRemovalPreview['chat']> {
+  const bots = chat.botIds.length ? await db.bot.count({ where: { orgId, id: { in: [...chat.botIds] } } }) : 0
+  if (chat.directMessages.length === 0) return { bots, directMessages: 0 }
+  const open = await db.integrationChannel.findMany({
+    where: {
+      OR: chat.directMessages.map(({ integrationId, channelId }) => ({ integrationId, channelId })),
+      kind: 'im',
+      trigger: { not: 'off' },
+      integration: { orgId }
+    },
+    select: { channelId: true, integration: { select: { botId: true } } }
+  })
+  return { bots, directMessages: new Set(open.map((row) => `${row.integration.botId}\x00${row.channelId}`)).size }
 }
 
 async function revokeOwnedComputersTx(
@@ -679,14 +744,24 @@ export class PgUserRepo implements UserRepo {
     return toMemberRecord(row)
   }
 
-  async removeMember(orgId: string, userId: string, actingUserId: string): Promise<'all' | string[]> {
+  async removeMember(
+    orgId: string,
+    userId: string,
+    actingUserId: string,
+    chat?: MemberChatRelease
+  ): Promise<MemberRemovalResult> {
     return withAmbientTx(this.db, async (tx) => {
       await assertUserKind(tx, userId, 'human')
-      return removeMembershipTx(tx, orgId, userId, actingUserId)
+      return removeMembershipTx(tx, orgId, userId, actingUserId, chat)
     })
   }
 
-  async previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview> {
+  async previewMemberRemoval(
+    orgId: string,
+    userId: string,
+    actingUserId: string,
+    chat: MemberChatRelease = NO_MEMBER_CHAT_RELEASE
+  ): Promise<MemberRemovalPreview> {
     // Unlocked and outside any transaction: this only feeds a confirmation
     // dialog. `removeMember` re-derives everything under the transition lock.
     await assertUserKind(this.db, userId, 'human')
@@ -718,7 +793,8 @@ export class PgUserRepo implements UserRepo {
       replacement: replacement ? toMemberRecord(replacement) : null,
       resources: VISIBILITY_RESOURCE_KINDS.map(([kind]) => byKind.get(kind)).filter(
         (row) => row !== undefined && row.selected > 0
-      ) as MemberRemovalPreview['resources']
+      ) as MemberRemovalPreview['resources'],
+      chat: await chatReleaseCounts(this.db, orgId, chat)
     }
   }
 
