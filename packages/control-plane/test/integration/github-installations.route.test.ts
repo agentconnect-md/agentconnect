@@ -40,6 +40,8 @@ interface GithubCall {
 function appAs(
   opts: {
     userId?: string
+    /** The console origin the setup callback redirects to; unset ⇒ its plain-text reply. */
+    consoleUrl?: string
     githubStatus?: number
     githubFetch?: (url: string, init?: RequestInit) => Promise<Response>
     githubUserAuthz?: Partial<Pick<GithubUserAuthzService, 'assertAccess' | 'filterReposForUser'>>
@@ -61,7 +63,11 @@ function appAs(
         : Response.json({ message: 'upstream failure' }, { status: githubStatus })
     }
   })
-  const a = buildHttpApp(prisma, opts.userId ? { DEFAULT_OWNER_ID: opts.userId } : undefined, undefined, undefined, {
+  const config = {
+    ...(opts.userId ? { DEFAULT_OWNER_ID: opts.userId } : {}),
+    ...(opts.consoleUrl ? { PUBLIC_WEB_URL: opts.consoleUrl } : {})
+  }
+  const a = buildHttpApp(prisma, config, undefined, undefined, {
     github,
     ...(opts.githubUserAuthz ? { githubUserAuthz: opts.githubUserAuthz as never } : {})
   })
@@ -89,6 +95,36 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
   await users.addMemberByEmail(DEFAULT_ORG_ID, email, role)
   return userId
 }
+
+describe('GET /github/setup/callback', () => {
+  const CONSOLE = 'https://console.example.test'
+  const callback = (app: HttpApp, query: string) =>
+    app.app.inject({ method: 'GET', url: `/api/v1/github/setup/callback?${query}` })
+
+  it('sends an update made on GitHub back to the console without a notice, claimed or not, and without asking GitHub', async () => {
+    const h = appAs({ consoleUrl: CONSOLE })
+    await seedInstallation()
+
+    const claimed = await callback(h.app, `setup_action=update&installation_id=${INSTALLATION}`)
+    const unknown = await callback(h.app, 'setup_action=update&installation_id=987654321')
+
+    for (const res of [claimed, unknown]) {
+      expect(res.statusCode).toBe(302)
+      expect(res.headers.location).toBe(`${CONSOLE}/`)
+    }
+    expect(h.calls).toEqual([])
+  })
+
+  it('still asks to restart an install that arrives without state', async () => {
+    const h = appAs({ consoleUrl: CONSOLE })
+
+    const res = await callback(h.app, `setup_action=install&installation_id=${INSTALLATION}`)
+
+    expect(res.statusCode).toBe(302)
+    expect(res.headers.location).toBe(`${CONSOLE}/?github=retry-install`)
+    expect(h.calls).toEqual([])
+  })
+})
 
 describe('GET /orgs/:orgId/github/app', () => {
   it("names the built-in App by slug and GitHub-side id, so the console can show the App's own logo", async () => {

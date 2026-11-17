@@ -1786,7 +1786,12 @@ operations. The GitHub routes are therefore registered as two plugins:
   undocumented GitHub behavior. When state is present and verifies successfully,
   verify App ownership, upsert the installation, and claim it into the
   organization in state. When state is missing, redirect with 302 to the console
-  and ask the user to restart the org-bound install. The App installation roster
+  and ask the user to restart the org-bound install. The exception is
+  `setup_action === 'update'` without state, which is an installation changed
+  on GitHub's own pages: it claims nothing and its change arrives by webhook,
+  so the callback redirects to the console with no notice. It answers every
+  such update alike, without looking the installation up, so the route never
+  tells an unauthenticated caller which installations are claimed. The App installation roster
   is deployment-global, so an authenticated organization path alone is not proof
   that an unclaimed installation belongs to that organization; Sync must never
   guess or create the claim.
