@@ -6,6 +6,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   completeLogin: vi.fn(),
+  currentSubject: vi.fn(),
+  fetchOrgs: vi.fn(),
+  forgetRememberedOrganization: vi.fn(),
   joinOrganizationsBySso: vi.fn(),
   refreshMySocialIdentities: vi.fn(),
   reportOrgSsoTest: vi.fn(),
@@ -28,13 +31,15 @@ const ApiError = vi.hoisted(
 
 vi.mock('@/lib/auth', () => ({
   completeLogin: mocks.completeLogin,
-  currentSubject: async () => 'subject-1',
+  currentSubject: mocks.currentSubject,
+  forgetRememberedOrganization: mocks.forgetRememberedOrganization,
   getUser: async () => ({ name: 'Dana', email: 'dana@acme.example', initials: 'D' }),
   isAuthConfigured: () => true,
   redirectExpiredSession: vi.fn()
 }))
 vi.mock('@/lib/api', () => ({
   ApiError,
+  fetchOrgs: mocks.fetchOrgs,
   joinOrganizationsBySso: mocks.joinOrganizationsBySso,
   refreshMySocialIdentities: mocks.refreshMySocialIdentities,
   reportOrgSsoTest: mocks.reportOrgSsoTest
@@ -78,6 +83,8 @@ beforeEach(() => {
   mocks.completeLogin.mockResolvedValue(undefined)
   mocks.refreshMySocialIdentities.mockResolvedValue(undefined)
   mocks.joinOrganizationsBySso.mockResolvedValue([])
+  mocks.currentSubject.mockResolvedValue('subject-1')
+  mocks.fetchOrgs.mockResolvedValue([{ id: 'org-1', slug: 'acme' }])
 })
 
 afterEach(async () => {
@@ -113,6 +120,36 @@ it('presents the nonce of a test sign-in and shows that it passed', async () => 
 
   await act(async () => host.querySelector('button')!.click())
   expect(mocks.replace).toHaveBeenCalledWith('/acme/settings#single-sign-on')
+})
+
+it('forgets the remembered organization once a test sign-in completes', async () => {
+  stashTest()
+  mocks.reportOrgSsoTest.mockResolvedValue(true)
+  await land('?code=abc')
+  expect(mocks.forgetRememberedOrganization).toHaveBeenCalledTimes(1)
+  expect(host.textContent).toContain('Back to Settings')
+})
+
+it('forgets the remembered organization once an ordinary sign-in completes', async () => {
+  await land('?code=abc')
+  expect(mocks.forgetRememberedOrganization).toHaveBeenCalledTimes(1)
+})
+
+it('keeps the remembered organization when the provider refused the sign-in', async () => {
+  stashTest()
+  await land('?error=invalid_client')
+  expect(mocks.forgetRememberedOrganization).not.toHaveBeenCalled()
+})
+
+it('offers the console instead of Settings when the landed account is not a member', async () => {
+  stashTest()
+  mocks.fetchOrgs.mockResolvedValue([{ id: 'org-2', slug: 'other' }])
+  mocks.reportOrgSsoTest.mockResolvedValue(true)
+  await land('?code=abc')
+  const button = host.querySelector('button')!
+  expect(button.textContent).toBe('Open the console')
+  await act(async () => button.click())
+  expect(mocks.replace).toHaveBeenCalledWith('/')
 })
 
 it('shows what the identity provider answered when a test sign-in fails', async () => {

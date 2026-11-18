@@ -506,6 +506,8 @@
       "retry": "Retry",
       "linked": "Linked",
       "notLinked": "Not linked",
+      "ssoBadge": "SSO",
+      "ssoUnnamed": "Single sign-on",
       "reconnecting": "Reconnecting…",
       "reconnect": "Reconnect",
       "unlink": "Unlink",
@@ -1430,7 +1432,8 @@
       "noAddress": "{name} returned no email address in this organization's domains. Fix the email claim or attribute, then test again.",
       "attributesSent": "Attributes the provider sent",
       "inDomainAddress": "Address in your domains",
-      "backToSettings": "Back to Settings"
+      "backToSettings": "Back to Settings",
+      "openConsole": "Open the console"
     },
     "socialCallback": {
       "repoConflict": "This GitHub account is linked to another AgentConnect account. You can connect it here for repository access. GitHub sign-in will still open the original account.",
@@ -1815,6 +1818,7 @@
     },
     "organization": {
       "step": "Step 1 of 2",
+      "signOut": "Sign out",
       "brandAgent": "Agent",
       "brandConnect": "Connect",
       "title": "Create your organization",

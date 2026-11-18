@@ -144,6 +144,42 @@ describe('SocialSignInCard account state', () => {
     expect(unlinkMyGithubRepoAccess).toHaveBeenCalledOnce()
   })
 
+  it('shows each SSO identity first, read-only, and leaves the social rows as they are', async () => {
+    window.__AC_ENV = { SOCIAL_PROVIDERS: 'google' }
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [],
+      ssoIdentities: [{ connectionName: 'Acme Identity', email: 'alex@acme.example' }, { email: 'alex@acme.example' }],
+      hasSecurityVerificationMethod: false
+    })
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Acme Identity') === true)
+    const signIn = container!.querySelector('#sign-in-methods')!
+    const rows = Array.from(signIn.querySelectorAll('[aria-busy] > div'))
+    expect(rows).toHaveLength(3)
+    expect(rows[0]!.textContent).toContain('Acme Identity')
+    expect(rows[0]!.textContent).toContain('SSO')
+    expect(rows[0]!.textContent).toContain('alex@acme.example')
+    expect(rows[1]!.textContent).toContain('Single sign-on')
+    expect(rows[0]!.querySelector('button')).toBeNull()
+    expect(rows[1]!.querySelector('button')).toBeNull()
+    expect(rows[2]!.textContent).toContain('Google')
+    expect(button('Link')).toBeDefined()
+    expect(button('Unlink')).toBeUndefined()
+  })
+
+  it('renders the card unchanged for an account with no SSO identity', async () => {
+    window.__AC_ENV = { SOCIAL_PROVIDERS: 'google' }
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [],
+      ssoIdentities: [],
+      hasSecurityVerificationMethod: false
+    })
+    await renderCard()
+    await waitUntil(() => container?.textContent?.includes('Not linked') === true)
+    expect(container!.querySelectorAll('#sign-in-methods [aria-busy] > div')).toHaveLength(1)
+    expect(container!.textContent).not.toContain('SSO')
+  })
+
   it('offers configured Lark and Feishu identities through the shared link flow', async () => {
     window.__AC_ENV = { SOCIAL_PROVIDERS: 'lark,feishu' }
     vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })

@@ -209,7 +209,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     if (loading || orgs.length === 0) return
     const target = resolveOrgTarget(orgs, activeOrg, readLastSlug(), hasOrgSegment)
     if (target && pathname.split('/')[1] !== target.slug) {
-      router.replace(`/${target.slug}${subPath(pathname, slug)}${window.location.search}`)
+      router.replace(`/${target.slug}${subPath(pathname, slug)}${window.location.search}${window.location.hash}`)
     }
   }, [loading, orgs, activeOrg, hasOrgSegment, slug, pathname, router])
 

@@ -3,10 +3,17 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
-import { completeLogin, currentSubject, getUser, isAuthConfigured, redirectExpiredSession } from '@/lib/auth'
+import {
+  completeLogin,
+  currentSubject,
+  forgetRememberedOrganization,
+  getUser,
+  isAuthConfigured,
+  redirectExpiredSession
+} from '@/lib/auth'
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
-import { ApiError, joinOrganizationsBySso, refreshMySocialIdentities, reportOrgSsoTest } from '@/lib/api'
+import { ApiError, fetchOrgs, joinOrganizationsBySso, refreshMySocialIdentities, reportOrgSsoTest } from '@/lib/api'
 import { commitPendingSignIn, organizationSsoEnabled, takeSsoTest } from '@/lib/organization-sso'
 import { Spinner, Wordmark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -28,10 +35,25 @@ type Landing =
       /** Of those, the ones whose value is an address in the organization's verified domains. */
       addressAttributes: string[]
       returnTo: string
+      /** False when the account that landed is not a member of the organization `returnTo` names. */
+      canReturn: boolean
     }
 
 // One landing per page load: the authorization code and a test nonce are each presented once, whatever re-runs the effect.
 let landing: Promise<Landing> | undefined
+
+// Every completed sign-in forgets the browser's remembered organization; the CP restores the account's own preference.
+async function completeLoginForgettingOrganization(): Promise<void> {
+  await completeLogin()
+  forgetRememberedOrganization()
+}
+
+// Unknown when the list cannot be read: the console's own fallback still handles a non-member.
+async function isMemberOf(returnTo: string): Promise<boolean> {
+  const slug = decodeURIComponent(returnTo.split(/[/?#]/)[1] ?? '')
+  const orgs = await fetchOrgs().catch(() => null)
+  return orgs ? orgs.some((o) => o.slug === slug) : true
+}
 
 async function land(): Promise<Landing> {
   const params = new URLSearchParams(window.location.search)
@@ -46,16 +68,22 @@ async function land(): Promise<Landing> {
       returnTo: test.returnTo,
       refused: false,
       attributes: [] as string[],
-      addressAttributes: [] as string[]
+      addressAttributes: [] as string[],
+      canReturn: true
     }
     if (providerError) {
       const error = [providerError, params.get('error_description')].filter(Boolean).join(': ')
       return { ...outcome, passed: false, email: null, error }
     }
     try {
-      await completeLogin()
+      await completeLoginForgettingOrganization()
+    } catch (e) {
+      return { ...outcome, passed: false, email: null, error: e instanceof Error ? e.message : null }
+    }
+    const canReturn = await isMemberOf(test.returnTo)
+    try {
       const passed = await reportOrgSsoTest(test.nonce, AbortSignal.timeout(10_000))
-      return { ...outcome, passed, email: (await getUser())?.email ?? null, error: null }
+      return { ...outcome, canReturn, passed, email: (await getUser())?.email ?? null, error: null }
     } catch (e) {
       const refused = e instanceof ApiError && e.code === 'SSO_ADDRESS_REQUIRED'
       const details = refused ? (e.details?.details as Record<string, unknown> | undefined) : undefined
@@ -65,6 +93,7 @@ async function land(): Promise<Landing> {
       const addressAttributes = names(details?.addressAttributes).filter((name) => attributes.includes(name))
       return {
         ...outcome,
+        canReturn,
         passed: false,
         email: null,
         error: e instanceof Error ? e.message : null,
@@ -78,7 +107,7 @@ async function land(): Promise<Landing> {
   // Logto returns a cancelled or failed direct sign-in here as `access_denied`.
   if (providerError === 'access_denied') return { kind: 'cancelled' }
   try {
-    await completeLogin()
+    await completeLoginForgettingOrganization()
     commitPendingSignIn()
     // Social sign-in can link an identity without passing through the Control Plane.
     await refreshMySocialIdentities(AbortSignal.timeout(5_000)).catch(() => undefined)
@@ -147,8 +176,11 @@ function SsoTestResult({ result }: { result: Extract<Landing, { kind: 'test' }> 
             </ul>
           </div>
         )}
-        <Button className="mt-[22px] h-10 px-[18px]" onClick={() => router.replace(result.returnTo)}>
-          {t('backToSettings')}
+        <Button
+          className="mt-[22px] h-10 px-[18px]"
+          onClick={() => router.replace(result.canReturn ? result.returnTo : '/')}
+        >
+          {t(result.canReturn ? 'backToSettings' : 'openConsole')}
         </Button>
       </div>
     </div>

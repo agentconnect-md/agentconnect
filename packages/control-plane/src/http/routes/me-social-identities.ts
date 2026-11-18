@@ -2,7 +2,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { resolveWebAppUrl } from '../../config/env.js'
-import { LogtoApiError } from '../../github/logto-identity.js'
+import { LogtoApiError, type LogtoIdentityService } from '../../github/logto-identity.js'
 import { GithubRepoIdentityError } from '../../github/repo-identity.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
 import { reconcileLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
@@ -69,8 +69,15 @@ const SocialIdentitySummaryDto = z.object({
     .optional()
 })
 
+// One single sign-on identity, read-only: its connection's owner administers it and the identity service cannot remove one alone.
+const SsoIdentitySummaryDto = z.object({
+  connectionName: z.string().optional(),
+  email: z.string().optional()
+})
+
 const SocialAccountDto = z.object({
   identities: z.array(SocialIdentitySummaryDto),
+  ssoIdentities: z.array(SsoIdentitySummaryDto),
   githubRepoIdentity: z.object({ githubUserId: z.string(), login: z.string() }).optional(),
   githubRepoAccessAvailable: z.boolean().optional(),
   /** Logto refuses an identity change the caller has not re-proven while this
@@ -84,6 +91,30 @@ type Operation = 'authorize' | 'link' | 'unlink' | 'read'
 function socialCallbackUrl(deps: HttpDeps): string | undefined {
   const webUrl = resolveWebAppUrl(deps.config)
   return webUrl ? new URL('/auth/social/callback', webUrl).toString() : undefined
+}
+
+// Names come from the organization's connection, then the deployment's connector, then the identity service; never an id.
+async function ssoIdentitiesOf(
+  deps: HttpDeps,
+  identity: LogtoIdentityService,
+  sub: string,
+  primaryEmail: string | undefined
+): Promise<z.infer<typeof SsoIdentitySummaryDto>[]> {
+  const held = await identity.ssoIdentitiesFor(sub)
+  if (held.length === 0) return []
+  const owned = (await deps.orgSsoConnections?.namesByConnector(held.map((h) => h.connectorId))) ?? new Map()
+  const deployment = deps.runtimeConfig.publicRuntimeConfig?.auth?.sso
+  return Promise.all(
+    held.map(async ({ connectorId, email }) => {
+      const name =
+        owned.get(connectorId) ??
+        (deployment?.connectorId === connectorId ? deployment.name : undefined) ??
+        (await identity.ssoConnectorNameFor(connectorId)) ??
+        undefined
+      const address = email ?? primaryEmail
+      return { ...(name ? { connectionName: name } : {}), ...(address ? { email: address } : {}) }
+    })
+  )
 }
 
 function logtoFailure(reply: FastifyReply, error: unknown, operation: Operation) {
@@ -396,7 +427,7 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
           tags: [Tag.Profile],
           summary: 'Get your sign-in methods',
           description:
-            'The social accounts linked to your profile, narrowed to what the console renders, plus whether Logto will require you to re-verify before they can change.',
+            'The social accounts linked to your profile, narrowed to what the console renders, the single sign-on identities you hold (connection name and address only; they cannot be unlinked here), plus whether Logto will require you to re-verify before they can change.',
           operationId: 'getMySocialIdentities',
           response: { 200: SocialAccountDto, 429: ErrorDto, 502: ErrorDto, 503: ErrorDto }
         }
@@ -405,8 +436,10 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
         const identity = deps.logtoIdentity
         if (!identity) return reply.code(503).send(unavailable)
         try {
+          const account = await identity.socialAccountFor(req.oidcSubject!)
           return {
-            ...(await identity.socialAccountFor(req.oidcSubject!)),
+            ...account,
+            ssoIdentities: await ssoIdentitiesOf(deps, identity, req.oidcSubject!, account.primaryEmail),
             githubRepoAccessAvailable: deps.githubRepoIdentity?.enabled ?? false
           }
         } catch (error) {

@@ -115,11 +115,15 @@ function server(existingConnectors: readonly string[] = ['telegram', 'discord', 
           application: { id: 'browser-app', created: false, changed: false },
           connectors: [],
           sso: null,
+          ssoConnectorsDeleted: [],
           signInExperienceChanged: true,
           adminRoleCreated: false
         }
       },
       createSsoConnector: async () => {
+        throw new Error('not used')
+      },
+      deleteManagedSsoConnectors: async () => {
         throw new Error('not used')
       }
     })

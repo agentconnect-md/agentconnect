@@ -16,7 +16,7 @@ import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { LogoMark, Spinner } from '@/components/marks'
 import { ApiError, createOrg, getMyAccess } from '@/lib/api'
-import { getUser, isAuthConfigured, type AuthUser } from '@/lib/auth'
+import { getUser, isAuthConfigured, logout, type AuthUser } from '@/lib/auth'
 import { orgUrlPrefix } from '@/lib/org-context'
 
 /** Lowercase letters/digits/hyphens — mirrors the CP's OrgSlug shape. */
@@ -115,13 +115,19 @@ export default function OrgOnboarding() {
         {user && (
           <span className="flex items-center gap-[9px]">
             {user.email && (
-              <span className="font-mono text-[12.5px] leading-none text-(--text-tertiary)">{user.email}</span>
+              <span className="hidden font-mono text-[12.5px] leading-none text-(--text-tertiary) desktop:inline">
+                {user.email}
+              </span>
             )}
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-(--gray-100) font-sans text-[11px] font-semibold text-(--text-secondary)">
               {user.initials}
             </span>
           </span>
         )}
+        <Button variant="ghost" size="sm" onClick={() => void logout()}>
+          <Icon name="log-out" size={14} />
+          {t('signOut')}
+        </Button>
       </header>
 
       <div className="flex-1 overflow-auto">
