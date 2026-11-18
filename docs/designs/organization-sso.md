@@ -106,7 +106,10 @@ One card in organization settings, three steps in order:
    nonce and starts a sign-in directly against this connector. The landing page
    presents the nonce; the Control Plane marks the connection tested when the account
    that landed holds an identity on this connector. The nonce shows an owner started
-   the test; the identity shows the provider works. The window closes when the test
+   the test; the identity shows the provider works. An account the sign-in check
+   refuses (§5) never presents the nonce, so a provider that returns no usable
+   address fails the test, and the page says that the address is what is missing.
+   The window closes when the test
    succeeds, when the settings change, when the connection is deactivated, or after
    ten minutes. While it is open, the organization's domains sign
    in only through the connection, as they do once it is active; the card says so
@@ -125,7 +128,10 @@ deactivates. Changing the protocol starts a new connector with new service-provi
 values.
 
 An organization-owned OIDC connection never trusts an unverified email; the
-`trustUnverifiedEmail` option stays a deployment-connector setting.
+`trustUnverifiedEmail` option stays a deployment-connector setting. A provider whose
+ID token carries no `email_verified` claim therefore yields an account with no
+address over OIDC, which the sign-in check refuses (§5); such a provider connects
+over SAML, with the email attribute set to the one its assertion actually carries.
 
 Configuration changes, activation and deactivation are audited with their actor, owner
 or `ADMIN`.
@@ -214,8 +220,11 @@ Three parts provide them.
 - **The Control Plane, at sign-in.** Before a subject is admitted, an account that
   holds an identity on an organization's connection must have its address inside
   that organization's verified domains. Otherwise the sign-in is refused. An account
-  that has no local user yet is also removed from the identity service; one that
-  has is left for an administrator. The refusal is audited without the address.
+  with no address at all is refused the same way: the provider withheld the address
+  or sent it without marking it verified, and the account would be a member of
+  nothing. An account that has no local user yet is also removed from the identity
+  service; one that has is left for an administrator. The refusal is audited without
+  the address.
 - **The Control Plane, as the only writer** of each connector's `domains` (§3), and
   of nothing but verified domains.
 
@@ -338,8 +347,8 @@ Verification on a staging deployment with a real identity provider, OIDC and SAM
   unverified claim blocks nobody.
 - R1 and R2 hold for both protocols.
 - An account that arrives through a connection with an address outside the
-  organization's verified domains is refused, and the test is refused when the
-  organization has no verified domain.
+  organization's verified domains, or with no address, is refused and fails a test
+  sign-in; the test is refused when the organization has no verified domain.
 - A Setup Server reconcile leaves single sign-on on and reports no drift for
   organization connectors.
 - After activation: social sign-in with a bound address is refused; the email field

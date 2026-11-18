@@ -670,13 +670,24 @@ describe('organization SSO sign-in admission', () => {
   it('admits accounts the organization’s connection may speak for', async () => {
     idp.accounts.set('social-only', { primaryEmail: 'someone@elsewhere.example.test', connectorIds: [] })
     idp.accounts.set('in-domain', { primaryEmail: 'Person@Example.TEST', connectorIds: [connectorId] })
-    idp.accounts.set('no-address', { primaryEmail: null, connectorIds: [connectorId] })
     idp.accounts.set('other-connector', { primaryEmail: 'x@elsewhere.example.test', connectorIds: ['deployment'] })
+    idp.accounts.set('no-address-elsewhere', { primaryEmail: null, connectorIds: ['deployment'] })
 
-    for (const subject of ['social-only', 'in-domain', 'no-address', 'other-connector', 'unknown']) {
+    for (const subject of ['social-only', 'in-domain', 'other-connector', 'no-address-elsewhere', 'unknown']) {
       expect(await admission.admit(subject)).toBe(true)
     }
     expect(idp.accounts.size).toBe(4)
+  })
+
+  it('refuses an account the provider gave no address and removes it when it has nothing here', async () => {
+    idp.accounts.set('no-address', { primaryEmail: null, connectorIds: [connectorId] })
+    expect(await admission.admit('no-address')).toBe(false)
+    expect(idp.accounts.has('no-address')).toBe(false)
+
+    const refusal = await prisma.auditEvent.findFirst({
+      where: { orgId: DEFAULT_ORG_ID, kind: 'org_sso_change', details: { path: ['action'], equals: 'account_refused' } }
+    })
+    expect(refusal?.details).toMatchObject({ subject: 'no-address', removed: true })
   })
 
   it('refuses an account outside the verified domains and removes it when it has nothing here', async () => {
