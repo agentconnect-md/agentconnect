@@ -116,6 +116,7 @@ model Org {
   linearTokens              LinearToken[]
   inviteLink                OrgInviteLink?
   domains                   OrgDomain[]
+  ssoConnection             OrgSsoConnection?
   mcpProviders              McpProvider[]
   skillSources              SkillSource[]
   decisions                 Decision[]
@@ -453,6 +454,25 @@ model OrgDomain {
   @@unique([orgId, domain])
   @@index([domain])
   @@map("org_domain")
+}
+
+// An organization's SSO connection (organization-sso.md §3); identity provider settings and the secret stay in Logto.
+model OrgSsoConnection {
+  id               String    @id @default(cuid())
+  orgId            String    @unique
+  logtoConnectorId String    @unique
+  protocol         String // oidc | saml
+  name             String
+  testNonceHash    String?   @unique
+  testExpiresAt    DateTime? @db.Timestamptz(6)
+  testedAt         DateTime? @db.Timestamptz(6)
+  activatedAt      DateTime? @db.Timestamptz(6)
+  configChangedAt  DateTime  @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("org_sso_connection")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

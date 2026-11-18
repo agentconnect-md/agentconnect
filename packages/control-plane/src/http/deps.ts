@@ -126,6 +126,8 @@ import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
 import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
 import type { OrgSsoDomainService } from '../org-sso/domains.js'
+import type { OrgSsoConnectionService } from '../org-sso/connections.js'
+import type { OrgSsoAdmission } from '../org-sso/admission.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
 import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
@@ -506,6 +508,10 @@ export interface HttpDeps {
   inviteLinks: OrgInviteLinkService
   /** Organization SSO domains; present only on a deployment that declares organization SSO, and its routes mount with it. */
   orgSsoDomains?: OrgSsoDomainService
+  /** Organization SSO connections; present when the deployment also has the identity service's Management API. */
+  orgSsoConnections?: OrgSsoConnectionService
+  /** The sign-in check organization SSO adds to subject admission. */
+  orgSsoAdmission?: OrgSsoAdmission
   /** Closed-beta admission: `/me/access` status, self-join, join-link redeem (waitlist-and-login.md). */
   waitlist: WaitlistService
   /** The shared usage report interface — this plane is its `gateway`-source adapter. */

@@ -158,6 +158,14 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   session), only where the agent holds a grant in the origin conversation as the compiled route table
   states it (never the row's trigger, which a shared bot repeats across siblings), and never over a
   `triggerChosen` row. The relay window (`roomOpeningMs`) only postpones a refusal and must grant nothing.
+- **Organization SSO** (`organization-sso.md` §5): on a deployment that declares it, an organization
+  owner picks the identity provider, so that provider is untrusted. A connection must speak only for
+  addresses in its own organization's verified domains (`org-sso/admission.ts`, applied at subject
+  admission), a domain must belong to at most one organization and be proved by DNS before it is
+  bound (`org-sso/domains.ts`), and the Control Plane must be the only writer of a connector's domain
+  list, writing verified domains and only while the connection is active or in a test window
+  (`org-sso/connections.ts`). A verified domain must not leave an organization while its connection
+  exists. The test nonce proves who started a test, never who signed in.
 - **Thread reads** (`webchat-threads.md` §7.1): `GET /sessions/:id/messages?view=roots` and
   `GET /sessions/:id/threads/:rootId/messages` show a coordinator conversation's threads, including
   observations, messages people wrote in the channel without addressing an agent, to whoever may view

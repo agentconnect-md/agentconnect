@@ -37,6 +37,7 @@ function stubDeps(): HttpDeps {
     // Mounted only with the service; its handlers are never reached here.
     capabilityRequests: {},
     orgSsoDomains: {},
+    orgSsoConnections: {},
     // Mounted only with the surface; its handlers are never reached here.
     azureDevOps: {},
     github: {},
@@ -381,6 +382,14 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/sso/domains',
           'POST /api/v1/orgs/:orgId/sso/domains/:id/verify',
           'DELETE /api/v1/orgs/:orgId/sso/domains/:id',
+          'PUT /api/v1/orgs/:orgId/sso/connection',
+          'POST /api/v1/orgs/:orgId/sso/connection/test',
+          'POST /api/v1/orgs/:orgId/sso/connection/activate',
+          'POST /api/v1/orgs/:orgId/sso/connection/deactivate',
+          'DELETE /api/v1/orgs/:orgId/sso/connection',
+          'POST /api/v1/sso/test-result',
+          'POST /api/v1/admin/orgs/:orgId/sso/connection/deactivate',
+          'DELETE /api/v1/admin/sso/domains/:id',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/settle',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/decline',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/reopen',

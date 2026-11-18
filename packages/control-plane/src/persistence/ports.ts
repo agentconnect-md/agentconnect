@@ -9031,6 +9031,57 @@ export interface OrgDomainRepo {
   listDueForRecheck(before: Date, limit: number): Promise<OrgDomainRecord[]>
   /** System tier: drop pending claims past their expiry. */
   deleteExpiredPending(now: Date): Promise<number>
+  /** System tier: a row by id whatever its organization, for a deployment administrator's release. */
+  getAny(id: string): Promise<OrgDomainRecord | null>
+}
+
+export type OrgSsoProtocol = 'oidc' | 'saml'
+
+export interface OrgSsoConnectionRecord {
+  id: string
+  orgId: string
+  logtoConnectorId: string
+  protocol: OrgSsoProtocol
+  name: string
+  testNonceHash: string | null
+  testExpiresAt: Date | null
+  testedAt: Date | null
+  activatedAt: Date | null
+  configChangedAt: Date
+  createdAt: Date
+}
+
+/** One connection per organization (organization-sso.md §3). Every state change is audited with its actor. */
+export interface OrgSsoConnectionRepo {
+  getForOrg(orgId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Create the row or record a configuration change; the test result no longer stands, and an open test window ends at `at`. */
+  save(
+    input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol; name: string },
+    at: Date,
+    actorUserId: string
+  ): Promise<OrgSsoConnectionRecord>
+  /** Open a test window; null when the organization has no connection. */
+  startTest(orgId: string, nonceHash: string, expiresAt: Date): Promise<OrgSsoConnectionRecord | null>
+  /** The connection whose live test window carries this nonce. */
+  findLiveTest(nonceHash: string, now: Date): Promise<OrgSsoConnectionRecord | null>
+  /** Mark tested and end the window at `at`; null when the window ended or the configuration changed meanwhile. */
+  completeTest(id: string, nonceHash: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** System tier: connections whose test window has ended, by time or by a change, and is not yet closed. */
+  listEndedTests(now: Date): Promise<OrgSsoConnectionRecord[]>
+  /** System tier: close an ended window, once what it bound has been unbound. */
+  closeTest(id: string, now: Date): Promise<void>
+  /** Null when the organization has no connection. */
+  activate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Also ends an open test window at `at`, since it binds the same domains; null when the organization has no connection. */
+  deactivate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Delete + audit; null when the organization has no connection. */
+  remove(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** System tier: the connections that own these identity-service connectors. */
+  findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
+  /** System tier: whether a sign-in subject already has a local user. */
+  subjectIsProvisioned(oidcSubject: string): Promise<boolean>
+  /** System tier: record a sign-in the organization's connection was refused for. */
+  recordRefusal(orgId: string, details: { connectionId: string; subject: string; removed: boolean }): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

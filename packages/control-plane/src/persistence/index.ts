@@ -132,6 +132,7 @@ export { PgUserRepo } from './repositories/user.repo.js'
 export { PgOrgRepo } from './repositories/org.repo.js'
 export { PgOrgInviteLinkRepo } from './repositories/org-invite-link.repo.js'
 export { PgOrgDomainRepo } from './repositories/org-domain.repo.js'
+export { PgOrgSsoConnectionRepo } from './repositories/org-sso-connection.repo.js'
 export { PgWaitlistRepo } from './repositories/waitlist.repo.js'
 export { PgDeploymentConfigRepository, PgDeploymentConfigStore } from './repositories/deployment-config.repo.js'
 

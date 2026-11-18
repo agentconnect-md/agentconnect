@@ -1,17 +1,16 @@
-// The background pass over organization SSO domains (organization-sso.md §8): the daily re-check and the removal of lapsed claims.
+// A background pass over organization SSO state (organization-sso.md §8): one pass at a time, re-armed after it settles.
 import type { Clock, TimerHandle } from '../domain/clock.js'
-import type { OrgSsoDomainService } from './domains.js'
 
-const FIRST_SWEEP_DELAY_MS = 5 * 60 * 1000
-const SWEEP_INTERVAL_MS = 60 * 60 * 1000
-
-export class OrgDomainSweeper {
+export class OrgSsoSweeper {
   private timer: TimerHandle | null = null
   private stopped = false
 
   constructor(
     private readonly deps: {
-      domains: OrgSsoDomainService
+      name: string
+      sweep: () => Promise<void>
+      firstDelayMs: number
+      intervalMs: number
       clock: Clock
       log?: { warn(obj: object, msg: string): void }
     }
@@ -19,7 +18,7 @@ export class OrgDomainSweeper {
 
   start(): void {
     this.stopped = false
-    this.arm(FIRST_SWEEP_DELAY_MS)
+    this.arm(this.deps.firstDelayMs)
   }
 
   stop(): void {
@@ -31,10 +30,10 @@ export class OrgDomainSweeper {
   private arm(delayMs: number): void {
     if (this.stopped) return
     this.timer = this.deps.clock.setTimeout(() => {
-      void this.deps.domains
+      void this.deps
         .sweep()
-        .catch((err) => this.deps.log?.warn({ err }, 'org sso domain sweep failed'))
-        .finally(() => this.arm(SWEEP_INTERVAL_MS))
+        .catch((err) => this.deps.log?.warn({ err }, `org sso ${this.deps.name} sweep failed`))
+        .finally(() => this.arm(this.deps.intervalMs))
     }, delayMs)
   }
 }

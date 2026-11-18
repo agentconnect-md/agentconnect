@@ -102,6 +102,39 @@ export class OrgSsoDomainService {
     return this.domains.release(orgId, id, actorUserId)
   }
 
+  /** The domains the organization holds now; the list its connection may be bound to. */
+  async verifiedDomains(orgId: string): Promise<string[]> {
+    const rows = await this.domains.listForOrg(orgId, new Date(this.clock.now()))
+    return rows.filter((row) => row.verifiedAt !== null).map((row) => row.domain)
+  }
+
+  /** Resolve every verified domain's record now, as activation requires (§4.1). */
+  async recheckVerified(orgId: string): Promise<{ domain: string; check: OrgDomainCheck }[]> {
+    const rows = await this.domains.listForOrg(orgId, new Date(this.clock.now()))
+    const results: { domain: string; check: OrgDomainCheck }[] = []
+    for (const record of rows.filter((row) => row.verifiedAt !== null)) {
+      const check = await this.check(record)
+      await this.domains.recordCheck(
+        record.id,
+        new Date(this.clock.now()),
+        check === 'lookup_failed' ? null : check === 'ok'
+      )
+      results.push({ domain: record.domain, check })
+    }
+    return results
+  }
+
+  /** Whether the organization's row is verified; null when it has no such live row. */
+  async isVerified(orgId: string, id: string): Promise<boolean | null> {
+    const record = await this.domains.get(orgId, id, new Date(this.clock.now()))
+    return record ? record.verifiedAt !== null : null
+  }
+
+  /** A row by id whatever its organization, for a deployment administrator's release. */
+  findAny(id: string): Promise<OrgDomainRecord | null> {
+    return this.domains.getAny(id)
+  }
+
   /** The background pass: re-check verified domains once a day and drop lapsed claims. A failing check only marks the row (§8). */
   async sweep(): Promise<void> {
     const due = await this.domains.listDueForRecheck(new Date(this.clock.now() - ORG_DOMAIN_RECHECK_MS), RECHECK_BATCH)

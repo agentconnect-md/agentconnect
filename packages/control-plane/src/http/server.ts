@@ -72,7 +72,7 @@ import { iconUploadRoutes } from './routes/icon-upload.js'
 import { memberRoutes } from './routes/members.js'
 import { serviceAccountRoutes } from './routes/service-accounts.js'
 import { orgInviteAcceptRoutes, orgInviteLinkRoutes } from './routes/org-invite-links.js'
-import { orgSsoRoutes } from './routes/org-sso.js'
+import { orgSsoRootRoutes, orgSsoRoutes } from './routes/org-sso.js'
 import { meRoutes } from './routes/me.js'
 import { meSocialIdentityRoutes } from './routes/me-social-identities.js'
 import { waitlistRoutes } from './routes/waitlist.js'
@@ -170,7 +170,12 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   void app.register(humanAuthPlugin, {
     ...deps.config,
     // Logto can register an account with no identifier at all; only one with a linked social or SSO account may sign in.
-    ...(deps.logtoIdentity ? { admitSubject: (sub: string) => deps.logtoIdentity!.hasSignInIdentity(sub) } : {}),
+    ...(deps.logtoIdentity
+      ? {
+          admitSubject: async (sub: string) =>
+            (await deps.logtoIdentity!.hasSignInIdentity(sub)) && ((await deps.orgSsoAdmission?.admit(sub)) ?? true)
+        }
+      : {}),
     resolveUser: async (input) => {
       const user = await deps.repos.user.provisionOidcUser(input)
       // Record the linked Google identity once per subject (google-chat-integration.md §10.6); a miss is read again on a claim.
@@ -351,6 +356,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       await api.register(computerRegisterRoutes(deps))
       // A deployment administrator's per-organization quota override, which needs no membership in it.
       await api.register(computerPlanAdminRoutes(deps))
+      await api.register(orgSsoRootRoutes(deps))
       // AgentConnect MCP — version root, OUTSIDE the org subtree: the org is
       // resolved from the personal API key's binding, not the URL
       // (docs/designs/agent-assistant.md §6.1). Mounted again at the public

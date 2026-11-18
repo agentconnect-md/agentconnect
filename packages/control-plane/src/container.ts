@@ -226,6 +226,7 @@ import {
   PgOrgRepo,
   PgOrgInviteLinkRepo,
   PgOrgDomainRepo,
+  PgOrgSsoConnectionRepo,
   PgWaitlistRepo
 } from './persistence/index.js'
 import type { PresetPoolPlacement } from './persistence/index.js'
@@ -296,7 +297,10 @@ import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { OrgSsoDomainService } from './org-sso/domains.js'
-import { OrgDomainSweeper } from './org-sso/domain-sweeper.js'
+import { OrgSsoSweeper } from './org-sso/sweeper.js'
+import { OrgSsoConnectionService } from './org-sso/connections.js'
+import { OrgSsoAdmission } from './org-sso/admission.js'
+import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
 import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
@@ -709,6 +713,7 @@ export function buildContainer(
     })),
     orgInviteLink: new PgOrgInviteLinkRepo(prisma),
     orgDomain: new PgOrgDomainRepo(prisma),
+    orgSsoConnection: new PgOrgSsoConnectionRepo(prisma),
     waitlist: new PgWaitlistRepo(prisma),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
@@ -1961,8 +1966,11 @@ export function buildContainer(
       })
     : undefined
   const orgDomainSweeper = orgSsoDomains
-    ? new OrgDomainSweeper({
-        domains: orgSsoDomains,
+    ? new OrgSsoSweeper({
+        name: 'domain',
+        sweep: () => orgSsoDomains.sweep(),
+        firstDelayMs: 5 * 60_000,
+        intervalMs: 60 * 60_000,
         clock,
         log: { warn: (obj, msg) => http.log.warn(obj, msg) }
       })
@@ -2482,6 +2490,39 @@ export function buildContainer(
           }
         )
       : undefined
+  // Organization SSO connections need the identity service's Management API on top of the declaration.
+  const orgSsoIdp = logtoIdentity ? new LogtoOrgSsoIdp((path, init) => logtoIdentity.management(path, init)) : undefined
+  const orgSsoWarn = { warn: (obj: object, msg: string) => http.log.warn(obj, msg) }
+  const orgSsoConnections =
+    orgSsoDomains && orgSsoIdp && config.OIDC_ISSUER
+      ? new OrgSsoConnectionService({
+          connections: repos.orgSsoConnection,
+          domains: orgSsoDomains,
+          idp: orgSsoIdp,
+          clock,
+          idpOrigin: new URL(config.OIDC_ISSUER).origin,
+          log: orgSsoWarn
+        })
+      : undefined
+  const orgSsoAdmission =
+    orgSsoDomains && orgSsoIdp
+      ? new OrgSsoAdmission({
+          connections: repos.orgSsoConnection,
+          domains: orgSsoDomains,
+          idp: orgSsoIdp,
+          log: orgSsoWarn
+        })
+      : undefined
+  const orgSsoTestSweeper = orgSsoConnections
+    ? new OrgSsoSweeper({
+        name: 'test window',
+        sweep: () => orgSsoConnections.sweep(),
+        firstDelayMs: 60_000,
+        intervalMs: 60_000,
+        clock,
+        log: orgSsoWarn
+      })
+    : undefined
   const githubUserAuthz =
     github && logtoIdentity
       ? new GithubUserAuthzService({
@@ -2774,6 +2815,8 @@ export function buildContainer(
     webchatTokens,
     inviteLinks,
     ...(orgSsoDomains ? { orgSsoDomains } : {}),
+    ...(orgSsoConnections ? { orgSsoConnections } : {}),
+    ...(orgSsoAdmission ? { orgSsoAdmission } : {}),
     waitlist,
     usageWriter,
     ...(clusterWorkloadIdentity ? { clusterWorkloadIdentity } : {}),
@@ -4247,6 +4290,7 @@ export function buildContainer(
       giteaConvergeSweeper.start()
       azureDevOpsHookSweeper.start()
       orgDomainSweeper?.start()
+      orgSsoTestSweeper?.start()
       // §3.5: the deployment secret moves only across a restart, so one pass at boot re-stamps it.
       void azureDevOpsConnectionService
         .reconcileDeploymentSecret()
@@ -4293,6 +4337,7 @@ export function buildContainer(
       giteaConvergeSweeper.stop()
       azureDevOpsHookSweeper.stop()
       orgDomainSweeper?.stop()
+      orgSsoTestSweeper?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

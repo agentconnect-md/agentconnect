@@ -143,6 +143,10 @@ export class PgOrgDomainRepo implements OrgDomainRepo {
     })
   }
 
+  getAny(id: string): Promise<OrgDomainRecord | null> {
+    return this.db.orgDomain.findUnique({ where: { id } })
+  }
+
   async deleteExpiredPending(now: Date): Promise<number> {
     const { count } = await this.db.orgDomain.deleteMany({
       where: { verifiedAt: null, challengeExpiresAt: { lte: now } }
