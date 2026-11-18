@@ -17,6 +17,24 @@ import {
 } from '@/lib/api'
 
 const DEFAULT_SCOPE = 'openid email profile'
+// Standard SAML and WS-Federation claim names, offered on the attribute fields.
+const CLAIMS = 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims'
+const EMAIL_ATTRIBUTES = [
+  'email',
+  'mail',
+  `${CLAIMS}/emailaddress`,
+  `${CLAIMS}/upn`,
+  `${CLAIMS}/name`,
+  'urn:oid:0.9.2342.19200300.100.1.3'
+]
+const NAME_ATTRIBUTES = [
+  'name',
+  'displayName',
+  `${CLAIMS}/name`,
+  'http://schemas.microsoft.com/identity/claims/displayname',
+  'urn:oid:2.16.840.1.113730.3.1.241'
+]
+
 const INPUT =
   'min-w-0 flex-1 border-0 bg-transparent font-[inherit] text-[length:inherit] outline-none placeholder:text-(--text-disabled)'
 
@@ -27,7 +45,8 @@ function Field({
   placeholder,
   mono = false,
   secret = false,
-  autoFocus = false
+  autoFocus = false,
+  suggestions
 }: {
   label: string
   value: string
@@ -36,7 +55,9 @@ function Field({
   mono?: boolean
   secret?: boolean
   autoFocus?: boolean
+  suggestions?: readonly string[]
 }) {
+  const listId = useId()
   return (
     <label className="fld min-w-0">
       <span className="fldlbl">{label}</span>
@@ -51,8 +72,16 @@ function Field({
           autoFocus={autoFocus}
           value={value}
           placeholder={placeholder}
+          list={suggestions ? listId : undefined}
           onChange={(event) => onChange(event.target.value)}
         />
+        {suggestions && (
+          <datalist id={listId}>
+            {suggestions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        )}
       </div>
     </label>
   )
@@ -372,8 +401,20 @@ export default function OrgSsoConnectionModal({
                 )}
               </div>
               <div className="grid grid-cols-1 gap-3 desktop:grid-cols-2">
-                <Field label={t('emailAttribute')} value={emailAttribute} onChange={setEmailAttribute} mono />
-                <Field label={t('nameAttribute')} value={nameAttribute} onChange={setNameAttribute} mono />
+                <Field
+                  label={t('emailAttribute')}
+                  value={emailAttribute}
+                  onChange={setEmailAttribute}
+                  mono
+                  suggestions={EMAIL_ATTRIBUTES}
+                />
+                <Field
+                  label={t('nameAttribute')}
+                  value={nameAttribute}
+                  onChange={setNameAttribute}
+                  mono
+                  suggestions={NAME_ATTRIBUTES}
+                />
               </div>
               <CopyField
                 label={t('acsUrl')}

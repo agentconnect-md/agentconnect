@@ -30,6 +30,10 @@ type Landing =
       error: string | null
       /** The Control Plane refused the account that landed: the provider gave it no address in the organization's domains. */
       refused: boolean
+      /** Names of the attributes the provider sent with the refused account, to pick the address attribute from. */
+      attributes: string[]
+      /** Of those, the ones whose value is an address in the organization's verified domains. */
+      addressAttributes: string[]
       returnTo: string
       /** False when the account that landed is not a member of the organization `returnTo` names. */
       canReturn: boolean
@@ -63,6 +67,8 @@ async function land(): Promise<Landing> {
       connectionName: test.connectionName,
       returnTo: test.returnTo,
       refused: false,
+      attributes: [] as string[],
+      addressAttributes: [] as string[],
       canReturn: true
     }
     if (providerError) {
@@ -79,14 +85,21 @@ async function land(): Promise<Landing> {
       const passed = await reportOrgSsoTest(test.nonce, AbortSignal.timeout(10_000))
       return { ...outcome, canReturn, passed, email: (await getUser())?.email ?? null, error: null }
     } catch (e) {
-      const refused = e instanceof ApiError && e.code === 'SIGN_IN_IDENTITY_REQUIRED'
+      const refused = e instanceof ApiError && e.code === 'SSO_ADDRESS_REQUIRED'
+      const details = refused ? (e.details?.details as Record<string, unknown> | undefined) : undefined
+      const names = (value: unknown) =>
+        Array.isArray(value) ? value.filter((name): name is string => typeof name === 'string') : []
+      const attributes = names(details?.attributes)
+      const addressAttributes = names(details?.addressAttributes).filter((name) => attributes.includes(name))
       return {
         ...outcome,
         canReturn,
         passed: false,
         email: null,
         error: e instanceof Error ? e.message : null,
-        refused
+        refused,
+        attributes,
+        addressAttributes
       }
     }
   }
@@ -141,6 +154,26 @@ function SsoTestResult({ result }: { result: Extract<Landing, { kind: 'test' }> 
             {result.refused
               ? t('noAddress', { name: result.connectionName })
               : (result.error ?? t('unconfirmed', { name: result.connectionName }))}
+          </div>
+        )}
+        {result.refused && result.attributes.length > 0 && (
+          <div className="mt-[14px] w-full text-left">
+            <div className="text-[12px] font-medium text-(--text-secondary)">{t('attributesSent')}</div>
+            <ul className="mono mt-[6px] max-h-[180px] overflow-y-auto rounded-sm border border-(--border-default) px-[10px] py-2 text-[12px] break-all text-(--text-primary) select-text">
+              {result.addressAttributes.map((name, i) => (
+                <li key={`address-${i}-${name}`} className="flex items-start justify-between gap-2">
+                  <span className="min-w-0">{name}</span>
+                  <span className="badge shrink-0 bg-(--status-online-soft) font-sans text-(--status-online)">
+                    {t('inDomainAddress')}
+                  </span>
+                </li>
+              ))}
+              {result.attributes
+                .filter((name) => !result.addressAttributes.includes(name))
+                .map((name, i) => (
+                  <li key={`${i}-${name}`}>{name}</li>
+                ))}
+            </ul>
           </div>
         )}
         <Button
