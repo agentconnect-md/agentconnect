@@ -13,17 +13,20 @@ refused before anything is shown.
 
 The card reuses the native-card path built for
 [native integration configuration](webchat-native-integration-ui.md): the same
-`McpAppCard` frame with a `nativeUi` intent, the same transcript row, and the same
-report channel. A button press reaches the agent as an ordinary user turn. The
-card is not an MCP App: no iframe, no bridge, and it does not occupy one of
-the conversation's live app slots.
+`McpAppCard` frame with a `nativeUi` intent and the same transcript row. A button press
+reaches the agent as a user turn that names the card and button it came from. The card is
+not an MCP App: no iframe, no bridge, and it does not occupy one of the conversation's live
+app slots.
 
 ## 1. Decision and user experience
 
 - **Where.** Webchat only in v1, and only in a conversation whose replies stay in the
   Console. A console continuation of a Slack, Telegram, Discord or Lark session is
   excluded, because its reply is also delivered to a platform that cannot show the card
-  yet. Every other surface is never offered the tool.
+  yet. A webchat turn whose client is not the Console is excluded too: the agent chat API
+  (`/ai-sdk`, `/ag-ui`) and AHP clients such as the VS Code extension share the webchat
+  turn context and relay bridge but have no renderer (§4, §10). Rendering is a property of
+  the reading client, not of the conversation.
 - **What the reader sees.** A card in the agent's reply, between the text the agent wrote
   before and after the call. The card keeps the Console's typography, colors, dark mode and
   mobile layout because every component is a Console component.
@@ -31,11 +34,16 @@ the conversation's live app slots.
   names the reason (the surface cannot show cards, or the spec is invalid and why), so
   the agent either corrects the spec or answers in Markdown. The agent never assumes a
   card was seen when it was not.
-- **Interaction.** v1 has one action. A button posts its text into the conversation as
-  the reader's own message, which starts the agent's next turn. A link button opens a
-  URL. History views render the same card read-only.
+- **Interaction.** v1 has one action. Pressing a button starts the agent's next turn with
+  the button's text, marked in the transcript and in the agent's input as a press on that
+  card (§6). A link button opens a URL. History views render the same card read-only.
 - **When not to use it.** Ordinary answers stay Markdown. The tool description says a card is
-  for structured results the reader scans or chooses from, not for prose.
+  for structured results the reader scans, with optional suggested follow-ups, not for
+  prose.
+- **Not a question.** A card never blocks the turn and stays pressable later, so it is not
+  a way to ask. When the agent needs an answer before it can continue, it uses
+  elicitation, which parks the turn and has one settle path. The tool guide states this
+  rule.
 
 ## 2. Existing foundations
 
@@ -45,7 +53,8 @@ the conversation's live app slots.
 | `McpAppCard` frame (`kind: 'app'`) in `protocol/src/frames/webchat.ts`             | Carrying the card to the browser. Its `nativeUi` field already accepts any member of the union.             |
 | `appSurface.open` and `writeAppRow` in the daemon                                  | Posting the card on the turn's stream and persisting it as a transcript row, exactly as a native form does. |
 | `McpAppCard` / `NativeIntegrationAppCard` in the web console                       | Dispatching on `nativeUi.resourceUri` and rendering the card chrome.                                        |
-| `appReport` in `SessionDetailView` (`pgNotice`)                                    | Sending a button's text as the reader's turn on the composer's own frame, never through a card bridge.      |
+| Fill-card answers (`pgAnswerFill`) in `SessionDetailView`                          | Sending a press as a structured event on the composer's live socket, never through a card bridge.           |
+| `apiProtocol` on the webchat turn (`ChatTurnContext`)                              | Telling a Console reader from an agent chat API or AHP client.                                              |
 | `MarkdownText` in the web console                                                  | Rendering `Text` content with the existing Markdown pipeline and link policy.                               |
 | Relay feature advertisement (`webchat-images-v1` → `advertisesWebchatImages`)      | Offering the tool only when the relay and its Console can render the new intent.                            |
 | Static-descriptor, dynamic-authority tools (`consoleImages` gating of `shareFile`) | Listing the tool once per session and deciding at execution time whether this turn can show a card.         |
@@ -101,9 +110,11 @@ visibility and form features without changing the format:
 }
 ```
 
-`UiSpecIntent` is `{ title?: string, spec: UiSpec }`, and its `NativeMcpUi` member is
-`{ resourceUri: 'ui://agentconnect/ui-spec', intent: UiSpecIntent }`. `nativeUiTitle`
-returns the intent's `title`, or `Card` when it has none.
+`UiSpecIntent` is `{ title?: string, spec: UiSpec }`. Its `NativeMcpUi` member is built
+with the same `nativeApp` helper as the existing members, so it carries
+`resourceUri: 'ui://agentconnect/ui-spec'`, `resourceVersion: 1`, `orgId` (filled by the
+daemon from the agent's organization, never by the model) and `intent: UiSpecIntent`.
+`nativeUiTitle` returns the intent's `title`, or `Card` when it has none.
 
 ### v1 catalog
 
@@ -133,10 +144,10 @@ which becomes the tool's input documentation (§4).
 - **Text** is Markdown, matching `@json-render/chat`, because every chat platform renders
   some Markdown dialect. The Console renders it with `MarkdownText`, which skips raw HTML
   and applies the agent-Markdown link policy.
-- **Button.** `id` is unique within the spec. A press sends `value`, or `label` when `value`
-  is absent. `id` is not used in the Console. It exists so a platform click can name the
-  button and the daemon can recover its text from the stored spec instead of trusting the
-  click payload (§10).
+- **Button.** `id` is unique within the spec. A press names the card and the button `id`,
+  and the daemon derives the text, `value` or `label` when `value` is absent, from its
+  stored spec instead of trusting the client (§6). Platform clicks later use the same
+  shape (§10).
 - **LinkButton** and Markdown links accept only `https:`, `http:` and `mailto:`, and they
   open in a new, opener-isolated tab.
 - **Not in v1:** `Image` and `Chart`. An `Image` would make the reader's browser fetch an
@@ -168,17 +179,25 @@ json-render's dynamic features are rejected by the strict schemas, not just igno
 
 ## 4. The `showUi` tool
 
-`showUi` is a daemon-local tool on the reserved `agentconnect` MCP server. Its input
-is `UiSpecIntent`, and its JSON Schema is generated with `z.toJSONSchema`, as the daemon
-already does for `MessageAttachment`. `getToolGuide` gains a `showUi` entry with the
-example above and the "when not to use it" guidance.
+`showUi` is a daemon-local tool on the reserved `agentconnect` MCP server. Its input is
+`UiSpecIntent`, validated in full at execution.
+
+The descriptor stays small: a one-paragraph description and an input schema that only
+requires `spec` to be an object with `root` and `elements`. The catalog, generated with
+`z.toJSONSchema` as the daemon already does for `MessageAttachment`, the example above,
+and the "when not to use it" and "not a question" rules live in a `getToolGuide` entry.
+The description tells the agent to read that entry first, as `sendMessage` does. This
+keeps the catalog out of every session's tool list, including the Slack or Telegram
+sessions that are offered the tool only because a console turn might reach them.
 
 ### Offer gate
 
 The descriptor is static per session, following the `consoleImages` pattern. A console
 turn may reach a session that was not born in webchat, so the session's own platform
 cannot decide this. The daemon lists `showUi` when the relay connection advertises
-`webchat-ui-spec-v1` (§9). Otherwise the tool does not exist for the agent.
+`webchat-ui-spec-v1` (§9). Otherwise the tool does not exist for the agent. The feature
+only says the relay's own Console can render the card, so the execution checks below
+still decide whether this turn's reader is that Console.
 
 ### Execution
 
@@ -186,9 +205,13 @@ The daemon runs the tool itself, so it opens the card directly instead of waitin
 observe the tool result in the ACP stream:
 
 1. Resolve the current turn for the calling session (`appTurnFor` / the pending turn by
-   session key). If there is no turn, the turn is not webchat, the turn is a console
-   continuation, or output is suppressed, refuse with the reason: "This conversation
-   cannot show cards; answer in Markdown."
+   session key). Refuse with the reason "This conversation cannot show cards; answer in
+   Markdown." when any of these holds:
+   - there is no turn, or the turn is not webchat;
+   - the turn is a console continuation;
+   - the turn carries an `apiProtocol` (an agent chat API protocol, `ahp`, or any other), so its
+     client is not the Console;
+   - output is suppressed.
 2. Parse the arguments with `UiSpecIntent`. On failure, return the zod issues as a tool
    error with their paths, so the agent can repair the spec in its next call.
 3. Open the card through the code path `projectNativeIntegration` uses today, extracted into
@@ -200,12 +223,21 @@ observe the tool result in the ACP stream:
    spec, which keeps model context small. It also does not parse as an intent, so the
    ACP-stream projection never opens the same card a second time.
 
-### Not a live app
+### Not a dialog invitation
 
-The card is not registered in `LiveAppRegistry`. A UI spec card has no RPC bridge to
-authorize. It does not count against `MCP_APP_LIVE_CAP`, so it never supersedes an
-MCP App or a native form, and those never supersede it. Session expiry and conversation
-close have nothing to settle for it.
+Today a present `nativeUi` means "a Console dialog invitation", and several readers act on
+that. The UI spec member is excluded from each of them by its `resourceUri`:
+
+- **`LiveAppRegistry`.** The card is not registered as a `native` live app. It has no RPC
+  bridge to authorize and does not count against `MCP_APP_LIVE_CAP`, so it never
+  supersedes an MCP App or a native form, and those never supersede it. Session expiry
+  and conversation close have nothing to settle for it.
+- **`reviveAppRow`.** A native row with no outcome is revivable. A UI spec row is never
+  revived, because there is nothing to re-arm.
+- **The Console's native-card handling.** `McpAppCard` checks for the UI spec member before
+  its `nativeUi` → `NativeIntegrationAppCard` branch, so the card never registers a
+  pending action, never appears in the pending-actions banner, and never shows the
+  Waiting or Done state of a native form.
 
 ## 5. Rendering in the Console
 
@@ -230,19 +262,28 @@ inside the card instead of widening the page.
 ## 6. The reply action
 
 `UiSpecCard` mounts json-render's `ActionProvider` with exactly one handler, `reply`.
-Pressing a `Button` calls the card's `onReport` with the button's text (`value`, or
-`label`), which `SessionDetailView` already sends as the reader's turn through
-`pgNotice`. This is the native form's report channel, chosen for the same reason: it
-is the reader speaking under their own Console session, so no card bridge or card
-liveness is needed.
+The button text is agent-authored, so a press must not reach the transcript as words the
+reader typed. A press therefore carries provenance, not text:
 
-- The message appears in the transcript as the reader's own words, so the agent and the
-  reader see the same thing.
-- After a press, the card disables its buttons and shows which one was sent. It
+1. The Console sends `{ appId, buttonId }` as a structured event on the composer's live
+   socket, as Fill-card answers already do (`pgAnswerFill`). It never goes through a card
+   bridge, and the browser does not send the button's text.
+2. The daemon loads the card's stored row for that conversation, checks that the button
+   exists, and derives the text: `value`, or `label` when `value` is absent. An unknown
+   card or button is refused, and nothing is sent.
+3. The daemon starts the reader's turn with that text and records the press provenance on
+   the user turn. The transcript renders it as a press, for example "Pressed _Promote to
+   production_" with the derived text shown beneath. The agent's input marks it the same
+   way, so neither the reader nor the agent can mistake a press for typed words.
+
+This is the same shape a platform click takes later (§10), so the Console and chat
+platforms share one press path.
+
+- After a press, the card disables its buttons and shows which one was pressed. It
   remembers this in `localStorage` keyed by `appId`, as `NativeIntegrationAppCard`
   does, so a second tab also shows the card as answered. This is presentational only.
-- Where `onReport` is absent (history views, non-live sessions, shared read-only views),
-  buttons render disabled. Link buttons stay usable.
+- Where the view has no live socket (history views, non-live sessions, shared read-only
+  views), buttons render disabled. Link buttons stay usable.
 
 ## 7. Security model
 
@@ -255,10 +296,12 @@ liveness is needed.
 - **Links.** URLs are limited to web and mail schemes and open in a new tab with
   `rel="noopener noreferrer"`. No image or other resource is fetched from an agent-chosen
   host.
-- **Actions.** The only action sends text the reader could have typed, and it is attributed
-  to the reader. A button cannot call a tool, read a resource, or act with any authority
-  the reader's own message would not have. The reader sees the label before pressing it,
-  and the text that is sent appears in the transcript.
+- **Actions.** The only action starts a turn with text the daemon derives from its own
+  stored spec, marked as a press on a named card. A prompt-injected agent can still author
+  a button's `value`, but the result reads as "the reader pressed this button", not as
+  the reader's own words, in both the transcript and the agent's input. A button cannot
+  call a tool, read a resource, or act with any authority the reader's own message would
+  not have.
 - **Size.** The structural limits in §3 bound both rendering cost and row size.
 
 ## 8. Data plane and persistence
@@ -283,8 +326,17 @@ feature:
   that is newer than its relay never offers the tool. A relay that is newer than its
   daemon advertises a feature that no tool uses.
 
-Rows persisted before a downgrade are re-validated by the Console (§5) and degrade to the
-"cannot be displayed" notice instead of failing the transcript.
+Two cases remain that the feature cannot close:
+
+- **A Console tab loaded before an upgrade.** The relay advertises the feature, but the
+  old tab drops the frame while the agent holds `shown: true`. Earlier native members had
+  the tool's own text as a fallback; this one does not. Reloading renders the card from the
+  transcript row. This is accepted for v1 because the window lasts only until the tab
+  reloads.
+- **A Console downgraded below the feature.** The older Console does not know the member,
+  fails to parse `nativeUi`, and shows the row as an unarmed app card. The "cannot be
+  displayed" notice in §5 applies only to a Console that knows the member but not the
+  spec's exact shape, such as a row written by a newer daemon.
 
 ## 10. Other chat platforms
 
@@ -348,6 +400,27 @@ Each renderer is expected to be comparable to an existing capability card, about
 200 lines, because the catalog is display components plus one button action. No core
 `switch` learns a platform name.
 
+The facet is added only when a second surface implements it, following the rule that a
+seam member is extracted with its second implementer.
+
+### API and AHP clients
+
+The agent chat API and AHP clients are refused in v1 (§4). A client joins by declaring
+that it renders UI spec cards, for example as a capability in its protocol handshake. The
+execution check then becomes "the reading client declares UI spec rendering", with the
+Console's declaration implied by the relay feature. For the AI SDK protocol, a natural
+carrier is a data part holding the intent. For AHP, it is the existing apps projection. Each
+of these is decided in its client's own design.
+
+### Relation to sticky choice cards
+
+The open
+[sticky choice cards proposal](https://github.com/agentconnect-md/agentconnect/issues/3583)
+covers cards that a local service creates and reads, with their own state. UI spec cards
+are agent-authored and display-first, and a press is only a turn. `uiCards` does not
+replace that proposal. If both land, a platform renderer may share its button and layout
+code between them.
+
 ## 11. Alternatives considered
 
 - **`@json-render/chat` with the Chat SDK.** `@json-render/chat` converts a spec into the
@@ -381,10 +454,16 @@ Each renderer is expected to be comparable to an existing capability card, about
 
 ### v1 scope
 
-Protocol schemas and feature constant, the relay advertisement, the daemon tool and its
-gates, the web renderer, `getToolGuide` text, and a
-[product conventions](../product-conventions.md) entry stating that cards appear only in
-webchat and that a button press is the reader's own message.
+- Protocol: the schemas, the press event, and the feature constant.
+- Relay: the feature advertisement.
+- Daemon: the tool and its gates, the press derivation, and the readers excluded in §4.
+- Web: the renderer, with a lint rule (`no-restricted-imports`) so that nothing outside
+  `components/console/ui-spec/` imports `@json-render/*`.
+- Text: the `getToolGuide` entry, and a [product conventions](../product-conventions.md)
+  entry stating that cards appear only for Console readers and that a press is recorded as
+  a press, not as typed words.
+- Threat model: an entry in `.oss-scanner/threat_model.md` for agent-authored native
+  content and the reader-attributed press.
 
 ### Validation
 
@@ -392,14 +471,25 @@ webchat and that a button press is the reader's own message.
   prop, a `$state` expression, a non-`Card` root, a nested `Card`, a child type its parent
   does not allow, a dangling child, a shared child, a cycle, an unreachable element, a
   duplicate button `id`, a `javascript:` URL, and each size limit.
-- Daemon unit tests cover: the tool absent without the relay feature; refusal outside a
-  webchat turn and in a console continuation; zod issues returned as a tool error; a valid
-  call opening exactly one card and one app row; no `LiveAppRegistry` entry; and the receipt
-  not parsing as an intent.
-- Web tests cover: every component renders; `Text` Markdown skips raw HTML; an invalid
-  persisted spec degrades to the notice; a press calls `onReport` once with `value`, or
-  `label` when `value` is absent, and disables the buttons; and buttons are disabled
-  without `onReport`.
+- Daemon unit tests cover:
+  - the tool absent without the relay feature;
+  - refusal outside a webchat turn, in a console continuation, and on a turn with any
+    `apiProtocol`;
+  - zod issues returned as a tool error;
+  - a valid call opening exactly one card and one app row, with `orgId` taken from the
+    agent's organization;
+  - no `LiveAppRegistry` entry, and a UI spec row that `reviveAppRow` never revives;
+  - the receipt not parsing as an intent;
+  - a press deriving `value`, or `label` when `value` is absent, from the stored row,
+    recording provenance on the user turn, and refusing an unknown card, an unknown
+    button, or a card from another conversation.
+- Web tests cover:
+  - every component renders, and `Text` Markdown skips raw HTML;
+  - an invalid persisted spec degrades to the notice;
+  - a UI spec card registers no pending action and shows no Waiting or Done state;
+  - a press sends only `{ appId, buttonId }` once and disables the buttons;
+  - buttons are disabled without a live socket;
+  - a press renders in the transcript as a press.
 - Acceptance: a local webchat conversation in which Claude and Codex each show a card,
   repair a deliberately invalid spec after the refusal, and continue after a button press.
   Check the result on mobile and in dark mode.
@@ -413,13 +503,15 @@ These are not designed here. Each needs its own review.
 - Local state and form inputs (`$state`, `$bindState`, text and select inputs) with a
   `submit` action, in the Console only, since chat cards have no inputs.
 
-### Open questions
+### Before the build PR
 
-- json-render's exact element-level event binding (`on.press` or button props) must be
-  confirmed against the pinned version before `Button` is wired.
-- `defineCatalog` must accept the protocol package's zod schemas. Both sides use zod 4, and
-  the workspace should resolve one instance. This needs to be verified before the web
-  catalog relies on it.
-- The `Table` `align` shape and any prop the protocol schemas differ on must be checked
-  against `standardComponentDefinitions` in the pinned `@json-render/chat` version, so
-  the alignment claimed in §3 holds.
+A spike against the pinned json-render version settles three questions. Its results are
+recorded here before implementation starts. If the library does not fit, v1 falls back to
+the hand-written renderer from §11, and the spec format does not change.
+
+- json-render's exact element-level event binding (`on.press` or button props).
+- Whether `defineCatalog` accepts the protocol package's zod schemas. Both sides use zod 4,
+  and the workspace should resolve one instance.
+- The `Table` `align` shape, and any other prop where the protocol schemas differ from
+  `standardComponentDefinitions` in the pinned `@json-render/chat` version, so the
+  alignment claimed in §3 holds.
