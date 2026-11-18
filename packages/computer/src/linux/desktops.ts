@@ -1,16 +1,33 @@
 // Per-agent desktops on Linux: one Xvfb + Xfce + driver + Computer per agent, started on demand (computer-use.md §3.9).
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync
+} from 'node:fs'
 import { join } from 'node:path'
 import { closeBrowser, waitForWindowManager } from '../browser/close.js'
-import { BROWSER_NAMES, profileOwner } from '../browser/launcher.js'
+import {
+  BROWSER_NAMES,
+  chromiumProfile,
+  mainProfile,
+  migrateProfile,
+  onImage,
+  profileOwner
+} from '../browser/launcher.js'
 import { ComputerError, type Computer } from '../computer.js'
 import type { DaemonConfig } from '../config.js'
 import type { CuaDriver } from '../driver/client.js'
 import { which, type DesktopSupport } from './desktops-support.js'
 
 export const DESKTOPS_DIR = 'desktops'
+/** The main desktop's id: its browser runs the master, and on the image its own wrappers lead to the launcher too. */
+export const MAIN_DESKTOP = 'main'
 const STATE_FILE = 'state.json'
 const SWEEP_MS = 30_000
 const START_TIMEOUT_MS = 15_000
@@ -51,14 +68,19 @@ export const desktopDir = (dataDir: string, id: string): string => join(desktops
 export const desktopProfile = (dataDir: string, id: string): string => join(desktopDir(dataDir, id), 'browser')
 const wrapperDir = (dataDir: string, id: string): string => join(desktopDir(dataDir, id), 'bin')
 
-export function loadDesktopState(dataDir: string): DesktopState {
+export function loadDesktopState(dataDir: string, env: NodeJS.ProcessEnv = process.env): DesktopState {
+  const master = mainProfile(dataDir, env)
   try {
     const state = JSON.parse(readFileSync(join(desktopsDir(dataDir), STATE_FILE), 'utf8')) as DesktopState
-    if (state.version === 1 && state.desktops) return state
+    if (state.version === 1 && state.desktops) {
+      // On the image the master moved to `browser/main` with Chrome (§3.8); agent desktops' profiles stay where they are.
+      if (onImage(env) && state.master === chromiumProfile(env)) state.master = master
+      return state
+    }
   } catch {
     // None yet.
   }
-  return { version: 1, next: 1, master: join(homedir(), '.config', 'chromium'), desktops: {} }
+  return { version: 1, next: 1, master, desktops: {} }
 }
 
 function saveDesktopState(dataDir: string, state: DesktopState): void {
@@ -69,10 +91,30 @@ function saveDesktopState(dataDir: string, state: DesktopState): void {
 /** What `browser --desktop <id>` launches with: that desktop's profile, and unless logins are not shared, the master and every other profile as a source. */
 export function desktopBrowserPlan(
   dataDir: string,
-  id: string
-): { profile: string; master?: string; sources: string[]; skip: string[]; mainBus?: string } {
-  const state = loadDesktopState(dataDir)
+  id: string,
+  env: NodeJS.ProcessEnv = process.env
+): {
+  profile: string
+  master?: string
+  movedFrom?: string
+  forks?: string[]
+  sources: string[]
+  skip: string[]
+  mainBus?: string
+} {
+  const state = loadDesktopState(dataDir, env)
   const ids = Object.values(state.desktops).map((record) => record.id)
+  // The master merges nothing in: what an organization prepared in it stays as it is (§3.9).
+  if (id === MAIN_DESKTOP) {
+    return {
+      profile: state.master,
+      ...(onImage(env)
+        ? { movedFrom: chromiumProfile(env), forks: ids.map((other) => desktopProfile(dataDir, other)) }
+        : {}),
+      sources: [],
+      skip: [MAIN_DESKTOP, ...ids].map((other) => wrapperDir(dataDir, other))
+    }
+  }
   if (!ids.includes(id)) throw new Error(`no desktop ${id}`)
   const share = state.shareBrowserLogins !== false
   return {
@@ -81,7 +123,7 @@ export function desktopBrowserPlan(
     sources: share
       ? [state.master, ...ids.filter((other) => other !== id).map((other) => desktopProfile(dataDir, other))]
       : [],
-    skip: ids.map((other) => wrapperDir(dataDir, other)),
+    skip: [MAIN_DESKTOP, ...ids].map((other) => wrapperDir(dataDir, other)),
     ...(state.mainBus ? { mainBus: state.mainBus } : {})
   }
 }
@@ -89,7 +131,7 @@ export function desktopBrowserPlan(
 const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 // Browser names on the desktop's PATH and its .desktop entries all lead to `browser --desktop <id>` (§3.10).
-function writeLaunchers(dataDir: string, id: string, self: string[], systemDataDirs: string[]): void {
+export function writeLaunchers(dataDir: string, id: string, self: string[], systemDataDirs: string[]): void {
   const bin = wrapperDir(dataDir, id)
   mkdirSync(bin, { recursive: true })
   const log = join(desktopDir(dataDir, id), 'browser.log')
@@ -100,16 +142,53 @@ function writeLaunchers(dataDir: string, id: string, self: string[], systemDataD
   }
   const apps = join(desktopDir(dataDir, id), 'share', 'applications')
   mkdirSync(apps, { recursive: true })
+  // The dock keeps a copy of the main desktop's entry that every desktop's panel runs, so it names a wrapper by PATH.
+  const exec = id === MAIN_DESKTOP ? 'google-chrome' : join(bin, 'chromium')
   for (const file of DESKTOP_FILES) {
     const source = systemDataDirs.map((dir) => join(dir, 'applications', file)).find((path) => existsSync(path))
     if (!source) continue
     const entry = readFileSync(source, 'utf8')
       .split('\n')
       .filter((line) => !line.startsWith('TryExec='))
-      .map((line) => line.replace(/^Exec=\S+/, `Exec=${join(bin, 'chromium')}`))
+      .map((line) => line.replace(/^Exec=\S+/, `Exec=${exec}`))
       .join('\n')
     writeFileSync(join(apps, file), entry)
   }
+}
+
+/** On the image, moves the main desktop's profile to `browser/main` before anything launches it; the daemon runs it on start. */
+export async function migrateMainProfile(
+  dataDir: string,
+  log: (line: string) => void,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<boolean> {
+  const plan = desktopBrowserPlan(dataDir, MAIN_DESKTOP, env)
+  if (!plan.movedFrom) return false
+  return migrateProfile({ profile: plan.profile, movedFrom: plan.movedFrom, forks: plan.forks ?? [], log })
+}
+
+/** Starts the main desktop's browser through the launcher, as its wrappers would: the image's `computer_launch` (§3.8). */
+export function launchMainBrowser(
+  dataDir: string,
+  app: string,
+  self: string[],
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  mkdirSync(desktopDir(dataDir, MAIN_DESKTOP), { recursive: true })
+  const log = openSync(join(desktopDir(dataDir, MAIN_DESKTOP), 'browser.log'), 'a')
+  try {
+    const [command, ...args] = self
+    const child = spawn(command!, [...args, 'browser', '--desktop', MAIN_DESKTOP], {
+      env,
+      detached: true,
+      stdio: ['ignore', log, log]
+    })
+    child.on('error', () => undefined)
+    child.unref()
+  } finally {
+    closeSync(log)
+  }
+  return JSON.stringify({ launched: app, via: 'fork-merge launcher', desktop: MAIN_DESKTOP })
 }
 
 /** Memory free for one more desktop, in whole GiB: the lesser of the machine's and a container limit's headroom. */
@@ -188,7 +267,7 @@ export class DesktopManager {
   constructor(private readonly deps: DesktopManagerDeps) {
     this.now = deps.now ?? Date.now
     this.baseEnv = deps.env ?? process.env
-    this.state = loadDesktopState(deps.dataDir)
+    this.state = loadDesktopState(deps.dataDir, this.baseEnv)
     if (this.baseEnv.DBUS_SESSION_BUS_ADDRESS) this.state.mainBus = this.baseEnv.DBUS_SESSION_BUS_ADDRESS
     saveDesktopState(deps.dataDir, this.state)
     this.sweeper = setInterval(() => void this.sweep(), SWEEP_MS)

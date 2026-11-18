@@ -375,7 +375,7 @@ is not parsed from it. This needs read access to the browser's `/proc` entries
 (same user or root).
 
 Managed pods route browser loopback traffic through the egress forwarder
-(`--proxy-bypass-list=<-loopback>` in `packages/computer/docker/chromium-flags`).
+(`--proxy-bypass-list=<-loopback>` from `imageFlags` in `packages/computer/src/browser/launcher.ts`).
 With that flag the daemon sees the forwarder as the peer and rejects every
 extension connection. Exempt the extension endpoint from the proxy
 (`<-loopback>;127.0.0.1:<port>`, leaving page loopback traffic proxied), or have

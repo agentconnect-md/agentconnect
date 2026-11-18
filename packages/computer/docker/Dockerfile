@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Linux desktop Computer: Xvfb + Xfce + Chromium, LibreOffice and dev tools with agentconnect-computer (computer-use.md §3.8); context is the repo root.
+# Linux desktop Computer: Xvfb + Xfce + Google Chrome, LibreOffice and dev tools with agentconnect-computer (computer-use.md §3.8); context is the repo root.
 #   docker build -f packages/computer/docker/Dockerfile -t agentconnect-computer .
 
 # The bundle is plain JavaScript, so it is built once on the build platform for every target arch.
@@ -31,19 +31,25 @@ ARG NODE_SHA256_X64=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959
 ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
-# Nothing here renders with OpenGL (Chromium and LibreOffice draw in software), so Mesa's LLVM backend and the CJK serif faces stay out.
+# Nothing here renders with OpenGL (Chrome and LibreOffice draw in software), so Mesa's LLVM backend and the CJK serif faces stay out.
 COPY packages/computer/docker/dpkg-excludes /etc/dpkg/dpkg.cfg.d/agentconnect-computer
-# sudo has no rule here, so it grants nothing until seed-system.sh writes one; apt reads https, the only web port a managed pod reaches.
+# sudo grants nothing until seed-system.sh writes a rule; apt reads https, a managed pod's only web port; Chrome lives in /usr for a system volume (§3.8).
 RUN apt-get update && apt-get install -y --no-install-recommends \
   xvfb x11-xserver-utils x11-utils xauth dbus-x11 at-spi2-core wmctrl \
   xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf thunar xfce4-terminal \
   mousepad ristretto xarchiver librsvg2-common \
-  chromium libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 \
+  libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 \
   fonts-noto-cjk fonts-dejavu-core fonts-liberation \
   python3 python3-pip python3-venv golang-go rustc cargo build-essential pkg-config \
   git gh openssh-client curl jq poppler-utils zip unzip \
   ca-certificates tini wget xz-utils procps sudo \
   && sed -i 's|http://deb.debian.org|https://deb.debian.org|' /etc/apt/sources.list.d/debian.sources \
+  && wget -q -O /usr/share/keyrings/google-chrome.asc https://dl.google.com/linux/linux_signing_key.pub \
+  && printf 'Types: deb\nURIs: https://dl.google.com/linux/chrome-stable/deb/\nSuites: stable\nComponents: main\nArchitectures: %s\nSigned-By: /usr/share/keyrings/google-chrome.asc\n' \
+    "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/google-chrome.sources \
+  && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+  && rm -f /usr/share/keyrings/google-chrome.asc && grep -q '^Signed-By: /usr/share/keyrings/google-chrome.gpg' /etc/apt/sources.list.d/google-chrome.sources \
+  && mv /opt/google /usr/lib/google && ln -s /usr/lib/google /opt/google \
   && rm -rf /var/lib/apt/lists/* /var/cache/debconf/*-old /var/log/apt /var/log/dpkg.log
 
 # Pinned, sha256-verified official Node.js with npm and corepack's shims, in /opt and linked into /usr/local/bin: a desktop whose /usr is a volume runs the image's Node (§3.8).
@@ -65,11 +71,12 @@ RUN AGENTCONNECT_COMPUTER_HOME=/opt/agentconnect/tools node /opt/agentconnect/ag
   && chmod 755 /usr/local/bin/agentconnect-computer
 # The form-fill extension, force-installed by managed policy from a local CRX; its id follows the extension build (§8).
 RUN node /opt/agentconnect/agentconnect-computer.mjs install-extension /opt/agentconnect/extension \
-  --policy-dir /etc/chromium/policies/managed --form-fill-port 7682 && chmod -R a+rX /opt/agentconnect/extension
+  --policy-dir /etc/opt/chrome/policies/managed --form-fill-port 7682 && chmod -R a+rX /opt/agentconnect/extension
 
-# Chromium's launcher sources /etc/chromium.d, which reads the egress forwarder's port in a managed pod (§15.4).
-COPY packages/computer/docker/chromium-flags /etc/chromium.d/agentconnect
-COPY packages/computer/docker/chromium-policies.json /etc/chromium/policies/managed/agentconnect.json
+# Chrome's launcher reads no flags file: the browser's flags come from the daemon's launcher, which every start goes through (§3.10).
+COPY packages/computer/docker/browser-policies.json /etc/opt/chrome/policies/managed/agentconnect.json
+# Chromium's copy serves a system volume that still runs the Chromium it was seeded with (§3.8).
+RUN mkdir -p /etc/chromium/policies/managed && cp /etc/opt/chrome/policies/managed/*.json /etc/chromium/policies/managed/
 # A bottom launcher dock on a dark backdrop with no desktop icons, for a profile with no Xfce settings of its own yet.
 COPY packages/computer/docker/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
 COPY packages/computer/docker/xfce4-desktop.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
@@ -81,10 +88,9 @@ COPY --chmod=644 packages/computer/docker/image-owned /opt/agentconnect/image-ow
 
 USER computer
 WORKDIR /home/computer
-# 1280x800 is the screenshot size (§5.3); isolation is declared, since /.dockerenv is absent under Podman and Kubernetes.
-# npm -g, go install and cargo install land in the home volume; Debian's Go would otherwise refuse a newer go.mod.
-ENV RESOLUTION=1280x800x24 LISTEN_HOST=0.0.0.0 PORT=7681 FORM_FILL_PORT=7682 BROWSER=chromium \
-  AGENTCONNECT_COMPUTER_HOME=/home/computer/.agentconnect/computer AGENTCONNECT_COMPUTER_ISOLATION=container \
+# Screenshot size (§5.3), declared isolation, the image's browser setup (§3.8), and tool installs that land in the home volume.
+ENV RESOLUTION=1280x800x24 LISTEN_HOST=0.0.0.0 PORT=7681 FORM_FILL_PORT=7682 BROWSER=google-chrome \
+  AGENTCONNECT_COMPUTER_HOME=/home/computer/.agentconnect/computer AGENTCONNECT_COMPUTER_ISOLATION=container AGENTCONNECT_COMPUTER_IMAGE=1 \
   NPM_CONFIG_PREFIX=/home/computer/.local GOTOOLCHAIN=auto PATH=/home/computer/.local/bin:/home/computer/go/bin:/home/computer/.cargo/bin:$PATH
 # Home holds the daemon data dir (config, Computer key, audit), the browser profile, and user-installed tools.
 VOLUME /home/computer
@@ -95,8 +101,8 @@ HEALTHCHECK --interval=60s --timeout=45s --start-period=120s --start-interval=5s
 # After every RUN: each RUN sees a declared ARG, so a per-release VERSION would rebuild the apt layer on every release.
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="AgentConnect computer" \
-  org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Chromium, LibreOffice) that registers as an AgentConnect Computer" \
+  org.opencontainers.image.description="A Linux desktop (Xvfb, Xfce, Google Chrome, LibreOffice) that registers as an AgentConnect Computer" \
   org.opencontainers.image.source="https://github.com/agentconnect-md/agentconnect" \
   org.opencontainers.image.version="${VERSION}"
-# No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright).
+# No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright) and Chrome Google's terms.
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentconnect/entrypoint.sh"]

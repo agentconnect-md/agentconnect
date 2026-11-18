@@ -1,7 +1,7 @@
 // Whether this machine can give each agent its own desktop, and whether the owner wants it (computer-use.md §3.9).
 import { spawn } from 'node:child_process'
 import { accessSync, constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
 import { findBrowser } from '../browser/launcher.js'
 import type { Check } from '../setup.js'
 
@@ -114,10 +114,16 @@ export function desktopsNotice(command: string): string {
   ].join('\n')
 }
 
+/** The browser a path starts, by the names the launcher looks for. */
+export const browserLabel = (path: string): string =>
+  /chrome/i.test(basename(path)) ? 'Google Chrome' : /chromium/i.test(basename(path)) ? 'Chromium' : basename(path)
+
 /** The doctor's line for the switch and what this machine supports; `install` is this distribution's install line. */
 export function desktopsCheck(switchedOn: boolean, support: DesktopSupport, command: string, install?: string): Check {
   const detail = describeDesktops(switchedOn, support)
-  const browserNote = support.browser ? '' : '; no Chromium found, so agents get no shared browser logins'
+  const browserNote = support.browser
+    ? `; browser ${browserLabel(support.browser)} (${support.browser})`
+    : '; no Chromium or Google Chrome found, so agents get no shared browser logins'
   if (!support.supported) {
     const fix =
       install && /is not installed$/.test(support.reason ?? '') ? `run: ${command} setup, or: ${install}` : support.fix

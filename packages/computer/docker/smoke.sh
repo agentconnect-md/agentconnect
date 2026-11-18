@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test of a built computer image: size, health, doctor, a maximized browser and a clean stop (computer-use.md §3.8).
+# Smoke test of a built computer image: size, health, doctor, a maximized Chrome and a clean stop (computer-use.md §3.8).
 set -euo pipefail
 
 image="${1:?usage: smoke.sh <image>}"
@@ -51,7 +51,8 @@ wait_healthy() {
   fi
   echo "health: healthy"
 }
-docker run -d --name "$name" --shm-size=1g "$image" > /dev/null
+# An inherited CHROME_EXTRA_FLAGS would win over argv, so the launcher drops it: the profile stays browser/main.
+docker run -d --name "$name" --shm-size=1g -e CHROME_EXTRA_FLAGS=--user-data-dir=/tmp/elsewhere "$image" > /dev/null
 wait_healthy "$name"
 
 # ffmpeg is not in the image: the daemon downloads it on first start, so its checks turn ok once that finishes.
@@ -78,7 +79,7 @@ grep -q 'token written to' <<< "$logs" || {
 maximized=
 for _ in $(seq 1 30); do
   if docker exec -e DISPLAY=:1 "$name" sh -c \
-    'w=$(wmctrl -l | awk "/Chromium\$/ { print \$1; exit }"); [ -n "$w" ] && xprop -id "$w" _NET_WM_STATE' \
+    'w=$(wmctrl -l | awk "/Google Chrome\$/ { print \$1; exit }"); [ -n "$w" ] && xprop -id "$w" _NET_WM_STATE' \
     | grep -q MAXIMIZED_HORZ; then
     maximized=1
     break
@@ -89,7 +90,30 @@ done
   echo "no maximized browser window" >&2
   exit 1
 }
-echo "browser: maximized"
+# Chrome runs through the launcher: on browser/main, marked as past its first run, with the container's flags.
+main=/home/computer/.agentconnect/computer/browser/main
+# Chrome rewrites its own process title, so its switches are read as one string, padded to match whole words.
+browser=$(docker exec "$name" sh -c "test -f '$main/First Run' && lock=\$(readlink '$main/SingletonLock') && pid=\${lock##*-} \
+  && readlink /proc/\$pid/exe && echo \" \$(tr '\\0' ' ' < /proc/\$pid/cmdline) \" && tr '\\0' '\\n' < /proc/\$pid/environ") || {
+  echo "no browser holds browser/main, or it has no First Run file" >&2
+  exit 1
+}
+# /opt/google leads to /usr/lib/google, so a system volume holds the browser with /usr (§3.8).
+[ "$(head -n 1 <<< "$browser")" = /usr/lib/google/chrome/chrome ] || {
+  echo "the main browser is not Google Chrome: $(head -n 1 <<< "$browser")" >&2
+  exit 1
+}
+for flag in "--user-data-dir=$main" --no-sandbox --no-first-run --hide-crash-restore-bubble --password-store=basic; do
+  sed -n 2p <<< "$browser" | grep -qF -- " $flag " || {
+    echo "the main browser lacks $flag" >&2
+    exit 1
+  }
+done
+if grep -q '^CHROME_EXTRA_FLAGS=' <<< "$browser"; then
+  echo "the main browser inherited CHROME_EXTRA_FLAGS" >&2
+  exit 1
+fi
+echo "browser: Google Chrome maximized on browser/main"
 
 # Registration from the environment against a stub Control Plane: one exchange, the key kept on restart, the token never shown.
 token="acr_smoke_$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
@@ -122,7 +146,7 @@ wait_log() {
 }
 wait_browser() {
   for _ in $(seq 1 30); do
-    docker exec "$name-reg" pgrep -x chromium > /dev/null && return 0
+    docker exec "$name-reg" pgrep -x chrome > /dev/null && return 0
     sleep 1
   done
 }
@@ -152,7 +176,7 @@ environs=$(docker exec "$name-reg" env -u AGENTCONNECT_REGISTER_TOKEN sh -c '
     echo "== ${dir#/proc/} $comm"
     tr "\0" "\n" < "$dir/environ" 2> /dev/null || true
   done')
-grep -q '^== .* chromium$' <<< "$environs" && grep -q '^== .* xfce4-session$' <<< "$environs" \
+grep -q '^== .* chrome$' <<< "$environs" && grep -q '^== .* xfce4-session$' <<< "$environs" \
   && grep -q '^== .* cua-driver$' <<< "$environs" || {
   grep '^==' <<< "$environs" >&2
   echo "the session, the browser or the driver is not running" >&2
@@ -186,6 +210,17 @@ grep -q "copied the image's system" <<< "$seeded" || {
 }
 docker run -d --name "$name-sys" --shm-size=1g "${system[@]}" "$image" > /dev/null
 wait_healthy "$name-sys"
+# The browser that runs is the volume's: its binary sits on the /usr mount.
+exe=
+for _ in $(seq 1 30); do
+  exe=$(docker exec "$name-sys" sh -c 'lock=$(readlink "$AGENTCONNECT_COMPUTER_HOME/browser/main/SingletonLock") \
+    && exe=$(readlink "/proc/${lock##*-}/exe") && echo "$(stat -c %m "$exe") $exe"' 2> /dev/null) && break
+  sleep 1
+done
+[ "$exe" = "/usr /usr/lib/google/chrome/chrome" ] || {
+  echo "the browser on a system volume does not run from the volume's /usr: ${exe:-none}" >&2
+  exit 1
+}
 [ "$(docker exec "$name-sys" sudo -n id -u)" = 0 ] || {
   echo "sudo does not reach root on a seeded system volume" >&2
   exit 1

@@ -740,7 +740,7 @@ jobs:
           node-version-file: .nvmrc
       - name: Install
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/computer..."
-      # The image's Chromium, form-fill extension and daemon end to end against fixture sites (form-fill design §11 S1).
+      # The image's Google Chrome, form-fill extension and daemon end to end against fixture sites (form-fill design §11 S1).
       - name: Form fill end to end
         env:
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}

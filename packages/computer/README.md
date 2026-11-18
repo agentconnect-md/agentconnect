@@ -28,8 +28,8 @@ published with each release too (see [Run in Docker](#run-in-docker)).
 - `setup` / `doctor` on macOS, Linux (X11 and GNOME Wayland) and Windows; a macOS LaunchAgent
   (`.app` mode), a Linux systemd user unit, and a Windows service that runs the daemon as SYSTEM in
   the signed-in session, so UAC prompts can be answered as the Computer's setting says.
-- A Docker image (Xvfb + Xfce + Chromium + LibreOffice) that registers from its environment, amd64 and arm64.
-- Form filling in the Docker image's Chromium (design: `docs/designs/computer-form-fill-and-vault.md`): a
+- A Docker image (Xvfb + Xfce + Google Chrome + LibreOffice) that registers from its environment, amd64 and arm64.
+- Form filling in the Docker image's Google Chrome (design: `docs/designs/computer-form-fill-and-vault.md`): a
   force-installed extension that discovers forms without reading values and fills them for agent sessions under
   the control lease. The extension dials `127.0.0.1:7682`, a port fixed in the image's policy; `FORM_FILL_PORT=` (empty) turns it off, and any other value disconnects the extension, and the daemon
   accepts a socket only when `/proc` attributes it to a desktop's browser. `pnpm test:image` with
@@ -292,14 +292,17 @@ downloads Cua Driver and a pinned static ffmpeg (6.0, libx264).
 ## Run in Docker
 
 The `computer` image (`ghcr.io/agentconnect-md/computer`, amd64 and arm64, published with each release) is a
-Debian trixie desktop with Xvfb, a lean Xfce, Chromium, LibreOffice, Noto CJK fonts, the pinned Node.js (with npm),
+Debian trixie desktop with Xvfb, a lean Xfce, Google Chrome (from Google's apt repository, under Google's terms),
+LibreOffice, Noto CJK fonts, the pinned Node.js (with npm),
 Debian's Python, Go and Rust toolchains, and the daemon
 with Cua Driver preinstalled. ffmpeg (GPL) is not in the image: the daemon downloads the pinned, sha256-checked
 build on first start into the volume, and the viewer polls screenshots until it is there. The entrypoint starts Xvfb on `:1` (`RESOLUTION`, default
 `1280x800x24`), a session D-Bus, Xfce and a maximized browser, then runs `run` in the foreground as user
-`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `chromium`; `none` turns it
-off; `BROWSER_URL` opens a page). `docker stop` stops the daemon, closes the browser, then the session, with exit
-code 0. `/home/computer` is a volume: the Computer key, config, audit log, and the browser profile survive a new
+`desktop`. The browser is restarted when it exits or crashes (`BROWSER`, default `google-chrome`; `none` turns it
+off; `BROWSER_URL` opens a page). Every start of it, the dock's, `xdg-open`'s and an agent's included, goes through
+the daemon's launcher on the profile `browser/main` in the data directory; a volume from the Chromium image has its
+`~/.config/chromium` copied there, open tabs included, on the first start. `docker stop` stops the daemon, closes
+the browser, then the session, with exit code 0. `/home/computer` is a volume: the Computer key, config, audit log, and the browser profile survive a new
 container. A `HEALTHCHECK` runs `doctor --json --daemon` inside the running daemon.
 
 Register it as a Computer: create a token in the console under **Computers → Add Computer** (its **Docker** tab

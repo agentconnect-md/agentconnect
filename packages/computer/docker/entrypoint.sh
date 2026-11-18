@@ -21,11 +21,31 @@ mkdir -p -m 700 "$data"
 [ -e "$data/cua-driver" ] || ln -s /opt/agentconnect/tools/cua-driver "$data/cua-driver"
 # An earlier image linked a preinstalled ffmpeg here; drop the dangling link so the daemon can download its own.
 [ -L "$data/ffmpeg" ] && [ ! -e "$data/ffmpeg" ] && rm -f "$data/ffmpeg"
+# The main desktop's browser profile, the master of computer-use.md §3.10: Chrome refuses remote debugging on its default one.
+main_profile="$data/browser/main"
 
 # The container filesystem survives `docker restart`, and so would a stale X lock.
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
-# Chromium's profile lock names the old hostname, which a woken pod no longer has, so it would refuse the profile.
-rm -f "$HOME"/.config/chromium/Singleton{Lock,Cookie,Socket}
+# The profile lock names the old hostname, which a woken pod no longer has, so it would refuse the profile.
+rm -f "$main_profile"/Singleton{Lock,Cookie,Socket}
+
+# BROWSER is resolved before the wrappers below shadow it; one that is not installed leaves the choice to the launcher.
+browser_path=
+if [ -n "${BROWSER:-}" ] && [ "$BROWSER" != none ]; then
+  browser_path=$(command -v "$BROWSER") || echo "[entrypoint] BROWSER=$BROWSER is not installed; starting the image's browser" >&2
+fi
+# Every start of the browser goes through the launcher, which passes its flags: its wrappers lead PATH and the menus (§3.10).
+node /opt/agentconnect/agentconnect-computer.mjs browser-launchers --desktop main
+apps="$data/desktops/main/share/applications"
+export PATH="$data/desktops/main/bin:$PATH" XDG_DATA_DIRS="$data/desktops/main/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+# The dock keeps a copy of its browser entry, which in a home from the Chromium image names Chromium itself; ours names a wrapper.
+for entry in "$HOME"/.config/xfce4/panel/launcher-*/*.desktop; do
+  grep -qE '^X-XFCE-Source=file://.*/applications/(chromium|google-chrome)\.desktop$' "$entry" 2> /dev/null || continue
+  for name in google-chrome.desktop chromium.desktop; do
+    [ -f "$apps/$name" ] && cp "$apps/$name" "$entry" && break
+  done
+done
+
 # dbus-launch connects and leaves first; a reset on that last disconnect would drop the session's connection mid-handshake.
 Xvfb :1 -screen 0 "${RESOLUTION:-1280x800x24}" -nolisten tcp -noreset -dpi 96 > /tmp/xvfb.log 2>&1 &
 xvfb=$!
@@ -44,31 +64,36 @@ export DBUS_SESSION_BUS_ADDRESS
 xfce4-session > /tmp/xfce4-session.log 2>&1 &
 session=$!
 
-# Whether the main desktop's browser runs: the one holding the default profile, not an agent desktop's own (computer-use.md §3.9).
-main_browser_running() {
+# The main desktop's browser, from its profile's lock: not an agent desktop's own (computer-use.md §3.9).
+main_browser_pid() {
   local lock
-  lock=$(readlink "$HOME/.config/chromium/SingletonLock" 2> /dev/null) || return 1
-  kill -0 "${lock##*-}" 2> /dev/null
+  lock=$(readlink "$main_profile/SingletonLock" 2> /dev/null) || return 1
+  kill -0 "${lock##*-}" 2> /dev/null && echo "${lock##*-}"
 }
 
 # Keeps one maximized browser window open: it is restarted when it exits or crashes, with a growing pause.
 supervise_browser() {
   trap 'exit 0' TERM INT
-  local pause=1 started pid window steady status
+  local pause=1 started pid window steady
+  local launch=(node /opt/agentconnect/agentconnect-computer.mjs browser --desktop main)
+  [ -n "$browser_path" ] && launch+=(--browser "$browser_path")
   while true; do
     # A second launch would only open another window in the instance holding the profile, so wait for that one to exit.
-    if main_browser_running; then
+    if main_browser_pid > /dev/null; then
       sleep 2 &
       wait $!
       continue
     fi
     started=$(date +%s)
+    # The launcher returns once the browser holds its profile, whose lock then names it; waited on so TERM is not held up.
     # shellcheck disable=SC2086 -- BROWSER_URL is optional and never contains spaces
-    "$BROWSER" ${BROWSER_URL:-} > /tmp/browser.log 2>&1 &
-    pid=$!
+    "${launch[@]}" -- ${BROWSER_URL:-} >> /tmp/browser.log 2>&1 &
+    wait $! || true
+    pid=$(main_browser_pid) || pid=
     # The window appears a moment after the process and may resize itself once mapped, so retry until it stays maximized.
     steady=0
     for _ in $(seq 1 150); do
+      [ -n "$pid" ] || break
       kill -0 "$pid" 2> /dev/null || break
       # wmctrl fails until the window manager is up.
       window=$(wmctrl -lp 2> /dev/null | awk -v pid="$pid" '$3 == pid { print $1; exit }') || window=
@@ -83,11 +108,14 @@ supervise_browser() {
       fi
       sleep 0.2
     done
-    status=0
-    wait "$pid" || status=$?
+    # Not this shell's child, so its exit is polled; in the background, so the TERM trap runs at once.
+    if [ -n "$pid" ]; then
+      tail --pid="$pid" -f /dev/null &
+      wait $!
+    fi
     # A browser that stayed up a minute starts the backoff over.
     if [ $(($(date +%s) - started)) -ge 60 ]; then pause=1; else pause=$((pause < 30 ? pause * 2 : 30)); fi
-    echo "[entrypoint] $BROWSER exited ($status); restarting in ${pause}s" >&2
+    echo "[entrypoint] the browser ${pid:+$pid }exited or did not start; restarting in ${pause}s" >&2
     # In the background, so the TERM trap runs at once rather than after the pause.
     sleep "$pause" &
     wait $!
@@ -123,11 +151,12 @@ while kill -0 "$daemon" 2> /dev/null; do
   wait "$daemon" || status=$?
 done
 
-# Stop restarting the browser, then close Chromium's main process gracefully so it saves the session and its tabs.
+# Stop restarting the browser, then close its main process (`chrome`, or a seeded volume's `chromium`) so it saves its tabs.
 [ -n "$browser" ] && kill -TERM "$browser" 2> /dev/null || true
-pkill -TERM -o -u "$(id -u)" -x chromium 2> /dev/null || true
+main=$(main_browser_pid) || main=
+if [ -n "$main" ]; then kill -TERM "$main"; else pkill -TERM -o -u "$(id -u)" -x 'chrome|chromium'; fi 2> /dev/null || true
 for _ in $(seq 1 50); do
-  pgrep -u "$(id -u)" -x chromium > /dev/null || break
+  pgrep -u "$(id -u)" -x 'chrome|chromium' > /dev/null || break
   sleep 0.1
 done
 kill -TERM "$session" 2> /dev/null || true

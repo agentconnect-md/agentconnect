@@ -491,25 +491,26 @@ desktop daemon ◀────────────────────�
 Where there is no physical desktop (a server, a NAS, Kubernetes), a "Linux desktop with a browser" is a container
 image running **the same desktop daemon**. The prototype was built and run on a Mac with OrbStack:
 
-- **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Chromium, LibreOffice, Noto CJK fonts, Debian's Python, Go and
-  Rust toolchains, pinned Node 26, and the desktop daemon; Cua Driver is downloaded and checksummed at build time. ffmpeg (GPL) is not in the published image: the
-  daemon downloads the pinned build on first start into the volume, as on desktops (§7.4, §11). It runs as the non-root user `computer`,
-  without systemd. `/home/computer` is a volume holding the token, config, audit log, and browser profile. The image is
-  1.26 GB and builds in about 100 s.
-- **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1280x800x24`, the §5.3 screenshot size so agents see it 1:1), a session D-Bus, and Xfce, then runs the daemon in
-  the foreground. `docker stop` stops the daemon, closes Chromium gracefully (so it saves its session), then ends
-  the session, with exit code 0 in under 0.9 s. Xvfb must keep its local socket (`-nolisten tcp`, never
-  `-nolisten unix`), and must not reset when its last client leaves (`-noreset`): `dbus-launch` connects and leaves
-  before Xfce does, and a reset at that moment drops Xfce's connection mid-handshake ("Cannot open display").
+- **Image**: Debian trixie-slim, Xvfb, a lean Xfce, Google Chrome, LibreOffice, Noto CJK fonts, Debian's Python, Go
+  and Rust toolchains, pinned Node 26, and the desktop daemon; Cua Driver is downloaded and checksummed at build time.
+  ffmpeg (GPL) is not in the published image: the daemon downloads the pinned build on first start into the volume, as
+  on desktops (§7.4, §11). It runs as the non-root user `computer`, without systemd. `/home/computer` is a volume
+  holding the token, config, audit log, and browser profile. The image is 1.26 GB and builds in about 100 s.
+- **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1280x800x24`, the §5.3 screenshot size so agents see it 1:1), a
+  session D-Bus, and Xfce, then runs the daemon in the foreground. `docker stop` stops the daemon, closes Chrome
+  gracefully (so it saves its session), then ends the session, with exit code 0 in under 0.9 s. Xvfb must keep its
+  local socket (`-nolisten tcp`, never `-nolisten unix`), and must not reset when its last client leaves (`-noreset`):
+  `dbus-launch` connects and leaves before Xfce does, and a reset at that moment drops Xfce's connection mid-handshake
+  ("Cannot open display").
 - **Published image [implemented]**: `ghcr.io/<owner>/computer`, built from `packages/computer/docker/Dockerfile`
   (context: the repository root) for `linux/amd64` and `linux/arm64` with every release, through the same
   `docker-bake.hcl` target, effective-version and alias steps as the other images. The bundle stage runs once on the
-  build platform. The image leaves out Mesa's GL drivers (Xvfb runs without GLX and Chromium and LibreOffice render in
-  software), the CJK serif faces, Go's test suite, gcc's sanitizers, ffmpeg and the driver's unused SDK library:
-  about 2.2 GiB uncompressed on amd64, 893 MB compressed. The PR job `Desktop image` builds both arches natively and runs `docker/smoke.sh` on them: size
-  under 2.5 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a maximized browser, registration against
-  a stub Control Plane (one exchange, the key kept on restart, the token absent from the log and from the session's
-  and browser's environments), and `docker stop` exiting 0.
+  build platform. The image leaves out Mesa's GL drivers (Xvfb runs without GLX and Chrome and LibreOffice render in
+  software), the CJK serif faces, Go's test suite, gcc's sanitizers, ffmpeg and the driver's unused SDK library: about
+  2.2 GiB uncompressed on amd64, 893 MB compressed. The PR job `Desktop image` builds both arches natively and runs
+  `docker/smoke.sh` on them: size under 2.5 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a
+  maximized browser, registration against a stub Control Plane (one exchange, the key kept on restart, the token
+  absent from the log and from the session's and browser's environments), and `docker stop` exiting 0.
 - **Registration [implemented]**: `run` spends `AGENTCONNECT_REGISTER_TOKEN` (or the file named by
   `AGENTCONNECT_REGISTER_TOKEN_FILE`, such as a Docker or Kubernetes secret) at `AGENTCONNECT_CP_URL` before it starts,
   with `AGENTCONNECT_COMPUTER_NAME` or the hostname as the name the console did not give. The stored key records the
@@ -523,15 +524,15 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   `xvfb`, and `computer_list` reports the name, OS release, session, isolation and the driver's startup screen size
   before the first capture. The Computers API the console lists from showed a `docker run` registered this way as
   online with `isolation: 'container'`, `session: 'xvfb'`, one 1600×900 display and all nine `doctor` checks ok.
-- **Browser [implemented]**: the entrypoint keeps one Chromium window open and maximized (`wmctrl`), restarting it
-  with a 2–30 s backoff when it exits or crashes; flags in `/etc/chromium.d` (sourced by Debian's launcher on every
-  start, an agent's included) and a managed policy turn off the first-run, default-browser, crash-restore, sign-in and
-  translate prompts that would block an unattended restart, restore the last session, and make Google the home page,
-  new-tab page and search engine in place of Debian's DuckDuckGo default. The profile lock names the
-  hostname, which a woken pod no longer has, so the entrypoint removes it before anything starts. While another
-  instance holds the profile (one an agent started), the supervisor waits for it instead of opening a second window.
-  `BROWSER=none` turns it off.
-- **Google Chrome [design]**: the image installs `google-chrome-stable` from Google's apt repository, for both
+- **Browser [implemented]**: the entrypoint keeps one Chrome window open and maximized (`wmctrl`), starting it through
+  the launcher of §3.10 and restarting it with a 2–30 s backoff when it exits or crashes; the launcher's flags and a
+  managed policy turn off the first-run, default-browser, crash-restore, sign-in and translate prompts that would
+  block an unattended restart, restore the last session, and make Google the home page, new-tab page and search
+  engine. The profile lock names the hostname, which a woken pod no longer has, so the entrypoint removes it before
+  anything starts. While another instance holds the profile (one an agent started), the supervisor waits for it
+  instead of opening a second window. `BROWSER` names the binary (`google-chrome`; one that is not installed, such as
+  an older compose file's `chromium`, leaves the choice to the launcher), and `BROWSER=none` turns it off.
+- **Google Chrome [implemented]**: the image installs `google-chrome-stable` from Google's apt repository, for both
   architectures, and drops Chromium. The reasons are what sites see and upstream support: Chrome DevTools MCP supports
   only Google Chrome and Chrome for Testing, although the prototype ran every allowlisted tool against Debian Chromium
   156 as well. The cost is that Chrome refuses remote debugging on its default profile, which moves the main profile
@@ -539,22 +540,32 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   Chrome" brand, whose absence one bot check flags, and Widevine works; `navigator.webdriver`, `window.chrome`,
   plugins and four bot checks' verdicts were identical. What moves with it:
   - **Flags.** Chrome's launcher reads neither `/etc/chromium.d` nor `CHROMIUM_FLAGS`, so the image's flags (no
-    sandbox, the prompts, the password store, the egress proxy of §15.4) move into the launcher of §3.10, which every
-    start then goes through: the supervised main browser, the dock, `xdg-open` and an agent's `computer_launch`. The
-    egress limit stays as it is: a browser binary run directly is not bound to the proxy. The binary itself (Chrome
-    158 and Chromium 156, with or without the wrapper) reads `CHROME_EXTRA_FLAGS` from its environment, splits it on
-    whitespace with quoting rules of its own and appends it after argv, so it wins over argv, `--user-data-dir`
-    included; the launcher removes it from the browser's environment, so an inherited value cannot move the profile,
-    the endpoint or the proxy. A start without `--no-sandbox` dies at once in the container (zygote FATAL, exit 133),
-    and `--hide-crash-restore-bubble` is needed on every start: after a crash, Chrome without it shows a "Restore
-    pages?" bubble and does not restore the tabs, `RestoreOnStartup` notwithstanding (measured).
+    sandbox, the prompts, the password store, the egress proxy of §15.4) live in the launcher of §3.10, which every
+    start goes through: the supervised main browser, the dock and menus, `xdg-open`, `x-www-browser` and an agent's
+    `computer_launch`. The image tells the launcher with `AGENTCONNECT_COMPUTER_IMAGE=1`, which also moves the master
+    and the browser order below; a person's Linux machine has none of it. Before Xfce starts, the entrypoint has the
+    daemon write the main desktop's wrappers and `.desktop` overrides (`desktops/main/bin` and `share` in the data
+    directory) and puts them first on `PATH` and `XDG_DATA_DIRS`, as an agent desktop's are. Xfce's dock keeps a copy
+    of its entry in the home, which every desktop's panel runs, so the main desktop's entries name the wrapper by
+    `PATH` (`google-chrome`) and each desktop's panel reaches its own launcher; a dock carried over from a Chromium
+    home, whose copy names `/usr/bin/chromium`, gets the new entry. The egress limit stays as it is: a browser binary
+    run directly is not bound to the proxy. The binary itself (Chrome 158 and Chromium 156, with or without the
+    wrapper) reads `CHROME_EXTRA_FLAGS` from its environment, splits it on whitespace with quoting rules of its own
+    and appends it after argv, so it wins over argv, `--user-data-dir` included; the launcher removes it from the
+    browser's environment, so an inherited value cannot move the profile, the endpoint or the proxy. A start without
+    `--no-sandbox` dies at once in the container (zygote FATAL, exit 133), and `--hide-crash-restore-bubble` is needed
+    on every start: after a crash, Chrome without it shows a "Restore pages?" bubble and does not restore the tabs,
+    `RestoreOnStartup` notwithstanding (measured). The launcher passes `--no-sandbox` and `--password-store=basic` on
+    the image only, and the proxy, its bypass for the form-fill port and the WebRTC policy only there with
+    `AGENTCONNECT_EGRESS_PORT` set.
   - **First run.** On a profile's first start Chrome shows a modal "Additional Terms of Service" dialog that Chromium
     lacks; no managed policy and no `initial_preferences` suppresses it, no `DevToolsActivePort` is written while it
     is up, and Cancel quits Chrome. `--no-first-run` suppresses it, and so does an empty `First Run` file in the
     profile, which a profile first created with `--no-first-run` does not get. So the launcher always passes the flag
     and writes an empty `First Run` into every profile it creates (`browser/main`, an agent desktop's copy).
-  - **Policies.** The managed policy and the form-fill force-install move to `/etc/opt/chrome/policies/managed`, which
-    `image-owned` then names. Measured on amd64: Chrome applies all of the image's policies with the statuses Chromium
+  - **Policies.** The image build writes the managed policy and the form-fill force-install to
+    `/etc/opt/chrome/policies/managed`, and a copy to Chromium's directory for a system volume still on Chromium;
+    `image-owned` names both. Measured on amd64: Chrome applies all of the image's policies with the statuses Chromium
     shows (two deprecated keys in both), `CommandLineFlagSecurityWarningsEnabled: false` keeps the warning bar off for
     `--no-sandbox` and the flags of §3.10, and it force-installs the `file://` CRX, whose worker connects to the
     daemon ([computer-form-fill-and-vault.md §8](computer-form-fill-and-vault.md)).
@@ -569,46 +580,63 @@ image running **the same desktop daemon**. The prototype was built and run on a 
     `--restore-last-session`, and Chromium 156 reopened it afterwards without a dialog: under `--password-store=basic`
     `Local State` holds no key, and both use the built-in `v10` one. The form-fill endpoint attributes connections
     only to the profiles it knows, today `~/.config/chromium` and `~/.config/google-chrome`, and refused Chrome's on
-    `browser/main`, so the desktop state's master moves with the profile.
-  - **The rest.** Chrome runs as process `chrome` (`/opt/google/chrome/chrome`, window class `google-chrome`), so the
-    entrypoint's `pkill` and `pgrep -x chromium` become `-x chrome`, and its lock cleanup and running check read
-    `browser/main`'s `SingletonLock`. The panel names `google-chrome.desktop` (`com.google.Chrome.desktop` is its
-    hidden twin); installing the package moves `x-www-browser` to Chrome. The launcher's `BROWSER_NAMES` puts
-    `google-chrome-stable` and `google-chrome` before `chromium`: today it starts Chromium wherever both are on `PATH`
-    (measured). The dock and menu entries, `BROWSER`, the graceful stop and `doctor`'s browser check name Chrome. The
+    `browser/main`, so the desktop state's master moves with the profile: on the image the master is `browser/main`, a
+    `desktops/state.json` naming the old default is pointed there when it is read, and the endpoint attributes only
+    the master to the main desktop. The daemon runs the copy when it starts on the image, under `browser/main`'s
+    launch lock and before any agent desktop is seeded from the master, so it happens with `BROWSER=none` too and
+    cannot race the supervisor's first launch, whose own call then finds it done. It copies into a temporary directory
+    renamed into place, so an interrupted copy is started over, and the launch lock is refreshed every 10 s while
+    held, so a copy longer than the lock's one-minute stale age is never taken over. Agent desktops' profiles stay
+    where they are, and before the rename each one's fork baseline is re-keyed from the old master's real path to the
+    new one, so a cookie an agent deleted before the move is not taken back by a first fork; the main desktop's
+    browser merges no other profile in.
+  - **The rest.** Chrome runs as process `chrome` (`/usr/lib/google/chrome/chrome`, window class `google-chrome`), so
+    the entrypoint's graceful stop signals the process holding `browser/main`'s `SingletonLock` and waits for every
+    `chrome` (or a system volume's `chromium`) to exit, and its lock cleanup and running check read that lock. The
+    panel names `google-chrome.desktop` (`com.google.Chrome.desktop` is its hidden twin); installing the package moves
+    `x-www-browser` to Chrome. On the image the launcher looks for `google-chrome-stable` and `google-chrome` before
+    `chromium`; elsewhere the order stays Chromium first, since a person's Chromium master holds `v11` cookies Chrome
+    may not decrypt (§17-20). `doctor`'s `desktops` check names the browser it found, Google Chrome on the image. The
     switch adds about 67 MiB installed on amd64 (Chrome 469,593 KiB against 401,361 KiB for Chromium and the 16
-    packages only it needed), well inside the smoke test's limit; Google publishes the same version for arm64. A
-    desktop with a system volume keeps the Chromium it was seeded with until a reset, or until Chrome is installed
-    there with apt (Google's apt source joins `image-owned`); the daemon reports browser tools only where it finds
-    Google Chrome.
-  - **Distribution [legal].** Chrome is proprietary, the first component of the image that is (§11.1). Until counsel
-    answers, the fallback is the one ffmpeg has: the image carries no browser and the entrypoint unpacks the pinned
-    package into the home volume on first start. Unattended starts with `--no-first-run` never present or accept
-    Chrome's Additional Terms of Service; whose acceptance covers a Computer's use of Chrome is part of the question.
-- **Browser sandbox [risk]**: Chromium runs with `--no-sandbox`. Docker's default seccomp profile and Kubernetes'
+    packages only it needed), well inside the smoke test's limit; Google publishes the same version for arm64. The
+    package keeps Google's apt source (`/etc/apt/sources.list.d/google-chrome.sources`) and its key current, and both
+    join `image-owned`, so a desktop with a system volume keeps the Chromium it was seeded with until a reset, or
+    until `sudo apt install --reinstall google-chrome-stable` there, which `seed-system.sh` suggests on every start;
+    the daemon reports browser tools only where it finds Google Chrome. The smoke test checks that the maximized
+    window is Chrome on `browser/main` with its First Run file and the container's flags, and that an inherited
+    `CHROME_EXTRA_FLAGS` does not reach it.
+  - **Distribution [legal].** Chrome is proprietary, the first component of the image that is (§11.1). The maintainers
+    chose on 2026-11-18 to install it at build time, from Google's apt repository, in the published image. Unattended
+    starts with `--no-first-run` never present or accept Chrome's Additional Terms of Service; whose acceptance covers
+    a Computer's use of Chrome remains a question for counsel.
+- **Browser sandbox [risk]**: Chrome runs with `--no-sandbox`. Docker's default seccomp profile and Kubernetes'
   `RuntimeDefault` refuse the user namespaces its sandbox needs, and `allowPrivilegeEscalation: false` rules out the
   setuid helper, so the container is the only boundary around a renderer: a compromised renderer can read the home
-  volume, the Computer key included. A seccomp profile that admits `CLONE_NEWUSER` for the desktop pod would restore it.
-- **Desktop and tools [implemented]**: the image's Xfce defaults are one centered bottom dock launching Chromium,
+  volume, the Computer key included. A seccomp profile that admits `CLONE_NEWUSER` for the desktop pod would restore
+  it.
+- **Desktop and tools [implemented]**: the image's Xfce defaults are one centered bottom dock launching Google Chrome,
   Thunar, the terminal and LibreOffice, a dark backdrop, and no desktop icons; a home volume that already holds Xfce
   settings keeps its own. The terminal has Python 3 (pip, venv), Node.js (npm; pnpm and yarn through corepack), Go
   (`GOTOOLCHAIN=auto`), Rust (cargo), git, curl, jq and poppler-utils. `npm -g`, `go install` and `cargo install` land
-  in the home volume, which is on `PATH`; a desktop without a system volume has no root, so nothing is installed
-  with apt at run time.
+  in the home volume, which is on `PATH`; a desktop without a system volume has no root, so nothing is installed with
+  apt at run time.
 - **System volume [implemented]**: `sudo` is in the image with no rule, so a container started from the image alone
-  still has no root. `/opt/agentconnect/seed-system.sh <volume>`, run as root before the desktop starts, gives a desktop
-  a system of its own. The first start copies the image's `/usr`, `/etc` and `/var` (about 2.3 GiB) to
+  still has no root. `/opt/agentconnect/seed-system.sh <volume>`, run as root before the desktop starts, gives a
+  desktop a system of its own. The first start copies the image's `/usr`, `/etc` and `/var` (about 2.3 GiB) to
   `<volume>/system`, drops the image's dpkg excludes from the copy, creates `<volume>/home` for the user and writes a
   passwordless sudo rule; with those four directories mounted back at their paths, `sudo apt install` works and what
   it installs stays with the volume. From then on the system is the desktop's own, like a machine's disk: a newer
-  image no longer replaces its packages, the browser included, until `sudo apt upgrade` or a reset does. What must
+  image no longer replaces its packages, the browser included, until `sudo apt upgrade` or a reset does. Google Chrome
+  installs under `/opt/google`, so the image moves it to `/usr/lib/google` and leaves `/opt/google` as a symlink: the
+  volume holds the browser with `/usr`, and dpkg follows the link, so an upgrade or reinstall of it lands there too; a
+  volume seeded before Chrome gets `/usr/lib/google` on its next start, so installing Chrome there does too. What must
   follow the image therefore lives outside the three directories: the daemon, the entrypoint, the driver and the
-  extension in `/opt/agentconnect`, and Node in `/opt/node`, linked into `/usr/local/bin`. Every later start copies the
-  files named in `/opt/agentconnect/image-owned` (the Chromium flags and managed policies, the Xfce defaults, the
-  daemon's wrapper) over the volume's and logs when the volume's Chromium is older than the image's. apt reads its
-  sources over HTTPS, the only web port a managed pod reaches (§15.4). The smoke test seeds a Docker volume, installs
-  a package with `sudo apt-get`, and finds it in a new container. [risk] A newer image's driver runs against the
-  volume's older system libraries.
+  extension in `/opt/agentconnect`, and Node in `/opt/node`, linked into `/usr/local/bin`. Every later start copies
+  the files named in `/opt/agentconnect/image-owned` (the browsers' managed policies, Google's apt source and key, the
+  Xfce defaults, the daemon's wrapper) over the volume's and logs when the Chrome on the volume, the one that runs, is
+  older than the image's, or when the volume has none. apt reads its sources over HTTPS, the only web port a managed
+  pod reaches (§15.4). The smoke test seeds a Docker volume, installs a package with `sudo apt-get`, and finds it in a
+  new container. [risk] A newer image's driver runs against the volume's older system libraries.
 - **Health [implemented]**: `HEALTHCHECK` runs `doctor --json --daemon`, which asks the running daemon and fails when
   none answers or a required check fails, a revoked key included.
 - **WebRTC and NAT**: by default the daemon advertises the local address the browser reached it on, which in bridge
@@ -772,8 +800,9 @@ then starts the browser. No extension and no DevTools protocol are involved.
   master without locks, caches and open tabs (service workers' `ScriptCache` stays, since their registrations are
   copied), so it shares the master's `Local State` and with it the cookie encryption key: `v10` in the container
   (`--password-store=basic`), `v11` from the keyring or the xdg portal on a person's desktop, which therefore needs
-  the same user on the same session bus. **[design]** The copy also leaves out `DevToolsActivePort`, which would
-  otherwise point at the master's live browser (measured), and gets an empty `First Run` file (§3.8).
+  the same user on the same session bus. The copy also leaves out `DevToolsActivePort`, which would otherwise point at
+  the master's live browser (measured), and gets an empty `First Run` file (§3.8), as does any profile the launcher
+  creates empty.
 - **Sources.** Every other profile, running or not. A running source is read by copying its files (the SQLite file with
   its journal, and the LevelDB directories, retried when a compaction races the copy); a running profile is never
   written to. A source lags its browser by up to about 30 s, Chromium's cookie flush interval.
@@ -783,13 +812,14 @@ then starts the browser. No extension and no DevTools protocol are involved.
   baseline but gone from the source is deleted, so a logout spreads. "Newest timestamp wins" is wrong: a logged-out
   visit on the target, later than a login made in the master, kept the target logged out. Validated in a Debian VM with
   test sites (logout included) and with GitHub and app.agentconnect.md taken from a running browser.
-- **Launch.** The same path for an agent and for a person in the viewer. A desktop session's `PATH` starts with wrappers
-  for `chromium`, `chromium-browser`, `google-chrome` and `x-www-browser`; its `XDG_DATA_DIRS` starts with `.desktop`
-  overrides for the panel, menus and `xdg-open`, since the system entries name absolute paths; and `computer_launch` of
-  a browser calls the same launcher, `agentconnect-computer browser --desktop <id>`. It merges and starts the browser
-  when the desktop's profile is not running, and otherwise hands the request to the running browser, which opens a
-  window. The browser gets the main session bus (the keyring that decrypts `v11` cookies lives there, not on the
-  desktop's own bus), `--ozone-platform=x11` and `--restore-last-session`.
+- **Launch.** The same path for an agent and for a person in the viewer. A desktop session's `PATH` starts with
+  wrappers for `chromium`, `chromium-browser`, `google-chrome`, `google-chrome-stable` and `x-www-browser` (on the
+  image the main desktop's too, §3.8); its `XDG_DATA_DIRS` starts with `.desktop` overrides for the panel, menus and
+  `xdg-open`, since the system entries name absolute paths; and `computer_launch` of a browser calls the same
+  launcher, `agentconnect-computer browser --desktop <id>`. It merges and starts the browser when the desktop's
+  profile is not running, and otherwise hands the request to the running browser, which opens a window. The browser
+  gets the main session bus (the keyring that decrypts `v11` cookies lives there, not on the desktop's own bus),
+  `--ozone-platform=x11` and `--restore-last-session`, and never the caller's `CHROME_EXTRA_FLAGS`.
 - **DevTools endpoint [design].** Where the Computer has the browser tier (§5.8: an isolated Computer whose policy
   leaves it on), the launcher also starts the browser with `--remote-debugging-port=0`, on every start whoever asked,
   since nothing outside a browser started without the switch can attach to it later (a second invocation's switch is
@@ -2042,25 +2072,25 @@ and every `computer/policy`.
 
 ### 11.1 Dependencies
 
-| Component                                                  | License                          | Use                                                            | Distribution                                                                                                                                                                      |
-| ---------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cua Driver (`libs/cua-driver`)                             | MIT                              | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                   |
-| werift                                                     | MIT                              | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                     |
-| Node.js (SEA)                                              | MIT                              | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                |
-| ffmpeg (with libx264)                                      | GPL                              | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal] |
-| GStreamer, PipeWire, python3-gi                            | LGPL and others                  | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                   |
-| libei                                                      | MIT                              | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                  |
-| Xvfb, Xfce, Chromium, LibreOffice, toolchains, Debian base | MIT / GPL / MPL / BSD and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                        |
-| Chrome DevTools MCP (`chrome-devtools-mcp`) [design]       | Apache-2.0                       | Browser tools (§5.8)                                           | Pinned npm package in the image                                                                                                                                                   |
-| Google Chrome [design]                                     | Proprietary (Google's terms)     | The image's browser (§3.8)                                     | Google's apt package in the image, replacing Chromium; publishing an image that contains it needs counsel, and until then it is unpacked on first start [legal]                   |
+| Component                                            | License                          | Use                                                            | Distribution                                                                                                                                                                        |
+| ---------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cua Driver (`libs/cua-driver`)                       | MIT                              | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                     |
+| werift                                               | MIT                              | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                       |
+| Node.js (SEA)                                        | MIT                              | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                  |
+| ffmpeg (with libx264)                                | GPL                              | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal]   |
+| GStreamer, PipeWire, python3-gi                      | LGPL and others                  | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                     |
+| libei                                                | MIT                              | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                    |
+| Xvfb, Xfce, LibreOffice, toolchains, Debian base     | MIT / GPL / MPL / BSD and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                          |
+| Chrome DevTools MCP (`chrome-devtools-mcp`) [design] | Apache-2.0                       | Browser tools (§5.8)                                           | Pinned npm package in the image                                                                                                                                                     |
+| Google Chrome                                        | Proprietary (Google's terms)     | The image's browser (§3.8)                                     | Google's apt package installed at build time, replacing Chromium (the maintainers' choice, 2026-11-18); whose acceptance of Google's terms covers a Computer is for counsel [legal] |
 
 xdotool and wayvnc are no longer needed. Never used: `cua-spacesd`, the Cua HTML5 viewer and streaming crates
 (FSL-1.1-MIT); `cua-perception` (AGPL models); ydotool, RustDesk (AGPL-3.0); Sunshine (GPL-3.0); the official nut.js
 (unidentified license). CI scans release artifacts and fails on AGPL / FSL / BSL / SSPL / GPL. ffmpeg is downloaded on
 the user's machine and run as a separate process; hosting it in Cloud, preinstalling it in an installer, or publishing
-an image with it needs counsel first [legal]; native capture plus OS hardware encoders replace it in the long run (§17).
-Google Chrome would be the image's first proprietary component, an exception to decision 15 that the same review
-must allow; the daemon's bundle stays permissive, since Chrome is a separate program the image installs.
+an image with it needs counsel first [legal]; native capture plus OS hardware encoders replace it in the long run
+(§17). Google Chrome is the image's first proprietary component, an exception to decision 15 that the same review must
+allow; the daemon's bundle stays permissive, since Chrome is a separate program the image installs.
 
 ### 11.2 OS licenses
 
@@ -2573,19 +2603,19 @@ The Control Plane hands a managed desktop its organization's egress on `computer
 by older desktops) and pushes a change with `computer/egress` to the desktops whose capabilities report `egress`;
 self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691), and
 **[design]** so does a self-hosted container while its browser tier is on, in direct mode and without the WebRTC
-policy, so its browser has the same loopback refusal (§5.8): Chromium's launcher sources
-`/etc/chromium.d/agentconnect`, which reads the port and sets `--proxy-server=http://127.0.0.1:<port>` with
-`<-loopback>` (so loopback goes through it too) and keeps WebRTC to the proxy; host names resolve at the proxy, and
-the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that tunnels `CONNECT` and forwards plain requests
-either straight out or through the organization's proxy with its credentials, which the browser never sees. Until the
-Control Plane names the egress the forwarder answers 503, so a desktop whose organization wants a proxy never goes out
-directly first; a desktop with no registration goes direct. A Control Plane that cannot read a managed desktop's
-egress fails its auth (the desktop redials) rather than omit it, and a desktop told `computer-egress-v1` never takes a
-missing egress as direct. The pod's NetworkPolicy admits TCP 443 and the chart's `computerPool.egressPorts` (3128 and
-8080 by default) for the proxy, to `computerPool.egressTo` only (public addresses by default, so the browser cannot
-reach in-cluster listeners on those ports). Limits: only the browser started through `chromium` (the launcher, on the
-Chrome image of §3.8) is bound to the proxy (other programs in the pod, and the binary run directly, keep the pod's
-network); SOCKS proxies and per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
+policy, so its browser has the same loopback refusal (§5.8): the launcher of §3.10 reads the port and passes
+`--proxy-server=http://127.0.0.1:<port>` with `<-loopback>` (so loopback goes through it too) and keeps WebRTC to the
+proxy; host names resolve at the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that
+tunnels `CONNECT` and forwards plain requests either straight out or through the organization's proxy with its
+credentials, which the browser never sees. Until the Control Plane names the egress the forwarder answers 503, so a
+desktop whose organization wants a proxy never goes out directly first; a desktop with no registration goes direct. A
+Control Plane that cannot read a managed desktop's egress fails its auth (the desktop redials) rather than omit it,
+and a desktop told `computer-egress-v1` never takes a missing egress as direct. The pod's NetworkPolicy admits TCP 443
+and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy, to `computerPool.egressTo` only
+(public addresses by default, so the browser cannot reach in-cluster listeners on those ports). Limits: only the
+browser started through the launcher of §3.10, which every start in the image goes through (§3.8), is bound to the
+proxy (other programs in the pod, and the binary run directly, keep the pod's network); SOCKS proxies and per-agent
+proxies are not offered; a proxy on another port needs `egressPorts`.
 
 **Loopback [design].** With the browser tier the forwarder also refuses the daemon's loopback ports and every DevTools
 port of a desktop's browser (§5.8), in a managed pod and in the self-hosted container alike. Since the browser sees
