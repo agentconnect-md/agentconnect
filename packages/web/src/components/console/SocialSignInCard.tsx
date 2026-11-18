@@ -528,14 +528,14 @@ export default function SocialSignInCard({
                 <span className="flex h-7 w-7 flex-none items-center justify-center text-(--text-secondary)">
                   <Icon name="key-round" size={18} />
                 </span>
-                <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">
+                <span className="min-w-0 font-sans text-[13.5px] font-semibold leading-[1.3] break-words">
                   {sso.connectionName ?? t('ssoUnnamed')}
                 </span>
               </div>
               <div className="col-span-2 row-start-2 flex min-h-8 min-w-0 items-center desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
                 {sso.email ? (
                   <div className="flex min-w-0 items-center gap-2.5">
-                    <Avatar initials={initialsFrom(sso.connectionName ?? '', sso.email)} size={32} fontSize={11} />
+                    <Avatar initials={initialsFrom('', sso.email)} size={32} fontSize={11} />
                     <div className="min-w-0 truncate font-sans text-[13px] font-medium leading-normal">{sso.email}</div>
                   </div>
                 ) : (
