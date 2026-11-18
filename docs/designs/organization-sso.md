@@ -264,12 +264,18 @@ organization does, on every request:
 - **An account that never signed in through the connection**, such as one invited
   earlier, gets in by signing in through it: the address links the new SSO identity
   to the same account (§5), and its session carries the claim.
+- **Owners.** The rule applies to an owner exactly as to any other member; there is
+  no owner exemption and no recovery code. An owner whose address is outside the
+  verified domains is unaffected only because the rule covers addresses inside them,
+  and that owner is the organization's own way back in when its identity provider
+  fails. An organization may choose to keep no such owner. The activation dialog
+  then says that no owner will be able to open the organization if the provider
+  stops working, and still activates; `GET /sso` tells an owner whether some owner's
+  address is outside the verified domains. A deployment `ADMIN` can deactivate any
+  connection (§4.1). Members outside the verified domains keep full access.
 - **Activating.** The test sign-in that activation requires is a sign-in through the
   connection, so an owner inside the domains who ran it already holds a session the
-  rule accepts. The activation dialog states that the domains sign in only through
-  the connection, which is now true of each organization's sessions too. An owner
-  outside the domains is never affected, and a deployment `ADMIN` can deactivate any
-  connection (§4.1).
+  rule accepts.
 
 ## 5. What must hold for an organization's connection
 
@@ -394,7 +400,9 @@ the few connector calls it needs beside it.
   provider on a now-bound address is linked to the same account at their first SSO
   sign-in and keeps their memberships. R1 is what makes that link safe.
 - **Lockout.** Activation requires a successful test after the last change, and a
-  deployment `ADMIN` can always deactivate. Settings changed on an active connection
+  deployment `ADMIN` can always deactivate. An owner outside the verified domains
+  keeps the organization reachable when its provider fails; activating without one
+  is allowed after the dialog says so (§4.5). Settings changed on an active connection
   take effect untested (§4.1); that is the one way to activate untested settings, and
   it is chosen over lifting enforcement.
 - **A test sign-in can land on a different account** when the provider's address

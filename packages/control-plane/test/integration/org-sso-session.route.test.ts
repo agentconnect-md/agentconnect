@@ -274,6 +274,33 @@ describe('organization SSO per session', () => {
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
   })
 
+  it('tells an owner whether some owner keeps an address outside the verified domains', async () => {
+    await testedConnection()
+    const state = async () =>
+      (
+        (await app.inject({ method: 'GET', url: SSO, headers: await owner() })).json() as {
+          ownerOutsideDomains?: boolean
+        }
+      ).ownerOutsideDomains
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { email: 'owner@example.test' } })
+    expect(await state()).toBe(true)
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { email: 'owner@acme.example' } })
+    expect(await state()).toBe(false)
+    // A member's view leaves it out.
+    await memberInDomain()
+    const seen = (await app.inject({ method: 'GET', url: SSO, headers: await as(MEMBER_SUBJECT) })).json() as object
+    expect(seen).not.toHaveProperty('ownerOutsideDomains')
+  })
+
+  it('applies to an owner inside the domains like any member', async () => {
+    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { email: 'owner@acme.example' } })
+    const connectorId = await activeConnection()
+    idp.accounts.set(OWNER_SUBJECT, { primaryEmail: 'owner@acme.example', connectorIds: [connectorId] })
+    clock.advance(ORG_SSO_SESSION_CACHE_TTL_MS)
+    expect((await agents(await owner())).statusCode).toBe(403)
+    expect((await agents(await as(OWNER_SUBJECT, viaConnector(connectorId)))).statusCode).toBe(200)
+  })
+
   it('lifts the rule on deactivation', async () => {
     await memberInDomain()
     await activeConnection()

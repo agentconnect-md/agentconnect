@@ -5980,6 +5980,8 @@ export interface OrgSsoConnectionDto {
 export interface OrgSsoStateDto {
   domains: OrgSsoDomainDto[]
   connection: OrgSsoConnectionDto | null
+  /** Owner view: whether some owner's address is outside the verified domains. */
+  ownerOutsideDomains?: boolean
 }
 
 export type OrgSsoDomainCheck = 'ok' | 'not_found' | 'mismatch' | 'lookup_failed'

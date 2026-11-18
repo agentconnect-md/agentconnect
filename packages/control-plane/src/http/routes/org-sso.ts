@@ -107,6 +107,17 @@ const domainNotFound = (reply: FastifyReply) =>
 
 /** Owner-only routes mounted inside `/orgs/:orgId`, and only on a deployment that declares organization SSO. */
 export function orgSsoRoutes(deps: HttpDeps) {
+  // An owner with no known address counts as inside: the activation dialog warns rather than reassures.
+  const ownerOutside = async (orgId: string, listed: readonly { domain: string; status: string }[]) => {
+    const verified = new Set(listed.filter((d) => d.status === 'verified').map((d) => d.domain))
+    const members = await deps.repos.user.listMembers(orgId)
+    return members.some(
+      (m) =>
+        m.role === 'owner' &&
+        m.email !== null &&
+        !verified.has(m.email.slice(m.email.lastIndexOf('@') + 1).toLowerCase())
+    )
+  }
   return async function orgSsoRoutesPlugin(app: FastifyInstance): Promise<void> {
     const domains = deps.orgSsoDomains
     if (!domains) return
@@ -121,7 +132,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Get the organization single sign-on setup',
           description:
-            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service. Other members get the verified domains and the connection without its settings.',
+            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service, and `ownerOutsideDomains` whether some owner’s address is outside the verified domains. Other members get the verified domains and the connection without its settings.',
           operationId: 'getOrganizationSso',
           response: { 200: OrgSsoStateDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
         }
@@ -134,7 +145,8 @@ export function orgSsoRoutes(deps: HttpDeps) {
           const listed = await domains.list(orgId)
           return {
             domains: (owner ? listed : listed.filter((domain) => domain.status === 'verified')).map(toDto),
-            connection: connection ? connectionDto(connection) : null
+            connection: connection ? connectionDto(connection) : null,
+            ...(owner ? { ownerOutsideDomains: await ownerOutside(orgId, listed) } : {})
           }
         })
       }

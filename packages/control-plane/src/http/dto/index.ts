@@ -3204,7 +3204,9 @@ export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
 /** `connection` is null until one is configured, and on a deployment that cannot manage connections. */
 export const OrgSsoStateDto = z.object({
   domains: z.array(OrgSsoDomainDto),
-  connection: OrgSsoConnectionDto.nullable()
+  connection: OrgSsoConnectionDto.nullable(),
+  /** Owner view: whether some owner's address is outside the verified domains, and so keeps a way in when the identity provider fails. */
+  ownerOutsideDomains: z.boolean().optional()
 })
 
 const OrgSsoConnectionName = z.string().trim().min(1).max(64)
