@@ -287,7 +287,7 @@ const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
 const noOwnerIcon = () => undefined
 const EMPTY_CONTROLS: readonly ControlCommand[] = []
 // The textarea's text box, shared with the overlay that marks a leading command so both lay text out identically.
-const COMPOSER_TEXT = 'px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55]'
+const COMPOSER_TEXT = 'px-[15px] py-[13px] font-sans text-[14px] leading-[1.55]'
 
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
 // the draft lives outside the playground context (usePgDraft subscription), and
@@ -375,8 +375,17 @@ function ComposerTextarea({
   // A recognized leading command reads as a command: the overlay behind the (then transparent) text colors it and hints its argument.
   const highlight = commandHighlight(draft, controls ?? EMPTY_CONTROLS, runtimeCommands.candidates)
   const overlayRef = useRef<HTMLDivElement | null>(null)
-  // Re-fit after every render (the scrollbar comes and goes with the draft) and whenever the composer resizes.
-  useLayoutEffect(() => syncCommandMirror(overlayRef.current, textareaRef.current))
+  // Grow with the draft up to the max-height cap (then scroll), and re-fit the command mirror after every render.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${textarea.scrollHeight}px`
+      // Caret-into-view scrolling ignores padding-bottom, so typing at the end would leave the last line flush with the edge.
+      if (textarea.selectionEnd === textarea.value.length) textarea.scrollTop = textarea.scrollHeight
+    }
+    syncCommandMirror(overlayRef.current, textarea)
+  })
   useEffect(() => {
     const textarea = textareaRef.current
     if (!textarea || typeof ResizeObserver === 'undefined') return
@@ -418,8 +427,9 @@ function ComposerTextarea({
         )}
         <textarea
           ref={textareaRef}
+          rows={1}
           onScroll={(e) => syncCommandMirror(overlayRef.current, e.currentTarget)}
-          className={`${COMPOSER_TEXT} relative block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          className={`${COMPOSER_TEXT} relative block max-h-[min(30vh,240px)] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
           placeholder={suggestion ?? placeholder}
           value={draft}
           onChange={(e) => {
