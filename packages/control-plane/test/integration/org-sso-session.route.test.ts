@@ -32,7 +32,7 @@ const INSIDE_OWNER_SUBJECT = 'subject-inside-owner'
 /** The identity service in memory: connectors by id and accounts by subject. */
 class FakeIdp implements OrgSsoIdp {
   readonly connectors = new Map<string, { name: string; protocol: OrgSsoProtocol; config: Record<string, unknown> }>()
-  readonly accounts = new Map<string, OrgSsoAccount>()
+  readonly accounts = new Map<string, Pick<OrgSsoAccount, 'primaryEmail' | 'connectorIds'>>()
   down = false
 
   private up(): void {
@@ -71,9 +71,10 @@ class FakeIdp implements OrgSsoIdp {
     this.connectors.delete(id)
   }
 
-  async account(subject: string) {
+  async account(subject: string): Promise<OrgSsoAccount | null> {
     this.up()
-    return this.accounts.get(subject) ?? null
+    const account = this.accounts.get(subject)
+    return account ? { attributeNames: {}, addressAttributes: {}, ...account } : null
   }
 
   async deleteAccount(subject: string) {
