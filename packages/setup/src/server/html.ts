@@ -807,6 +807,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
     }
 
     async function removeSso() {
+      if (!window.confirm('Remove SSO sign-in and delete its Logto connector? People who signed in through it lose that sign-in; their accounts stay.')) return;
       await json(await fetch(api + '/configure/sso', {
         method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({ connector: null })
@@ -2159,6 +2160,12 @@ export const SETUP_HTML = String.raw`<!doctype html>
         method: 'PUT', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({ expectedRevision: currentRevision, values })
       }));
+      try {
+        if (currentStatus.values.auth.mode === 'oidc') await reconcileLogto();
+      } catch (error) {
+        await load();
+        throw new Error('Saved deployment options, but Logto was not updated: ' + error.message);
+      }
       message('Saved deployment options. Restart AgentConnect to apply them.');
       await load();
     }

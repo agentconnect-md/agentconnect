@@ -47,6 +47,8 @@ export interface LogtoSetupDesired {
   sso?: LogtoSsoDesired
   /** Organizations own SSO connectors the Control Plane manages, so single sign-on stays on without a deployment connector. */
   organizationSso?: boolean
+  /** The document holds no SSO connector, so the managed one must not exist in Logto either. */
+  ssoRemoved?: boolean
 }
 
 const singleSignOnDesired = (desired: LogtoSetupDesired): boolean =>
@@ -156,6 +158,7 @@ export interface LogtoSetupReconcileResult {
   application: { id: string; created: boolean; changed: boolean }
   connectors: Array<{ target: string; id: string; created: boolean; changed: boolean }>
   sso: { id: string; changed: boolean } | null
+  ssoConnectorsDeleted: string[]
   signInExperienceChanged: boolean
   adminRoleCreated: boolean
 }
@@ -531,7 +534,11 @@ export class LogtoAdminClaimClient {
     )
     addDiff(signInExperienceDiff, 'Sign-in mode', signInExperience.signInMode ?? null, 'SignInAndRegister')
     addDiff(signInExperienceDiff, 'Single sign-on', signInExperience.singleSignOnEnabled, singleSignOnDesired(desired))
-    const sso = desired.sso ? await this.inspectSsoConnector(desired.sso) : null
+    const sso = desired.sso
+      ? await this.inspectSsoConnector(desired.sso)
+      : desired.ssoRemoved
+        ? await this.inspectRemovedSsoConnector()
+        : null
     return {
       sso,
       application: {
@@ -600,6 +607,7 @@ export class LogtoAdminClaimClient {
     const sso = desired.sso
       ? await this.ensureSsoConnector(desired.sso, options.refreshConnectorSecrets ?? false)
       : null
+    const ssoConnectorsDeleted = !desired.sso && desired.ssoRemoved ? await this.deleteManagedSsoConnectors() : []
     const signInExperienceChanged = await this.ensureSignInExperience(
       desired.socialProviders,
       singleSignOnDesired(desired)
@@ -610,11 +618,13 @@ export class LogtoAdminClaimClient {
         application.changed ||
         connectors.some((connector) => connector.changed) ||
         (sso?.changed ?? false) ||
+        ssoConnectorsDeleted.length > 0 ||
         signInExperienceChanged ||
         adminRoleCreated,
       application,
       connectors,
       sso,
+      ssoConnectorsDeleted,
       signInExperienceChanged,
       adminRoleCreated
     }
@@ -641,6 +651,34 @@ export class LogtoAdminClaimClient {
     const created = parseSsoConnector(await response.json().catch(() => null))
     if (!created) throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto returned an invalid SSO connector')
     return { id: created.id, created: true }
+  }
+
+  /** Delete the managed SSO connector and the sign-in identities it holds; organization connectors are left alone. */
+  async deleteManagedSsoConnectors(): Promise<string[]> {
+    const managed = (await this.listSsoConnectors()).filter(
+      (connector) => connector.connectorName === MANAGED_SSO_CONNECTOR_NAME
+    )
+    for (const connector of managed) {
+      try {
+        await this.request(`/api/sso-connectors/${encodeURIComponent(connector.id)}`, { method: 'DELETE' })
+      } catch (error) {
+        if (!(error instanceof LogtoManagementError && error.status === 404)) throw error
+      }
+    }
+    return managed.map((connector) => connector.id)
+  }
+
+  private async inspectRemovedSsoConnector(): Promise<LogtoSetupInspection['sso']> {
+    const managed = (await this.listSsoConnectors()).find(
+      (connector) => connector.connectorName === MANAGED_SSO_CONNECTOR_NAME
+    )
+    if (!managed) return null
+    return {
+      id: managed.id,
+      exists: true,
+      matches: false,
+      diff: [{ field: 'SSO connector', current: managed.id, expected: 'Removed' }]
+    }
   }
 
   private async inspectSsoConnector(

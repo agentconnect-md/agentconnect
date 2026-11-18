@@ -238,7 +238,10 @@ Three parts provide them.
 **The declaration.** The Setup Server cannot read which Logto release it faces, so
 organization SSO is on only where the operator declares it (D1). The deployment
 guide names the minimum Logto release, and a deployment on an older one, or on Logto
-Cloud, keeps the deployment connector as its SSO.
+Cloud, keeps the deployment connector as its SSO. Saving the declaration runs the
+same Logto reconcile as saving the deployment connector, so single sign-on follows the
+saved document without a separate apply step, and a failed reconcile is shown where the
+operator saved.
 
 Domain ownership and uniqueness are the Control Plane's job. Logto does not verify
 ownership and lets two connectors list the same domain; it only refuses a list of
@@ -288,6 +291,17 @@ The Setup Server's desired value for Logto's `singleSignOnEnabled` becomes "a
 deployment connector exists, or organization SSO is declared". Without that, its next
 reconcile would switch single sign-on off for every organization. Its inspection
 leaves connectors it does not own out of the drift report.
+
+The fixed-name connector exists in Logto exactly while the deployment document holds
+`logto.ssoConnector`, including the state between creating it and saving its identity
+provider. Removing SSO sign-in deletes it in Logto before the document is cleared, so a
+failed delete leaves both in place; deleting it also deletes the sign-in identities it
+established, which the operator confirms first. A leftover connector would stay a way in
+that no setting shows, and Logto keys an SSO identity by issuer and subject, so it would
+also block an organization connection on the same issuer from linking anyone who had
+signed in through it. A document without the connector therefore reports a remaining
+one as drift, and reconcile deletes it; connectors named after an organization are never
+touched.
 
 The Control Plane already holds a Logto Management API client; organization SSO adds
 the few connector calls it needs beside it.

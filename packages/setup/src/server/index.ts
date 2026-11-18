@@ -326,7 +326,7 @@ export interface SetupServerDeps {
   ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
   makeLogtoSetupClient?: (
     config: LogtoManagementConfig
-  ) => Pick<LogtoAdminClaimClient, 'reconcileSetup' | 'createSsoConnector'>
+  ) => Pick<LogtoAdminClaimClient, 'reconcileSetup' | 'createSsoConnector' | 'deleteManagedSsoConnectors'>
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
   auditFeishuAppSetup?: FeishuAppSetupAuditor
   slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp' | 'updateApp'>
@@ -567,6 +567,7 @@ function logtoSetup(
     sso: sso ? { connectorId: sso.connectorId, name: sso.displayName } : null,
     desired: {
       ...(sso ? { sso } : {}),
+      ...(logto.ssoConnector ? {} : { ssoRemoved: true }),
       ...(record.values.features.organizationSso ? { organizationSso: true } : {}),
       ...(applicationId ? { applicationId } : {}),
       applicationName: browser.applicationName,
@@ -1984,6 +1985,14 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
             : 'invalid SSO connector settings'
         return problem(reply, 400, message)
       }
+      if (!parsed.data.connector) {
+        // Delete in Logto first, so a failure leaves the document still naming the connector that lives.
+        const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+        const config = logtoConfig(runtime, logtoManagementEndpoint)
+        if (!config) return problem(reply, 409, 'save the Logto Management API configuration first')
+        const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
+        await client.deleteManagedSsoConnectors()
+      }
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
       const connector = saved.values.logto?.ssoConnector
       return {
@@ -2085,6 +2094,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         application: reconciled.application,
         connectors: reconciled.connectors,
         sso: reconciled.sso,
+        ssoConnectorsDeleted: reconciled.ssoConnectorsDeleted,
         signInExperienceChanged: reconciled.signInExperienceChanged,
         adminRoleCreated: reconciled.adminRoleCreated
       }
@@ -2299,9 +2309,12 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
           : {
               id: 'logto.sso_connector',
               status: 'fail',
-              message: setupInspection.sso.exists
-                ? 'The Logto SSO connector differs from its saved identity provider.'
-                : 'The Logto SSO connector no longer exists; create it again.',
+              message:
+                !setup.sso && setupInspection.sso.exists
+                  ? 'SSO sign-in was removed, but its Logto SSO connector still exists; apply expected settings to delete it.'
+                  : setupInspection.sso.exists
+                    ? 'The Logto SSO connector differs from its saved identity provider.'
+                    : 'The Logto SSO connector no longer exists; create it again.',
               diff: setupInspection.sso.diff
             }
       )
