@@ -38,11 +38,10 @@ type Landing =
 // One landing per page load: the authorization code and a test nonce are each presented once, whatever re-runs the effect.
 let landing: Promise<Landing> | undefined
 
-// A sign-in that lands as a different account must not inherit the previous account's remembered organization.
-async function completeLoginForgettingOtherAccount(): Promise<void> {
-  const before = await currentSubject()
+// Every completed sign-in forgets the browser's remembered organization; the CP restores the account's own preference.
+async function completeLoginForgettingOrganization(): Promise<void> {
   await completeLogin()
-  if ((await currentSubject()) !== before) forgetRememberedOrganization()
+  forgetRememberedOrganization()
 }
 
 // Unknown when the list cannot be read: the console's own fallback still handles a non-member.
@@ -71,7 +70,7 @@ async function land(): Promise<Landing> {
       return { ...outcome, passed: false, email: null, error }
     }
     try {
-      await completeLoginForgettingOtherAccount()
+      await completeLoginForgettingOrganization()
     } catch (e) {
       return { ...outcome, passed: false, email: null, error: e instanceof Error ? e.message : null }
     }
@@ -95,7 +94,7 @@ async function land(): Promise<Landing> {
   // Logto returns a cancelled or failed direct sign-in here as `access_denied`.
   if (providerError === 'access_denied') return { kind: 'cancelled' }
   try {
-    await completeLoginForgettingOtherAccount()
+    await completeLoginForgettingOrganization()
     commitPendingSignIn()
     // Social sign-in can link an identity without passing through the Control Plane.
     await refreshMySocialIdentities(AbortSignal.timeout(5_000)).catch(() => undefined)

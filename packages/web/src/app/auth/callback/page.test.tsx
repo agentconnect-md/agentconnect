@@ -121,19 +121,22 @@ it('presents the nonce of a test sign-in and shows that it passed', async () => 
   expect(mocks.replace).toHaveBeenCalledWith('/acme/settings#single-sign-on')
 })
 
-it('forgets the remembered organization when the test lands as a different account', async () => {
+it('forgets the remembered organization once a test sign-in completes', async () => {
   stashTest()
-  mocks.currentSubject.mockResolvedValueOnce('owner').mockResolvedValue('someone-else')
   mocks.reportOrgSsoTest.mockResolvedValue(true)
   await land('?code=abc')
   expect(mocks.forgetRememberedOrganization).toHaveBeenCalledTimes(1)
   expect(host.textContent).toContain('Back to Settings')
 })
 
-it('keeps the remembered organization when the same account signs in again', async () => {
-  stashTest()
-  mocks.reportOrgSsoTest.mockResolvedValue(true)
+it('forgets the remembered organization once an ordinary sign-in completes', async () => {
   await land('?code=abc')
+  expect(mocks.forgetRememberedOrganization).toHaveBeenCalledTimes(1)
+})
+
+it('keeps the remembered organization when the provider refused the sign-in', async () => {
+  stashTest()
+  await land('?error=invalid_client')
   expect(mocks.forgetRememberedOrganization).not.toHaveBeenCalled()
 })
 
