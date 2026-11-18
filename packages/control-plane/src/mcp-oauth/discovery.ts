@@ -12,9 +12,9 @@
  *  2. FETCH the protected-resource metadata — from the challenge when it named one, else
  *     by the well-known fallback in the spec's order (path-inserted, then root).
  *  3. FETCH the authorization-server metadata by trying the spec's exact URL priority
- *     order, and REJECT any document whose `issuer` is not byte-identical to the issuer
- *     the URL was built from. That check is what stops a hostile metadata host from
- *     claiming to speak for someone else.
+ *     order, and REJECT any document whose `issuer` is neither the issuer the URL was built
+ *     from nor a same-origin ancestor of it ({@link issuerCovers}). That check is what stops
+ *     a hostile metadata host from claiming to speak for someone else.
  *
  * `resource` canonicalization cuts BOTH ways, and the direction is easy to get backwards.
  * OUTBOUND (the RFC 8707 `resource` parameter) we send the PRM document's own string
@@ -319,6 +319,24 @@ export function issuerEquivalent(advertised: string, expected: string): boolean 
   return a.origin === b.origin && a.origin !== 'null'
 }
 
+/** {@link issuerEquivalent}, or a same-origin ancestor at a path-segment boundary (§4 of the design: per-tenant issuer paths). */
+export function issuerCovers(advertised: string, requested: string): boolean {
+  if (issuerEquivalent(advertised, requested)) return true
+  let a: URL
+  let r: URL
+  try {
+    a = new URL(advertised)
+    r = new URL(requested)
+  } catch {
+    return false
+  }
+  if (a.origin !== r.origin || a.origin === 'null') return false
+  if (a.search !== '' || r.search !== '' || a.hash !== '' || r.hash !== '') return false
+  const prefix = a.pathname.replace(/\/+$/, '')
+  const path = r.pathname.replace(/\/+$/, '')
+  return path.length > prefix.length && path.startsWith(prefix) && path.charAt(prefix.length) === '/'
+}
+
 function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetadata | 'mismatch' | null {
   if (typeof json !== 'object' || json === null) return null
   const doc = json as Record<string, unknown>
@@ -326,7 +344,7 @@ function readAuthServer(json: unknown, expectedIssuer: string): AuthServerMetada
   const authorizationEndpoint = str(doc.authorization_endpoint)
   const tokenEndpoint = str(doc.token_endpoint)
   if (issuer === undefined || authorizationEndpoint === undefined || tokenEndpoint === undefined) return null
-  if (!issuerEquivalent(issuer, expectedIssuer)) return 'mismatch'
+  if (!issuerCovers(issuer, expectedIssuer)) return 'mismatch'
   const registration = str(doc.registration_endpoint)
   const scopes = strArray(doc.scopes_supported)
   const methods = strArray(doc.code_challenge_methods_supported)
