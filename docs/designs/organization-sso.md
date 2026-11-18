@@ -162,14 +162,17 @@ A deployment with only a deployment connector keeps its single button.
 
 ### 4.3 Membership
 
-The join is its own step when a sign-in resolves to a local user. It reads from the
-identity service which connections the caller holds an SSO identity on, and it is
-idempotent on the join record. It does not ride on the cached identity read the
-sign-in gate makes.
+The join is its own step: the console calls `POST /sso/join` after a sign-in. It reads
+from the identity service which connections the caller holds an SSO identity on, and
+it is idempotent on the join record. It does not ride on the sign-in gate, which
+resolves a subject once per process and so would miss an existing account's first
+sign-in through a connection.
 
-- A caller with an identity on an organization's active connection, and no join
-  record for that organization, gets a membership as `collaborator` (the role an
-  invite link grants) and a join record. The join is audited.
+- A caller with an identity on an organization's active connection, an address in
+  that organization's verified domains, and no join record for that organization,
+  gets a membership as `collaborator` (the role an invite link grants) and a join
+  record. The join is audited.
+- A caller who is already a member keeps their role and gets the join record.
 - The join record outlives the membership. An owner who removes such a member is not
   overruled at the person's next sign-in; they can be invited back.
 - Removing someone at the identity provider stops their sign-in through the
@@ -237,6 +240,7 @@ organization's people authenticate, and one of them carries a client secret):
 Outside the organization subtree:
 
 - `POST /sso/test-result`: any signed-in caller presents the nonce.
+- `POST /sso/join`: any signed-in caller, after a sign-in (§4.3).
 - `POST /admin/orgs/:orgId/sso/connection/deactivate` and
   `DELETE /admin/sso/domains/:id`: a deployment `ADMIN`'s recovery paths (§4.1).
 - `POST /sign-in/lookup`: anonymous (§4.2).
@@ -311,8 +315,9 @@ Each step merges on its own.
    and the ownership rule of §6.1.
 3. **Sign-in lookup** (landed): the anonymous lookup and the `/runtime-config`
    boolean.
-4. **Web:** the email field on the login page; the settings card.
-5. **Membership** on first sign-in, with the join record.
+4. **Membership** (landed): the join record and `POST /sso/join`.
+5. **Web:** the email field on the login page, the call to `POST /sso/join` after a
+   sign-in, and the settings card.
 6. **User documentation**, once the feature is complete, naming the minimum Logto
    release.
 

@@ -39,6 +39,7 @@ function stubDeps(): HttpDeps {
     orgSsoDomains: {},
     orgSsoConnections: {},
     orgSsoLookup: {},
+    orgSsoMembership: {},
     // Mounted only with the surface; its handlers are never reached here.
     azureDevOps: {},
     github: {},
@@ -388,6 +389,7 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/sso/connection/activate',
           'POST /api/v1/orgs/:orgId/sso/connection/deactivate',
           'DELETE /api/v1/orgs/:orgId/sso/connection',
+          'POST /api/v1/sso/join',
           'POST /api/v1/sso/test-result',
           'POST /api/v1/admin/orgs/:orgId/sso/connection/deactivate',
           'DELETE /api/v1/admin/sso/domains/:id',

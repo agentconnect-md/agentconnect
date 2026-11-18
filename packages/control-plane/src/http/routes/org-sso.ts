@@ -11,6 +11,7 @@ import {
   IdParam,
   OrgSsoConnectionDto,
   OrgSsoDomainDto,
+  OrgSsoJoinDto,
   OrgSsoStateDto,
   OrgSsoTestDto,
   OrgSsoTestResultBody,
@@ -420,6 +421,31 @@ export function orgSsoRootRoutes(deps: HttpDeps) {
           }
         },
         async (req) => ({ connector: await lookup.find(req.body.email) })
+      )
+    }
+
+    const membership = deps.orgSsoMembership
+    if (membership) {
+      r.post(
+        '/sso/join',
+        {
+          preHandler: app.humanAuth,
+          config,
+          schema: {
+            tags: [Tag.Organizations],
+            summary: 'Join the organizations a sign-in entitles the caller to',
+            description:
+              'Called by the console after a sign-in. A caller who signed in through an organization’s active single sign-on connection, with an address in that organization’s verified domains, becomes a collaborator of it once. Returns the organizations joined by this call; a later call returns none, also after an owner has removed the member.',
+            operationId: 'joinOrganizationsBySso',
+            response: { 200: OrgSsoJoinDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          const { userId } = req.principal!
+          const subject = await deps.repos.user.getOidcSubject(userId)
+          if (!subject) return { joined: [] }
+          return withIdp(reply, async () => ({ joined: await membership.join(subject, userId) }))
+        }
       )
     }
 

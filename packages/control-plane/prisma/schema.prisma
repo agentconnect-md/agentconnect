@@ -117,6 +117,7 @@ model Org {
   inviteLink                OrgInviteLink?
   domains                   OrgDomain[]
   ssoConnection             OrgSsoConnection?
+  ssoJoins                  OrgSsoJoin[]
   mcpProviders              McpProvider[]
   skillSources              SkillSource[]
   decisions                 Decision[]
@@ -233,6 +234,7 @@ model User {
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
+  ssoJoins                         OrgSsoJoin[]
   webchatConversations             WebchatConversation[]
   webchatMcpDelegations            WebchatMcpDelegation[]
   createdEnvironmentEntries        OrganizationEnvironmentEntry[]      @relation("OrgEnvCreatedBy")
@@ -473,6 +475,20 @@ model OrgSsoConnection {
   org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("org_sso_connection")
+}
+
+// A membership granted by a first sign-in through the organization's connection (organization-sso.md §4.3); it outlives the membership so a removal stands.
+model OrgSsoJoin {
+  orgId    String
+  userId   String
+  joinedAt DateTime @default(now()) @db.Timestamptz(6)
+
+  org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, userId])
+  @@index([userId])
+  @@map("org_sso_join")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

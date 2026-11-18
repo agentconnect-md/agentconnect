@@ -301,6 +301,7 @@ import { OrgSsoSweeper } from './org-sso/sweeper.js'
 import { OrgSsoConnectionService } from './org-sso/connections.js'
 import { OrgSsoAdmission } from './org-sso/admission.js'
 import { OrgSsoSignInLookup } from './org-sso/lookup.js'
+import { OrgSsoMembership } from './org-sso/membership.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
@@ -2514,6 +2515,10 @@ export function buildContainer(
           log: orgSsoWarn
         })
       : undefined
+  const orgSsoMembership =
+    orgSsoDomains && orgSsoIdp
+      ? new OrgSsoMembership({ connections: repos.orgSsoConnection, domains: orgSsoDomains, idp: orgSsoIdp, clock })
+      : undefined
   const orgSsoLookup = orgSsoConnections
     ? new OrgSsoSignInLookup({ connections: repos.orgSsoConnection, clock, log: orgSsoWarn })
     : undefined
@@ -2823,6 +2828,7 @@ export function buildContainer(
     ...(orgSsoConnections ? { orgSsoConnections } : {}),
     ...(orgSsoAdmission ? { orgSsoAdmission } : {}),
     ...(orgSsoLookup ? { orgSsoLookup } : {}),
+    ...(orgSsoMembership ? { orgSsoMembership } : {}),
     waitlist,
     usageWriter,
     ...(clusterWorkloadIdentity ? { clusterWorkloadIdentity } : {}),

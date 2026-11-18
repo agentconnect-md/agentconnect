@@ -3223,6 +3223,9 @@ export const OrgSsoTestResultBody = z.object({ nonce: z.string().min(1).max(200)
 
 export const OrgSsoTestResultDto = z.object({ tested: z.boolean() })
 
+/** The organizations the caller just became a member of; empty on every sign-in after the first. */
+export const OrgSsoJoinDto = z.object({ joined: z.array(z.string()) })
+
 export const SignInLookupBody = z.object({ email: z.string().min(3).max(320) }).strict()
 
 /** `connector` is the one to start a sign-in against; null means the address signs in by the other methods. */

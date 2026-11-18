@@ -171,6 +171,36 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
     )
   }
 
+  async joinOnce(
+    orgId: string,
+    userId: string,
+    connectionId: string,
+    at: Date
+  ): Promise<'joined' | 'already_member' | 'recorded'> {
+    const run = () =>
+      this.inTransaction(async (tx) => {
+        const key = { orgId_userId: { orgId, userId } }
+        if (await tx.orgSsoJoin.findUnique({ where: key })) return 'recorded' as const
+        await tx.orgSsoJoin.create({ data: { orgId, userId, joinedAt: at } })
+        // Someone invited earlier keeps their role; the record still stands, so a later removal is not overruled.
+        if (await tx.membership.findUnique({ where: key })) return 'already_member' as const
+        await tx.membership.create({ data: { orgId, userId, role: 'collaborator' } })
+        await this.audit(tx, orgId, userId, 'member joined through single sign-on', {
+          action: 'member_joined',
+          connectionId,
+          role: 'collaborator'
+        })
+        return 'joined' as const
+      })
+    try {
+      return await run()
+    } catch (err) {
+      // Two sign-ins of the same person at once: the second reads the first's record.
+      if ((err as { code?: string }).code === 'P2002') return run()
+      throw err
+    }
+  }
+
   async subjectIsProvisioned(oidcSubject: string): Promise<boolean> {
     return (await this.db.user.findUnique({ where: { oidcSubject }, select: { id: true } })) !== null
   }
