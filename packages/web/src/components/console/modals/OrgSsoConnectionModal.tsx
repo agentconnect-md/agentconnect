@@ -141,12 +141,15 @@ export default function OrgSsoConnectionModal({
   orgId,
   connection,
   onClose,
-  onSaved
+  onSaved,
+  onRemove
 }: {
   orgId: string
   connection: OrgSsoConnectionDto | null
   onClose: () => void
   onSaved: () => void
+  /** Hands an existing connection's removal to the caller, which confirms it. */
+  onRemove: () => void
 }) {
   const t = useTranslations('Settings.sso.connectionDialog')
   const tc = useTranslations('Common.actions')
@@ -395,6 +398,11 @@ export default function OrgSsoConnectionModal({
           )}
         </div>
         <div className="modalfoot">
+          {connection && (
+            <Button variant="ghost" className="text-(--status-error)" disabled={busy} onClick={onRemove}>
+              {t('remove')}
+            </Button>
+          )}
           <div className="flex-1" />
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             {tc('cancel')}

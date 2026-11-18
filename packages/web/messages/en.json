@@ -5690,7 +5690,14 @@
         "acsUrl": "ACS URL",
         "entityId": "Entity ID",
         "save": "Save",
-        "saving": "Saving…"
+        "saving": "Saving…",
+        "remove": "Remove connection"
+      },
+      "removeDialog": {
+        "title": "Remove {name}?",
+        "body": "Sign-ins set up through <b>{name}</b> stop working. Accounts stay, and their owners sign in with another method.",
+        "bodyActive": "Addresses on these domains will be able to sign in with any method again. Sign-ins set up through <b>{name}</b> stop working; accounts stay, and their owners sign in with another method.",
+        "removing": "Removing…"
       },
       "testDialog": {
         "title": "Test sign-in with {name}?",

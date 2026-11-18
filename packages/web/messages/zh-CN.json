@@ -5690,7 +5690,14 @@
         "acsUrl": "ACS URL",
         "entityId": "Entity ID",
         "save": "保存",
-        "saving": "正在保存…"
+        "saving": "正在保存…",
+        "remove": "删除连接"
+      },
+      "removeDialog": {
+        "title": "删除 {name}？",
+        "body": "通过 <b>{name}</b> 建立的登录方式将失效。账号保留，需改用其他方式登录。",
+        "bodyActive": "这些域名下的邮箱将可以重新用任意方式登录。通过 <b>{name}</b> 建立的登录方式将失效；账号保留，需改用其他方式登录。",
+        "removing": "正在删除…"
       },
       "testDialog": {
         "title": "用 {name} 测试登录？",
