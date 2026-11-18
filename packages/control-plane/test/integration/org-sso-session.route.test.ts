@@ -301,6 +301,12 @@ describe('organization SSO per session', () => {
       headers: await as(INSIDE_OWNER_SUBJECT)
     })
     expect(notThrough.json()).toMatchObject({ code: 'SSO_SIGN_IN_REQUIRED' })
+    const throughAnother = await app.inject({
+      method: 'POST',
+      url: `${SSO}/connection/enforce`,
+      headers: await as(INSIDE_OWNER_SUBJECT, viaConnector('connector-elsewhere'))
+    })
+    expect(throughAnother.json()).toMatchObject({ code: 'SSO_SIGN_IN_REQUIRED' })
     const enforced = await enforce(connectorId)
     expect(enforced.json()).toMatchObject({ status: 'active', enforcedAt: expect.any(String) })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
