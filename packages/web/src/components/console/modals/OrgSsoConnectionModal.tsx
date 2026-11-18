@@ -209,7 +209,9 @@ export default function OrgSsoConnectionModal({
     }
     const document = source === 'url' ? metadataUrl.trim() : metadata.trim()
     if (!document) return null
+    // The dialog has no field for the subject-ID attribute, so a saved one rides along unchanged.
     const mapping = {
+      ...(savedSaml?.attributeMapping.id ? { id: savedSaml.attributeMapping.id } : {}),
       ...(emailAttribute.trim() ? { email: emailAttribute.trim() } : {}),
       ...(nameAttribute.trim() ? { name: nameAttribute.trim() } : {})
     }

@@ -5982,7 +5982,7 @@ export type OrgSsoConnectionInput =
       name: string
       metadataUrl?: string
       metadata?: string
-      attributeMapping?: { email?: string; name?: string }
+      attributeMapping?: { id?: string; email?: string; name?: string }
     }
 
 export async function fetchOrgSso(orgId?: string): Promise<OrgSsoStateDto> {

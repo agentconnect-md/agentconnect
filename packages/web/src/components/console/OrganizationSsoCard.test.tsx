@@ -267,6 +267,34 @@ describe('organization single sign-on card', () => {
     expect(radios.map((radio) => radio.disabled)).toEqual([true, true])
   })
 
+  it('keeps a saved SAML subject-ID mapping the dialog has no field for', async () => {
+    const saml = connection({
+      protocol: 'saml',
+      settings: {
+        metadataUrl: 'https://idp.example.test/metadata',
+        metadata: null,
+        attributeMapping: { id: 'employeeId', email: 'mail' }
+      },
+      serviceProvider: {
+        assertionConsumerServiceUrl: 'https://auth.example.test/acs/abc',
+        entityId: 'https://auth.example.test/entity/abc'
+      }
+    })
+    await render({ domains: [domain('acme.example')], connection: saml })
+    await click('Edit', host)
+    mocks.saveOrgSsoConnection.mockResolvedValue(saml)
+    await click('Save', dialog())
+    expect(mocks.saveOrgSsoConnection).toHaveBeenCalledWith(
+      {
+        protocol: 'saml',
+        name: 'Example IdP',
+        metadataUrl: 'https://idp.example.test/metadata',
+        attributeMapping: { id: 'employeeId', email: 'mail', name: 'name' }
+      },
+      'org-test'
+    )
+  })
+
   it('stashes the nonce and leaves for the connector on a test sign-in', async () => {
     await render({ domains: [domain('acme.example')], connection: connection() })
     await click('Test sign-in', host)
