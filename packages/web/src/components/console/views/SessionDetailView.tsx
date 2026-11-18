@@ -375,8 +375,15 @@ function ComposerTextarea({
   // A recognized leading command reads as a command: the overlay behind the (then transparent) text colors it and hints its argument.
   const highlight = commandHighlight(draft, controls ?? EMPTY_CONTROLS, runtimeCommands.candidates)
   const overlayRef = useRef<HTMLDivElement | null>(null)
-  // Re-fit after every render (the scrollbar comes and goes with the draft) and whenever the composer resizes.
-  useLayoutEffect(() => syncCommandMirror(overlayRef.current, textareaRef.current))
+  // Grow with the draft up to the max-height cap (then scroll), and re-fit the command mirror after every render.
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${textarea.scrollHeight}px`
+    }
+    syncCommandMirror(overlayRef.current, textarea)
+  })
   useEffect(() => {
     const textarea = textareaRef.current
     if (!textarea || typeof ResizeObserver === 'undefined') return
@@ -419,7 +426,7 @@ function ComposerTextarea({
         <textarea
           ref={textareaRef}
           onScroll={(e) => syncCommandMirror(overlayRef.current, e.currentTarget)}
-          className={`${COMPOSER_TEXT} relative block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          className={`${COMPOSER_TEXT} relative block max-h-[min(40vh,320px)] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
           placeholder={suggestion ?? placeholder}
           value={draft}
           onChange={(e) => {
