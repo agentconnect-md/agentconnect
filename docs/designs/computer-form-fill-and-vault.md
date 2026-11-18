@@ -354,6 +354,11 @@ as current, another build's (reinstall and restart the browser), missing, or
 without an endpoint. Checked in containers on 2026-11-10 against Debian 13
 Chromium, Google Chrome deb, Fedora Chromium and Google Chrome rpm: each
 force-installed the extension, which dialed the endpoint with the bundle's build ID.
+On 2026-11-18 Google Chrome 158 in the Computer image did the same from
+`/etc/opt/chrome/policies/managed` on amd64 (arm64 is unmeasured), and its
+connection is accepted once the main desktop's profile, which moves to
+`browser/main` there, is the one the daemon attributes
+([computer-use.md §3.8](computer-use.md)).
 
 The local transport is an extension service-worker WebSocket to the desktop
 daemon's loopback endpoint. Bind to loopback and require the extension's
@@ -453,7 +458,7 @@ is known, assume a new extension version arrives only with a fresh profile or an
 explicit reinstall (§10). An unpacked extension also kept running stale
 service-worker code from its script cache after a restart, even with a version
 bump. Not covered: the webchat and Slack cards, the relay and agent-daemon hop,
-CP storage and consent, TOTP, branded Chrome, custom widgets, shadow DOM and real
+CP storage and consent, TOTP, fills in branded Chrome, custom widgets, shadow DOM and real
 third-party sites.
 
 ## 9. CP storage and encryption
