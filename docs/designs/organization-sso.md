@@ -148,8 +148,10 @@ buttons.
   deployment connector.
 - With nothing, the page stays where it is and points at the social buttons. There is
   no password sign-in, so the field has no further step for such an address.
-- The lookup decides by domain, never by whether the address has an account. It is
-  rate limited. It does reveal that a domain uses SSO; that is accepted.
+- The lookup decides by domain, never by whether the address has an account. It
+  answers from an in-memory snapshot of the active domains, refreshed at most every
+  fifteen seconds, so an anonymous request costs no query; limiting request volume
+  is the ingress's job. It does reveal that a domain uses SSO; that is accepted.
 - The browser remembers the last method that worked and puts it first next time. The
   server is not asked.
 
@@ -237,9 +239,10 @@ Outside the organization subtree:
 - `POST /sso/test-result`: any signed-in caller presents the nonce.
 - `POST /admin/orgs/:orgId/sso/connection/deactivate` and
   `DELETE /admin/sso/domains/:id`: a deployment `ADMIN`'s recovery paths (§4.1).
-- `POST /sign-in/lookup`: anonymous, rate limited (§4.2).
+- `POST /sign-in/lookup`: anonymous (§4.2).
 
-`/runtime-config` gains one boolean so the login page knows to show the email field.
+`/runtime-config` gains one boolean, `auth.organizationSso`, so the login page knows to
+show the email field.
 `auth.sso` keeps describing the deployment connector.
 
 ### 6.1 Two writers to Logto
@@ -306,7 +309,8 @@ Each step merges on its own.
 2. **Connections** (landed): the connection table, connection management against
    Logto, the test window, activation, the sign-in check of §5, the recovery paths,
    and the ownership rule of §6.1.
-3. **Sign-in lookup:** the anonymous lookup and the `/runtime-config` boolean.
+3. **Sign-in lookup** (landed): the anonymous lookup and the `/runtime-config`
+   boolean.
 4. **Web:** the email field on the login page; the settings card.
 5. **Membership** on first sign-in, with the join record.
 6. **User documentation**, once the feature is complete, naming the minimum Logto

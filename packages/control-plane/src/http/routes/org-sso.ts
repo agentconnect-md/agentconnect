@@ -16,6 +16,8 @@ import {
   OrgSsoTestResultBody,
   OrgSsoTestResultDto,
   PutOrgSsoConnectionBody,
+  SignInLookupBody,
+  SignInLookupDto,
   VerifiedOrgSsoDomainDto,
   type OrgSsoConnectionDtoT,
   type OrgSsoDomainDtoT
@@ -401,6 +403,25 @@ export function orgSsoRootRoutes(deps: HttpDeps) {
         statusCode: 403,
         message: 'only a deployment administrator can do this'
       })
+
+    const lookup = deps.orgSsoLookup
+    if (lookup) {
+      r.post(
+        '/sign-in/lookup',
+        {
+          schema: {
+            tags: [Tag.Deployment],
+            summary: 'Look up how an address signs in',
+            description:
+              'Anonymous. On a deployment whose organizations own single sign-on connections, returns the connector to start a sign-in against for an address, or `connector: null` when the address signs in by the deployment’s other methods. The answer depends on the address’s domain alone, never on whether the address has an account, and may trail an activation by a few seconds.',
+            operationId: 'lookupSignIn',
+            body: SignInLookupBody,
+            response: { 200: SignInLookupDto, 400: ErrorDto, 503: ErrorDto }
+          }
+        },
+        async (req) => ({ connector: await lookup.find(req.body.email) })
+      )
+    }
 
     r.post(
       '/sso/test-result',

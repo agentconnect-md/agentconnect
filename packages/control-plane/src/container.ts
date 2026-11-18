@@ -300,6 +300,7 @@ import { OrgSsoDomainService } from './org-sso/domains.js'
 import { OrgSsoSweeper } from './org-sso/sweeper.js'
 import { OrgSsoConnectionService } from './org-sso/connections.js'
 import { OrgSsoAdmission } from './org-sso/admission.js'
+import { OrgSsoSignInLookup } from './org-sso/lookup.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
@@ -2513,6 +2514,9 @@ export function buildContainer(
           log: orgSsoWarn
         })
       : undefined
+  const orgSsoLookup = orgSsoConnections
+    ? new OrgSsoSignInLookup({ connections: repos.orgSsoConnection, clock, log: orgSsoWarn })
+    : undefined
   const orgSsoTestSweeper = orgSsoConnections
     ? new OrgSsoSweeper({
         name: 'test window',
@@ -2677,7 +2681,8 @@ export function buildContainer(
                       appId: opts.deploymentConfig.values.auth.browserClient.appId,
                       apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
                       socialProviders: opts.deploymentConfig.values.auth.socialProviders,
-                      sso: opts.deploymentConfig.values.auth.sso
+                      sso: opts.deploymentConfig.values.auth.sso,
+                      organizationSso: orgSsoConnections !== undefined
                     }
                   : null,
               // The console derives workspace tiles from this host (§7).
@@ -2817,6 +2822,7 @@ export function buildContainer(
     ...(orgSsoDomains ? { orgSsoDomains } : {}),
     ...(orgSsoConnections ? { orgSsoConnections } : {}),
     ...(orgSsoAdmission ? { orgSsoAdmission } : {}),
+    ...(orgSsoLookup ? { orgSsoLookup } : {}),
     waitlist,
     usageWriter,
     ...(clusterWorkloadIdentity ? { clusterWorkloadIdentity } : {}),

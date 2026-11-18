@@ -50,7 +50,8 @@ describe('runtime config route', () => {
             appId: 'web-app',
             apiResource: 'https://api.example.test',
             socialProviders: ['github'],
-            sso: { connectorId: 'sso-connector', name: 'Example SSO' }
+            sso: { connectorId: 'sso-connector', name: 'Example SSO' },
+            organizationSso: false
           },
           gitlab: { instanceUrl: 'https://gitlab.example.test' }
         }
@@ -72,7 +73,8 @@ describe('runtime config route', () => {
           appId: 'web-app',
           apiResource: 'https://api.example.test',
           socialProviders: ['github'],
-          sso: { connectorId: 'sso-connector', name: 'Example SSO' }
+          sso: { connectorId: 'sso-connector', name: 'Example SSO' },
+          organizationSso: false
         },
         gitlab: { instanceUrl: 'https://gitlab.example.test' }
       },

@@ -128,6 +128,7 @@ import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
 import type { OrgSsoDomainService } from '../org-sso/domains.js'
 import type { OrgSsoConnectionService } from '../org-sso/connections.js'
 import type { OrgSsoAdmission } from '../org-sso/admission.js'
+import type { OrgSsoSignInLookup } from '../org-sso/lookup.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
 import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
@@ -512,6 +513,8 @@ export interface HttpDeps {
   orgSsoConnections?: OrgSsoConnectionService
   /** The sign-in check organization SSO adds to subject admission. */
   orgSsoAdmission?: OrgSsoAdmission
+  /** The login page's lookup from an address to its organization's connector. */
+  orgSsoLookup?: OrgSsoSignInLookup
   /** Closed-beta admission: `/me/access` status, self-join, join-link redeem (waitlist-and-login.md). */
   waitlist: WaitlistService
   /** The shared usage report interface — this plane is its `gateway`-source adapter. */

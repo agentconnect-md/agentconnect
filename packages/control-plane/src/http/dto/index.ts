@@ -3223,6 +3223,13 @@ export const OrgSsoTestResultBody = z.object({ nonce: z.string().min(1).max(200)
 
 export const OrgSsoTestResultDto = z.object({ tested: z.boolean() })
 
+export const SignInLookupBody = z.object({ email: z.string().min(3).max(320) }).strict()
+
+/** `connector` is the one to start a sign-in against; null means the address signs in by the other methods. */
+export const SignInLookupDto = z.object({
+  connector: z.object({ connectorId: z.string(), name: z.string() }).nullable()
+})
+
 export const AddOrgSsoDomainBody = z.object({ domain: z.string().min(1).max(253) }).strict()
 
 /** `check` is what the lookup just found; `domain.status` only changes on `ok`. */

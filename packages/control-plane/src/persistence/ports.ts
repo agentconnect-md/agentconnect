@@ -9078,6 +9078,8 @@ export interface OrgSsoConnectionRepo {
   remove(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
   /** System tier: the connections that own these identity-service connectors. */
   findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
+  /** System tier: every verified domain of an active connection, with the connector it signs in through. */
+  listActiveDomains(): Promise<{ domain: string; connectorId: string; name: string }[]>
   /** System tier: whether a sign-in subject already has a local user. */
   subjectIsProvisioned(oidcSubject: string): Promise<boolean>
   /** System tier: record a sign-in the organization's connection was refused for. */
