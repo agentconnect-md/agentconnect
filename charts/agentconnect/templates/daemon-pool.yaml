@@ -185,6 +185,8 @@ spec:
               value: {{ include "agentconnect.computerWarmPoolName" . | quote }}
             - name: AC_K8S_COMPUTER_BOOTSTRAP_PORT
               value: {{ .Values.computerPool.bootstrapPort | quote }}
+            - name: AC_K8S_COMPUTER_NAMESPACE
+              value: {{ include "agentconnect.computerNamespace" . | quote }}
             {{- end }}
             # The sink the readiness probe below reads: the daemon serves GET /readyz here and
             # answers 200 only once startup finished, the control plane acknowledged registration

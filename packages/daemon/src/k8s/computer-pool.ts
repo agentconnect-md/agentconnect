@@ -26,12 +26,15 @@ export const K8S_COMPUTER_WARM_POOL_ENV = 'AC_K8S_COMPUTER_WARM_POOL'
 /** The port a desktop pod's pool bootstrap listens on. */
 export const K8S_COMPUTER_BOOTSTRAP_PORT_ENV = 'AC_K8S_COMPUTER_BOOTSTRAP_PORT'
 export const DEFAULT_COMPUTER_BOOTSTRAP_PORT = 7690
+/** The namespace desktop claims live in; unset, they share the agents' sandbox namespace. */
+export const K8S_COMPUTER_NAMESPACE_ENV = 'AC_K8S_COMPUTER_NAMESPACE'
 /** The desktop template's container, whose image a wake moves onto the pool's current one. */
 export const COMPUTER_CONTAINER = 'computer'
 
 export interface ComputerPoolSettings {
   warmPoolName: string
   bootstrapPort: number
+  namespace?: string
 }
 
 /** The deployment's desktop pool, or undefined when this member serves no desktop claims. */
@@ -43,7 +46,8 @@ export function computerPoolSettings(env: NodeJS.ProcessEnv): ComputerPoolSettin
   if (!Number.isInteger(bootstrapPort) || bootstrapPort < 1 || bootstrapPort > 65_535) {
     throw new Error(`${K8S_COMPUTER_BOOTSTRAP_PORT_ENV} is not a valid port: ${raw}`)
   }
-  return { warmPoolName, bootstrapPort }
+  const namespace = env[K8S_COMPUTER_NAMESPACE_ENV]?.trim()
+  return { warmPoolName, bootstrapPort, ...(namespace ? { namespace } : {}) }
 }
 
 export const computerClaimName = (computerId: string): string => `computer-${computerId}`
@@ -238,7 +242,12 @@ export class ComputerPool {
     let image
     try {
       const targetImage = await poolContainerImage(this.deps.api, this.deps.settings.warmPoolName, COMPUTER_CONTAINER)
-      image = { ...sandboxContainerImage(name, sandbox, COMPUTER_CONTAINER), targetImage }
+      const observed = sandboxContainerImage(name, sandbox, COMPUTER_CONTAINER)
+      // The init container that seeds the system volume runs the desktop image too, so it follows the wake.
+      const initContainerIndexes = (sandbox.spec?.podTemplate?.spec?.initContainers ?? []).flatMap((one, index) =>
+        one.image === observed.observedImage ? [index] : []
+      )
+      image = { ...observed, targetImage, initContainerIndexes }
     } catch (err) {
       this.deps.log?.warn(`desktop pool: waking ${name} on its current image: ${(err as Error).message}`)
       return await this.switchMode(name, 'Running', 'Suspended', uid)

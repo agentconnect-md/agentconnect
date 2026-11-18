@@ -12,6 +12,8 @@ export interface ResumeImage {
   observedName: string
   observedImage: string
   targetImage: string
+  /** Init containers on the observed image, which move to the target with it. */
+  initContainerIndexes?: number[]
 }
 
 export const SANDBOX_LAUNCH_GENERATION = 'agentconnect.md/launch-generation'
@@ -51,7 +53,7 @@ interface SandboxContainer {
 
 interface SandboxPodTemplate {
   metadata?: { labels?: Record<string, string> }
-  spec?: { containers?: SandboxContainer[] }
+  spec?: { containers?: SandboxContainer[]; initContainers?: SandboxContainer[] }
 }
 
 export interface Sandbox extends K8sObject {
@@ -362,6 +364,10 @@ export class SandboxApi {
     ]
     if (image.observedImage !== image.targetImage) {
       body.push({ op: 'replace', path: `${containerPath}/image`, value: image.targetImage })
+      for (const index of image.initContainerIndexes ?? []) {
+        const path = `/spec/podTemplate/spec/initContainers/${index}/image`
+        body.push({ op: 'test', path, value: image.observedImage }, { op: 'replace', path, value: image.targetImage })
+      }
     }
     body.push({ op: 'replace', path: '/spec/operatingMode', value: 'Running' })
     try {

@@ -435,7 +435,13 @@ computerPool:
   repository: ''
   tag: ''
   image: ''
-  # Pull secrets in sandboxNamespace, only for a private desktop image.
+  # Where desktop pods run; empty ⇒ daemonPool.sandboxNamespace. A name of its own renders the namespace, its default-deny policy and the members' claim RBAC.
+  namespace: ''
+  # sudo for the desktop user, with what apt installs kept on the home volume (computer-use.md §15.1).
+  rootAccess:
+    # Needs user namespaces (Kubernetes 1.33+, nodes on Linux 6.3+; pin them with nodeSelector) and `namespace`, which then enforces `baseline`.
+    enabled: false
+  # Pull secrets in the desktops' namespace, only for a private desktop image.
   imagePullSecrets: []
   # Prewarmed desktops (a standing pod and volume each) so a session gets one in seconds; 0 starts cold.
   warmReplicas: 1
@@ -443,17 +449,18 @@ computerPool:
   bootstrapPort: 7690
   # The screenshot size (computer-use.md §5.3), so agents see the screen 1:1.
   resolution: 1280x800x24
-  # The desktop's home (key, browser profile, files): kept while asleep, deleted with an ephemeral desktop.
+  # The desktop's home (key, browser profile, files; with rootAccess its system too, so 20Gi or more): kept while asleep, deleted with an ephemeral desktop.
   home:
     size: 5Gi
     storageClass: standard
-  # A `manual` desktop starts an agent desktop (about 0.9 GB) while a GiB of this limit is free (computer-use.md §3.9).
+  # A `manual` desktop starts an agent desktop (about 0.9 GB) while a GiB of the memory limit is free (computer-use.md §3.9); ephemeral-storage bounds what it writes outside its volume.
   resources:
     requests:
       cpu: 500m
       memory: 1Gi
     limits:
       memory: 3Gi
+      ephemeral-storage: 10Gi
   # Idle windows: an ephemeral desktop is reclaimed, a per-agent or manual one sleeps.
   ephemeralIdleSeconds: 600
   sleepIdleSeconds: 1800

@@ -261,6 +261,11 @@ app.kubernetes.io/component: {{ .component }}
 {{- .Values.computerPool.image | default (printf "%s:%s" $repository (.Values.computerPool.tag | default (include "agentconnect.imageTag" .))) -}}
 {{- end -}}
 
+{{/* Where desktops run: their own namespace when `computerPool.namespace` names one, else the agents namespace. */}}
+{{- define "agentconnect.computerNamespace" -}}
+{{- .Values.computerPool.namespace | default (.Values.daemonPool.sandboxNamespace | default .Release.Namespace) -}}
+{{- end -}}
+
 {{- define "agentconnect.computerTemplateName" -}}
 {{- printf "%s-computer" (include "agentconnect.fullname" .) -}}
 {{- end -}}

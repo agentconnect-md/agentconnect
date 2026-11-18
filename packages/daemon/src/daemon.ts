@@ -4315,13 +4315,15 @@ export class Daemon {
     try {
       const settings = computerPoolSettings(process.env)
       if (!settings) return
-      const namespace = resolveK8sPlaneSettings({ env: process.env }).sandboxNamespace
+      const namespace = settings.namespace ?? resolveK8sPlaneSettings({ env: process.env }).sandboxNamespace
       this.computerPool = new ComputerPool({
         api: new SandboxApi(new K8sHttp(loadInClusterConfig()), namespace),
         settings,
         log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
       })
-      this.log.info(`k8s: serving desktop claims for managed computers from warm pool ${settings.warmPoolName}`)
+      this.log.info(
+        `k8s: serving desktop claims for managed computers from warm pool ${settings.warmPoolName} in namespace ${namespace}`
+      )
     } catch (error) {
       this.log.warn(`k8s: desktop claims disabled: ${(error as Error).message}`)
     }
