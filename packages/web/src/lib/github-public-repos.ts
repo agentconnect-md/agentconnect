@@ -53,13 +53,28 @@ export async function fetchPublicGithubRepo(fullName: string, signal?: AbortSign
   return repo && !repo.private ? repo : null
 }
 
+// Bounds anonymous reads, which share a 60-per-hour budget per IP.
+const MAX_BRANCH_PAGES = 10
+
+function nextPageUrl(link: string | null): string | null {
+  const next = link?.split(',').find((part) => /;\s*rel="next"/.test(part))
+  const url = next?.match(/<([^>]+)>/)?.[1]
+  return url?.startsWith('https://api.github.com/') ? url : null
+}
+
+/** Branch names, following pagination up to a cap; a later page's failure keeps the earlier pages. */
 export async function fetchPublicGithubBranches(fullName: string, signal?: AbortSignal): Promise<string[] | null> {
   const label = githubRepoLabelFromInput(fullName)
   if (!label) return null
-  const res = await fetch(`https://api.github.com/repos/${label}/branches?per_page=100`, { signal, cache: 'no-store' })
-  if (!res.ok) return null
-  const rows = (await res.json()) as Array<{ name?: string }>
-  return rows.map((r) => r.name).filter((name): name is string => !!name)
+  const branches: string[] = []
+  let url: string | null = `https://api.github.com/repos/${label}/branches?per_page=100`
+  for (let page = 0; url && page < MAX_BRANCH_PAGES; page++) {
+    const res: Response = await fetch(url, { signal, cache: 'no-store' })
+    if (!res.ok) return page === 0 ? null : branches
+    for (const row of (await res.json()) as Array<{ name?: string }>) if (row.name) branches.push(row.name)
+    url = nextPageUrl(res.headers.get('link'))
+  }
+  return branches
 }
 
 export async function searchPublicGithubRepos(query: string, signal?: AbortSignal): Promise<GithubRepoDto[]> {
