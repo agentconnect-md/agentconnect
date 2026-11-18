@@ -79,11 +79,11 @@ function settingsOf(protocol: OrgSsoProtocol, config: Record<string, unknown>): 
   return { metadataUrl: str(config.metadataUrl), metadata: str(config.metadata), attributeMapping }
 }
 
-// An organization-owned connection never trusts an unverified address (§4.1).
+// The address is taken as the provider sends it, marked verified or not: the verified domains bound what it may be (§4.1).
 function connectorConfig(input: OrgSsoConnectionInput, clientSecret?: string): Record<string, unknown> {
   if (input.protocol === 'oidc') {
     const { issuer, clientId, scope } = input
-    return { issuer, clientId, clientSecret, ...(scope ? { scope } : {}), trustUnverifiedEmail: false }
+    return { issuer, clientId, clientSecret, ...(scope ? { scope } : {}), trustUnverifiedEmail: true }
   }
   const { metadataUrl, metadata, attributeMapping } = input
   return {
