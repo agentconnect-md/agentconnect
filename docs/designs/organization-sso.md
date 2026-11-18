@@ -325,8 +325,8 @@ Each step merges on its own.
 3. **Sign-in lookup** (landed): the anonymous lookup and the `/runtime-config`
    boolean.
 4. **Membership** (landed): the join record and `POST /sso/join`.
-5. **Web:** the email field on the login page, the call to `POST /sso/join` after a
-   sign-in, and the settings card.
+5. **Web** (landed): the email field on the login page, the call to `POST /sso/join`
+   after a sign-in, the settings card, and the page a test sign-in lands on.
 6. **User documentation**, once the feature is complete, naming the minimum Logto
    release.
 

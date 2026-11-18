@@ -142,13 +142,14 @@ export async function login(provider?: SocialLoginTarget): Promise<void> {
   )
 }
 
-/** Start sign-in through the deployment's SSO connector. */
-export async function loginWithSso(connectorId: string): Promise<void> {
+/** Start sign-in through an SSO connector: the deployment's, or the one an address's organization owns. */
+export async function loginWithSso(connectorId: string, loginHint?: string): Promise<void> {
   await navigateWithSession((c) =>
     c.signIn({
       redirectUri: `${window.location.origin}/auth/callback`,
       directSignIn: { method: 'sso', target: connectorId },
-      prompt: [Prompt.Login, Prompt.Consent]
+      prompt: [Prompt.Login, Prompt.Consent],
+      ...(loginHint ? { loginHint } : {})
     })
   )
 }

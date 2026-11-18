@@ -5922,6 +5922,149 @@ export async function acceptOrgInviteLink(token: string): Promise<AcceptedOrgInv
   return apiPost<AcceptedOrgInviteLinkDto>('/invite-links/accept', { token })
 }
 
+// ── organization single sign-on ──────────────────────────────────────────────
+export interface OrgSsoDomainDto {
+  id: string
+  domain: string
+  status: 'pending' | 'verified'
+  record: { type: 'TXT'; name: string; value: string }
+  challengeExpiresAt: string | null
+  verifiedAt: string | null
+  lastCheckedAt: string | null
+  lastCheckOk: boolean | null
+}
+
+export type OrgSsoProtocol = 'oidc' | 'saml'
+
+/** What the owner enters at the identity provider. */
+export type OrgSsoServiceProvider = { redirectUri: string } | { assertionConsumerServiceUrl: string; entityId: string }
+
+export interface OrgSsoOidcSettings {
+  issuer: string
+  clientId: string
+  scope: string
+  hasClientSecret: boolean
+}
+
+export interface OrgSsoSamlSettings {
+  metadataUrl: string | null
+  metadata: string | null
+  attributeMapping: { id?: string; email?: string; name?: string }
+}
+
+export interface OrgSsoConnectionDto {
+  id: string
+  protocol: OrgSsoProtocol
+  name: string
+  status: 'draft' | 'tested' | 'active'
+  tested: boolean
+  testedAt: string | null
+  activatedAt: string | null
+  configChangedAt: string
+  /** The connector is gone from the identity service; the settings must be entered again. */
+  needsConfiguration: boolean
+  /** The saved settings, for an owner; never the client secret. */
+  settings: OrgSsoOidcSettings | OrgSsoSamlSettings | null
+  serviceProvider: OrgSsoServiceProvider
+}
+
+export interface OrgSsoStateDto {
+  domains: OrgSsoDomainDto[]
+  connection: OrgSsoConnectionDto | null
+}
+
+export type OrgSsoDomainCheck = 'ok' | 'not_found' | 'mismatch' | 'lookup_failed'
+
+export type OrgSsoConnectionInput =
+  | { protocol: 'oidc'; name: string; issuer: string; clientId: string; clientSecret?: string; scope?: string }
+  | {
+      protocol: 'saml'
+      name: string
+      metadataUrl?: string
+      metadata?: string
+      attributeMapping?: { email?: string; name?: string }
+    }
+
+export async function fetchOrgSso(orgId?: string): Promise<OrgSsoStateDto> {
+  return apiGet<OrgSsoStateDto>(`${orgBase(orgId)}/sso`)
+}
+
+export async function addOrgSsoDomain(domain: string, orgId?: string): Promise<OrgSsoDomainDto> {
+  return apiPost<OrgSsoDomainDto>(`${orgBase(orgId)}/sso/domains`, { domain })
+}
+
+export async function verifyOrgSsoDomain(
+  id: string,
+  orgId?: string
+): Promise<{ domain: OrgSsoDomainDto; check: OrgSsoDomainCheck }> {
+  return apiPost(`${orgBase(orgId)}/sso/domains/${encodeURIComponent(id)}/verify`, {})
+}
+
+export async function releaseOrgSsoDomain(id: string, orgId?: string): Promise<void> {
+  await apiDelete<void>(`${orgBase(orgId)}/sso/domains/${encodeURIComponent(id)}`)
+}
+
+/** The values to register at the identity provider, available before the settings are first saved. */
+export async function prepareOrgSsoConnection(
+  protocol: OrgSsoProtocol,
+  orgId?: string
+): Promise<OrgSsoServiceProvider> {
+  const prepared = await apiPost<{ serviceProvider: OrgSsoServiceProvider }>(
+    `${orgBase(orgId)}/sso/connection/service-provider`,
+    { protocol }
+  )
+  return prepared.serviceProvider
+}
+
+export async function saveOrgSsoConnection(input: OrgSsoConnectionInput, orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPut<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection`, input)
+}
+
+export async function startOrgSsoTest(
+  orgId?: string
+): Promise<{ nonce: string; connectorId: string; expiresAt: string }> {
+  return apiPost(`${orgBase(orgId)}/sso/connection/test`, {})
+}
+
+export async function activateOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/activate`, {})
+}
+
+export async function deactivateOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/deactivate`, {})
+}
+
+export async function removeOrgSsoConnection(orgId?: string): Promise<void> {
+  await apiDelete<void>(`${orgBase(orgId)}/sso/connection`)
+}
+
+/** The page a test sign-in lands on presents the nonce, as whichever account landed. */
+export async function reportOrgSsoTest(nonce: string, signal?: AbortSignal): Promise<boolean> {
+  return (await apiPost<{ tested: boolean }>('/sso/test-result', { nonce }, signal)).tested
+}
+
+/** Called once after a sign-in; the organizations this sign-in just made the caller a member of. */
+export async function joinOrganizationsBySso(signal?: AbortSignal): Promise<string[]> {
+  return (await apiPost<{ joined: string[] }>('/sso/join', {}, signal)).joined
+}
+
+/** Anonymous: the connector an address signs in through, or null for the deployment's other methods. */
+export async function lookupSignIn(
+  email: string,
+  signal?: AbortSignal
+): Promise<{ connectorId: string; name: string } | null> {
+  const path = '/sign-in/lookup'
+  // No bearer: the token helper would send a signed-out browser back to the sign-in page it is already on.
+  const res = await fetch(`${cpBase()}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email }),
+    signal
+  })
+  if (!res.ok) throw await apiErrorFromResponse('POST', path, res)
+  return ((await res.json()) as { connector: { connectorId: string; name: string } | null }).connector
+}
+
 // ── me (the caller's own profile) ─────────────────────────────────────────────
 // The signed-in user's CP profile (GET /me — root-scoped like /orgs). The console
 // overlays it on the id-token claims (see lib/profile): profile edits land here,

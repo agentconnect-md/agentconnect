@@ -25,6 +25,8 @@ const KEYS = [
   // The SSO connector the sign-in page offers, and the name on its button.
   'SSO_CONNECTOR_ID',
   'SSO_NAME',
+  // Organizations own their SSO connections here: the sign-in page asks for an address, and Settings offers the card.
+  'ORGANIZATION_SSO',
   'CP_URL',
   'RELAY_URL',
   // The deployment's GitLab instance base URL (workspace tile derivation). Served
@@ -85,6 +87,7 @@ interface RuntimeConfigResponse {
       apiResource: string | null
       socialProviders: string[]
       sso?: null | { connectorId: string; name: string }
+      organizationSso?: boolean
     }
     gitlab?: null | { instanceUrl: string }
   }
@@ -148,6 +151,7 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
       env.SSO_CONNECTOR_ID = body.config.auth.sso.connectorId
       env.SSO_NAME = body.config.auth.sso.name
     }
+    if (body.config.auth.organizationSso) env.ORGANIZATION_SSO = 'true'
   }
   if (body.config.gitlab?.instanceUrl) env.GITLAB_URL = body.config.gitlab.instanceUrl
   return { config: env, topology }
@@ -176,7 +180,8 @@ export const resolvePublicEnv = cache(async (): Promise<Record<string, string>> 
         'LOGTO_API_RESOURCE',
         'SOCIAL_PROVIDERS',
         'SSO_CONNECTOR_ID',
-        'SSO_NAME'
+        'SSO_NAME',
+        'ORGANIZATION_SSO'
       ]) {
         delete env[key]
       }

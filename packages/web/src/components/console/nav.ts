@@ -174,6 +174,14 @@ const SETTING_CARDS: ConsolePage[] = [
     ownerOnly: true
   },
   {
+    href: '/settings#single-sign-on',
+    label: 'Single sign-on',
+    icon: 'key-round',
+    kind: 'setting',
+    keywords: ['settings', 'sso', 'saml', 'oidc', 'domain'],
+    ownerOnly: true
+  },
+  {
     href: '/settings#service-accounts',
     label: 'Service accounts',
     icon: 'bot',

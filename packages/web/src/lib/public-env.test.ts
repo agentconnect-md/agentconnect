@@ -59,6 +59,36 @@ it('publishes the SSO connector from the persisted auth config and drops a stale
   expect(await fresh.resolvePublicEnv()).not.toHaveProperty('SSO_CONNECTOR_ID')
 })
 
+it('publishes organization SSO only when the persisted auth config declares it', async () => {
+  vi.resetModules()
+  vi.stubEnv('CP_INTERNAL_URL', 'https://example.test/api/v1')
+  vi.stubEnv('ORGANIZATION_SSO', 'true')
+  const config = (organizationSso: boolean) => ({
+    auth: {
+      endpoint: 'https://auth.example.test',
+      issuer: 'https://auth.example.test/oidc',
+      appId: 'console',
+      apiResource: null,
+      socialProviders: [],
+      sso: null,
+      organizationSso
+    }
+  })
+  const fetch = vi.fn(
+    async () => new Response(JSON.stringify({ schemaVersion: '1', revision: 1, config: config(true) }))
+  )
+  vi.stubGlobal('fetch', fetch)
+  const { resolvePublicEnv } = await import('./public-env')
+  expect(await resolvePublicEnv()).toMatchObject({ ORGANIZATION_SSO: 'true' })
+
+  vi.resetModules()
+  fetch.mockImplementation(
+    async () => new Response(JSON.stringify({ schemaVersion: '1', revision: 2, config: config(false) }))
+  )
+  const fresh = await import('./public-env')
+  expect(await fresh.resolvePublicEnv()).not.toHaveProperty('ORGANIZATION_SSO')
+})
+
 it('picks up a changed CP protocol after its refresh window and keeps serving through a CP outage', async () => {
   vi.resetModules()
   vi.useFakeTimers()
