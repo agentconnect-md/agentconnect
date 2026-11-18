@@ -169,6 +169,62 @@ describe('my social identities routes', () => {
   })
 })
 
+describe('GET /me/social-identities single sign-on identities', () => {
+  const account = { identities: [], hasSecurityVerificationMethod: true, primaryEmail: 'alex@acme.example' }
+
+  it('names each SSO identity by its organization, the deployment, then the identity service, and exposes no ids', async () => {
+    const identity = {
+      socialAccountFor: vi.fn(async () => account),
+      ssoIdentitiesFor: vi.fn(async () => [
+        { connectorId: 'org-connector', email: 'alex@idp.example.test' },
+        { connectorId: 'deployment-connector' },
+        { connectorId: 'other-connector', email: 'alex@other.example.test' },
+        { connectorId: 'nameless-connector' }
+      ]),
+      ssoConnectorNameFor: vi.fn(async (id: string) => (id === 'other-connector' ? 'Other IdP' : null))
+    }
+    const orgSsoConnections = {
+      namesByConnector: vi.fn(async () => new Map([['org-connector', 'Acme Identity']]))
+    }
+    const runtimeConfig = {
+      publicRuntimeConfig: { auth: { sso: { connectorId: 'deployment-connector', name: 'Company SSO' } } }
+    }
+    const app = await slackApp({ logtoIdentity: identity, orgSsoConnections, runtimeConfig } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().ssoIdentities).toEqual([
+        { connectionName: 'Acme Identity', email: 'alex@idp.example.test' },
+        { connectionName: 'Company SSO', email: 'alex@acme.example' },
+        { connectionName: 'Other IdP', email: 'alex@other.example.test' },
+        { email: 'alex@acme.example' }
+      ])
+      expect(res.body).not.toContain('connector')
+      expect(identity.ssoIdentitiesFor).toHaveBeenCalledWith('logto-user')
+      expect(identity.ssoConnectorNameFor).not.toHaveBeenCalledWith('org-connector')
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('returns an empty list and skips name lookups for an account without SSO', async () => {
+    const identity = {
+      socialAccountFor: vi.fn(async () => account),
+      ssoIdentitiesFor: vi.fn(async () => []),
+      ssoConnectorNameFor: vi.fn()
+    }
+    const app = await slackApp({ logtoIdentity: identity } as unknown as HttpDeps)
+    try {
+      const res = await app.inject({ method: 'GET', url: '/me/social-identities' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().ssoIdentities).toEqual([])
+      expect(identity.ssoConnectorNameFor).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+    }
+  })
+})
+
 /** A routes-only app whose oidcAuth stamps a fixed subject. */
 async function slackApp(partial: Partial<HttpDeps>, config: Record<string, unknown> = {}) {
   const deps = {

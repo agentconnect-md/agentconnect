@@ -6106,8 +6106,15 @@ export interface MySocialIdentityDto {
   workspace?: { teamId: string; name?: string; domain?: string; url?: string }
 }
 
+/** A single sign-on identity; read-only, since its connection's owner administers it. */
+export interface MySsoIdentityDto {
+  connectionName?: string
+  email?: string
+}
+
 export interface MySocialAccountDto {
   identities: MySocialIdentityDto[]
+  ssoIdentities?: MySsoIdentityDto[]
   githubRepoIdentity?: { githubUserId: string; login: string }
   githubRepoAccessAvailable?: boolean
   /** Drives whether linking has to collect an ownership code first; Logto
