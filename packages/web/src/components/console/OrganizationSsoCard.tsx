@@ -17,6 +17,7 @@ import {
   deactivateOrgSsoConnection,
   fetchOrgSso,
   releaseOrgSsoDomain,
+  removeOrgSsoConnection,
   startOrgSsoTest,
   verifyOrgSsoDomain,
   type OrgSsoConnectionDto,
@@ -42,6 +43,7 @@ type Dialog =
   | { kind: 'test' }
   | { kind: 'activate' }
   | { kind: 'deactivate' }
+  | { kind: 'remove' }
   | { kind: 'verify'; domain: OrgSsoDomainDto }
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -471,7 +473,34 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
 
       {dialog?.kind === 'addDomain' && <OrgSsoDomainModal orgId={orgId} onClose={close} onAdded={refresh} />}
       {dialog?.kind === 'connection' && (
-        <OrgSsoConnectionModal orgId={orgId} connection={connection} onClose={close} onSaved={refresh} />
+        <OrgSsoConnectionModal
+          orgId={orgId}
+          connection={connection}
+          onClose={close}
+          onSaved={refresh}
+          onRemove={() => open({ kind: 'remove' })}
+        />
+      )}
+      {dialog?.kind === 'remove' && connection && (
+        <ConfirmationDialog
+          title={t('removeDialog.title', { name: connection.name })}
+          confirmLabel={t('connectionDialog.remove')}
+          busy={pending}
+          busyLabel={t('removeDialog.removing')}
+          error={dialogError}
+          destructive
+          onConfirm={() =>
+            void confirm(async () => {
+              await removeOrgSsoConnection(orgId)
+              // A domain row that said the connection kept it no longer has one.
+              setProblems({})
+            })
+          }
+          onClose={close}
+        >
+          {active && <DomainList domains={verified} />}
+          {t.rich(active ? 'removeDialog.bodyActive' : 'removeDialog.body', { name: connection.name, b: strong })}
+        </ConfirmationDialog>
       )}
       {dialog?.kind === 'test' && connection && (
         <ConfirmationDialog

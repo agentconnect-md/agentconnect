@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   saveOrgSsoConnection: vi.fn(),
   startOrgSsoTest: vi.fn(),
   activateOrgSsoConnection: vi.fn(),
+  removeOrgSsoConnection: vi.fn(),
   loginWithSso: vi.fn()
 }))
 
@@ -25,7 +26,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   prepareOrgSsoConnection: mocks.prepareOrgSsoConnection,
   saveOrgSsoConnection: mocks.saveOrgSsoConnection,
   startOrgSsoTest: mocks.startOrgSsoTest,
-  activateOrgSsoConnection: mocks.activateOrgSsoConnection
+  activateOrgSsoConnection: mocks.activateOrgSsoConnection,
+  removeOrgSsoConnection: mocks.removeOrgSsoConnection
 }))
 vi.mock('@/lib/auth', () => ({
   currentUser: () => ({ name: 'Dana', email: 'dana@acme.example', initials: 'D' }),
@@ -321,5 +323,37 @@ describe('organization single sign-on card', () => {
     )
     await click('Activate', dialog())
     expect(dialog().textContent).toContain('the DNS record could not be confirmed for acme.example')
+  })
+
+  it('removes the connection from its edit dialog after a confirmation', async () => {
+    mocks.prepareOrgSsoConnection.mockResolvedValue({ redirectUri: 'https://auth.example.test/callback/new' })
+    await render({ domains: [domain('acme.example')], connection: null })
+    await click('Set up connection', host)
+    expect(buttons(dialog())).not.toContain('Remove connection')
+
+    await render({ domains: [domain('acme.example')], connection: connection() })
+    await click('Edit', host)
+    await click('Remove connection', dialog())
+    expect(dialog().textContent).toContain('Remove Example IdP?')
+    expect(dialog().textContent).not.toContain('acme.example')
+    expect(mocks.removeOrgSsoConnection).not.toHaveBeenCalled()
+
+    mocks.removeOrgSsoConnection.mockResolvedValue(undefined)
+    mocks.fetchOrgSso.mockResolvedValue({ domains: [domain('acme.example')], connection: null })
+    await click('Remove connection', dialog())
+    expect(mocks.removeOrgSsoConnection).toHaveBeenCalledWith('org-test')
+    expect(dialog()).toBeNull()
+    expect(buttons(host)).toContain('Set up connection')
+  })
+
+  it('names the domains that removing an active connection frees', async () => {
+    await render({
+      domains: [domain('acme.example')],
+      connection: connection({ status: 'active', tested: true })
+    })
+    await click('Edit', host)
+    await click('Remove connection', dialog())
+    expect(dialog().textContent).toContain('acme.example')
+    expect(dialog().textContent).toContain('any method again')
   })
 })
