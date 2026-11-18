@@ -120,6 +120,18 @@ export async function forkMerge(
   return reports
 }
 
+/** Renames a source in a profile's fork baselines, as when that source moved; false when there was nothing to rename. */
+export function renameBaselineSource(target: string, from: string, to: string): boolean {
+  const path = join(target, BASELINE_FILE)
+  const baselines = loadBaselines(path)
+  const baseline = baselines.sources[from]
+  if (!baseline || baselines.sources[to]) return false
+  baselines.sources[to] = baseline
+  delete baselines.sources[from]
+  writeFileSync(path, JSON.stringify(baselines))
+  return true
+}
+
 function loadBaselines(path: string): Baselines {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Baselines

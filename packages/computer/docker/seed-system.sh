@@ -25,10 +25,18 @@ else
     mkdir -p "$system$(dirname "$path")"
     cp -a "$path" "$system$path"
   done < /opt/agentconnect/image-owned
-  image=$(dpkg-query -W -f '${Version}' chromium)
-  desktop=$(dpkg-query --admindir="$system/var/lib/dpkg" -W -f '${Version}' chromium 2> /dev/null || true)
-  if [ -n "$desktop" ] && dpkg --compare-versions "$desktop" lt "$image"; then
-    echo "seed-system: this desktop's chromium $desktop is older than the image's $image; run 'sudo apt update && sudo apt upgrade' or reset the desktop"
+  # A volume seeded before Chrome gets the target of /opt/google, so installing Chrome there lands on the volume.
+  mkdir -p "$system/usr/lib/google"
+  # The Chrome that runs is the volume's: /opt/google leads to /usr/lib/google, so its version is the volume's package's.
+  image=$(dpkg-query -W -f '${Version}' google-chrome-stable)
+  desktop=
+  if [ -x "$system/usr/lib/google/chrome/chrome" ]; then
+    desktop=$(dpkg-query --admindir="$system/var/lib/dpkg" -W -f '${Version}' google-chrome-stable 2> /dev/null || true)
+  fi
+  if [ -z "$desktop" ]; then
+    echo "seed-system: this desktop's system has no Google Chrome, so it runs the Chromium it was seeded with if it has one; run 'sudo apt update && sudo apt install --reinstall google-chrome-stable' or reset the desktop for the image's Google Chrome $image"
+  elif dpkg --compare-versions "$desktop" lt "$image"; then
+    echo "seed-system: this desktop's Google Chrome $desktop is older than the image's $image; run 'sudo apt update && sudo apt upgrade' or reset the desktop"
   fi
 fi
 

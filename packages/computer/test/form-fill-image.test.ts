@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startFixtures, type Fixtures } from './form-fill/fixtures.js'
 import { startStubCp, type StubCp } from './form-fill/stub-cp.js'
 
-// The published image end to end (computer-form-fill-and-vault.md §8, §11 S1): its own Chromium, extension and daemon.
+// The published image end to end (computer-form-fill-and-vault.md §8, §11 S1): its own Google Chrome, extension and daemon.
 const image = process.env.COMPUTER_IMAGE
 const HOST = 'host.docker.internal'
 const name = `ac-form-fill-e2e-${process.pid}`
@@ -137,7 +137,7 @@ class Agent {
   /** Starts this agent's desktop and browser, and waits for the extension there to connect. */
   async start(): Promise<void> {
     await this.call('computer_screenshot')
-    await this.call('computer_launch', { app: 'chromium' })
+    await this.call('computer_launch', { app: 'google-chrome' })
     // A new browser shows its new-tab page, which is not a website: the extension answering at all is enough here.
     await until(`the extension on ${this.desk}'s desktop`, 90_000, async () =>
       /not connected/.test((await this.discover()).reason ?? '') ? undefined : true
@@ -177,6 +177,7 @@ describe.skipIf(!image)('form fill in the computer image (computer-form-fill-and
     await until('the desktop to authenticate with the stub Control Plane', 120_000, () =>
       cp.authenticated() ? true : undefined
     )
+    // Chrome on browser/main, the master the endpoint attributes to the main desktop (computer-use.md §3.8).
     await until('the main desktop extension', 120_000, () =>
       /form fill: extension .* connected on desktop main/.test(logs()) ? true : undefined
     )

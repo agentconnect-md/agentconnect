@@ -61,8 +61,11 @@ describe('the switch', () => {
     expect(desktopsCheck(true, supported, 'agentconnect-computer')).toEqual({
       name: 'desktops',
       status: 'ok',
-      detail: 'on: each agent gets its own desktop (Xvfb + Xfce)'
+      detail: 'on: each agent gets its own desktop (Xvfb + Xfce); browser Chromium (/usr/bin/chromium)'
     })
+    expect(
+      desktopsCheck(true, { ...supported, browser: '/usr/bin/google-chrome-stable' }, 'agentconnect-computer').detail
+    ).toMatch(/; browser Google Chrome \(\/usr\/bin\/google-chrome-stable\)$/)
     expect(desktopsCheck(false, supported, 'agentconnect-computer')).toMatchObject({
       status: 'info',
       fix: 'turn on: agentconnect-computer desktops on'
@@ -72,7 +75,7 @@ describe('the switch', () => {
     ).toMatchObject({ status: 'warn', detail: expect.stringContaining('unavailable (Xvfb is not installed)') })
     expect(desktopsCheck(true, { supported: true, session: 'xfce' }, 'x')).toMatchObject({
       status: 'warn',
-      detail: expect.stringContaining('no Chromium found')
+      detail: expect.stringContaining('no Chromium or Google Chrome found')
     })
   })
 })

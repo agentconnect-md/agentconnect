@@ -1,6 +1,9 @@
-/etc/chromium.d/agentconnect
+/etc/opt/chrome/policies/managed/agentconnect.json
+/etc/opt/chrome/policies/managed/agentconnect-form-fill.json
 /etc/chromium/policies/managed/agentconnect.json
 /etc/chromium/policies/managed/agentconnect-form-fill.json
+/etc/apt/sources.list.d/google-chrome.sources
+/usr/share/keyrings/google-chrome.gpg
 /etc/xdg/xfce4/panel/default.xml
 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
 /usr/share/backgrounds/agentconnect/backdrop.svg

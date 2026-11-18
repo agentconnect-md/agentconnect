@@ -1,7 +1,6 @@
-# Mesa's software GL drivers: Xvfb runs without GLX and Chromium and LibreOffice render in software; rustc keeps libLLVM.
+# Mesa's software GL drivers: Xvfb runs without GLX and Chrome and LibreOffice render in software; rustc keeps libLLVM.
 path-exclude=/usr/lib/*/libgallium*
 path-exclude=/usr/lib/*/dri/*
-path-exclude=/usr/lib/chromium/libVkLayer_khronos_validation.so
 # Sans CJK covers Chinese, Japanese and Korean pages; the serif faces double the font size.
 path-exclude=/usr/share/fonts/opentype/noto/NotoSerifCJK*
 path-exclude=/usr/share/man/*

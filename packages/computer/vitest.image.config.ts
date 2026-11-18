@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
 
-// The computer image end to end (COMPUTER_IMAGE=<tag>): its Chromium, the form-fill extension and the daemon in Docker.
+// The computer image end to end (COMPUTER_IMAGE=<tag>): its Google Chrome, the form-fill extension and the daemon in Docker.
 export default defineConfig({
   test: {
     environment: 'node',

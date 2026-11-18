@@ -1,10 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Computer, ComputerError } from '../computer.js'
 import type { CuaDriver } from '../driver/client.js'
 import { FakeDriver, testConfig } from '../testing.js'
+import { chromiumProfile, lockProfile } from '../browser/launcher.js'
+import { BASELINE_FILE } from '../browser/profile-merge.js'
 import {
   DesktopManager,
   desktopBrowserPlan,
@@ -12,7 +14,9 @@ import {
   desktopProfile,
   isBrowserName,
   loadDesktopState,
-  memoryGiB
+  memoryGiB,
+  migrateMainProfile,
+  writeLaunchers
 } from './desktops.js'
 
 const dirs: string[] = []
@@ -50,10 +54,16 @@ describe('desktops', () => {
       profile: desktopProfile(dataDir, 'd2'),
       master: '/home/u/.config/chromium',
       sources: ['/home/u/.config/chromium', desktopProfile(dataDir, 'd1')],
-      skip: [join(dataDir, 'desktops', 'd1', 'bin'), join(dataDir, 'desktops', 'd2', 'bin')],
+      skip: ['main', 'd1', 'd2'].map((id) => join(dataDir, 'desktops', id, 'bin')),
       mainBus: 'unix:path=/run/user/1000/bus'
     })
     expect(() => desktopBrowserPlan(dataDir, 'd9')).toThrow('no desktop d9')
+    // The main desktop runs the master and merges nothing into it.
+    expect(desktopBrowserPlan(dataDir, 'main')).toEqual({
+      profile: '/home/u/.config/chromium',
+      sources: [],
+      skip: ['main', 'd1', 'd2'].map((id) => join(dataDir, 'desktops', id, 'bin'))
+    })
 
     // With login sharing off (§3.9) the profile is its own: never seeded from the master or merged with another.
     const state = JSON.parse(readFileSync(join(dataDir, 'desktops', 'state.json'), 'utf8')) as Record<string, unknown>
@@ -61,10 +71,32 @@ describe('desktops', () => {
     expect(desktopBrowserPlan(dataDir, 'd2')).toEqual({
       profile: desktopProfile(dataDir, 'd2'),
       sources: [],
-      skip: [join(dataDir, 'desktops', 'd1', 'bin'), join(dataDir, 'desktops', 'd2', 'bin')],
+      skip: ['main', 'd1', 'd2'].map((id) => join(dataDir, 'desktops', id, 'bin')),
       mainBus: 'unix:path=/run/user/1000/bus'
     })
   })
+
+  it.skipIf(process.platform === 'win32')(
+    "writes each desktop's wrappers and menu entries, the main desktop's naming its wrapper by PATH",
+    () => {
+      const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
+      dirs.push(dataDir)
+      const apps = join(dataDir, 'system', 'applications')
+      mkdirSync(apps, { recursive: true })
+      writeFileSync(
+        join(apps, 'google-chrome.desktop'),
+        '[Desktop Entry]\nName=Google Chrome\nTryExec=/usr/bin/google-chrome-stable\nExec=/usr/bin/google-chrome-stable %U\n'
+      )
+      for (const id of ['main', 'd1']) writeLaunchers(dataDir, id, ['node', 'daemon.mjs'], [join(dataDir, 'system')])
+
+      const entry = (id: string) =>
+        readFileSync(join(dataDir, 'desktops', id, 'share', 'applications', 'google-chrome.desktop'), 'utf8')
+      expect(entry('main')).toBe('[Desktop Entry]\nName=Google Chrome\nExec=google-chrome %U\n')
+      expect(entry('d1')).toContain(`Exec=${join(dataDir, 'desktops', 'd1', 'bin', 'chromium')} %U`)
+      const wrapper = readFileSync(join(dataDir, 'desktops', 'main', 'bin', 'google-chrome-stable'), 'utf8')
+      expect(wrapper).toContain("'node' 'daemon.mjs' browser --desktop 'main' -- \"$@\"")
+    }
+  )
 
   it("starts an agent desktop as an Xfce X11 session, without the main GNOME or Wayland session's identity", () => {
     const env = desktopEnv({
@@ -98,10 +130,118 @@ describe('desktops', () => {
   })
 
   it('starts with no desktops and the default Chromium profile as the master', () => {
-    const state = loadDesktopState(join(tmpdir(), 'ac-desktops-missing'))
+    const state = loadDesktopState(join(tmpdir(), 'ac-desktops-missing'), {})
     expect(state).toMatchObject({ version: 1, next: 1, desktops: {} })
     expect(state.master).toMatch(/\.config[/\\]chromium$/)
   })
+
+  it('makes browser/main the master on the image, moving an existing state there and leaving agent profiles', () => {
+    const image = { AGENTCONNECT_COMPUTER_IMAGE: '1' }
+    const dataDir = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
+    dirs.push(dataDir)
+    const main = join(dataDir, 'browser', 'main')
+    expect(loadDesktopState(dataDir, image).master).toBe(main)
+
+    const now = '2026-11-06T00:00:00.000Z'
+    mkdirSync(join(dataDir, 'desktops'))
+    writeFileSync(
+      join(dataDir, 'desktops', 'state.json'),
+      JSON.stringify({
+        version: 1,
+        next: 2,
+        master: chromiumProfile(),
+        desktops: { 'agent-a': { id: 'd1', key: 'agent-a', label: 'a', createdAt: now, lastUsedAt: now } }
+      })
+    )
+    expect(loadDesktopState(dataDir, {}).master).toBe(chromiumProfile())
+    expect(loadDesktopState(dataDir, image).master).toBe(main)
+    expect(desktopBrowserPlan(dataDir, 'd1', image)).toMatchObject({
+      profile: desktopProfile(dataDir, 'd1'),
+      master: main,
+      sources: [main]
+    })
+    expect(desktopBrowserPlan(dataDir, 'main', image)).toMatchObject({
+      profile: main,
+      movedFrom: chromiumProfile(),
+      sources: []
+    })
+
+    // The daemon saves the moved master, so every later reader agrees.
+    const manager = new DesktopManager({
+      dataDir,
+      config: testConfig({ perAgentDesktops: true }),
+      support: () => ({ supported: false, reason: 'test' }),
+      self: ['node', 'daemon.mjs'],
+      build: () => {
+        throw new Error('unused')
+      },
+      log: () => undefined,
+      env: image
+    })
+    void manager.close()
+    const saved = JSON.parse(readFileSync(join(dataDir, 'desktops', 'state.json'), 'utf8')) as { master: string }
+    expect(saved.master).toBe(main)
+    expect(loadDesktopState(dataDir, {}).master).toBe(main)
+  })
+})
+
+describe('migrateMainProfile', () => {
+  // The daemon's start on the image (computer-use.md §3.8), with BROWSER=none as with a supervised browser.
+  it.skipIf(process.platform === 'win32')(
+    "moves the master to browser/main under its launch lock, carrying agents' baselines, once",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-desktops-'))
+      dirs.push(root)
+      const env = { AGENTCONNECT_COMPUTER_IMAGE: '1', HOME: join(root, 'home') }
+      const old = chromiumProfile(env)
+      mkdirSync(join(old, 'Default', 'Sessions'), { recursive: true })
+      writeFileSync(join(old, 'Default', 'Sessions', 'Tabs_1'), 'x')
+      const dataDir = join(root, 'data')
+      mkdirSync(join(dataDir, 'desktops'), { recursive: true })
+      const now = '2026-11-06T00:00:00.000Z'
+      writeFileSync(
+        join(dataDir, 'desktops', 'state.json'),
+        JSON.stringify({
+          version: 1,
+          next: 2,
+          master: old,
+          desktops: { 'agent-a': { id: 'd1', key: 'agent-a', label: 'a', createdAt: now, lastUsedAt: now } }
+        })
+      )
+      const agent = desktopProfile(dataDir, 'd1')
+      mkdirSync(agent, { recursive: true })
+      const baseline = { cookies: { k: 'v' }, localStorage: {}, indexedDb: {} }
+      const baselines = { version: 1, sources: { [realpathSync(old)]: baseline } }
+      writeFileSync(join(agent, BASELINE_FILE), JSON.stringify(baselines))
+      const main = join(dataDir, 'browser', 'main')
+      const lines: string[] = []
+
+      // The supervisor's first launch holds the lock: the daemon waits for it rather than moving under it.
+      const release = await lockProfile(main)
+      const moving = migrateMainProfile(dataDir, (line) => lines.push(line), env)
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500))
+      expect(existsSync(main)).toBe(false)
+      release()
+
+      expect(await moving).toBe(true)
+      expect(existsSync(join(main, 'Default', 'Sessions', 'Tabs_1'))).toBe(true)
+      expect(existsSync(join(main, 'First Run'))).toBe(true)
+      expect(lines).toEqual([`browser profile ${old} copied to ${main} with its open tabs`])
+      const carried = JSON.parse(readFileSync(join(agent, BASELINE_FILE), 'utf8')) as typeof baselines
+      expect(carried.sources).toEqual({ [realpathSync(main)]: baseline })
+      expect(existsSync(`${main}.launch-lock`)).toBe(false)
+
+      // Done once: a later start, and the launcher's own call, find browser/main and leave it.
+      writeFileSync(join(main, 'Local State'), '{"kept":true}')
+      expect(await migrateMainProfile(dataDir, (line) => lines.push(line), env)).toBe(false)
+      expect(readFileSync(join(main, 'Local State'), 'utf8')).toBe('{"kept":true}')
+      expect(lines).toHaveLength(1)
+      // Off the image nothing moves.
+      rmSync(main, { recursive: true })
+      expect(await migrateMainProfile(dataDir, () => undefined, { HOME: env.HOME })).toBe(false)
+      expect(existsSync(main)).toBe(false)
+    }
+  )
 })
 
 // A stand-in Xvfb that reports display 99 after a delay and stays up, so a desktop starts without X or Xfce.

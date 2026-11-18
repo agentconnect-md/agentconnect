@@ -28,7 +28,7 @@
   <property name="plugins" type="empty">
     <property name="plugin-1" type="string" value="launcher">
       <property name="items" type="array">
-        <value type="string" value="chromium.desktop"/>
+        <value type="string" value="google-chrome.desktop"/>
       </property>
     </property>
     <property name="plugin-2" type="string" value="launcher">

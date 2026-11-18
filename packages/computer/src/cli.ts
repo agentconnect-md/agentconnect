@@ -14,7 +14,8 @@ import {
 } from '@agentconnect.md/protocol/computer'
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
-import { browserCloseCommand, browserCommand } from './browser/command.js'
+import { browserCloseCommand, browserCommand, browserLaunchersCommand } from './browser/command.js'
+import { onImage } from './browser/launcher.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { askYes, installable, offerDesktopInstall, runInherited } from './linux/desktops-install.js'
 import { describeDesktops, desktopsNotice, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
@@ -30,7 +31,13 @@ import {
 } from './form-fill/desktop-install.js'
 import { extensionId, extensionKey, installExtension } from './form-fill/package.js'
 import { FormFillService } from './form-fill/service.js'
-import { DesktopManager, loadDesktopState } from './linux/desktops.js'
+import {
+  DesktopManager,
+  isBrowserName,
+  launchMainBrowser,
+  loadDesktopState,
+  migrateMainProfile
+} from './linux/desktops.js'
 import { AuditReporter } from './cp/audit-report.js'
 import { ScreenshotStore } from './cp/screenshot-store.js'
 import { disableAutostart, enableAutostart, startAutostartNow } from './autostart.js'
@@ -166,7 +173,7 @@ Commands:
                                                --daemon also fails when no daemon answers (health checks)
   autostart enable | disable | start           Windows without the service: start 'run' at logon (Run key)
   browser --profile DIR [--master DIR] [--source DIR]... [--browser PATH] [-- ARGS]
-                                               start a desktop's Chromium on its own profile, first merging the
+                                               start a desktop's browser on its own profile, first merging the
                                                logins of the other profiles into it (or hand ARGS to the running one)
   browser-close --profile DIR [--display :N]   close that browser the way a person would, so it saves its cookies
   desktops [on | off | status]                 Linux: give each agent its own desktop (the default where the
@@ -366,6 +373,8 @@ async function main(): Promise<void> {
       return await serviceCommand(dir, loadConfig(dir), rest[0], Boolean(values.purge))
     case 'browser':
       return browserCommand(values, rest, log, dir)
+    case 'browser-launchers':
+      return browserLaunchersCommand(values, dir)
     case 'browser-close':
       return browserCloseCommand(values, log)
     case 'desktops':
@@ -540,6 +549,15 @@ function buildComputer(
     ...(process.platform === 'win32' && windowsService.serviceHost()
       ? { launchApp: (app: string) => windowsService.launchAsUser(app) }
       : {}),
+    // On the image the main desktop's browser starts through the launcher too, like an agent desktop's (§3.8).
+    ...(process.platform === 'linux' && onImage()
+      ? {
+          launchBrowser: (app: string) =>
+            isBrowserName(app)
+              ? async () => launchMainBrowser(dir, app, [process.execPath, resolve(process.argv[1]!)])
+              : undefined
+        }
+      : {}),
     ...(adminPrompts ? { adminPrompts } : {}),
     ...(onHalt ? { onHalt } : {}),
     ...owner,
@@ -613,8 +631,9 @@ async function startFormFill(
   // The profiles a socket may come from, read per connection: an agent desktop's profile appears on its first start.
   const profiles = (): { desktop: string; profile: string }[] => {
     const known = desktops ? desktops.profiles() : []
-    // The person's own browsers run the default profiles, which are the main desktop's: Chromium's master, and Google Chrome's.
-    const defaults = [loadDesktopState(dir).master, join(homedir(), '.config', 'google-chrome')]
+    // The main desktop's: the master, and off the image Google Chrome's default profile, which a person's own Chrome runs.
+    const master = loadDesktopState(dir).master
+    const defaults = onImage() ? [master] : [master, join(homedir(), '.config', 'google-chrome')]
     for (const path of defaults) {
       if (!existsSync(path)) continue
       const profile = realpathSync(path)
@@ -932,6 +951,10 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     printClientSetup(config, clientName, issued.token, process.stdout.isTTY ? undefined : join(dir, 'client-token'))
   }
   if (!config.driverPath && !existsSync(installedDriverPath(dir))) await installDriver(dir)
+  // Before any agent desktop seeds from the master, and with BROWSER=none too, under the main browser's launch lock.
+  if (process.platform === 'linux' && onImage()) {
+    await migrateMainProfile(dir, log).catch((error: unknown) => log(`browser profile move failed: ${String(error)}`))
+  }
   const setTitle = (status: string): void => {
     process.title = `AgentConnect Computer — ${status}`
   }
