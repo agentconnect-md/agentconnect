@@ -701,6 +701,29 @@ describe('Logto SSO connector', () => {
     expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: false })
   })
 
+  it('deletes a removed managed connector, reports it until then, and leaves organizations’ connectors alone', async () => {
+    const logto = fakeLogto()
+    const owned = { id: 'org-sso', providerName: 'OIDC', connectorName: 'org-1', domains: ['example.test'] }
+    logto.ssoConnectors.push(owned)
+    await logto.client.createSsoConnector({ providerName: 'OIDC', displayName: 'Example SSO' })
+    const desired = { ...base, socialProviders: [], organizationSso: true }
+
+    // Between create and configure the document still holds the connector, so nothing is deleted.
+    await logto.client.reconcileSetup(desired)
+    expect(logto.ssoConnectors.map((connector) => connector.id)).toEqual(['org-sso', 'sso-1'])
+
+    await expect(logto.client.inspectSetup({ ...desired, ssoRemoved: true })).resolves.toMatchObject({
+      sso: { id: 'sso-1', exists: true, matches: false, diff: [{ field: 'SSO connector', expected: 'Removed' }] }
+    })
+    await expect(logto.client.reconcileSetup({ ...desired, ssoRemoved: true })).resolves.toMatchObject({
+      changed: true,
+      ssoConnectorsDeleted: ['sso-1']
+    })
+    expect(logto.ssoConnectors).toEqual([owned])
+    await expect(logto.client.inspectSetup({ ...desired, ssoRemoved: true })).resolves.toMatchObject({ sso: null })
+    await expect(logto.client.deleteManagedSsoConnectors()).resolves.toEqual([])
+  })
+
   it('names a connector deleted in Logto and carries Logto’s reason for a refused setting', async () => {
     const missing = fakeLogto()
     const sso = {

@@ -8,7 +8,7 @@ import {
   type DeploymentSecretKey
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { buildSetupServer } from '../src/server/index.js'
-import type { LogtoSetupDesired } from '../src/server/logto-management.js'
+import { LogtoManagementError, type LogtoSetupDesired } from '../src/server/logto-management.js'
 
 let running: FastifyInstance | undefined
 afterEach(async () => {
@@ -48,6 +48,7 @@ function server() {
   }
   const reconciled: LogtoSetupDesired[] = []
   const created: Array<{ providerName: string; displayName: string }> = []
+  const logto = { deletions: 0, failDelete: false }
   const store: DeploymentConfigStore = {
     getAdmin: async () => admin,
     getRuntime: async (keys) => ({
@@ -89,6 +90,7 @@ function server() {
           application: { id: 'browser-app', created: false, changed: false },
           connectors: [],
           sso: desired.sso ? { id: desired.sso.connectorId, changed: true } : null,
+          ssoConnectorsDeleted: [],
           signInExperienceChanged: true,
           adminRoleCreated: false
         }
@@ -96,11 +98,16 @@ function server() {
       createSsoConnector: async (input) => {
         created.push(input)
         return { id: 'sso-1', created: created.length === 1 }
+      },
+      deleteManagedSsoConnectors: async () => {
+        if (logto.failDelete) throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto request failed: HTTP 500', 500)
+        logto.deletions++
+        return ['sso-1']
       }
     })
   })
   running = app
-  return { app, admin, secrets, reconciled, created }
+  return { app, admin, secrets, reconciled, created, logto }
 }
 
 const post = (app: FastifyInstance, url: string, payload: unknown) =>
@@ -108,7 +115,9 @@ const post = (app: FastifyInstance, url: string, payload: unknown) =>
 
 describe('SSO configuration', () => {
   it('creates the connector, takes the OIDC client, and signs in through it alone', async () => {
-    const { app, admin, secrets, reconciled, created } = server()
+    const { app, admin, secrets, reconciled, created, logto } = server()
+    expect((await post(app, '/api/v1/reconcile/logto', {})).statusCode).toBe(200)
+    expect(reconciled.at(-1)?.ssoRemoved).toBe(true)
 
     const create = await post(app, '/api/v1/create/sso', { protocol: 'oidc', name: 'Example SSO' })
     expect(create.statusCode).toBe(200)
@@ -136,6 +145,11 @@ describe('SSO configuration', () => {
     const early = await post(app, '/api/v1/reconcile/logto', {})
     expect(early.statusCode).toBe(409)
     expect(early.json().detail ?? early.body).toContain('SSO connector')
+    // A reconcile between the two steps keeps the connector being configured.
+    admin.values.logto!.browser!.socialProviders = ['google']
+    expect((await post(app, '/api/v1/reconcile/logto', {})).statusCode).toBe(200)
+    expect(reconciled.at(-1)?.ssoRemoved).toBeUndefined()
+    admin.values.logto!.browser!.socialProviders = []
 
     const oidc = { issuer: 'https://idp.example.test', clientId: 'client', trustUnverifiedEmail: true }
     const noSecret = await post(app, '/api/v1/configure/sso', {
@@ -177,11 +191,20 @@ describe('SSO configuration', () => {
     // The last way in cannot be removed.
     expect((await post(app, '/api/v1/configure/sso', { connector: null })).statusCode).toBe(400)
     admin.values.logto!.browser!.socialProviders = ['google']
+    expect(logto.deletions).toBe(0)
+    // A failed delete in Logto leaves the document naming the connector that still lives.
+    logto.failDelete = true
+    const failed = await post(app, '/api/v1/configure/sso', { connector: null })
+    expect(failed.statusCode).toBe(502)
+    expect(admin.values.logto?.ssoConnector).toMatchObject({ connectorId: 'sso-1' })
+    logto.failDelete = false
     expect((await post(app, '/api/v1/configure/sso', { connector: null })).statusCode).toBe(200)
+    expect(logto.deletions).toBe(1)
     expect(admin.values.logto?.ssoConnector).toBeNull()
     expect(secrets['logto.ssoConnectorClientSecret']).toBeUndefined()
     await post(app, '/api/v1/reconcile/logto', {})
     expect(reconciled.at(-1)?.sso).toBeUndefined()
+    expect(reconciled.at(-1)?.ssoRemoved).toBe(true)
     expect(admin.values.auth).toMatchObject({ socialProviders: ['google'], sso: null })
   })
 
