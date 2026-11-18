@@ -9080,6 +9080,13 @@ export interface OrgSsoConnectionRepo {
   findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
   /** System tier: every verified domain of an active connection, with the connector it signs in through. */
   listActiveDomains(): Promise<{ domain: string; connectorId: string; name: string }[]>
+  /** Grant the membership a first sign-in through the connection earns, once; `recorded` means an earlier join stands, whatever became of the membership. */
+  joinOnce(
+    orgId: string,
+    userId: string,
+    connectionId: string,
+    at: Date
+  ): Promise<'joined' | 'already_member' | 'recorded'>
   /** System tier: whether a sign-in subject already has a local user. */
   subjectIsProvisioned(oidcSubject: string): Promise<boolean>
   /** System tier: record a sign-in the organization's connection was refused for. */

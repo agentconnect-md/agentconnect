@@ -12,6 +12,7 @@ import { ORG_SSO_TEST_TTL_MS, OrgSsoConnectionService } from '../../src/org-sso/
 import { OrgSsoDomainService } from '../../src/org-sso/domains.js'
 import { OrgSsoIdpRejected, type OrgSsoAccount, type OrgSsoIdp } from '../../src/org-sso/idp.js'
 import { ORG_SSO_LOOKUP_TTL_MS, OrgSsoSignInLookup } from '../../src/org-sso/lookup.js'
+import { OrgSsoMembership } from '../../src/org-sso/membership.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const SSO = `/api/v1/orgs/${DEFAULT_ORG_ID}/sso`
@@ -117,6 +118,7 @@ let domains: OrgSsoDomainService
 let connections: OrgSsoConnectionService
 let admission: OrgSsoAdmission
 let lookup: OrgSsoSignInLookup
+let membership: OrgSsoMembership
 let dns: Map<string, string[]>
 
 beforeEach(async () => {
@@ -134,6 +136,7 @@ beforeEach(async () => {
   })
   admission = new OrgSsoAdmission({ connections: repo, domains, idp })
   lookup = new OrgSsoSignInLookup({ connections: repo, clock })
+  membership = new OrgSsoMembership({ connections: repo, domains, idp, clock })
   await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: OWNER_SUBJECT } })
 })
 
@@ -146,7 +149,8 @@ function start(): HttpApp['app'] {
   running = buildHttpApp(prisma, undefined, undefined, undefined, {
     orgSsoDomains: domains,
     orgSsoConnections: connections,
-    orgSsoLookup: lookup
+    orgSsoLookup: lookup,
+    orgSsoMembership: membership
   })
   return running.app
 }
@@ -531,5 +535,65 @@ describe('organization SSO sign-in admission', () => {
     idp.accounts.set(OWNER_SUBJECT, { primaryEmail: 'owner@elsewhere.example.test', connectorIds: [connectorId] })
     expect(await admission.admit(OWNER_SUBJECT)).toBe(false)
     expect(idp.accounts.has(OWNER_SUBJECT)).toBe(true)
+  })
+})
+
+describe('organization SSO membership', () => {
+  let app: HttpApp['app']
+  let connectorId: string
+  let newcomer: string
+  const role = async (userId: string) =>
+    (await prisma.membership.findUnique({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } } }))?.role ?? null
+
+  beforeEach(async () => {
+    app = start()
+    await save(app)
+    await verifiedDomain(app, 'example.test')
+    await passTest(app)
+    connectorId = idp.only().id
+    newcomer = (await prisma.user.create({ data: { email: 'new@example.test', oidcSubject: 'subject-new' } })).id
+    idp.accounts.set('subject-new', { primaryEmail: 'new@example.test', connectorIds: [connectorId] })
+  })
+
+  it('grants nothing until the connection is active', async () => {
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
+    expect(await role(newcomer)).toBeNull()
+  })
+
+  it('makes a first sign-in through the active connection a collaborator, once', async () => {
+    await post(app, `${SSO}/connection/activate`)
+    expect(await membership.join('subject-new', newcomer)).toEqual([DEFAULT_ORG_ID])
+    expect(await role(newcomer)).toBe('collaborator')
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
+
+    const audit = await prisma.auditEvent.findFirst({
+      where: { orgId: DEFAULT_ORG_ID, kind: 'org_sso_change', details: { path: ['action'], equals: 'member_joined' } }
+    })
+    expect(audit).toMatchObject({ actorUserId: newcomer, details: { role: 'collaborator' } })
+
+    // An owner's removal stands: the next sign-in does not bring the member back.
+    await prisma.membership.delete({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: newcomer } } })
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
+    expect(await role(newcomer)).toBeNull()
+  })
+
+  it('joins only an account the connection may speak for', async () => {
+    await post(app, `${SSO}/connection/activate`)
+    idp.accounts.set('subject-new', { primaryEmail: 'new@elsewhere.example.test', connectorIds: [connectorId] })
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
+    idp.accounts.set('subject-new', { primaryEmail: 'new@example.test', connectorIds: [] })
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
+    idp.accounts.set('subject-new', { primaryEmail: null, connectorIds: [connectorId] })
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
+    expect(await membership.join('subject-unknown', newcomer)).toEqual([])
+    expect(await role(newcomer)).toBeNull()
+  })
+
+  it('leaves an existing member’s role alone and reports no join', async () => {
+    await post(app, `${SSO}/connection/activate`)
+    const res = await post(app, '/api/v1/sso/join')
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ joined: [] })
+    expect(await role(DEFAULT_OWNER_ID)).toBe('owner')
   })
 })
