@@ -279,7 +279,14 @@ reader typed. A press therefore carries provenance, not text:
 This is the same shape a platform click takes later (§10), so the Console and chat
 platforms share one press path.
 
-- After a press, the card disables its buttons and shows which one was pressed. It
+- **Admission.** The press event is part of `webchat-ui-spec-v1`, so a relay or daemon
+  without the feature never carries it. The derived turn passes the same admission as a
+  composer message: it carries the relay-stamped author, it queues behind a running turn,
+  and it lands in the card's own thread.
+- **Retry.** The press is asynchronous, so the card disables its buttons only once the
+  daemon accepts the press. A refused or held press leaves the buttons enabled and shows
+  why, so the reader can retry.
+- After an accepted press, the card shows which button was pressed. It
   remembers this in `localStorage` keyed by `appId`, as `NativeIntegrationAppCard`
   does, so a second tab also shows the card as answered. This is presentational only.
 - Where the view has no live socket (history views, non-live sessions, shared read-only
@@ -482,12 +489,15 @@ code between them.
   - the receipt not parsing as an intent;
   - a press deriving `value`, or `label` when `value` is absent, from the stored row,
     recording provenance on the user turn, and refusing an unknown card, an unknown
-    button, or a card from another conversation.
+    button, or a card from another conversation;
+  - a press admitted like a composer message: the relay-stamped author, queued behind a
+    running turn, and in the card's thread.
 - Web tests cover:
   - every component renders, and `Text` Markdown skips raw HTML;
   - an invalid persisted spec degrades to the notice;
   - a UI spec card registers no pending action and shows no Waiting or Done state;
-  - a press sends only `{ appId, buttonId }` once and disables the buttons;
+  - a press sends only `{ appId, buttonId }` once, disables the buttons only after it is
+    accepted, and leaves them enabled with the reason after a refusal;
   - buttons are disabled without a live socket;
   - a press renders in the transcript as a press.
 - Acceptance: a local webchat conversation in which Claude and Codex each show a card,
