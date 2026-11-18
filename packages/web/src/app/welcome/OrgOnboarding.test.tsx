@@ -15,14 +15,16 @@ const mocks = vi.hoisted(() => {
     authConfigured: true,
     user: null as unknown,
     access: {} as Record<string, unknown>,
-    createOrg: vi.fn()
+    createOrg: vi.fn(),
+    logout: vi.fn()
   }
 })
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: mocks.replace }) }))
 vi.mock('@/lib/auth', () => ({
   isAuthConfigured: () => mocks.authConfigured,
-  getUser: () => Promise.resolve(mocks.user)
+  getUser: () => Promise.resolve(mocks.user),
+  logout: mocks.logout
 }))
 vi.mock('@/lib/api', () => ({
   ApiError: mocks.FakeApiError,
@@ -141,5 +143,12 @@ describe('org onboarding — who belongs here', () => {
     await act(async () => createButton().click())
     expect(host.textContent).toContain('That URL name is already taken.')
     expect(mocks.replace).not.toHaveBeenCalled()
+  })
+
+  it('lets someone who signed in with the wrong account sign out', async () => {
+    await render()
+    const signOut = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Sign out')!
+    await act(async () => signOut.click())
+    expect(mocks.logout).toHaveBeenCalledTimes(1)
   })
 })

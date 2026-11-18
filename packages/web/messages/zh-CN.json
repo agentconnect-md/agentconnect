@@ -1430,7 +1430,8 @@
       "failed": "登录测试未通过",
       "unconfirmed": "这次登录没有对应上 {name} 的测试，请回到设置重新开始测试。",
       "noAddress": "{name} 没有返回属于本组织域名的邮箱。请调整邮箱的 claim 或属性，然后重新测试。",
-      "backToSettings": "返回设置"
+      "backToSettings": "返回设置",
+      "openConsole": "打开控制台"
     },
     "socialCallback": {
       "repoConflict": "这个 GitHub 账号已关联其他 AgentConnect 账号。你可以继续连接，用于当前账号的仓库访问。使用 GitHub 登录仍会进入原账号。",
@@ -1815,6 +1816,7 @@
     },
     "organization": {
       "step": "第 1 步，共 2 步",
+      "signOut": "退出登录",
       "brandAgent": "Agent",
       "brandConnect": "Connect",
       "title": "创建组织",

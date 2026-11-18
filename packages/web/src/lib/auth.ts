@@ -202,12 +202,16 @@ export function initialsFrom(name: string, email?: string): string {
 // round-trip. Null when signed out or auth is disabled.
 let cachedUser: AuthUser | null = null
 
+/** Drop the browser's remembered organization; it belongs to whichever account wrote it. */
+export function forgetRememberedOrganization(): void {
+  document.cookie = 'ac.org=; path=/; max-age=0'
+}
+
 function clearLocalSessionMetadata(): void {
   cachedUser = null
   resetAnalytics()
-  // The next sign-in may be a different user, so do not carry the previous
-  // session's fallback cookie into it. The CP restores that user's preference.
-  document.cookie = 'ac.org=; path=/; max-age=0'
+  // The next sign-in may be a different user; the CP restores that user's preference.
+  forgetRememberedOrganization()
   // A link proof belongs to the session that earned it. Left behind, the next
   // user in this tab would start a link Logto can only reject at the callback.
   forgetOwnershipProof()
