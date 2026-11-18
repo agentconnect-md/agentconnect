@@ -29,7 +29,7 @@ identity provider. Four things are missing:
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1  | An SSO connection is owned by the deployment (today's connector, unchanged) or by one organization (new). A deployment has one kind: its operator declares organization SSO, and the declaration excludes a deployment connector. |
 | D2  | An organization proves it controls an email domain by a DNS record before it can use that domain. A domain belongs to at most one organization.                                                                                   |
-| D3  | Binding a verified domain to a connection is what enforces SSO for that domain. There is no separate enforcement switch, and binding is refused until a sign-in through the connection has succeeded.                             |
+| D3  | Binding a verified domain to an active connection makes the connection the only sign-in for that domain at the identity service. Binding is refused until a sign-in through the connection has succeeded.                         |
 | D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                                                |
 | D5  | A person who first signs in through an organization's active connection becomes a member of that organization once.                                                                                                               |
 | D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
@@ -63,8 +63,8 @@ after that, and **active** once `activatedAt` is set. An active connection whose
 settings changed stays active and reads as untested until a test succeeds again.
 
 A connection carries one list in the identity service, Logto's `domains`, and the
-Control Plane is its only writer. Logto routes by this list, enforces single sign-on
-for it, and links a sign-in to an existing account only when the account's address is
+Control Plane is its only writer. Logto routes by this list, allows only single
+sign-on for it, and links a sign-in to an existing account only when the account's address is
 in it. The list holds the organization's verified domains in two situations and is
 empty otherwise:
 
@@ -127,8 +127,10 @@ One card in organization settings, three steps in order:
    is bound when it is verified.
 
 **Changing the settings** takes effect at once and clears the test result. An active
-connection stays active: turning enforcement off to rotate a secret would re-open
-other sign-in methods for the domain. The owner is still signed in and tests again;
+connection stays active: unbinding to rotate a secret would re-open other sign-in
+methods for the domain. An enforced connection stops being enforced (§4.5), since
+the rule must not rest on settings nobody has signed in through; an owner enforces
+again from a session through the changed connection. The owner is still signed in and tests again;
 if the new settings are wrong and nobody can sign in, a deployment `ADMIN`
 deactivates. Changing the protocol starts a new connector with new service-provider
 values.
@@ -203,10 +205,13 @@ sign-in through a connection.
 - The join record outlives the membership. An owner who removes such a member is not
   overruled at the person's next sign-in; they can be invited back.
 - Removing someone at the identity provider stops new sign-ins through the
-  connection, so no new session reaches the organization (§4.5), whatever other
-  sign-in identities the account holds. A session already signed in lasts until it
-  ends, and the membership, API keys and OAuth grants stay. Ending those needs the
-  provider to notify the deployment, which is out of scope here (§7).
+  connection. On an enforced connection no new session then reaches the
+  organization (§4.5), whatever other sign-in identities the account holds. On an
+  active connection that is not enforced, an account that has also linked a social
+  identity reporting another address still signs in with it and reaches the
+  organization. A session already signed in lasts until it ends, and the membership,
+  API keys and OAuth grants stay. Ending those needs the provider to notify the
+  deployment, which is out of scope here (§7).
 
 ### 4.4 Claiming an invited row
 
@@ -230,14 +235,20 @@ who enforces the connection makes the organization check it on every request:
   latest sign-in went through its connection. Otherwise it is refused with 403
   `ORG_SSO_SIGN_IN_REQUIRED`. The account's other organizations are unaffected, and
   so is anyone whose address is outside the verified domains.
-- **Who may enforce.** Only an owner whose own address is in the verified domains, so
-  the owner who turns the rule on is bound by it and has the way in it requires
-  (409 `SSO_ENFORCER_OUTSIDE_DOMAINS` otherwise). The rule then applies to owners
-  exactly as to any other member: there is no owner exemption and no recovery code.
-  When the identity provider breaks, a deployment `ADMIN` stops enforcing
-  (`POST /admin/orgs/:orgId/sso/connection/stop-enforcing`) or deactivates the
-  connection; an owner can also stop enforcing from a session the rule accepts.
-  Deactivating ends the enforcement, so activating again does not bring it back.
+- **Who may enforce.** An owner whose own address is in the verified domains and
+  whose current session signed in through the connection (409
+  `SSO_ENFORCER_OUTSIDE_DOMAINS` or `SSO_SIGN_IN_REQUIRED` otherwise). That one check
+  shows there is an owner the connection speaks for, that this owner's account links
+  through it, that the claims script is in place, and that all of it works right
+  now, so enforcing cannot be the act that locks every owner out. The rule then
+  applies to owners exactly as to any other member: there is no owner exemption and
+  no recovery code. An organization whose owners are all outside the verified
+  domains cannot enforce, and a deployment `ADMIN` cannot enforce on its behalf.
+- **Undoing it.** When the identity provider breaks, a deployment `ADMIN` stops
+  enforcing (`POST /admin/orgs/:orgId/sso/connection/stop-enforcing`) or deactivates
+  the connection; an owner can also stop enforcing from a session the rule accepts.
+  Deactivating, and changing the settings (§4.1), end the enforcement, so it comes
+  back only when an owner enforces again.
 - **What the token carries.** The identity service's access-token claims script adds
   `sso_connector_id`: the connector of an SSO verification in the session's latest
   sign-in, when its identity (issuer and subject) is one the account holds. A
@@ -280,8 +291,8 @@ who enforces the connection makes the organization check it on every request:
   earlier, gets in by signing in through it: the address links the new SSO identity
   to the same account (§5), and its session carries the claim.
 - **Enforcing.** An owner inside the domains who ran the test sign-in already holds a
-  session through the connection; one who has not is asked to sign in through it at
-  their next request, like any member.
+  session through the connection, so the precondition is usually met where the
+  connection was set up.
 
 ## 5. What must hold for an organization's connection
 
@@ -347,7 +358,7 @@ authenticate, and one of them carries a client secret), and owner-only except `G
 | `POST /connection/test`             | Open the test window and mint the nonce.                                                                                                              |
 | `POST /connection/activate`         | Bind the verified domains.                                                                                                                            |
 | `POST /connection/deactivate`       | Unbind, and stop enforcing.                                                                                                                           |
-| `POST /connection/enforce`          | Enforce per session (§4.5); the caller's address must be in the verified domains.                                                                     |
+| `POST /connection/enforce`          | Enforce per session (§4.5): the caller's address is in the verified domains and their session signed in through the connection.                       |
 | `POST /connection/stop-enforcing`   | Stop enforcing; the connection stays active.                                                                                                          |
 | `DELETE /connection`                | Remove the connection and the identities it established.                                                                                              |
 
@@ -421,14 +432,14 @@ the few connector calls it needs beside it.
 - **Lockout.** Activation requires a successful test after the last change, and a
   deployment `ADMIN` can always deactivate or stop enforcing. Enforcing binds owners
   inside the domains like any member, so when the provider fails it is the deployment
-  `ADMIN` who opens the organization again (§4.5). Settings changed on an active connection
-  take effect untested (§4.1); that is the one way to activate untested settings, and
-  it is chosen over lifting enforcement.
+  `ADMIN` who opens the organization again (§4.5). Settings changed on an active
+  connection take effect untested and stop the enforcement (§4.1); binding untested
+  settings is chosen over unbinding the domains.
 - **A test sign-in can land on a different account** when the provider's address
   differs from the owner's. R1 holds for it, so that account can only be one whose
   address is in a domain the organization has verified. The connection is still
   marked tested; the owner signs back in. The settings card says so before starting.
-- **A test window enforces.** For up to ten minutes the organization's domains sign
+- **A test window binds.** For up to ten minutes the organization's domains sign
   in only through a connection that is not yet proven. The window closes itself, and
   a background pass closes one whose closing write failed.
 - **Deactivating is not removing.** Identities already established keep working
@@ -453,7 +464,8 @@ Each step merges on its own.
    enforce step and the check of §4.5, `ssoSignIn` on `GET /orgs`, and the console's
    sign-in step for an organization. The card's Enforce control follows separately.
 7. **User documentation**, once the feature is complete, naming the minimum Logto
-   release.
+   release and saying that activating alone leaves a member with another linked
+   sign-in identity able to reach the organization until it is enforced.
 
 Organization SSO stays undeclared on every deployment until its Logto provides §5.
 

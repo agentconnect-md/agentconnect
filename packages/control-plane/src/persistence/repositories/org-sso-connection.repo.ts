@@ -30,14 +30,18 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
   ): Promise<OrgSsoConnectionRecord> {
     const { orgId, logtoConnectorId, protocol, name } = input
     return this.inTransaction(async (tx) => {
-      const current = await tx.orgSsoConnection.findUnique({ where: { orgId }, select: { testExpiresAt: true } })
+      const current = await tx.orgSsoConnection.findUnique({
+        where: { orgId },
+        select: { testExpiresAt: true, enforcedAt: true }
+      })
       const existed = current !== null
-      // An open test window ends here but stays on the row until what it bound has been unbound.
+      // An open test window ends here but stays on the row until what it bound has been unbound; untested settings are not enforced.
       const changed = {
         logtoConnectorId,
         protocol,
         name,
         configChangedAt: at,
+        enforcedAt: null,
         testNonceHash: null,
         testExpiresAt: current?.testExpiresAt ? at : null
       }
@@ -49,7 +53,8 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
       await this.audit(tx, orgId, actorUserId, `single sign-on connection ${existed ? 'changed' : 'created'}`, {
         action: existed ? 'connection_changed' : 'connection_created',
         connectionId: row.id,
-        protocol
+        protocol,
+        ...(current?.enforcedAt ? { enforcementStopped: true } : {})
       })
       return toRecord(row)
     })

@@ -9056,7 +9056,7 @@ export interface OrgSsoConnectionRecord {
 /** One connection per organization (organization-sso.md §3). Every state change is audited with its actor. */
 export interface OrgSsoConnectionRepo {
   getForOrg(orgId: string): Promise<OrgSsoConnectionRecord | null>
-  /** Create the row or record a configuration change; the test result no longer stands, and an open test window ends at `at`. */
+  /** Create the row or record a configuration change; the test result no longer stands, enforcing stops, and an open test window ends at `at`. */
   save(
     input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol; name: string },
     at: Date,

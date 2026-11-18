@@ -294,6 +294,13 @@ describe('organization SSO per session', () => {
     expect(refused.statusCode).toBe(409)
     expect(refused.json()).toMatchObject({ code: 'SSO_ENFORCER_OUTSIDE_DOMAINS' })
     await insideOwner()
+    // An owner inside the domains still has to be signed in through the connection now.
+    const notThrough = await app.inject({
+      method: 'POST',
+      url: `${SSO}/connection/enforce`,
+      headers: await as(INSIDE_OWNER_SUBJECT)
+    })
+    expect(notThrough.json()).toMatchObject({ code: 'SSO_SIGN_IN_REQUIRED' })
     const enforced = await enforce(connectorId)
     expect(enforced.json()).toMatchObject({ status: 'active', enforcedAt: expect.any(String) })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
@@ -302,6 +309,27 @@ describe('organization SSO per session', () => {
     // A connector gone from the identity service cannot be signed in through, so it locks nobody out.
     idp.connectors.delete(connectorId)
     clock.advance(ORG_SSO_SESSION_CACHE_TTL_MS)
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
+  })
+
+  it('stops enforcing when the settings change, so untested settings are never enforced', async () => {
+    await memberInDomain()
+    await activeConnection()
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
+    const changed = await app.inject({
+      method: 'PUT',
+      url: `${SSO}/connection`,
+      headers: await owner(),
+      payload: {
+        protocol: 'oidc',
+        name: 'Acme IdP',
+        issuer: 'https://idp.example.test',
+        clientId: 'c2',
+        clientSecret: 's'
+      }
+    })
+    expect(changed.json()).toMatchObject({ status: 'active', enforcedAt: null })
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
   })
 

@@ -224,19 +224,20 @@ export class OrgSsoConnectionService {
     return this.view(row)
   }
 
-  /** Enforce an active connection per session (§4.5); only an owner whose own address is in the verified domains may, since the rule then applies to them too. */
+  /** Enforce an active connection per session (§4.5): an owner inside the domains, signed in through it now, shows an owner can get in under the rule. */
   async enforce(
     orgId: string,
     actorUserId: string,
-    actorSubject: string | null
-  ): Promise<OrgSsoConnectionView | 'none' | 'inactive' | 'outside_domains'> {
+    actor: { subject: string | null; signInConnectorId: string | null }
+  ): Promise<OrgSsoConnectionView | 'none' | 'inactive' | 'outside_domains' | 'sign_in_required'> {
     const { connections, domains, idp, clock } = this.deps
     const current = await connections.getForOrg(orgId)
     if (!current) return 'none'
     if (current.activatedAt === null) return 'inactive'
-    const email = actorSubject === null ? null : ((await idp.account(actorSubject))?.primaryEmail ?? null)
+    const email = actor.subject === null ? null : ((await idp.account(actor.subject))?.primaryEmail ?? null)
     const domain = email === null ? null : email.slice(email.lastIndexOf('@') + 1).toLowerCase()
     if (domain === null || !(await domains.verifiedDomains(orgId)).includes(domain)) return 'outside_domains'
+    if (actor.signInConnectorId !== current.logtoConnectorId) return 'sign_in_required'
     const row = await connections.enforce(orgId, new Date(clock.now()), actorUserId)
     return row ? this.view(row) : 'inactive'
   }

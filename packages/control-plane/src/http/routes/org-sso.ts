@@ -421,7 +421,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Enforce the single sign-on connection',
           description:
-            'Owner-only. From now on a member whose address is in the organization’s verified domains opens it only from a session signed in through the connection; members outside those domains are unaffected. The connection must be active, and the caller’s own address must be in the verified domains (409 `SSO_ENFORCER_OUTSIDE_DOMAINS` otherwise), so the owner who turns the rule on is bound by it. A deployment administrator can stop enforcing when the identity provider breaks.',
+            'Owner-only. From now on a member whose address is in the organization’s verified domains opens it only from a session signed in through the connection; members outside those domains are unaffected. The connection must be active; the caller’s own address must be in the verified domains (409 `SSO_ENFORCER_OUTSIDE_DOMAINS`) and the caller must be signed in through the connection now (409 `SSO_SIGN_IN_REQUIRED`), which shows an owner gets in under the rule. Changing the settings stops enforcing. A deployment administrator can stop enforcing when the identity provider breaks.',
           operationId: 'enforceOrganizationSsoConnection',
           response: {
             200: OrgSsoConnectionDto,
@@ -437,7 +437,10 @@ export function orgSsoRoutes(deps: HttpDeps) {
         if (denyNonOwner(req, reply)) return
         const { orgId } = req.orgCtx!
         return withIdp(reply, async () => {
-          const outcome = await connections.enforce(orgId, req.principal!.userId, req.oidcSubject ?? null)
+          const outcome = await connections.enforce(orgId, req.principal!.userId, {
+            subject: req.oidcSubject ?? null,
+            signInConnectorId: req.signInSsoConnectorId ?? null
+          })
           if (outcome === 'none') return connectionNotFound(reply)
           if (outcome === 'inactive') return conflict(reply, 'SSO_NOT_ACTIVE', 'activate the connection first')
           if (outcome === 'outside_domains') {
@@ -446,6 +449,9 @@ export function orgSsoRoutes(deps: HttpDeps) {
               'SSO_ENFORCER_OUTSIDE_DOMAINS',
               'only an owner whose address is in the verified domains can enforce the connection'
             )
+          }
+          if (outcome === 'sign_in_required') {
+            return conflict(reply, 'SSO_SIGN_IN_REQUIRED', 'sign in through the connection before enforcing it')
           }
           return connectionDto(outcome)
         })
