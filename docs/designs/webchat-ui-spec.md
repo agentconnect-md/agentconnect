@@ -265,10 +265,12 @@ inside the card instead of widening the page.
 The button text is agent-authored, so a press must not reach the transcript as words the
 reader typed. A press therefore carries provenance, not text:
 
-1. The Console sends `{ appId, buttonId }` as a structured event on the composer's live
-   socket, as Fill-card answers already do (`pgAnswerFill`). It never goes through a card
-   bridge, and the browser does not send the button's text.
-2. The daemon loads the card's stored row for that conversation, checks that the button
+1. The Console sends `{ agentId, appId, buttonId, pressId }` as a structured event on the
+   composer's live socket, as Fill-card answers already do (`pgAnswerFill`, which also
+   names the card's agent). `agentId` selects the agent whose stored row holds the card in
+   a multi-agent conversation. `pressId` is generated once per press by the Console. The
+   event never goes through a card bridge, and the browser does not send the button's text.
+2. The daemon loads that agent's stored row for the card in that conversation, checks that the button
    exists, and derives the text: `value`, or `label` when `value` is absent. An unknown
    card or button is refused, and nothing is sent.
 3. The daemon starts the reader's turn with that text and records the press provenance on
@@ -276,16 +278,20 @@ reader typed. A press therefore carries provenance, not text:
    production_" with the derived text shown beneath. The agent's input marks it the same
    way, so neither the reader nor the agent can mistake a press for typed words.
 
-This is the same shape a platform click takes later (§10), so the Console and chat
-platforms share one press path.
+A platform click later carries the same provenance, card and button, with the agent
+implied by the integration it arrives through (§10), so the Console and chat platforms
+share one press path.
 
 - **Admission.** The press event is part of `webchat-ui-spec-v1`, so a relay or daemon
   without the feature never carries it. The derived turn passes the same admission as a
   composer message: it carries the relay-stamped author, it queues behind a running turn,
   and it lands in the card's own thread.
 - **Retry.** The press is asynchronous, so the card disables its buttons only once the
-  daemon accepts the press. A refused or held press leaves the buttons enabled and shows
-  why, so the reader can retry.
+  daemon accepts the press. Acceptance means the derived turn was admitted, including into
+  the queue behind a running turn, so a queued press counts as accepted. A refused press
+  leaves the buttons enabled and shows why, so the reader can retry. The daemon also uses
+  `pressId` as the turn's idempotency key, so a retry after a lost acknowledgement never
+  starts a second turn.
 - After an accepted press, the card shows which button was pressed. It
   remembers this in `localStorage` keyed by `appId`, as `NativeIntegrationAppCard`
   does, so a second tab also shows the card as answered. This is presentational only.
@@ -489,15 +495,17 @@ code between them.
   - the receipt not parsing as an intent;
   - a press deriving `value`, or `label` when `value` is absent, from the stored row,
     recording provenance on the user turn, and refusing an unknown card, an unknown
-    button, or a card from another conversation;
+    button, a card from another conversation, or a card of another agent;
   - a press admitted like a composer message: the relay-stamped author, queued behind a
-    running turn, and in the card's thread.
+    running turn and acknowledged as accepted, and in the card's thread;
+  - a repeated `pressId` starting no second turn.
 - Web tests cover:
   - every component renders, and `Text` Markdown skips raw HTML;
   - an invalid persisted spec degrades to the notice;
   - a UI spec card registers no pending action and shows no Waiting or Done state;
-  - a press sends only `{ appId, buttonId }` once, disables the buttons only after it is
-    accepted, and leaves them enabled with the reason after a refusal;
+  - a press sends only `{ agentId, appId, buttonId, pressId }`, disables the buttons only
+    after it is accepted, and leaves them enabled with the reason after a refusal;
+  - a retry of the same press reuses its `pressId`;
   - buttons are disabled without a live socket;
   - a press renders in the transcript as a press.
 - Acceptance: a local webchat conversation in which Claude and Codex each show a card,
