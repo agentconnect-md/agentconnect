@@ -15,16 +15,19 @@ import {
   activateOrgSsoConnection,
   ApiError,
   deactivateOrgSsoConnection,
+  enforceOrgSsoConnection,
   fetchOrgSso,
   releaseOrgSsoDomain,
   removeOrgSsoConnection,
   startOrgSsoTest,
+  stopEnforcingOrgSsoConnection,
   verifyOrgSsoDomain,
   type OrgSsoConnectionDto,
   type OrgSsoDomainDto,
   type OrgSsoStateDto
 } from '@/lib/api'
 import { currentUser, loginWithSso } from '@/lib/auth'
+import { writeFlowState } from '@/lib/flow-state'
 import { canStashSsoTest, stashSsoTest } from '@/lib/organization-sso'
 import { consoleKeys } from '@/lib/swr-keys'
 
@@ -43,6 +46,8 @@ type Dialog =
   | { kind: 'test' }
   | { kind: 'activate' }
   | { kind: 'deactivate' }
+  | { kind: 'enforce' }
+  | { kind: 'stopEnforcing' }
   | { kind: 'remove' }
   | { kind: 'verify'; domain: OrgSsoDomainDto }
 
@@ -218,7 +223,10 @@ function ConnectionRow({
           <span className="badge bg-(--status-error-soft) text-(--status-error)">{t('status.needsConfiguration')}</span>
         ) : (
           <>
-            {active && (
+            {active && connection.enforcedAt && (
+              <span className="badge bg-(--status-online-soft) text-(--status-online)">{t('status.enforced')}</span>
+            )}
+            {active && !connection.enforcedAt && (
               <span className="badge bg-(--status-online-soft) text-(--status-online)">{t('status.active')}</span>
             )}
             {!active && connection.tested && (
@@ -250,6 +258,16 @@ function ConnectionRow({
                 <Button variant="secondary" size="xs" onClick={() => open({ kind: 'connection' })}>
                   {t('edit')}
                 </Button>
+                {active && !connection.enforcedAt && (
+                  <Button size="xs" onClick={() => open({ kind: 'enforce' })}>
+                    {t('enforce')}
+                  </Button>
+                )}
+                {active && connection.enforcedAt && (
+                  <Button variant="secondary" size="xs" onClick={() => open({ kind: 'stopEnforcing' })}>
+                    {t('stopEnforcing')}
+                  </Button>
+                )}
                 {active && (
                   <Button variant="secondary" size="xs" onClick={() => open({ kind: 'deactivate' })}>
                     {t('deactivate')}
@@ -363,6 +381,19 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       setPending(false)
     } finally {
       refresh()
+    }
+  }
+
+  // Enforcing needs this session to have signed in through the connection; the sign-in returns to this card.
+  const signInThrough = async (connectorId: string) => {
+    setPending(true)
+    setDialogError(null)
+    try {
+      writeFlowState('returnTo', `${pathname}#single-sign-on`)
+      await loginWithSso(connectorId, currentUser()?.email ?? undefined)
+    } catch (e) {
+      setDialogError(message(e))
+      setPending(false)
     }
   }
 
@@ -552,6 +583,53 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
         >
           <DomainList domains={verified} />
           {t('deactivateDialog.body')}
+        </ConfirmationDialog>
+      )}
+      {dialog?.kind === 'enforce' && connection && (
+        <ConfirmationDialog
+          title={t('enforceDialog.title', { name: connection.name })}
+          busy={pending}
+          busyLabel={t('enforceDialog.working')}
+          error={dialogError}
+          {...(state?.enforce === 'ready'
+            ? {
+                confirmLabel: t('enforce'),
+                onConfirm: () =>
+                  void confirm(async () => {
+                    await enforceOrgSsoConnection(orgId)
+                  })
+              }
+            : state?.enforce === 'sign_in_required'
+              ? {
+                  confirmLabel: t('enforceDialog.signIn', { name: connection.name }),
+                  onConfirm: () => void signInThrough(connection.connectorId)
+                }
+              : {})}
+          onClose={close}
+        >
+          <DomainList domains={verified} />
+          {state?.enforce === 'outside_domains'
+            ? t.rich('enforceDialog.outsideDomains', { name: connection.name, b: strong })
+            : state?.enforce === 'sign_in_required'
+              ? t.rich('enforceDialog.signInFirst', { name: connection.name, b: strong })
+              : t.rich('enforceDialog.body', { name: connection.name, b: strong })}
+        </ConfirmationDialog>
+      )}
+      {dialog?.kind === 'stopEnforcing' && connection && (
+        <ConfirmationDialog
+          title={t('stopEnforcingDialog.title', { name: connection.name })}
+          confirmLabel={t('stopEnforcing')}
+          busy={pending}
+          busyLabel={t('enforceDialog.working')}
+          error={dialogError}
+          onConfirm={() =>
+            void confirm(async () => {
+              await stopEnforcingOrgSsoConnection(orgId)
+            })
+          }
+          onClose={close}
+        >
+          {t.rich('stopEnforcingDialog.body', { name: connection.name, b: strong })}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'verify' && connection && (

@@ -17,6 +17,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import type { HttpDeps } from '../deps.js'
+import { refuseWithoutOrgSso } from '../org-scope.js'
 import {
   AHP_SCOPE,
   MCP_SCOPES,
@@ -99,6 +100,8 @@ export function oauthConsentRoutes(deps: HttpDeps) {
           .code(403)
           .send({ error: 'Forbidden', statusCode: 403, message: 'not a member of that organization' })
       }
+      // The grant reaches the organization later without a browser session, so it needs the session the organization requires.
+      if (await refuseWithoutOrgSso(deps.orgSsoSession, req, reply, orgId)) return reply
 
       // Granted scopes = what the user approved, clamped to what we support.
       const requested = normalizeScopes(str(b.scope))

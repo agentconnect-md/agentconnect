@@ -27,6 +27,7 @@ import {
   type RoutePermission
 } from '../../domain/api-key-permission.js'
 import { MCP_SCOPES } from '../../registry/oauthService.js'
+import { SSO_CONNECTOR_CLAIM } from '../../org-sso/token-claims.js'
 
 /** The authenticated WebUI user attached to a request (`req.principal`).
  *  Identity ONLY — the org a request acts on lives in the URL
@@ -191,6 +192,8 @@ declare module 'fastify' {
      *  (Logto reads: profile identities, the viewer identity set) — never to look
      *  up anyone else. */
     oidcSubject?: string
+    /** Real-OIDC path only: the SSO connector this browser session last signed in through, or null (organization-sso.md §4.5). */
+    signInSsoConnectorId?: string | null
     /** Set only when the caller authenticated with a personal API key (not OIDC/dev):
      *  the key's row id (audit / self-mint guard) and the org it is bound to. The
      *  org-scope guard asserts this equals the URL org, so a key acts only in its org. */
@@ -519,6 +522,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         ...(isAdmin ? { isAdmin: true } : {})
       }
       req.oidcSubject = sub
+      req.signInSsoConnectorId = typeof payload[SSO_CONNECTOR_CLAIM] === 'string' ? payload[SSO_CONNECTOR_CLAIM] : null
       // Warm the identity projection behind this response (cold-visit §3). Contained:
       // a throw here must not fall into the outer catch and 401 a valid token.
       try {
@@ -650,6 +654,7 @@ export const humanAuthPlugin = fp(
     // an OSS devAuth principal or personal API key can never impersonate a user.
     app.decorate('oidcAuth', realOidc ?? oidcUnavailable)
     app.decorateRequest('principal', undefined)
+    app.decorateRequest('signInSsoConnectorId', undefined)
     app.decorateRequest('apiKeyId', undefined)
     app.decorateRequest('apiKeyOrgId', undefined)
     app.decorateRequest('apiKeyScopes', undefined)

@@ -368,7 +368,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           // schema doesn't declare (the prefix's `orgId`), and it runs BEFORE
           // preHandler — the guard must read the raw params first.
           scope.addHook('preValidation', scope.humanAuth)
-          scope.addHook('preValidation', makeOrgScope(deps.repos.org))
+          scope.addHook('preValidation', makeOrgScope(deps.repos.org, deps.orgSsoSession))
           await scope.register(orgScopedRoutes(deps))
           await scope.register(daemonRoutes(deps))
           await scope.register(memberSetRoutes(deps))
@@ -440,7 +440,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
         async (scope) => {
           scope.addHook('preValidation', usageServiceAuth(deps))
           scope.addHook('preValidation', unlessUsageService(scope.humanAuth))
-          scope.addHook('preValidation', unlessUsageService(makeOrgScope(deps.repos.org)))
+          scope.addHook('preValidation', unlessUsageService(makeOrgScope(deps.repos.org, deps.orgSsoSession)))
           await scope.register(usageRoutes(deps))
         },
         { prefix: '/orgs/:orgId' }

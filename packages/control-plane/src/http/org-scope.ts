@@ -9,6 +9,40 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { OrgRepo, OrgMemberRole } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
+import type { OrgSsoSessionRule } from '../org-sso/session.js'
+
+/** The browser session must sign in through the organization's SSO connection first (organization-sso.md §4.5). */
+export const ORG_SSO_SIGN_IN_REQUIRED = 'ORG_SSO_SIGN_IN_REQUIRED'
+
+/** Refuse an interactive session that organization SSO sends through the organization's connection; true when it replied. */
+export async function refuseWithoutOrgSso(
+  rule: OrgSsoSessionRule | undefined,
+  req: FastifyRequest,
+  reply: FastifyReply,
+  orgId: string
+): Promise<boolean> {
+  // Only a browser session has a sign-in method; API keys, OAuth tokens and delegated calls are credentials issued earlier.
+  if (!rule || req.oidcSubject === undefined || req.apiKeyId !== undefined) return false
+  let required: Awaited<ReturnType<OrgSsoSessionRule['requirement']>>
+  try {
+    required = await rule.requirement(orgId, {
+      subject: req.oidcSubject,
+      ssoConnectorId: req.signInSsoConnectorId ?? null
+    })
+  } catch (err) {
+    req.log.warn({ err }, 'org sso: could not check the session against the organization connection')
+    void reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'temporarily unavailable' })
+    return true
+  }
+  if (!required) return false
+  void reply.code(403).send({
+    error: 'Forbidden',
+    statusCode: 403,
+    message: `sign in through ${required.name} to open this organization`,
+    code: ORG_SSO_SIGN_IN_REQUIRED
+  })
+  return true
+}
 
 /** The org an authenticated request acts on + the caller's role and id in it.
  *  `userId` is plumbed here so per-resource visibility guards (`ctxOf` →
@@ -26,7 +60,7 @@ declare module 'fastify' {
 }
 
 /** Build the org-scope preHandler for the `/orgs/:orgId` subtree. */
-export function makeOrgScope(orgs: OrgRepo) {
+export function makeOrgScope(orgs: OrgRepo, orgSso?: OrgSsoSessionRule) {
   return async function orgScope(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     // The prefix param — present on every route registered under `/orgs/:orgId`.
     const orgId = (req.params as { orgId?: string }).orgId
@@ -43,6 +77,8 @@ export function makeOrgScope(orgs: OrgRepo) {
     if (!role) {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
     }
+    // After membership, so a non-member learns nothing about the organization's sign-in.
+    if (await refuseWithoutOrgSso(orgSso, req, reply, orgId)) return
     // Scope confinement (agent-assistant.md §6.3): an OAuth access token carries the
     // user's identity but is confined to its granted scopes. A non-empty scope set
     // WITHOUT `mcp:write` may not mutate org resources — otherwise a `mcp:read`

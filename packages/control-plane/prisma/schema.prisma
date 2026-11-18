@@ -469,6 +469,7 @@ model OrgSsoConnection {
   testExpiresAt    DateTime? @db.Timestamptz(6)
   testedAt         DateTime? @db.Timestamptz(6)
   activatedAt      DateTime? @db.Timestamptz(6)
+  enforcedAt       DateTime? @db.Timestamptz(6)
   configChangedAt  DateTime  @db.Timestamptz(6)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
 

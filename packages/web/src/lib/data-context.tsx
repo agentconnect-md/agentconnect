@@ -837,7 +837,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // Org-list failures are surfaced directly by OrgProvider; never turn a pseudo
   // org id into a cache tenant or an HTTP path.
   const waitingForOrg = orgLoading || (!activeOrg && orgs.length > 0)
-  const orgKey = waitingForOrg ? null : (activeOrg?.id ?? null)
+  // An organization this session must first sign in to answers every request with a refusal, so nothing is fetched.
+  const orgKey = waitingForOrg || activeOrg?.ssoSignIn ? null : (activeOrg?.id ?? null)
 
   const {
     data: realAgents,

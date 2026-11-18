@@ -1566,6 +1566,8 @@ export interface OrgDto {
   onboardingCompleted?: boolean
   /** Getting-started tutorial position: checklist steps passed (completed or skipped). */
   gettingStartedStep?: number
+  /** The SSO connection this browser session must sign in through before it opens the organization. */
+  ssoSignIn?: { connectorId: string; name: string } | null
   createdAt: string // ISO-8601
 }
 
@@ -1647,6 +1649,9 @@ export interface MintedUserKeyDto {
   allAgents: boolean
   agentIds: string[]
 }
+
+/** The refusal code, and the window event the console raises on it, when a session must sign in through an organization's SSO connection. */
+export const ORG_SSO_SIGN_IN_REQUIRED = 'ORG_SSO_SIGN_IN_REQUIRED'
 
 // ── fetch helpers ───────────────────────────────────────────────────────────
 async function authHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
@@ -1928,6 +1933,10 @@ async function apiErrorFromResponse(method: string, path: string, res: Response)
   // the console can work, and no retry helps, so sign out instead of surfacing the
   // failure on every panel. The error is still thrown for the in-flight caller.
   if (res.status === 401 && code === 'ACCOUNT_GONE') void signOutDeletedAccount()
+  // A connection activated while the console was open: the organization list learns which one to sign in through.
+  if (res.status === 403 && code === ORG_SSO_SIGN_IN_REQUIRED && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(ORG_SSO_SIGN_IN_REQUIRED))
+  }
   return new ApiError(message, res.status, code, body)
 }
 
@@ -5954,12 +5963,16 @@ export interface OrgSsoSamlSettings {
 
 export interface OrgSsoConnectionDto {
   id: string
+  /** The identity service's connector, which a direct sign-in through the connection names. */
+  connectorId: string
   protocol: OrgSsoProtocol
   name: string
   status: 'draft' | 'tested' | 'active'
   tested: boolean
   testedAt: string | null
   activatedAt: string | null
+  /** Set while members inside the verified domains must open the organization through the connection. */
+  enforcedAt: string | null
   configChangedAt: string
   /** The connector is gone from the identity service; the settings must be entered again. */
   needsConfiguration: boolean
@@ -5971,6 +5984,8 @@ export interface OrgSsoConnectionDto {
 export interface OrgSsoStateDto {
   domains: OrgSsoDomainDto[]
   connection: OrgSsoConnectionDto | null
+  /** Owner view of an active connection: whether this session could enforce it now, or what stands in the way. */
+  enforce?: 'ready' | 'outside_domains' | 'sign_in_required'
 }
 
 export type OrgSsoDomainCheck = 'ok' | 'not_found' | 'mismatch' | 'lookup_failed'
@@ -6028,6 +6043,14 @@ export async function startOrgSsoTest(
 
 export async function activateOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
   return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/activate`, {})
+}
+
+export async function enforceOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/enforce`, {})
+}
+
+export async function stopEnforcingOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/stop-enforcing`, {})
 }
 
 export async function deactivateOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {

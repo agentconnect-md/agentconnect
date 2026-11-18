@@ -18,13 +18,14 @@ export function ConfirmationDialog({
 }: {
   title: string
   children: ReactNode
-  confirmLabel: string
+  /** Without `onConfirm` the dialog only explains, and offers no confirmation. */
+  confirmLabel?: string
   busy?: boolean
   busyLabel?: string
   error?: string | null
   /** The confirmed action keeps nothing: error-toned glyph and a danger button, the way the delete modals read. */
   destructive?: boolean
-  onConfirm: () => void
+  onConfirm?: () => void
   onClose: () => void
 }) {
   const t = useTranslations('Common.actions')
@@ -66,9 +67,11 @@ export function ConfirmationDialog({
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             {t('cancel')}
           </Button>
-          <Button variant={destructive ? 'danger' : 'primary'} disabled={busy} onClick={onConfirm}>
-            {busy ? busyLabel : confirmLabel}
-          </Button>
+          {onConfirm && (
+            <Button variant={destructive ? 'danger' : 'primary'} disabled={busy} onClick={onConfirm}>
+              {busy ? busyLabel : confirmLabel}
+            </Button>
+          )}
         </div>
       </div>
     </Scrim>

@@ -1,6 +1,10 @@
 {
   "Common": {
     "organizationLoadError": "无法加载你的组织，请检查网络连接后重试。",
+    "organizationSso": {
+      "title": "{org} 需要通过 {name} 登录",
+      "signIn": "使用 {name} 登录"
+    },
     "metadata": {
       "description": "连接即时通信平台与 AI 编程 Agent 的多 Agent 平台"
     },
@@ -5645,6 +5649,8 @@
       "testSignIn": "测试登录",
       "activate": "启用",
       "deactivate": "停用",
+      "enforce": "强制",
+      "stopEnforcing": "停止强制",
       "edit": "编辑",
       "reconfigure": "重新配置",
       "status": {
@@ -5653,6 +5659,7 @@
         "notTested": "未测试",
         "tested": "已测试",
         "active": "已启用",
+        "enforced": "已强制",
         "needsConfiguration": "需要重新配置"
       },
       "problem": {
@@ -5722,6 +5729,18 @@
         "title": "停用 {name}？",
         "body": "这些域名下的邮箱将可以重新用任意方式登录。",
         "deactivating": "正在停用…"
+      },
+      "enforceDialog": {
+        "title": "强制使用 {name}？",
+        "body": "这些域名下的成员（包括所有者）只有通过 <b>{name}</b> 登录后才能进入这个组织。如果 {name} 无法使用，部署管理员可以关闭这项设置。",
+        "signInFirst": "要强制使用，请先通过 <b>{name}</b> 登录。",
+        "signIn": "使用 {name} 登录",
+        "outsideDomains": "只有邮箱在这些域名下的所有者才能强制使用 <b>{name}</b>。",
+        "working": "正在保存…"
+      },
+      "stopEnforcingDialog": {
+        "title": "停止强制使用 {name}？",
+        "body": "这些域名下的成员将可以用任何方式登录后进入这个组织。<b>{name}</b> 仍保持启用。"
       },
       "verifyDialog": {
         "title": "验证 {domain}？",

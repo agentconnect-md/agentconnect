@@ -32,14 +32,18 @@ export type OrgSsoSettings =
 
 export interface OrgSsoConnectionView {
   id: string
+  /** The identity service's connector, which a direct sign-in through the connection names. */
+  connectorId: string
   protocol: OrgSsoProtocol
   name: string
-  /** `active` enforces single sign-on for the organization's domains whether or not the current settings were tested. */
+  /** `active` binds the organization's domains whether or not the current settings were tested. */
   status: 'draft' | 'tested' | 'active'
   /** A sign-in through the connection has succeeded since its settings last changed. */
   tested: boolean
   testedAt: Date | null
   activatedAt: Date | null
+  /** Set while members inside the verified domains must reach the organization from a session signed in through the connection (§4.5). */
+  enforcedAt: Date | null
   configChangedAt: Date
   serviceProvider: OrgSsoServiceProvider
   /** Read from the identity service only for an owner's `get`; null otherwise and when the connector is gone. */
@@ -222,7 +226,50 @@ export class OrgSsoConnectionService {
     return this.view(row)
   }
 
-  /** Lifts the restriction on the organization's domains, an open test window's included; people already linked can still sign in through the connection. */
+  /** Enforce an active connection per session (§4.5): an owner inside the domains, signed in through it now, shows an owner can get in under the rule. */
+  async enforce(
+    orgId: string,
+    actorUserId: string,
+    actor: { subject: string | null; signInConnectorId: string | null }
+  ): Promise<OrgSsoConnectionView | 'none' | 'inactive' | 'outside_domains' | 'sign_in_required'> {
+    const { connections, clock } = this.deps
+    const current = await connections.getForOrg(orgId)
+    if (!current) return 'none'
+    if (current.activatedAt === null) return 'inactive'
+    const blocked = await this.enforceBlockedBy(current, actor)
+    if (blocked) return blocked
+    const row = await connections.enforce(orgId, new Date(clock.now()), actorUserId)
+    return row ? this.view(row) : 'inactive'
+  }
+
+  /** Whether this caller could enforce now; null when the connection is not active. */
+  async enforceReadiness(
+    orgId: string,
+    actor: { subject: string | null; signInConnectorId: string | null }
+  ): Promise<'ready' | 'outside_domains' | 'sign_in_required' | null> {
+    const current = await this.deps.connections.getForOrg(orgId)
+    if (!current || current.activatedAt === null) return null
+    return (await this.enforceBlockedBy(current, actor)) ?? 'ready'
+  }
+
+  private async enforceBlockedBy(
+    current: OrgSsoConnectionRecord,
+    actor: { subject: string | null; signInConnectorId: string | null }
+  ): Promise<'outside_domains' | 'sign_in_required' | null> {
+    const { domains, idp } = this.deps
+    const email = actor.subject === null ? null : ((await idp.account(actor.subject))?.primaryEmail ?? null)
+    const domain = email === null ? null : email.slice(email.lastIndexOf('@') + 1).toLowerCase()
+    if (domain === null || !(await domains.verifiedDomains(current.orgId)).includes(domain)) return 'outside_domains'
+    if (actor.signInConnectorId !== current.logtoConnectorId) return 'sign_in_required'
+    return null
+  }
+
+  async stopEnforcing(orgId: string, actorUserId: string): Promise<OrgSsoConnectionView | null> {
+    const row = await this.deps.connections.stopEnforcing(orgId, actorUserId)
+    return row ? this.view(row) : null
+  }
+
+  /** Lifts the restriction on the organization's domains, an open test window's and the enforcement included; people already linked can still sign in through the connection. */
   async deactivate(orgId: string, actorUserId: string): Promise<OrgSsoConnectionView | null> {
     const { connections, clock } = this.deps
     const row = await connections.deactivate(orgId, new Date(clock.now()), actorUserId)
@@ -332,12 +379,14 @@ export class OrgSsoConnectionService {
     const tested = isTested(row)
     return {
       id: row.id,
+      connectorId: row.logtoConnectorId,
       protocol: row.protocol,
       name: row.name,
       status: row.activatedAt ? 'active' : tested ? 'tested' : 'draft',
       tested,
       testedAt: row.testedAt,
       activatedAt: row.activatedAt,
+      enforcedAt: row.enforcedAt,
       configChangedAt: row.configChangedAt,
       serviceProvider: this.serviceProvider(row.protocol, row.logtoConnectorId),
       settings: settings === 'missing' ? null : settings,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LogtoAdminClaimClient, LogtoManagementError } from '../src/server/logto-management.js'
+import { ACCESS_TOKEN_CLAIMS_SCRIPT } from '@agentconnect.md/control-plane/org-sso-token-claims'
 
 const config = {
   endpoint: 'https://login.example.test',
@@ -528,7 +529,8 @@ describe('Logto setup reconciliation', () => {
 })
 
 describe('Logto SSO connector', () => {
-  function fakeLogto(options: { rejectConfig?: string } = {}) {
+  function fakeLogto(options: { rejectConfig?: string; accessTokenClaims?: Record<string, unknown> } = {}) {
+    let accessTokenClaims = options.accessTokenClaims
     const ssoConnectors: Record<string, unknown>[] = []
     let minted = 0
     const patches: Record<string, unknown>[] = []
@@ -581,6 +583,10 @@ describe('Logto SSO connector', () => {
         return response(signInExperience)
       }
       if (url.pathname === '/api/sign-in-exp') return response(signInExperience)
+      if (url.pathname === '/api/configs/jwt-customizer/access-token') {
+        if (init?.method === 'PUT') accessTokenClaims = JSON.parse(String(init.body)) as Record<string, unknown>
+        return accessTokenClaims ? response(accessTokenClaims) : response({ code: 'entity.not_found' }, 404)
+      }
       if (url.pathname === '/api/roles' && url.search)
         return response([{ id: 'r', name: 'ADMIN', type: 'User', isDefault: false }])
       return response({}, 404)
@@ -589,7 +595,8 @@ describe('Logto SSO connector', () => {
       client: new LogtoAdminClaimClient(config, fetcher),
       ssoConnectors,
       patches,
-      signInExperience: () => signInExperience
+      signInExperience: () => signInExperience,
+      accessTokenClaims: () => accessTokenClaims
     }
   }
 
@@ -722,6 +729,40 @@ describe('Logto SSO connector', () => {
     expect(logto.ssoConnectors).toEqual([owned])
     await expect(logto.client.inspectSetup({ ...desired, ssoRemoved: true })).resolves.toMatchObject({ sso: null })
     await expect(logto.client.deleteManagedSsoConnectors()).resolves.toEqual([])
+  })
+
+  it('owns the access-token claims script only while organizations run their own SSO', async () => {
+    const handWritten = { script: 'const getCustomJwtClaims = async () => ({ roles: [] })' }
+    const logto = fakeLogto({ accessTokenClaims: handWritten })
+    const desired = { ...base, socialProviders: [], organizationSso: true }
+
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({
+      tokenClaims: {
+        matches: false,
+        diff: [{ field: 'Access token claims', current: 'Different script', expected: 'Managed script' }]
+      }
+    })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({ tokenClaimsChanged: true })
+    expect(logto.accessTokenClaims()).toEqual({ script: ACCESS_TOKEN_CLAIMS_SCRIPT })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({ tokenClaimsChanged: false })
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({
+      tokenClaims: { matches: true, diff: [] }
+    })
+
+    // Without the declaration the script is not Setup's, so it is neither checked nor replaced.
+    const other = fakeLogto({ accessTokenClaims: handWritten })
+    await expect(other.client.inspectSetup({ ...base, socialProviders: [] })).resolves.toMatchObject({
+      tokenClaims: null
+    })
+    await expect(other.client.reconcileSetup({ ...base, socialProviders: [] })).resolves.toMatchObject({
+      tokenClaimsChanged: false
+    })
+    expect(other.accessTokenClaims()).toEqual(handWritten)
+    // A deployment with no script yet gets one.
+    const empty = fakeLogto()
+    await expect(empty.client.inspectSetup(desired)).resolves.toMatchObject({
+      tokenClaims: { matches: false, diff: [{ current: 'Missing' }] }
+    })
   })
 
   it('names a connector deleted in Logto and carries Logto’s reason for a refused setting', async () => {

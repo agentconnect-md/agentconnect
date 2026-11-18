@@ -3175,12 +3175,16 @@ export const OrgSsoServiceProviderDto = z.union([
 // `settings` and `needsConfiguration` are read from the identity service only by an owner's GET; other responses carry null and false.
 export const OrgSsoConnectionDto = z.object({
   id: z.string(),
+  /** The identity service's connector, which a direct sign-in through the connection names. */
+  connectorId: z.string(),
   protocol: z.enum(['oidc', 'saml']),
   name: z.string(),
   status: z.enum(['draft', 'tested', 'active']),
   tested: z.boolean(),
   testedAt: z.string().nullable(),
   activatedAt: z.string().nullable(),
+  /** Set while members inside the verified domains must open the organization from a session signed in through the connection. */
+  enforcedAt: z.string().nullable(),
   configChangedAt: z.string(),
   serviceProvider: OrgSsoServiceProviderDto,
   needsConfiguration: z.boolean(),
@@ -3204,7 +3208,9 @@ export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
 /** `connection` is null until one is configured, and on a deployment that cannot manage connections. */
 export const OrgSsoStateDto = z.object({
   domains: z.array(OrgSsoDomainDto),
-  connection: OrgSsoConnectionDto.nullable()
+  connection: OrgSsoConnectionDto.nullable(),
+  /** Owner view of an active connection: whether this caller could enforce it now, or what stands in the way. */
+  enforce: z.enum(['ready', 'outside_domains', 'sign_in_required']).optional()
 })
 
 const OrgSsoConnectionName = z.string().trim().min(1).max(64)
@@ -3342,6 +3348,8 @@ export const OrgDto = z.object({
   /** Registered daemons in this org (any status) — lets the console skip the
    *  onboarding redirect when ANY of the caller's orgs already runs a daemon. */
   daemonCount: z.number().int(),
+  /** In `GET /orgs`: the SSO connection this browser session must sign in through before it opens the organization; null when it may. */
+  ssoSignIn: z.object({ connectorId: z.string(), name: z.string() }).nullable().optional(),
   createdAt: z.string() // ISO-8601
 })
 export const OrgListDto = z.array(OrgDto)

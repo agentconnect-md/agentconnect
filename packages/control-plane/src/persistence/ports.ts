@@ -9047,6 +9047,8 @@ export interface OrgSsoConnectionRecord {
   testExpiresAt: Date | null
   testedAt: Date | null
   activatedAt: Date | null
+  /** Set while an active connection is enforced per session (§4.5); deactivating clears it. */
+  enforcedAt: Date | null
   configChangedAt: Date
   createdAt: Date
 }
@@ -9054,7 +9056,7 @@ export interface OrgSsoConnectionRecord {
 /** One connection per organization (organization-sso.md §3). Every state change is audited with its actor. */
 export interface OrgSsoConnectionRepo {
   getForOrg(orgId: string): Promise<OrgSsoConnectionRecord | null>
-  /** Create the row or record a configuration change; the test result no longer stands, and an open test window ends at `at`. */
+  /** Create the row or record a configuration change; the test result no longer stands, enforcing stops, and an open test window ends at `at`. */
   save(
     input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol; name: string },
     at: Date,
@@ -9072,14 +9074,20 @@ export interface OrgSsoConnectionRepo {
   closeTest(id: string, now: Date): Promise<void>
   /** Null when the organization has no connection. */
   activate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
-  /** Also ends an open test window at `at`, since it binds the same domains; null when the organization has no connection. */
+  /** Enforce an active connection per session; null when the organization has no active connection. */
+  enforce(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Null when the organization has no connection. */
+  stopEnforcing(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Also ends an open test window at `at`, since it binds the same domains, and the enforcement; null when the organization has no connection. */
   deactivate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
   /** Delete + audit; null when the organization has no connection. */
   remove(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
   /** System tier: the connections that own these identity-service connectors. */
   findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
   /** System tier: every verified domain of an active connection, with the connector it signs in through. */
-  listActiveDomains(): Promise<{ domain: string; connectorId: string; name: string }[]>
+  listActiveDomains(): Promise<
+    { domain: string; orgId: string; connectorId: string; name: string; enforced: boolean }[]
+  >
   /** Grant the membership a first sign-in through the connection earns, once; `recorded` means an earlier join stands, whatever became of the membership. */
   joinOnce(
     orgId: string,

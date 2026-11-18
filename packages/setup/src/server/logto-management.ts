@@ -8,6 +8,7 @@ import {
   LOGTO_LOGIN_APPS
 } from '../logto-connectors.js'
 import { ADMIN_ROLE } from './auth.js'
+import { ACCESS_TOKEN_CLAIMS_SCRIPT } from '@agentconnect.md/control-plane/org-sso-token-claims'
 
 const MANAGED_APP_TAG = 'agentconnectSetup'
 const MANAGED_APP_TAG_VALUE = { version: 1, resource: 'browser' } as const
@@ -53,6 +54,9 @@ export interface LogtoSetupDesired {
 
 const singleSignOnDesired = (desired: LogtoSetupDesired): boolean =>
   desired.sso !== undefined || desired.organizationSso === true
+
+/** Organization SSO reads how a session signed in from the access token, so Setup owns the identity service's access-token claims script then. */
+const ACCESS_TOKEN_CLAIMS_PATH = '/api/configs/jwt-customizer/access-token'
 
 /** The SSO connector's IdP settings, in Logto's own config shape. */
 export interface LogtoSsoDesired {
@@ -151,6 +155,8 @@ export interface LogtoSetupInspection {
   sso: { id: string; exists: boolean; matches: boolean; diff: LogtoConfigurationDiff[] } | null
   signInExperienceMatches: boolean
   signInExperienceDiff: LogtoConfigurationDiff[]
+  /** Null when Setup does not own the access-token claims script. */
+  tokenClaims: { matches: boolean; diff: LogtoConfigurationDiff[] } | null
 }
 
 export interface LogtoSetupReconcileResult {
@@ -160,6 +166,7 @@ export interface LogtoSetupReconcileResult {
   sso: { id: string; changed: boolean } | null
   ssoConnectorsDeleted: string[]
   signInExperienceChanged: boolean
+  tokenClaimsChanged: boolean
   adminRoleCreated: boolean
 }
 
@@ -539,8 +546,10 @@ export class LogtoAdminClaimClient {
       : desired.ssoRemoved
         ? await this.inspectRemovedSsoConnector()
         : null
+    const tokenClaims = desired.organizationSso === true ? await this.inspectTokenClaims() : null
     return {
       sso,
+      tokenClaims,
       application: {
         id: application?.id ?? null,
         exists: application !== undefined,
@@ -612,6 +621,7 @@ export class LogtoAdminClaimClient {
       desired.socialProviders,
       singleSignOnDesired(desired)
     )
+    const tokenClaimsChanged = desired.organizationSso === true ? await this.ensureTokenClaims() : false
     const adminRoleCreated = (await this.ensureAdminRole()).created
     return {
       changed:
@@ -620,12 +630,14 @@ export class LogtoAdminClaimClient {
         (sso?.changed ?? false) ||
         ssoConnectorsDeleted.length > 0 ||
         signInExperienceChanged ||
+        tokenClaimsChanged ||
         adminRoleCreated,
       application,
       connectors,
       sso,
       ssoConnectorsDeleted,
       signInExperienceChanged,
+      tokenClaimsChanged,
       adminRoleCreated
     }
   }
@@ -1067,6 +1079,44 @@ export class LogtoAdminClaimClient {
         singleSignOnEnabled: sso,
         signInMode: 'SignInAndRegister'
       })
+    })
+    return true
+  }
+
+  /** The installed access-token claims script, or null when none is set. */
+  private async accessTokenClaimsScript(): Promise<string | null> {
+    try {
+      const script = asRecord(await this.getJson(ACCESS_TOKEN_CLAIMS_PATH)).script
+      return typeof script === 'string' ? script : null
+    } catch (error) {
+      if (error instanceof LogtoManagementError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  private async inspectTokenClaims(): Promise<{ matches: boolean; diff: LogtoConfigurationDiff[] }> {
+    const current = await this.accessTokenClaimsScript()
+    const matches = current === ACCESS_TOKEN_CLAIMS_SCRIPT
+    return {
+      matches,
+      diff: matches
+        ? []
+        : [
+            {
+              field: 'Access token claims',
+              current: current === null ? 'Missing' : 'Different script',
+              expected: 'Managed script'
+            }
+          ]
+    }
+  }
+
+  private async ensureTokenClaims(): Promise<boolean> {
+    if ((await this.accessTokenClaimsScript()) === ACCESS_TOKEN_CLAIMS_SCRIPT) return false
+    await this.request(ACCESS_TOKEN_CLAIMS_PATH, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ script: ACCESS_TOKEN_CLAIMS_SCRIPT })
     })
     return true
   }

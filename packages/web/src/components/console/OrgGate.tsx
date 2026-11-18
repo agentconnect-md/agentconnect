@@ -1,15 +1,19 @@
 'use client'
 
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import { LoadingState } from '@/components/marks'
+import { LoadingState, OrgIconView } from '@/components/marks'
 import { Button } from '@/components/ui'
-import { useOrgs } from '@/lib/org-context'
+import { currentUser, loginWithSso } from '@/lib/auth'
+import type { OrgDto } from '@/lib/api'
+import { writeFlowState } from '@/lib/flow-state'
+import { orgColor, useOrgs } from '@/lib/org-context'
 import { MOCK_MODE } from '@/lib/data'
 
 export function OrgGate({ children }: { children: ReactNode }) {
   const { activeOrg, loading, error, refreshOrgs } = useOrgs()
   const t = useTranslations('Common')
+  if (activeOrg?.ssoSignIn) return <OrgSsoSignIn org={activeOrg} connection={activeOrg.ssoSignIn} />
   if (MOCK_MODE || activeOrg) return children
   if (error) {
     return (
@@ -24,4 +28,49 @@ export function OrgGate({ children }: { children: ReactNode }) {
     )
   }
   return <LoadingState fill />
+}
+
+// The organization accepts this browser session only once it signs in through its SSO connection (organization-sso.md §4.5).
+function OrgSsoSignIn({ org, connection }: { org: OrgDto; connection: { connectorId: string; name: string } }) {
+  const t = useTranslations('Common.organizationSso')
+  const [pending, setPending] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const orgName = org.name ?? org.slug
+
+  const signIn = async () => {
+    setPending(true)
+    setFailed(null)
+    try {
+      // The sign-in lands on the callback, which returns here.
+      writeFlowState('returnTo', window.location.pathname + window.location.search)
+      await loginWithSso(connection.connectorId, currentUser()?.email ?? undefined)
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e))
+      setPending(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-64 flex-col items-center justify-center gap-4 p-6 text-center">
+      <OrgIconView
+        icon={org.icon}
+        iconUrl={org.iconUrl}
+        label={orgName}
+        fallbackColor={orgColor(org.id)}
+        size={40}
+        className="rounded-md text-[18px]"
+      />
+      <h1 className="font-sans text-[18px] leading-normal font-semibold text-(--text-primary)">
+        {t('title', { org: orgName, name: connection.name })}
+      </h1>
+      <Button disabled={pending} onClick={() => void signIn()}>
+        {t('signIn', { name: connection.name })}
+      </Button>
+      {failed && (
+        <p role="alert" className="text-[13px] text-(--status-error)">
+          {failed}
+        </p>
+      )}
+    </div>
+  )
 }

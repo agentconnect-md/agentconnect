@@ -82,6 +82,12 @@
       "import": "./dist/http/slack-manifest.js",
       "default": "./dist/http/slack-manifest.js"
     },
+    "./org-sso-token-claims": {
+      "development": "./src/org-sso/token-claims.ts",
+      "types": "./dist/org-sso/token-claims.d.ts",
+      "import": "./dist/org-sso/token-claims.js",
+      "default": "./dist/org-sso/token-claims.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",

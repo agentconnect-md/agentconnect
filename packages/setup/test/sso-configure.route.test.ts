@@ -92,6 +92,7 @@ function server() {
           sso: desired.sso ? { id: desired.sso.connectorId, changed: true } : null,
           ssoConnectorsDeleted: [],
           signInExperienceChanged: true,
+          tokenClaimsChanged: false,
           adminRoleCreated: false
         }
       },

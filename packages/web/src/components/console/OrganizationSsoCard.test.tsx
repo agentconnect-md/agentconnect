@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   startOrgSsoTest: vi.fn(),
   activateOrgSsoConnection: vi.fn(),
   removeOrgSsoConnection: vi.fn(),
+  enforceOrgSsoConnection: vi.fn(),
+  stopEnforcingOrgSsoConnection: vi.fn(),
   loginWithSso: vi.fn()
 }))
 
@@ -27,7 +29,9 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   saveOrgSsoConnection: mocks.saveOrgSsoConnection,
   startOrgSsoTest: mocks.startOrgSsoTest,
   activateOrgSsoConnection: mocks.activateOrgSsoConnection,
-  removeOrgSsoConnection: mocks.removeOrgSsoConnection
+  removeOrgSsoConnection: mocks.removeOrgSsoConnection,
+  enforceOrgSsoConnection: mocks.enforceOrgSsoConnection,
+  stopEnforcingOrgSsoConnection: mocks.stopEnforcingOrgSsoConnection
 }))
 vi.mock('@/lib/auth', () => ({
   currentUser: () => ({ name: 'Dana', email: 'dana@acme.example', initials: 'D' }),
@@ -51,12 +55,14 @@ const domain = (name: string, patch: Partial<OrgSsoDomainDto> = {}): OrgSsoDomai
 
 const connection = (patch: Partial<OrgSsoConnectionDto> = {}): OrgSsoConnectionDto => ({
   id: 'conn',
+  connectorId: 'connector-1',
   protocol: 'oidc',
   name: 'Example IdP',
   status: 'draft',
   tested: false,
   testedAt: null,
   activatedAt: null,
+  enforcedAt: null,
   configChangedAt: '2026-01-01T00:00:00Z',
   needsConfiguration: false,
   settings: { issuer: 'https://idp.example.test', clientId: 'client', scope: 'openid email', hasClientSecret: true },
@@ -162,7 +168,7 @@ describe('organization single sign-on card', () => {
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Activate', 'Edit'])
 
     await render({ domains, connection: connection({ status: 'active', tested: true }) })
-    expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Deactivate'])
+    expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Enforce', 'Deactivate'])
     // An active connection is named on each domain it binds.
     expect(host.textContent).toContain('VerifiedExample IdP')
 
@@ -323,6 +329,50 @@ describe('organization single sign-on card', () => {
     )
     await click('Activate', dialog())
     expect(dialog().textContent).toContain('the DNS record could not be confirmed for acme.example')
+  })
+
+  it('offers Enforce on an active connection and explains what stands in the way', async () => {
+    const active = connection({ status: 'active', tested: true, activatedAt: '2026-01-02T00:00:00Z' })
+    await render({ domains: [domain('acme.example')], connection: active, enforce: 'ready' })
+    expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Enforce', 'Deactivate'])
+    await click('Enforce', host)
+    expect(dialog().textContent).toContain(
+      'owners included, will open this organization only after signing in through Example IdP'
+    )
+    mocks.enforceOrgSsoConnection.mockResolvedValue({ ...active, enforcedAt: '2026-01-03T00:00:00Z' })
+    await click('Enforce', dialog())
+    expect(mocks.enforceOrgSsoConnection).toHaveBeenCalledWith('org-test')
+
+    // Not signed in through the connection: the dialog leads there instead.
+    await render({ domains: [domain('acme.example')], connection: active, enforce: 'sign_in_required' })
+    await click('Enforce', host)
+    expect(dialog().textContent).toContain('To enforce, first sign in through Example IdP.')
+    await click('Sign in with Example IdP', dialog())
+    expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-1', 'dana@acme.example')
+    expect(mocks.enforceOrgSsoConnection).toHaveBeenCalledTimes(1)
+
+    // An owner outside the domains is told why, with nothing to confirm.
+    await render({ domains: [domain('acme.example')], connection: active, enforce: 'outside_domains' })
+    await click('Enforce', host)
+    expect(dialog().textContent).toContain('Only an owner with an address on these domains can enforce Example IdP.')
+    expect(buttons(dialog()).filter((label) => label !== 'Close')).toEqual(['Cancel'])
+  })
+
+  it('shows an enforced connection and stops enforcing after a confirmation', async () => {
+    const enforced = connection({
+      status: 'active',
+      tested: true,
+      activatedAt: '2026-01-02T00:00:00Z',
+      enforcedAt: '2026-01-03T00:00:00Z'
+    })
+    await render({ domains: [domain('acme.example')], connection: enforced, enforce: 'ready' })
+    expect(host.textContent).toContain('Enforced')
+    expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Stop enforcing', 'Deactivate'])
+    await click('Stop enforcing', host)
+    expect(dialog().textContent).toContain('Example IdP stays active')
+    mocks.stopEnforcingOrgSsoConnection.mockResolvedValue({ ...enforced, enforcedAt: null })
+    await click('Stop enforcing', dialog())
+    expect(mocks.stopEnforcingOrgSsoConnection).toHaveBeenCalledWith('org-test')
   })
 
   it('removes the connection from its edit dialog after a confirmation', async () => {
