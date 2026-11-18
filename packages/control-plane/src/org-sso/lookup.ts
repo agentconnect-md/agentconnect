@@ -12,6 +12,8 @@ export interface OrgSsoSignInConnector {
 /** An organization's active connection and the verified domains it holds. */
 export interface OrgSsoActiveConnection extends OrgSsoSignInConnector {
   domains: ReadonlySet<string>
+  /** Members inside the domains must reach the organization from a session signed in through it (§4.5). */
+  enforced: boolean
 }
 
 interface Snapshot {
@@ -68,7 +70,12 @@ export class OrgSsoSignInLookup {
     const byOrg = new Map<string, OrgSsoActiveConnection & { domains: Set<string> }>()
     for (const row of await this.deps.connections.listActiveDomains()) {
       byDomain.set(row.domain, { connectorId: row.connectorId, name: row.name })
-      const org = byOrg.get(row.orgId) ?? { connectorId: row.connectorId, name: row.name, domains: new Set<string>() }
+      const org = byOrg.get(row.orgId) ?? {
+        connectorId: row.connectorId,
+        name: row.name,
+        enforced: row.enforced,
+        domains: new Set<string>()
+      }
       org.domains.add(row.domain)
       byOrg.set(row.orgId, org)
     }

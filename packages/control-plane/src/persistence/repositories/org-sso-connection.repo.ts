@@ -113,6 +113,34 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
     })
   }
 
+  enforce(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null> {
+    return this.inTransaction(async (tx) => {
+      const current = await tx.orgSsoConnection.findUnique({ where: { orgId } })
+      if (!current || current.activatedAt === null) return null
+      if (current.enforcedAt !== null) return toRecord(current)
+      const row = await tx.orgSsoConnection.update({ where: { orgId }, data: { enforcedAt: at } })
+      await this.audit(tx, orgId, actorUserId, 'single sign-on enforced', {
+        action: 'connection_enforced',
+        connectionId: row.id
+      })
+      return toRecord(row)
+    })
+  }
+
+  stopEnforcing(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null> {
+    return this.inTransaction(async (tx) => {
+      const current = await tx.orgSsoConnection.findUnique({ where: { orgId } })
+      if (!current) return null
+      if (current.enforcedAt === null) return toRecord(current)
+      const row = await tx.orgSsoConnection.update({ where: { orgId }, data: { enforcedAt: null } })
+      await this.audit(tx, orgId, actorUserId, 'single sign-on no longer enforced', {
+        action: 'connection_enforcement_stopped',
+        connectionId: row.id
+      })
+      return toRecord(row)
+    })
+  }
+
   deactivate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null> {
     return this.inTransaction(async (tx) => {
       const current = await tx.orgSsoConnection.findUnique({ where: { orgId } })
@@ -121,7 +149,12 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
       // A test window binds the same domains, so it ends too; it stays on the row until they are unbound.
       const row = await tx.orgSsoConnection.update({
         where: { orgId },
-        data: { activatedAt: null, testNonceHash: null, testExpiresAt: current.testExpiresAt ? at : null }
+        data: {
+          activatedAt: null,
+          enforcedAt: null,
+          testNonceHash: null,
+          testExpiresAt: current.testExpiresAt ? at : null
+        }
       })
       const wasActive = current.activatedAt !== null
       await this.audit(
@@ -157,11 +190,14 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
     return rows.map(toRecord)
   }
 
-  async listActiveDomains(): Promise<{ domain: string; orgId: string; connectorId: string; name: string }[]> {
+  async listActiveDomains(): Promise<
+    { domain: string; orgId: string; connectorId: string; name: string; enforced: boolean }[]
+  > {
     const rows = await this.db.orgSsoConnection.findMany({
       where: { activatedAt: { not: null } },
       select: {
         orgId: true,
+        enforcedAt: true,
         logtoConnectorId: true,
         name: true,
         org: { select: { domains: { where: { verifiedAt: { not: null } }, select: { domain: true } } } }
@@ -172,7 +208,8 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
         domain,
         orgId: row.orgId,
         connectorId: row.logtoConnectorId,
-        name: row.name
+        name: row.name,
+        enforced: row.enforcedAt !== null
       }))
     )
   }

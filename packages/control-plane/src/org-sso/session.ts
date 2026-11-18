@@ -1,4 +1,4 @@
-/** Per-session enforcement (organization-sso.md §4.5): an address in an organization's verified domains reaches it only from a session signed in through its connection. */
+/** Per-session enforcement (organization-sso.md §4.5): once an owner enforces it, an address in the organization's verified domains reaches it only from a session signed in through its connection. */
 import type { Clock } from '../domain/clock.js'
 import type { OrgSsoIdp } from './idp.js'
 import type { OrgSsoSignInConnector, OrgSsoSignInLookup } from './lookup.js'
@@ -31,7 +31,7 @@ export class OrgSsoSessionRule {
   /** The connection this session must sign in through before it reaches the organization, or null when it may. */
   async requirement(orgId: string, session: OrgSsoSession): Promise<OrgSsoSignInConnector | null> {
     const active = await this.deps.lookup.activeFor(orgId)
-    if (!active || session.ssoConnectorId === active.connectorId) return null
+    if (!active?.enforced || session.ssoConnectorId === active.connectorId) return null
     const email = await this.address(session.subject)
     if (email === null || !active.domains.has(domainOf(email))) return null
     // A connector gone from the identity service needs configuring again; nobody can sign in through it, so it does not lock anyone out.

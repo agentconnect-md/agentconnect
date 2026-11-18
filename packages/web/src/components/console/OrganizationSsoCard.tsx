@@ -533,11 +533,6 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
         >
           <DomainList domains={verified} />
           {t.rich('activateDialog.body', { name: connection.name, b: strong })}
-          {state?.ownerOutsideDomains === false && (
-            <p role="alert" className="mt-2 text-(--status-error)">
-              {t('activateDialog.noOwnerOutside', { name: connection.name })}
-            </p>
-          )}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'deactivate' && connection && (

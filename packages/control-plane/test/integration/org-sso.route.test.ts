@@ -101,7 +101,7 @@ describe('organization SSO domains', () => {
     try {
       const res = await app.http.inject({ method: 'GET', url: SSO })
       expect(res.statusCode).toBe(200)
-      expect(res.json()).toEqual({ domains: [], connection: null, ownerOutsideDomains: true })
+      expect(res.json()).toEqual({ domains: [], connection: null })
     } finally {
       await app.shutdown()
     }

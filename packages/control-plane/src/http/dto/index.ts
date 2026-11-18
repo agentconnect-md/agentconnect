@@ -3181,6 +3181,8 @@ export const OrgSsoConnectionDto = z.object({
   tested: z.boolean(),
   testedAt: z.string().nullable(),
   activatedAt: z.string().nullable(),
+  /** Set while members inside the verified domains must open the organization from a session signed in through the connection. */
+  enforcedAt: z.string().nullable(),
   configChangedAt: z.string(),
   serviceProvider: OrgSsoServiceProviderDto,
   needsConfiguration: z.boolean(),
@@ -3204,9 +3206,7 @@ export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
 /** `connection` is null until one is configured, and on a deployment that cannot manage connections. */
 export const OrgSsoStateDto = z.object({
   domains: z.array(OrgSsoDomainDto),
-  connection: OrgSsoConnectionDto.nullable(),
-  /** Owner view: whether some owner's address is outside the verified domains, and so keeps a way in when the identity provider fails. */
-  ownerOutsideDomains: z.boolean().optional()
+  connection: OrgSsoConnectionDto.nullable()
 })
 
 const OrgSsoConnectionName = z.string().trim().min(1).max(64)

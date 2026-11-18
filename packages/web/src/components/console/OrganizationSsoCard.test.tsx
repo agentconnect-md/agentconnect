@@ -57,6 +57,7 @@ const connection = (patch: Partial<OrgSsoConnectionDto> = {}): OrgSsoConnectionD
   tested: false,
   testedAt: null,
   activatedAt: null,
+  enforcedAt: null,
   configChangedAt: '2026-01-01T00:00:00Z',
   needsConfiguration: false,
   settings: { issuer: 'https://idp.example.test', clientId: 'client', scope: 'openid email', hasClientSecret: true },
@@ -323,22 +324,6 @@ describe('organization single sign-on card', () => {
     )
     await click('Activate', dialog())
     expect(dialog().textContent).toContain('the DNS record could not be confirmed for acme.example')
-  })
-
-  it('says at activation when no owner keeps a way in outside the domains, and still activates', async () => {
-    const tested = connection({ status: 'tested', tested: true })
-    await render({ domains: [domain('acme.example')], connection: tested, ownerOutsideDomains: true })
-    await click('Activate', host)
-    expect(dialog().textContent).not.toContain('No owner has an address outside these domains')
-
-    await render({ domains: [domain('acme.example')], connection: tested, ownerOutsideDomains: false })
-    await click('Activate', host)
-    expect(dialog().textContent).toContain(
-      'No owner has an address outside these domains. If Example IdP stops working, no owner will be able to open this organization.'
-    )
-    mocks.activateOrgSsoConnection.mockResolvedValue(undefined)
-    await click('Activate', dialog())
-    expect(mocks.activateOrgSsoConnection).toHaveBeenCalledWith('org-test')
   })
 
   it('removes the connection from its edit dialog after a confirmation', async () => {

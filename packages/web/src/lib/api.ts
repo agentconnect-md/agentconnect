@@ -5969,6 +5969,8 @@ export interface OrgSsoConnectionDto {
   tested: boolean
   testedAt: string | null
   activatedAt: string | null
+  /** Set while members inside the verified domains must open the organization through the connection. */
+  enforcedAt: string | null
   configChangedAt: string
   /** The connector is gone from the identity service; the settings must be entered again. */
   needsConfiguration: boolean
@@ -5980,8 +5982,6 @@ export interface OrgSsoConnectionDto {
 export interface OrgSsoStateDto {
   domains: OrgSsoDomainDto[]
   connection: OrgSsoConnectionDto | null
-  /** Owner view: whether some owner's address is outside the verified domains. */
-  ownerOutsideDomains?: boolean
 }
 
 export type OrgSsoDomainCheck = 'ok' | 'not_found' | 'mismatch' | 'lookup_failed'

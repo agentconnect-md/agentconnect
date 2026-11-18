@@ -56,6 +56,7 @@ function connectionDto(view: OrgSsoConnectionView): OrgSsoConnectionDtoT {
     tested: view.tested,
     testedAt: view.testedAt?.toISOString() ?? null,
     activatedAt: view.activatedAt?.toISOString() ?? null,
+    enforcedAt: view.enforcedAt?.toISOString() ?? null,
     configChangedAt: view.configChangedAt.toISOString(),
     serviceProvider: view.serviceProvider,
     needsConfiguration: view.needsConfiguration,
@@ -107,17 +108,6 @@ const domainNotFound = (reply: FastifyReply) =>
 
 /** Owner-only routes mounted inside `/orgs/:orgId`, and only on a deployment that declares organization SSO. */
 export function orgSsoRoutes(deps: HttpDeps) {
-  // An owner with no known address counts as inside: the activation dialog warns rather than reassures.
-  const ownerOutside = async (orgId: string, listed: readonly { domain: string; status: string }[]) => {
-    const verified = new Set(listed.filter((d) => d.status === 'verified').map((d) => d.domain))
-    const members = await deps.repos.user.listMembers(orgId)
-    return members.some(
-      (m) =>
-        m.role === 'owner' &&
-        m.email !== null &&
-        !verified.has(m.email.slice(m.email.lastIndexOf('@') + 1).toLowerCase())
-    )
-  }
   return async function orgSsoRoutesPlugin(app: FastifyInstance): Promise<void> {
     const domains = deps.orgSsoDomains
     if (!domains) return
@@ -132,7 +122,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Get the organization single sign-on setup',
           description:
-            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service, and `ownerOutsideDomains` whether some owner’s address is outside the verified domains. Other members get the verified domains and the connection without its settings.',
+            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service. Other members get the verified domains and the connection without its settings.',
           operationId: 'getOrganizationSso',
           response: { 200: OrgSsoStateDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
         }
@@ -145,8 +135,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           const listed = await domains.list(orgId)
           return {
             domains: (owner ? listed : listed.filter((domain) => domain.status === 'verified')).map(toDto),
-            connection: connection ? connectionDto(connection) : null,
-            ...(owner ? { ownerOutsideDomains: await ownerOutside(orgId, listed) } : {})
+            connection: connection ? connectionDto(connection) : null
           }
         })
       }
@@ -424,6 +413,65 @@ export function orgSsoRoutes(deps: HttpDeps) {
       }
     )
 
+    r.post(
+      '/sso/connection/enforce',
+      {
+        config,
+        schema: {
+          tags: [Tag.Organizations],
+          summary: 'Enforce the single sign-on connection',
+          description:
+            'Owner-only. From now on a member whose address is in the organization’s verified domains opens it only from a session signed in through the connection; members outside those domains are unaffected. The connection must be active, and the caller’s own address must be in the verified domains (409 `SSO_ENFORCER_OUTSIDE_DOMAINS` otherwise), so the owner who turns the rule on is bound by it. A deployment administrator can stop enforcing when the identity provider breaks.',
+          operationId: 'enforceOrganizationSsoConnection',
+          response: {
+            200: OrgSsoConnectionDto,
+            401: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        const { orgId } = req.orgCtx!
+        return withIdp(reply, async () => {
+          const outcome = await connections.enforce(orgId, req.principal!.userId, req.oidcSubject ?? null)
+          if (outcome === 'none') return connectionNotFound(reply)
+          if (outcome === 'inactive') return conflict(reply, 'SSO_NOT_ACTIVE', 'activate the connection first')
+          if (outcome === 'outside_domains') {
+            return conflict(
+              reply,
+              'SSO_ENFORCER_OUTSIDE_DOMAINS',
+              'only an owner whose address is in the verified domains can enforce the connection'
+            )
+          }
+          return connectionDto(outcome)
+        })
+      }
+    )
+
+    r.post(
+      '/sso/connection/stop-enforcing',
+      {
+        config,
+        schema: {
+          tags: [Tag.Organizations],
+          summary: 'Stop enforcing the single sign-on connection',
+          description:
+            'Owner-only. Members whose address is in the verified domains open the organization from any session again; the connection stays active.',
+          operationId: 'stopEnforcingOrganizationSsoConnection',
+          response: { 200: OrgSsoConnectionDto, 401: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        const view = await connections.stopEnforcing(req.orgCtx!.orgId, req.principal!.userId)
+        return view ? connectionDto(view) : connectionNotFound(reply)
+      }
+    )
+
     r.delete(
       '/sso/connection',
       {
@@ -555,6 +603,28 @@ export function orgSsoRootRoutes(deps: HttpDeps) {
           const view = await connections.deactivate(req.params.orgId, userId)
           return view ? connectionDto(view) : connectionNotFound(reply)
         })
+      }
+    )
+
+    r.post(
+      '/admin/orgs/:orgId/sso/connection/stop-enforcing',
+      {
+        preHandler: app.humanAuth,
+        config,
+        schema: {
+          tags: [Tag.Organizations],
+          summary: 'Stop enforcing an organization’s single sign-on connection (admin)',
+          description:
+            'A deployment administrator’s recovery path when an identity provider breaks after enforcing: members open the organization from any session again, without being a member and without deactivating the connection. 403 for anyone else; 404 when the organization has no connection.',
+          operationId: 'adminStopEnforcingOrganizationSsoConnection',
+          params: AdminOrgParams,
+          response: { 200: OrgSsoConnectionDto, 401: ErrorDto, 403: ErrorDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!isDeploymentAdmin(req)) return adminOnly(reply)
+        const view = await connections.stopEnforcing(req.params.orgId, req.principal!.userId)
+        return view ? connectionDto(view) : connectionNotFound(reply)
       }
     )
 

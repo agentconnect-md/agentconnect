@@ -5718,8 +5718,7 @@
       "activateDialog": {
         "title": "启用 {name}？",
         "body": "这些域名下的邮箱将只能通过 <b>{name}</b> 登录。",
-        "activating": "正在启用…",
-        "noOwnerOutside": "没有哪位所有者的邮箱在这些域名之外。如果 {name} 无法使用，将没有任何所有者能进入这个组织。"
+        "activating": "正在启用…"
       },
       "deactivateDialog": {
         "title": "停用 {name}？",

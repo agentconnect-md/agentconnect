@@ -27,6 +27,7 @@ const AUDIENCE = 'org-sso-session-test'
 const OWNER_SUBJECT = 'subject-owner'
 const MEMBER_SUBJECT = 'subject-member'
 const MEMBER_EMAIL = 'member@acme.example'
+const INSIDE_OWNER_SUBJECT = 'subject-inside-owner'
 
 /** The identity service in memory: connectors by id and accounts by subject. */
 class FakeIdp implements OrgSsoIdp {
@@ -203,9 +204,27 @@ async function testedConnection(): Promise<string> {
   return test.connectorId
 }
 
+/** A second owner whose own address is inside the verified domain; only such an owner may enforce. */
+async function insideOwner(): Promise<void> {
+  const users = new PgUserRepo(prisma)
+  await users.provisionOidcUser({ oidcSubject: INSIDE_OWNER_SUBJECT, email: 'boss@acme.example', emailVerified: true })
+  await users.addMemberByEmail(DEFAULT_ORG_ID, 'boss@acme.example', 'owner')
+  idp.accounts.set(INSIDE_OWNER_SUBJECT, { primaryEmail: 'boss@acme.example', connectorIds: [] })
+}
+
+const enforce = async (connectorId: string) =>
+  app.inject({
+    method: 'POST',
+    url: `${SSO}/connection/enforce`,
+    headers: await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId))
+  })
+
+/** Activate the connection and have an owner inside the domain enforce it; returns its connector id. */
 async function activeConnection(): Promise<string> {
   const connectorId = await testedConnection()
   expect((await ownerPost(`${SSO}/connection/activate`)).statusCode).toBe(200)
+  await insideOwner()
+  expect((await enforce(connectorId)).statusCode).toBe(200)
   clock.advance(ORG_SSO_LOOKUP_TTL_MS)
   return connectorId
 }
@@ -255,16 +274,27 @@ describe('organization SSO per session', () => {
     expect((await orgList(await as(MEMBER_SUBJECT))).find((o) => o.id === other.id)?.ssoSignIn).toBeNull()
   })
 
-  it('enforces only while the connection is active and its connector exists', async () => {
+  it('enforces only once an owner signed in through the connection enforces it', async () => {
     await memberInDomain()
     const connectorId = await testedConnection()
-    // A tested connection, and a test window, do not enforce.
+    // A tested connection, a test window and an active connection that is not enforced do not refuse anyone.
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
     expect((await ownerPost(`${SSO}/connection/test`)).statusCode).toBe(200)
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
-
+    const early = await ownerPost(`${SSO}/connection/enforce`)
+    expect(early.json()).toMatchObject({ code: 'SSO_NOT_ACTIVE' })
     expect((await ownerPost(`${SSO}/connection/activate`)).statusCode).toBe(200)
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
+
+    // Only an owner whose own address is inside the domains may enforce, since the rule then binds them too.
+    const refused = await ownerPost(`${SSO}/connection/enforce`)
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'SSO_ENFORCER_OUTSIDE_DOMAINS' })
+    await insideOwner()
+    const enforced = await enforce(connectorId)
+    expect(enforced.json()).toMatchObject({ status: 'active', enforcedAt: expect.any(String) })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
 
@@ -272,24 +302,6 @@ describe('organization SSO per session', () => {
     idp.connectors.delete(connectorId)
     clock.advance(ORG_SSO_SESSION_CACHE_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
-  })
-
-  it('tells an owner whether some owner keeps an address outside the verified domains', async () => {
-    await testedConnection()
-    const state = async () =>
-      (
-        (await app.inject({ method: 'GET', url: SSO, headers: await owner() })).json() as {
-          ownerOutsideDomains?: boolean
-        }
-      ).ownerOutsideDomains
-    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { email: 'owner@example.test' } })
-    expect(await state()).toBe(true)
-    await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { email: 'owner@acme.example' } })
-    expect(await state()).toBe(false)
-    // A member's view leaves it out.
-    await memberInDomain()
-    const seen = (await app.inject({ method: 'GET', url: SSO, headers: await as(MEMBER_SUBJECT) })).json() as object
-    expect(seen).not.toHaveProperty('ownerOutsideDomains')
   })
 
   it('applies to an owner inside the domains like any member', async () => {
@@ -301,11 +313,37 @@ describe('organization SSO per session', () => {
     expect((await agents(await as(OWNER_SUBJECT, viaConnector(connectorId)))).statusCode).toBe(200)
   })
 
-  it('lifts the rule on deactivation', async () => {
+  it('lifts the rule when an owner or a deployment administrator stops enforcing, and on deactivation', async () => {
     await memberInDomain()
     await activeConnection()
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
-    expect((await ownerPost(`${SSO}/connection/deactivate`)).statusCode).toBe(200)
+    const stopped = await ownerPost(`${SSO}/connection/stop-enforcing`)
+    expect(stopped.json()).toMatchObject({ status: 'active', enforcedAt: null })
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
+
+    // The administrator's recovery path needs no membership; a member cannot use it.
+    const connectorId = idp.connectors.keys().next().value!
+    await enforce(connectorId)
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
+    const adminPath = `/api/v1/admin/orgs/${DEFAULT_ORG_ID}/sso/connection/stop-enforcing`
+    expect((await app.inject({ method: 'POST', url: adminPath, headers: await as(MEMBER_SUBJECT) })).statusCode).toBe(
+      403
+    )
+    const admin = await app.inject({
+      method: 'POST',
+      url: adminPath,
+      headers: await as('subject-admin', { roles: ['ADMIN'], email: 'admin@example.test' })
+    })
+    expect(admin.json()).toMatchObject({ enforcedAt: null })
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
+
+    // Deactivating ends the enforcement too, so activating again does not bring it back.
+    await enforce(connectorId)
+    expect((await ownerPost(`${SSO}/connection/deactivate`)).json()).toMatchObject({ enforcedAt: null })
+    expect((await ownerPost(`${SSO}/connection/activate`)).json()).toMatchObject({ enforcedAt: null })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
   })

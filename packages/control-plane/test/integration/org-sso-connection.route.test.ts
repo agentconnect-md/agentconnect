@@ -629,11 +629,7 @@ describe('organization SSO connection', () => {
     // Releasing a verified domain ends the identities established on its word: the connector goes with it.
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/sso/domains/${domainId}` })).statusCode).toBe(204)
     expect(idp.connectors.size).toBe(0)
-    expect((await app.inject({ method: 'GET', url: SSO })).json()).toEqual({
-      domains: [],
-      connection: null,
-      ownerOutsideDomains: true
-    })
+    expect((await app.inject({ method: 'GET', url: SSO })).json()).toEqual({ domains: [], connection: null })
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/sso/domains/${domainId}` })).statusCode).toBe(404)
   })
 

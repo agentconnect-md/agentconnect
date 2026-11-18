@@ -5718,8 +5718,7 @@
       "activateDialog": {
         "title": "Activate {name}?",
         "body": "Addresses on these domains will only be able to sign in through <b>{name}</b>.",
-        "activating": "Activating…",
-        "noOwnerOutside": "No owner has an address outside these domains. If {name} stops working, no owner will be able to open this organization."
+        "activating": "Activating…"
       },
       "deactivateDialog": {
         "title": "Deactivate {name}?",
