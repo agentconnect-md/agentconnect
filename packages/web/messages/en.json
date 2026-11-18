@@ -5649,6 +5649,8 @@
       "testSignIn": "Test sign-in",
       "activate": "Activate",
       "deactivate": "Deactivate",
+      "enforce": "Enforce",
+      "stopEnforcing": "Stop enforcing",
       "edit": "Edit",
       "reconfigure": "Reconfigure",
       "status": {
@@ -5657,6 +5659,7 @@
         "notTested": "Not tested",
         "tested": "Tested",
         "active": "Active",
+        "enforced": "Enforced",
         "needsConfiguration": "Needs configuration"
       },
       "problem": {
@@ -5726,6 +5729,18 @@
         "title": "Deactivate {name}?",
         "body": "Addresses on these domains will be able to sign in with any method again.",
         "deactivating": "Deactivating…"
+      },
+      "enforceDialog": {
+        "title": "Enforce {name}?",
+        "body": "Members with addresses on these domains, owners included, will open this organization only after signing in through <b>{name}</b>. If {name} stops working, a deployment administrator can turn this off.",
+        "signInFirst": "To enforce, first sign in through <b>{name}</b>.",
+        "signIn": "Sign in with {name}",
+        "outsideDomains": "Only an owner with an address on these domains can enforce <b>{name}</b>.",
+        "working": "Saving…"
+      },
+      "stopEnforcingDialog": {
+        "title": "Stop enforcing {name}?",
+        "body": "Members with addresses on these domains will open this organization from any sign-in again. <b>{name}</b> stays active."
       },
       "verifyDialog": {
         "title": "Verify {domain}?",

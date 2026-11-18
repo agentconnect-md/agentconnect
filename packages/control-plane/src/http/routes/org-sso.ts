@@ -50,6 +50,7 @@ function toDto(view: OrgDomainView): OrgSsoDomainDtoT {
 function connectionDto(view: OrgSsoConnectionView): OrgSsoConnectionDtoT {
   return {
     id: view.id,
+    connectorId: view.connectorId,
     protocol: view.protocol,
     name: view.name,
     status: view.status,
@@ -122,7 +123,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Get the organization single sign-on setup',
           description:
-            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service. Other members get the verified domains and the connection without its settings.',
+            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service, and `enforce` whether the caller could enforce an active connection now. Other members get the verified domains and the connection without its settings.',
           operationId: 'getOrganizationSso',
           response: { 200: OrgSsoStateDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
         }
@@ -133,9 +134,17 @@ export function orgSsoRoutes(deps: HttpDeps) {
         return withIdp(reply, async () => {
           const connection = (await connections?.get(orgId, { withSettings: owner })) ?? null
           const listed = await domains.list(orgId)
+          const enforce =
+            owner && connection?.status === 'active' && connections
+              ? await connections.enforceReadiness(orgId, {
+                  subject: req.oidcSubject ?? null,
+                  signInConnectorId: req.signInSsoConnectorId ?? null
+                })
+              : null
           return {
             domains: (owner ? listed : listed.filter((domain) => domain.status === 'verified')).map(toDto),
-            connection: connection ? connectionDto(connection) : null
+            connection: connection ? connectionDto(connection) : null,
+            ...(enforce ? { enforce } : {})
           }
         })
       }

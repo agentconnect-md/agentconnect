@@ -5963,6 +5963,8 @@ export interface OrgSsoSamlSettings {
 
 export interface OrgSsoConnectionDto {
   id: string
+  /** The identity service's connector, which a direct sign-in through the connection names. */
+  connectorId: string
   protocol: OrgSsoProtocol
   name: string
   status: 'draft' | 'tested' | 'active'
@@ -5982,6 +5984,8 @@ export interface OrgSsoConnectionDto {
 export interface OrgSsoStateDto {
   domains: OrgSsoDomainDto[]
   connection: OrgSsoConnectionDto | null
+  /** Owner view of an active connection: whether this session could enforce it now, or what stands in the way. */
+  enforce?: 'ready' | 'outside_domains' | 'sign_in_required'
 }
 
 export type OrgSsoDomainCheck = 'ok' | 'not_found' | 'mismatch' | 'lookup_failed'
@@ -6039,6 +6043,14 @@ export async function startOrgSsoTest(
 
 export async function activateOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
   return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/activate`, {})
+}
+
+export async function enforceOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/enforce`, {})
+}
+
+export async function stopEnforcingOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {
+  return apiPost<OrgSsoConnectionDto>(`${orgBase(orgId)}/sso/connection/stop-enforcing`, {})
 }
 
 export async function deactivateOrgSsoConnection(orgId?: string): Promise<OrgSsoConnectionDto> {

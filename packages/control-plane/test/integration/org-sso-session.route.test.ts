@@ -318,6 +318,20 @@ describe('organization SSO per session', () => {
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
   })
 
+  it('tells an owner whether they could enforce now', async () => {
+    const connectorId = await testedConnection()
+    const readiness = async (headers: Record<string, string>) =>
+      ((await app.inject({ method: 'GET', url: SSO, headers })).json() as { enforce?: string }).enforce
+    expect(await readiness(await owner())).toBeUndefined()
+    expect((await ownerPost(`${SSO}/connection/activate`)).statusCode).toBe(200)
+    expect(await readiness(await owner())).toBe('outside_domains')
+    await insideOwner()
+    expect(await readiness(await as(INSIDE_OWNER_SUBJECT))).toBe('sign_in_required')
+    expect(await readiness(await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId)))).toBe('ready')
+    await memberInDomain()
+    expect(await readiness(await as(MEMBER_SUBJECT, viaConnector(connectorId)))).toBeUndefined()
+  })
+
   it('stops enforcing when the settings change, so untested settings are never enforced', async () => {
     await memberInDomain()
     await activeConnection()

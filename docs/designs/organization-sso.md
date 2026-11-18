@@ -229,7 +229,14 @@ who enforces the connection makes the organization check it on every request:
 
 - **Two steps.** Activating binds the domains and routes their addresses to the
   connection (§4.1). Enforcing is a separate owner action on an active connection,
-  and stopping it leaves the connection active.
+  and stopping it leaves the connection active. The settings card offers "Enforce"
+  beside "Deactivate" on an active connection, and "Stop enforcing" once the
+  connection reads as enforced. The Enforce dialog lists the domains and says the
+  rule includes owners; when the owner may not enforce yet, it says why instead: an
+  owner outside the domains is told only such an owner can, with nothing to
+  confirm, and an owner inside them who did not sign in through the connection is
+  offered that sign-in, which returns to the card. `GET /sso` tells an owner which
+  of these applies (`enforce`).
 - **The rule.** A request to an enforced organization, from an account whose address
   is in that organization's verified domains, must come from a browser session whose
   latest sign-in went through its connection. Otherwise it is refused with 403
@@ -462,7 +469,7 @@ Each step merges on its own.
    after a sign-in, the settings card, and the page a test sign-in lands on.
 6. **Per session** (landed): the access-token claims script and its drift check, the
    enforce step and the check of §4.5, `ssoSignIn` on `GET /orgs`, and the console's
-   sign-in step for an organization. The card's Enforce control follows separately.
+   sign-in step for an organization, and the card's Enforce and Stop enforcing.
 7. **User documentation**, once the feature is complete, naming the minimum Logto
    release and saying that activating alone leaves a member with another linked
    sign-in identity able to reach the organization until it is enforced.

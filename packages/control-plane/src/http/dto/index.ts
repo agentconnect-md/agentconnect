@@ -3175,6 +3175,8 @@ export const OrgSsoServiceProviderDto = z.union([
 // `settings` and `needsConfiguration` are read from the identity service only by an owner's GET; other responses carry null and false.
 export const OrgSsoConnectionDto = z.object({
   id: z.string(),
+  /** The identity service's connector, which a direct sign-in through the connection names. */
+  connectorId: z.string(),
   protocol: z.enum(['oidc', 'saml']),
   name: z.string(),
   status: z.enum(['draft', 'tested', 'active']),
@@ -3206,7 +3208,9 @@ export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
 /** `connection` is null until one is configured, and on a deployment that cannot manage connections. */
 export const OrgSsoStateDto = z.object({
   domains: z.array(OrgSsoDomainDto),
-  connection: OrgSsoConnectionDto.nullable()
+  connection: OrgSsoConnectionDto.nullable(),
+  /** Owner view of an active connection: whether this caller could enforce it now, or what stands in the way. */
+  enforce: z.enum(['ready', 'outside_domains', 'sign_in_required']).optional()
 })
 
 const OrgSsoConnectionName = z.string().trim().min(1).max(64)
