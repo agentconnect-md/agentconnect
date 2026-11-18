@@ -142,7 +142,7 @@ it('says the provider returned no usable address when the landed account is refu
   await land('?code=abc')
   expect(host.textContent).toContain('Sign-in test failed')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-    'Example IdP returned no verified email address in this organization'
+    'Example IdP returned no email address in this organization'
   )
   expect(host.textContent).toContain('Attributes the provider sent')
   expect([...host.querySelectorAll('li')].map((li) => li.textContent)).toEqual([

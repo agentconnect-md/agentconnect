@@ -132,11 +132,18 @@ if the new settings are wrong and nobody can sign in, a deployment `ADMIN`
 deactivates. Changing the protocol starts a new connector with new service-provider
 values.
 
-An organization-owned OIDC connection never trusts an unverified email; the
-`trustUnverifiedEmail` option stays a deployment-connector setting. A provider whose
-ID token carries no `email_verified` claim therefore yields an account with no
-address over OIDC, which the sign-in check refuses (§5); such a provider connects
-over SAML, with the email attribute set to the one its assertion actually carries.
+An organization-owned OIDC connection takes the address as the provider sends it,
+whether or not the ID token marks it verified: the connector is always written with
+`trustUnverifiedEmail` on, and the owner has no setting for it. The flag is the
+provider's own statement, and the owner chose the provider, so requiring it would
+stop no owner and would only shut out providers whose tokens carry no
+`email_verified` claim. What bounds the address is unchanged: the identity service
+links by address only inside the connector's `domains`, and the sign-in check admits
+only an address inside the organization's verified domains (§5). What this accepts
+is the organization's own risk: a provider that lets its users set their own address
+lets one of them present a colleague's address in the same domains. A SAML
+connection has no such flag; its email attribute must name one the assertion
+carries, or the account arrives with no address and is refused.
 
 Configuration changes, activation and deactivation are audited with their actor, owner
 or `ADMIN`.
@@ -225,11 +232,11 @@ Three parts provide them.
 - **The Control Plane, at sign-in.** Before a subject is admitted, an account that
   holds an identity on an organization's connection must have its address inside
   that organization's verified domains. Otherwise the sign-in is refused. An account
-  with no address at all is refused the same way: the provider withheld the address
-  or sent it without marking it verified, and the account would be a member of
-  nothing. An account that has no local user yet is also removed from the identity
-  service; one that has is left for an administrator. The refusal is audited without
-  the address. It answers `403 SSO_ADDRESS_REQUIRED` with
+  with no address at all is refused the same way: the provider sent none, or the
+  connection reads it from a claim or attribute the provider does not send, and the
+  account would be a member of nothing. An account that has no local user yet is
+  also removed from the identity service; one that has is left for an administrator.
+  The refusal is audited without the address. It answers `403 SSO_ADDRESS_REQUIRED` with
   `details: { attributes: string[], addressAttributes: string[] }`. `attributes` are
   the keys of the `detail` Logto stores on the account's identity on that connector,
   read before the account is removed (raw attribute names over SAML, mapped profile
