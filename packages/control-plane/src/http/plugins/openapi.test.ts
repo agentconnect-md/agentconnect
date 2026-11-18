@@ -38,6 +38,7 @@ function stubDeps(): HttpDeps {
     capabilityRequests: {},
     orgSsoDomains: {},
     orgSsoConnections: {},
+    orgSsoLookup: {},
     // Mounted only with the surface; its handlers are never reached here.
     azureDevOps: {},
     github: {},

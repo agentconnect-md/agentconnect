@@ -11,6 +11,7 @@ import { OrgSsoAdmission } from '../../src/org-sso/admission.js'
 import { ORG_SSO_TEST_TTL_MS, OrgSsoConnectionService } from '../../src/org-sso/connections.js'
 import { OrgSsoDomainService } from '../../src/org-sso/domains.js'
 import { OrgSsoIdpRejected, type OrgSsoAccount, type OrgSsoIdp } from '../../src/org-sso/idp.js'
+import { ORG_SSO_LOOKUP_TTL_MS, OrgSsoSignInLookup } from '../../src/org-sso/lookup.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const SSO = `/api/v1/orgs/${DEFAULT_ORG_ID}/sso`
@@ -115,6 +116,7 @@ let idp: FakeIdp
 let domains: OrgSsoDomainService
 let connections: OrgSsoConnectionService
 let admission: OrgSsoAdmission
+let lookup: OrgSsoSignInLookup
 let dns: Map<string, string[]>
 
 beforeEach(async () => {
@@ -131,6 +133,7 @@ beforeEach(async () => {
     idpOrigin: 'https://auth.example.test'
   })
   admission = new OrgSsoAdmission({ connections: repo, domains, idp })
+  lookup = new OrgSsoSignInLookup({ connections: repo, clock })
   await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: OWNER_SUBJECT } })
 })
 
@@ -142,7 +145,8 @@ afterEach(async () => {
 function start(): HttpApp['app'] {
   running = buildHttpApp(prisma, undefined, undefined, undefined, {
     orgSsoDomains: domains,
-    orgSsoConnections: connections
+    orgSsoConnections: connections,
+    orgSsoLookup: lookup
   })
   return running.app
 }
@@ -179,6 +183,7 @@ describe('organization SSO connection', () => {
     running = buildHttpApp(prisma, undefined, undefined, undefined, { orgSsoDomains: domains })
     expect((await save(running.app)).statusCode).toBe(404)
     expect((await post(running.app, '/api/v1/sso/test-result', { nonce: 'n' })).statusCode).toBe(404)
+    expect((await post(running.app, '/api/v1/sign-in/lookup', { email: 'a@example.test' })).statusCode).toBe(404)
     expect(await connectionOf(running.app)).toBeNull()
   })
 
@@ -413,6 +418,33 @@ describe('organization SSO connection', () => {
     expect(await connectionOf(app)).toBeNull()
     expect((await app.inject({ method: 'DELETE', url: `${SSO}/connection` })).statusCode).toBe(404)
     expect((await app.inject({ method: 'DELETE', url: `${SSO}/domains/${domainId}` })).statusCode).toBe(204)
+  })
+
+  it('routes an address to its organization’s connector only while the connection is active', async () => {
+    const app = start()
+    const find = async (email: string) =>
+      ((await post(app, '/api/v1/sign-in/lookup', { email })).json() as { connector: unknown }).connector
+    await save(app)
+    await verifiedDomain(app, 'example.test')
+    await passTest(app)
+    expect(await find('person@example.test')).toBeNull()
+
+    await post(app, `${SSO}/connection/activate`)
+    // The answer comes from a snapshot, so it trails the activation by at most the snapshot's lifetime.
+    expect(await find('person@example.test')).toBeNull()
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
+    const connector = { connectorId: idp.only().id, name: 'Example IdP' }
+    expect(await find('person@example.test')).toEqual(connector)
+    expect(await find(' Someone.Else@EXAMPLE.test ')).toEqual(connector)
+    // By domain alone: a subdomain, another domain and a string that is no address all sign in the other ways.
+    expect(await find('person@sub.example.test')).toBeNull()
+    expect(await find('person@elsewhere.example.test')).toBeNull()
+    expect(await find('example.test')).toBeNull()
+    expect((await post(app, '/api/v1/sign-in/lookup', {})).statusCode).toBe(400)
+
+    await post(app, `${SSO}/connection/deactivate`)
+    clock.advance(ORG_SSO_LOOKUP_TTL_MS)
+    expect(await find('person@example.test')).toBeNull()
   })
 
   it('gives a deployment administrator the two recovery paths', async () => {
