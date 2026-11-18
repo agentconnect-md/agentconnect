@@ -318,6 +318,7 @@ export default function SocialSignInCard({
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
   const handledAutoAuthorize = useRef<string | undefined>(undefined)
   const currentAccount = error ? undefined : account
+  const ssoIdentities = currentAccount?.ssoIdentities ?? []
   const linkedProviderCount = currentAccount
     ? socialLoginProviders().filter((provider) => byTarget(currentAccount, provider.target)).length
     : 0
@@ -515,6 +516,41 @@ export default function SocialSignInCard({
         ) : null}
 
         <div aria-busy={isValidating}>
+          {ssoIdentities.map((sso, index) => (
+            // Read-only: the connection's owner administers this identity, and the identity service cannot remove one alone.
+            <div
+              key={`sso-${index}`}
+              className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3.5 desktop:grid-cols-[170px_minmax(0,1fr)_auto] ${
+                index > 0 ? 'border-t border-(--border-subtle)' : ''
+              }`}
+            >
+              <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-3">
+                <span className="flex h-7 w-7 flex-none items-center justify-center text-(--text-secondary)">
+                  <Icon name="key-round" size={18} />
+                </span>
+                <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">
+                  {sso.connectionName ?? t('ssoUnnamed')}
+                </span>
+              </div>
+              <div className="col-span-2 row-start-2 flex min-h-8 min-w-0 items-center desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
+                {sso.email ? (
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Avatar initials={initialsFrom(sso.connectionName ?? '', sso.email)} size={32} fontSize={11} />
+                    <div className="min-w-0 truncate font-sans text-[13px] font-medium leading-normal">{sso.email}</div>
+                  </div>
+                ) : (
+                  <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+                    {t('linked')}
+                  </span>
+                )}
+              </div>
+              <div className="col-start-2 row-start-1 flex items-center justify-end desktop:col-start-3">
+                <span className="flex-none rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                  {t('ssoBadge')}
+                </span>
+              </div>
+            </div>
+          ))}
           {socialLoginProviders().map((provider, index) => {
             const details = currentAccount ? byTarget(currentAccount, provider.target) : undefined
             const workspace = details?.workspace
@@ -523,7 +559,7 @@ export default function SocialSignInCard({
               <div
                 key={provider.target}
                 className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3.5 desktop:grid-cols-[170px_minmax(0,1fr)_auto] ${
-                  index > 0 ? 'border-t border-(--border-subtle)' : ''
+                  index > 0 || ssoIdentities.length > 0 ? 'border-t border-(--border-subtle)' : ''
                 }`}
               >
                 <div className="col-start-1 row-start-1 flex min-w-0 items-center gap-3">

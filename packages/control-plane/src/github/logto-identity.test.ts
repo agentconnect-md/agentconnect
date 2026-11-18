@@ -93,6 +93,48 @@ describe('LogtoIdentityService.hasSignInIdentity', () => {
   })
 })
 
+describe('LogtoIdentityService SSO display reads', () => {
+  const setup = () => {
+    const urls: string[] = []
+    const user = {
+      identities: {},
+      ssoIdentities: [
+        { ssoConnectorId: 'c1', issuer: 'https://idp.example.test', detail: { email: 'alex@acme.example', sub: 'x' } },
+        { ssoConnectorId: 'c2', issuer: 'https://idp.example.test', detail: {} },
+        { issuer: 'https://idp.example.test' }
+      ]
+    }
+    const fetchImpl: FetchImpl = async (url) => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'tok', expires_in: 3600 })
+      urls.push(url)
+      if (url.includes('/api/sso-connectors/c1')) return Response.json({ branding: { displayName: 'Acme IdP' } })
+      if (url.includes('/api/sso-connectors/')) return new Response('{}', { status: 404 })
+      return url.includes('/api/users/sso') ? Response.json(user) : new Response('{}', { status: 404 })
+    }
+    return { svc: new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl), urls }
+  }
+
+  it('keeps only the connector and address, and serves repeat reads from cache until a refresh', async () => {
+    const { svc, urls } = setup()
+    const expected = [{ connectorId: 'c1', email: 'alex@acme.example' }, { connectorId: 'c2' }]
+    expect(await svc.ssoIdentitiesFor('sso')).toEqual(expected)
+    expect(await svc.ssoIdentitiesFor('sso')).toEqual(expected)
+    expect(urls).toEqual(['https://t.logto.app/api/users/sso?includeSsoIdentities=true'])
+    svc.forgetUser('sso')
+    await svc.ssoIdentitiesFor('sso')
+    expect(urls).toHaveLength(2)
+    expect(await svc.ssoIdentitiesFor('missing')).toEqual([])
+  })
+
+  it("reads a connector's display name once and answers null for one that is gone", async () => {
+    const { svc, urls } = setup()
+    expect(await svc.ssoConnectorNameFor('c1')).toBe('Acme IdP')
+    expect(await svc.ssoConnectorNameFor('c1')).toBe('Acme IdP')
+    expect(await svc.ssoConnectorNameFor('gone')).toBeNull()
+    expect(urls).toHaveLength(2)
+  })
+})
+
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
 /** A Logto user with a Slack identity in the given workspace. Synthetic ids. */

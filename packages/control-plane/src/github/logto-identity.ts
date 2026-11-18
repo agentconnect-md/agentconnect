@@ -123,6 +123,12 @@ export interface SocialIdentitySummary {
   workspace?: { teamId: string; name?: string; domain?: string; url?: string }
 }
 
+/** One SSO identity the account holds, narrowed to the connector it came through and the address it carries. */
+export interface SsoIdentitySummary {
+  connectorId: string
+  email?: string
+}
+
 export interface MicrosoftIdentity {
   objectId: string
   email: string
@@ -255,6 +261,9 @@ export class LogtoIdentityService {
   // its full TTL. Every invalidation bumps the subject's epoch; a lookup only
   // caches its result if the epoch it started under is still current.
   private readonly cacheEpochs = new Map<string, number>()
+  // Display-only SSO reads for the Profile card, invalidated with the user cache.
+  private readonly ssoUsers = new Map<string, { identities: SsoIdentitySummary[]; expiresAt: number }>()
+  private readonly ssoConnectorNames = new Map<string, { name: string | null; expiresAt: number }>()
 
   // The §2.3 identity serving lease (`SESSION_ACCESS_IDENTITY_TTL_SEC` in ms) —
   // safety rests on the epoch fence, so the operator may widen it well past 120 s.
@@ -436,6 +445,41 @@ export class LogtoIdentityService {
     return Array.isArray(ssoIdentities) && ssoIdentities.length > 0
   }
 
+  // The SSO identities an account holds, cached like the user read so a Profile load stays one upstream fetch per lease.
+  async ssoIdentitiesFor(sub: string): Promise<SsoIdentitySummary[]> {
+    const cached = this.ssoUsers.get(sub)
+    if (cached && cached.expiresAt > this.clock.now()) return cached.identities
+    const epoch = this.epochOf(sub)
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}?includeSsoIdentities=true`)
+    if (!res.ok && res.status !== 404) {
+      throw new LogtoApiError(`logto user lookup failed: ${res.status}`, res.status, res.status >= 500)
+    }
+    const body = res.ok ? ((await res.json()) as { ssoIdentities?: unknown }) : {}
+    const identities = Array.isArray(body.ssoIdentities) ? body.ssoIdentities.flatMap(ssoSummaryOf) : []
+    if (this.epochOf(sub) === epoch) {
+      const ttl = res.ok ? this.positiveTtlMs : NEGATIVE_TTL_MS
+      this.setBounded(this.ssoUsers, sub, { identities, expiresAt: this.clock.now() + ttl })
+    }
+    return identities
+  }
+
+  // The display name an SSO connector carries in the identity service; null when it has none or is gone.
+  async ssoConnectorNameFor(connectorId: string): Promise<string | null> {
+    const cached = this.ssoConnectorNames.get(connectorId)
+    if (cached && cached.expiresAt > this.clock.now()) return cached.name
+    let res: Response
+    try {
+      res = await this.request(`/api/sso-connectors/${encodeURIComponent(connectorId)}`)
+    } catch {
+      return null
+    }
+    if (!res.ok && res.status !== 404) return null
+    const body = res.ok ? ((await res.json()) as { branding?: { displayName?: unknown } }) : {}
+    const name = firstString(body.branding?.displayName)?.trim() || null
+    this.setBounded(this.ssoConnectorNames, connectorId, { name, expiresAt: this.clock.now() + LINK_MODE_TTL_MS })
+    return name
+  }
+
   /**
    * Drop the cached user because it was changed somewhere this service cannot
    * see. Linking runs browser→Logto — the Account API is the only side with a
@@ -448,6 +492,7 @@ export class LogtoIdentityService {
     this.bumpEpoch(sub)
     this.users.delete(sub)
     this.userInFlight.delete(sub)
+    this.ssoUsers.delete(sub)
   }
 
   forgetGithubLogin(sub: string): void {
@@ -635,6 +680,7 @@ export class LogtoIdentityService {
     this.loginInFlight.delete(sub)
     this.users.delete(sub)
     this.userInFlight.delete(sub)
+    this.ssoUsers.delete(sub)
   }
 
   private epochOf(sub: string): number {
@@ -779,6 +825,16 @@ export class LogtoIdentityService {
     }
     return body.access_token
   }
+}
+
+// Keeps only the connector id and the identity's address; the issuer and the rest of the detail stay here.
+function ssoSummaryOf(entry: unknown): SsoIdentitySummary[] {
+  if (!entry || typeof entry !== 'object') return []
+  const value = entry as { ssoConnectorId?: unknown; detail?: { email?: unknown } }
+  const connectorId = firstString(value.ssoConnectorId)
+  if (!connectorId) return []
+  const email = firstString(value.detail?.email)
+  return [{ connectorId, ...(email ? { email } : {}) }]
 }
 
 function firstString(...candidates: unknown[]): string | null {
