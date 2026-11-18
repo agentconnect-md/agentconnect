@@ -14,6 +14,21 @@ export interface OrgSsoAccount {
   primaryEmail: string | null
   /** Connectors the account holds an SSO identity on. */
   connectorIds: string[]
+  /** Per connector, the names of the attributes the provider sent on the last sign-in; never their values. */
+  attributeNames: Record<string, string[]>
+  /** Per connector, the attributes whose value is an address, with only its lower-cased domain. */
+  addressAttributes: Record<string, { name: string; domain: string }[]>
+}
+
+const ADDRESS = /^[^\s@]+@([^\s@]+\.[^\s@]+)$/
+
+/** The domain of the first address among a string or an array of strings, or null. */
+function addressDomain(value: unknown): string | null {
+  for (const item of Array.isArray(value) ? value : [value]) {
+    const match = typeof item === 'string' ? ADDRESS.exec(item.trim()) : null
+    if (match) return match[1]!.toLowerCase()
+  }
+  return null
 }
 
 /** `missing` means the connector is gone from the identity service, so the connection needs its configuration again. */
@@ -108,6 +123,28 @@ export class LogtoOrgSsoIdp implements OrgSsoIdp {
       primaryEmail: typeof user.primaryEmail === 'string' && user.primaryEmail ? user.primaryEmail : null,
       connectorIds: identities.flatMap((identity) =>
         typeof identity.ssoConnectorId === 'string' ? [identity.ssoConnectorId] : []
+      ),
+      attributeNames: Object.fromEntries(
+        identities.flatMap((identity) =>
+          typeof identity.ssoConnectorId === 'string'
+            ? [[identity.ssoConnectorId, Object.keys(record(identity.detail))] as const]
+            : []
+        )
+      ),
+      addressAttributes: Object.fromEntries(
+        identities.flatMap((identity) =>
+          typeof identity.ssoConnectorId === 'string'
+            ? [
+                [
+                  identity.ssoConnectorId,
+                  Object.entries(record(identity.detail)).flatMap(([name, value]) => {
+                    const domain = addressDomain(value)
+                    return domain ? [{ name, domain }] : []
+                  })
+                ] as const
+              ]
+            : []
+        )
       )
     }
   }

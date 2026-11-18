@@ -137,19 +137,31 @@ export interface DeletedIdentityStore {
 export type EnsureIdentityFresh = (principal: { userId: string; oidcSubject?: string }) => void
 
 /** Whether a verified subject may use the plane at all: false ⇒ 403, a throw ⇒ 503; absent ⇒ every subject is admitted. */
-export type AdmitOidcSubject = (oidcSubject: string) => Promise<boolean>
+export type AdmitOidcSubject = (oidcSubject: string) => Promise<boolean | SubjectRefusal>
 
-class SubjectRefused extends Error {}
+/** A refusal that names its reason: its code, message and details replace the default 403 body. */
+export interface SubjectRefusal {
+  code: string
+  message: string
+  details?: Record<string, unknown>
+}
+
+class SubjectRefused extends Error {
+  constructor(readonly refusal?: SubjectRefusal) {
+    super('subject refused')
+  }
+}
 class AdmissionUnavailable extends Error {}
 const REFUSAL_TTL_MS = 60_000
 const MAX_REFUSED_SUBJECTS = 10_000
 
-function identityRequired(reply: FastifyReply): FastifyReply {
+function identityRequired(reply: FastifyReply, refusal?: SubjectRefusal): FastifyReply {
   return reply.code(403).send({
     error: 'Forbidden',
     statusCode: 403,
     message: 'this account has no linked sign-in identity',
-    code: 'SIGN_IN_IDENTITY_REQUIRED'
+    code: 'SIGN_IN_IDENTITY_REQUIRED',
+    ...refusal
   })
 }
 
@@ -287,12 +299,12 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // effect immediately.
   const resolved = new Map<string, Promise<{ userId: string }>>()
   // Short negative memo so a refused subject costs no upstream check per request; a 503 is never remembered.
-  const refused = new Map<string, number>()
-  function rememberRefusal(sub: string): void {
+  const refused = new Map<string, { until: number; refusal?: SubjectRefusal }>()
+  function rememberRefusal(sub: string, refusal?: SubjectRefusal): void {
     const now = Date.now()
-    for (const [key, until] of refused) if (until <= now) refused.delete(key)
+    for (const [key, { until }] of refused) if (until <= now) refused.delete(key)
     refused.delete(sub)
-    refused.set(sub, now + REFUSAL_TTL_MS)
+    refused.set(sub, { until: now + REFUSAL_TTL_MS, ...(refusal ? { refusal } : {}) })
     if (refused.size > MAX_REFUSED_SUBJECTS) refused.delete(refused.keys().next().value!)
   }
   // Subjects whose local account was found deleted, and WHEN (epoch seconds) — a
@@ -433,8 +445,8 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // Resolve to a LOCAL user id when a resolver is wired; else fall back to
       // the raw `sub` (no DB). The in-flight promise is cached synchronously so
       // parallel first requests coalesce into ONE signup.
-      const refusedUntil = refused.get(sub)
-      if (refusedUntil !== undefined && Date.now() < refusedUntil) return identityRequired(reply)
+      const memo = refused.get(sub)
+      if (memo !== undefined && Date.now() < memo.until) return identityRequired(reply, memo.refusal)
       let pending = resolved.get(sub)
       if (!pending) {
         pending = (async () => {
@@ -443,7 +455,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
             const admitted = await cfg.admitSubject(sub).catch((err: unknown) => {
               throw new AdmissionUnavailable('subject admission check failed', { cause: err })
             })
-            if (!admitted) throw new SubjectRefused()
+            if (admitted !== true) throw new SubjectRefused(admitted === false ? undefined : admitted)
           }
           return cfg.resolveUser
             ? cfg.resolveUser({
@@ -463,9 +475,9 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         identity = await pending
       } catch (err) {
         if (err instanceof SubjectRefused) {
-          rememberRefusal(sub)
-          req.log.warn({ sub }, 'humanAuth: subject has no linked sign-in identity — refused')
-          return identityRequired(reply)
+          rememberRefusal(sub, err.refusal)
+          req.log.warn({ sub, code: err.refusal?.code }, 'humanAuth: subject has no linked sign-in identity — refused')
+          return identityRequired(reply, err.refusal)
         }
         if (err instanceof AdmissionUnavailable) {
           req.log.warn({ err: err.cause }, 'humanAuth: could not check the sign-in identity — refusing for now')

@@ -99,13 +99,41 @@ describe('LogtoOrgSsoIdp', () => {
         status: 200,
         body: {
           primaryEmail: 'person@example.test',
-          ssoIdentities: [{ ssoConnectorId: 'c1', issuer: 'https://idp.example.test' }, { issuer: 'no-connector' }]
+          ssoIdentities: [
+            {
+              ssoConnectorId: 'c1',
+              issuer: 'https://idp.example.test',
+              detail: {
+                mail: 'person@Example.TEST',
+                upn: 'p',
+                groups: ['admins'],
+                aliases: ['x', 'p@acme.example'],
+                nested: { email: 'n@example.test' }
+              }
+            },
+            { issuer: 'no-connector' }
+          ]
         }
       },
       'GET /api/users/sub-2?includeSsoIdentities=true': { status: 200, body: { primaryEmail: '' } }
     })
-    expect(await idp.account('sub-1')).toEqual({ primaryEmail: 'person@example.test', connectorIds: ['c1'] })
-    expect(await idp.account('sub-2')).toEqual({ primaryEmail: null, connectorIds: [] })
+    expect(await idp.account('sub-1')).toEqual({
+      primaryEmail: 'person@example.test',
+      connectorIds: ['c1'],
+      attributeNames: { c1: ['mail', 'upn', 'groups', 'aliases', 'nested'] },
+      addressAttributes: {
+        c1: [
+          { name: 'mail', domain: 'example.test' },
+          { name: 'aliases', domain: 'acme.example' }
+        ]
+      }
+    })
+    expect(await idp.account('sub-2')).toEqual({
+      primaryEmail: null,
+      connectorIds: [],
+      attributeNames: {},
+      addressAttributes: {}
+    })
     expect(await idp.account('gone')).toBeNull()
   })
 
