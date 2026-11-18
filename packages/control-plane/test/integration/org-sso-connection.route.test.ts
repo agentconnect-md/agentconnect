@@ -14,6 +14,7 @@ import { OrgSsoIdpRejected, type OrgSsoAccount, type OrgSsoIdp } from '../../src
 import { ORG_SSO_LOOKUP_TTL_MS, OrgSsoSignInLookup } from '../../src/org-sso/lookup.js'
 import { OrgSsoMembership } from '../../src/org-sso/membership.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 
 const SSO = `/api/v1/orgs/${DEFAULT_ORG_ID}/sso`
 const OWNER_SUBJECT = 'subject-owner'
@@ -53,6 +54,12 @@ class FakeIdp implements OrgSsoIdp {
       domains: []
     })
     return id
+  }
+
+  async connector(id: string) {
+    this.up()
+    const connector = this.connectors.get(id)
+    return connector ? { config: connector.config ?? {} } : ('missing' as const)
   }
 
   async configure(id: string, input: { displayName: string; config: Record<string, unknown> }) {
@@ -101,6 +108,8 @@ interface ConnectionBody {
   status: 'draft' | 'tested' | 'active'
   tested: boolean
   serviceProvider: Record<string, string>
+  settings: Record<string, unknown> | null
+  needsConfiguration: boolean
 }
 
 const OIDC = {
@@ -182,6 +191,154 @@ async function passTest(app: HttpApp['app'], subject = OWNER_SUBJECT, email = 'o
   expect(res.json()).toEqual({ tested: true })
 }
 
+async function member(role: 'viewer' | 'collaborator') {
+  const repo = new PgUserRepo(prisma)
+  const email = `${role}@acme.example`
+  const { userId } = await repo.provisionOidcUser({ oidcSubject: `subject-${role}`, email, emailVerified: true })
+  await repo.addMemberByEmail(DEFAULT_ORG_ID, email, role)
+  return userId
+}
+
+function startAs(userId: string): HttpApp['app'] {
+  const other = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId }, undefined, undefined, {
+    orgSsoDomains: domains,
+    orgSsoConnections: connections
+  })
+  extra.push(other)
+  return other.app
+}
+
+const extra: HttpApp[] = []
+afterEach(async () => {
+  for (const app of extra.splice(0)) await app.close()
+})
+
+const prepare = (app: HttpApp['app'], protocol: OrgSsoProtocol) =>
+  post(app, `${SSO}/connection/service-provider`, { protocol })
+
+describe('organization SSO settings for the console card', () => {
+  it('reads the saved settings back for an owner without the secret', async () => {
+    const app = start()
+    await save(app, { ...OIDC, scope: 'openid email' })
+    const res = await app.inject({ method: 'GET', url: SSO })
+    expect(res.body).not.toContain('secret-1')
+    expect((res.json() as { connection: object }).connection).toMatchObject({
+      needsConfiguration: false,
+      settings: { issuer: OIDC.issuer, clientId: 'client-1', scope: 'openid email', hasClientSecret: true }
+    })
+  })
+
+  it('reads SAML settings with missing fields as null', async () => {
+    const app = start()
+    await save(app, { protocol: 'saml', name: 'Example IdP', metadataUrl: 'https://idp.example.test/metadata' })
+    expect((await connectionOf(app))?.settings).toEqual({
+      metadataUrl: 'https://idp.example.test/metadata',
+      metadata: null,
+      attributeMapping: {}
+    })
+  })
+
+  it('reports a connector gone from the identity service as needing configuration', async () => {
+    const app = start()
+    await save(app)
+    idp.connectors.clear()
+    expect(await connectionOf(app)).toMatchObject({ needsConfiguration: true, settings: null })
+  })
+
+  it('reads an unconfigured connector as empty settings', async () => {
+    const app = start()
+    await save(app)
+    for (const connector of idp.connectors.values()) connector.config = {}
+    expect(await connectionOf(app)).toMatchObject({
+      needsConfiguration: false,
+      settings: { issuer: '', clientId: '', scope: '', hasClientSecret: false }
+    })
+  })
+
+  it('gives other members the verified domains and the connection without its settings', async () => {
+    const app = start()
+    await verifiedDomain(app, 'acme.example')
+    await post(app, `${SSO}/domains`, { domain: 'pending.acme.example' })
+    await save(app)
+    for (const role of ['collaborator', 'viewer'] as const) {
+      const other = startAs(await member(role))
+      idp.down = true
+      const res = await other.inject({ method: 'GET', url: SSO })
+      idp.down = false
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as { domains: { domain: string }[]; connection: ConnectionBody }
+      expect(body.domains.map((domain) => domain.domain)).toEqual(['acme.example'])
+      expect(body.connection).toMatchObject({ protocol: 'oidc', settings: null, needsConfiguration: false })
+      expect((await save(other)).statusCode).toBe(403)
+      expect((await prepare(other, 'oidc')).statusCode).toBe(403)
+    }
+  })
+
+  it('returns the service-provider values before the first save, and the same ones after it', async () => {
+    const app = start()
+    const before = await prepare(app, 'oidc')
+    expect(before.statusCode).toBe(200)
+    const { serviceProvider } = before.json() as { serviceProvider: { redirectUri: string } }
+    expect(serviceProvider.redirectUri).toBe(`https://auth.example.test/callback/${idp.only().id}`)
+    expect(await connectionOf(app)).toBeNull()
+    expect((await save(app)).json()).toMatchObject({ serviceProvider })
+    expect((await prepare(app, 'oidc')).json()).toEqual({ serviceProvider })
+    expect(idp.connectors.size).toBe(1)
+  })
+
+  it('refuses the other protocol while a connection exists and keeps its connector', async () => {
+    const app = start()
+    await save(app)
+    const kept = idp.only().id
+    const res = await prepare(app, 'saml')
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'SSO_PROTOCOL_MISMATCH' })
+    expect(idp.only().id).toBe(kept)
+  })
+
+  it('creates a fresh connector for a connection whose connector is gone, which the next save adopts', async () => {
+    const app = start()
+    await save(app)
+    idp.connectors.clear()
+    const { serviceProvider } = (await prepare(app, 'oidc')).json() as { serviceProvider: object }
+    expect((await save(app)).json()).toMatchObject({ serviceProvider })
+  })
+
+  it('keeps the stored secret for a save that leaves it out with the same issuer', async () => {
+    const app = start()
+    await save(app)
+    const { clientSecret: _omit, ...withoutSecret } = OIDC
+    const res = await save(app, { ...withoutSecret, clientId: 'client-2' })
+    expect(res.statusCode).toBe(200)
+    expect(idp.only().config).toMatchObject({ clientId: 'client-2', clientSecret: 'secret-1' })
+  })
+
+  it('requires the secret when the issuer changed, without a connection, or when the connector is gone', async () => {
+    const app = start()
+    const { clientSecret: _omit, ...withoutSecret } = OIDC
+    const refused = async (payload: object) => {
+      const res = await save(app, payload)
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({ code: 'SSO_CLIENT_SECRET_REQUIRED', message: 'enter the client secret' })
+    }
+    await refused(withoutSecret)
+    expect(idp.connectors.size).toBe(0)
+    await save(app)
+    await refused({ ...withoutSecret, issuer: 'https://other.example.test' })
+    expect(idp.only().config).toMatchObject({ issuer: OIDC.issuer, clientSecret: 'secret-1' })
+    idp.connectors.clear()
+    await refused(withoutSecret)
+    expect(idp.connectors.size).toBe(0)
+  })
+
+  it('saves a given secret as before, also over a stored one', async () => {
+    const app = start()
+    await save(app)
+    expect((await save(app, { ...OIDC, clientSecret: 'secret-2' })).statusCode).toBe(200)
+    expect(idp.only().config).toMatchObject({ clientSecret: 'secret-2' })
+  })
+})
+
 describe('organization SSO connection', () => {
   it('exists only where the deployment can manage connections', async () => {
     running = buildHttpApp(prisma, undefined, undefined, undefined, { orgSsoDomains: domains })
@@ -215,7 +372,11 @@ describe('organization SSO connection', () => {
       tested: false,
       serviceProvider: { redirectUri: `https://auth.example.test/callback/${connector.id}` }
     })
-    expect(await connectionOf(app)).toEqual(res.json())
+    expect(res.json()).toMatchObject({ settings: null, needsConfiguration: false })
+    expect(await connectionOf(app)).toEqual({
+      ...res.json(),
+      settings: expect.objectContaining({ hasClientSecret: true })
+    })
     // The secret is forwarded, never kept.
     expect(JSON.stringify(await prisma.orgSsoConnection.findMany())).not.toContain('secret-1')
   })

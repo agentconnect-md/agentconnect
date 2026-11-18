@@ -9,7 +9,7 @@ import { orgConnectorName, type OrgSsoIdp } from './idp.js'
 export const ORG_SSO_TEST_TTL_MS = 10 * 60 * 1000
 
 export type OrgSsoConnectionInput =
-  | { protocol: 'oidc'; name: string; issuer: string; clientId: string; clientSecret: string; scope?: string }
+  | { protocol: 'oidc'; name: string; issuer: string; clientId: string; clientSecret?: string; scope?: string }
   | {
       protocol: 'saml'
       name: string
@@ -20,6 +20,15 @@ export type OrgSsoConnectionInput =
 
 /** What the owner enters at the identity provider. */
 export type OrgSsoServiceProvider = { redirectUri: string } | { assertionConsumerServiceUrl: string; entityId: string }
+
+/** The saved settings as the identity service holds them; the client secret is reported only by its presence. */
+export type OrgSsoSettings =
+  | { issuer: string; clientId: string; scope: string; hasClientSecret: boolean }
+  | {
+      metadataUrl: string | null
+      metadata: string | null
+      attributeMapping: { id?: string; email?: string; name?: string }
+    }
 
 export interface OrgSsoConnectionView {
   id: string
@@ -33,6 +42,10 @@ export interface OrgSsoConnectionView {
   activatedAt: Date | null
   configChangedAt: Date
   serviceProvider: OrgSsoServiceProvider
+  /** Read from the identity service only for an owner's `get`; null otherwise and when the connector is gone. */
+  settings: OrgSsoSettings | null
+  /** The connector is gone from the identity service; set only where `settings` was read. */
+  needsConfiguration: boolean
 }
 
 /** `none`: no connection. `needs_configuration`: its connector is gone from the identity service. */
@@ -43,10 +56,33 @@ const isTested = (row: OrgSsoConnectionRecord): boolean =>
 
 const hashNonce = (nonce: string): string => createHash('sha256').update(nonce).digest('hex')
 
+const str = (value: unknown): string | null => (typeof value === 'string' ? value : null)
+
+function settingsOf(protocol: OrgSsoProtocol, config: Record<string, unknown>): OrgSsoSettings {
+  if (protocol === 'oidc') {
+    return {
+      issuer: str(config.issuer) ?? '',
+      clientId: str(config.clientId) ?? '',
+      scope: str(config.scope) ?? '',
+      hasClientSecret: Boolean(str(config.clientSecret))
+    }
+  }
+  const mapping =
+    config.attributeMapping && typeof config.attributeMapping === 'object'
+      ? (config.attributeMapping as Record<string, unknown>)
+      : {}
+  const attributeMapping: { id?: string; email?: string; name?: string } = {}
+  for (const key of ['id', 'email', 'name'] as const) {
+    const value = str(mapping[key])
+    if (value) attributeMapping[key] = value
+  }
+  return { metadataUrl: str(config.metadataUrl), metadata: str(config.metadata), attributeMapping }
+}
+
 // An organization-owned connection never trusts an unverified address (§4.1).
-function connectorConfig(input: OrgSsoConnectionInput): Record<string, unknown> {
+function connectorConfig(input: OrgSsoConnectionInput, clientSecret?: string): Record<string, unknown> {
   if (input.protocol === 'oidc') {
-    const { issuer, clientId, clientSecret, scope } = input
+    const { issuer, clientId, scope } = input
     return { issuer, clientId, clientSecret, ...(scope ? { scope } : {}), trustUnverifiedEmail: false }
   }
   const { metadataUrl, metadata, attributeMapping } = input
@@ -69,14 +105,40 @@ export class OrgSsoConnectionService {
     }
   ) {}
 
-  async get(orgId: string): Promise<OrgSsoConnectionView | null> {
+  /** `withSettings` reads the saved settings back from the identity service. */
+  async get(orgId: string, options: { withSettings?: boolean } = {}): Promise<OrgSsoConnectionView | null> {
     const row = await this.deps.connections.getForOrg(orgId)
-    return row ? this.view(row) : null
+    if (!row) return null
+    if (!options.withSettings) return this.view(row)
+    const stored = await this.deps.idp.connector(row.logtoConnectorId)
+    return this.view(row, stored === 'missing' ? 'missing' : settingsOf(row.protocol, stored.config))
+  }
+
+  /** Create the connector ahead of the first save so the owner can register the service-provider values first; nothing else changes. */
+  async prepare(orgId: string, protocol: OrgSsoProtocol): Promise<OrgSsoServiceProvider | 'protocol_mismatch'> {
+    const row = await this.deps.connections.getForOrg(orgId)
+    // A protocol change would delete the connection's connector, so it waits for an explicit removal.
+    if (row && row.protocol !== protocol) return 'protocol_mismatch'
+    const connectorId = await this.deps.idp.ensureConnector({
+      connectorName: orgConnectorName(orgId),
+      protocol,
+      displayName: row?.name ?? 'SSO'
+    })
+    return this.serviceProvider(protocol, connectorId)
   }
 
   /** Create or change the settings. Throws `OrgSsoIdpRejected` with the identity service's reason. */
-  async save(orgId: string, input: OrgSsoConnectionInput, actorUserId: string): Promise<OrgSsoConnectionView> {
+  async save(
+    orgId: string,
+    input: OrgSsoConnectionInput,
+    actorUserId: string
+  ): Promise<OrgSsoConnectionView | 'secret_required'> {
     const { idp, connections, clock } = this.deps
+    let clientSecret = input.protocol === 'oidc' ? input.clientSecret : undefined
+    if (input.protocol === 'oidc' && !clientSecret) {
+      clientSecret = await this.keptSecret(orgId, input.issuer)
+      if (!clientSecret) return 'secret_required'
+    }
     const connectorId = await idp.ensureConnector({
       connectorName: orgConnectorName(orgId),
       protocol: input.protocol,
@@ -88,7 +150,10 @@ export class OrgSsoConnectionService {
       new Date(clock.now()),
       actorUserId
     )
-    const configured = await idp.configure(connectorId, { displayName: input.name, config: connectorConfig(input) })
+    const configured = await idp.configure(connectorId, {
+      displayName: input.name,
+      config: connectorConfig(input, clientSecret)
+    })
     if (configured === 'missing') throw new LogtoApiError('the sso connector disappeared while it was saved', 0, true)
     await this.settle(row)
     return this.view(row)
@@ -208,6 +273,18 @@ export class OrgSsoConnectionService {
     }
   }
 
+  /** The stored secret, when it may carry over to a save that leaves it out. */
+  private async keptSecret(orgId: string, issuer: string): Promise<string | undefined> {
+    const row = await this.deps.connections.getForOrg(orgId)
+    if (row?.protocol !== 'oidc') return undefined
+    const stored = await this.deps.idp.connector(row.logtoConnectorId)
+    if (stored === 'missing') return undefined
+    const secret = str(stored.config.clientSecret)
+    // The identity service sends the secret to the issuer's token endpoint, so a kept secret must not follow a changed issuer.
+    if (!secret || str(stored.config.issuer) !== issuer) return undefined
+    return secret
+  }
+
   /** Bring the connector's domains in line with the row, closing a test window the row has ended. */
   private async settle(row: OrgSsoConnectionRecord): Promise<void> {
     if (row.testExpiresAt !== null && row.testExpiresAt.getTime() <= this.deps.clock.now()) {
@@ -234,9 +311,18 @@ export class OrgSsoConnectionService {
     return idp.setDomains(row.logtoConnectorId, bound ? await domains.verifiedDomains(row.orgId) : [])
   }
 
-  private view(row: OrgSsoConnectionRecord): OrgSsoConnectionView {
-    const id = encodeURIComponent(row.logtoConnectorId)
+  private serviceProvider(protocol: OrgSsoProtocol, connectorId: string): OrgSsoServiceProvider {
+    const id = encodeURIComponent(connectorId)
     const origin = this.deps.idpOrigin
+    return protocol === 'oidc'
+      ? { redirectUri: `${origin}/callback/${id}` }
+      : {
+          assertionConsumerServiceUrl: `${origin}/api/authn/single-sign-on/saml/${id}`,
+          entityId: `${origin}/enterprise-sso/${id}`
+        }
+  }
+
+  private view(row: OrgSsoConnectionRecord, settings: OrgSsoSettings | 'missing' | null = null): OrgSsoConnectionView {
     const tested = isTested(row)
     return {
       id: row.id,
@@ -247,13 +333,9 @@ export class OrgSsoConnectionService {
       testedAt: row.testedAt,
       activatedAt: row.activatedAt,
       configChangedAt: row.configChangedAt,
-      serviceProvider:
-        row.protocol === 'oidc'
-          ? { redirectUri: `${origin}/callback/${id}` }
-          : {
-              assertionConsumerServiceUrl: `${origin}/api/authn/single-sign-on/saml/${id}`,
-              entityId: `${origin}/enterprise-sso/${id}`
-            }
+      serviceProvider: this.serviceProvider(row.protocol, row.logtoConnectorId),
+      settings: settings === 'missing' ? null : settings,
+      needsConfiguration: settings === 'missing'
     }
   }
 }

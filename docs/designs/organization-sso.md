@@ -38,7 +38,9 @@ identity provider. Four things are missing:
 
 Two tables in the Control Plane. Identity provider settings and the client secret stay
 in Logto, which already owns them for the deployment connector; the Control Plane
-forwards a secret on save and does not keep it.
+forwards a secret on save and does not keep it. The settings card reads the saved
+settings back from Logto when an owner opens it, with the secret reported only by
+whether one is stored.
 
 ```
 org_sso_connection
@@ -76,7 +78,8 @@ The rows are the desired state. A write to Logto follows the row and sets a whol
 value, so a retry or a second Control Plane instance converges on the same result. If
 the Logto connector is gone, after an identity service was rebuilt for instance, the
 connection shows as needing its configuration again: the secret is not kept, so the
-connector cannot be recreated on the owner's behalf.
+connector cannot be recreated on the owner's behalf. The owner's view finds this when
+it reads the settings back and the connector is not there.
 
 The Logto connector is named after the organization id. `connectorName` is unique in
 Logto, and the Setup-managed connector keeps its fixed name, so the two never collide.
@@ -93,7 +96,12 @@ One card in organization settings, three steps in order:
 2. **Configure the connection and test it.** OIDC takes issuer, client id, client
    secret and scopes; SAML takes a metadata URL or document and an attribute mapping.
    The card shows the callback URL, ACS URL and entity id to enter at the identity
-   provider. An OIDC save always carries the client secret, since it is not kept.
+   provider. These exist before the first save: the connector is created first, with
+   no settings, so the owner can register the application at the identity provider
+   and then enter the client id and secret it issues. An OIDC save carries the client
+   secret unless the issuer is unchanged, in which case Logto keeps the stored one;
+   Logto sends the secret to the issuer's token endpoint, so a secret never carries
+   over to a different issuer.
    "Test sign-in" needs a verified domain. It opens the test window, mints a one-time
    nonce and starts a sign-in directly against this connector. The landing page
    presents the nonce; the Control Plane marks the connection tested when the account
@@ -222,20 +230,21 @@ public mail domains.
 
 ## 6. API
 
-Under `/orgs/:orgId/sso`, owner-only and `interactiveOnly` (they manage how an
-organization's people authenticate, and one of them carries a client secret):
+Under `/orgs/:orgId/sso`, `interactiveOnly` (they manage how an organization's people
+authenticate, and one of them carries a client secret), and owner-only except `GET /`:
 
-| Route                         | Purpose                                                          |
-| ----------------------------- | ---------------------------------------------------------------- |
-| `GET /`                       | Domains, connection state, the service-provider values to show.  |
-| `POST /domains`               | Add a domain; returns the challenge.                             |
-| `POST /domains/:id/verify`    | Resolve the TXT record now.                                      |
-| `DELETE /domains/:id`         | Release a domain; a verified one only when no connection exists. |
-| `PUT /connection`             | Create or update the connection; clears the test result.         |
-| `POST /connection/test`       | Open the test window and mint the nonce.                         |
-| `POST /connection/activate`   | Bind the verified domains.                                       |
-| `POST /connection/deactivate` | Unbind.                                                          |
-| `DELETE /connection`          | Remove the connection and the identities it established.         |
+| Route                               | Purpose                                                                                                                                               |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /`                             | Any member: an owner gets domains, connection state, service-provider values and the saved settings; others get verified domains and the state alone. |
+| `POST /connection/service-provider` | Create the connector if needed and return its service-provider values; refused for the other protocol while a connection exists.                      |
+| `POST /domains`                     | Add a domain; returns the challenge.                                                                                                                  |
+| `POST /domains/:id/verify`          | Resolve the TXT record now.                                                                                                                           |
+| `DELETE /domains/:id`               | Release a domain; a verified one only when no connection exists.                                                                                      |
+| `PUT /connection`                   | Create or update the connection; clears the test result.                                                                                              |
+| `POST /connection/test`             | Open the test window and mint the nonce.                                                                                                              |
+| `POST /connection/activate`         | Bind the verified domains.                                                                                                                            |
+| `POST /connection/deactivate`       | Unbind.                                                                                                                                               |
+| `DELETE /connection`                | Remove the connection and the identities it established.                                                                                              |
 
 Outside the organization subtree:
 

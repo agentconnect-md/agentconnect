@@ -81,6 +81,18 @@ describe('LogtoOrgSsoIdp', () => {
     await expect(down.idp.setDomains('c1', [])).rejects.toBeInstanceOf(LogtoApiError)
   })
 
+  it('reads a connector’s stored settings and reports one that is gone', async () => {
+    const { idp } = management({
+      'GET /api/sso-connectors/c1': { status: 200, body: { id: 'c1', config: { issuer: 'https://idp.example.test' } } },
+      'GET /api/sso-connectors/c2': { status: 200, body: { id: 'c2', config: {} } },
+      'GET /api/sso-connectors/c3': { status: 503 }
+    })
+    expect(await idp.connector('c1')).toEqual({ config: { issuer: 'https://idp.example.test' } })
+    expect(await idp.connector('c2')).toEqual({ config: {} })
+    expect(await idp.connector('gone')).toBe('missing')
+    await expect(idp.connector('c3')).rejects.toBeInstanceOf(LogtoApiError)
+  })
+
   it('reads an account’s address and the connectors it holds an identity on', async () => {
     const { idp } = management({
       'GET /api/users/sub-1?includeSsoIdentities=true': {
