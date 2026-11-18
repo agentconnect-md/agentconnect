@@ -105,6 +105,7 @@ the picture it draws.
 ### Authorization, identity, and visibility
 
 - [authorization-policy.md](designs/authorization-policy.md) — The OSS authorization policy.
+- **(proposal)** [organization-sso.md](designs/organization-sso.md) — Single sign-on owned by an organization on a shared deployment: verified domains, a connection that is tested before it is enforced, sign-in routed by email domain, and membership on first sign-in.
 - [resource-visibility.md](designs/resource-visibility.md) — Resource visibility and sharing: the org/restricted model.
 - [session-visibility.md](designs/session-visibility.md) — Session visibility and conversation audiences.
 - [directional-agent-visibility.md](designs/directional-agent-visibility.md) — Directional visibility between agents.
