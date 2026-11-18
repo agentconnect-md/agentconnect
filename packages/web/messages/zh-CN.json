@@ -1429,6 +1429,7 @@
       "unconfirmed": "这次登录没有对应上 {name} 的测试，请回到设置重新开始测试。",
       "noAddress": "{name} 没有返回属于本组织域名的已验证邮箱。请在身份提供方调整邮箱的 claim 或属性，然后重新测试。",
       "attributesSent": "身份提供方发送的属性",
+      "inDomainAddress": "本组织域名的邮箱",
       "backToSettings": "返回设置"
     },
     "socialCallback": {

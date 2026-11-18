@@ -7,8 +7,11 @@ import type { OrgSsoIdp } from './idp.js'
 export interface OrgSsoRefusal {
   code: 'SSO_ADDRESS_REQUIRED'
   message: string
-  details: { attributes: string[] }
+  details: { attributes: string[]; addressAttributes: string[] }
 }
+
+const bounded = (names: readonly string[]): string[] =>
+  names.slice(0, MAX_ATTRIBUTES).map((name) => name.slice(0, MAX_ATTRIBUTE_LENGTH))
 
 // The names come from the provider, so a hostile one must not inflate the response.
 const MAX_ATTRIBUTES = 50
@@ -36,11 +39,15 @@ export class OrgSsoAdmission {
     // No address is not an address inside the domains: the provider withheld it or sent it unverified, and the account would belong to nobody.
     const domain = account.primaryEmail === null ? null : domainOf(account.primaryEmail)
     for (const connection of owned) {
-      if (domain !== null && (await domains.verifiedDomains(connection.orgId)).includes(domain)) continue
+      const verified = await domains.verifiedDomains(connection.orgId)
+      if (domain !== null && verified.includes(domain)) continue
       // Read before the account is removed: the names show the owner which attribute carries the address.
-      const attributes = (account.attributeNames[connection.logtoConnectorId] ?? [])
-        .slice(0, MAX_ATTRIBUTES)
-        .map((name) => name.slice(0, MAX_ATTRIBUTE_LENGTH))
+      const attributes = bounded(account.attributeNames[connection.logtoConnectorId] ?? [])
+      const addressAttributes = bounded(
+        (account.addressAttributes[connection.logtoConnectorId] ?? [])
+          .filter((attribute) => verified.includes(attribute.domain))
+          .map((attribute) => attribute.name)
+      )
       // Only an account with nothing here is removed; one that already has a local user is refused and left for an administrator.
       const removed = !(await connections.subjectIsProvisioned(subject))
       if (removed) await idp.deleteAccount(subject)
@@ -49,7 +56,7 @@ export class OrgSsoAdmission {
       return {
         code: 'SSO_ADDRESS_REQUIRED',
         message: 'the organization connection gave this account no address in its verified domains',
-        details: { attributes }
+        details: { attributes, addressAttributes }
       }
     }
     return true

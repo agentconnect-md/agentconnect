@@ -30,7 +30,10 @@ interface Connector {
 /** The identity service in memory: connectors by id, and the accounts a sign-in would have produced. */
 class FakeIdp implements OrgSsoIdp {
   readonly connectors = new Map<string, Connector>()
-  readonly accounts = new Map<string, Omit<OrgSsoAccount, 'attributeNames'> & Partial<OrgSsoAccount>>()
+  readonly accounts = new Map<
+    string,
+    Omit<OrgSsoAccount, 'attributeNames' | 'addressAttributes'> & Partial<OrgSsoAccount>
+  >()
   rejectWith: string | null = null
   down = false
 
@@ -87,7 +90,7 @@ class FakeIdp implements OrgSsoIdp {
   async account(subject: string) {
     this.up()
     const account = this.accounts.get(subject)
-    return account ? { attributeNames: {}, ...account } : null
+    return account ? { attributeNames: {}, addressAttributes: {}, ...account } : null
   }
 
   async deleteAccount(subject: string) {
@@ -701,12 +704,32 @@ describe('organization SSO sign-in admission', () => {
     expect(refusal?.details).toMatchObject({ subject: 'no-address', removed: true })
   })
 
+  it('names the attributes that carry an address in the verified domains', async () => {
+    const claim = 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
+    idp.accounts.set('misread', {
+      primaryEmail: null,
+      connectorIds: [connectorId],
+      attributeNames: { [connectorId]: ['email', claim, 'personal'] },
+      addressAttributes: {
+        [connectorId]: [
+          { name: claim, domain: 'example.test' },
+          { name: 'personal', domain: 'elsewhere.example.test' }
+        ]
+      }
+    })
+    const refused = await admission.admit('misread')
+    expect(refused === true ? null : refused.details).toEqual({
+      attributes: ['email', claim, 'personal'],
+      addressAttributes: [claim]
+    })
+  })
+
   it('refuses an account outside the verified domains and removes it when it has nothing here', async () => {
     idp.accounts.set('outside', { primaryEmail: 'victim@elsewhere.example.test', connectorIds: [connectorId] })
     expect(await admission.admit('outside')).toEqual({
       code: 'SSO_ADDRESS_REQUIRED',
       message: expect.any(String),
-      details: { attributes: [] }
+      details: { attributes: [], addressAttributes: [] }
     })
     expect(idp.accounts.has('outside')).toBe(false)
 

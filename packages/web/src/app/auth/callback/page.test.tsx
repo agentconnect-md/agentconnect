@@ -151,6 +151,22 @@ it('says the provider returned no usable address when the landed account is refu
   ])
 })
 
+it('puts the attributes carrying an in-domain address first, marked', async () => {
+  stashTest()
+  const claim = 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
+  mocks.reportOrgSsoTest.mockRejectedValue(
+    new ApiError('no address', 403, 'SSO_ADDRESS_REQUIRED', {
+      code: 'SSO_ADDRESS_REQUIRED',
+      details: { attributes: ['email', 'givenname', claim], addressAttributes: [claim] }
+    })
+  )
+  await land('?code=abc')
+  const items = [...host.querySelectorAll('li')]
+  expect(items.map((li) => li.firstChild?.textContent)).toEqual([claim, 'email', 'givenname'])
+  expect(items[0]?.textContent).toContain('Address in your domains')
+  expect(host.querySelectorAll('.badge')).toHaveLength(1)
+})
+
 it('shows no attribute list for a refusal that is not about the address', async () => {
   stashTest()
   mocks.reportOrgSsoTest.mockRejectedValue(

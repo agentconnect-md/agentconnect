@@ -111,7 +111,10 @@ One card in organization settings, three steps in order:
    address fails the test, and the page says that the address is what is missing.
    It also lists the names, never the values, of the attributes the provider sent
    with that sign-in, so the owner can pick the email attribute from what the
-   provider actually sends instead of guessing. The window closes when the test
+   provider actually sends instead of guessing. The attributes whose value is an
+   address in the organization's verified domains come first and are marked, since
+   one of them is the attribute to choose; when none is marked, the provider sends
+   no such address at all. The window closes when the test
    succeeds, when the settings change, when the connection is deactivated, or after
    ten minutes. While it is open, the organization's domains sign
    in only through the connection, as they do once it is active; the card says so
@@ -227,10 +230,14 @@ Three parts provide them.
   nothing. An account that has no local user yet is also removed from the identity
   service; one that has is left for an administrator. The refusal is audited without
   the address. It answers `403 SSO_ADDRESS_REQUIRED` with
-  `details: { attributes: string[] }`: the keys of the `detail` Logto stores on the
-  account's identity on that connector, read before the account is removed (raw
-  attribute names over SAML, mapped profile fields over OIDC). The list is bounded in
-  count and length, since a hostile provider chooses it, and is rendered as text. A
+  `details: { attributes: string[], addressAttributes: string[] }`. `attributes` are
+  the keys of the `detail` Logto stores on the account's identity on that connector,
+  read before the account is removed (raw attribute names over SAML, mapped profile
+  fields over OIDC). `addressAttributes` are those whose value (a string, or any
+  element of an array of strings) is an address in the organization's verified
+  domains; only the value's domain is read, and no value leaves the Control Plane.
+  Both lists are bounded in count and length, since a hostile provider chooses them,
+  and are rendered as text. A
   remembered refusal answers with the same body. Other refusals keep
   `403 SIGN_IN_IDENTITY_REQUIRED`.
 - **The Control Plane, as the only writer** of each connector's `domains` (§3), and

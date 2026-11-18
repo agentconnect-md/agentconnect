@@ -24,6 +24,7 @@ const EMAIL_ATTRIBUTES = [
   'mail',
   `${CLAIMS}/emailaddress`,
   `${CLAIMS}/upn`,
+  `${CLAIMS}/name`,
   'urn:oid:0.9.2342.19200300.100.1.3'
 ]
 const NAME_ATTRIBUTES = [
