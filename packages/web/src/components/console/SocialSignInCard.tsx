@@ -531,9 +531,6 @@ export default function SocialSignInCard({
                 <span className="truncate font-sans text-[13.5px] font-semibold leading-normal">
                   {sso.connectionName ?? t('ssoUnnamed')}
                 </span>
-                <span className="flex-none rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                  {t('ssoBadge')}
-                </span>
               </div>
               <div className="col-span-2 row-start-2 flex min-h-8 min-w-0 items-center desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
                 {sso.email ? (
@@ -546,6 +543,11 @@ export default function SocialSignInCard({
                     {t('linked')}
                   </span>
                 )}
+              </div>
+              <div className="col-start-2 row-start-1 flex items-center justify-end desktop:col-start-3">
+                <span className="flex-none rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                  {t('ssoBadge')}
+                </span>
               </div>
             </div>
           ))}
