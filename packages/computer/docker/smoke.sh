@@ -29,26 +29,30 @@ cleanup() {
   if [ "$status" -ne 0 ]; then
     diagnose "$name" >&2
     diagnose "$name-reg" >&2
+    diagnose "$name-sys" >&2
   fi
-  docker rm -f "$name" "$name-reg" "$name-stub" > /dev/null 2>&1 || true
+  docker rm -f "$name" "$name-reg" "$name-stub" "$name-sys" > /dev/null 2>&1 || true
   docker network rm "$net" > /dev/null 2>&1 || true
+  docker volume rm "$name-sys" > /dev/null 2>&1 || true
 }
 trap cleanup EXIT
+wait_healthy() {
+  local health=starting
+  for _ in $(seq 1 60); do
+    health=$(docker inspect --format '{{.State.Health.Status}}' "$1")
+    [ "$health" = starting ] || break
+    sleep 3
+  done
+  if [ "$health" != healthy ]; then
+    docker logs "$1" >&2
+    docker inspect --format '{{json .State.Health}}' "$1" >&2
+    echo "health: $health" >&2
+    exit 1
+  fi
+  echo "health: healthy"
+}
 docker run -d --name "$name" --shm-size=1g "$image" > /dev/null
-
-health=starting
-for _ in $(seq 1 60); do
-  health=$(docker inspect --format '{{.State.Health.Status}}' "$name")
-  [ "$health" = starting ] || break
-  sleep 3
-done
-if [ "$health" != healthy ]; then
-  docker logs "$name" >&2
-  docker inspect --format '{{json .State.Health}}' "$name" >&2
-  echo "health: $health" >&2
-  exit 1
-fi
-echo "health: healthy"
+wait_healthy "$name"
 
 # ffmpeg is not in the image: the daemon downloads it on first start, so its checks turn ok once that finishes.
 for _ in $(seq 1 40); do
@@ -159,6 +163,56 @@ if docker logs "$name-reg" 2>&1 | grep -qF "$token" || grep -qF "$token" <<< "$e
   exit 1
 fi
 echo "registration: registered once, kept on restart, token not shown"
+
+# The image alone grants no root: sudo has no rule until a system volume is seeded.
+if docker exec "$name" sudo -n true 2> /dev/null; then
+  echo "sudo works without a seeded system volume" >&2
+  exit 1
+fi
+
+# A system volume (§3.8): seeded once, sudo and apt work as the desktop user, and a package outlives its container.
+docker volume create "$name-sys" > /dev/null
+seed() {
+  docker run --rm --user 0 --entrypoint /opt/agentconnect/seed-system.sh -v "$name-sys:/volume" "$image" /volume
+}
+system=(--mount "type=volume,src=$name-sys,dst=/home/computer,volume-subpath=home")
+for dir in usr etc var; do
+  system+=(--mount "type=volume,src=$name-sys,dst=/$dir,volume-subpath=system/$dir")
+done
+seeded=$(seed)
+grep -q "copied the image's system" <<< "$seeded" || {
+  echo "the first seed did not copy the image's system" >&2
+  exit 1
+}
+docker run -d --name "$name-sys" --shm-size=1g "${system[@]}" "$image" > /dev/null
+wait_healthy "$name-sys"
+[ "$(docker exec "$name-sys" sudo -n id -u)" = 0 ] || {
+  echo "sudo does not reach root on a seeded system volume" >&2
+  exit 1
+}
+installed=
+for _ in 1 2 3; do
+  if docker exec "$name-sys" sudo -n sh -c 'apt-get update -q && apt-get install -y -q --no-install-recommends sl' > /dev/null 2>&1; then
+    installed=1
+    break
+  fi
+  sleep 5
+done
+[ -n "$installed" ] || {
+  echo "apt-get install failed on a seeded system volume" >&2
+  exit 1
+}
+docker rm -f "$name-sys" > /dev/null
+seeded=$(seed)
+if grep -q "copied the image's system" <<< "$seeded"; then
+  echo "a second seed copied the system again" >&2
+  exit 1
+fi
+docker run --rm "${system[@]}" --entrypoint sh "$image" -c 'dpkg -s sl > /dev/null && test -x /usr/games/sl && sudo -n true && node --version > /dev/null' || {
+  echo "the installed package, sudo or node did not survive a new container" >&2
+  exit 1
+}
+echo "system volume: seeded once, sudo and apt work, the package survives"
 
 started=$(date +%s)
 docker stop -t 20 "$name" > /dev/null
