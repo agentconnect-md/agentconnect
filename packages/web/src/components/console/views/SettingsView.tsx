@@ -43,6 +43,8 @@ import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
+import { OrganizationSsoCard } from '@/components/console/OrganizationSsoCard'
+import { organizationSsoEnabled } from '@/lib/organization-sso'
 import { ServiceAccountsCard } from '@/components/console/ServiceAccountsCard'
 import { Scrim } from '@/components/console/Scrim'
 
@@ -884,6 +886,9 @@ export default function SettingsView() {
       </div>
 
       {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
+
+      {/* Owners manage it; other members see what is verified and whether the connection is active. */}
+      {activeOrg && organizationSsoEnabled() && <OrganizationSsoCard orgId={activeOrg.id} isOwner={isOwner} />}
 
       {isOwner && activeOrg && <ServiceAccountsCard org={activeOrg} />}
 

@@ -20,6 +20,8 @@ export interface OrgSsoAccount {
 export interface OrgSsoIdp {
   /** Create the organization's connector, or return the one a retried create left; a protocol change replaces it. */
   ensureConnector(input: { connectorName: string; protocol: OrgSsoProtocol; displayName: string }): Promise<string>
+  /** The settings as the identity service stores them, the client secret included. */
+  connector(id: string): Promise<{ config: Record<string, unknown> } | 'missing'>
   configure(id: string, input: { displayName: string; config: Record<string, unknown> }): Promise<'ok' | 'missing'>
   /** Set the whole list of domains the connector routes, links and enforces. */
   setDomains(id: string, domains: readonly string[]): Promise<'ok' | 'missing'>
@@ -74,6 +76,13 @@ export class LogtoOrgSsoIdp implements OrgSsoIdp {
     const id = record(await created.json()).id
     if (typeof id !== 'string') throw new LogtoApiError('logto returned an invalid sso connector', 502, false)
     return id
+  }
+
+  async connector(id: string): Promise<{ config: Record<string, unknown> } | 'missing'> {
+    const res = await this.request(`/api/sso-connectors/${encodeURIComponent(id)}`)
+    if (res.status === 404) return 'missing'
+    if (!res.ok) await refusal(res)
+    return { config: record(record(await res.json()).config) }
   }
 
   configure(id: string, input: { displayName: string; config: Record<string, unknown> }): Promise<'ok' | 'missing'> {

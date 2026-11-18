@@ -1212,6 +1212,7 @@
         "variablesSecrets": "Variables & secrets",
         "membersRoles": "Members & roles",
         "inviteLinks": "Invite links",
+        "singleSignOn": "Single sign-on",
         "profile": "Profile"
       }
     },
@@ -1315,7 +1316,13 @@
       "firstTime": "First time here? Signing in creates your account.",
       "continueWith": "Continue with {provider}",
       "continueWithPrefix": "Continue with ",
-      "or": "or"
+      "or": "or",
+      "email": "Email",
+      "emailPlaceholder": "you@company.com",
+      "continue": "Continue",
+      "notFound": "No sign-in found for this email. Use one of the options below.",
+      "tooMany": "Too many attempts. Try again in a minute.",
+      "lookupFailed": "Couldn't check this email. Try again."
     },
     "activation": {
       "storageBlocked": "This browser is blocking the temporary storage this activation link needs, so it cannot verify who is signing in. Allow site data for this site (or use a regular, non-private window), then open the link again.",
@@ -1415,6 +1422,12 @@
       "cancelled": "Sign-in was cancelled or could not finish.",
       "backToLogin": "Back to sign in",
       "signingIn": "Signing you in…"
+    },
+    "ssoTest": {
+      "passed": "Sign-in test passed",
+      "failed": "Sign-in test failed",
+      "unconfirmed": "This sign-in could not be matched to the test of {name}. Start the test again from Settings.",
+      "backToSettings": "Back to Settings"
     },
     "socialCallback": {
       "repoConflict": "This GitHub account is linked to another AgentConnect account. You can connect it here for repository access. GitHub sign-in will still open the original account.",
@@ -5609,6 +5622,97 @@
       "copyOnce": "Copy this link now — it is shown only once",
       "copied": "copied",
       "copy": "copy"
+    },
+    "sso": {
+      "title": "Single sign-on",
+      "loadError": "Couldn't load single sign-on.",
+      "noDomains": "No domains",
+      "domains": "Domains",
+      "connection": "Connection",
+      "noConnection": "None",
+      "setUpConnection": "Set up connection",
+      "verify": "Verify",
+      "removeDomain": "Remove domain",
+      "recordMissing": "DNS record missing",
+      "copy": "Copy",
+      "testSignIn": "Test sign-in",
+      "activate": "Activate",
+      "deactivate": "Deactivate",
+      "edit": "Edit",
+      "reconfigure": "Reconfigure",
+      "status": {
+        "pending": "Pending",
+        "verified": "Verified",
+        "notTested": "Not tested",
+        "tested": "Tested",
+        "active": "Active",
+        "needsConfiguration": "Needs configuration"
+      },
+      "problem": {
+        "notFound": "Record not found",
+        "mismatch": "Record does not match",
+        "lookupFailed": "DNS lookup failed",
+        "taken": "Verified by another organization",
+        "inUse": "In use by the connection"
+      },
+      "record": {
+        "type": "Type",
+        "name": "Name",
+        "value": "Value"
+      },
+      "addDomain": {
+        "open": "Add domain",
+        "title": "Add domain",
+        "domain": "Domain",
+        "submit": "Add domain",
+        "invalid": "Enter a domain, like acme.example",
+        "taken": "This domain is verified by another organization"
+      },
+      "connectionDialog": {
+        "createTitle": "Set up connection",
+        "editTitle": "Edit connection",
+        "reconfigureTitle": "Reconfigure connection",
+        "protocol": "Protocol",
+        "name": "Name",
+        "issuer": "Issuer",
+        "clientId": "Client ID",
+        "clientSecret": "Client secret",
+        "secretSet": "Set",
+        "replaceSecret": "Replace",
+        "secretRequired": "Enter the client secret.",
+        "scopes": "Scopes",
+        "callbackUrl": "Callback URL",
+        "metadata": "Metadata",
+        "metadataUrl": "Metadata URL",
+        "metadataXml": "Metadata XML",
+        "emailAttribute": "Email attribute",
+        "nameAttribute": "Name attribute",
+        "acsUrl": "ACS URL",
+        "entityId": "Entity ID",
+        "save": "Save",
+        "saving": "Saving…"
+      },
+      "testDialog": {
+        "title": "Test sign-in with {name}?",
+        "body": "You'll sign in once through <b>{name}</b>. If {name} returns an email other than <b>{email}</b>, you'll be signed in to that account and will need to sign back in.",
+        "bodyNoEmail": "You'll sign in once through <b>{name}</b>. If {name} returns an email other than yours, you'll be signed in to that account and will need to sign back in.",
+        "starting": "Starting…",
+        "storageBlocked": "This browser is blocking the temporary storage the test needs. Allow site data for this site, then try again."
+      },
+      "activateDialog": {
+        "title": "Activate {name}?",
+        "body": "Addresses on these domains will only be able to sign in through <b>{name}</b>.",
+        "activating": "Activating…"
+      },
+      "deactivateDialog": {
+        "title": "Deactivate {name}?",
+        "body": "Addresses on these domains will be able to sign in with any method again.",
+        "deactivating": "Deactivating…"
+      },
+      "verifyDialog": {
+        "title": "Verify {domain}?",
+        "body": "<b>{name}</b> is active. Once verified, addresses on <b>{domain}</b> will only be able to sign in through {name}."
+      }
     },
     "serviceAccounts": {
       "title": "Service accounts",

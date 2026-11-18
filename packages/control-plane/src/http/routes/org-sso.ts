@@ -4,7 +4,8 @@ import { z } from 'zod'
 import type { HttpDeps } from '../deps.js'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
-import { denyNonOwner } from '../rbac.js'
+import { AuthorizationAction, can } from '../../authorization/policy.js'
+import { ctxOf, denyNonOwner } from '../rbac.js'
 import {
   AddOrgSsoDomainBody,
   ErrorDto,
@@ -12,6 +13,8 @@ import {
   OrgSsoConnectionDto,
   OrgSsoDomainDto,
   OrgSsoJoinDto,
+  OrgSsoPreparedDto,
+  OrgSsoServiceProviderBody,
   OrgSsoStateDto,
   OrgSsoTestDto,
   OrgSsoTestResultBody,
@@ -54,7 +57,9 @@ function connectionDto(view: OrgSsoConnectionView): OrgSsoConnectionDtoT {
     testedAt: view.testedAt?.toISOString() ?? null,
     activatedAt: view.activatedAt?.toISOString() ?? null,
     configChangedAt: view.configChangedAt.toISOString(),
-    serviceProvider: view.serviceProvider
+    serviceProvider: view.serviceProvider,
+    needsConfiguration: view.needsConfiguration,
+    settings: view.settings
   }
 }
 
@@ -64,6 +69,8 @@ const connectionNotFound = (reply: FastifyReply) =>
   reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'no single sign-on connection' })
 const needsConfiguration = (reply: FastifyReply) =>
   conflict(reply, 'SSO_CONNECTION_NEEDS_CONFIGURATION', 'the connection needs its configuration again')
+const badRequest = (reply: FastifyReply, code: string, message: string) =>
+  reply.code(400).send({ error: 'Bad Request', statusCode: 400, message, code })
 const domainRequired = (reply: FastifyReply) => conflict(reply, 'SSO_DOMAIN_REQUIRED', 'verify a domain first')
 
 /** The identity service's refusal goes to the owner as a 400; its being unreachable is a 503. */
@@ -114,19 +121,22 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Get the organization single sign-on setup',
           description:
-            'Owner-only. Returns the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider.',
+            'Any member. An owner gets the domains the organization has claimed for single sign-on, each with the DNS TXT record that proves control of it, and the organization’s connection with the values to enter at the identity provider and the saved settings read back from the identity service (the client secret only as `hasClientSecret`); `needsConfiguration` reports a connector gone from the identity service. Other members get the verified domains and the connection without its settings.',
           operationId: 'getOrganizationSso',
           response: { 200: OrgSsoStateDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
-        if (denyNonOwner(req, reply)) return
         const orgId = req.orgCtx!.orgId
-        const connection = (await connections?.get(orgId)) ?? null
-        return {
-          domains: (await domains.list(orgId)).map(toDto),
-          connection: connection ? connectionDto(connection) : null
-        }
+        const owner = can(ctxOf(req), { action: AuthorizationAction.OrganizationManage })
+        return withIdp(reply, async () => {
+          const connection = (await connections?.get(orgId, { withSettings: owner })) ?? null
+          const listed = await domains.list(orgId)
+          return {
+            domains: (owner ? listed : listed.filter((domain) => domain.status === 'verified')).map(toDto),
+            connection: connection ? connectionDto(connection) : null
+          }
+        })
       }
     )
 
@@ -250,7 +260,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Create or change the single sign-on connection',
           description:
-            'Owner-only. Saves the identity provider settings for the organization’s one connection and returns the values to enter at the identity provider. The settings take effect at once, also on an active connection, and the connection reads as untested until a test sign-in succeeds again. An OIDC save always carries the client secret, which is forwarded to the identity service and not kept. A SAML save carries a metadata URL or a metadata document. Changing the protocol starts a new connection with new service-provider values.',
+            'Owner-only. Saves the identity provider settings for the organization’s one connection and returns the values to enter at the identity provider. The settings take effect at once, also on an active connection, and the connection reads as untested until a test sign-in succeeds again. The client secret is forwarded to the identity service and not kept; an OIDC save may leave it out to keep the stored secret, which is refused with `SSO_CLIENT_SECRET_REQUIRED` when the issuer changed or no secret is stored. A SAML save carries a metadata URL or a metadata document. Changing the protocol starts a new connection with new service-provider values.',
           operationId: 'putOrganizationSsoConnection',
           body: PutOrgSsoConnectionBody,
           response: { 200: OrgSsoConnectionDto, 400: ErrorDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
@@ -268,7 +278,46 @@ export function orgSsoRoutes(deps: HttpDeps) {
         }
         const { orgId } = req.orgCtx!
         const userId = req.principal!.userId
-        return withIdp(reply, async () => connectionDto(await connections.save(orgId, body, userId)))
+        return withIdp(reply, async () => {
+          const saved = await connections.save(orgId, body, userId)
+          if (saved === 'secret_required')
+            return badRequest(reply, 'SSO_CLIENT_SECRET_REQUIRED', 'enter the client secret')
+          return connectionDto(saved)
+        })
+      }
+    )
+
+    r.post(
+      '/sso/connection/service-provider',
+      {
+        config,
+        schema: {
+          tags: [Tag.Organizations],
+          summary: 'Get the service-provider values before saving',
+          description:
+            'Owner-only. Creates the organization’s connector in the identity service when it does not exist yet and returns the values to enter at the identity provider for the protocol, so they can be registered before the first save. The connection itself does not change. Refused with `SSO_PROTOCOL_MISMATCH` when the organization has a connection of the other protocol.',
+          operationId: 'prepareOrganizationSsoConnection',
+          body: OrgSsoServiceProviderBody,
+          response: {
+            200: OrgSsoPreparedDto,
+            400: ErrorDto,
+            401: ErrorDto,
+            403: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        const { orgId } = req.orgCtx!
+        return withIdp(reply, async () => {
+          const result = await connections.prepare(orgId, req.body.protocol)
+          if (result === 'protocol_mismatch') {
+            return conflict(reply, 'SSO_PROTOCOL_MISMATCH', 'remove the connection to change its protocol')
+          }
+          return { serviceProvider: result }
+        })
       }
     )
 

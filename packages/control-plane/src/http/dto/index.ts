@@ -3167,6 +3167,12 @@ export const OrgSsoDomainDto = z.object({
 export type OrgSsoDomainDtoT = z.infer<typeof OrgSsoDomainDto>
 
 // The service-provider values an owner enters at the identity provider; which pair depends on the protocol.
+export const OrgSsoServiceProviderDto = z.union([
+  z.object({ redirectUri: z.string() }),
+  z.object({ assertionConsumerServiceUrl: z.string(), entityId: z.string() })
+])
+
+// `settings` and `needsConfiguration` are read from the identity service only by an owner's GET; other responses carry null and false.
 export const OrgSsoConnectionDto = z.object({
   id: z.string(),
   protocol: z.enum(['oidc', 'saml']),
@@ -3176,10 +3182,22 @@ export const OrgSsoConnectionDto = z.object({
   testedAt: z.string().nullable(),
   activatedAt: z.string().nullable(),
   configChangedAt: z.string(),
-  serviceProvider: z.union([
-    z.object({ redirectUri: z.string() }),
-    z.object({ assertionConsumerServiceUrl: z.string(), entityId: z.string() })
-  ])
+  serviceProvider: OrgSsoServiceProviderDto,
+  needsConfiguration: z.boolean(),
+  settings: z
+    .union([
+      z.object({ issuer: z.string(), clientId: z.string(), scope: z.string(), hasClientSecret: z.boolean() }),
+      z.object({
+        metadataUrl: z.string().nullable(),
+        metadata: z.string().nullable(),
+        attributeMapping: z.object({
+          id: z.string().optional(),
+          email: z.string().optional(),
+          name: z.string().optional()
+        })
+      })
+    ])
+    .nullable()
 })
 export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
 
@@ -3191,14 +3209,14 @@ export const OrgSsoStateDto = z.object({
 
 const OrgSsoConnectionName = z.string().trim().min(1).max(64)
 
-/** The client secret is forwarded to the identity service and not kept, so every OIDC save carries it. */
+/** The client secret is forwarded to the identity service and not kept here; an OIDC save may leave it out to keep the stored one when the issuer is unchanged. */
 export const PutOrgSsoConnectionBody = z.discriminatedUnion('protocol', [
   z.strictObject({
     protocol: z.literal('oidc'),
     name: OrgSsoConnectionName,
     issuer: z.string().trim().min(1).max(2_000),
     clientId: z.string().trim().min(1).max(500),
-    clientSecret: z.string().min(1).max(10_000),
+    clientSecret: z.string().min(1).max(10_000).optional(),
     scope: z.string().trim().max(500).optional()
   }),
   z.strictObject({
@@ -3215,6 +3233,10 @@ export const PutOrgSsoConnectionBody = z.discriminatedUnion('protocol', [
       .optional()
   })
 ])
+
+export const OrgSsoServiceProviderBody = z.strictObject({ protocol: z.enum(['oidc', 'saml']) })
+
+export const OrgSsoPreparedDto = z.object({ serviceProvider: OrgSsoServiceProviderDto })
 
 /** The nonce is shown once; the landing page presents it after the test sign-in. */
 export const OrgSsoTestDto = z.object({ nonce: z.string(), connectorId: z.string(), expiresAt: z.string() })

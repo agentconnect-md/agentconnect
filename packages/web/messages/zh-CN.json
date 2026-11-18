@@ -1212,6 +1212,7 @@
         "variablesSecrets": "变量与密钥",
         "membersRoles": "成员与角色",
         "inviteLinks": "邀请链接",
+        "singleSignOn": "单点登录（SSO）",
         "profile": "个人资料"
       }
     },
@@ -1315,7 +1316,13 @@
       "firstTime": "首次使用？登录后将自动创建账户。",
       "continueWith": "使用 {provider} 继续",
       "continueWithPrefix": "使用 ",
-      "or": "或"
+      "or": "或",
+      "email": "邮箱",
+      "emailPlaceholder": "you@company.com",
+      "continue": "继续",
+      "notFound": "没有找到这个邮箱对应的登录方式，请使用下面的方式登录。",
+      "tooMany": "尝试次数过多，请一分钟后再试。",
+      "lookupFailed": "无法查询这个邮箱，请重试。"
     },
     "activation": {
       "storageBlocked": "此浏览器阻止了激活链接所需的临时存储，因此无法验证登录身份。请允许本站使用站点数据（或改用普通的非隐私窗口），然后重新打开链接。",
@@ -1415,6 +1422,12 @@
       "cancelled": "登录已取消，或未能完成。",
       "backToLogin": "返回登录页",
       "signingIn": "正在登录…"
+    },
+    "ssoTest": {
+      "passed": "登录测试通过",
+      "failed": "登录测试未通过",
+      "unconfirmed": "这次登录没有对应上 {name} 的测试，请回到设置重新开始测试。",
+      "backToSettings": "返回设置"
     },
     "socialCallback": {
       "repoConflict": "这个 GitHub 账号已关联其他 AgentConnect 账号。你可以继续连接，用于当前账号的仓库访问。使用 GitHub 登录仍会进入原账号。",
@@ -5609,6 +5622,97 @@
       "copyOnce": "请立即复制此链接：它只会显示一次",
       "copied": "已复制",
       "copy": "复制"
+    },
+    "sso": {
+      "title": "单点登录（SSO）",
+      "loadError": "无法加载单点登录设置。",
+      "noDomains": "暂无域名",
+      "domains": "域名",
+      "connection": "连接",
+      "noConnection": "无",
+      "setUpConnection": "配置连接",
+      "verify": "验证",
+      "removeDomain": "移除域名",
+      "recordMissing": "DNS 记录缺失",
+      "copy": "复制",
+      "testSignIn": "测试登录",
+      "activate": "启用",
+      "deactivate": "停用",
+      "edit": "编辑",
+      "reconfigure": "重新配置",
+      "status": {
+        "pending": "待验证",
+        "verified": "已验证",
+        "notTested": "未测试",
+        "tested": "已测试",
+        "active": "已启用",
+        "needsConfiguration": "需要重新配置"
+      },
+      "problem": {
+        "notFound": "未找到记录",
+        "mismatch": "记录不匹配",
+        "lookupFailed": "DNS 查询失败",
+        "taken": "已被其他组织验证",
+        "inUse": "连接正在使用"
+      },
+      "record": {
+        "type": "类型",
+        "name": "名称",
+        "value": "值"
+      },
+      "addDomain": {
+        "open": "添加域名",
+        "title": "添加域名",
+        "domain": "域名",
+        "submit": "添加域名",
+        "invalid": "请输入域名，例如 acme.example",
+        "taken": "该域名已被其他组织验证"
+      },
+      "connectionDialog": {
+        "createTitle": "配置连接",
+        "editTitle": "编辑连接",
+        "reconfigureTitle": "重新配置连接",
+        "protocol": "协议",
+        "name": "名称",
+        "issuer": "Issuer",
+        "clientId": "Client ID",
+        "clientSecret": "Client secret",
+        "secretSet": "已设置",
+        "replaceSecret": "替换",
+        "secretRequired": "请填写 Client secret。",
+        "scopes": "Scopes",
+        "callbackUrl": "回调 URL",
+        "metadata": "元数据",
+        "metadataUrl": "元数据 URL",
+        "metadataXml": "元数据 XML",
+        "emailAttribute": "邮箱属性",
+        "nameAttribute": "姓名属性",
+        "acsUrl": "ACS URL",
+        "entityId": "Entity ID",
+        "save": "保存",
+        "saving": "正在保存…"
+      },
+      "testDialog": {
+        "title": "用 {name} 测试登录？",
+        "body": "你将通过 <b>{name}</b> 登录一次。如果 {name} 返回的邮箱不是 <b>{email}</b>，你会登录到那个账户，之后需要重新登录。",
+        "bodyNoEmail": "你将通过 <b>{name}</b> 登录一次。如果 {name} 返回的邮箱不是你的，你会登录到那个账户，之后需要重新登录。",
+        "starting": "正在开始…",
+        "storageBlocked": "浏览器阻止了测试所需的临时存储。请允许本站保存数据后重试。"
+      },
+      "activateDialog": {
+        "title": "启用 {name}？",
+        "body": "这些域名下的邮箱将只能通过 <b>{name}</b> 登录。",
+        "activating": "正在启用…"
+      },
+      "deactivateDialog": {
+        "title": "停用 {name}？",
+        "body": "这些域名下的邮箱将可以重新用任意方式登录。",
+        "deactivating": "正在停用…"
+      },
+      "verifyDialog": {
+        "title": "验证 {domain}？",
+        "body": "<b>{name}</b> 已启用。验证通过后，<b>{domain}</b> 下的邮箱将只能通过 {name} 登录。"
+      }
     },
     "serviceAccounts": {
       "title": "服务账号",

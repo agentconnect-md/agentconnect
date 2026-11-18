@@ -25,6 +25,7 @@ import {
   status
 } from '@/lib/data'
 import { featureFlagEnabled } from '@/lib/feature-flags'
+import { organizationSsoEnabled } from '@/lib/organization-sso'
 import { cronHuman } from '@/lib/cron'
 import { isAuthConfigured } from '@/lib/auth'
 import { fetchSessionExternalAccess, type SessionAccessProvider } from '@/lib/api'
@@ -89,6 +90,7 @@ const SEARCH_PAGE_LABEL_KEYS: Record<string, Parameters<ReturnType<typeof useTra
     '/settings#environment': 'settings.variablesSecrets',
     '/settings#members': 'settings.membersRoles',
     '/settings#invite-links': 'settings.inviteLinks',
+    '/settings#single-sign-on': 'settings.singleSignOn',
     '/profile': 'settings.profile'
   }
 
@@ -321,6 +323,7 @@ export function GlobalSearch({
             p.kind === 'setting' &&
             (!p.ownerOnly || myRole === 'owner') &&
             (p.href !== '/settings#session-access' || sessionAccessRenders) &&
+            (p.href !== '/settings#single-sign-on' || organizationSsoEnabled()) &&
             pageHit(p)
         )
       : []

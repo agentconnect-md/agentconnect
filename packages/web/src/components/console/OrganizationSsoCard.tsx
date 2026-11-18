@@ -1,0 +1,544 @@
+'use client'
+
+// Organization single sign-on (organization-sso.md §4.1): add and verify a domain, set up and test the connection, activate.
+
+import { useEffect, useState, type ReactNode } from 'react'
+import { usePathname } from 'next/navigation'
+import { useTranslations } from 'next-intl'
+import useSWR from 'swr'
+import { Button, Icon } from '@/components/ui'
+import { LoadingState } from '@/components/marks'
+import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
+import OrgSsoConnectionModal from '@/components/console/modals/OrgSsoConnectionModal'
+import OrgSsoDomainModal from '@/components/console/modals/OrgSsoDomainModal'
+import {
+  activateOrgSsoConnection,
+  ApiError,
+  deactivateOrgSsoConnection,
+  fetchOrgSso,
+  releaseOrgSsoDomain,
+  startOrgSsoTest,
+  verifyOrgSsoDomain,
+  type OrgSsoConnectionDto,
+  type OrgSsoDomainDto,
+  type OrgSsoStateDto
+} from '@/lib/api'
+import { currentUser, loginWithSso } from '@/lib/auth'
+import { canStashSsoTest, stashSsoTest } from '@/lib/organization-sso'
+import { consoleKeys } from '@/lib/swr-keys'
+
+const SECTION =
+  'border-b border-(--border-subtle) bg-(--surface-app) px-4 py-[9px] font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.04em] text-(--text-tertiary)'
+const ROW = 'border-b border-(--border-subtle) px-4 py-3 last:border-b-0'
+const LINE = 'flex flex-wrap items-center gap-[10px]'
+const MUTED = 'font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)'
+
+/** What the last action on a domain row found; shown on the row until the next one. */
+type DomainProblem = 'not_found' | 'mismatch' | 'lookup_failed' | 'taken' | 'in_use'
+
+type Dialog =
+  | { kind: 'addDomain' }
+  | { kind: 'connection' }
+  | { kind: 'test' }
+  | { kind: 'activate' }
+  | { kind: 'deactivate' }
+  | { kind: 'verify'; domain: OrgSsoDomainDto }
+
+const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+function CopyValue({ value }: { value: string }) {
+  const t = useTranslations('Settings.sso')
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* clipboard unavailable: the value stays selectable */
+    }
+  }
+  return (
+    <button
+      type="button"
+      className="iconbtn h-7 w-7 border-transparent bg-transparent"
+      title={t('copy')}
+      aria-label={t('copy')}
+      onClick={() => void copy()}
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={14} />
+    </button>
+  )
+}
+
+/** The DNS record that proves control of a domain. */
+function DnsRecord({ record }: { record: OrgSsoDomainDto['record'] }) {
+  const t = useTranslations('Settings.sso.record')
+  const key =
+    'w-[46px] flex-none font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[.06em] text-(--text-tertiary)'
+  const value =
+    'min-w-0 flex-1 truncate font-mono text-[12px] font-normal leading-normal text-(--text-primary) select-all'
+  const line =
+    'flex min-w-0 items-center gap-[10px] border-b border-(--border-subtle) py-[7px] pr-2 pl-3 last:border-b-0'
+  return (
+    <div className="mt-3 rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+      <div className={line}>
+        <span className={key}>{t('type')}</span>
+        <span className={value}>{record.type}</span>
+      </div>
+      <div className={line}>
+        <span className={key}>{t('name')}</span>
+        <span className={value}>{record.name}</span>
+        <CopyValue value={record.name} />
+      </div>
+      <div className={line}>
+        <span className={key}>{t('value')}</span>
+        <span className={value}>{record.value}</span>
+        <CopyValue value={record.value} />
+      </div>
+    </div>
+  )
+}
+
+function DomainRow({
+  domain,
+  boundTo,
+  problem,
+  isOwner,
+  busy,
+  onVerify,
+  onRemove
+}: {
+  domain: OrgSsoDomainDto
+  /** The active connection's name: addresses on this domain sign in only through it. */
+  boundTo: string | null
+  problem: DomainProblem | undefined
+  isOwner: boolean
+  busy: boolean
+  onVerify: () => void
+  onRemove: () => void
+}) {
+  const t = useTranslations('Settings.sso')
+  const verified = domain.status === 'verified'
+  // The daily re-check found the record gone; the domain stays verified and bound until an owner acts.
+  const recordMissing = verified && domain.lastCheckOk === false
+  const needsRecord = !verified || recordMissing
+  const problemText =
+    problem === 'not_found'
+      ? t('problem.notFound')
+      : problem === 'mismatch'
+        ? t('problem.mismatch')
+        : problem === 'lookup_failed'
+          ? t('problem.lookupFailed')
+          : problem === 'taken'
+            ? t('problem.taken')
+            : problem === 'in_use'
+              ? t('problem.inUse')
+              : null
+
+  return (
+    <div className={ROW}>
+      <div className={LINE}>
+        <span className="font-mono text-[13px] font-medium leading-normal break-all">{domain.domain}</span>
+        {verified ? (
+          <span className="badge bg-(--status-online-soft) text-(--status-online)">{t('status.verified')}</span>
+        ) : (
+          <span className="badge bg-(--status-paused-soft) text-(--status-paused)">{t('status.pending')}</span>
+        )}
+        {recordMissing && (
+          <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--status-paused)">
+            <Icon name="triangle-exclamation-point" size={14} />
+            {t('recordMissing')}
+          </span>
+        )}
+        {problemText && !recordMissing && (
+          <span
+            className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--status-error)"
+            role="alert"
+          >
+            <Icon name="circle-exclamation-point" size={14} />
+            {problemText}
+          </span>
+        )}
+        {verified && boundTo && (
+          <span className="inline-flex items-center gap-[5px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            <Icon name="link" size={13} />
+            {boundTo}
+          </span>
+        )}
+        {isOwner && (
+          <span className="ml-auto flex items-center gap-2">
+            {needsRecord && (
+              <Button size="xs" disabled={busy} onClick={onVerify}>
+                {t('verify')}
+              </Button>
+            )}
+            <button
+              type="button"
+              className="iconbtn h-7 w-7"
+              title={t('removeDomain')}
+              aria-label={t('removeDomain')}
+              disabled={busy}
+              onClick={onRemove}
+            >
+              <Icon name="trash" size={14} />
+            </button>
+          </span>
+        )}
+      </div>
+      {isOwner && needsRecord && <DnsRecord record={domain.record} />}
+    </div>
+  )
+}
+
+function ConnectionRow({
+  connection,
+  isOwner,
+  open
+}: {
+  connection: OrgSsoConnectionDto
+  isOwner: boolean
+  open: (dialog: Dialog) => void
+}) {
+  const t = useTranslations('Settings.sso')
+  const active = connection.status === 'active'
+  return (
+    <div className={ROW}>
+      <div className={LINE}>
+        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken) text-(--text-secondary)">
+          <Icon name="key-round" size={15} />
+        </span>
+        <span className="font-sans text-[13.5px] font-semibold leading-normal">{connection.name}</span>
+        <span className="rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
+          {connection.protocol === 'oidc' ? 'OIDC' : 'SAML'}
+        </span>
+        {connection.needsConfiguration ? (
+          <span className="badge bg-(--status-error-soft) text-(--status-error)">{t('status.needsConfiguration')}</span>
+        ) : (
+          <>
+            {active && (
+              <span className="badge bg-(--status-online-soft) text-(--status-online)">{t('status.active')}</span>
+            )}
+            {!active && connection.tested && (
+              <span className="badge bg-(--status-info-soft) text-(--status-info)">{t('status.tested')}</span>
+            )}
+            {!connection.tested && (
+              <span className="badge bg-(--surface-sunken) text-(--text-secondary)">{t('status.notTested')}</span>
+            )}
+          </>
+        )}
+        {isOwner && (
+          <span className="ml-auto flex items-center gap-2 max-desktop:ml-0 max-desktop:w-full">
+            {connection.needsConfiguration ? (
+              <Button size="xs" onClick={() => open({ kind: 'connection' })}>
+                {t('reconfigure')}
+              </Button>
+            ) : (
+              <>
+                {!connection.tested && (
+                  <Button size="xs" onClick={() => open({ kind: 'test' })}>
+                    {t('testSignIn')}
+                  </Button>
+                )}
+                {!active && connection.tested && (
+                  <Button size="xs" onClick={() => open({ kind: 'activate' })}>
+                    {t('activate')}
+                  </Button>
+                )}
+                <Button variant="secondary" size="xs" onClick={() => open({ kind: 'connection' })}>
+                  {t('edit')}
+                </Button>
+                {active && (
+                  <Button variant="secondary" size="xs" onClick={() => open({ kind: 'deactivate' })}>
+                    {t('deactivate')}
+                  </Button>
+                )}
+              </>
+            )}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DomainList({ domains }: { domains: readonly OrgSsoDomainDto[] }) {
+  return (
+    <div className="mb-[14px] rounded-md border border-(--border-subtle)">
+      {domains.map((domain) => (
+        <div
+          key={domain.id}
+          className="border-b border-(--border-subtle) px-3 py-2 font-mono text-[13px] font-medium leading-normal break-all text-(--text-primary) last:border-b-0"
+        >
+          {domain.domain}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const strong = (chunks: ReactNode) => <b className="font-semibold text-(--text-primary)">{chunks}</b>
+
+export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner: boolean }) {
+  const t = useTranslations('Settings.sso')
+  const pathname = usePathname()
+  const {
+    data: state,
+    error: loadError,
+    mutate
+  } = useSWR<OrgSsoStateDto>(consoleKeys.orgSso(orgId), ([, id]) => fetchOrgSso(id as string))
+  const [dialog, setDialog] = useState<Dialog | null>(null)
+  const [pending, setPending] = useState(false)
+  const [dialogError, setDialogError] = useState<string | null>(null)
+  const [problems, setProblems] = useState<Record<string, DomainProblem>>({})
+  const [rowBusy, setRowBusy] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setDialog(null)
+    setProblems({})
+    setActionError(null)
+  }, [orgId])
+
+  const open = (next: Dialog) => {
+    setDialogError(null)
+    setPending(false)
+    setDialog(next)
+  }
+  const close = () => setDialog(null)
+  const refresh = () => void mutate()
+
+  const domains = state?.domains ?? []
+  const connection = state?.connection ?? null
+  const verified = domains.filter((domain) => domain.status === 'verified')
+  const active = connection?.status === 'active' && !connection.needsConfiguration
+
+  const setProblem = (id: string, problem: DomainProblem | null) =>
+    setProblems((current) => {
+      const { [id]: _dropped, ...rest } = current
+      return problem ? { ...rest, [id]: problem } : rest
+    })
+
+  const verify = async (domain: OrgSsoDomainDto) => {
+    setRowBusy(domain.id)
+    setActionError(null)
+    try {
+      const result = await verifyOrgSsoDomain(domain.id, orgId)
+      setProblem(domain.id, result.check === 'ok' ? null : result.check)
+      await mutate()
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'SSO_DOMAIN_TAKEN') setProblem(domain.id, 'taken')
+      else setActionError(message(e))
+    } finally {
+      setRowBusy(null)
+    }
+  }
+
+  const remove = async (domain: OrgSsoDomainDto) => {
+    setRowBusy(domain.id)
+    setActionError(null)
+    try {
+      await releaseOrgSsoDomain(domain.id, orgId)
+      setProblem(domain.id, null)
+      await mutate()
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'SSO_DOMAIN_IN_USE') setProblem(domain.id, 'in_use')
+      else setActionError(message(e))
+    } finally {
+      setRowBusy(null)
+    }
+  }
+
+  // A confirmed action: the dialog stays up while it runs and shows what the Control Plane refused.
+  const confirm = async (run: () => Promise<void>) => {
+    setPending(true)
+    setDialogError(null)
+    try {
+      await run()
+      close()
+    } catch (e) {
+      setDialogError(message(e))
+      setPending(false)
+    } finally {
+      refresh()
+    }
+  }
+
+  const startTest = async () => {
+    if (!connection) return
+    setPending(true)
+    setDialogError(null)
+    try {
+      if (!canStashSsoTest()) throw new Error(t('testDialog.storageBlocked'))
+      const test = await startOrgSsoTest(orgId)
+      stashSsoTest({
+        nonce: test.nonce,
+        connectionName: connection.name,
+        returnTo: `${pathname}#single-sign-on`,
+        expiresAt: test.expiresAt
+      })
+      // The page leaves for the identity provider and lands on the sign-in callback.
+      await loginWithSso(test.connectorId)
+    } catch (e) {
+      setDialogError(message(e))
+      setPending(false)
+    }
+  }
+
+  // Nothing to show a member who cannot act on an empty card.
+  if (!isOwner && state && domains.length === 0 && !connection) return null
+  // A deployment that stopped declaring organization SSO answers 404; the card goes with it.
+  if (loadError instanceof ApiError && loadError.status === 404) return null
+  if (!isOwner && loadError) return null
+
+  const email = currentUser()?.email
+
+  return (
+    <div className="card mt-[18px]" id="single-sign-on">
+      <div className="cardhead justify-between">
+        <span className="cardtitle">{t('title')}</span>
+        {isOwner && state && (
+          <Button variant="secondary" size="xs" onClick={() => open({ kind: 'addDomain' })}>
+            <Icon name="plus" size={14} />
+            {t('addDomain.open')}
+          </Button>
+        )}
+      </div>
+
+      {state === undefined && !loadError ? (
+        <LoadingState size={22} padding={20} />
+      ) : state === undefined ? (
+        <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+          {t('loadError')}
+        </div>
+      ) : (
+        <>
+          {domains.length === 0 ? (
+            <div className={ROW}>
+              <span className={MUTED}>{t('noDomains')}</span>
+            </div>
+          ) : (
+            <>
+              <div className={SECTION}>{t('domains')}</div>
+              {domains.map((domain) => (
+                <DomainRow
+                  key={domain.id}
+                  domain={domain}
+                  boundTo={active && connection ? connection.name : null}
+                  problem={problems[domain.id]}
+                  isOwner={isOwner}
+                  busy={rowBusy === domain.id}
+                  onVerify={() =>
+                    active && domain.status === 'pending' ? open({ kind: 'verify', domain }) : void verify(domain)
+                  }
+                  onRemove={() => void remove(domain)}
+                />
+              ))}
+            </>
+          )}
+          {(connection || verified.length > 0) && (
+            <>
+              <div className={SECTION}>{t('connection')}</div>
+              {connection ? (
+                <ConnectionRow connection={connection} isOwner={isOwner} open={open} />
+              ) : (
+                <div className={ROW}>
+                  <div className={LINE}>
+                    <span className={MUTED}>{t('noConnection')}</span>
+                    {isOwner && (
+                      <span className="ml-auto flex items-center gap-2">
+                        <Button size="xs" onClick={() => open({ kind: 'connection' })}>
+                          {t('setUpConnection')}
+                        </Button>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {actionError && (
+        <div
+          className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
+          role="alert"
+        >
+          {actionError}
+        </div>
+      )}
+
+      {dialog?.kind === 'addDomain' && <OrgSsoDomainModal orgId={orgId} onClose={close} onAdded={refresh} />}
+      {dialog?.kind === 'connection' && (
+        <OrgSsoConnectionModal orgId={orgId} connection={connection} onClose={close} onSaved={refresh} />
+      )}
+      {dialog?.kind === 'test' && connection && (
+        <ConfirmationDialog
+          title={t('testDialog.title', { name: connection.name })}
+          confirmLabel={t('testSignIn')}
+          busy={pending}
+          busyLabel={t('testDialog.starting')}
+          error={dialogError}
+          onConfirm={() => void startTest()}
+          onClose={close}
+        >
+          {email
+            ? t.rich('testDialog.body', { name: connection.name, email, b: strong })
+            : t.rich('testDialog.bodyNoEmail', { name: connection.name, b: strong })}
+        </ConfirmationDialog>
+      )}
+      {dialog?.kind === 'activate' && connection && (
+        <ConfirmationDialog
+          title={t('activateDialog.title', { name: connection.name })}
+          confirmLabel={t('activate')}
+          busy={pending}
+          busyLabel={t('activateDialog.activating')}
+          error={dialogError}
+          onConfirm={() =>
+            void confirm(async () => {
+              await activateOrgSsoConnection(orgId)
+            })
+          }
+          onClose={close}
+        >
+          <DomainList domains={verified} />
+          {t.rich('activateDialog.body', { name: connection.name, b: strong })}
+        </ConfirmationDialog>
+      )}
+      {dialog?.kind === 'deactivate' && connection && (
+        <ConfirmationDialog
+          title={t('deactivateDialog.title', { name: connection.name })}
+          confirmLabel={t('deactivate')}
+          busy={pending}
+          busyLabel={t('deactivateDialog.deactivating')}
+          error={dialogError}
+          destructive
+          onConfirm={() =>
+            void confirm(async () => {
+              await deactivateOrgSsoConnection(orgId)
+            })
+          }
+          onClose={close}
+        >
+          <DomainList domains={verified} />
+          {t('deactivateDialog.body')}
+        </ConfirmationDialog>
+      )}
+      {dialog?.kind === 'verify' && connection && (
+        <ConfirmationDialog
+          title={t('verifyDialog.title', { domain: dialog.domain.domain })}
+          confirmLabel={t('verify')}
+          onConfirm={() => {
+            const { domain } = dialog
+            close()
+            void verify(domain)
+          }}
+          onClose={close}
+        >
+          {t.rich('verifyDialog.body', { name: connection.name, domain: dialog.domain.domain, b: strong })}
+        </ConfirmationDialog>
+      )}
+    </div>
+  )
+}
