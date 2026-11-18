@@ -239,6 +239,7 @@ export type AuditKind =
   | 'hook_change'
   | 'agent_repo_change'
   | 'org_invite_change'
+  | 'org_sso_change'
   | 'integration_recovery'
   | 'protocol_error'
   | 'api_key_create'
@@ -8991,6 +8992,45 @@ export interface OrgInviteLinkRepo {
   revoke(orgId: string, inviteLinkId: string, at: Date, actorUserId: string): Promise<boolean>
   /** Validate + grant collaborator + persist redemption and its audit atomically. */
   accept(tokenHash: string, userId: string, now: Date): Promise<OrgInviteAcceptResult>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// OrgDomainRepo — domains an organization claims for SSO (organization-sso.md §3)
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface OrgDomainRecord {
+  id: string
+  orgId: string
+  domain: string
+  challenge: string
+  challengeExpiresAt: Date
+  verifiedAt: Date | null
+  lastCheckedAt: Date | null
+  lastCheckOk: boolean | null
+  createdAt: Date
+}
+
+/** A pending claim past its expiry reads as absent everywhere; only the sweeper sees it, to delete it. */
+export interface OrgDomainRepo {
+  /** Verified domains and live pending claims, oldest first. */
+  listForOrg(orgId: string, now: Date): Promise<OrgDomainRecord[]>
+  get(orgId: string, id: string, now: Date): Promise<OrgDomainRecord | null>
+  /** Start a claim, or return the live row for the same domain. `taken`: another organization holds it. `limit`: the organization is at `maxPerOrg`. */
+  claim(
+    input: { orgId: string; domain: string; challenge: string; challengeExpiresAt: Date; maxPerOrg: number },
+    now: Date,
+    actorUserId: string
+  ): Promise<{ record: OrgDomainRecord; created: boolean } | 'taken' | 'limit'>
+  /** Verify + drop every other organization's pending claim + audit, atomically. Null: not this organization's live row. */
+  markVerified(orgId: string, id: string, at: Date, actorUserId: string): Promise<OrgDomainRecord | 'taken' | null>
+  /** Record a DNS check; `ok: null` keeps the last definite result (the lookup itself failed). */
+  recordCheck(id: string, at: Date, ok: boolean | null): Promise<void>
+  /** Delete + audit. False means the id is not in that organization. */
+  release(orgId: string, id: string, actorUserId: string): Promise<boolean>
+  /** System tier: verified rows whose last check is older than `before`, least recently checked first. */
+  listDueForRecheck(before: Date, limit: number): Promise<OrgDomainRecord[]>
+  /** System tier: drop pending claims past their expiry. */
+  deleteExpiredPending(now: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -115,6 +115,7 @@ model Org {
   slackUserConfigs          SlackUserConfig[]
   linearTokens              LinearToken[]
   inviteLink                OrgInviteLink?
+  domains                   OrgDomain[]
   mcpProviders              McpProvider[]
   skillSources              SkillSource[]
   decisions                 Decision[]
@@ -433,6 +434,25 @@ model OrgInviteRedemption {
   @@id([inviteLinkId, userId])
   @@index([userId])
   @@map("org_invite_redemption")
+}
+
+// A domain an organization claims for SSO (organization-sso.md §3); a partial unique index in the migration allows one verified row per domain.
+model OrgDomain {
+  id                 String    @id @default(cuid())
+  orgId              String
+  domain             String // lowercase
+  challenge          String
+  challengeExpiresAt DateTime  @db.Timestamptz(6)
+  verifiedAt         DateTime? @db.Timestamptz(6)
+  lastCheckedAt      DateTime? @db.Timestamptz(6)
+  lastCheckOk        Boolean?
+  createdAt          DateTime  @default(now()) @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, domain])
+  @@index([domain])
+  @@map("org_domain")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -3439,6 +3459,7 @@ enum AuditKind {
   hook_change
   agent_repo_change
   org_invite_change
+  org_sso_change
   integration_recovery
   protocol_error
   api_key_create

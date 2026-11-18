@@ -27,6 +27,7 @@ import type { FetchLike } from './github/api.js'
 import { makeSecretsProvider } from './secrets/providers/memory.js'
 import { buildContainer } from './container.js'
 import type { OrgStanding } from './key-server/org-standing.js'
+import type { TxtLookup } from './org-sso/txt-lookup.js'
 
 /** The seams `buildApp` injects (each swappable for a fake in tests). */
 export interface BuildAppDeps {
@@ -58,6 +59,8 @@ export interface BuildAppDeps {
   linearFetch?: FetchLike
   /** Org standing override — suites run a fake key server; absent ⇒ from KEY_SERVER_URL, or no gate. */
   orgStanding?: OrgStanding
+  /** DNS TXT lookup override for organization SSO domain checks — suites answer without network. */
+  orgSsoTxtLookup?: TxtLookup
 }
 
 /** The wired app both prod and tests drive. */
@@ -140,7 +143,8 @@ export function buildApp(deps: BuildAppDeps): App {
     ...(deps.linearFetch ? { linearFetch: deps.linearFetch } : {}),
     ...(deps.secretCipher ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.deploymentConfig ? { deploymentConfig: deps.deploymentConfig } : {}),
-    ...(deps.orgStanding ? { orgStanding: deps.orgStanding } : {})
+    ...(deps.orgStanding ? { orgStanding: deps.orgStanding } : {}),
+    ...(deps.orgSsoTxtLookup ? { orgSsoTxtLookup: deps.orgSsoTxtLookup } : {})
   })
 
   let wss: WebSocketServer | undefined

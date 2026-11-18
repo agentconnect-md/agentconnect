@@ -109,6 +109,25 @@ describe('DeploymentConfigValuesV1Schema', () => {
     browserClient: { appId: 'web-app', apiResource: null }
   }
 
+  it('declares organization SSO only with console sign-in and without a deployment connector', () => {
+    expect(DeploymentConfigValuesV1Schema.parse(base).features.organizationSso).toBe(false)
+    const declared = { ...base.features, organizationSso: true }
+    const signIn = { ...oidcAuth, socialProviders: ['github'] }
+    expect(
+      DeploymentConfigValuesV1Schema.parse({ ...base, auth: signIn, features: declared }).features.organizationSso
+    ).toBe(true)
+    expect(DeploymentConfigValuesV1Schema.safeParse({ ...base, features: declared }).success).toBe(false)
+    const ssoConnector = { connectorId: 'sso-1', protocol: 'oidc', name: 'Example SSO' }
+    expect(
+      DeploymentConfigValuesV1Schema.safeParse({
+        ...base,
+        auth: signIn,
+        logto: { ...base.logto, ssoConnector },
+        features: declared
+      }).success
+    ).toBe(false)
+  })
+
   it('lets an SSO connector stand in for every social provider', () => {
     const sso = { connectorId: 'sso-1', name: 'Example SSO' }
     expect(

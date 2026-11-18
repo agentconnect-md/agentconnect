@@ -20,7 +20,7 @@ function runtime(overrides: Partial<DeploymentConfigRuntime> = {}): DeploymentCo
       github: null,
       slack: null,
       logto: null,
-      features: { presetAgentsEnabled: true, maxOrgsPerNonAdminUser: 1 }
+      features: { presetAgentsEnabled: true, maxOrgsPerNonAdminUser: 1, organizationSso: false }
     },
     secrets: {},
     updatedAt: new Date(0),
@@ -109,7 +109,7 @@ describe('applyDeploymentEnvironment', () => {
               browser: null,
               githubConnector: null
             },
-            features: { presetAgentsEnabled: false, maxOrgsPerNonAdminUser: 1 }
+            features: { presetAgentsEnabled: false, maxOrgsPerNonAdminUser: 1, organizationSso: false }
           },
           secrets: {
             'github.privateKeyB64': 'github-key',
