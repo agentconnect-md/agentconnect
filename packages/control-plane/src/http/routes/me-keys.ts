@@ -17,6 +17,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
+import { refuseWithoutOrgSso } from '../org-scope.js'
 import type { UserApiKeyView } from '../../ports.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
 import { isAgentLevelPermission } from '../../domain/api-key-permission.js'
@@ -120,6 +121,8 @@ export function meKeyRoutes(deps: HttpDeps) {
         if (!role) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
         }
+        // A key reaches the organization later without a browser session, so minting one needs the session the organization requires.
+        if (await refuseWithoutOrgSso(deps.orgSsoSession, req, reply, req.body.orgId)) return reply
         const agentIds = Array.isArray(req.body.agents) ? [...new Set(req.body.agents)] : undefined
         if (agentIds && !(await agentsVisible(req.body.orgId, agentIds, req.principal!.userId))) {
           return notFound(reply, 'agent not found')
@@ -165,6 +168,7 @@ export function meKeyRoutes(deps: HttpDeps) {
         if (target.revokedAt) {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'key is revoked' })
         }
+        if (await refuseWithoutOrgSso(deps.orgSsoSession, req, reply, target.orgId)) return reply
         // The selection rules are judged against the permission the key will have after the edit.
         const permission = req.body.permission ?? target.permission
         if (req.body.agents !== undefined && !isAgentLevelPermission(permission)) {
@@ -208,6 +212,7 @@ export function meKeyRoutes(deps: HttpDeps) {
         if (target.revokedAt) {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'key is revoked' })
         }
+        if (await refuseWithoutOrgSso(deps.orgSsoSession, req, reply, target.orgId)) return reply
         const minted = await deps.apiKeys.regenerate(target.id)
         return {
           apiKeyId: minted.apiKeyId,

@@ -3342,6 +3342,8 @@ export const OrgDto = z.object({
   /** Registered daemons in this org (any status) — lets the console skip the
    *  onboarding redirect when ANY of the caller's orgs already runs a daemon. */
   daemonCount: z.number().int(),
+  /** In `GET /orgs`: the SSO connection this browser session must sign in through before it opens the organization; null when it may. */
+  ssoSignIn: z.object({ connectorId: z.string(), name: z.string() }).nullable().optional(),
   createdAt: z.string() // ISO-8601
 })
 export const OrgListDto = z.array(OrgDto)

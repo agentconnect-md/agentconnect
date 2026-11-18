@@ -23,6 +23,7 @@ import {
   updateOrg as apiUpdateOrg,
   deleteOrg as apiDeleteOrg,
   removeMember as apiRemoveMember,
+  ORG_SSO_SIGN_IN_REQUIRED,
   type MemberRole,
   type OrgDto
 } from '@/lib/api'
@@ -184,6 +185,13 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     // SWR retains usable rows and exposes refresh failures without rejecting mutation callers.
     await mutate().catch(() => undefined)
   }, [mutate])
+
+  // A refusal for a missing SSO sign-in means the list is stale; re-reading it shows the way in.
+  useEffect(() => {
+    const onRefused = () => void refreshOrgs()
+    window.addEventListener(ORG_SSO_SIGN_IN_REQUIRED, onRefused)
+    return () => window.removeEventListener(ORG_SSO_SIGN_IN_REQUIRED, onRefused)
+  }, [refreshOrgs])
 
   const hasOrgSegment = pathname.split('/')[1] === slug
   // A proxy rewrite can supply the internal `-` param while the visible URL is

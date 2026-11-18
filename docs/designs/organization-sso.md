@@ -33,6 +33,7 @@ identity provider. Four things are missing:
 | D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                                                |
 | D5  | A person who first signs in through an organization's active connection becomes a member of that organization once.                                                                                                               |
 | D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
+| D7  | An organization with an active connection accepts a member whose address is in its verified domains only from a browser session that signed in through that connection. Other organizations and other members are unaffected.     |
 
 ## 3. Model
 
@@ -196,18 +197,79 @@ sign-in through a connection.
 - A caller who is already a member keeps their role and gets the join record.
 - The join record outlives the membership. An owner who removes such a member is not
   overruled at the person's next sign-in; they can be invited back.
-- Removing someone at the identity provider stops their sign-in through the
-  connection, and so with a bound address. It is not an organization-wide rule: an
-  account that has also linked a social identity reporting another address, or none,
-  still signs in with it. Nor does it remove the membership or revoke API keys and
-  OAuth grants. Both need the provider to notify the deployment, which is out of
-  scope here (§7).
+- Removing someone at the identity provider stops new sign-ins through the
+  connection, so no new session reaches the organization (§4.5), whatever other
+  sign-in identities the account holds. A session already signed in lasts until it
+  ends, and the membership, API keys and OAuth grants stay. Ending those needs the
+  provider to notify the deployment, which is out of scope here (§7).
 
 ### 4.4 Claiming an invited row
 
 Unchanged for addresses outside any bound domain. For an address inside one, the
 existing claim by email relies on §5: only that organization's connection can assert
 the address.
+
+### 4.5 Per session
+
+The identity service refuses another sign-in method for an address in a bound
+domain, but it judges the address that sign-in reports. An account holds several
+sign-in identities, and a linked social identity may report another address or none,
+so that refusal alone does not keep such an account out of the organization. The
+organization does, on every request:
+
+- **The rule.** A request to an organization with an active connection, from an
+  account whose address is in that organization's verified domains, must come from a
+  browser session whose latest sign-in went through that connection. Otherwise it is
+  refused with 403 `ORG_SSO_SIGN_IN_REQUIRED`. The account's other organizations are
+  unaffected, and so is anyone whose address is outside the verified domains, owners
+  included.
+- **What the token carries.** The identity service's access-token claims script adds
+  `sso_connector_id`: the connector of an SSO verification in the session's latest
+  sign-in, when its identity (issuer and subject) is one the account holds. A
+  verification of someone else's identity in the same sign-in does not count. The
+  script runs on every issuance, refreshes included, and reads the browser session's
+  latest sign-in, so the claim follows that session: a later sign-in by another
+  method in the same browser drops it from tokens issued afterwards, a later sign-in
+  through the connection adds it, and a session that has ended yields none. The
+  method belongs to a session, not a subject, so nothing caches it; the account's
+  address and whether the connector exists are cached for a minute.
+- **Who configures it.** The Setup Server owns the script while organization SSO is
+  declared, and reports a missing or different one as drift (§6.1). The script also
+  carries the role names the Control Plane reads for `ADMIN`, so it replaces a
+  script that did only that. Until it is applied no session carries the claim, and
+  members inside the domains cannot open the organization.
+- **Where it is checked.** In the guard of the `/orgs/:orgId` subtree, after
+  membership, so a non-member learns nothing about the organization's sign-in; and
+  where a credential for the organization is minted or reissued outside that
+  subtree: a personal API key (`POST /me/keys`, its edit and its regeneration) and an
+  OAuth grant (`POST /oauth/consent`). Revoking a key stays open.
+- **Who it applies to.** Browser sessions only: requests authenticated by an access
+  token of the identity service. API keys, OAuth tokens, service accounts and an
+  agent's delegated calls carry no sign-in method. They were issued earlier and keep
+  working; ending them when someone leaves needs the identity provider (§7).
+- **When it applies.** Only an active connection with a verified domain enforces. A
+  draft, a test window, and a deactivated or removed connection do not. Nor does an
+  active connection whose connector is gone from the identity service, since nobody
+  could sign in through it. Activation and deactivation take effect within the
+  lookup's fifteen seconds (§4.2). When the account's address cannot be read and none
+  is cached, the request answers 503.
+- **The console.** `GET /orgs` returns, for each organization, `ssoSignIn` (the
+  connector and its name) when this session must first sign in through it. The
+  console then shows, in place of the organization's pages, its name and the
+  connection with one action, "Sign in with" the connection, which starts the same
+  direct sign-in as the login page and returns to the same page. The rail and the
+  organization switcher stay, so the other organizations remain one click away. A
+  refusal on any request makes the console read the list again, which covers a
+  connection activated while it was open.
+- **An account that never signed in through the connection**, such as one invited
+  earlier, gets in by signing in through it: the address links the new SSO identity
+  to the same account (§5), and its session carries the claim.
+- **Activating.** The test sign-in that activation requires is a sign-in through the
+  connection, so an owner inside the domains who ran it already holds a session the
+  rule accepts. The activation dialog states that the domains sign in only through
+  the connection, which is now true of each organization's sessions too. An owner
+  outside the domains is never affected, and a deployment `ADMIN` can deactivate any
+  connection (§4.1).
 
 ## 5. What must hold for an organization's connection
 
@@ -277,15 +339,18 @@ Outside the organization subtree:
 show the email field.
 `auth.sso` keeps describing the deployment connector.
 
+`GET /orgs` gains `ssoSignIn` per organization, and a refused request carries the
+code `ORG_SSO_SIGN_IN_REQUIRED` (§4.5).
+
 ### 6.1 Two writers to Logto
 
 The Control Plane becomes a second writer to Logto beside the Setup Server. Each owns
 a disjoint part:
 
-| Writer        | Owns                                                                           |
-| ------------- | ------------------------------------------------------------------------------ |
-| Setup Server  | The sign-in experience, and the one connector with its fixed name.             |
-| Control Plane | Connectors named after an organization: their configuration and their domains. |
+| Writer        | Owns                                                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Setup Server  | The sign-in experience, the one connector with its fixed name, and the access-token claims script while organization SSO is declared. |
+| Control Plane | Connectors named after an organization: their configuration and their domains.                                                        |
 
 The Setup Server's desired value for Logto's `singleSignOnEnabled` becomes "a
 deployment connector exists, or organization SSO is declared". Without that, its next
@@ -357,7 +422,10 @@ Each step merges on its own.
 4. **Membership** (landed): the join record and `POST /sso/join`.
 5. **Web** (landed): the email field on the login page, the call to `POST /sso/join`
    after a sign-in, the settings card, and the page a test sign-in lands on.
-6. **User documentation**, once the feature is complete, naming the minimum Logto
+6. **Per session** (landed): the access-token claims script and its drift check, the
+   check of §4.5, `ssoSignIn` on `GET /orgs`, and the console's sign-in step for an
+   organization.
+7. **User documentation**, once the feature is complete, naming the minimum Logto
    release.
 
 Organization SSO stays undeclared on every deployment until its Logto provides §5.
@@ -379,6 +447,10 @@ Verification on a staging deployment with a real identity provider, OIDC and SAM
   does not recreate it.
 - Changing the configuration clears the test result and blocks activation.
 - Deactivating restores social sign-in for the domain.
+- A member inside the domains who signed in with a linked social identity is refused
+  in the organization, reaches it after signing in through the connection, and keeps
+  reaching their other organizations meanwhile; an owner outside the domains is
+  unaffected.
 
 Open points:
 

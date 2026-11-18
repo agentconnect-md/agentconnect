@@ -9079,7 +9079,7 @@ export interface OrgSsoConnectionRepo {
   /** System tier: the connections that own these identity-service connectors. */
   findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
   /** System tier: every verified domain of an active connection, with the connector it signs in through. */
-  listActiveDomains(): Promise<{ domain: string; connectorId: string; name: string }[]>
+  listActiveDomains(): Promise<{ domain: string; orgId: string; connectorId: string; name: string }[]>
   /** Grant the membership a first sign-in through the connection earns, once; `recorded` means an earlier join stands, whatever became of the membership. */
   joinOnce(
     orgId: string,

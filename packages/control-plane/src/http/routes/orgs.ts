@@ -76,7 +76,20 @@ export function orgRoutes(deps: HttpDeps) {
       },
       async (req) => {
         const rows = await deps.repos.org.listForUser(req.principal!.userId)
-        return rows.map((o) => toDto(o, deps))
+        const rule = deps.orgSsoSession
+        const subject = req.apiKeyId === undefined ? req.oidcSubject : undefined
+        if (!rule || subject === undefined) return rows.map((o) => toDto(o, deps))
+        const session = { subject, ssoConnectorId: req.signInSsoConnectorId ?? null }
+        // The list itself stays reachable, so the console can show the way in and the other organizations.
+        return Promise.all(
+          rows.map(async (o) => ({
+            ...toDto(o, deps),
+            ssoSignIn: await rule.requirement(o.id, session).catch((err: unknown) => {
+              req.log.warn({ err }, 'org sso: could not check the session for the organization list')
+              return null
+            })
+          }))
+        )
       }
     )
 

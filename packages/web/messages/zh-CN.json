@@ -1,6 +1,10 @@
 {
   "Common": {
     "organizationLoadError": "无法加载你的组织，请检查网络连接后重试。",
+    "organizationSso": {
+      "title": "{org} 需要通过 {name} 登录",
+      "signIn": "使用 {name} 登录"
+    },
     "metadata": {
       "description": "连接即时通信平台与 AI 编程 Agent 的多 Agent 平台"
     },

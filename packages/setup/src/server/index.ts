@@ -2096,6 +2096,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         sso: reconciled.sso,
         ssoConnectorsDeleted: reconciled.ssoConnectorsDeleted,
         signInExperienceChanged: reconciled.signInExperienceChanged,
+        tokenClaimsChanged: reconciled.tokenClaimsChanged,
         adminRoleCreated: reconciled.adminRoleCreated
       }
     })
@@ -2316,6 +2317,23 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
                     ? 'The Logto SSO connector differs from its saved identity provider.'
                     : 'The Logto SSO connector no longer exists; create it again.',
               diff: setupInspection.sso.diff
+            }
+      )
+    }
+    if (setupInspection.tokenClaims) {
+      findings.push(
+        setupInspection.tokenClaims.matches
+          ? {
+              id: 'logto.token_claims',
+              status: 'pass',
+              message: 'Logto access tokens carry the sign-in method organization SSO checks.'
+            }
+          : {
+              id: 'logto.token_claims',
+              status: 'fail',
+              message:
+                'Logto access tokens do not carry the sign-in method, so members with addresses on an organization’s verified domains cannot open it.',
+              diff: setupInspection.tokenClaims.diff
             }
       )
     }
