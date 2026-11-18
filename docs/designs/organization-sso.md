@@ -99,7 +99,8 @@ One card in organization settings, three steps in order:
    presents the nonce; the Control Plane marks the connection tested when the account
    that landed holds an identity on this connector. The nonce shows an owner started
    the test; the identity shows the provider works. The window closes when the test
-   succeeds or after ten minutes. While it is open, the organization's domains sign
+   succeeds, when the settings change, when the connection is deactivated, or after
+   ten minutes. While it is open, the organization's domains sign
    in only through the connection, as they do once it is active; the card says so
    before starting.
 3. **Activate.** Offered only when a domain is verified and the connection is tested.

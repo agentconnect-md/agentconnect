@@ -305,6 +305,46 @@ describe('organization SSO connection', () => {
     expect(await connectionOf(app)).toMatchObject({ status: 'draft' })
   })
 
+  it('unbinds a test window’s domains when a save inside it is refused', async () => {
+    const app = start()
+    await save(app)
+    await verifiedDomain(app, 'example.test')
+    const test = (await post(app, `${SSO}/connection/test`)).json() as { nonce: string; connectorId: string }
+    idp.accounts.set(OWNER_SUBJECT, { primaryEmail: 'owner@example.test', connectorIds: [test.connectorId] })
+
+    idp.rejectWith = 'issuer discovery failed'
+    expect((await save(app, { ...OIDC, issuer: 'https://wrong.example.test' })).statusCode).toBe(400)
+    // The refusal left the unbinding undone; the window is ended on the row, so the background pass finishes it.
+    expect(idp.only().domains).toEqual(['example.test'])
+    expect((await post(app, '/api/v1/sso/test-result', { nonce: test.nonce })).json()).toEqual({ tested: false })
+    await connections.sweep()
+    expect(idp.only().domains).toEqual([])
+    expect(await prisma.orgSsoConnection.findFirst()).toMatchObject({ testNonceHash: null, testExpiresAt: null })
+  })
+
+  it('ends an open test window when the connection is deactivated', async () => {
+    const app = start()
+    await save(app)
+    await verifiedDomain(app, 'example.test')
+    const test = (await post(app, `${SSO}/connection/test`)).json() as { nonce: string; connectorId: string }
+    idp.accounts.set(OWNER_SUBJECT, { primaryEmail: 'owner@example.test', connectorIds: [test.connectorId] })
+    expect(idp.only().domains).toEqual(['example.test'])
+
+    const off = await post(app, `/api/v1/admin/orgs/${DEFAULT_ORG_ID}/sso/connection/deactivate`)
+    expect(off.statusCode).toBe(200)
+    expect(idp.only().domains).toEqual([])
+    expect((await post(app, '/api/v1/sso/test-result', { nonce: test.nonce })).json()).toEqual({ tested: false })
+    expect(await prisma.orgSsoConnection.findFirst()).toMatchObject({ testNonceHash: null, testExpiresAt: null })
+
+    // The same holds while active: deactivating during a re-test lifts the restriction at once.
+    clock.advance(1000)
+    await passTest(app)
+    await post(app, `${SSO}/connection/activate`)
+    await post(app, `${SSO}/connection/test`)
+    expect((await post(app, `${SSO}/connection/deactivate`)).json()).toMatchObject({ status: 'tested' })
+    expect(idp.only().domains).toEqual([])
+  })
+
   it('activates only a tested connection whose domains still resolve, and binds them', async () => {
     const app = start()
     await save(app)

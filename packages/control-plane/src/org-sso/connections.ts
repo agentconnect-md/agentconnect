@@ -90,7 +90,7 @@ export class OrgSsoConnectionService {
     )
     const configured = await idp.configure(connectorId, { displayName: input.name, config: connectorConfig(input) })
     if (configured === 'missing') throw new LogtoApiError('the sso connector disappeared while it was saved', 0, true)
-    await this.sync(row)
+    await this.settle(row)
     return this.view(row)
   }
 
@@ -142,20 +142,21 @@ export class OrgSsoConnectionService {
     if (checks.length === 0) return 'no_domain'
     const failed = checks.filter((entry) => entry.check !== 'ok')
     if (failed.length > 0) return { failed }
-    const row = await connections.setActive(orgId, new Date(clock.now()), actorUserId)
+    const row = await connections.activate(orgId, new Date(clock.now()), actorUserId)
     if (!row) return 'none'
     if ((await this.sync(row)) === 'missing') {
-      await connections.setActive(orgId, null, actorUserId)
+      await connections.deactivate(orgId, new Date(clock.now()), actorUserId)
       return 'needs_configuration'
     }
     return this.view(row)
   }
 
-  /** Lifts the restriction on the organization's domains; people already linked can still sign in through the connection. */
+  /** Lifts the restriction on the organization's domains, an open test window's included; people already linked can still sign in through the connection. */
   async deactivate(orgId: string, actorUserId: string): Promise<OrgSsoConnectionView | null> {
-    const row = await this.deps.connections.setActive(orgId, null, actorUserId)
+    const { connections, clock } = this.deps
+    const row = await connections.deactivate(orgId, new Date(clock.now()), actorUserId)
     if (!row) return null
-    await this.sync(row)
+    await this.settle(row)
     return this.view(row)
   }
 
@@ -197,13 +198,22 @@ export class OrgSsoConnectionService {
     return this.deps.domains.release(record.orgId, id, actorUserId)
   }
 
-  /** The background pass: close test windows past their expiry and unbind what they bound. */
+  /** The background pass: close test windows that ended, by time or by a change whose unbinding did not complete, and unbind what they bound. */
   async sweep(): Promise<void> {
     const { connections, clock, log } = this.deps
     for (const row of await connections.listEndedTests(new Date(clock.now()))) {
       await this.closeTestWindow(row).catch((err: unknown) =>
         log?.warn({ err, connectionId: row.id }, 'org sso: could not close a test window')
       )
+    }
+  }
+
+  /** Bring the connector's domains in line with the row, closing a test window the row has ended. */
+  private async settle(row: OrgSsoConnectionRecord): Promise<void> {
+    if (row.testExpiresAt !== null && row.testExpiresAt.getTime() <= this.deps.clock.now()) {
+      await this.closeTestWindow(row)
+    } else {
+      await this.sync(row)
     }
   }
 

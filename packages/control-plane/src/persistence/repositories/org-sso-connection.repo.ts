@@ -30,14 +30,16 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
   ): Promise<OrgSsoConnectionRecord> {
     const { orgId, logtoConnectorId, protocol, name } = input
     return this.inTransaction(async (tx) => {
-      const existed = (await tx.orgSsoConnection.findUnique({ where: { orgId }, select: { id: true } })) !== null
+      const current = await tx.orgSsoConnection.findUnique({ where: { orgId }, select: { testExpiresAt: true } })
+      const existed = current !== null
+      // An open test window ends here but stays on the row until what it bound has been unbound.
       const changed = {
         logtoConnectorId,
         protocol,
         name,
         configChangedAt: at,
         testNonceHash: null,
-        testExpiresAt: null
+        testExpiresAt: current?.testExpiresAt ? at : null
       }
       const row = await tx.orgSsoConnection.upsert({
         where: { orgId },
@@ -97,16 +99,41 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
     })
   }
 
-  setActive(orgId: string, at: Date | null, actorUserId: string): Promise<OrgSsoConnectionRecord | null> {
+  activate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null> {
     return this.inTransaction(async (tx) => {
       const current = await tx.orgSsoConnection.findUnique({ where: { orgId } })
       if (!current) return null
-      if ((current.activatedAt !== null) === (at !== null)) return toRecord(current)
+      if (current.activatedAt !== null) return toRecord(current)
       const row = await tx.orgSsoConnection.update({ where: { orgId }, data: { activatedAt: at } })
-      await this.audit(tx, orgId, actorUserId, `single sign-on connection ${at ? 'activated' : 'deactivated'}`, {
-        action: at ? 'connection_activated' : 'connection_deactivated',
+      await this.audit(tx, orgId, actorUserId, 'single sign-on connection activated', {
+        action: 'connection_activated',
         connectionId: row.id
       })
+      return toRecord(row)
+    })
+  }
+
+  deactivate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null> {
+    return this.inTransaction(async (tx) => {
+      const current = await tx.orgSsoConnection.findUnique({ where: { orgId } })
+      if (!current) return null
+      if (current.activatedAt === null && current.testExpiresAt === null) return toRecord(current)
+      // A test window binds the same domains, so it ends too; it stays on the row until they are unbound.
+      const row = await tx.orgSsoConnection.update({
+        where: { orgId },
+        data: { activatedAt: null, testNonceHash: null, testExpiresAt: current.testExpiresAt ? at : null }
+      })
+      const wasActive = current.activatedAt !== null
+      await this.audit(
+        tx,
+        orgId,
+        actorUserId,
+        `single sign-on ${wasActive ? 'connection deactivated' : 'test cancelled'}`,
+        {
+          action: wasActive ? 'connection_deactivated' : 'connection_test_cancelled',
+          connectionId: row.id
+        }
+      )
       return toRecord(row)
     })
   }

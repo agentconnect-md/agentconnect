@@ -9054,7 +9054,7 @@ export interface OrgSsoConnectionRecord {
 /** One connection per organization (organization-sso.md §3). Every state change is audited with its actor. */
 export interface OrgSsoConnectionRepo {
   getForOrg(orgId: string): Promise<OrgSsoConnectionRecord | null>
-  /** Create the row or record a configuration change; either way the test result no longer stands. */
+  /** Create the row or record a configuration change; the test result no longer stands, and an open test window ends at `at`. */
   save(
     input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol; name: string },
     at: Date,
@@ -9066,12 +9066,14 @@ export interface OrgSsoConnectionRepo {
   findLiveTest(nonceHash: string, now: Date): Promise<OrgSsoConnectionRecord | null>
   /** Mark tested and end the window at `at`; null when the window ended or the configuration changed meanwhile. */
   completeTest(id: string, nonceHash: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
-  /** System tier: connections whose test window has ended and is not yet closed. */
+  /** System tier: connections whose test window has ended, by time or by a change, and is not yet closed. */
   listEndedTests(now: Date): Promise<OrgSsoConnectionRecord[]>
   /** System tier: close an ended window, once what it bound has been unbound. */
   closeTest(id: string, now: Date): Promise<void>
-  /** Activate (`at`) or deactivate (`null`); null when the organization has no connection. */
-  setActive(orgId: string, at: Date | null, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Null when the organization has no connection. */
+  activate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
+  /** Also ends an open test window at `at`, since it binds the same domains; null when the organization has no connection. */
+  deactivate(orgId: string, at: Date, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
   /** Delete + audit; null when the organization has no connection. */
   remove(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
   /** System tier: the connections that own these identity-service connectors. */
