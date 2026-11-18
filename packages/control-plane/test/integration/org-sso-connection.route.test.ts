@@ -30,7 +30,7 @@ interface Connector {
 /** The identity service in memory: connectors by id, and the accounts a sign-in would have produced. */
 class FakeIdp implements OrgSsoIdp {
   readonly connectors = new Map<string, Connector>()
-  readonly accounts = new Map<string, OrgSsoAccount>()
+  readonly accounts = new Map<string, Omit<OrgSsoAccount, 'attributeNames'> & Partial<OrgSsoAccount>>()
   rejectWith: string | null = null
   down = false
 
@@ -86,7 +86,8 @@ class FakeIdp implements OrgSsoIdp {
 
   async account(subject: string) {
     this.up()
-    return this.accounts.get(subject) ?? null
+    const account = this.accounts.get(subject)
+    return account ? { attributeNames: {}, ...account } : null
   }
 
   async deleteAccount(subject: string) {
@@ -680,8 +681,18 @@ describe('organization SSO sign-in admission', () => {
   })
 
   it('refuses an account the provider gave no address and removes it when it has nothing here', async () => {
-    idp.accounts.set('no-address', { primaryEmail: null, connectorIds: [connectorId] })
-    expect(await admission.admit('no-address')).toBe(false)
+    const long = 'x'.repeat(500)
+    idp.accounts.set('no-address', {
+      primaryEmail: null,
+      connectorIds: [connectorId],
+      attributeNames: { [connectorId]: ['mail', long, ...Array.from({ length: 100 }, (_, i) => `a${i}`)] }
+    })
+    const refused = await admission.admit('no-address')
+    expect(refused).toMatchObject({ code: 'SSO_ADDRESS_REQUIRED' })
+    // The names were read before the account was removed, and the list is bounded.
+    const attributes = refused === true ? [] : refused.details.attributes
+    expect(attributes.slice(0, 2)).toEqual(['mail', 'x'.repeat(200)])
+    expect(attributes).toHaveLength(50)
     expect(idp.accounts.has('no-address')).toBe(false)
 
     const refusal = await prisma.auditEvent.findFirst({
@@ -692,7 +703,11 @@ describe('organization SSO sign-in admission', () => {
 
   it('refuses an account outside the verified domains and removes it when it has nothing here', async () => {
     idp.accounts.set('outside', { primaryEmail: 'victim@elsewhere.example.test', connectorIds: [connectorId] })
-    expect(await admission.admit('outside')).toBe(false)
+    expect(await admission.admit('outside')).toEqual({
+      code: 'SSO_ADDRESS_REQUIRED',
+      message: expect.any(String),
+      details: { attributes: [] }
+    })
     expect(idp.accounts.has('outside')).toBe(false)
 
     const refusal = await prisma.auditEvent.findFirst({
@@ -705,7 +720,7 @@ describe('organization SSO sign-in admission', () => {
 
   it('refuses but keeps an account that already has a local user', async () => {
     idp.accounts.set(OWNER_SUBJECT, { primaryEmail: 'owner@elsewhere.example.test', connectorIds: [connectorId] })
-    expect(await admission.admit(OWNER_SUBJECT)).toBe(false)
+    expect(await admission.admit(OWNER_SUBJECT)).toMatchObject({ code: 'SSO_ADDRESS_REQUIRED' })
     expect(idp.accounts.has(OWNER_SUBJECT)).toBe(true)
   })
 })

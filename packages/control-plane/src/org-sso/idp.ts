@@ -14,6 +14,8 @@ export interface OrgSsoAccount {
   primaryEmail: string | null
   /** Connectors the account holds an SSO identity on. */
   connectorIds: string[]
+  /** Per connector, the names of the attributes the provider sent on the last sign-in; never their values. */
+  attributeNames: Record<string, string[]>
 }
 
 /** `missing` means the connector is gone from the identity service, so the connection needs its configuration again. */
@@ -108,6 +110,13 @@ export class LogtoOrgSsoIdp implements OrgSsoIdp {
       primaryEmail: typeof user.primaryEmail === 'string' && user.primaryEmail ? user.primaryEmail : null,
       connectorIds: identities.flatMap((identity) =>
         typeof identity.ssoConnectorId === 'string' ? [identity.ssoConnectorId] : []
+      ),
+      attributeNames: Object.fromEntries(
+        identities.flatMap((identity) =>
+          typeof identity.ssoConnectorId === 'string'
+            ? [[identity.ssoConnectorId, Object.keys(record(identity.detail))] as const]
+            : []
+        )
       )
     }
   }

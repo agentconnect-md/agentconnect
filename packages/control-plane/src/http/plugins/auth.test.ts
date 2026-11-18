@@ -361,6 +361,22 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
     expect(resolveUser).not.toHaveBeenCalled()
   })
 
+  it('answers with the reason a refusal names, on the remembered refusal too', async () => {
+    const refusal = { code: 'SSO_ADDRESS_REQUIRED', message: 'no address', details: { attributes: ['mail'] } }
+    const admitSubject = vi.fn(async () => refusal)
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, admitSubject })
+    const headers = { authorization: `Bearer ${await mintBearer('outside')}` }
+
+    for (const response of [
+      await app.inject({ method: 'GET', url: '/api/v1/probe', headers }),
+      await app.inject({ method: 'GET', url: '/api/v1/probe', headers })
+    ]) {
+      expect(response.statusCode).toBe(403)
+      expect(response.json()).toMatchObject(refusal)
+    }
+    expect(admitSubject).toHaveBeenCalledTimes(1)
+  })
+
   it('answers 503 when the identity check fails and checks again on the next request', async () => {
     const admitSubject = vi
       .fn<(sub: string) => Promise<boolean>>()

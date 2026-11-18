@@ -109,7 +109,9 @@ One card in organization settings, three steps in order:
    the test; the identity shows the provider works. An account the sign-in check
    refuses (§5) never presents the nonce, so a provider that returns no usable
    address fails the test, and the page says that the address is what is missing.
-   The window closes when the test
+   It also lists the names, never the values, of the attributes the provider sent
+   with that sign-in, so the owner can pick the email attribute from what the
+   provider actually sends instead of guessing. The window closes when the test
    succeeds, when the settings change, when the connection is deactivated, or after
    ten minutes. While it is open, the organization's domains sign
    in only through the connection, as they do once it is active; the card says so
@@ -224,7 +226,13 @@ Three parts provide them.
   or sent it without marking it verified, and the account would be a member of
   nothing. An account that has no local user yet is also removed from the identity
   service; one that has is left for an administrator. The refusal is audited without
-  the address.
+  the address. It answers `403 SSO_ADDRESS_REQUIRED` with
+  `details: { attributes: string[] }`: the keys of the `detail` Logto stores on the
+  account's identity on that connector, read before the account is removed (raw
+  attribute names over SAML, mapped profile fields over OIDC). The list is bounded in
+  count and length, since a hostile provider chooses it, and is rendered as text. A
+  remembered refusal answers with the same body. Other refusals keep
+  `403 SIGN_IN_IDENTITY_REQUIRED`.
 - **The Control Plane, as the only writer** of each connector's `domains` (§3), and
   of nothing but verified domains.
 

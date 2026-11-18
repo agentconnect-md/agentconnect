@@ -23,6 +23,8 @@ type Landing =
       error: string | null
       /** The Control Plane refused the account that landed: the provider gave it no address in the organization's domains. */
       refused: boolean
+      /** Names of the attributes the provider sent with the refused account, to pick the address attribute from. */
+      attributes: string[]
       returnTo: string
     }
 
@@ -40,7 +42,8 @@ async function land(): Promise<Landing> {
       kind: 'test' as const,
       connectionName: test.connectionName,
       returnTo: test.returnTo,
-      refused: false
+      refused: false,
+      attributes: [] as string[]
     }
     if (providerError) {
       const error = [providerError, params.get('error_description')].filter(Boolean).join(': ')
@@ -51,8 +54,17 @@ async function land(): Promise<Landing> {
       const passed = await reportOrgSsoTest(test.nonce, AbortSignal.timeout(10_000))
       return { ...outcome, passed, email: (await getUser())?.email ?? null, error: null }
     } catch (e) {
-      const refused = e instanceof ApiError && e.code === 'SIGN_IN_IDENTITY_REQUIRED'
-      return { ...outcome, passed: false, email: null, error: e instanceof Error ? e.message : null, refused }
+      const refused = e instanceof ApiError && e.code === 'SSO_ADDRESS_REQUIRED'
+      const sent = refused ? (e.details?.details as { attributes?: unknown } | undefined)?.attributes : undefined
+      const attributes = Array.isArray(sent) ? sent.filter((name): name is string => typeof name === 'string') : []
+      return {
+        ...outcome,
+        passed: false,
+        email: null,
+        error: e instanceof Error ? e.message : null,
+        refused,
+        attributes
+      }
     }
   }
 
@@ -106,6 +118,16 @@ function SsoTestResult({ result }: { result: Extract<Landing, { kind: 'test' }> 
             {result.refused
               ? t('noAddress', { name: result.connectionName })
               : (result.error ?? t('unconfirmed', { name: result.connectionName }))}
+          </div>
+        )}
+        {result.refused && result.attributes.length > 0 && (
+          <div className="mt-[14px] w-full text-left">
+            <div className="text-[12px] font-medium text-(--text-secondary)">{t('attributesSent')}</div>
+            <ul className="mono mt-[6px] max-h-[180px] overflow-y-auto rounded-sm border border-(--border-default) px-[10px] py-2 text-[12px] break-all text-(--text-primary) select-text">
+              {result.attributes.map((name, i) => (
+                <li key={`${i}-${name}`}>{name}</li>
+              ))}
+            </ul>
           </div>
         )}
         <Button className="mt-[22px] h-10 px-[18px]" onClick={() => router.replace(result.returnTo)}>

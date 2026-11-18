@@ -99,13 +99,24 @@ describe('LogtoOrgSsoIdp', () => {
         status: 200,
         body: {
           primaryEmail: 'person@example.test',
-          ssoIdentities: [{ ssoConnectorId: 'c1', issuer: 'https://idp.example.test' }, { issuer: 'no-connector' }]
+          ssoIdentities: [
+            {
+              ssoConnectorId: 'c1',
+              issuer: 'https://idp.example.test',
+              detail: { mail: 'person@example.test', upn: 'p' }
+            },
+            { issuer: 'no-connector' }
+          ]
         }
       },
       'GET /api/users/sub-2?includeSsoIdentities=true': { status: 200, body: { primaryEmail: '' } }
     })
-    expect(await idp.account('sub-1')).toEqual({ primaryEmail: 'person@example.test', connectorIds: ['c1'] })
-    expect(await idp.account('sub-2')).toEqual({ primaryEmail: null, connectorIds: [] })
+    expect(await idp.account('sub-1')).toEqual({
+      primaryEmail: 'person@example.test',
+      connectorIds: ['c1'],
+      attributeNames: { c1: ['mail', 'upn'] }
+    })
+    expect(await idp.account('sub-2')).toEqual({ primaryEmail: null, connectorIds: [], attributeNames: {} })
     expect(await idp.account('gone')).toBeNull()
   })
 

@@ -18,7 +18,8 @@ const ApiError = vi.hoisted(
       constructor(
         message: string,
         readonly status: number,
-        readonly code?: string
+        readonly code?: string,
+        readonly details?: Record<string, unknown>
       ) {
         super(message)
       }
@@ -133,13 +134,31 @@ it('fails the test when the sign-in did not come through the connection', async 
 it('says the provider returned no usable address when the landed account is refused', async () => {
   stashTest()
   mocks.reportOrgSsoTest.mockRejectedValue(
-    new ApiError('this account has no linked sign-in identity', 403, 'SIGN_IN_IDENTITY_REQUIRED')
+    new ApiError('no address', 403, 'SSO_ADDRESS_REQUIRED', {
+      code: 'SSO_ADDRESS_REQUIRED',
+      details: { attributes: ['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn', 'displayName', 7] }
+    })
   )
   await land('?code=abc')
   expect(host.textContent).toContain('Sign-in test failed')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain(
     'Example IdP returned no verified email address in this organization'
   )
+  expect(host.textContent).toContain('Attributes the provider sent')
+  expect([...host.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
+    'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn',
+    'displayName'
+  ])
+})
+
+it('shows no attribute list for a refusal that is not about the address', async () => {
+  stashTest()
+  mocks.reportOrgSsoTest.mockRejectedValue(
+    new ApiError('this account has no linked sign-in identity', 403, 'SIGN_IN_IDENTITY_REQUIRED')
+  )
+  await land('?code=abc')
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe('this account has no linked sign-in identity')
+  expect(host.querySelector('li')).toBeNull()
 })
 
 it('keeps reporting a cancelled sign-in', async () => {

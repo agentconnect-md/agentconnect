@@ -1428,6 +1428,7 @@
       "failed": "Sign-in test failed",
       "unconfirmed": "This sign-in could not be matched to the test of {name}. Start the test again from Settings.",
       "noAddress": "{name} returned no verified email address in this organization's domains. Fix the email claim or attribute at the identity provider, then test again.",
+      "attributesSent": "Attributes the provider sent",
       "backToSettings": "Back to Settings"
     },
     "socialCallback": {
