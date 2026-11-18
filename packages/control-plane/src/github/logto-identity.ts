@@ -720,6 +720,11 @@ export class LogtoIdentityService {
     return new LogtoApiError(message, res.status, res.status >= 500 || res.status === 429, code)
   }
 
+  /** Management API access for the part of Logto another module owns (organization SSO connectors). */
+  management(path: string, init?: RequestInit): Promise<Response> {
+    return this.request(path, init)
+  }
+
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const token = await this.mgmtToken()
     const headers = new Headers(init.headers)

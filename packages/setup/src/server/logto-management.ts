@@ -45,7 +45,12 @@ export interface LogtoSetupDesired {
   azuread?: { clientId: string; clientSecret: string }
   /** Set once the connector has its IdP details; until then sign-in leaves single sign-on off. */
   sso?: LogtoSsoDesired
+  /** Organizations own SSO connectors the Control Plane manages, so single sign-on stays on without a deployment connector. */
+  organizationSso?: boolean
 }
+
+const singleSignOnDesired = (desired: LogtoSetupDesired): boolean =>
+  desired.sso !== undefined || desired.organizationSso === true
 
 /** The SSO connector's IdP settings, in Logto's own config shape. */
 export interface LogtoSsoDesired {
@@ -525,7 +530,7 @@ export class LogtoAdminClaimClient {
       sameStrings(signInExperience.socialSignInConnectorTargets, desired.socialProviders)
     )
     addDiff(signInExperienceDiff, 'Sign-in mode', signInExperience.signInMode ?? null, 'SignInAndRegister')
-    addDiff(signInExperienceDiff, 'Single sign-on', signInExperience.singleSignOnEnabled, desired.sso !== undefined)
+    addDiff(signInExperienceDiff, 'Single sign-on', signInExperience.singleSignOnEnabled, singleSignOnDesired(desired))
     const sso = desired.sso ? await this.inspectSsoConnector(desired.sso) : null
     return {
       sso,
@@ -580,7 +585,7 @@ export class LogtoAdminClaimClient {
       signInExperienceMatches: this.signInExperienceMatches(
         signInExperience,
         desired.socialProviders,
-        desired.sso !== undefined
+        singleSignOnDesired(desired)
       ),
       signInExperienceDiff
     }
@@ -597,7 +602,7 @@ export class LogtoAdminClaimClient {
       : null
     const signInExperienceChanged = await this.ensureSignInExperience(
       desired.socialProviders,
-      desired.sso !== undefined
+      singleSignOnDesired(desired)
     )
     const adminRoleCreated = (await this.ensureAdminRole()).created
     return {

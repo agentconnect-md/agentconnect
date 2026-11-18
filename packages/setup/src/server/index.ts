@@ -567,6 +567,7 @@ function logtoSetup(
     sso: sso ? { connectorId: sso.connectorId, name: sso.displayName } : null,
     desired: {
       ...(sso ? { sso } : {}),
+      ...(record.values.features.organizationSso ? { organizationSso: true } : {}),
       ...(applicationId ? { applicationId } : {}),
       applicationName: browser.applicationName,
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(setupOrigin, '/auth/callback')],

@@ -3166,7 +3166,62 @@ export const OrgSsoDomainDto = z.object({
 })
 export type OrgSsoDomainDtoT = z.infer<typeof OrgSsoDomainDto>
 
-export const OrgSsoStateDto = z.object({ domains: z.array(OrgSsoDomainDto) })
+// The service-provider values an owner enters at the identity provider; which pair depends on the protocol.
+export const OrgSsoConnectionDto = z.object({
+  id: z.string(),
+  protocol: z.enum(['oidc', 'saml']),
+  name: z.string(),
+  status: z.enum(['draft', 'tested', 'active']),
+  tested: z.boolean(),
+  testedAt: z.string().nullable(),
+  activatedAt: z.string().nullable(),
+  configChangedAt: z.string(),
+  serviceProvider: z.union([
+    z.object({ redirectUri: z.string() }),
+    z.object({ assertionConsumerServiceUrl: z.string(), entityId: z.string() })
+  ])
+})
+export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
+
+/** `connection` is null until one is configured, and on a deployment that cannot manage connections. */
+export const OrgSsoStateDto = z.object({
+  domains: z.array(OrgSsoDomainDto),
+  connection: OrgSsoConnectionDto.nullable()
+})
+
+const OrgSsoConnectionName = z.string().trim().min(1).max(64)
+
+/** The client secret is forwarded to the identity service and not kept, so every OIDC save carries it. */
+export const PutOrgSsoConnectionBody = z.discriminatedUnion('protocol', [
+  z.strictObject({
+    protocol: z.literal('oidc'),
+    name: OrgSsoConnectionName,
+    issuer: z.string().trim().min(1).max(2_000),
+    clientId: z.string().trim().min(1).max(500),
+    clientSecret: z.string().min(1).max(10_000),
+    scope: z.string().trim().max(500).optional()
+  }),
+  z.strictObject({
+    protocol: z.literal('saml'),
+    name: OrgSsoConnectionName,
+    metadataUrl: z.string().trim().min(1).max(2_000).optional(),
+    metadata: z.string().trim().min(1).max(200_000).optional(),
+    attributeMapping: z
+      .strictObject({
+        id: z.string().trim().min(1).max(500).optional(),
+        email: z.string().trim().min(1).max(500).optional(),
+        name: z.string().trim().min(1).max(500).optional()
+      })
+      .optional()
+  })
+])
+
+/** The nonce is shown once; the landing page presents it after the test sign-in. */
+export const OrgSsoTestDto = z.object({ nonce: z.string(), connectorId: z.string(), expiresAt: z.string() })
+
+export const OrgSsoTestResultBody = z.object({ nonce: z.string().min(1).max(200) }).strict()
+
+export const OrgSsoTestResultDto = z.object({ tested: z.boolean() })
 
 export const AddOrgSsoDomainBody = z.object({ domain: z.string().min(1).max(253) }).strict()
 

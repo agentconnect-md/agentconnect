@@ -683,6 +683,24 @@ describe('Logto SSO connector', () => {
     expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: false })
   })
 
+  it('keeps single sign-on on for organizations’ connectors without touching them', async () => {
+    const logto = fakeLogto()
+    const owned = { id: 'org-sso', providerName: 'OIDC', connectorName: 'org-1', domains: ['example.test'] }
+    logto.ssoConnectors.push(owned)
+    const desired = { ...base, socialProviders: [], organizationSso: true }
+
+    await logto.client.reconcileSetup(desired)
+    expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: true })
+    expect(logto.patches).toEqual([])
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({
+      sso: null,
+      signInExperienceMatches: true
+    })
+    expect(logto.ssoConnectors).toEqual([owned])
+    await logto.client.reconcileSetup({ ...base, socialProviders: [] })
+    expect(logto.signInExperience()).toMatchObject({ singleSignOnEnabled: false })
+  })
+
   it('names a connector deleted in Logto and carries Logto’s reason for a refused setting', async () => {
     const missing = fakeLogto()
     const sso = {

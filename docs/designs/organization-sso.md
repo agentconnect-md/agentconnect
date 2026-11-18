@@ -1,6 +1,6 @@
 # Organization single sign-on
 
-> **Status:** Proposal for review.
+> **Status:** In progress; §9 says what has landed.
 > **Related:** [authorization-policy.md](authorization-policy.md) (the sign-in gate),
 > [`packages/setup/README.md`](../../packages/setup/README.md) (the deployment's SSO
 > connector), [slack-identity.md](slack-identity.md) (reading a sign-in identity).
@@ -25,14 +25,14 @@ identity provider. Four things are missing:
 
 ## 2. Decisions
 
-| #   | Decision                                                                                                                                                                                                |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | An SSO connection is owned by the deployment (today's connector, unchanged) or by one organization (new). Organization-owned connections exist only on a deployment that declares the guarantees of §5. |
-| D2  | An organization proves it controls an email domain by a DNS record before it can use that domain. A domain belongs to at most one organization.                                                         |
-| D3  | Binding a verified domain to a connection is what enforces SSO for that domain. There is no separate enforcement switch, and binding is refused until a sign-in through the connection has succeeded.   |
-| D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                      |
-| D5  | A person who first signs in through an organization's active connection becomes a member of that organization once.                                                                                     |
-| D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                            |
+| #   | Decision                                                                                                                                                                                                                          |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | An SSO connection is owned by the deployment (today's connector, unchanged) or by one organization (new). A deployment has one kind: its operator declares organization SSO, and the declaration excludes a deployment connector. |
+| D2  | An organization proves it controls an email domain by a DNS record before it can use that domain. A domain belongs to at most one organization.                                                                                   |
+| D3  | Binding a verified domain to a connection is what enforces SSO for that domain. There is no separate enforcement switch, and binding is refused until a sign-in through the connection has succeeded.                             |
+| D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                                                |
+| D5  | A person who first signs in through an organization's active connection becomes a member of that organization once.                                                                                                               |
+| D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
 
 ## 3. Model
 
@@ -44,7 +44,7 @@ forwards a secret on save and does not keep it.
 org_sso_connection
   id, orgId (unique: one connection per organization)
   logtoConnectorId (unique), protocol: oidc | saml, name
-  testNonceHash?, testedAt?, activatedAt?, configChangedAt
+  testNonceHash?, testExpiresAt?, testedAt?, activatedAt?, configChangedAt
 
 org_domain
   id, orgId, domain (lowercase; unique among verified rows)
@@ -56,20 +56,21 @@ domain, so nobody can block one they do not control: a pending challenge expires
 when one organization verifies the domain the pending rows of the others are dropped.
 
 A connection is **draft** until `testedAt` is later than `configChangedAt`, **tested**
-after that, and **active** once `activatedAt` is set.
+after that, and **active** once `activatedAt` is set. An active connection whose
+settings changed stays active and reads as untested until a test succeeds again.
 
-A connection carries two lists in the identity service. The Control Plane is the only
-writer of both.
+A connection carries one list in the identity service, Logto's `domains`, and the
+Control Plane is its only writer. Logto routes by this list, enforces single sign-on
+for it, and links a sign-in to an existing account only when the account's address is
+in it. The list holds the organization's verified domains in two situations and is
+empty otherwise:
 
-- **Allowed domains**: the organization's verified domains, written whenever that set
-  changes and before a sign-in through the connection can start. R1 (§5) is checked
-  against this list, and an empty list refuses every sign-in.
-- **Bound domains** (Logto's `domains`): written at activation and emptied at
-  deactivation. This is the list Logto routes by and enforces.
+- while the connection is **active**;
+- during a **test window**, the ten minutes after an owner starts a test sign-in.
 
-A draft or deactivated connection therefore has allowed domains and no bound ones. It
-can be tested, only with addresses the organization has proved it controls, and it
-neither routes nor restricts anyone.
+A draft or deactivated connection therefore routes nobody and restricts nobody. It
+also cannot reach an existing account, which is why a test needs the window: the
+owner's own account links only while their domain is listed.
 
 The rows are the desired state. A write to Logto follows the row and sets a whole
 value, so a retry or a second Control Plane instance converges on the same result. If
@@ -92,16 +93,27 @@ One card in organization settings, three steps in order:
 2. **Configure the connection and test it.** OIDC takes issuer, client id, client
    secret and scopes; SAML takes a metadata URL or document and an attribute mapping.
    The card shows the callback URL, ACS URL and entity id to enter at the identity
-   provider. "Test sign-in" needs a verified domain. It mints a one-time nonce and
-   starts a sign-in directly against this connector. The landing page presents the
-   nonce; the Control Plane marks the connection tested when the account that landed
-   holds an identity on this connector. The nonce shows an owner started the test; the
-   identity shows the provider works. Any change to the configuration clears the
-   result.
+   provider. An OIDC save always carries the client secret, since it is not kept.
+   "Test sign-in" needs a verified domain. It opens the test window, mints a one-time
+   nonce and starts a sign-in directly against this connector. The landing page
+   presents the nonce; the Control Plane marks the connection tested when the account
+   that landed holds an identity on this connector. The nonce shows an owner started
+   the test; the identity shows the provider works. The window closes when the test
+   succeeds or after ten minutes. While it is open, the organization's domains sign
+   in only through the connection, as they do once it is active; the card says so
+   before starting.
 3. **Activate.** Offered only when a domain is verified and the connection is tested.
-   Activation resolves the DNS records again before it binds. From this moment
-   addresses in those domains sign in only through the connection. A domain verified
-   while the connection is active is bound when it is verified.
+   Activation resolves the DNS records again before it binds, and is refused when one
+   no longer carries its challenge. From this moment addresses in those domains sign
+   in only through the connection. A domain verified while the connection is active
+   is bound when it is verified.
+
+**Changing the settings** takes effect at once and clears the test result. An active
+connection stays active: turning enforcement off to rotate a secret would re-open
+other sign-in methods for the domain. The owner is still signed in and tests again;
+if the new settings are wrong and nobody can sign in, a deployment `ADMIN`
+deactivates. Changing the protocol starts a new connector with new service-provider
+values.
 
 An organization-owned OIDC connection never trusts an unverified email; the
 `trustUnverifiedEmail` option stays a deployment-connector setting.
@@ -109,10 +121,20 @@ An organization-owned OIDC connection never trusts an unverified email; the
 Configuration changes, activation and deactivation are audited with their actor, owner
 or `ADMIN`.
 
-Deactivating empties the bound domains, which lifts the restriction; the allowed
-domains stay. An owner can deactivate their own connection, and a deployment `ADMIN`
-can deactivate any connection, which is the recovery path when an identity provider
-breaks after activation.
+**Deactivating** empties the list, which lifts the restriction. People who already
+signed in through the connection keep an identity on it and can still use it. An
+owner can deactivate their own connection, and a deployment `ADMIN` can deactivate
+any connection, which is the recovery path when an identity provider breaks after
+activation.
+
+**Removing** the connection deletes the connector and every identity it established.
+Accounts stay, and their owners sign in by another method.
+
+**Releasing a domain.** An owner can release a pending claim at any time, and a
+verified domain only when the organization has no connection: the identities on a
+connection were established on that domain's word, so the connection is removed
+first. A deployment `ADMIN` can release any domain, for an organization that has
+lost control of one; a verified domain takes the connection with it.
 
 ### 4.2 Signing in
 
@@ -160,35 +182,33 @@ Unchanged for addresses outside any bound domain. For an address inside one, the
 existing claim by email relies on §5: only that organization's connection can assert
 the address.
 
-## 5. What the identity service must guarantee
+## 5. What must hold for an organization's connection
 
 An organization owner chooses the identity provider, so on a shared deployment the
-provider is untrusted input. Organization-owned connections need two guarantees from
-the identity service:
+provider is untrusted input. Two things must hold:
 
-- **R1.** A connection can assert only addresses in its allowed domains (§3). With
-  none, it can assert nothing.
+- **R1.** A connection speaks only for addresses in its organization's verified
+  domains. It can neither reach nor create an account with any other address.
 - **R2.** An identity established through one connection is never accepted through
   another.
 
-Both apply before any user is identified, so they cover sign-in, linking and
-registration alike, and the test sign-in of §4.1 as much as any other. They are
-opt-in at the identity service: a deployment connector may serve addresses outside
-its listed domains today, and applying R1 to it unasked would lock those people out.
+Three parts provide them.
 
-**Who provides them.** Stock Logto offers neither as a setting. They are a change to
-Logto's enterprise SSO verification, to be contributed upstream. They cannot be
-enforced in the Control Plane instead: by the time a token reaches it, the identity
-service has already chosen the account.
+- **The identity service** links a sign-in to an existing account only when the
+  address is in the connector's `domains`, and binds an identity to the connector
+  that established it. Organization SSO needs a Logto release that does both.
+- **The Control Plane, at sign-in.** Before a subject is admitted, an account that
+  holds an identity on an organization's connection must have its address inside
+  that organization's verified domains. Otherwise the sign-in is refused. An account
+  that has no local user yet is also removed from the identity service; one that
+  has is left for an administrator. The refusal is audited without the address.
+- **The Control Plane, as the only writer** of each connector's `domains` (§3), and
+  of nothing but verified domains.
 
-- Until a Logto release includes the change, organization SSO needs a Logto build
-  that carries it. Such a build reports the capability, and the Setup Server reads
-  that before it lets an operator declare organization SSO (D1).
-- A deployment on the stock image pinned in `compose.logto.yaml`, or on Logto Cloud,
-  cannot report it. Organization SSO stays off there, and the deployment connector
-  remains its SSO.
-
-How the two are implemented and tested is specified with the change that adds them.
+**The declaration.** The Setup Server cannot read which Logto release it faces, so
+organization SSO is on only where the operator declares it (D1). The deployment
+guide names the minimum Logto release, and a deployment on an older one, or on Logto
+Cloud, keeps the deployment connector as its SSO.
 
 Domain ownership and uniqueness are the Control Plane's job. Logto does not verify
 ownership and lets two connectors list the same domain; it only refuses a list of
@@ -199,22 +219,24 @@ public mail domains.
 Under `/orgs/:orgId/sso`, owner-only and `interactiveOnly` (they manage how an
 organization's people authenticate, and one of them carries a client secret):
 
-| Route                         | Purpose                                                         |
-| ----------------------------- | --------------------------------------------------------------- |
-| `GET /`                       | Domains, connection state, the service-provider values to show. |
-| `POST /domains`               | Add a domain; returns the challenge.                            |
-| `POST /domains/:id/verify`    | Resolve the TXT record now.                                     |
-| `DELETE /domains/:id`         | Release a domain; an owner is refused while it is bound.        |
-| `PUT /connection`             | Create or update the connection; clears the test result.        |
-| `POST /connection/test`       | Mint the test nonce; refused without a verified domain.         |
-| `POST /connection/activate`   | Bind verified domains.                                          |
-| `POST /connection/deactivate` | Unbind. Also allowed for a deployment `ADMIN`.                  |
+| Route                         | Purpose                                                          |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `GET /`                       | Domains, connection state, the service-provider values to show.  |
+| `POST /domains`               | Add a domain; returns the challenge.                             |
+| `POST /domains/:id/verify`    | Resolve the TXT record now.                                      |
+| `DELETE /domains/:id`         | Release a domain; a verified one only when no connection exists. |
+| `PUT /connection`             | Create or update the connection; clears the test result.         |
+| `POST /connection/test`       | Open the test window and mint the nonce.                         |
+| `POST /connection/activate`   | Bind the verified domains.                                       |
+| `POST /connection/deactivate` | Unbind.                                                          |
+| `DELETE /connection`          | Remove the connection and the identities it established.         |
 
-A deployment `ADMIN` may also release any domain, bound or not; releasing a bound one
-unbinds it first.
+Outside the organization subtree:
 
-Outside the organization subtree: `POST /sign-in/lookup` (anonymous, rate limited) and
-`POST /sso/test-result` (any signed-in caller, presents the nonce).
+- `POST /sso/test-result`: any signed-in caller presents the nonce.
+- `POST /admin/orgs/:orgId/sso/connection/deactivate` and
+  `DELETE /admin/sso/domains/:id`: a deployment `ADMIN`'s recovery paths (§4.1).
+- `POST /sign-in/lookup`: anonymous, rate limited (§4.2).
 
 `/runtime-config` gains one boolean so the login page knows to show the email field.
 `auth.sso` keeps describing the deployment connector.
@@ -224,19 +246,18 @@ Outside the organization subtree: `POST /sign-in/lookup` (anonymous, rate limite
 The Control Plane becomes a second writer to Logto beside the Setup Server. Each owns
 a disjoint part:
 
-| Writer        | Owns                                                                                            |
-| ------------- | ----------------------------------------------------------------------------------------------- |
-| Setup Server  | The sign-in experience, and the one connector with its fixed name.                              |
-| Control Plane | Connectors named after an organization: their configuration, allowed domains and bound domains. |
+| Writer        | Owns                                                                           |
+| ------------- | ------------------------------------------------------------------------------ |
+| Setup Server  | The sign-in experience, and the one connector with its fixed name.             |
+| Control Plane | Connectors named after an organization: their configuration and their domains. |
 
 The Setup Server's desired value for Logto's `singleSignOnEnabled` becomes "a
 deployment connector exists, or organization SSO is declared". Without that, its next
 reconcile would switch single sign-on off for every organization. Its inspection
 leaves connectors it does not own out of the drift report.
 
-The Control Plane already holds a Logto Management API client. The calls that create
-and update a connector exist in the Setup Server for the deployment connector; with a
-second caller they move to where both can use them.
+The Control Plane already holds a Logto Management API client; organization SSO adds
+the few connector calls it needs beside it.
 
 ## 7. Out of scope
 
@@ -261,32 +282,45 @@ second caller they move to where both can use them.
   provider on a now-bound address is linked to the same account at their first SSO
   sign-in and keeps their memberships. R1 is what makes that link safe.
 - **Lockout.** Activation requires a successful test after the last change, and a
-  deployment `ADMIN` can always deactivate.
+  deployment `ADMIN` can always deactivate. Settings changed on an active connection
+  take effect untested (§4.1); that is the one way to activate untested settings, and
+  it is chosen over lifting enforcement.
 - **A test sign-in can land on a different account** when the provider's address
   differs from the owner's. R1 holds for it, so that account can only be one whose
   address is in a domain the organization has verified. The connection is still
   marked tested; the owner signs back in. The settings card says so before starting.
+- **A test window enforces.** For up to ten minutes the organization's domains sign
+  in only through a connection that is not yet proven. The window closes itself, and
+  a background pass closes one whose closing write failed.
+- **Deactivating is not removing.** Identities already established keep working
+  through a deactivated connection. Ending them takes removing the connection, which
+  is why a verified domain cannot leave an organization that still has one.
 
 ## 9. Rollout and verification
 
 Each step merges on its own.
 
-1. **The guarantees of §5** in the identity service, with tests. Reviewed separately
-   from everything else.
-2. **Control Plane and Setup Server:** the two tables, DNS verification, connection
-   management against Logto, the lookup, and the ownership rule of §6.1. This step
-   adds the feature's entry to `.oss-scanner/threat_model.md`.
-3. **Web:** the email field on the login page; the settings card.
-4. **Membership** on first sign-in, with the join record.
-5. **User documentation**, once the feature is complete.
+1. **Declaration and domains** (landed): the operator's declaration, the domain
+   table, DNS verification and the daily re-check.
+2. **Connections** (landed): the connection table, connection management against
+   Logto, the test window, activation, the sign-in check of §5, the recovery paths,
+   and the ownership rule of §6.1.
+3. **Sign-in lookup:** the anonymous lookup and the `/runtime-config` boolean.
+4. **Web:** the email field on the login page; the settings card.
+5. **Membership** on first sign-in, with the join record.
+6. **User documentation**, once the feature is complete, naming the minimum Logto
+   release.
+
+Organization SSO stays undeclared on every deployment until its Logto provides §5.
 
 Verification on a staging deployment with a real identity provider, OIDC and SAML:
 
 - A second organization cannot verify a domain the first has verified, and an
   unverified claim blocks nobody.
 - R1 and R2 hold for both protocols.
-- A draft connection cannot sign in an address outside the organization's verified
-  domains, and the test is refused when there is none.
+- An account that arrives through a connection with an address outside the
+  organization's verified domains is refused, and the test is refused when the
+  organization has no verified domain.
 - A Setup Server reconcile leaves single sign-on on and reports no drift for
   organization connectors.
 - After activation: social sign-in with a bound address is refused; the email field
@@ -297,9 +331,8 @@ Verification on a staging deployment with a real identity provider, OIDC and SAM
 - Changing the configuration clears the test result and blocks activation.
 - Deactivating restores social sign-in for the domain.
 
-Open points to settle during step 1 and 2:
+Open points:
 
-- Whether Logto accepts a direct sign-in against a connector that has allowed domains
-  but no bound ones yet. The test in §4.1 depends on it.
-- The form of the capability a Logto build reports for §5, which the Setup Server
-  reads.
+- A periodic pass that applies the sign-in check of §5 to accounts that have not
+  signed in yet, and deactivates a connection that keeps failing it.
+- SAML has been read but not yet exercised end to end.
