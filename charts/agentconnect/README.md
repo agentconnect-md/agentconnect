@@ -386,6 +386,28 @@ and the console reads it on another; the Control Plane never holds the bytes.
 | `maxRetentionDays` | `365`   | The most a Computer's policy may ask for                |
 | `maxBytes`         | `8Mi`   | Largest screenshot stored (at most `32Mi`)              |
 
+### Managed computers: root access
+
+`computerPool.rootAccess.enabled=true` gives a managed desktop's user passwordless `sudo`,
+and keeps what `apt` installs on the desktop's home volume across sleep and wake
+([design](../../docs/designs/computer-use.md#151-positioning)). It is off by default.
+
+| Value                             | Default | Meaning                                                                    |
+| --------------------------------- | ------- | -------------------------------------------------------------------------- |
+| `computerPool.namespace`          | `''`    | The desktops' own namespace; empty shares `daemonPool.sandboxNamespace`    |
+| `computerPool.rootAccess.enabled` | `false` | sudo for the desktop user; needs `namespace`, which then enforces baseline |
+| `computerPool.home.size`          | `5Gi`   | With root access it holds the system too: use `20Gi` or more               |
+| `computerPool.nodeSelector`       | `{}`    | Pin desktops to nodes on Linux 6.3 or newer                                |
+
+Root access runs each desktop pod in a user namespace (`hostUsers: false`), so it needs
+Kubernetes 1.33, a container runtime that maps ids on mounts (containerd 2) and nodes on
+Linux 6.3 or newer. The chart renders the desktops' namespace at the `baseline` Pod
+Security level, the members' claim Role there, and a ValidatingAdmissionPolicy that
+refuses any pod in that namespace outside a user namespace; installing it therefore also
+needs write on `validatingadmissionpolicies` and their bindings. Delete existing managed
+desktops before changing `computerPool.namespace`: members stop seeing claims left in the
+old namespace. A desktop made before root access was turned on gets it by a reset.
+
 ### Computer viewer STUN and TURN
 
 The console's embedded Computer viewer sends media straight between the browser and the

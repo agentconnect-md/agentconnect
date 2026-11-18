@@ -199,6 +199,14 @@ describe('desktop pool settings', () => {
       computerPoolSettings({ AC_K8S_COMPUTER_WARM_POOL: 'desk', AC_K8S_COMPUTER_BOOTSTRAP_PORT: '0' })
     ).toThrow(/not a valid port/)
   })
+
+  it('claims desktops in their own namespace when the deployment names one', () => {
+    expect(computerPoolSettings({ AC_K8S_COMPUTER_WARM_POOL: 'desk', AC_K8S_COMPUTER_NAMESPACE: ' desks ' })).toEqual({
+      warmPoolName: 'desk',
+      bootstrapPort: 7690,
+      namespace: 'desks'
+    })
+  })
 })
 
 describe('ComputerPool', () => {
@@ -279,6 +287,30 @@ describe('ComputerPool', () => {
       { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
     ])
     expect(cluster.volumes.get(name)!.files['notes.txt']).toBe('kept')
+  })
+
+  it('moves the init container that seeds the system volume onto the newer image with the desktop', async () => {
+    const { cluster, pool } = await setup()
+    await pool.handle(ensure(C1))
+    const name = computerClaimName(C1)
+    const spec = cluster.sandboxes.get(name)!.spec!.podTemplate!.spec!
+    spec.initContainers = [
+      { name: 'system', image: IMAGE_V1 },
+      { name: 'other', image: 'registry.example.test/other:1' }
+    ]
+    await pool.handle(ensure(C1, { running: false, create: false }))
+
+    cluster.templateImage = IMAGE_V2
+    await pool.handle(ensure(C1, { create: false }))
+    const woken = cluster.sandboxes.get(name)!.spec!.podTemplate!.spec!
+    expect(woken.containers?.[0]?.image).toBe(IMAGE_V2)
+    expect(woken.initContainers?.map((one) => one.image)).toEqual([IMAGE_V2, 'registry.example.test/other:1'])
+    const patch = cluster.writes.at(-1)!.body as Array<{ op: string; path: string }>
+    expect(patch.filter((op) => op.op === 'replace').map((op) => op.path)).toEqual([
+      '/spec/podTemplate/spec/containers/0/image',
+      '/spec/podTemplate/spec/initContainers/0/image',
+      '/spec/operatingMode'
+    ])
   })
 
   it("just resumes a desktop already on the pool template's image", async () => {

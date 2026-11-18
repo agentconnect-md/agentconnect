@@ -1090,6 +1090,87 @@ p2p_v4 = p2p_rule['to'].map { |peer| peer['ipBlock'] }.compact.find { |block| bl
 abort("peer-to-peer UDP must reach only public addresses: #{p2p_rule['to']}") unless
   p2p_v4 && %w[10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10].all? { |cidr| p2p_v4.fetch('except', []).include?(cidr) }
 
+# Desktops share the agents namespace unless the deployment names one of their own, and root access needs one (computer-use.md §15.1).
+abort('desktops must share the agents namespace and stay rootless by default') unless
+  desktop_template.dig('metadata', 'namespace') == 'agentconnect-example-agents' &&
+  desktop_member_env['AC_K8S_COMPUTER_NAMESPACE'] == 'agentconnect-example-agents' &&
+  desktop_docs.none? { |doc| doc['kind'] == 'ValidatingAdmissionPolicy' } &&
+  !desktop_pod.key?('hostUsers') && !desktop_pod.key?('initContainers') &&
+  desktop_container.dig('securityContext', 'allowPrivilegeEscalation') == false
+desktop_command = command + ['--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test']
+_, shared_root_error, shared_root_status = Open3.capture3(*desktop_command, '--set', 'computerPool.rootAccess.enabled=true')
+abort('root access in the restricted agents namespace must be refused') if
+  shared_root_status.success? || !shared_root_error.include?('computerPool.namespace')
+own_command = desktop_command + ['--set', 'computerPool.namespace=agentconnect-example-computers']
+root_rendered, root_error, root_status = Open3.capture3(*own_command, '--set', 'computerPool.rootAccess.enabled=true')
+abort("helm template (desktop root access) failed:\n#{root_error}") unless root_status.success?
+root_docs = YAML.load_stream(root_rendered).compact
+root_find = lambda do |kind, name|
+  root_docs.find { |doc| doc['kind'] == kind && doc.dig('metadata', 'name') == name } || abort("missing #{kind}/#{name}")
+end
+root_namespace = root_find.call('Namespace', 'agentconnect-example-computers')
+abort("a root desktop namespace must enforce baseline and survive an uninstall: #{root_namespace['metadata']}") unless
+  root_namespace.dig('metadata', 'labels', 'pod-security.kubernetes.io/enforce') == 'baseline' &&
+  root_namespace.dig('metadata', 'annotations', 'helm.sh/resource-policy') == 'keep'
+abort('the agents namespace must stay restricted beside root desktops') unless
+  root_find.call('Namespace', 'agentconnect-example-agents').dig('metadata', 'labels', 'pod-security.kubernetes.io/enforce') == 'restricted'
+root_deny = root_find.call('NetworkPolicy', 'example-agentconnect-computers-default-deny')
+abort('the desktops namespace must start from nothing in, nothing out') unless
+  root_deny.dig('metadata', 'namespace') == 'agentconnect-example-computers' &&
+  root_deny.dig('spec', 'podSelector') == {} && root_deny.dig('spec', 'policyTypes') == %w[Ingress Egress]
+root_role = root_find.call('Role', 'example-agentconnect-daemon-pool-computers')
+root_binding = root_find.call('RoleBinding', 'example-agentconnect-daemon-pool-computers')
+abort('members must hold the claim verbs in the desktops namespace, and only there') unless
+  root_role.dig('metadata', 'namespace') == 'agentconnect-example-computers' &&
+  root_role['rules'].any? { |rule| rule['resources'] == ['sandboxclaims'] && rule['verbs'].include?('create') } &&
+  root_binding.dig('subjects', 0) == { 'kind' => 'ServiceAccount', 'name' => 'ac-cloud-daemon', 'namespace' => 'agentconnect-example' }
+root_template = root_find.call('SandboxTemplate', 'example-agentconnect-computer')
+root_pod = root_template.dig('spec', 'podTemplate', 'spec')
+abort('root desktops, their warm pool and their bootstrap policy must live in the desktops namespace') unless
+  [root_template, root_find.call('SandboxWarmPool', 'example-agentconnect-computer-pool'),
+   root_find.call('NetworkPolicy', 'example-agentconnect-computer-bootstrap')].all? { |doc| doc.dig('metadata', 'namespace') == 'agentconnect-example-computers' }
+# Root in the pod must be an unprivileged id on the node, and fsGroup would regroup the system directories and clear sudo's setuid bit.
+abort("a root desktop must run in a user namespace without fsGroup: #{root_pod['securityContext']}") unless
+  root_pod['hostUsers'] == false && root_pod['securityContext'] == { 'seccompProfile' => { 'type' => 'RuntimeDefault' } }
+root_init = root_pod.fetch('initContainers').first
+abort("unexpected system init container: #{root_init}") unless
+  root_init['command'] == ['/opt/agentconnect/seed-system.sh', '/volume'] && root_init['workingDir'] == '/' &&
+  root_init['image'] == root_pod.fetch('containers').first['image'] &&
+  root_init.dig('securityContext', 'runAsUser') == 0 && root_init.dig('securityContext', 'allowPrivilegeEscalation') == false &&
+  root_init.dig('securityContext', 'capabilities') == { 'drop' => ['ALL'], 'add' => %w[CHOWN DAC_OVERRIDE FOWNER FSETID] } &&
+  root_init['volumeMounts'] == [{ 'name' => 'home', 'mountPath' => '/volume' }]
+root_security = root_pod.fetch('containers').first.fetch('securityContext')
+root_added = root_security.dig('capabilities', 'add')
+abort("a root desktop still runs as the user, with only the capabilities sudo and apt use: #{root_security}") unless
+  root_security['runAsNonRoot'] == true && root_security['runAsUser'] == 1000 && root_security['allowPrivilegeEscalation'] == true &&
+  root_security.dig('capabilities', 'drop') == ['ALL'] && %w[SETUID SETGID CHOWN].all? { |cap| root_added.include?(cap) } &&
+  (root_added & %w[SYS_ADMIN NET_ADMIN NET_RAW SYS_PTRACE SYS_MODULE]).empty?
+root_mounts = root_pod.fetch('containers').first.fetch('volumeMounts').to_h { |mount| [mount['mountPath'], [mount['name'], mount['subPath']]] }
+abort("a root desktop keeps its home and its system on the claim volume: #{root_mounts}") unless
+  root_mounts.slice('/home/computer', '/usr', '/etc', '/var') ==
+  { '/home/computer' => %w[home home], '/usr' => %w[home system/usr], '/etc' => %w[home system/etc], '/var' => %w[home system/var] }
+# `baseline` alone would admit a root pod on the host's own ids, so admission refuses any pod there outside a user namespace.
+root_policy = root_find.call('ValidatingAdmissionPolicy', 'example-agentconnect-computers-user-namespace')
+root_policy_binding = root_find.call('ValidatingAdmissionPolicyBinding', 'example-agentconnect-computers-user-namespace')
+abort('every pod in the desktops namespace must be held to a user namespace') unless
+  root_policy.dig('spec', 'failurePolicy') == 'Fail' &&
+  root_policy.dig('spec', 'validations', 0, 'expression').include?('object.spec.hostUsers == false') &&
+  root_policy.dig('spec', 'matchConstraints', 'resourceRules', 0, 'operations') == %w[CREATE UPDATE] &&
+  root_policy_binding.dig('spec', 'policyName') == 'example-agentconnect-computers-user-namespace' &&
+  root_policy_binding.dig('spec', 'validationActions') == ['Deny'] &&
+  root_policy_binding.dig('spec', 'matchResources', 'namespaceSelector', 'matchLabels') == { 'kubernetes.io/metadata.name' => 'agentconnect-example-computers' }
+_, root_member = pool_member.call(root_docs)
+abort('members must claim root desktops in the desktops namespace') unless
+  root_member.fetch('env').any? { |item| item['name'] == 'AC_K8S_COMPUTER_NAMESPACE' && item['value'] == 'agentconnect-example-computers' }
+# A namespace of their own without root access keeps the restricted level and needs no admission rule.
+own_rendered, own_error, own_status = Open3.capture3(*own_command)
+abort("helm template (desktops namespace) failed:\n#{own_error}") unless own_status.success?
+own_docs = YAML.load_stream(own_rendered).compact
+own_namespace = own_docs.find { |doc| doc['kind'] == 'Namespace' && doc.dig('metadata', 'name') == 'agentconnect-example-computers' }
+abort('a rootless desktops namespace must stay restricted with no admission rule') unless
+  own_namespace&.dig('metadata', 'labels', 'pod-security.kubernetes.io/enforce') == 'restricted' &&
+  own_docs.none? { |doc| doc['kind'] == 'ValidatingAdmissionPolicy' }
+
 # Without the daemon pool nothing can claim a desktop, so the Control Plane must not advertise managed computers.
 poolless_rendered, poolless_error, poolless_status = Open3.capture3(*command, '--set', 'computerPool.enabled=true', '--set', 'publicUrl=https://app.example.test', '--set', 'daemonPool.enabled=false')
 abort("helm template (computer pool without daemon pool) failed:\n#{poolless_error}") unless poolless_status.success?

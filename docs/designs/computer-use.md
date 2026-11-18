@@ -1970,6 +1970,35 @@ cluster credentials ([k8s-daemon-pool.md](k8s-daemon-pool.md) D17):
   without a pool member. The chart's
   `computerPool` values render the desktop SandboxTemplate, its warm pool and the bootstrap NetworkPolicy, and set the
   member and CP variables; desktops register at the public CP URL.
+- **Root access [implemented].** `computerPool.rootAccess.enabled` gives a managed desktop's user passwordless `sudo`,
+  with what `apt` installs kept across sleep and wake on the system volume of §3.8. It needs `computerPool.namespace`:
+  the agents namespace enforces the `restricted` Pod Security level, which refuses a setuid binary, so the chart
+  renders desktops a namespace of their own at `baseline` (with its default-deny policy and the members' claim Role)
+  and members claim there (`AC_K8S_COMPUTER_NAMESPACE`); agents stay `restricted`. The pod runs in a user namespace
+  (`hostUsers: false`), so root inside it is an unprivileged id on the node. `baseline` alone would also admit a root
+  pod on the host's own ids, which a member that can patch a Sandbox could ask for, so a ValidatingAdmissionPolicy
+  refuses any pod in that namespace outside a user namespace. An init container runs `seed-system.sh` as root with
+  `CHOWN`, `DAC_OVERRIDE`, `FOWNER` and `FSETID`. The desktop still runs as uid 1000, with
+  `allowPrivilegeEscalation: true` and those four plus `SETUID`, `SETGID`, `KILL` and `AUDIT_WRITE` as the most root
+  may hold: never `SYS_ADMIN`, `NET_ADMIN` or `NET_RAW`, and seccomp stays `RuntimeDefault`. The pod sets no `fsGroup`,
+  which would regroup the system directories and clear sudo's setuid bit. A wake moves the init container onto the
+  pool's image with the desktop. `resources.limits.ephemeral-storage` (10Gi by default) bounds what a desktop writes
+  outside its volume, which for root is the whole root filesystem.
+  - **Requirements.** Kubernetes 1.33, a runtime that maps ids on mounts (containerd 2), and nodes on Linux 6.3 or
+    newer: on a 5.15 node the runtime refuses to create the pod, so pin desktops with `computerPool.nodeSelector`.
+    The home volume also holds the system, so `computerPool.home.size` wants 20Gi or more.
+  - **Existing desktops.** A Sandbox keeps the pod template and the namespace it was claimed with, so a desktop made
+    before the switch gets root only by a reset, and one left in the namespace members no longer claim in is
+    stranded: delete those desktops before changing `computerPool.namespace`.
+  - **Measured.** On Linux 6.8 nodes of a Kubernetes 1.33 cluster with containerd 2.0: `sudo apt-get install` as
+    uid 1000 installed 28 packages in 5 s, every `doctor` check stayed ok, and the packages, the sudo rule and the home
+    were there after the pod was deleted and recreated on the same volume (ready in 9 s); the first start's copy took
+    10–23 s. Root in the pod mapped to an unprivileged host id. gVisor (`runsc`) on the same cluster ran the desktop, but
+    its kernel ignored the setuid bit, so `sudo` did not reach root there.
+  - **[risk]** An agent, and a page that takes over the unsandboxed browser (§3.8), is root in the pod: it can change
+    the managed browser policy and leave changes in the system that outlive a sleep, until a reset. System packages
+    stop following the image (§3.8). The node's kernel is still shared, with a slightly larger surface than a
+    rootless desktop's.
 
 |                   | Self-hosted computer                                                | Managed computer                                                                                               |
 | ----------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |

@@ -1,7 +1,110 @@
 {{- if and .Values.daemonPool.enabled .Values.computerPool.enabled }}
 {{- if not (or .Values.apiHost .Values.publicUrl) }}{{ fail "computerPool.enabled needs apiHost or publicUrl: desktop pods register with the Control Plane's public URL" }}{{ end }}
-{{- $sandboxNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
+{{- $agentsNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
+{{- $sandboxNamespace := include "agentconnect.computerNamespace" . }}
 {{- $pool := .Values.computerPool }}
+{{- $root := $pool.rootAccess.enabled }}
+{{- $ownNamespace := and (ne $sandboxNamespace $agentsNamespace) (ne $sandboxNamespace .Release.Namespace) }}
+{{- if and $root (eq $sandboxNamespace $agentsNamespace) (ne $agentsNamespace .Release.Namespace) }}{{ fail "computerPool.rootAccess.enabled needs computerPool.namespace: the agents namespace enforces the restricted Pod Security level, which refuses sudo" }}{{ end }}
+{{- if $ownNamespace }}
+# Desktops' own namespace: `baseline` only when they get root, with the same nothing-in, nothing-out floor as the agents namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: {{ ternary "baseline" "restricted" $root }}
+    pod-security.kubernetes.io/audit: {{ ternary "baseline" "restricted" $root }}
+    pod-security.kubernetes.io/warn: {{ ternary "baseline" "restricted" $root }}
+  annotations:
+    # Uninstalling the release must never cascade into live desktops and their volumes.
+    helm.sh/resource-policy: keep
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-computers-default-deny
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ['Ingress', 'Egress']
+---
+{{- end }}
+{{- if ne $sandboxNamespace $agentsNamespace }}
+# Members claim, sleep, wake and delete desktops here; the agents namespace's Role covers a pool that shares it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-computers
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxclaims']
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxwarmpools', 'sandboxtemplates']
+    verbs: ['get']
+  - apiGroups: ['agents.x-k8s.io']
+    resources: ['sandboxes']
+    verbs: ['get', 'list', 'watch', 'patch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-computers
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: ac-cloud-daemon
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-computers
+---
+{{- end }}
+{{- if and $root $ownNamespace }}
+# `baseline` would also admit a root pod on the host's own ids, so every pod here must run in a user namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-computers-user-namespace
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: ['v1']
+        operations: ['CREATE', 'UPDATE']
+        resources: ['pods']
+  validations:
+    - expression: 'has(object.spec.hostUsers) && object.spec.hostUsers == false'
+      message: 'pods in the desktops namespace must run in a user namespace (hostUsers: false)'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-computers-user-namespace
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "agentconnect.fullname" . }}-computers-user-namespace
+  validationActions: ['Deny']
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $sandboxNamespace }}
+---
+{{- end }}
 # Managed computers (computer-use.md §15.1): a member claims a desktop and pushes it a one-time registration.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
@@ -58,6 +161,13 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if $root }}
+      # Root in the pod is an unprivileged id on the node; no fsGroup, which would regroup the system directories and clear sudo's setuid bit.
+      hostUsers: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- else }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -65,6 +175,7 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      {{- end }}
       {{- with $pool.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -72,6 +183,31 @@ spec:
       {{- with $pool.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $root }}
+      initContainers:
+        # Copies the image's system to the volume on the first start and writes the sudo rule (computer-use.md §3.8).
+        - name: system
+          image: {{ include "agentconnect.computerImage" . | quote }}
+          command: ['/opt/agentconnect/seed-system.sh', '/volume']
+          # The image's working directory is the user's home, which the runtime could not enter as root in a user namespace.
+          workingDir: /
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+              add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID']
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: home
+              mountPath: /volume
       {{- end }}
       containers:
         - name: computer
@@ -93,14 +229,36 @@ spec:
               port: bootstrap
             periodSeconds: 2
           securityContext:
+            {{- if $root }}
+            # The desktop still runs as the user; sudo's setuid bit and these capabilities are what root inside the user namespace may use.
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: true
+            capabilities:
+              drop: ['ALL']
+              add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID', 'KILL', 'AUDIT_WRITE']
+            {{- else }}
             allowPrivilegeEscalation: false
             capabilities:
               drop: ['ALL']
+            {{- end }}
           resources:
             {{- toYaml $pool.resources | nindent 12 }}
           volumeMounts:
+            {{- if $root }}
             - name: home
               mountPath: /home/computer
+              subPath: home
+            {{- range list "usr" "etc" "var" }}
+            - name: home
+              mountPath: /{{ . }}
+              subPath: system/{{ . }}
+            {{- end }}
+            {{- else }}
+            - name: home
+              mountPath: /home/computer
+            {{- end }}
             - name: shm
               mountPath: /dev/shm
       volumes:
