@@ -1428,7 +1428,8 @@
       "failed": "Sign-in test failed",
       "unconfirmed": "This sign-in could not be matched to the test of {name}. Start the test again from Settings.",
       "noAddress": "{name} returned no verified email address in this organization's domains. Fix the email claim or attribute at the identity provider, then test again.",
-      "backToSettings": "Back to Settings"
+      "backToSettings": "Back to Settings",
+      "openConsole": "Open the console"
     },
     "socialCallback": {
       "repoConflict": "This GitHub account is linked to another AgentConnect account. You can connect it here for repository access. GitHub sign-in will still open the original account.",
@@ -1813,6 +1814,7 @@
     },
     "organization": {
       "step": "Step 1 of 2",
+      "signOut": "Sign out",
       "brandAgent": "Agent",
       "brandConnect": "Connect",
       "title": "Create your organization",
