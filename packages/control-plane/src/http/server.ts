@@ -72,6 +72,7 @@ import { iconUploadRoutes } from './routes/icon-upload.js'
 import { memberRoutes } from './routes/members.js'
 import { serviceAccountRoutes } from './routes/service-accounts.js'
 import { orgInviteAcceptRoutes, orgInviteLinkRoutes } from './routes/org-invite-links.js'
+import { orgSsoRoutes } from './routes/org-sso.js'
 import { meRoutes } from './routes/me.js'
 import { meSocialIdentityRoutes } from './routes/me-social-identities.js'
 import { waitlistRoutes } from './routes/waitlist.js'
@@ -401,6 +402,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(memberRoutes(deps))
           await scope.register(serviceAccountRoutes(deps))
           await scope.register(orgInviteLinkRoutes(deps))
+          await scope.register(orgSsoRoutes(deps))
           await scope.register(cronRoutes(deps))
           await scope.register(hookRoutes(deps))
           await scope.register(trustedActorRoutes(deps))

@@ -109,7 +109,7 @@ const LogtoSlackConnectorSchema = z.preprocess(
   })
 )
 
-const SsoDomainSchema = z
+export const SsoDomainSchema = z
   .string()
   .trim()
   .toLowerCase()
@@ -319,7 +319,9 @@ export const DeploymentConfigValuesV1Schema = z
     features: z.strictObject({
       presetAgentsEnabled: z.boolean(),
       /** Maximum organizations a non-ADMIN account may create through the console. */
-      maxOrgsPerNonAdminUser: z.number().int().nonnegative().default(1)
+      maxOrgsPerNonAdminUser: z.number().int().nonnegative().default(1),
+      /** Organizations own their SSO connections (organization-sso.md D1); the operator declares it. */
+      organizationSso: z.boolean().default(false)
     })
   })
   .superRefine((values, ctx) => {
@@ -367,6 +369,23 @@ export const DeploymentConfigValuesV1Schema = z
         })
       }
     }
+    if (values.features.organizationSso) {
+      if (values.auth.mode !== 'oidc') {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['features', 'organizationSso'],
+          message: 'requires console sign-in'
+        })
+      }
+      // A deployment has one kind of SSO connection: its own connector, or its organizations'.
+      if (values.logto?.ssoConnector) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['features', 'organizationSso'],
+          message: 'cannot be combined with the deployment SSO connector'
+        })
+      }
+    }
     if (values.auth.mode === 'oidc') {
       if (values.auth.socialProviders.length === 0 && values.auth.sso === null) {
         ctx.addIssue({
@@ -393,7 +412,7 @@ export const DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1: DeploymentConfigValuesV1 = {
   github: null,
   slack: null,
   logto: null,
-  features: { presetAgentsEnabled: true, maxOrgsPerNonAdminUser: 1 }
+  features: { presetAgentsEnabled: true, maxOrgsPerNonAdminUser: 1, organizationSso: false }
 }
 
 export const DEPLOYMENT_SECRET_KEYS = [

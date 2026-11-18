@@ -125,6 +125,7 @@ import type { CodeHostProviderRegistry } from '../codehost/provider.js'
 import type { DaemonReleaseResolver } from '../registry/daemonRelease.js'
 import type { WebchatTokenService } from '../registry/webchatToken.js'
 import type { OrgInviteLinkService } from '../registry/orgInviteLinkService.js'
+import type { OrgSsoDomainService } from '../org-sso/domains.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
 import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
@@ -503,6 +504,8 @@ export interface HttpDeps {
   webchatTokens: WebchatTokenService
   /** One fixed seven-day collaborator invite link per organization. */
   inviteLinks: OrgInviteLinkService
+  /** Organization SSO domains; present only on a deployment that declares organization SSO, and its routes mount with it. */
+  orgSsoDomains?: OrgSsoDomainService
   /** Closed-beta admission: `/me/access` status, self-join, join-link redeem (waitlist-and-login.md). */
   waitlist: WaitlistService
   /** The shared usage report interface — this plane is its `gateway`-source adapter. */

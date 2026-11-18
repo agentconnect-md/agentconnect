@@ -36,6 +36,7 @@ function stubDeps(): HttpDeps {
     config: { NODE_ENV: 'test', DEFAULT_OWNER_ID: '00000000-0000-4000-8000-000000000000' },
     // Mounted only with the service; its handlers are never reached here.
     capabilityRequests: {},
+    orgSsoDomains: {},
     // Mounted only with the surface; its handlers are never reached here.
     azureDevOps: {},
     github: {},
@@ -376,6 +377,10 @@ describe('openapi plane', () => {
           'PATCH /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
           'POST /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId/regenerate',
           'DELETE /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
+          'GET /api/v1/orgs/:orgId/sso',
+          'POST /api/v1/orgs/:orgId/sso/domains',
+          'POST /api/v1/orgs/:orgId/sso/domains/:id/verify',
+          'DELETE /api/v1/orgs/:orgId/sso/domains/:id',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/settle',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/decline',
           'POST /api/v1/orgs/:orgId/capability-requests/:id/reopen',

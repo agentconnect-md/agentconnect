@@ -225,6 +225,7 @@ import {
   PgUserRepo,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
+  PgOrgDomainRepo,
   PgWaitlistRepo
 } from './persistence/index.js'
 import type { PresetPoolPlacement } from './persistence/index.js'
@@ -294,6 +295,9 @@ import { WebchatRemoteMcpService } from './registry/webchatRemoteMcpService.js'
 import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
+import { OrgSsoDomainService } from './org-sso/domains.js'
+import { OrgDomainSweeper } from './org-sso/domain-sweeper.js'
+import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
 import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
@@ -540,6 +544,8 @@ export interface ContainerOpts {
   deploymentConfig?: DeploymentConfigRuntime
   /** Org standing override for tests; absent ⇒ built from KEY_SERVER_URL, and no gate when that is unset. */
   orgStanding?: OrgStanding
+  /** DNS TXT lookup override for organization SSO domain checks; absent ⇒ the system resolver. */
+  orgSsoTxtLookup?: TxtLookup
 }
 
 /**
@@ -702,6 +708,7 @@ export function buildContainer(
       keyName: `${effectiveOrgKeyPrefix(config.VAULT_TRANSIT_KEY, config.VAULT_TRANSIT_ORG_KEY_PREFIX)}${orgId}`
     })),
     orgInviteLink: new PgOrgInviteLinkRepo(prisma),
+    orgDomain: new PgOrgDomainRepo(prisma),
     waitlist: new PgWaitlistRepo(prisma),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
@@ -1947,6 +1954,19 @@ export function buildContainer(
     clock,
     log: { warn: (obj, msg) => http.log.warn(obj, msg) }
   })
+  // Organization SSO exists only where the operator declared it (organization-sso.md D1).
+  const orgSsoDomains = opts.deploymentConfig?.values.features.organizationSso
+    ? new OrgSsoDomainService(repos.orgDomain, opts.orgSsoTxtLookup ?? systemTxtLookup(), clock, {
+        warn: (obj, msg) => http.log.warn(obj, msg)
+      })
+    : undefined
+  const orgDomainSweeper = orgSsoDomains
+    ? new OrgDomainSweeper({
+        domains: orgSsoDomains,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
   // The Azure DevOps arm of rc/codehost-membership-authz (§11.4): the actor's groups against the repository's list chain.
   const azureDevOpsMembershipAuthz = new AzureDevOpsMembershipAuthzService({
     hooks: repos.hook,
@@ -2753,6 +2773,7 @@ export function buildContainer(
     oauth,
     webchatTokens,
     inviteLinks,
+    ...(orgSsoDomains ? { orgSsoDomains } : {}),
     waitlist,
     usageWriter,
     ...(clusterWorkloadIdentity ? { clusterWorkloadIdentity } : {}),
@@ -4225,6 +4246,7 @@ export function buildContainer(
       gitlabConvergeSweeper?.start()
       giteaConvergeSweeper.start()
       azureDevOpsHookSweeper.start()
+      orgDomainSweeper?.start()
       // §3.5: the deployment secret moves only across a restart, so one pass at boot re-stamps it.
       void azureDevOpsConnectionService
         .reconcileDeploymentSecret()
@@ -4270,6 +4292,7 @@ export function buildContainer(
       gitlabConvergeSweeper?.stop()
       giteaConvergeSweeper.stop()
       azureDevOpsHookSweeper.stop()
+      orgDomainSweeper?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

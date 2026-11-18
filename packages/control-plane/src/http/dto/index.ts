@@ -3153,6 +3153,29 @@ export const CreatedOrgInviteLinkDto = OrgInviteLinkDto.extend({ token: z.string
 /** No policy knobs: role and seven-day lifetime are deliberately server-fixed. */
 export const CreateOrgInviteLinkBody = z.object({}).strict()
 
+// A domain an organization claims for single sign-on, with the DNS record that proves it.
+export const OrgSsoDomainDto = z.object({
+  id: z.string(),
+  domain: z.string(),
+  status: z.enum(['pending', 'verified']),
+  record: z.object({ type: z.literal('TXT'), name: z.string(), value: z.string() }),
+  challengeExpiresAt: z.string().nullable(),
+  verifiedAt: z.string().nullable(),
+  lastCheckedAt: z.string().nullable(),
+  lastCheckOk: z.boolean().nullable()
+})
+export type OrgSsoDomainDtoT = z.infer<typeof OrgSsoDomainDto>
+
+export const OrgSsoStateDto = z.object({ domains: z.array(OrgSsoDomainDto) })
+
+export const AddOrgSsoDomainBody = z.object({ domain: z.string().min(1).max(253) }).strict()
+
+/** `check` is what the lookup just found; `domain.status` only changes on `ok`. */
+export const VerifiedOrgSsoDomainDto = z.object({
+  domain: OrgSsoDomainDto,
+  check: z.enum(['ok', 'not_found', 'mismatch', 'lookup_failed'])
+})
+
 /** Root-scoped accept body; token stays out of the request URL/access log. */
 export const AcceptOrgInviteLinkBody = z.object({ token: z.string().min(1).max(256) }).strict()
 

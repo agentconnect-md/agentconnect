@@ -592,6 +592,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <div class="panel">
         <label class="field"><span><input id="preset-agents-enabled" type="checkbox"> Enable preset Agents</span></label>
         <label class="field">Max organizations created per non-ADMIN user<input id="max-orgs-per-non-admin-user" type="number" min="0" step="1" value="1"></label>
+        <label class="field"><span><input id="organization-sso" type="checkbox"> Let organizations set up their own SSO</span></label>
         <div class="row"><button id="save-options">Save options</button></div>
       </div>
     </section>
@@ -911,6 +912,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
       el('preset-agents-enabled').checked = values.features.presetAgentsEnabled;
       el('max-orgs-per-non-admin-user').value = String(values.features.maxOrgsPerNonAdminUser);
+      el('organization-sso').checked = values.features.organizationSso === true;
 
       const github = values.github;
       const webhookStored = byKey.get('github.webhookSecret') && byKey.get('github.webhookSecret').configured;
@@ -2149,7 +2151,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
         ...currentStatus.values,
         features: {
           presetAgentsEnabled: el('preset-agents-enabled').checked,
-          maxOrgsPerNonAdminUser: Number(el('max-orgs-per-non-admin-user').value)
+          maxOrgsPerNonAdminUser: Number(el('max-orgs-per-non-admin-user').value),
+          organizationSso: el('organization-sso').checked
         }
       };
       const saved = await json(await fetch(api + '/deployment-config', {
