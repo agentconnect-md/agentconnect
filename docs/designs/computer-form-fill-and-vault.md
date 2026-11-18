@@ -385,7 +385,8 @@ Setting `.value` alone is insufficient for controlled forms, and deprecated
 the isolated world and then dispatching `input` and `change` updated React 19 and
 Vue 3 `v-model` state, including `<select>`. A site that accepts only `isTrusted`
 events ignores this input. Trusted input would require the DevTools protocol,
-which this design does not use, so such sites are an unsupported class. Include
+which this design does not use, so such sites are an unsupported class; the
+endpoint that [computer-use.md §5.8](computer-use.md) designs could lift that later. Include
 custom controls, select fields, address fields, multi-page logins and
 `isTrusted`-only handlers in the supported-form matrix.
 

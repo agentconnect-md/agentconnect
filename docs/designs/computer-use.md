@@ -10,6 +10,10 @@ adds a command-line and file tier beside the GUI tools, granted separately and o
 v8 (2026-11-06) designs one desktop per agent on a Linux Computer, so agents work in parallel, with browser logins
 shared between those desktops by forking and merging Chromium profiles when a browser starts (§3.9, §3.10); a
 prototype validated it in a Debian VM, and it shipped as M6 (§14.9), on by default where supported.
+v9 (2026-11-18) designs a second way to work a browser, beside the screen: the browser a Computer starts accepts the
+DevTools protocol, and the desktop daemon embeds Chrome DevTools MCP to offer its page tools under the same lease
+(§5.8); the viewer gains a Browser view, the page under an address bar, for a person to operate (§7.6); and the
+image moves from Chromium to Google Chrome (§3.8). None of it is built yet (§14.10).
 The Chinese version lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -44,7 +48,10 @@ inferred or untested; **[legal]** needs counsel. Nothing here on licenses is leg
 | 19  | Managed allocation and sharing     | Managed computers are `ephemeral` (per session), `per-agent` (one per agent, sleeps between uses) or `manual` (user-created, shared); shared Computers queue for the lease (§4.4, §15.1)                                                          | Design                                            |
 | 20  | Command line and files             | `computer_exec` and file tools implemented by the desktop daemon, not Cua's; policy `shell` / `files`, on for managed computers and off on a person's desktop; run as the signed-in person; no lease; stopped by pause and stop (§5.7)            | Implemented on Linux                              |
 | 21  | Per-agent desktops                 | A Linux Computer runs one desktop (Xvfb, Xfce, its own driver and lease) per agent, on by default wherever it can, off from the tray menu; the main desktop stays for people (§3.9)                                                               | Design; prototype validated (§14.9)               |
-| 22  | Shared browser logins              | Each desktop has its own Chromium profile; before a browser starts, the daemon three-way merges cookies, localStorage and IndexedDB from the other profiles into it; no extension, no CDP (§3.10)                                                 | Design; prototype validated (§14.9)               |
+| 22  | Shared browser logins              | Each desktop has its own Chromium profile; before a browser starts, the daemon three-way merges cookies, localStorage and IndexedDB from the other profiles into it; the merge needs no extension and no CDP (§3.10)                              | Design; prototype validated (§14.9)               |
+| 23  | Browser tools                      | Browsers an isolated Computer starts accept the DevTools protocol on loopback; the desktop daemon embeds **Chrome DevTools MCP (Apache-2.0, pinned)** and serves its page tools as `chrome_*` under the lease and audit of `computer_*` (§5.8)    | Design                                            |
+| 24  | Browser view                       | The viewer gains a **Browser** view beside Desktop: the page streamed and operated over DevTools under an address bar and tabs, in Infra's Computer page and the agent side panel (§7.6)                                                          | Design                                            |
+| 25  | Image browser                      | The container image ships **Google Chrome** instead of Chromium: Chrome DevTools MCP supports it, and its main profile leaves Chrome's default directory, which refuses remote debugging (§3.8)                                                   | Design (publishing needs legal, §11.1)            |
 
 ## 1. Background and goals
 
@@ -192,6 +199,9 @@ flowchart LR
   a `cua-driver mcp --direct` child over stdio MCP. A child process isolates driver crashes and makes MCP the boundary.
   `cua-perception` (AGPL models) is never installed. Linux X11 uses Cua's XTest backend, so no xdotool fallback is
   needed; GNOME Wayland uses Cua's Wayland mode (§3.2.3).
+- **Browser driver [design]**: Chrome DevTools MCP, a second stdio MCP child beside the driver, one per desktop whose
+  browser runs, connected to that browser's loopback DevTools endpoint (§5.8). The viewer's Browser view uses a
+  DevTools connection of the daemon's own (§7.6). The diagram shows neither yet.
 - **External interface**: one HTTP port (7681 in the prototype) serves Streamable HTTP MCP at `/mcp` and the viewer at
   `/view`; a loopback-only `/control` sits beside them (§8).
 - **Computer core**: leases, human arbitration, owner pause, `uncertain` handling, a JSONL audit log (§4–§6).
@@ -519,6 +529,28 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   hostname, which a woken pod no longer has, so the entrypoint removes it before anything starts. While another
   instance holds the profile (one an agent started), the supervisor waits for it instead of opening a second window.
   `BROWSER=none` turns it off.
+- **Google Chrome [design]**: the image installs `google-chrome-stable` from Google's apt repository, for both
+  architectures, and drops Chromium. Chrome DevTools MCP supports only Google Chrome and Chrome for Testing (§5.8),
+  and sites see the browser people use rather than a distribution build. What moves with it:
+  - **Flags.** Chrome's launcher reads neither `/etc/chromium.d` nor `CHROMIUM_FLAGS`, so the image's flags (no
+    sandbox, the prompts, the password store, the egress proxy of §15.4) move into the launcher of §3.10, which every
+    start then goes through: the supervised main browser, the dock, `xdg-open` and an agent's `computer_launch`. The
+    egress limit stays as it is: a browser binary run directly is not bound to the proxy.
+  - **Policies.** The managed policy and the form-fill force-install move to `/etc/opt/chrome/policies/managed`, which
+    `image-owned` then names. Whether branded Chrome installs the `file://` CRX as Chromium does is [unverified]
+    ([computer-form-fill-and-vault.md §8](computer-form-fill-and-vault.md)).
+  - **The main profile.** Google Chrome ignores the remote-debugging switches for its default data directory, so the
+    main desktop's profile lives in a directory the daemon names (`browser/main` in the data directory), passed as
+    `--user-data-dir` like an agent desktop's, and it stays the master of §3.10. The first start with Chrome copies
+    an existing `~/.config/chromium` there without locks and caches, so a `per-agent` or `manual` computer keeps its
+    sign-ins: both browsers read the image's `v10` cookies, whose key `--password-store=basic` fixes.
+  - **The rest.** The dock and menu entries, `BROWSER`, the entrypoint's lock cleanup and graceful stop, `doctor`'s
+    browser check and the smoke test's size limit name Chrome. A desktop with a system volume keeps the Chromium it
+    was seeded with until a reset, or until Chrome is installed there with apt (Google's apt source joins
+    `image-owned`); the daemon reports browser tools only where it finds Google Chrome.
+  - **Distribution [legal].** Chrome is proprietary, the first component of the image that is (§11.1). Until counsel
+    answers, the fallback is the one ffmpeg has: the image carries no browser and the entrypoint unpacks the pinned
+    package into the home volume on first start.
 - **Browser sandbox [risk]**: Chromium runs with `--no-sandbox`. Docker's default seccomp profile and Kubernetes'
   `RuntimeDefault` refuse the user namespaces its sandbox needs, and `allowPrivilegeEscalation: false` rules out the
   setuid helper, so the container is the only boundary around a renderer: a compromised renderer can read the home
@@ -719,6 +751,12 @@ then starts the browser. No extension and no DevTools protocol are involved.
   when the desktop's profile is not running, and otherwise hands the request to the running browser, which opens a
   window. The browser gets the main session bus (the keyring that decrypts `v11` cookies lives there, not on the
   desktop's own bus), `--ozone-platform=x11` and `--restore-last-session`.
+- **DevTools endpoint [design].** Where the Computer has the browser tier (§5.8: an isolated Computer whose policy
+  leaves it on), the launcher also starts the browser with `--remote-debugging-port=0`, on every start whoever
+  asked, since a browser started without the switch cannot be attached to later and a profile has only one browser.
+  Elsewhere it never passes the switch, and a policy change applies at the browser's next start. Chrome binds a free
+  loopback port and writes it, with the browser's WebSocket path, to `DevToolsActivePort` in the profile directory,
+  which is where the daemon reads the endpoint from. The merge itself still uses no DevTools protocol.
 - **Lifetime.** The browser outlives a turn, because the next turn usually continues on the same page. It is closed when
   its desktop has had no lease and no viewer for `browserIdleMinutes` (10), and when the desktop stops; the next launch
   then forks again and picks up logins made elsewhere, and `--restore-last-session` brings the tabs back (a GitHub tab
@@ -802,6 +840,7 @@ interface ComputerPolicy {
   appAllowlist?: string[] // apps that may be operated (bundle id / executable name)
   redactApps: string[] // app windows masked in screenshots, such as password managers
   exposeDriverTools: boolean // expose the cua_* pass-through tools (§5.5), default false
+  browserTier: boolean // [design] the browser tier (§5.8, §7.6); on for an isolated Computer, never on elsewhere
   shell: 'off' | 'ask' | 'on' // computer_exec (§5.7); off on a self-hosted Computer
   files: 'off' | 'read' | 'read-write' // the file tools (§5.7); off on a self-hosted Computer
   fileRoots?: string[] // prefixes the file tools may touch (§5.7); absent: the home directory
@@ -914,6 +953,12 @@ Whatever the policy, the desktop daemon refuses locally:
 - **Driver tools**: the script, configuration, extension, screen recording, process-kill, clipboard, and file-transfer
   tools among the `cua_*` pass-throughs are never exposed (§5.5). A shell and files come only from the desktop daemon's
   own §5.7 tools, behind their own policy, which narrows this rule on purpose.
+- **Browser tools [design]**: only the allowlisted `chrome_*` tools of §5.8 are offered, and only on an isolated
+  Computer. Chrome DevTools MCP's other
+  tools (network inspection and mocking, emulation, performance, memory, extensions, PWA, WebAuthn, coordinate clicks,
+  automation of DevTools itself) and the raw DevTools endpoint are never exposed, and no argument may make the child
+  read or write a file on the Computer outside the §5.7 file policy. With `shell` on, the agent's own commands reach
+  the endpoint as the desktop's user anyway, which §5.7 already counts as handing over the account.
 
 ### 4.4 Leases and concurrency [validated]
 
@@ -1236,6 +1281,141 @@ command runs; the prototype's local client tokens, which get no tier.
   would move the session onto the Computer: that is "run the agent on this machine" (§17-2), not "use this machine".
 - **A terminal driven through the GUI.** What agents do today: every keystroke and every read is a screenshot.
 
+### 5.8 Browser tools over the DevTools protocol [design]
+
+Most of what an agent does on a Computer happens in a browser, and the screen is a poor interface to a page: every
+step costs a screenshot, a click lands on a coordinate that moves when the layout does, and text below the fold needs
+scrolling to read. Chrome's DevTools protocol reaches the page itself: a text snapshot of its accessibility tree,
+input addressed to an element instead of a point, navigation, tabs, and input events the page sees as trusted. So a
+Computer offers a **browser tier** next to the screen one, and an agent uses either on the same window: the browser
+is still a window on the desktop's display, so `computer_screenshot` and the viewer show what a browser tool did, and
+`computer_*` stays for what lies outside the page (the browser's own dialogs and prompts, a CAPTCHA, another app).
+
+**One browser, on the desktop.** This is a requirement, not a side effect. A desktop has one browser, a normal
+window on that desktop's display, started by the launcher (§3.10) whoever asks: `computer_launch`, a `chrome_*`
+tool, a person on the desktop, or the viewer's Browser view (§7.6). Nothing here runs headless or starts a second,
+hidden browser. So an agent that takes a screenshot of the desktop sees the browser the page tools work on, a
+person on the Desktop view sees it too, and what one of them opens the other finds open.
+
+The desktop daemon does not write these tools. It embeds **Chrome DevTools MCP** (`chrome-devtools-mcp`,
+Apache-2.0, from the Chrome DevTools team), pinned (1.13.0 when this was written) and installed in the image, as it
+embeds Cua Driver (§3.1): a stdio MCP child whose tools the daemon serves under its own lease, arbitration and audit.
+
+**Where it runs.** On the Computer, beside the driver. The alternative, the child in the agent's sandbox dialing the
+browser's endpoint across the network, would put a DevTools endpoint (every cookie of every signed-in site) on the
+network and take the calls around the lease, the takeover and the audit. The endpoint never leaves loopback.
+
+**The endpoint, and where the tier exists.** A DevTools endpoint is the browser: whoever reaches it holds every
+session of every signed-in site. Chrome offers it on a loopback TCP port, and a loopback port is not scoped to a
+user: any process that can open a loopback socket reaches it, whatever its account or its view of the filesystem
+(another account on a shared machine, a host-network container, a sandboxed process that is denied the profile
+directory). File permissions protect the profile; nothing protects the port. So in this milestone the tier exists
+only on a Computer with `isolation: 'container'` or `'vm'` (§2.2), a managed computer or the self-hosted container,
+whose network namespace holds one desktop user and nothing else:
+
+| Computer                                         | Desktop                 | Profile                             | Browser tier |
+| ------------------------------------------------ | ----------------------- | ----------------------------------- | ------------ |
+| Isolated (managed, or the self-hosted container) | Main                    | `browser/main`, named by the daemon | Yes          |
+| Isolated                                         | An agent desktop (§3.9) | In the desktop's directory          | Yes          |
+| A person's Linux machine (`isolation: 'none'`)   | Any                     | The person's, or a fork of it       | No (§17-20)  |
+| macOS and Windows                                | The person's own        | The person's own default profile    | No (§17-20)  |
+
+A person's machine gets no endpoint, no `chrome_*` tools and no Browser view until the endpoint is one that only the
+daemon can reach. On an isolated Computer the launcher passes the switch only while the policy's `browserTier` is on
+(§4.1), so a Computer with the tier off has no listening port at all. Google Chrome also refuses the switch for its
+default data directory, which is why the image's main profile moves (§3.8). The daemon reports `devtools` in its
+capabilities, per desktop, where it found Google Chrome, opened the endpoint and can start the child.
+
+Inside the container three things still must not reach the endpoint. A page: Chrome is expected to answer its HTTP
+side only for a loopback `Host` and to refuse a WebSocket that carries an `Origin` [unverified, §14.10], and a
+page's loopback requests leave through the egress forwarder (§15.4), which refuses the loopback destinations the
+daemon owns: its own listeners and every DevTools port it opened. Another container: containers of one pod share
+the loopback, so the desktop pod carries no sidecar. And the agent's own commands: with `shell` on they run as the
+desktop's user and reach the port directly, around the allowlist, the lease and the audit, which §5.7 already
+counts as handing over the account.
+
+**The child.** One per desktop, started by the first `chrome_*` call after a browser start with the endpoint read from
+`DevToolsActivePort`, and stopped when that browser exits, is closed for idleness (§3.10), or its desktop stops; a
+new browser gets a new child, so page ids do not outlive a browser. The daemon always passes an endpoint, so the
+child never starts a browser of its own, which would be a second browser off the desktop and would skip the
+launcher's profile, merge and egress flags. It runs
+with usage statistics, the CrUX lookup and the update check off (`--no-usage-statistics`, `--no-performance-crux`,
+`CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS`: by default it reports to Google), every tool category the allowlist does not
+need off, header redaction on, and `--no-javascript-evaluation` unless the policy allows scripts.
+
+**Tools.** The upstream names behind a `chrome_` prefix, with the pinned version's schemas. The list is an
+allowlist, so an upgrade adds nothing by itself.
+
+| Tools                                                                                                                    | Lease | Notes                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------ | ----- | ------------------------------------------------------------------------------------ |
+| `chrome_list_pages`, `chrome_take_snapshot`, `chrome_take_screenshot`, `chrome_wait_for`                                 | no    | The snapshot is text with an id per element; images are stored like screenshots (§9) |
+| `chrome_list_console_messages`, `chrome_get_console_message`                                                             | no    |                                                                                      |
+| `chrome_click`, `chrome_hover`, `chrome_drag`, `chrome_fill`, `chrome_fill_form`, `chrome_type_text`, `chrome_press_key` | yes   | By element id from the latest snapshot; no coordinates                               |
+| `chrome_handle_dialog`, `chrome_navigate_page`, `chrome_new_page`, `chrome_select_page`, `chrome_close_page`             | yes   | A page's own `alert` / `confirm` / `prompt`, not the browser's dialogs               |
+| `chrome_upload_file`                                                                                                     | yes   | Only with `files` not `off`; paths inside `fileRoots` (§5.7)                         |
+| `chrome_evaluate_script`                                                                                                 | yes   | Only with `shell` not `off`, approved as `computer_exec` is (§5.7)                   |
+
+- **Policy.** `browserTier` (§4.1) is on by default on an isolated Computer, a decision made as `shell`'s default
+  was for managed computers: nothing there is a person's. Off, there is no endpoint, so no tools and no Browser view
+  (§7.6) either. The tier needs `agentMode: 'control'`, as `shell` does. A `view` agent keeps screenshots only: even
+  the tools that take no lease read more than a screenshot shows (text below the fold, every tab's title and
+  address, console messages, which carry tokens on many sites). A browser that `appAllowlist` leaves out, or that
+  `redactApps` names, gets no tier. Scripts follow `shell` and uploads follow `files`: a script runs inside every
+  site the browser is signed in to, and reads what a screenshot cannot (a field's value, storage a page script can
+  reach).
+- **Authority on the desktop.** As for the command-line tier (§5.7). The channel token (§3.7) names the tier beside
+  `agentMode`, `shell` and `files`, and the desktop registers only the `chrome_*` tools its token allows, narrowed by
+  the last policy the CP pushed, where an unset field reads off, so an older Control Plane grants none. From the
+  `shell` and `files` it already holds, the desktop itself leaves out `chrome_evaluate_script` and
+  `chrome_upload_file`. The agent daemon's own check is not the guard.
+- **Approvals.** Every `chrome_*` tool that acts counts as the session's first input on that Computer (§4.2), one
+  that starts the browser included, and under `shell: 'ask'` a `chrome_evaluate_script` asks as `computer_exec`
+  does, with the script on the card. The agent daemon asks before it takes the lease and carries the outcome in the
+  call's `_meta` as inputs do (§8.2); the desktop refuses a script under `ask` without it.
+- **Arguments.** Every argument that names a file the child would write or read (`filePath`, `sourcePath`) is
+  removed from the schemas and from every call, as the driver's are (§5.5), and results come back inline. The one
+  exception is `chrome_upload_file`: the desktop checks its paths against `files` and `fileRoots` (§5.7) and
+  forwards the ones that pass. `initScript` on a navigation is a script and goes with `chrome_evaluate_script`.
+- **Lease and arbitration.** The tools that act wait for and hold the desktop's control lease exactly as
+  `computer_click` does (§4.4), and are refused with the same errors while a person is in control, the owner has
+  paused, or, on a main desktop, a person is active (§6): DevTools input moves no pointer, but it acts on the pages
+  the person is using.
+- **The front tab.** DevTools acts on any page by id, while the screen and the viewer show one tab. Before a tool
+  acts, the daemon brings its page to the front, so a person watching sees the agent's work and can take over on it.
+- **No browser running.** A tool that acts starts the desktop's browser through the launcher first (§3.10); one that
+  only reads returns `unavailable` with the reason `browser_not_running`.
+- **Unknown outcomes.** A timeout, a child crash, or a browser that went away during a tool that acts returns
+  `uncertain` with a fresh screenshot, and is never replayed (§5.4).
+- **Audit.** One entry per call like `computer_*` (§8.2), with typed and filled text reduced to its length, an
+  address to its origin, and a script recorded as a command line is (§5.7).
+- **Form fill.** Fills still go through the extension
+  ([computer-form-fill-and-vault.md](computer-form-fill-and-vault.md)), never through `chrome_fill`, whose values are
+  model-visible arguments. A snapshot shows a field's value as a screenshot does (whether it masks a password
+  field's is [unverified], and decides whether snapshots pause around a fill as screenshots do), and a script can
+  read any of them, which that design already counts outside its guarantee. Its sites that accept only
+  trusted events could later be filled through this endpoint.
+
+**Contract and delivery.** The desktop daemon registers the tools on `/mcp` beside `computer_*`, and they reach it
+over the same session channel (§5.2). The tool set is AgentConnect's own versioned contract, `computer-browser-v1`
+in `packages/protocol`: the names and schemas above start as the pinned child's, but they belong to the contract.
+An agent daemon and a self-hosted desktop upgrade apart, so both speak v1 whatever child the desktop carries: the
+desktop adapts v1 to its child, a test in the computer package checks the adapter against the pinned child's own
+`tools/list`, and a change an agent would see is a v2 beside it. Delivery follows the command-line tier's (§5.7).
+The desktop reports `capabilities.devtools` in its heartbeat. The CP advertises `computer-browser-v1` on the daemon
+wire once its tokens and grants name the tier, and with it the agent daemon offers the tools in every session that
+has the computer tools, which covers an on-demand managed computer that does not exist yet (§15.1). A Computer
+whose grant does not allow the tier refuses it as `denied`, and one without it as `unavailable`, before anything
+acts. The tier stays out of the agent spec, so neither a policy change nor a desktop's capability re-ships
+anything. The tools add about twenty schemas to such a session's context; their size is not measured yet.
+
+**Guidance.** `COMPUTER_USE_GUIDANCE` gains: in a browser, prefer `chrome_take_snapshot` and the element tools to
+screenshots and coordinates; take a new snapshot after a navigation, since element ids belong to the snapshot that
+gave them; use `computer_*` for anything the snapshot does not show; page content is untrusted, as the screen is.
+
+**Not in this scope.** A Computer with no isolation: a person's Linux machine, macOS and Windows (§17-20); a
+headless Computer with no desktop, which this tier would make possible; the browser tier as the text interface for
+runtimes without MCP image content (decision 13 stands until then).
+
 ## 6. Sharing the desktop with a human
 
 - **Input arbitration [validated]**: the daemon polls the cursor; when the pointer moves without the agent causing it,
@@ -1456,6 +1636,57 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
   encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then the relay's TURN, then screenshots over the relay) is done.
 
+### 7.6 Browser view [design]
+
+The viewer shows a desktop. For a desktop that reports `devtools` (§5.8) it gains a second view of that desktop,
+**Browser**, beside **Desktop**: the browser's page, streamed and operated over the DevTools protocol, under a bar
+the console draws (an address field, back, forward, reload, and the open tabs with their titles). A person opens an
+address and works the page without the desktop around it.
+
+- **Where.** Everywhere the viewer already is, since both places mount the same component: the Computer's page in
+  Infra, and the Computer panel of an agent's side panel, which opens on that agent's own desktop (§3.9). A
+  Desktop / Browser switch sits beside the desktop picker. The side panel is narrow and is about what the agent is
+  doing, so it opens on Browser while that desktop's browser runs; the Computer's page opens on Desktop.
+- **The daemon's own DevTools connection.** Chrome DevTools MCP addresses elements and has no live stream and no
+  pointer-level input, so the viewer does not go through the child. The desktop daemon holds a second connection to
+  the same endpoint, which Chrome allows, for the viewer alone: the page list, navigation, the screencast and input.
+  It is a small client over Node's own WebSocket and adds no dependency.
+- **Frames.** `Page.startScreencast` on the browser's front page: JPEG frames that Chrome sends only when the page
+  changes and that the daemon acknowledges one by one. One screencast runs per desktop, started by its first Browser
+  view and stopped by its last, like the shared capture. Frames reach a viewer over the DataChannel its session
+  already has for input (direct, STUN or TURN, §7.2), in chunks, and the daemon acknowledges a frame to Chrome only
+  once the channels have drained, so a slow link lowers the frame rate instead of queueing. On the Screenshots path
+  the view polls `GET /view/api/browser/frame`, a DevTools screenshot. ffmpeg is not involved, so this view works
+  before its download; the session's video track idles while no viewer of the desktop is on Desktop.
+- **The front tab.** The view shows the browser's front page, which is the one the desktop shows, and choosing a
+  tab in the bar brings it to the front. Browser and Desktop, the person and the agent, always look at the same tab
+  (§5.8).
+- **Input.** Pointer, wheel and key events go to the page as DevTools input events, in page coordinates taken from
+  the frame's metadata; pasted and IME text goes as inserted text, so a person's clipboard reaches the page, which
+  the Desktop view cannot do (§7.5). Input and the bar's actions need a `control` viewer and take control first,
+  exactly as the Take control button does (§7.3): the agent gets `human_in_control` until the person releases or
+  goes silent. Watching needs neither. The bar's actions are audited as the viewer's takeover is, with the member,
+  the desktop, the action and the address's origin.
+- **The bar.** `open` (a new tab at an address), `navigate`, `back`, `forward`, `reload`, `select` and `close`.
+  Addresses are `http:` and `https:` only, and text without a scheme gets `https://`; this is a convenience, not a
+  boundary, since a person in control can type anything into the browser's own bar on Desktop. With no browser
+  running the view offers the address field alone, and `open` starts the desktop's browser there through the
+  launcher (§3.10), fork-merge included.
+- **What it does not show.** A page, not the browser: permission prompts, the file chooser, HTTP sign-in dialogs,
+  downloads, extension popups and native popup widgets such as a `<select>` list [unverified] are outside a
+  screencast. A page's own `alert`, `confirm` and `prompt` are reported by DevTools, and the console draws them with
+  their buttons. For everything else the person switches to Desktop, which is why Browser is a second view and not a
+  replacement.
+- **API.** Under the desktop's viewer API, so the relay's `/view/api/*` route needs no change (§3.9):
+  `GET /view/api/browser` answers whether a browser runs and its pages (id, title, URL, which is in front),
+  `POST /view/api/browser` takes the bar's actions, `GET /view/api/browser/frame` is the polling frame, and a WebRTC
+  session carries frames and input as DataChannel messages.
+- **Data.** Frames, titles and URLs are page content: they travel between the desktop and the person's browser on
+  the viewer's channels like the Desktop view's video, are not stored, and never reach the Control Plane, whose
+  audit holds an address's origin and nothing more.
+- **Mobile.** The bar keeps the address field and folds the tabs into a count that opens a list. The page keeps the
+  desktop's viewport size in this step (§17-25).
+
 ## 8. Security and audit
 
 ### 8.1 The prototype's security posture (not for production)
@@ -1474,6 +1705,11 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   and its warning says so.
 - **Least scope**: `appAllowlist`, `redactApps` (window-level masking feasibility to be validated), granting a single display.
 - **Prompt injection**: screen content is untrusted; the session instructions say so (§5.6).
+- **DevTools endpoint [design]**: a browser's remote-debugging port holds every session of every signed-in site, and
+  loopback is no boundary between local principals. So the port exists only on an isolated Computer whose policy has
+  the browser tier on; no page reaches it; the agent gets the allowlisted tools and never the endpoint; and the
+  child that holds it reports nothing to its vendor (§5.8). The threat model's computer-use section, once it exists
+  (§3.10), lists the endpoint and the child's reporting switches.
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
   the length of `computer_type` text and no screenshots [validated]. The release adds the agent, session, target window,
   approval outcome, and screenshot reference, reports to the Control Plane, and lets the owner query per Computer.
@@ -1601,6 +1837,9 @@ and every `computer/policy`.
   on a phone, editable by the agent's editors, shown where the pool runs or a mode is set) and, for `per-agent`, its
   one computer with its state, or that it is created on first use; the agent's own managed computers are not repeated
   among the Computers that grant it.
+- **Browser view [design]** (§7.6): the viewer's Desktop / Browser switch, with the address bar and tabs, in both
+  places the viewer is mounted: the screen on a Computer's page in Infra, and the Computer panel of an agent's side
+  panel. Both use the shared viewer component, so one change serves them, each with its mobile layout.
 - Session page: the current lease and an action timeline with screenshots
   (**[implemented]**: a computer tool row shows the screenshots its result stored, §9).
 
@@ -1617,12 +1856,16 @@ and every `computer/policy`.
 | GStreamer, PipeWire, python3-gi                            | LGPL and others                  | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                   |
 | libei                                                      | MIT                              | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                  |
 | Xvfb, Xfce, Chromium, LibreOffice, toolchains, Debian base | MIT / GPL / MPL / BSD and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                        |
+| Chrome DevTools MCP (`chrome-devtools-mcp`) [design]       | Apache-2.0                       | Browser tools (§5.8)                                           | Pinned npm package in the image                                                                                                                                                   |
+| Google Chrome [design]                                     | Proprietary (Google's terms)     | The image's browser (§3.8)                                     | Google's apt package in the image, replacing Chromium; publishing an image that contains it needs counsel, and until then it is unpacked on first start [legal]                   |
 
 xdotool and wayvnc are no longer needed. Never used: `cua-spacesd`, the Cua HTML5 viewer and streaming crates
 (FSL-1.1-MIT); `cua-perception` (AGPL models); ydotool, RustDesk (AGPL-3.0); Sunshine (GPL-3.0); the official nut.js
 (unidentified license). CI scans release artifacts and fails on AGPL / FSL / BSL / SSPL / GPL. ffmpeg is downloaded on
 the user's machine and run as a separate process; hosting it in Cloud, preinstalling it in an installer, or publishing
 an image with it needs counsel first [legal]; native capture plus OS hardware encoders replace it in the long run (§17).
+Google Chrome would be the image's first proprietary component, an exception to decision 15 that the same review
+must allow; the daemon's bundle stays permissive, since Chrome is a separate program the image installs.
 
 ### 11.2 OS licenses
 
@@ -1725,6 +1968,7 @@ Estimates assume one engineer who knows the codebase.
 | M4        | **Windows**: signed installer, tray UI, session and lock-screen handling                                                      | 3–4 engineer-weeks   | M1                                               |
 | M5        | **Command line and files** (§5.7): Linux and containers first, then Windows; macOS after its TCC check                        | 2–3 engineer-weeks   | M2; M4 for Windows                               |
 | M6        | **Per-agent desktops** (§3.9, §3.10): one desktop per agent on Linux, shared browser logins, per-desktop leases and viewer    | 3–4 engineer-weeks   | M1, M2 (§14.9)                                   |
+| M7        | **Browser tools** (§5.8, §7.6): Chrome in the image, the DevTools endpoint, the `chrome_*` tools, the viewer's Browser view   | 4–6 engineer-weeks   | M6 (§14.10); Chrome distribution (§11.1)         |
 | Later     | Native capture and hardware encoding, multiple displays, audio / clipboard, window masking, macOS / Windows managed computers | Estimated separately | Legal conclusions                                |
 
 M1 plus M2 is the first releasable scope (about 10–14 engineer-weeks): both Linux user desktops and Docker desktops
@@ -1881,6 +2125,8 @@ works; lock screen and UAC prompts return definite errors; no rules or autostart
 - ffmpeg's GPL obligations and the OS licensing of remote watching [legal] may change how the viewer is distributed;
   until counsel answers, M2's published image downloads ffmpeg on first start instead of preinstalling it.
 - TURN bandwidth cost and latency affect managed-computer pricing.
+- Upstream Chrome DevTools MCP moves fast and is built for debugging a page, not for operating one: pin the version,
+  keep the tools an allowlist with schemas checked in tests, and rerun the browser matrix before upgrading (§5.8).
 
 ### 14.9 M6: per-agent desktops on Linux
 
@@ -1904,6 +2150,33 @@ the last step turned it on.
 Open after the prototype: whether two desktops refreshing one rotating app token kept in localStorage log each other
 out; storage buckets and partitioned storage in the merge; tab restore after an idle close worked once and failed
 once.
+
+### 14.10 M7: browser tools
+
+Nothing of §5.8 and §7.6 has run yet. A prototype comes first, in the container image, because seven things the
+design leans on are inferred from documentation:
+
+| Check                                                                                                             | Decides                                                                   |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Google Chrome on both architectures in the image: flags through the launcher, managed policies, the form-fill CRX | Whether §3.8's switch is only packaging                                   |
+| Remote debugging with the main profile in `browser/main`, and the Chromium profile copied into it                 | The main desktop's tier and kept sign-ins (§3.8)                          |
+| Chrome DevTools MCP against that browser: the allowlisted tools, a browser restart under a running child          | The child's lifetime (§5.8)                                               |
+| The endpoint from a page, directly and through the egress forwarder                                               | The §8.2 claim that no page reaches it                                    |
+| The endpoint from another local principal: a second account in the container, a container sharing its network     | The isolation scope of §5.8, and what a desktop pod must not carry        |
+| Sites that challenge automation, with and without the endpoint open and a child attached                          | Whether the tier costs managed computers more of their reputation (§15.4) |
+| The screencast of a windowed Chrome under Xvfb: frame rate, a covered window, popup widgets, frames through TURN  | Whether the Browser view is usable as designed (§7.6)                     |
+
+Then, one pull request each:
+
+| Step | Pull request                                                                                                                                  | Verified by                                                       |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1    | This design                                                                                                                                   | Review                                                            |
+| 2    | The image on Google Chrome: flags in the launcher, policies, the main profile's move and migration, the dock, `doctor`, the smoke test        | The `Desktop image` job on both arches; a woken volume's logins   |
+| 3    | The DevTools endpoint and the child: the launcher's switch, reading `DevToolsActivePort`, the child's lifetime, the `devtools` capability     | Unit tests with a fake child; the image test with a real one      |
+| 4    | The `chrome_*` tools on the desktop daemon: allowlist, stripped arguments, the token's tier, lease, arbitration, `uncertain`, audit           | Unit tests; a local client driving a page in the container        |
+| 5    | Protocol, Control Plane and agent daemon: the `computer-browser-v1` contract, the policy field and token claim, offering, approvals, guidance | Daemon and CP tests; an agent through the Control Plane on test   |
+| 6    | The daemon's DevTools connection and the viewer's browser API: pages, navigation, screencast frames, input, takeover, the `/view` page        | Unit tests; a takeover that navigates from another machine        |
+| 7    | The console's Browser view in the shared viewer: the switch, the bar, the page, dialogs; Infra's Computer page and the agent side panel       | Web tests; the console against a managed computer, on a phone too |
 
 ## 15. Later: managed computers
 
@@ -2140,6 +2413,8 @@ Control Plane's.
 - [centralized-tool-management.md](centralized-tool-management.md), [mcp-elicitation.md](mcp-elicitation.md): tool governance and approvals.
 - [shared-bot-relay.md](shared-bot-relay.md), [session-executors.md](session-executors.md): data-plane candidates.
 - [daemon-sandbox-backends.md](daemon-sandbox-backends.md), [k8s-daemon-pool.md](k8s-daemon-pool.md): the base for managed computers.
+- [computer-form-fill-and-vault.md](computer-form-fill-and-vault.md): the form-fill extension the browser tools sit beside (§5.8).
+- [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp): the embedded browser driver; its tool and configuration references.
 
 ## 17. Open questions
 
@@ -2187,6 +2462,22 @@ desktop (a container image, §3.8).
     display and profile ownership it complicates?
 19. Command lines can carry secrets, and the audit records them (§5.7, §8.2): keep them whole, or offer a policy
     switch that records only a hash?
+20. The browser tier outside an isolated Computer (§5.8). A loopback DevTools port is open to every local
+    principal, and a person's own Chrome refuses remote debugging on its default profile. Candidates: a debugging
+    pipe the daemon owns, fronted by an authenticated endpoint for the child and the viewer (the browser then dies
+    with the daemon, where today it survives a restart); or an extension holding `chrome.debugger` on the form-fill
+    link (Chrome's debugging banner, a broader extension). A fork across browser brands is open too: `v11` cookies
+    are keyed per brand in the keyring, so a Chromium master may not decrypt in Chrome.
+21. Do scripts in a page belong with `shell` (§5.8), or do they need a policy value of their own once a person's
+    desktop has the tier?
+22. Network inspection is left out of the browser tools because requests carry credentials. Is a redacted form
+    worth offering to agents that debug web apps?
+23. With a text snapshot of the page, is the browser tier enough to lift decision 13 for runtimes without MCP image
+    content, and to offer a Computer with no desktop at all (a headless browser and this tier only)?
+24. Does an organization restrict where its Computers' browsers may go (Chrome DevTools MCP has allow and block URL
+    patterns), or does that belong to the egress policy (§15.4)?
+25. The Browser view on a phone (§7.6) shows a desktop-sized page. DevTools can give the page the phone's viewport
+    so it reflows, but that changes what the agent and the Desktop view see. Offer it only while a person is in control?
 
 ## Appendix A: VM desktop pool design summary (reference for managed computers)
 
