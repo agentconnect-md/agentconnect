@@ -33,6 +33,7 @@ ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 # Nothing here renders with OpenGL (Chromium and LibreOffice draw in software), so Mesa's LLVM backend and the CJK serif faces stay out.
 COPY packages/computer/docker/dpkg-excludes /etc/dpkg/dpkg.cfg.d/agentconnect-computer
+# sudo has no rule here, so it grants nothing until seed-system.sh writes one; apt reads https, the only web port a managed pod reaches.
 RUN apt-get update && apt-get install -y --no-install-recommends \
   xvfb x11-xserver-utils x11-utils xauth dbus-x11 at-spi2-core wmctrl \
   xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf thunar xfce4-terminal \
@@ -41,17 +42,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   fonts-noto-cjk fonts-dejavu-core fonts-liberation \
   python3 python3-pip python3-venv golang-go rustc cargo build-essential pkg-config \
   git gh openssh-client curl jq poppler-utils zip unzip \
-  ca-certificates tini wget xz-utils procps \
+  ca-certificates tini wget xz-utils procps sudo \
+  && sed -i 's|http://deb.debian.org|https://deb.debian.org|' /etc/apt/sources.list.d/debian.sources \
   && rm -rf /var/lib/apt/lists/* /var/cache/debconf/*-old /var/log/apt /var/log/dpkg.log
 
-# Pinned, sha256-verified official Node.js for the target arch, with npm and corepack's pnpm and yarn shims.
+# Pinned, sha256-verified official Node.js with npm and corepack's shims, in /opt and linked into /usr/local/bin: a desktop whose /usr is a volume runs the image's Node (§3.8).
 RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in arm64) node=arm64; sum=$NODE_SHA256_ARM64;; amd64) node=x64; sum=$NODE_SHA256_X64;; *) echo "unsupported $arch"; exit 1;; esac; \
     wget -q -O /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node}.tar.xz"; \
     echo "$sum  /tmp/node.tar.xz" | sha256sum -c -; \
-    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+    mkdir -p /opt/node; tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1 --no-same-owner \
       --exclude='*/include' --exclude='*/share' --exclude='*/CHANGELOG.md' --exclude='*/README.md'; \
-    rm /tmp/node.tar.xz; npm install --global corepack@0.36.0; corepack enable pnpm yarn; node --version; npm --version
+    rm /tmp/node.tar.xz; export PATH="/opt/node/bin:$PATH"; npm install --global corepack@0.36.0; corepack enable pnpm yarn; \
+    ln -s /opt/node/bin/* /usr/local/bin/; node --version; npm --version
 
 COPY --from=bundle /app/packages/computer/bundle/agentconnect-computer.mjs /app/packages/computer/bundle/agentconnect-computer.mjs.LEGAL.txt /opt/agentconnect/
 # The pinned Cua Driver lives in the image; GPL ffmpeg is not bundled, the daemon downloads it on first start (§11).
@@ -72,7 +75,9 @@ COPY packages/computer/docker/xfce4-panel.xml /etc/xdg/xfce4/panel/default.xml
 COPY packages/computer/docker/xfce4-desktop.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
 COPY packages/computer/docker/backdrop.svg /usr/share/backgrounds/agentconnect/backdrop.svg
 RUN useradd --create-home --uid 1000 --shell /bin/bash computer && mkdir -p -m 1777 /tmp/.X11-unix
-COPY --chmod=755 packages/computer/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Under /opt like the daemon, so they follow the image on a desktop whose /usr, /etc and /var are a volume (§3.8); image-owned lists what else does.
+COPY --chmod=755 packages/computer/docker/entrypoint.sh packages/computer/docker/seed-system.sh /opt/agentconnect/
+COPY --chmod=644 packages/computer/docker/image-owned /opt/agentconnect/image-owned
 
 USER computer
 WORKDIR /home/computer
@@ -94,4 +99,4 @@ LABEL org.opencontainers.image.title="AgentConnect computer" \
   org.opencontainers.image.source="https://github.com/agentconnect-md/agentconnect" \
   org.opencontainers.image.version="${VERSION}"
 # No licenses label: the daemon is Apache-2.0, but the Debian packages keep their own (/usr/share/doc/*/copyright).
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentconnect/entrypoint.sh"]

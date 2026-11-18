@@ -1,0 +1,7 @@
+/etc/chromium.d/agentconnect
+/etc/chromium/policies/managed/agentconnect.json
+/etc/chromium/policies/managed/agentconnect-form-fill.json
+/etc/xdg/xfce4/panel/default.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+/usr/share/backgrounds/agentconnect/backdrop.svg
+/usr/local/bin/agentconnect-computer

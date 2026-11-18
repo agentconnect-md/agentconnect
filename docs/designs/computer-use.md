@@ -527,7 +527,22 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   Thunar, the terminal and LibreOffice, a dark backdrop, and no desktop icons; a home volume that already holds Xfce
   settings keeps its own. The terminal has Python 3 (pip, venv), Node.js (npm; pnpm and yarn through corepack), Go
   (`GOTOOLCHAIN=auto`), Rust (cargo), git, curl, jq and poppler-utils. `npm -g`, `go install` and `cargo install` land
-  in the home volume, which is on `PATH`; there is no root, so nothing is installed with apt at run time.
+  in the home volume, which is on `PATH`; a desktop without a system volume has no root, so nothing is installed
+  with apt at run time.
+- **System volume [implemented]**: `sudo` is in the image with no rule, so a container started from the image alone
+  still has no root. `/opt/agentconnect/seed-system.sh <volume>`, run as root before the desktop starts, gives a desktop
+  a system of its own. The first start copies the image's `/usr`, `/etc` and `/var` (about 2.3 GiB) to
+  `<volume>/system`, drops the image's dpkg excludes from the copy, creates `<volume>/home` for the user and writes a
+  passwordless sudo rule; with those four directories mounted back at their paths, `sudo apt install` works and what
+  it installs stays with the volume. From then on the system is the desktop's own, like a machine's disk: a newer
+  image no longer replaces its packages, the browser included, until `sudo apt upgrade` or a reset does. What must
+  follow the image therefore lives outside the three directories: the daemon, the entrypoint, the driver and the
+  extension in `/opt/agentconnect`, and Node in `/opt/node`, linked into `/usr/local/bin`. Every later start copies the
+  files named in `/opt/agentconnect/image-owned` (the Chromium flags and managed policies, the Xfce defaults, the
+  daemon's wrapper) over the volume's and logs when the volume's Chromium is older than the image's. apt reads its
+  sources over HTTPS, the only web port a managed pod reaches (§15.4). The smoke test seeds a Docker volume, installs
+  a package with `sudo apt-get`, and finds it in a new container. [risk] A newer image's driver runs against the
+  volume's older system libraries.
 - **Health [implemented]**: `HEALTHCHECK` runs `doctor --json --daemon`, which asks the running daemon and fails when
   none answers or a required check fails, a revoked key included.
 - **WebRTC and NAT**: by default the daemon advertises the local address the browser reached it on, which in bridge
