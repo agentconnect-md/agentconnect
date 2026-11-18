@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl'
 import { completeLogin, currentSubject, getUser, isAuthConfigured, redirectExpiredSession } from '@/lib/auth'
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
-import { joinOrganizationsBySso, refreshMySocialIdentities, reportOrgSsoTest } from '@/lib/api'
+import { ApiError, joinOrganizationsBySso, refreshMySocialIdentities, reportOrgSsoTest } from '@/lib/api'
 import { commitPendingSignIn, organizationSsoEnabled, takeSsoTest } from '@/lib/organization-sso'
 import { Spinner, Wordmark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -21,6 +21,8 @@ type Landing =
       connectionName: string
       email: string | null
       error: string | null
+      /** The Control Plane refused the account that landed: the provider gave it no address in the organization's domains. */
+      refused: boolean
       returnTo: string
     }
 
@@ -34,7 +36,12 @@ async function land(): Promise<Landing> {
   // A test sign-in started from Settings lands here like any other; the stash tells them apart.
   const test = takeSsoTest()
   if (test) {
-    const outcome = { kind: 'test' as const, connectionName: test.connectionName, returnTo: test.returnTo }
+    const outcome = {
+      kind: 'test' as const,
+      connectionName: test.connectionName,
+      returnTo: test.returnTo,
+      refused: false
+    }
     if (providerError) {
       const error = [providerError, params.get('error_description')].filter(Boolean).join(': ')
       return { ...outcome, passed: false, email: null, error }
@@ -44,7 +51,8 @@ async function land(): Promise<Landing> {
       const passed = await reportOrgSsoTest(test.nonce, AbortSignal.timeout(10_000))
       return { ...outcome, passed, email: (await getUser())?.email ?? null, error: null }
     } catch (e) {
-      return { ...outcome, passed: false, email: null, error: e instanceof Error ? e.message : null }
+      const refused = e instanceof ApiError && e.code === 'SIGN_IN_IDENTITY_REQUIRED'
+      return { ...outcome, passed: false, email: null, error: e instanceof Error ? e.message : null, refused }
     }
   }
 
@@ -95,7 +103,9 @@ function SsoTestResult({ result }: { result: Extract<Landing, { kind: 'test' }> 
             className="mono mt-[10px] rounded-sm bg-(--status-error-soft) px-[10px] py-2 text-[12px] break-words text-(--status-error)"
             role="alert"
           >
-            {result.error ?? t('unconfirmed', { name: result.connectionName })}
+            {result.refused
+              ? t('noAddress', { name: result.connectionName })
+              : (result.error ?? t('unconfirmed', { name: result.connectionName }))}
           </div>
         )}
         <Button className="mt-[22px] h-10 px-[18px]" onClick={() => router.replace(result.returnTo)}>

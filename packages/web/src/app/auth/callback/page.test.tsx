@@ -11,6 +11,19 @@ const mocks = vi.hoisted(() => ({
   reportOrgSsoTest: vi.fn(),
   replace: vi.fn()
 }))
+// The page tells a refusal apart by the error's class and code; the module mock below replaces the real class.
+const ApiError = vi.hoisted(
+  () =>
+    class ApiError extends Error {
+      constructor(
+        message: string,
+        readonly status: number,
+        readonly code?: string
+      ) {
+        super(message)
+      }
+    }
+)
 
 vi.mock('@/lib/auth', () => ({
   completeLogin: mocks.completeLogin,
@@ -20,6 +33,7 @@ vi.mock('@/lib/auth', () => ({
   redirectExpiredSession: vi.fn()
 }))
 vi.mock('@/lib/api', () => ({
+  ApiError,
   joinOrganizationsBySso: mocks.joinOrganizationsBySso,
   refreshMySocialIdentities: mocks.refreshMySocialIdentities,
   reportOrgSsoTest: mocks.reportOrgSsoTest
@@ -114,6 +128,18 @@ it('fails the test when the sign-in did not come through the connection', async 
   await land('?code=abc')
   expect(host.textContent).toContain('Sign-in test failed')
   expect(host.textContent).toContain('could not be matched to the test of Example IdP')
+})
+
+it('says the provider returned no usable address when the landed account is refused', async () => {
+  stashTest()
+  mocks.reportOrgSsoTest.mockRejectedValue(
+    new ApiError('this account has no linked sign-in identity', 403, 'SIGN_IN_IDENTITY_REQUIRED')
+  )
+  await land('?code=abc')
+  expect(host.textContent).toContain('Sign-in test failed')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+    'Example IdP returned no verified email address in this organization'
+  )
 })
 
 it('keeps reporting a cancelled sign-in', async () => {
