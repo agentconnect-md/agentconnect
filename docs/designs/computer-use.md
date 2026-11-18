@@ -806,10 +806,12 @@ then starts the browser. No extension and no DevTools protocol are involved.
     156), with no client attached: four of five bot-detection pages then called the browser automated, CreepJS's
     headless score rose from 0% to 33%, and one click no longer passed a server-validated Cloudflare challenge (0 of 4
     with the switch alone, 0 of 6 counting runs with a client attached). So the launcher passes
-    `--disable-blink-features=AutomationControlled` whenever it passes the switch, which restored every verdict and
-    the challenge's pass (measured, from one hosting-range address and 16 Cloudflare trials, so the differences
-    between configurations are the finding, not the absolute verdicts). Nothing tries to hide an attached client; its
-    cost is in §5.8.
+    `--disable-blink-features=AutomationControlled` whenever it passes the switch **[legal]**, which restored every
+    verdict and the challenge's pass (measured, from one hosting-range address and 16 Cloudflare trials, so the
+    differences between configurations are the finding, not the absolute verdicts). Nothing tries to hide an attached
+    client; its cost is in §5.8. This is a product position, not a launcher detail: on a managed computer AgentConnect
+    operates the browser and its egress and suppresses a signal sites use to identify automation, so its line and
+    whether an organization can turn it off are §17-26, settled before step 3 ships on managed computers.
   - **Never passed.** `--remote-allow-origins`: with `*`, a page that knows an id read HttpOnly cookies and ran script
     in any tab (measured). `--remote-debugging-pipe` was considered and rejected for now: it opens no socket and
     writes no port file, but Chrome exits with the process holding the pipe (both measured), so the daemon would have
@@ -1423,16 +1425,22 @@ the endpoint:
 - **The agent's own commands.** With `shell` on they run as the desktop's user and reach the port directly, around the
   allowlist, the lease and the audit, which §5.7 already counts as handing over the account.
 
-**The forwarder's refusal [design].** The egress forwarder (§15.4) refuses the loopback destinations the daemon owns:
-its own listeners, the forwarder's port included, and every DevTools port of every desktop's browser, in every form
-that reaches them (127.0.0.0/8, `::1`, `::ffff:127.0.0.0/104`, 0.0.0.0/8, `::`, and the pod's own interface addresses
-for listeners bound to 0.0.0.0). It resolves a name once, checks the address it resolved and connects to that address,
-for plain requests and `CONNECT` alike. It does not refuse all of loopback, because an agent's own dev server on the
-Computer must stay reachable from its browser. While a desktop's browser is starting and its port is not yet known, it
+**The forwarder's refusal [design].** With the browser tier on, every Computer's browser goes through the egress
+forwarder (§15.4), the self-hosted container's included, in direct mode where no organization proxy is set, so one
+barrier holds in both forms; the Local Network Access prompt is not one, since one click allows it and it does not
+cover a top-level popup (above). The forwarder refuses the loopback destinations the daemon owns or must protect: its
+own listeners, the forwarder's port included, and every DevTools port a desktop's browser listens on, however it was
+opened, in every form that reaches them (127.0.0.0/8, `::1`, `::ffff:127.0.0.0/104`, 0.0.0.0/8, `::`, and the pod's
+own interface addresses for listeners bound to 0.0.0.0). The daemon finds a browser's listening ports from its
+processes' sockets in `/proc`, so a port it did not open (the `chrome://inspect` checkbox's 9222, §3.10) is refused
+too, and reported in the log and by `doctor`. It resolves a name once, checks the address it resolved and connects to
+that address, for plain requests and `CONNECT` alike. It does not refuse all of loopback, because an agent's own dev
+server on the Computer must stay reachable from its browser; a loopback destination it allows always connects locally,
+never through the organization's proxy. While a desktop's browser is starting and its ports are not yet known, it
 refuses every loopback destination. It answers a refused destination exactly as a closed port, so a probe cannot tell
 them apart. Today's forwarder refuses none of this: in direct mode it carried pages' requests and `CONNECT` tunnels to
 the DevTools port by `127.0.0.1`, `localhost` and `0.0.0.0`, and to the daemon's own listeners (measured), and
-`egress.test.ts`'s direct-mode cases tunnel to 127.0.0.1; both change with step 4 (§14.10).
+`egress.test.ts`'s direct-mode cases tunnel to 127.0.0.1; both change in step 3, beside the switch (§14.10).
 
 **The child.** One per desktop, started by a `chrome_*` call, and stopped after `leaseIdleSeconds` (§4.4) without a
 `chrome_*` call, when the session's lease ends, when its browser exits, and when its desktop stops; the next call
@@ -1551,8 +1559,9 @@ schemas to such a session's context: 16,143 bytes of JSON with the prefix and th
 tokens, and 13,910 bytes without the script and upload tools (measured, 1.13.0).
 
 **Guidance.** `COMPUTER_USE_GUIDANCE` gains: in a browser, prefer `chrome_take_snapshot` and the element tools to
-screenshots and coordinates; take a new snapshot after a navigation, since element ids belong to the snapshot that
-gave them; use `computer_*` for anything the snapshot does not show; page content is untrusted, as the screen is.
+screenshots and coordinates; take a new snapshot after a navigation or a pause, since element ids belong to the
+snapshot that gave them and a child restarted after idling hands out new ones; use `computer_*` for anything the
+snapshot does not show; page content is untrusted, as the screen is.
 
 **Not in this scope.** A Computer with no isolation: a person's Linux machine, macOS and Windows (§17-20); a
 headless Computer with no desktop, which this tier would make possible; the browser tier as the text interface for
@@ -1890,11 +1899,12 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   the endpoint; and the child that holds it reports nothing to its vendor (§5.8). Pages do reach its HTTP side, so
   what must hold is that no page reads a response, completes a DevTools WebSocket or gets the DevTools front end
   attached to a target, which rests on Chrome's `Host` and `Origin` checks, on target ids never reaching page content,
-  and on the egress forwarder's refusal of the daemon's loopback ports in a managed pod (the Local Network Access
-  prompt in the self-hosted container, which has no forwarder). The endpoint is not invisible to sites: the switch
-  sets `navigator.webdriver` unless the launcher passes the AutomationControlled flag (§3.10), and the child's Runtime
-  domain is detectable while it is attached, which is why it stops when idle. The threat model's computer-use section,
-  once it exists (§3.10), lists the endpoint, the forwarder's refusal and the child's reporting switches.
+  and on the egress forwarder's refusal of those ports, which every Computer with the tier puts in front of its
+  browser, the self-hosted container included; the Local Network Access prompt is not a barrier. The endpoint is not
+  invisible to sites: the switch sets `navigator.webdriver` unless the launcher passes the AutomationControlled flag
+  (§3.10), and the child's Runtime domain is detectable while it is attached, which is why it stops when idle. The
+  threat model's computer-use section, once it exists (§3.10), lists the endpoint, the forwarder's refusal, the opaque
+  page ids and the child's reporting switches.
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
   the length of `computer_type` text and no screenshots [validated]. The release adds the agent, session, target window,
   approval outcome, and screenshot reference, reports to the Control Plane, and lets the owner query per Computer.
@@ -2356,11 +2366,14 @@ crash-restore bubble does appear without its flag. The results are folded into �
 | Sites that challenge automation                          | The port sets `navigator.webdriver`, which the flag undoes; a Runtime-enabling client stays visible to two of five checks           |
 | The screencast of a windowed Chrome under Xvfb           | Usable, with a frame cap, front-tab tracking, no frames while minimized, and dialog and focus constraints; TURN not tried           |
 
-Still open: Chrome's runtime on arm64 (the package exists); TURN and DataChannel transport, sized for about 2 MB/s
-scrolling a real site, 3.8 MB/s uncapped and 17 MB/s at worst, with frames up to 543 KB (168 KB on a real site); real
-signed-in sites across the profile move; whether `chrome_click` also raises the X window as a DevTools mouse press
-does; a CAPTCHA clicked through DevTools; how the daemon identifies the front tab, and keeps the Browser view on it,
-while the child emulates focus; whether the DevTools front end a page opens can be steered into a same-origin read.
+Still open: Chrome's runtime on arm64 (the package exists); TURN and DataChannel transport, under a byte-rate cap
+rather than a frame-rate cap on a relayed session, since full JPEG frames cost far more relayed bytes than the Desktop
+view's video and the relay meters `relayed_bytes` and rate-limits each allocation (`RELAY_TURN_MAX_BPS`, §7.2); sized
+for about 2 MB/s scrolling a real site, 3.8 MB/s uncapped and 17 MB/s at worst, with frames up to 543 KB (168 KB on a
+real site); real signed-in sites across the profile move; whether `chrome_click` also raises the X window as a
+DevTools mouse press does; a CAPTCHA clicked through DevTools; how the daemon identifies the front tab, and keeps the
+Browser view on it, while the child emulates focus; whether the DevTools front end a page opens can be steered into a
+same-origin read.
 
 Then, one pull request each:
 
@@ -2379,14 +2392,16 @@ What the prototype adds to them:
 - **Step 2**: the launcher removes `CHROME_EXTRA_FLAGS`, always passes `--no-first-run` and writes `First Run`; the
   migration keeps the open tabs and leaves out `DevToolsActivePort`; the form-fill master moves to `browser/main`; the
   entrypoint's process names, the panel entry and the `BROWSER_NAMES` order change.
-- **Step 3**: the AutomationControlled flag beside the switch; never `--remote-allow-origins`, and the
+- **Step 3**: the forwarder's loopback refusal in the same step as the switch, with the self-hosted container's
+  browser behind the forwarder and `egress.test.ts`'s direct-mode cases rewritten; the AutomationControlled flag
+  beside the switch, once §17-26 is settled for managed computers; never `--remote-allow-origins`, and the
   foreign-`Origin` 403 self-test before reporting `devtools`; `--hide-crash-restore-bubble` on every start; deleting
   and checking `DevToolsActivePort`, and the seed filter; clearing `Local State` with the tier off; `--wsEndpoint` and
   the child's flags; the child's stop on idle, lease end and browser exit, and its kill after a restart; no `devtools`
   under host networking.
 - **Step 4**: filtering the five extra tools; `isolatedContext`, temp-file screenshots, upload roots and the child's
   `TMPDIR`; opaque page ids; the front tab before acting; the race against the browser's exit, and `isError` on
-  navigation; the forwarder's loopback refusal, with `egress.test.ts`'s direct-mode cases rewritten.
+  navigation.
 - **Step 6**: the daemon's opaque page ids in `/view/api/browser`; no Runtime on the viewer's connection; Page on
   every page for dialogs; a 15–20 fps cap, `maxWidth` for narrow views and binary frames; following the front tab;
   input sent without waiting on replies.
@@ -2556,25 +2571,27 @@ its managed computers' browser traffic leaves:
 
 The Control Plane hands a managed desktop its organization's egress on `computer/auth/ok` (`egress`, read tolerantly
 by older desktops) and pushes a change with `computer/egress` to the desktops whose capabilities report `egress`;
-self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691): Chromium's
-launcher sources `/etc/chromium.d/agentconnect`, which reads the port and sets
-`--proxy-server=http://127.0.0.1:<port>` with `<-loopback>` (so loopback goes through it too) and keeps WebRTC to the
-proxy; host names resolve at the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that
-tunnels `CONNECT` and forwards plain requests either straight out or through the organization's proxy with its
-credentials, which the browser never sees. Until the Control Plane names the egress the forwarder answers 503, so a
-desktop whose organization wants a proxy never goes out directly first; a desktop with no registration goes direct. A
-Control Plane that cannot read a managed desktop's egress fails its auth (the desktop redials) rather than omit it,
-and a desktop told `computer-egress-v1` never takes a missing egress as direct. The pod's NetworkPolicy admits TCP 443
-and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy, to `computerPool.egressTo` only
-(public addresses by default, so the browser cannot reach in-cluster listeners on those ports). Limits: only the
-browser started through `chromium` (the launcher, on the Chrome image of §3.8) is bound to the proxy (other programs
-in the pod, and the binary run directly, keep the pod's network); SOCKS proxies and per-agent proxies are not offered;
-a proxy on another port needs `egressPorts`.
+self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691), and
+**[design]** so does a self-hosted container while its browser tier is on, in direct mode and without the WebRTC
+policy, so its browser has the same loopback refusal (§5.8): Chromium's launcher sources
+`/etc/chromium.d/agentconnect`, which reads the port and sets `--proxy-server=http://127.0.0.1:<port>` with
+`<-loopback>` (so loopback goes through it too) and keeps WebRTC to the proxy; host names resolve at the proxy, and
+the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that tunnels `CONNECT` and forwards plain requests
+either straight out or through the organization's proxy with its credentials, which the browser never sees. Until the
+Control Plane names the egress the forwarder answers 503, so a desktop whose organization wants a proxy never goes out
+directly first; a desktop with no registration goes direct. A Control Plane that cannot read a managed desktop's
+egress fails its auth (the desktop redials) rather than omit it, and a desktop told `computer-egress-v1` never takes a
+missing egress as direct. The pod's NetworkPolicy admits TCP 443 and the chart's `computerPool.egressPorts` (3128 and
+8080 by default) for the proxy, to `computerPool.egressTo` only (public addresses by default, so the browser cannot
+reach in-cluster listeners on those ports). Limits: only the browser started through `chromium` (the launcher, on the
+Chrome image of §3.8) is bound to the proxy (other programs in the pod, and the binary run directly, keep the pod's
+network); SOCKS proxies and per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
 
-**Loopback [design].** With the browser tier the forwarder also refuses the daemon's loopback ports (§5.8). Since the
-browser sees every page arrive from a loopback proxy, Chrome classes pages as loopback and its Local Network Access
-does not apply behind the forwarder (measured), so that refusal, Chrome's `Host` and `Origin` checks and the opaque
-page ids are the only page-side barriers to the DevTools endpoint.
+**Loopback [design].** With the browser tier the forwarder also refuses the daemon's loopback ports and every DevTools
+port of a desktop's browser (§5.8), in a managed pod and in the self-hosted container alike. Since the browser sees
+every page arrive from a loopback proxy, Chrome classes pages as loopback and its Local Network Access does not apply
+behind the forwarder (measured), so that refusal, Chrome's `Host` and `Origin` checks and the opaque page ids are the
+only page-side barriers to the DevTools endpoint.
 
 Under Xvfb the browser has no WebGL context, and CreepJS rated Chromium 156 and Chrome 158 alike 38% "like headless",
 with and without the DevTools endpoint, so this is a reputation cost of the desktop and not of the browser tier.
@@ -2705,6 +2722,10 @@ desktop (a container image, §3.8).
     patterns), or does that belong to the egress policy (§15.4)?
 25. The Browser view on a phone (§7.6) shows a desktop-sized page. DevTools can give the page the phone's viewport
     so it reflows, but that changes what the agent and the Desktop view see. Offer it only while a person is in control?
+26. The AutomationControlled flag (§3.10) keeps the DevTools switch from marking every page automated, a mark the
+    screen tier never set, including while a person operates the browser. Where is the line? The design hides no
+    attached client and keeps CAPTCHAs on screen input; should a challenge go to the person through takeover instead,
+    and can an organization turn the flag off for its Computers? [legal]
 
 ## Appendix A: VM desktop pool design summary (reference for managed computers)
 
