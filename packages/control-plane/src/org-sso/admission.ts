@@ -22,7 +22,7 @@ export class OrgSsoAdmission {
     if (!account || account.connectorIds.length === 0) return true
     const owned = await connections.findByConnectorIds(account.connectorIds)
     if (owned.length === 0) return true
-    // No address is not an address inside the domains: the provider withheld it or sent it unverified, and the account would belong to nobody.
+    // No address is not an address inside the domains: the provider sent none, and the account would belong to nobody.
     const domain = account.primaryEmail === null ? null : domainOf(account.primaryEmail)
     for (const connection of owned) {
       if (domain !== null && (await domains.verifiedDomains(connection.orgId)).includes(domain)) continue

@@ -362,7 +362,8 @@ describe('organization SSO connection', () => {
         issuer: 'https://idp.example.test',
         clientId: 'client-1',
         clientSecret: 'secret-1',
-        trustUnverifiedEmail: false
+        // The verified domains bound the address, so the provider's own "verified" mark is not asked for.
+        trustUnverifiedEmail: true
       }
     })
     expect(res.json()).toMatchObject({
