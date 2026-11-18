@@ -268,8 +268,10 @@ reader typed. A press therefore carries provenance, not text:
 1. The Console sends `{ agentId, appId, buttonId, pressId }` as a structured event on the
    composer's live socket, as Fill-card answers already do (`pgAnswerFill`, which also
    names the card's agent). `agentId` selects the agent whose stored row holds the card in
-   a multi-agent conversation. `pressId` is generated once per press by the Console. The
-   event never goes through a card bridge, and the browser does not send the button's text.
+   a multi-agent conversation. The client supplies `agentId`, so the relay checks it against
+   the conversation's roster before forwarding, and the daemon's refusal in step 2 is the
+   second check. `pressId` is generated once per press by the Console. The event never goes
+   through a card bridge, and the browser does not send the button's text.
 2. The daemon loads that agent's stored row for the card in that conversation, checks that the button
    exists, and derives the text: `value`, or `label` when `value` is absent. An unknown
    card or button is refused, and nothing is sent.
@@ -499,6 +501,8 @@ code between them.
   - a press admitted like a composer message: the relay-stamped author, queued behind a
     running turn and acknowledged as accepted, and in the card's thread;
   - a repeated `pressId` starting no second turn.
+- Relay unit tests cover a press whose `agentId` is not on the conversation's roster being
+  refused before it is forwarded.
 - Web tests cover:
   - every component renders, and `Text` Markdown skips raw HTML;
   - an invalid persisted spec degrades to the notice;
