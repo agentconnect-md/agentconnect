@@ -84,8 +84,14 @@ Three steps, each a spec MUST, each a place where being slightly wrong fails muc
    interoperability: an issuer with no path may be spelled with or without its trailing
    slash (RFC 3986 §6.2.3 makes the two the same resource; Google's protected-resource
    documents say `https://accounts.google.com/`, its metadata `https://accounts.google.com`).
-   Any other difference — path, host, scheme, port, query, or a slash on a non-empty path —
-   is still a mismatch, and the document's own spelling is what the flow records.
+   A second concession covers per-tenant issuer paths: a document served at the issuer's own
+   well-known URL may name a same-origin **ancestor** of it at a path-segment boundary. Some
+   CRM servers publish `https://crm.example.test/oauth2/<tenant>/<service>` as the
+   authorization server while its metadata says `https://crm.example.test/oauth2`, with a
+   tenant-specific `authorization_endpoint` that only that document carries
+   (`issuerCovers`). A different origin, a sibling or descendant path, or a query is still a
+   mismatch, and the document's own spelling is what the flow records — it is what an RFC
+   9207 `iss` response will carry.
 
 ### 4.1 `resource` canonicalization cuts both ways
 

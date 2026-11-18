@@ -6,6 +6,7 @@ import {
   discoverAuthServer,
   discoverMcpAuthorization,
   discoverProtectedResource,
+  issuerCovers,
   issuerEquivalent,
   parseWwwAuthenticate,
   probeMcpEndpoint,
@@ -323,6 +324,52 @@ describe('discoverAuthServer', () => {
     expect(issuerEquivalent('not a url', ISSUER)).toBe(false)
   })
 
+  it('accepts a same-origin ancestor issuer for a per-tenant issuer path, keeping the document as served', async () => {
+    const tenant = `${ISSUER}/oauth/tenant-a/service-a`
+    const dial = fakeDial({
+      'https://auth.example.test/.well-known/oauth-authorization-server/oauth/tenant-a/service-a': ok(200, {
+        ...AS_DOC,
+        issuer: `${ISSUER}/oauth`,
+        authorization_endpoint: `${ISSUER}/oauth/authorize/tenant-a/service-a`
+      })
+    })
+    const result = await discoverAuthServer(dial, tenant)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.issuer).toBe(`${ISSUER}/oauth`)
+    expect(result.value.authorizationEndpoint).toBe(`${ISSUER}/oauth/authorize/tenant-a/service-a`)
+  })
+
+  it('still rejects a descendant, sibling or cross-origin issuer for a per-tenant issuer path', async () => {
+    const tenant = `${ISSUER}/oauth/tenant-a`
+    const url = 'https://auth.example.test/.well-known/oauth-authorization-server/oauth/tenant-a'
+    for (const issuer of [
+      `${ISSUER}/oauth/tenant-a/x`,
+      `${ISSUER}/oauth/tenant-b`,
+      'https://other.example.test/oauth'
+    ]) {
+      const dial = fakeDial({ [url]: ok(200, { ...AS_DOC, issuer }) })
+      expect(await discoverAuthServer(dial, tenant)).toEqual({ ok: false, failure: 'issuer_mismatch' })
+    }
+  })
+
+  it('treats only a same-origin ancestor at a path-segment boundary as covering', () => {
+    expect(issuerCovers(`${ISSUER}/oauth`, `${ISSUER}/oauth/tenant`)).toBe(true)
+    expect(issuerCovers(`${ISSUER}/oauth/`, `${ISSUER}/oauth/tenant`)).toBe(true)
+    expect(issuerCovers(ISSUER, `${ISSUER}/tenant`)).toBe(true)
+    expect(issuerCovers(`${ISSUER}/`, ISSUER)).toBe(true)
+    expect(issuerCovers(`${ISSUER}/oauth`, `${ISSUER}/oauth`)).toBe(true)
+    expect(issuerCovers(`${ISSUER}/oauth/`, `${ISSUER}/oauth`)).toBe(false)
+    expect(issuerCovers(`${ISSUER}/oau`, `${ISSUER}/oauth/tenant`)).toBe(false)
+    expect(issuerCovers(`${ISSUER}/oauth/tenant`, `${ISSUER}/oauth`)).toBe(false)
+    expect(issuerCovers('https://other.example.test/oauth', `${ISSUER}/oauth/tenant`)).toBe(false)
+    expect(issuerCovers('http://auth.example.test/oauth', `${ISSUER}/oauth/tenant`)).toBe(false)
+    expect(issuerCovers('https://auth.example.test:8443/oauth', `${ISSUER}/oauth/tenant`)).toBe(false)
+    expect(issuerCovers(`${ISSUER}/oauth?x=1`, `${ISSUER}/oauth/tenant`)).toBe(false)
+    expect(issuerCovers(`${ISSUER}/oauth`, `${ISSUER}/oauth/tenant?x=1`)).toBe(false)
+    expect(issuerCovers('not a url', `${ISSUER}/oauth/tenant`)).toBe(false)
+  })
+
   it('rejects a document missing a required endpoint', async () => {
     const dial = fakeDial({
       'https://auth.example.test/.well-known/oauth-authorization-server': ok(200, {
@@ -375,6 +422,37 @@ describe('discoverMcpAuthorization', () => {
     expect(result.value.resource).toBe(MCP_URL)
     expect(result.value.scopes).toEqual(['files:read', 'files:write', 'offline_access'])
     expect(result.value.metadata.registrationEndpoint).toBe(`${ISSUER}/register`)
+  })
+
+  it('connects a server whose resource names a per-tenant issuer path served by an ancestor issuer', async () => {
+    const url = 'https://crm.example.test/mcp/tenant-a/service-a'
+    const prmUrl = 'https://crm.example.test/mcp/.well-known/oauth-protected-resource/tenant-a/service-a'
+    const dial = fakeDial({
+      [url]: ok(401, undefined, {
+        'www-authenticate': `Bearer realm="crm", resource_metadata="${prmUrl}", resource="${url}"`
+      }),
+      [prmUrl]: ok(200, {
+        resource: url,
+        authorization_servers: ['https://crm.example.test/oauth2/tenant-a/service-a']
+      }),
+      'https://crm.example.test/.well-known/oauth-authorization-server/oauth2/tenant-a/service-a': ok(200, {
+        issuer: 'https://crm.example.test/oauth2',
+        authorization_endpoint: 'https://crm.example.test/oauth2/authorize/tenant-a/service-a',
+        token_endpoint: 'https://crm.example.test/oauth2/token',
+        registration_endpoint: 'https://crm.example.test/oauth2/register',
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none']
+      })
+    })
+    const result = await discoverMcpAuthorization(dial, url)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.resource).toBe(url)
+    expect(result.value.scopes).toEqual([])
+    expect(result.value.metadata.issuer).toBe('https://crm.example.test/oauth2')
+    expect(result.value.metadata.authorizationEndpoint).toBe(
+      'https://crm.example.test/oauth2/authorize/tenant-a/service-a'
+    )
   })
 
   it('surfaces the first failure in the chain', async () => {
