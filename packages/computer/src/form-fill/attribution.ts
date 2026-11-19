@@ -51,6 +51,41 @@ export function socketInode(proc: ProcFs, clientPort: number, serverPort: number
   return undefined
 }
 
+/** The sockets listening (state `0A`) in a /proc/net/tcp or tcp6 table: each one's port, by inode. */
+export function listeningSockets(table: string): Map<string, number> {
+  const sockets = new Map<string, number>()
+  for (const line of table.split('\n').slice(1)) {
+    const columns = line.trim().split(/\s+/)
+    const [local, state, inode] = [columns[1], columns[3], columns[9]]
+    if (local && state === '0A' && inode && inode !== '0') sockets.set(inode, portOf(local))
+  }
+  return sockets
+}
+
+/** Every readable process holding one of the socket inodes, by inode. */
+export function socketHolders(proc: ProcFs, inodes: ReadonlySet<string>): Map<string, number[]> {
+  const holders = new Map<string, number[]>()
+  for (const entry of proc.list('/proc')) {
+    if (!/^\d+$/.test(entry)) continue
+    let fds: string[]
+    try {
+      fds = proc.list(`/proc/${entry}/fd`)
+    } catch {
+      continue
+    }
+    for (const fd of fds) {
+      let inode: string | undefined
+      try {
+        inode = /^socket:\[(\d+)\]$/.exec(proc.link(`/proc/${entry}/fd/${fd}`))?.[1]
+      } catch {
+        continue
+      }
+      if (inode && inodes.has(inode)) holders.set(inode, [...(holders.get(inode) ?? []), Number(entry)])
+    }
+  }
+  return holders
+}
+
 /** The process holding a socket inode, by scanning readable fds; another user's processes stay unreadable and are skipped. */
 export function socketOwner(proc: ProcFs, inode: string, self = process.pid): number | undefined {
   const target = `socket:[${inode}]`

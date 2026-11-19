@@ -128,6 +128,12 @@ export function desktopBrowserPlan(
   }
 }
 
+/** Every desktop's browser profile as the launcher names it, read fresh: the master and each agent desktop's, started or not. */
+export function desktopBrowserProfiles(dataDir: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const state = loadDesktopState(dataDir, env)
+  return [state.master, ...Object.values(state.desktops).map((record) => desktopProfile(dataDir, record.id))]
+}
+
 const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 // Browser names on the desktop's PATH and its .desktop entries all lead to `browser --desktop <id>` (§3.10).

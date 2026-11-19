@@ -33,6 +33,7 @@ import { extensionId, extensionKey, installExtension } from './form-fill/package
 import { FormFillService } from './form-fill/service.js'
 import {
   DesktopManager,
+  desktopBrowserProfiles,
   isBrowserName,
   launchMainBrowser,
   loadDesktopState,
@@ -110,6 +111,7 @@ import {
 } from './cp/env-registration.js'
 import { poolBootstrapPort, startPoolBootstrap } from './cp/pool-bootstrap.js'
 import { EgressForwarder, egressPort } from './egress.js'
+import { LoopbackGuard } from './loopback-guard.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
 import { scheduleDoctor } from './doctor-schedule.js'
@@ -936,7 +938,18 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   let config = initial
   // In a managed pod the browser's only proxy; it lets nothing out until the Control Plane names the egress (§15.4).
   const egressAt = egressPort()
-  const egress = egressAt !== undefined ? new EgressForwarder({ port: egressAt, log }) : undefined
+  // Refuses pages the daemon's listeners and desktop browsers' ports; 127.0.0.1:<form-fill port> bypasses it (§5.8).
+  const egress =
+    egressAt !== undefined
+      ? new EgressForwarder({
+          port: egressAt,
+          log,
+          loopback: new LoopbackGuard({
+            daemonPorts: () => [config.port, config.formFillPort, poolBootstrapPort(), egressAt],
+            profiles: () => desktopBrowserProfiles(dir)
+          })
+        })
+      : undefined
   if (egress) log(`egress forwarder on 127.0.0.1:${await egress.start()}`)
   await registerFromPool(dir)
   await registerFromEnvironment(dir)
