@@ -55,6 +55,9 @@ export interface LogtoSetupDesired {
 const singleSignOnDesired = (desired: LogtoSetupDesired): boolean =>
   desired.sso !== undefined || desired.organizationSso === true
 
+/** Organization SSO decides who it applies to by the account's address, so members must not be able to edit it themselves. */
+const ACCOUNT_CENTER_PATH = '/api/account-center'
+
 /** Organization SSO reads how a session signed in from the access token, so Setup owns the identity service's access-token claims script then. */
 const ACCESS_TOKEN_CLAIMS_PATH = '/api/configs/jwt-customizer/access-token'
 
@@ -157,6 +160,8 @@ export interface LogtoSetupInspection {
   signInExperienceDiff: LogtoConfigurationDiff[]
   /** Null when Setup does not own the access-token claims script. */
   tokenClaims: { matches: boolean; diff: LogtoConfigurationDiff[] } | null
+  /** Null unless organization SSO is declared: whether members are kept from editing their own address. */
+  accountEmail: { matches: boolean; diff: LogtoConfigurationDiff[] } | null
 }
 
 export interface LogtoSetupReconcileResult {
@@ -167,6 +172,7 @@ export interface LogtoSetupReconcileResult {
   ssoConnectorsDeleted: string[]
   signInExperienceChanged: boolean
   tokenClaimsChanged: boolean
+  accountEmailChanged: boolean
   adminRoleCreated: boolean
 }
 
@@ -547,9 +553,11 @@ export class LogtoAdminClaimClient {
         ? await this.inspectRemovedSsoConnector()
         : null
     const tokenClaims = desired.organizationSso === true ? await this.inspectTokenClaims() : null
+    const accountEmail = desired.organizationSso === true ? await this.inspectAccountEmail() : null
     return {
       sso,
       tokenClaims,
+      accountEmail,
       application: {
         id: application?.id ?? null,
         exists: application !== undefined,
@@ -622,6 +630,7 @@ export class LogtoAdminClaimClient {
       singleSignOnDesired(desired)
     )
     const tokenClaimsChanged = desired.organizationSso === true ? await this.ensureTokenClaims() : false
+    const accountEmailChanged = desired.organizationSso === true ? await this.ensureAccountEmailNotEditable() : false
     const adminRoleCreated = (await this.ensureAdminRole()).created
     return {
       changed:
@@ -631,6 +640,7 @@ export class LogtoAdminClaimClient {
         ssoConnectorsDeleted.length > 0 ||
         signInExperienceChanged ||
         tokenClaimsChanged ||
+        accountEmailChanged ||
         adminRoleCreated,
       application,
       connectors,
@@ -638,6 +648,7 @@ export class LogtoAdminClaimClient {
       ssoConnectorsDeleted,
       signInExperienceChanged,
       tokenClaimsChanged,
+      accountEmailChanged,
       adminRoleCreated
     }
   }
@@ -1117,6 +1128,32 @@ export class LogtoAdminClaimClient {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ script: ACCESS_TOKEN_CLAIMS_SCRIPT })
+    })
+    return true
+  }
+
+  /** The account center's per-field permissions; an unset field is off. */
+  private async accountCenterFields(): Promise<Record<string, unknown>> {
+    return asRecord(asRecord(await this.getJson(ACCOUNT_CENTER_PATH)).fields)
+  }
+
+  private async inspectAccountEmail(): Promise<{ matches: boolean; diff: LogtoConfigurationDiff[] }> {
+    const email = (await this.accountCenterFields()).email ?? 'Off'
+    const matches = email !== 'Edit'
+    return {
+      matches,
+      diff: matches ? [] : [{ field: 'Account center email', current: email, expected: 'ReadOnly or Off' }]
+    }
+  }
+
+  private async ensureAccountEmailNotEditable(): Promise<boolean> {
+    const fields = await this.accountCenterFields()
+    if (fields.email !== 'Edit') return false
+    // The whole field list is written back, so the other permissions stay as they are.
+    await this.request(ACCOUNT_CENTER_PATH, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fields: { ...fields, email: 'ReadOnly' } })
     })
     return true
   }

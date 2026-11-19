@@ -12,8 +12,10 @@ import {
   IdParam,
   OrgSsoConnectionDto,
   OrgSsoDomainDto,
+  OrgMemberSourceStateDto,
   OrgSsoJoinDto,
   OrgSsoPreparedDto,
+  PutOrgMemberSourceBody,
   OrgSsoServiceProviderBody,
   OrgSsoStateDto,
   OrgSsoTestDto,
@@ -142,10 +144,33 @@ export function orgSsoRoutes(deps: HttpDeps) {
               : null
           return {
             domains: (owner ? listed : listed.filter((domain) => domain.status === 'verified')).map(toDto),
+            memberSource: await domains.memberSource(orgId),
             connection: connection ? connectionDto(connection) : null,
             ...(enforce ? { enforce } : {})
           }
         })
+      }
+    )
+
+    r.put(
+      '/sso/member-source',
+      {
+        config,
+        schema: {
+          tags: [Tag.Organizations],
+          summary: 'Set how new members join the organization',
+          description:
+            'Owner-only. `invite` admits new members by invitation only. `domain` also makes an account whose address is on one of the organization’s verified domains a collaborator when it signs in, once: an owner’s later removal stands. `domain` needs a verified domain, and releasing the last one returns the organization to `invite`.',
+          operationId: 'setOrganizationMemberSource',
+          body: PutOrgMemberSourceBody,
+          response: { 200: OrgMemberSourceStateDto, 401: ErrorDto, 403: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyNonOwner(req, reply)) return
+        const result = await domains.setMemberSource(req.orgCtx!.orgId, req.body.memberSource, req.principal!.userId)
+        if (result === 'no_domain') return domainRequired(reply)
+        return { memberSource: result }
       }
     )
 
@@ -556,9 +581,9 @@ export function orgSsoRootRoutes(deps: HttpDeps) {
           config,
           schema: {
             tags: [Tag.Organizations],
-            summary: 'Join the organizations a sign-in entitles the caller to',
+            summary: 'Join the organization the caller’s address entitles them to',
             description:
-              'Called by the console after a sign-in. A caller who signed in through an organization’s active single sign-on connection, with an address in that organization’s verified domains, becomes a collaborator of it once. Returns the organizations joined by this call; a later call returns none, also after an owner has removed the member.',
+              'Called by the console after a sign-in. A caller whose address is on a domain an organization has verified becomes a collaborator of it once, when that organization takes members by domain. Returns the organizations joined by this call; a later call returns none, also after an owner has removed the member.',
             operationId: 'joinOrganizationsBySso',
             response: { 200: OrgSsoJoinDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
           }

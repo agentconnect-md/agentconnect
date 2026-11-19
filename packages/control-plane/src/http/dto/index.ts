@@ -3204,9 +3204,17 @@ export const OrgSsoConnectionDto = z.object({
 })
 export type OrgSsoConnectionDtoT = z.infer<typeof OrgSsoConnectionDto>
 
+export const OrgMemberSourceDto = z.enum(['invite', 'domain'])
+
+export const PutOrgMemberSourceBody = z.strictObject({ memberSource: OrgMemberSourceDto })
+
+export const OrgMemberSourceStateDto = z.object({ memberSource: OrgMemberSourceDto })
+
 /** `connection` is null until one is configured, and on a deployment that cannot manage connections. */
 export const OrgSsoStateDto = z.object({
   domains: z.array(OrgSsoDomainDto),
+  /** `domain`: an account whose address is on a verified domain becomes a collaborator when it signs in. */
+  memberSource: OrgMemberSourceDto,
   connection: OrgSsoConnectionDto.nullable(),
   /** Owner view of an active connection: whether this caller could enforce it now, or what stands in the way. */
   enforce: z.enum(['ready', 'outside_domains', 'sign_in_required']).optional()

@@ -2097,6 +2097,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         ssoConnectorsDeleted: reconciled.ssoConnectorsDeleted,
         signInExperienceChanged: reconciled.signInExperienceChanged,
         tokenClaimsChanged: reconciled.tokenClaimsChanged,
+        accountEmailChanged: reconciled.accountEmailChanged,
         adminRoleCreated: reconciled.adminRoleCreated
       }
     })
@@ -2334,6 +2335,23 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
               message:
                 'Logto access tokens do not carry the sign-in method, so members with addresses on an organization’s verified domains cannot open it.',
               diff: setupInspection.tokenClaims.diff
+            }
+      )
+    }
+    if (setupInspection.accountEmail) {
+      findings.push(
+        setupInspection.accountEmail.matches
+          ? {
+              id: 'logto.account_email',
+              status: 'pass',
+              message: 'Members cannot edit their own address in the Logto account center.'
+            }
+          : {
+              id: 'logto.account_email',
+              status: 'fail',
+              message:
+                'Members can edit their own address in the Logto account center, so one could move it out of an organization’s verified domains and leave its SSO rule.',
+              diff: setupInspection.accountEmail.diff
             }
       )
     }

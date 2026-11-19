@@ -630,7 +630,11 @@ describe('organization SSO connection', () => {
     // Releasing a verified domain ends the identities established on its word: the connector goes with it.
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/sso/domains/${domainId}` })).statusCode).toBe(204)
     expect(idp.connectors.size).toBe(0)
-    expect((await app.inject({ method: 'GET', url: SSO })).json()).toEqual({ domains: [], connection: null })
+    expect((await app.inject({ method: 'GET', url: SSO })).json()).toEqual({
+      domains: [],
+      memberSource: 'invite',
+      connection: null
+    })
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/sso/domains/${domainId}` })).statusCode).toBe(404)
   })
 
@@ -746,30 +750,50 @@ describe('organization SSO sign-in admission', () => {
   })
 })
 
-describe('organization SSO membership', () => {
+describe('organization membership by domain', () => {
   let app: HttpApp['app']
-  let connectorId: string
   let newcomer: string
   const role = async (userId: string) =>
     (await prisma.membership.findUnique({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } } }))?.role ?? null
+  const setSource = (memberSource: string) =>
+    app.inject({ method: 'PUT', url: SSO + '/member-source', payload: { memberSource } })
+  const sourceOf = async () =>
+    ((await app.inject({ method: 'GET', url: SSO })).json() as { memberSource: string }).memberSource
 
   beforeEach(async () => {
     app = start()
-    await save(app)
-    await verifiedDomain(app, 'example.test')
-    await passTest(app)
-    connectorId = idp.only().id
     newcomer = (await prisma.user.create({ data: { email: 'new@example.test', oidcSubject: 'subject-new' } })).id
-    idp.accounts.set('subject-new', { primaryEmail: 'new@example.test', connectorIds: [connectorId] })
+    // No connection: the account signed in some other way, and its address is all that counts.
+    idp.accounts.set('subject-new', { primaryEmail: 'new@example.test', connectorIds: [] })
   })
 
-  it('grants nothing until the connection is active', async () => {
+  it('takes members by invitation only until an owner says otherwise, and needs a verified domain to', async () => {
+    expect(await sourceOf()).toBe('invite')
+    const refused = await setSource('domain')
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'SSO_DOMAIN_REQUIRED' })
+
+    await verifiedDomain(app, 'example.test')
+    // A verified domain alone grants nothing.
     expect(await membership.join('subject-new', newcomer)).toEqual([])
     expect(await role(newcomer)).toBeNull()
+
+    expect((await setSource('domain')).json()).toEqual({ memberSource: 'domain' })
+    expect(await sourceOf()).toBe('domain')
+    expect((await setSource('scim')).statusCode).toBe(400)
+    const audit = await prisma.auditEvent.findFirst({
+      where: {
+        orgId: DEFAULT_ORG_ID,
+        kind: 'org_sso_change',
+        details: { path: ['action'], equals: 'member_source_changed' }
+      }
+    })
+    expect(audit).toMatchObject({ actorUserId: DEFAULT_OWNER_ID, details: { memberSource: 'domain' } })
   })
 
-  it('makes a first sign-in through the active connection a collaborator, once', async () => {
-    await post(app, `${SSO}/connection/activate`)
+  it('makes an account with an address on a verified domain a collaborator, once', async () => {
+    await verifiedDomain(app, 'example.test')
+    await setSource('domain')
     expect(await membership.join('subject-new', newcomer)).toEqual([DEFAULT_ORG_ID])
     expect(await role(newcomer)).toBe('collaborator')
     expect(await membership.join('subject-new', newcomer)).toEqual([])
@@ -777,7 +801,7 @@ describe('organization SSO membership', () => {
     const audit = await prisma.auditEvent.findFirst({
       where: { orgId: DEFAULT_ORG_ID, kind: 'org_sso_change', details: { path: ['action'], equals: 'member_joined' } }
     })
-    expect(audit).toMatchObject({ actorUserId: newcomer, details: { role: 'collaborator' } })
+    expect(audit).toMatchObject({ actorUserId: newcomer, details: { role: 'collaborator', domain: 'example.test' } })
 
     // An owner's removal stands: the next sign-in does not bring the member back.
     await prisma.membership.delete({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: newcomer } } })
@@ -785,20 +809,38 @@ describe('organization SSO membership', () => {
     expect(await role(newcomer)).toBeNull()
   })
 
-  it('joins only an account the connection may speak for', async () => {
-    await post(app, `${SSO}/connection/activate`)
-    idp.accounts.set('subject-new', { primaryEmail: 'new@elsewhere.example.test', connectorIds: [connectorId] })
+  it('joins only an address on a verified domain, and stops when an owner returns to invitations', async () => {
+    await post(app, SSO + '/domains', { domain: 'pending.example.test' })
+    await verifiedDomain(app, 'example.test')
+    await setSource('domain')
+    idp.accounts.set('subject-new', { primaryEmail: 'new@elsewhere.example.test', connectorIds: [] })
     expect(await membership.join('subject-new', newcomer)).toEqual([])
-    idp.accounts.set('subject-new', { primaryEmail: 'new@example.test', connectorIds: [] })
+    idp.accounts.set('subject-new', { primaryEmail: 'new@pending.example.test', connectorIds: [] })
     expect(await membership.join('subject-new', newcomer)).toEqual([])
-    idp.accounts.set('subject-new', { primaryEmail: null, connectorIds: [connectorId] })
+    idp.accounts.set('subject-new', { primaryEmail: null, connectorIds: [] })
     expect(await membership.join('subject-new', newcomer)).toEqual([])
     expect(await membership.join('subject-unknown', newcomer)).toEqual([])
+
+    idp.accounts.set('subject-new', { primaryEmail: 'New@Example.TEST', connectorIds: [] })
+    await setSource('invite')
+    expect(await membership.join('subject-new', newcomer)).toEqual([])
     expect(await role(newcomer)).toBeNull()
   })
 
+  it('returns to invitations when the last verified domain is released', async () => {
+    const first = await verifiedDomain(app, 'example.test')
+    const second = await verifiedDomain(app, 'second.example.test')
+    await setSource('domain')
+    expect((await app.inject({ method: 'DELETE', url: SSO + '/domains/' + first })).statusCode).toBe(204)
+    expect(await sourceOf()).toBe('domain')
+    expect((await app.inject({ method: 'DELETE', url: SSO + '/domains/' + second })).statusCode).toBe(204)
+    expect(await sourceOf()).toBe('invite')
+  })
+
   it('leaves an existing member’s role alone and reports no join', async () => {
-    await post(app, `${SSO}/connection/activate`)
+    await verifiedDomain(app, 'example.test')
+    await setSource('domain')
+    idp.accounts.set(OWNER_SUBJECT, { primaryEmail: 'owner@example.test', connectorIds: [] })
     const res = await post(app, '/api/v1/sso/join')
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ joined: [] })

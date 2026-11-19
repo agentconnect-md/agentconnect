@@ -1,7 +1,7 @@
 /** PgOrgDomainRepo — domains an organization claims for single sign-on (organization-sso.md §3). */
 import type { PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
-import type { OrgDomainRecord, OrgDomainRepo } from '../ports.js'
+import type { OrgDomainRecord, OrgDomainRepo, OrgMemberSource } from '../ports.js'
 
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
 
@@ -117,6 +117,12 @@ export class PgOrgDomainRepo implements OrgDomainRepo {
       const current = await tx.orgDomain.findFirst({ where: { id, orgId } })
       if (!current) return false
       await tx.orgDomain.delete({ where: { id } })
+      // Joining by domain needs a verified domain, so releasing the last one returns the organization to invitations.
+      const left = await tx.orgDomain.count({ where: { orgId, verifiedAt: { not: null } } })
+      const { count: reset } =
+        left === 0
+          ? await tx.org.updateMany({ where: { id: orgId, memberSource: 'domain' }, data: { memberSource: 'invite' } })
+          : { count: 0 }
       await tx.auditEvent.create({
         data: {
           kind: 'org_sso_change',
@@ -127,12 +133,50 @@ export class PgOrgDomainRepo implements OrgDomainRepo {
             action: 'domain_released',
             domainId: id,
             domain: current.domain,
-            verified: current.verifiedAt !== null
+            verified: current.verifiedAt !== null,
+            ...(reset > 0 ? { memberSource: 'invite' } : {})
           }
         }
       })
       return true
     })
+  }
+
+  async memberSource(orgId: string): Promise<OrgMemberSource> {
+    const org = await this.db.org.findUnique({ where: { id: orgId }, select: { memberSource: true } })
+    return org?.memberSource === 'domain' ? 'domain' : 'invite'
+  }
+
+  setMemberSource(orgId: string, source: OrgMemberSource, actorUserId: string): Promise<OrgMemberSource | 'no_domain'> {
+    return this.inTransaction(async (tx) => {
+      if (source === 'domain' && (await tx.orgDomain.count({ where: { orgId, verifiedAt: { not: null } } })) === 0) {
+        return 'no_domain' as const
+      }
+      const { count } = await tx.org.updateMany({
+        where: { id: orgId, memberSource: { not: source } },
+        data: { memberSource: source }
+      })
+      if (count > 0) {
+        await tx.auditEvent.create({
+          data: {
+            kind: 'org_sso_change',
+            orgId,
+            actorUserId,
+            message: source === 'domain' ? 'members join by verified domain' : 'members join by invitation only',
+            details: { action: 'member_source_changed', memberSource: source }
+          }
+        })
+      }
+      return source
+    })
+  }
+
+  async findJoinableOrg(domain: string): Promise<string | null> {
+    const row = await this.db.orgDomain.findFirst({
+      where: { domain, verifiedAt: { not: null }, org: { memberSource: 'domain' } },
+      select: { orgId: true }
+    })
+    return row?.orgId ?? null
   }
 
   listDueForRecheck(before: Date, limit: number): Promise<OrgDomainRecord[]> {

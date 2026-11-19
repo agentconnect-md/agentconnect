@@ -9010,6 +9010,9 @@ export interface OrgDomainRecord {
   createdAt: Date
 }
 
+/** How new members reach an organization: by invitation only, or also by an address on its verified domains (organization-sso.md §4.3). */
+export type OrgMemberSource = 'invite' | 'domain'
+
 /** A pending claim past its expiry reads as absent everywhere; only the sweeper sees it, to delete it. */
 export interface OrgDomainRepo {
   /** Verified domains and live pending claims, oldest first. */
@@ -9025,8 +9028,13 @@ export interface OrgDomainRepo {
   markVerified(orgId: string, id: string, at: Date, actorUserId: string): Promise<OrgDomainRecord | 'taken' | null>
   /** Record a DNS check; `ok: null` keeps the last definite result (the lookup itself failed). */
   recordCheck(id: string, at: Date, ok: boolean | null): Promise<void>
-  /** Delete + audit. False means the id is not in that organization. */
+  /** Delete + audit. False means the id is not in that organization. Releasing the last verified domain returns the member source to `invite`. */
   release(orgId: string, id: string, actorUserId: string): Promise<boolean>
+  memberSource(orgId: string): Promise<OrgMemberSource>
+  /** Set + audit. `no_domain`: `domain` needs a verified domain. */
+  setMemberSource(orgId: string, source: OrgMemberSource, actorUserId: string): Promise<OrgMemberSource | 'no_domain'>
+  /** System tier: the organization that verified this domain and takes its addresses as members, or null. */
+  findJoinableOrg(domain: string): Promise<string | null>
   /** System tier: verified rows whose last check is older than `before`, least recently checked first. */
   listDueForRecheck(before: Date, limit: number): Promise<OrgDomainRecord[]>
   /** System tier: drop pending claims past their expiry. */
@@ -9085,13 +9093,8 @@ export interface OrgSsoConnectionRepo {
   findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
   /** System tier: every verified domain of an active connection, with the connector it signs in through. */
   listActiveDomains(): Promise<{ domain: string; orgId: string; connectorId: string; enforced: boolean }[]>
-  /** Grant the membership a first sign-in through the connection earns, once; `recorded` means an earlier join stands, whatever became of the membership. */
-  joinOnce(
-    orgId: string,
-    userId: string,
-    connectionId: string,
-    at: Date
-  ): Promise<'joined' | 'already_member' | 'recorded'>
+  /** Grant the membership an address on the organization's domain earns, once; `recorded` means an earlier join stands, whatever became of the membership. */
+  joinOnce(orgId: string, userId: string, domain: string, at: Date): Promise<'joined' | 'already_member' | 'recorded'>
   /** System tier: whether a sign-in subject already has a local user. */
   subjectIsProvisioned(oidcSubject: string): Promise<boolean>
   /** System tier: record a sign-in the organization's connection was refused for. */

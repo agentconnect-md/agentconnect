@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { OrgSsoConnectionDto, OrgSsoDomainDto, OrgSsoStateDto } from '@/lib/api'
+import type { OrgMemberSource, OrgSsoConnectionDto, OrgSsoDomainDto, OrgSsoStateDto } from '@/lib/api'
 
 const mocks = vi.hoisted(() => ({
   fetchOrgSso: vi.fn(),
@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   removeOrgSsoConnection: vi.fn(),
   enforceOrgSsoConnection: vi.fn(),
   stopEnforcingOrgSsoConnection: vi.fn(),
+  setOrgMemberSource: vi.fn(),
   loginWithSso: vi.fn()
 }))
 
@@ -31,7 +32,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   activateOrgSsoConnection: mocks.activateOrgSsoConnection,
   removeOrgSsoConnection: mocks.removeOrgSsoConnection,
   enforceOrgSsoConnection: mocks.enforceOrgSsoConnection,
-  stopEnforcingOrgSsoConnection: mocks.stopEnforcingOrgSsoConnection
+  stopEnforcingOrgSsoConnection: mocks.stopEnforcingOrgSsoConnection,
+  setOrgMemberSource: mocks.setOrgMemberSource
 }))
 vi.mock('@/lib/auth', () => ({
   currentUser: () => ({ name: 'Dana', email: 'dana@acme.example', initials: 'D' }),
@@ -78,8 +80,10 @@ async function settle() {
   })
 }
 
-async function render(state: OrgSsoStateDto, isOwner = true) {
-  mocks.fetchOrgSso.mockResolvedValue(state)
+type State = Omit<OrgSsoStateDto, 'memberSource'> & { memberSource?: OrgMemberSource }
+
+async function render(state: State, isOwner = true) {
+  mocks.fetchOrgSso.mockResolvedValue({ memberSource: 'invite', ...state })
   // A fresh mount per state: a second render would answer from the first one's cache.
   await act(async () => root.unmount())
   root = createRoot(host)
@@ -94,7 +98,9 @@ async function render(state: OrgSsoStateDto, isOwner = true) {
 }
 
 const buttons = (scope: ParentNode = document.body) =>
-  [...scope.querySelectorAll('button')].map((button) => button.getAttribute('aria-label') ?? button.textContent)
+  [...scope.querySelectorAll('button:not([role="radio"])')].map(
+    (button) => button.getAttribute('aria-label') ?? button.textContent
+  )
 
 const button = (label: string, scope: ParentNode = document.body) => {
   const found = [...scope.querySelectorAll('button')].find(
@@ -115,6 +121,11 @@ async function type(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
+
+const picked = () =>
+  [...host.querySelectorAll('[role="radio"]')]
+    .filter((radio) => radio.getAttribute('aria-checked') === 'true')
+    .map((radio) => radio.textContent)
 
 const dialog = () => document.body.querySelector('[role="dialog"]') as HTMLElement
 
@@ -401,5 +412,38 @@ describe('organization single sign-on card', () => {
     await click('Remove connection', dialog())
     expect(dialog().textContent).toContain('acme.example')
     expect(dialog().textContent).toContain('any method again')
+  })
+
+  it('lets an owner open the organization to its verified domains, after confirming', async () => {
+    // Nothing to choose until a domain is verified.
+    await render({ domains: [domain('acme.example', { status: 'pending' })], connection: null })
+    expect(host.querySelector('[role="radio"]')).toBeNull()
+
+    await render({ domains: [domain('acme.example')], connection: null })
+    expect(picked()).toEqual(['Invite only'])
+    await click('Anyone on your domains', host)
+    expect(dialog().textContent).toContain('acme.example')
+    expect(dialog().textContent).toContain('joins as a collaborator')
+    expect(mocks.setOrgMemberSource).not.toHaveBeenCalled()
+
+    mocks.setOrgMemberSource.mockResolvedValue(undefined)
+    mocks.fetchOrgSso.mockResolvedValue({ domains: [domain('acme.example')], connection: null, memberSource: 'domain' })
+    await click('Allow', dialog())
+    expect(mocks.setOrgMemberSource).toHaveBeenCalledWith('domain', 'org-test')
+    expect(dialog()).toBeNull()
+    expect(picked()).toEqual(['Anyone on your domains'])
+
+    // Returning to invitations needs no confirmation.
+    mocks.fetchOrgSso.mockResolvedValue({ domains: [domain('acme.example')], connection: null, memberSource: 'invite' })
+    await click('Invite only', host)
+    expect(mocks.setOrgMemberSource).toHaveBeenLastCalledWith('invite', 'org-test')
+    expect(dialog()).toBeNull()
+    expect(picked()).toEqual(['Invite only'])
+  })
+
+  it('shows a member how people join without a way to change it', async () => {
+    await render({ domains: [domain('acme.example')], connection: null, memberSource: 'domain' }, false)
+    expect(host.querySelector('[role="radio"]')).toBeNull()
+    expect(host.textContent).toContain('New membersAnyone on your domains')
   })
 })

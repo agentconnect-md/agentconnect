@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto'
 import type { Clock } from '../domain/clock.js'
 import { SsoDomainSchema } from '../persistence/deployment-config.js'
-import type { OrgDomainRecord, OrgDomainRepo } from '../persistence/ports.js'
+import type { OrgDomainRecord, OrgDomainRepo, OrgMemberSource } from '../persistence/ports.js'
 import type { TxtLookup } from './txt-lookup.js'
 
 export const ORG_DOMAIN_CHALLENGE_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -100,6 +100,20 @@ export class OrgSsoDomainService {
 
   release(orgId: string, id: string, actorUserId: string): Promise<boolean> {
     return this.domains.release(orgId, id, actorUserId)
+  }
+
+  memberSource(orgId: string): Promise<OrgMemberSource> {
+    return this.domains.memberSource(orgId)
+  }
+
+  /** `no_domain`: joining by domain needs a verified domain. */
+  setMemberSource(orgId: string, source: OrgMemberSource, actorUserId: string): Promise<OrgMemberSource | 'no_domain'> {
+    return this.domains.setMemberSource(orgId, source, actorUserId)
+  }
+
+  /** The organization that takes an address on this domain as a member, or null. */
+  joinableOrg(domain: string): Promise<string | null> {
+    return this.domains.findJoinableOrg(domain)
   }
 
   /** The domains the organization holds now; the list its connection may be bound to. */
