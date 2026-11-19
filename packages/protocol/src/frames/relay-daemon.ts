@@ -1081,6 +1081,8 @@ export const WireEmailAdapterExt = z.object({
   from: WireEmailMailbox,
   to: z.array(WireEmailMailbox).max(EMAIL_RECIPIENTS_MAX),
   cc: z.array(WireEmailMailbox).max(EMAIL_RECIPIENTS_MAX),
+  /** How many `To` and `Cc` entries could not be read as an address: each still makes the thread a group, and none can be sent a reply (§5.2). */
+  unreadableRecipients: z.number().int().positive().max(EMAIL_RECIPIENTS_MAX).optional(),
   subject: emailHeaderText(998),
   /** The `Date` header as written: the sender's clock, never an ordering input. */
   date: emailHeaderText(128).optional(),

@@ -1333,6 +1333,9 @@ describe('email wire shapes (email-integration.md §6.2)', () => {
     expect(WireEmailAdapterExt.parse(ext)).toEqual(ext)
     const full = { ...ext, date: 'Mon, 02 Nov 2026 09:30:00 +0000', inReplyTo: 'a1@mail.example.test', truncated: true }
     expect(WireEmailAdapterExt.parse({ ...full, ticket: TICKET })).toEqual({ ...full, ticket: TICKET })
+    // A count of recipients that could not be read is carried only when there is one.
+    expect(WireEmailAdapterExt.parse({ ...ext, unreadableRecipients: 2 }).unreadableRecipients).toBe(2)
+    expect(WireEmailAdapterExt.safeParse({ ...ext, unreadableRecipients: 0 }).success).toBe(false)
     expect(WireEmailAdapterExt.safeParse({ ...ext, subject: 'one\ntwo' }).success).toBe(false)
     expect(WireEmailAdapterExt.safeParse({ ...ext, from: { address: 'Alice Example' } }).success).toBe(false)
     expect(WireEmailAdapterExt.safeParse({ ...ext, messageId: '<g1@corp.example.test>' }).success).toBe(false)

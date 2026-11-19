@@ -263,7 +263,7 @@ export function emailFallbackThreadKey(mail: EmailThreadHeaders): string {
 
 // ── §5.2 conversations ──
 
-/** A message's participants: its sender, then every `To` and `Cc` address other than the agent's own, each once (§5.2); only the agent's own address loses its `+tag`. */
+/** The participants a message names by address: its sender, then every `To` and `Cc` address other than the agent's own, each once (§5.2); only the agent's own address loses its `+tag`. */
 export function emailParticipants(
   mail: Pick<WireEmailAdapterExt, 'from' | 'to' | 'cc'>,
   agentAddress: string
@@ -282,11 +282,15 @@ export interface EmailConversation {
   channel: string
 }
 
-/** The conversation a message belongs to (§5.2): the sender alone is that member's direct conversation, and anyone else makes the thread a group of its own. */
-export function emailConversation(participants: readonly [string, ...string[]], threadKey: string): EmailConversation {
-  return participants.length > 1
-    ? { kind: 'group', channel: `group:${threadKey}` }
-    : { kind: 'dm', channel: `dm:${participants[0]}` }
+/** The conversation a message belongs to (§5.2): the sender alone is that member's direct conversation, and any other recipient, one the relay could not read included, makes the thread a group of its own. */
+export function emailConversation(
+  mail: Pick<WireEmailAdapterExt, 'from' | 'to' | 'cc' | 'unreadableRecipients'>,
+  agentAddress: string,
+  threadKey: string
+): EmailConversation {
+  // A recipient with no readable address is still someone the message went to, so it never leaves the sender alone.
+  const alone = emailParticipants(mail, agentAddress).length === 1 && !mail.unreadableRecipients
+  return alone ? { kind: 'dm', channel: `dm:${mail.from.address}` } : { kind: 'group', channel: `group:${threadKey}` }
 }
 
 // ── §5.4 what the agent reads ──
@@ -361,6 +365,7 @@ export interface EmailInboundMessage {
   /** Every header field, top first. */
   headers: readonly EmailHeader[]
   from?: readonly EmailParsedMailbox[]
+  /** Every entry of `To` and of `Cc`, one the reader could not make an address of included: it is counted, never dropped. */
   to?: readonly EmailParsedMailbox[]
   cc?: readonly EmailParsedMailbox[]
   /** The text part, or an HTML-only body already converted to text. */
@@ -385,15 +390,35 @@ export type EmailInvalidReason = 'sender' | 'message_id' | 'recipients'
 export type EmailNormalizeResult =
   { kind: 'message'; message: NormalizedPlatformMessage } | { kind: 'invalid'; reason: EmailInvalidReason }
 
-function mailboxes(parsed: readonly EmailParsedMailbox[] | undefined): WireEmailMailbox[] {
+interface Mailboxes {
+  readable: WireEmailMailbox[]
+  /** Entries that name someone by an address or a display name this cannot read as a canonical address. */
+  unreadable: number
+}
+
+// The entries of one header: each readable address once, and a count of the rest; an entry with neither an address nor a name is nothing.
+function mailboxes(parsed: readonly EmailParsedMailbox[] | undefined): Mailboxes {
   const byAddress = new Map<string, WireEmailMailbox>()
+  let unreadable = 0
   for (const entry of parsed ?? []) {
-    const address = typeof entry?.address === 'string' ? canonicalEmailAddress(entry.address) : undefined
-    if (!address || byAddress.has(address)) continue
-    const name = typeof entry.name === 'string' ? oneLine(entry.name, 256) : ''
-    byAddress.set(address, { address, ...(name ? { name } : {}) })
+    const written = typeof entry?.address === 'string' ? entry.address.trim() : ''
+    const name = typeof entry?.name === 'string' ? oneLine(entry.name, 256) : ''
+    const address = canonicalEmailAddress(written)
+    if (!address) unreadable += written || name ? 1 : 0
+    else if (!byAddress.has(address)) byAddress.set(address, { address, ...(name ? { name } : {}) })
   }
-  return [...byAddress.values()]
+  return { readable: [...byAddress.values()], unreadable }
+}
+
+// One recipient field; text in its header that the reader returned no entry for counts as one recipient that could not be read.
+function recipients(
+  headers: readonly EmailHeader[],
+  name: 'to' | 'cc',
+  parsed?: readonly EmailParsedMailbox[]
+): Mailboxes {
+  const { readable, unreadable } = mailboxes(parsed)
+  const dropped = !readable.length && !unreadable && emailHeaderValues(headers, name).some((value) => value.trim())
+  return { readable, unreadable: dropped ? 1 : unreadable }
 }
 
 // A bare `type/subtype`; anything else is named as opaque bytes.
@@ -411,15 +436,19 @@ export function normalizeEmailMessage(
 ): EmailNormalizeResult {
   const { headers } = payload
   // Two `From` fields, or two addresses in one, leave no single sender for the authentication verdict to be about.
-  const from = mailboxes(payload.from)[0]
+  const from = mailboxes(payload.from).readable[0]
   if (!from || payload.from?.length !== 1 || emailHeaderValues(headers, 'from').length !== 1)
     return { kind: 'invalid', reason: 'sender' }
   const ownIds = emailHeaderValues(headers, 'message-id')
   const [messageId, ...otherIds] = parseEmailMessageIds(ownIds[0])
   if (!messageId || otherIds.length || ownIds.length !== 1) return { kind: 'invalid', reason: 'message_id' }
-  const to = mailboxes(payload.to)
-  const cc = mailboxes(payload.cc).filter((entry) => !to.some((other) => other.address === entry.address))
-  if (to.length + cc.length > EMAIL_RECIPIENTS_MAX) return { kind: 'invalid', reason: 'recipients' }
+  const toField = recipients(headers, 'to', payload.to)
+  const ccField = recipients(headers, 'cc', payload.cc)
+  const to = toField.readable
+  const cc = ccField.readable.filter((entry) => !to.some((other) => other.address === entry.address))
+  // A recipient that could not be read gets no reply, and still counts as one the message went to (§5.2).
+  const unreadable = toField.unreadable + ccField.unreadable
+  if (to.length + cc.length + unreadable > EMAIL_RECIPIENTS_MAX) return { kind: 'invalid', reason: 'recipients' }
 
   const chain = parseEmailMessageIds(emailHeaderValues(headers, 'references').join(' '))
   // An over-long chain keeps its root, which the fallback key reads, and its newest IDs, which the daemon walks first.
@@ -440,6 +469,7 @@ export function normalizeEmailMessage(
     from,
     to,
     cc,
+    ...(unreadable ? { unreadableRecipients: unreadable } : {}),
     subject: oneLine(emailHeaderValues(headers, 'subject')[0] ?? '', 998),
     ...(date ? { date } : {}),
     messageId,
@@ -449,7 +479,7 @@ export function normalizeEmailMessage(
     attachments
   }
   const thread = emailFallbackThreadKey(ext)
-  const conversation = emailConversation(emailParticipants(ext, context.agentAddress), thread)
+  const conversation = emailConversation(ext, context.agentAddress, thread)
   const group = conversation.kind === 'group'
   const { receivedAtMs } = context
   return {

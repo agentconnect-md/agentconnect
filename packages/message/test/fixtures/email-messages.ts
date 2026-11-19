@@ -22,6 +22,8 @@ interface MailParts {
   from?: EmailParsedMailbox[]
   to?: EmailParsedMailbox[]
   cc?: EmailParsedMailbox[]
+  /** The `Cc` field's text as written, where the reader's list does not account for it. */
+  ccHeader?: string
   messageId?: string
   inReplyTo?: string
   references?: string
@@ -34,18 +36,19 @@ interface MailParts {
 }
 
 const mailboxHeader = (list: EmailParsedMailbox[]) =>
-  list.map(({ address, name }) => (name ? `${name} <${address}>` : address)).join(', ')
+  list.map(({ address = '', name }) => (name ? `${name} <${address}>` : address)).join(', ')
 
 export function mail(parts: MailParts = {}): EmailInboundMessage {
   const from = parts.from ?? [{ address: ALICE, name: 'Alice Example' }]
   const to = parts.to ?? [{ address: AGENT }]
   const cc = parts.cc ?? []
+  const ccHeader = parts.ccHeader ?? (cc.length ? mailboxHeader(cc) : undefined)
   return {
     headers: [
       ...(parts.prepend ?? [authResults(DMARC_PASS)]),
       header('From', mailboxHeader(from)),
       header('To', mailboxHeader(to)),
-      ...(cc.length ? [header('Cc', mailboxHeader(cc))] : []),
+      ...(ccHeader !== undefined ? [header('Cc', ccHeader)] : []),
       header('Subject', parts.subject ?? 'Quarterly report'),
       header('Date', 'Mon, 02 Nov 2026 09:30:00 +0000'),
       header('Message-ID', parts.messageId ?? '<m1@corp.example.test>'),

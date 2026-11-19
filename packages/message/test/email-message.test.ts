@@ -290,11 +290,22 @@ describe('mail conversations (§5.2)', () => {
   })
 
   it('puts the sender alone in a direct conversation and anyone else in a group keyed by the thread', () => {
-    expect(emailConversation([ALICE], 'm1@corp.example.test')).toEqual({ kind: 'dm', channel: `dm:${ALICE}` })
-    expect(emailConversation([ALICE, BOB], 'm1@corp.example.test')).toEqual({
+    const alone = { from: box(ALICE), to: [box(AGENT)], cc: [] }
+    expect(emailConversation(alone, AGENT, 'm1@corp.example.test')).toEqual({ kind: 'dm', channel: `dm:${ALICE}` })
+    expect(emailConversation({ ...alone, cc: [box(BOB)] }, AGENT, 'm1@corp.example.test')).toEqual({
       kind: 'group',
       channel: 'group:m1@corp.example.test'
     })
+  })
+
+  it('never reads a thread as direct when one of its recipients could not be read', () => {
+    const mail = { from: box(ALICE), to: [box(AGENT)], cc: [], unreadableRecipients: 1 }
+    expect(emailConversation(mail, AGENT, 'm1@corp.example.test')).toEqual({
+      kind: 'group',
+      channel: 'group:m1@corp.example.test'
+    })
+    // The unreadable recipient is nobody a reply or the fence can name.
+    expect(emailParticipants(mail, AGENT)).toEqual([ALICE])
   })
 })
 
@@ -450,19 +461,59 @@ describe('email normalization', () => {
       reason: 'recipients'
     })
     expect(extOf(messageOf(mail({ to: [{ address: AGENT }], cc: many.slice(1) }))).cc).toHaveLength(49)
+    // A recipient that could not be read still counts toward the limit.
+    const unreadable = [...many.slice(1), { address: 'not an address' }]
+    expect(normalizeEmailMessage(mail({ to: [{ address: AGENT }], cc: unreadable }), CONTEXT)).toEqual({
+      kind: 'invalid',
+      reason: 'recipients'
+    })
   })
 
-  it('drops a recipient it cannot read and one named twice', () => {
-    const ext = extOf(
-      messageOf(
-        mail({
-          to: [{ address: AGENT }, { address: 'undisclosed-recipients:;' }, {}],
-          cc: [{ address: AGENT }, { address: BOB }]
-        })
-      )
-    )
+  it('names a recipient once, however often the headers do', () => {
+    const ext = extOf(messageOf(mail({ cc: [{ address: AGENT }, { address: BOB }, { address: BOB.toUpperCase() }] })))
     expect(ext.to).toEqual([{ address: AGENT }])
     expect(ext.cc).toEqual([{ address: BOB }])
+    expect(ext.unreadableRecipients).toBeUndefined()
+  })
+
+  it('makes a thread with a recipient it cannot read a group, and leaves that recipient off replies', () => {
+    const unreadable = [
+      { address: '"Dana Example"@corp.example.test' },
+      { address: 'dána@corp.example.test', name: 'Dana Example' },
+      { address: 'undisclosed-recipients:;' },
+      { name: 'Dana Example' }
+    ]
+    for (const entry of unreadable) {
+      const message = messageOf(mail({ cc: [entry] }))
+      expect(message.channel, JSON.stringify(entry)).toBe('group:m1@corp.example.test')
+      expect(message.isDm).toBe(false)
+      expect(message.isGroupDm).toBe(true)
+      expect(message.mentionedBots).toEqual([AGENT])
+      const ext = extOf(message)
+      expect(ext.cc).toEqual([])
+      expect(ext.unreadableRecipients).toBe(1)
+      expect(emailParticipants(ext, AGENT)).toEqual([ALICE])
+    }
+    const mixed = extOf(
+      messageOf(mail({ to: [{ address: AGENT }, { name: 'Dana' }], cc: [{ address: BOB }, unreadable[0]!] }))
+    )
+    expect(mixed.unreadableRecipients).toBe(2)
+    expect(emailParticipants(mixed, AGENT)).toEqual([ALICE, BOB])
+  })
+
+  it('counts a recipient field that has text and came back with no entry', () => {
+    const message = messageOf(mail({ ccHeader: 'someone the reader returned nothing for' }))
+    expect(message.channel).toBe('group:m1@corp.example.test')
+    expect(extOf(message).unreadableRecipients).toBe(1)
+  })
+
+  it('keeps a message direct when a recipient field is empty', () => {
+    for (const ccHeader of ['', ' \t ']) {
+      const message = messageOf(mail({ ccHeader, cc: [{}, { address: '  ' }, { name: ' ' }] }))
+      expect(message.channel, JSON.stringify(ccHeader)).toBe(`dm:${ALICE}`)
+      expect(message.isDm).toBe(true)
+      expect(extOf(message).unreadableRecipients).toBeUndefined()
+    }
   })
 
   it('keeps the root and the newest IDs of an over-long References chain', () => {
