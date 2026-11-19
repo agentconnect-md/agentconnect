@@ -11,6 +11,7 @@
 // no-auth mode.
 
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
@@ -23,9 +24,11 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { initialsFrom } from '@/lib/auth'
 import {
+  ApiError,
   createOrgInviteLink,
   fetchMembers,
   fetchOrgInviteLink,
+  fetchOrgSso,
   fetchSessionExternalAccess,
   memberDisplayName,
   revokeOrgInviteLink,
@@ -35,6 +38,7 @@ import {
   type MemberDto,
   type MemberRole,
   type OrgInviteLinkDto,
+  type OrgSsoStateDto,
   type SessionAccessProvider
 } from '@/lib/api'
 import { type AgentCallPolicy } from '@/lib/data'
@@ -43,8 +47,9 @@ import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
-import { OrganizationSsoCard } from '@/components/console/OrganizationSsoCard'
+import { OrganizationMemberSourceCard, OrganizationSsoCard } from '@/components/console/OrganizationSsoCard'
 import { organizationSsoEnabled } from '@/lib/organization-sso'
+import { resolveSettingsTab, settingsTabHref, settingsTabs, type SettingsTab } from '@/lib/settings-tabs'
 import { ServiceAccountsCard } from '@/components/console/ServiceAccountsCard'
 import { Scrim } from '@/components/console/Scrim'
 
@@ -694,7 +699,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
 
 export default function SettingsView() {
   const t = useTranslations('Settings')
-  const { activeOrg, myRole, refreshOrgs, updateOrg: updateOrgSettings, leaveOrg, error: orgError } = useOrgs()
+  const { activeOrg, myRole, orgPath, refreshOrgs, updateOrg: updateOrgSettings, leaveOrg, error: orgError } = useOrgs()
   const { openModal } = useModal()
   // The organization-environment picker filters this to agents the viewer can manage.
   const { agents } = useConsoleData()
@@ -725,6 +730,25 @@ export default function SettingsView() {
     router.replace(`${pathname}${sp.size ? `?${sp}` : ''}`, { scroll: false })
   }, [searchParams, pathname, router])
 
+  // Same read as the SSO cards: a non-owner gets the tab only when there is something to read there.
+  const ssoFlag = organizationSsoEnabled()
+  const { data: ssoState, error: ssoError } = useSWR<OrgSsoStateDto>(
+    ssoFlag ? consoleKeys.orgSso(activeOrg?.id) : null,
+    ([, id]) => fetchOrgSso(id as string)
+  )
+  const ssoShown =
+    ssoFlag &&
+    Boolean(activeOrg) &&
+    !(ssoError instanceof ApiError && ssoError.status === 404) &&
+    (isOwner || (!ssoError && Boolean(ssoState && (ssoState.domains.length > 0 || ssoState.connection))))
+  const tabs = settingsTabs(ssoShown)
+  const tab = resolveSettingsTab(searchParams.get('tab'), tabs)
+  const tabLabels: Record<SettingsTab, string> = {
+    general: t('tabs.general'),
+    members: t('tabs.members'),
+    sso: t('tabs.sso')
+  }
+
   // A member change can affect ME (self-demote/-remove) — re-pull the org list
   // too so myRole / the active org stay honest instead of 403-ing controls.
   const onMembersChanged = useCallback(() => {
@@ -751,146 +775,184 @@ export default function SettingsView() {
 
   return (
     <div className="wrap max-w-[900px] max-desktop:p-4">
-      {/* Card ids are GlobalSearch anchor targets — keep in sync with nav.ts SETTING_CARDS. */}
-      <div className="card" id="organization">
-        <div className="cardhead justify-between">
-          <span className="cardtitle">{t('organization.title')}</span>
-          {isOwner && (
-            <Button variant="secondary" size="xs" onClick={() => openModal('editOrg')}>
-              <Icon name="pencil" size={14} />
-              {t('organization.edit')}
-            </Button>
-          )}
-        </div>
-        <div className="flex items-center gap-[14px] px-4 py-[15px]">
-          {isOwner ? (
-            // Owners edit the org avatar in place: glyph/color via onCommit, an uploaded
-            // image via onUploadImage (shown only when the object store is configured).
-            <AgentIconPicker
-              value={withIconUrl(activeOrg?.icon, activeOrg?.iconUrl)}
-              runtime=""
-              size={44}
-              radiusClass="rounded-[10px]"
-              onCommit={(icon) =>
-                activeOrg &&
-                void updateOrg(activeOrg.id, { icon })
-                  .then(() => refreshOrgs())
-                  .catch(() => {})
-              }
-              onUploadImage={
-                activeOrg?.iconUploadEnabled
-                  ? async (blob) => {
-                      await uploadOrgIcon(blob, activeOrg.id)
-                      refreshOrgs()
-                    }
-                  : undefined
-              }
-            />
-          ) : (
-            <span className="av h-11 w-11 flex-none rounded-[10px]">
-              <AgentIconView icon={withIconUrl(activeOrg?.icon, activeOrg?.iconUrl)} runtime="" size={44} />
-            </span>
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="font-sans text-[15px] font-semibold leading-normal">
-              {activeOrg?.name ?? activeOrg?.slug ?? '—'}
-            </div>
-            <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{activeOrg?.slug ?? ''}</div>
-          </div>
-        </div>
+      {/* Same strip as the agent detail tabs: `.tab` on desktop, a full-bleed scrollable row on a phone. */}
+      <div
+        role="tablist"
+        className="flex gap-6 overflow-x-auto border-b border-(--border-default) bg-(--surface-card) px-4 [-webkit-overflow-scrolling:touch] max-desktop:-mx-4 max-desktop:-mt-4 desktop:gap-0 desktop:overflow-x-visible desktop:bg-transparent desktop:px-0"
+      >
+        {tabs.map((id) => {
+          const on = tab === id
+          return (
+            <Link
+              key={id}
+              href={orgPath(settingsTabHref(id))}
+              role="tab"
+              aria-selected={on}
+              className={`${on ? 'tab on' : 'tab'} whitespace-nowrap no-underline max-desktop:-mb-px max-desktop:mr-0 max-desktop:flex-none max-desktop:border-solid max-desktop:border-b-2 max-desktop:px-0 max-desktop:pt-3 max-desktop:pb-[10px] max-desktop:text-[14px] ${
+                on
+                  ? 'max-desktop:border-b-(--brand) max-desktop:after:hidden'
+                  : 'max-desktop:border-b-transparent max-desktop:text-(--text-tertiary)'
+              }`}
+            >
+              {tabLabels[id]}
+            </Link>
+          )
+        })}
       </div>
 
-      <AgentVisibilityCard
-        key={activeOrg?.id ?? 'loading'}
-        orgId={activeOrg?.id}
-        policy={activeOrg?.defaultAgentVisibility ?? 'all'}
-        isOwner={isOwner}
-        onChange={async (policy) => {
-          if (!activeOrg) return
-          await updateOrgSettings(activeOrg.id, { defaultAgentVisibility: policy })
-        }}
-      />
-
-      <SessionAccessCard orgId={activeOrg?.id} isOwner={isOwner} />
-
-      <DaemonAutoUpgradeDefaultCard
-        orgId={activeOrg?.id}
-        enabled={activeOrg?.defaultDaemonAutoUpgrade ?? false}
-        isOwner={isOwner}
-        onChange={async (enabled) => {
-          if (!activeOrg) return
-          await updateOrgSettings(activeOrg.id, { defaultDaemonAutoUpgrade: enabled })
-        }}
-      />
-
-      {/* Sits with the other organization-wide agent policies. Owner-only, so the
-          card renders nothing at all for collaborators and viewers (§8.1). */}
-      <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
-
-      <div className="card mt-[18px]" id="members">
-        <div className="cardhead justify-between">
-          <span className="cardtitle">{t('members.title')}</span>
-          {isOwner && (
-            <Button variant="secondary" size="xs" onClick={() => setInviting(true)}>
-              <Icon name="user-plus" size={14} />
-              {t('members.invite')}
-            </Button>
-          )}
-        </div>
-        <div className={`row h ${MEMBER_GRID}`}>
-          <span>{t('members.member')}</span>
-          <span>{t('members.role')}</span>
-          <span />
-        </div>
-        {rows.map((p) => (
-          <div key={p.userId} className={`row ${MEMBER_GRID} gap-[11px]`}>
-            <div className="flex min-w-0 items-center gap-[11px]">
-              <Avatar src={p.picture} initials={p.initials} size={32} fontSize={12} bg={p.avBg} fg={p.avText} />
-              <div className="min-w-0">
-                <div className="truncate font-sans text-[13px] font-semibold leading-normal">{p.name}</div>
-                <div className="mono truncate text-[11px] text-(--text-tertiary)">{p.email ?? '—'}</div>
+      {/* Card ids are GlobalSearch anchor targets — keep in sync with nav.ts SETTING_CARDS. */}
+      {tab === 'general' && (
+        <>
+          <div className="card mt-[18px]" id="organization">
+            <div className="cardhead justify-between">
+              <span className="cardtitle">{t('organization.title')}</span>
+              {isOwner && (
+                <Button variant="secondary" size="xs" onClick={() => openModal('editOrg')}>
+                  <Icon name="pencil" size={14} />
+                  {t('organization.edit')}
+                </Button>
+              )}
+            </div>
+            <div className="flex items-center gap-[14px] px-4 py-[15px]">
+              {isOwner ? (
+                // Owners edit the org avatar in place: glyph/color via onCommit, an uploaded
+                // image via onUploadImage (shown only when the object store is configured).
+                <AgentIconPicker
+                  value={withIconUrl(activeOrg?.icon, activeOrg?.iconUrl)}
+                  runtime=""
+                  size={44}
+                  radiusClass="rounded-[10px]"
+                  onCommit={(icon) =>
+                    activeOrg &&
+                    void updateOrg(activeOrg.id, { icon })
+                      .then(() => refreshOrgs())
+                      .catch(() => {})
+                  }
+                  onUploadImage={
+                    activeOrg?.iconUploadEnabled
+                      ? async (blob) => {
+                          await uploadOrgIcon(blob, activeOrg.id)
+                          refreshOrgs()
+                        }
+                      : undefined
+                  }
+                />
+              ) : (
+                <span className="av h-11 w-11 flex-none rounded-[10px]">
+                  <AgentIconView icon={withIconUrl(activeOrg?.icon, activeOrg?.iconUrl)} runtime="" size={44} />
+                </span>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="font-sans text-[15px] font-semibold leading-normal">
+                  {activeOrg?.name ?? activeOrg?.slug ?? '—'}
+                </div>
+                <div className="mono mt-[2px] text-[11.5px] text-(--text-tertiary)">{activeOrg?.slug ?? ''}</div>
               </div>
             </div>
-            <span className="badge self-center justify-self-start" style={{ background: p.roleBg, color: p.roleText }}>
-              {
-                {
-                  owner: t('members.roles.owner'),
-                  collaborator: t('members.roles.collaborator'),
-                  viewer: t('members.roles.viewer')
-                }[p.role]
-              }
-            </span>
-            {isOwner || p.isCurrentUser ? (
-              <button
-                className="iconbtn h-7 w-7 self-center"
-                title={isOwner ? t('members.edit') : t('members.manage')}
-                onClick={() => edit(p)}
-              >
-                <Icon name="pencil" size={14} />
-              </button>
-            ) : (
-              <span className="w-7" />
+          </div>
+
+          <AgentVisibilityCard
+            key={activeOrg?.id ?? 'loading'}
+            orgId={activeOrg?.id}
+            policy={activeOrg?.defaultAgentVisibility ?? 'all'}
+            isOwner={isOwner}
+            onChange={async (policy) => {
+              if (!activeOrg) return
+              await updateOrgSettings(activeOrg.id, { defaultAgentVisibility: policy })
+            }}
+          />
+
+          <SessionAccessCard orgId={activeOrg?.id} isOwner={isOwner} />
+
+          <DaemonAutoUpgradeDefaultCard
+            orgId={activeOrg?.id}
+            enabled={activeOrg?.defaultDaemonAutoUpgrade ?? false}
+            isOwner={isOwner}
+            onChange={async (enabled) => {
+              if (!activeOrg) return
+              await updateOrgSettings(activeOrg.id, { defaultDaemonAutoUpgrade: enabled })
+            }}
+          />
+
+          {/* Sits with the other organization-wide agent policies. Owner-only, so the
+          card renders nothing at all for collaborators and viewers (§8.1). */}
+          <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
+        </>
+      )}
+
+      {tab === 'members' && (
+        <>
+          <div className="card mt-[18px]" id="members">
+            <div className="cardhead justify-between">
+              <span className="cardtitle">{t('members.title')}</span>
+              {isOwner && (
+                <Button variant="secondary" size="xs" onClick={() => setInviting(true)}>
+                  <Icon name="user-plus" size={14} />
+                  {t('members.invite')}
+                </Button>
+              )}
+            </div>
+            <div className={`row h ${MEMBER_GRID}`}>
+              <span>{t('members.member')}</span>
+              <span>{t('members.role')}</span>
+              <span />
+            </div>
+            {rows.map((p) => (
+              <div key={p.userId} className={`row ${MEMBER_GRID} gap-[11px]`}>
+                <div className="flex min-w-0 items-center gap-[11px]">
+                  <Avatar src={p.picture} initials={p.initials} size={32} fontSize={12} bg={p.avBg} fg={p.avText} />
+                  <div className="min-w-0">
+                    <div className="truncate font-sans text-[13px] font-semibold leading-normal">{p.name}</div>
+                    <div className="mono truncate text-[11px] text-(--text-tertiary)">{p.email ?? '—'}</div>
+                  </div>
+                </div>
+                <span
+                  className="badge self-center justify-self-start"
+                  style={{ background: p.roleBg, color: p.roleText }}
+                >
+                  {
+                    {
+                      owner: t('members.roles.owner'),
+                      collaborator: t('members.roles.collaborator'),
+                      viewer: t('members.roles.viewer')
+                    }[p.role]
+                  }
+                </span>
+                {isOwner || p.isCurrentUser ? (
+                  <button
+                    className="iconbtn h-7 w-7 self-center"
+                    title={isOwner ? t('members.edit') : t('members.manage')}
+                    onClick={() => edit(p)}
+                  >
+                    <Icon name="pencil" size={14} />
+                  </button>
+                ) : (
+                  <span className="w-7" />
+                )}
+              </div>
+            ))}
+            {members === null && (
+              <div className="row grid-cols-[1fr]">
+                <LoadingState size={22} padding={20} />
+              </div>
+            )}
+            {loadFailed && (
+              <div className="row grid-cols-[1fr] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+                {t('members.loadError')}
+              </div>
             )}
           </div>
-        ))}
-        {members === null && (
-          <div className="row grid-cols-[1fr]">
-            <LoadingState size={22} padding={20} />
-          </div>
-        )}
-        {loadFailed && (
-          <div className="row grid-cols-[1fr] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-            {t('members.loadError')}
-          </div>
-        )}
-      </div>
 
-      {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
+          {activeOrg && ssoFlag && <OrganizationMemberSourceCard orgId={activeOrg.id} isOwner={isOwner} />}
+
+          {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
+
+          {isOwner && activeOrg && <ServiceAccountsCard org={activeOrg} />}
+        </>
+      )}
 
       {/* Owners manage it; other members see what is verified and whether the connection is active. */}
-      {activeOrg && organizationSsoEnabled() && <OrganizationSsoCard orgId={activeOrg.id} isOwner={isOwner} />}
-
-      {isOwner && activeOrg && <ServiceAccountsCard org={activeOrg} />}
+      {tab === 'sso' && activeOrg && <OrganizationSsoCard orgId={activeOrg.id} isOwner={isOwner} />}
 
       {inviting && (
         <Scrim onEscape={() => setInviting(false)} onClick={() => setInviting(false)}>

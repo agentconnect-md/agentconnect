@@ -5389,6 +5389,11 @@
     }
   },
   "Settings": {
+    "tabs": {
+      "general": "常规",
+      "members": "成员",
+      "sso": "单点登录"
+    },
     "organization": {
       "title": "组织",
       "edit": "编辑",
@@ -5634,7 +5639,6 @@
       "copy": "复制"
     },
     "sso": {
-      "title": "域名与单点登录",
       "loadError": "无法加载域名与单点登录。",
       "noDomains": "暂无域名",
       "domains": "域名",

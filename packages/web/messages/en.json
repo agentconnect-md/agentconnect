@@ -5389,6 +5389,11 @@
     }
   },
   "Settings": {
+    "tabs": {
+      "general": "General",
+      "members": "Members",
+      "sso": "Single sign-on"
+    },
     "organization": {
       "title": "Organization",
       "edit": "Edit",
@@ -5634,7 +5639,6 @@
       "copy": "copy"
     },
     "sso": {
-      "title": "Domains and single sign-on",
       "loadError": "Couldn't load domains and single sign-on.",
       "noDomains": "No domains",
       "domains": "Domains",

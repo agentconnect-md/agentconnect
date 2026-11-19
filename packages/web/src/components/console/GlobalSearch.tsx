@@ -88,9 +88,9 @@ const SEARCH_PAGE_LABEL_KEYS: Record<string, Parameters<ReturnType<typeof useTra
     '/settings#agent-visibility': 'settings.defaultAgentVisibility',
     '/settings#session-access': 'settings.sessionAccess',
     '/settings#environment': 'settings.variablesSecrets',
-    '/settings#members': 'settings.membersRoles',
-    '/settings#invite-links': 'settings.inviteLinks',
-    '/settings#single-sign-on': 'settings.singleSignOn',
+    '/settings?tab=members#members': 'settings.membersRoles',
+    '/settings?tab=members#invite-links': 'settings.inviteLinks',
+    '/settings?tab=sso#single-sign-on': 'settings.singleSignOn',
     '/profile': 'settings.profile'
   }
 
@@ -323,7 +323,7 @@ export function GlobalSearch({
             p.kind === 'setting' &&
             (!p.ownerOnly || myRole === 'owner') &&
             (p.href !== '/settings#session-access' || sessionAccessRenders) &&
-            (p.href !== '/settings#single-sign-on' || organizationSsoEnabled()) &&
+            (p.href !== '/settings?tab=sso#single-sign-on' || organizationSsoEnabled()) &&
             pageHit(p)
         )
       : []
