@@ -21,6 +21,7 @@ const ssoForm = (prefix: string) => String.raw`
             </div>
             <label class="field">Email domains (at least one), comma-separated<input id="${prefix}-domains" autocomplete="off" placeholder="example.com" required></label>
             <label class="field">New members<select id="${prefix}-member-source"><option value="domain">Anyone who signs in with SSO</option><option value="invite">Invite only</option></select></label>
+            <label class="field">Organization<select id="${prefix}-member-organization"></select></label>
             <div class="row"><button id="${prefix}-submit">Save SSO and configure Logto</button></div>
           </div>`
 
@@ -741,6 +742,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el(prefix + '-name').value = connector.name;
         el(prefix + '-domains').value = (connector.domains || []).join(', ');
         el(prefix + '-member-source').value = connector.memberSource || 'domain';
+        renderMemberOrganizations(prefix, connector.memberOrganization || '');
         renderUriList(prefix + '-urls', ssoUrls(connector));
         const oidc = connector.oidc || {};
         el(prefix + '-issuer').value = oidc.issuer || '';
@@ -753,6 +755,28 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el(prefix + '-email-attribute').value = (saml.attributeMapping && saml.attributeMapping.email) || '';
       }
       updateSsoProtocol(prefix);
+    }
+
+    // The organizations new members may join; the empty value is the deployment's only one, and a saved id that is gone stays visible.
+    let ssoOrganizations = [];
+    function renderMemberOrganizations(prefix, selected) {
+      const select = el(prefix + '-member-organization');
+      select.replaceChildren();
+      const option = (value, label) => {
+        const item = document.createElement('option');
+        item.value = value;
+        item.textContent = label;
+        select.append(item);
+      };
+      option('', 'The only organization');
+      for (const org of ssoOrganizations) option(org.id, (org.name || org.slug) + ' (' + org.slug + ')');
+      if (selected && !ssoOrganizations.some((org) => org.id === selected)) option(selected, 'Missing organization (' + selected + ')');
+      select.value = selected;
+      updateMemberOrganization(prefix);
+    }
+
+    function updateMemberOrganization(prefix) {
+      el(prefix + '-member-organization').disabled = el(prefix + '-member-source').value === 'invite';
     }
 
     function updateSsoProtocol(prefix) {
@@ -786,6 +810,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         name: el(prefix + '-name').value,
         domains: el(prefix + '-domains').value.split(',').map((domain) => domain.trim()).filter(Boolean),
         memberSource: el(prefix + '-member-source').value,
+        memberOrganization: el(prefix + '-member-organization').value || null,
         ...(protocol === 'oidc'
           ? { oidc: {
               issuer: el(prefix + '-issuer').value.trim(),
@@ -900,6 +925,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       text('logto-management-resource', logto && logto.managementResource);
       secretText('logto-management-secret-display', byKey, 'logto.managementAppSecret', Boolean(logto));
       const sso = logto && logto.ssoConnector;
+      ssoOrganizations = status.organizations || [];
       renderSso('sso', sso);
       el('sso-remove').hidden = !sso;
       match('sso-match', !sso ? '' : sso.oidc || sso.saml ? 'pass' : 'warn', !sso ? 'Not configured' : sso.oidc || sso.saml ? 'Configured' : 'Needs identity provider');
@@ -2183,6 +2209,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('bootstrap-google-submit').onclick = () => bootstrapGoogle().catch((error) => message(error.message, true));
     for (const prefix of ['bootstrap-sso', 'sso']) {
       el(prefix + '-protocol').onchange = () => updateSsoProtocol(prefix);
+      el(prefix + '-member-source').onchange = () => updateMemberOrganization(prefix);
       el(prefix + '-create').onclick = () => createSso(prefix).catch((error) => message(error.message, true));
       el(prefix + '-submit').onclick = () => saveSso(prefix).catch((error) => message(error.message, true));
     }

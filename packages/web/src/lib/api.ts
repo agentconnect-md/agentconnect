@@ -1568,6 +1568,8 @@ export interface OrgDto {
   gettingStartedStep?: number
   /** The SSO connection this browser session must sign in through before it opens the organization. */
   ssoSignIn?: { connectorId: string } | null
+  /** How the deployment's own SSO connector admits new members, on the one organization they join. */
+  deploymentMemberSource?: 'invite' | 'domain' | null
   createdAt: string // ISO-8601
 }
 

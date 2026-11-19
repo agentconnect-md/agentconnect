@@ -131,6 +131,7 @@ import type { OrgSsoAdmission } from '../org-sso/admission.js'
 import type { OrgSsoSignInLookup } from '../org-sso/lookup.js'
 import type { OrgSsoMembership } from '../org-sso/membership.js'
 import type { OrgSsoSessionRule } from '../org-sso/session.js'
+import type { DeploymentMemberSource } from '../org-sso/member-source.js'
 import type { WaitlistService } from '../registry/waitlistService.js'
 import type { ControlSender } from '../orchestrator/outbound.js'
 import type { AgentDelivery } from '../orchestrator/agentDelivery.js'
@@ -521,6 +522,8 @@ export interface HttpDeps {
   orgSsoMembership?: OrgSsoMembership
   /** Which browser sessions must sign in through an organization's connection before reaching it. */
   orgSsoSession?: OrgSsoSessionRule
+  /** The deployment's own SSO connector's member source, when it has one; `GET /orgs` reports it for its organization. */
+  deploymentMemberSource?: Pick<DeploymentMemberSource, 'choice' | 'target'>
   /** Closed-beta admission: `/me/access` status, self-join, join-link redeem (waitlist-and-login.md). */
   waitlist: WaitlistService
   /** The shared usage report interface — this plane is its `gateway`-source adapter. */

@@ -29,6 +29,7 @@ import {
   type DeploymentConfigAdmin,
   type DeploymentConfigRuntime,
   type DeploymentConfigStore,
+  type DeploymentOrganizations,
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { loadDeploymentEnvironment } from '../deployment-environment.js'
@@ -207,6 +208,7 @@ const ConfigureSsoBody = z.strictObject({
       name: SsoName,
       domains: z.array(z.string().trim().min(1).max(253)).max(50).default([]),
       memberSource: z.enum(['invite', 'domain']).optional(),
+      memberOrganization: z.string().trim().min(1).max(200).nullable().optional(),
       oidc: z
         .strictObject({
           issuer: z.string().trim().min(1).max(2_000),
@@ -316,6 +318,8 @@ interface OidcDiscovery {
 
 export interface SetupServerDeps {
   store: DeploymentConfigStore
+  /** The organizations the SSO connector's new members may join; absent lists none. */
+  organizations?: DeploymentOrganizations
   publicUrl: string
   fetch?: typeof fetch
   /** The wait between tries while a new blueprint settles; tests pass one that does not sleep. */
@@ -832,7 +836,9 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Logto availability is reported by the dedicated check. Fixed IDs remain correct for connectors we create.
     }
-    return { ...status, providerExpectations: providerExpectations(status.values, connectorIds) }
+    // The organizations the SSO connector's new members may join, for its Organization control.
+    const organizations = (await deps.organizations?.list()) ?? []
+    return { ...status, providerExpectations: providerExpectations(status.values, connectorIds), organizations }
   }
 
   app.addHook('onClose', async () => {
@@ -1972,6 +1978,12 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     const parsed = ConfigureSsoBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'invalid SSO connector settings')
     return serializeMutation(async () => {
+      // A newly chosen organization must exist; a saved one that has gone stays until the operator picks again.
+      const chosen = parsed.data.connector?.memberOrganization
+      if (chosen && deps.organizations && !(await deps.organizations.list()).some((org) => org.id === chosen)) {
+        const saved = (await deps.store.getAdmin())?.values.logto?.ssoConnector?.memberOrganization
+        if (saved !== chosen) return problem(reply, 400, 'the chosen organization does not exist')
+      }
       const current = await deps.store.getAdmin()
       if (!current) return problem(reply, 409, 'save deployment settings before configuring SSO')
       let put: ReturnType<typeof logtoSsoConnectorPut>
@@ -2458,6 +2470,7 @@ export async function serveSetupServer(env: NodeJS.ProcessEnv = process.env): Pr
   const app = buildSetupServer(
     {
       store: handle.store,
+      organizations: handle.organizations,
       publicUrl,
       allowContainerLoopbackProxy: config.SETUP_SERVER_ALLOW_CONTAINER_PROXY,
       localAuthBootstrap: {

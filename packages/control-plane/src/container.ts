@@ -302,7 +302,7 @@ import { OrgSsoConnectionService } from './org-sso/connections.js'
 import { OrgSsoAdmission } from './org-sso/admission.js'
 import { OrgSsoSignInLookup } from './org-sso/lookup.js'
 import { OrgSsoMembership } from './org-sso/membership.js'
-import { resolveMemberSource } from './org-sso/member-source.js'
+import { DeploymentMemberSource, resolveMemberSource } from './org-sso/member-source.js'
 import { OrgSsoSessionRule } from './org-sso/session.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
@@ -2843,6 +2843,7 @@ export function buildContainer(
     ...(orgSsoLookup ? { orgSsoLookup } : {}),
     ...(orgSsoMembership ? { orgSsoMembership } : {}),
     ...(orgSsoSession ? { orgSsoSession } : {}),
+    ...(memberSource instanceof DeploymentMemberSource ? { deploymentMemberSource: memberSource } : {}),
     waitlist,
     usageWriter,
     ...(clusterWorkloadIdentity ? { clusterWorkloadIdentity } : {}),

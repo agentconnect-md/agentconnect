@@ -125,6 +125,8 @@ const LogtoSsoConnectorSchema = z.strictObject({
   domains: z.array(SsoDomainSchema).default([]),
   /** How accounts become members of the deployment's organization: by an address on `domains`, or only by invitation. */
   memberSource: z.enum(['invite', 'domain']).default('domain'),
+  /** The organization id new members join; null means the deployment's only organization. */
+  memberOrganization: z.string().trim().min(1).nullable().default(null),
   /** OIDC IdP; the client secret is the write-only 'logto.ssoConnectorClientSecret'. */
   oidc: z
     .strictObject({
