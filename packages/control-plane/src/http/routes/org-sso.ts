@@ -541,9 +541,35 @@ const AdminOrgParams = z.object({ orgId: z.string().min(1).max(64) })
 /** Outside the organization subtree: the test landing for any signed-in caller, and a deployment administrator's recovery paths (§4.1, §8). */
 export function orgSsoRootRoutes(deps: HttpDeps) {
   return async function orgSsoRootRoutesPlugin(app: FastifyInstance): Promise<void> {
+    const r = app.withTypeProvider<ZodTypeProvider>()
+    // Both kinds of SSO admit members by domain: the deployment's own connector, or an organization's connection.
+    const membership = deps.orgSsoMembership
+    if (membership) {
+      r.post(
+        '/sso/join',
+        {
+          preHandler: app.humanAuth,
+          config,
+          schema: {
+            tags: [Tag.Organizations],
+            summary: 'Join the organization the caller’s address entitles them to',
+            description:
+              'Called by the console after a sign-in. The caller’s address at the identity service decides, once: where the deployment has its own SSO connector set to take members by domain, an address on one of that connector’s domains makes the caller a collaborator of the deployment’s organization, provided it has exactly one; where organizations own their connections, an address on a domain an organization has verified makes the caller a collaborator of it, when that organization takes members by domain. Returns the organizations joined by this call; a later call returns none, also after an owner has removed the member, and an existing member keeps their role.',
+            operationId: 'joinOrganizationsBySso',
+            response: { 200: OrgSsoJoinDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          const { userId } = req.principal!
+          const subject = await deps.repos.user.getOidcSubject(userId)
+          if (!subject) return { joined: [] }
+          return withIdp(reply, async () => ({ joined: await membership.join(subject, userId) }))
+        }
+      )
+    }
+
     const connections = deps.orgSsoConnections
     if (!connections) return
-    const r = app.withTypeProvider<ZodTypeProvider>()
     const isDeploymentAdmin = (req: FastifyRequest): boolean =>
       !deps.config.OIDC_ISSUER || req.principal?.isAdmin === true
     const adminOnly = (reply: FastifyReply) =>
@@ -569,31 +595,6 @@ export function orgSsoRootRoutes(deps: HttpDeps) {
           }
         },
         async (req) => ({ connector: await lookup.find(req.body.email) })
-      )
-    }
-
-    const membership = deps.orgSsoMembership
-    if (membership) {
-      r.post(
-        '/sso/join',
-        {
-          preHandler: app.humanAuth,
-          config,
-          schema: {
-            tags: [Tag.Organizations],
-            summary: 'Join the organization the caller’s address entitles them to',
-            description:
-              'Called by the console after a sign-in. A caller whose address is on a domain an organization has verified becomes a collaborator of it once, when that organization takes members by domain. Returns the organizations joined by this call; a later call returns none, also after an owner has removed the member.',
-            operationId: 'joinOrganizationsBySso',
-            response: { 200: OrgSsoJoinDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
-          }
-        },
-        async (req, reply) => {
-          const { userId } = req.principal!
-          const subject = await deps.repos.user.getOidcSubject(userId)
-          if (!subject) return { joined: [] }
-          return withIdp(reply, async () => ({ joined: await membership.join(subject, userId) }))
-        }
       )
     }
 

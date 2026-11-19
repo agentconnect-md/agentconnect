@@ -302,6 +302,7 @@ import { OrgSsoConnectionService } from './org-sso/connections.js'
 import { OrgSsoAdmission } from './org-sso/admission.js'
 import { OrgSsoSignInLookup } from './org-sso/lookup.js'
 import { OrgSsoMembership } from './org-sso/membership.js'
+import { resolveMemberSource } from './org-sso/member-source.js'
 import { OrgSsoSessionRule } from './org-sso/session.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
@@ -2516,9 +2517,15 @@ export function buildContainer(
           log: orgSsoWarn
         })
       : undefined
+  const memberSource = resolveMemberSource({
+    deploymentConnector: opts.deploymentConfig?.values.logto?.ssoConnector,
+    organizationDomains: orgSsoDomains,
+    orgs: repos.org,
+    log: orgSsoWarn
+  })
   const orgSsoMembership =
-    orgSsoDomains && orgSsoIdp
-      ? new OrgSsoMembership({ connections: repos.orgSsoConnection, domains: orgSsoDomains, idp: orgSsoIdp, clock })
+    memberSource && orgSsoIdp
+      ? new OrgSsoMembership({ connections: repos.orgSsoConnection, source: memberSource, idp: orgSsoIdp, clock })
       : undefined
   const orgSsoLookup = orgSsoConnections
     ? new OrgSsoSignInLookup({ connections: repos.orgSsoConnection, clock, log: orgSsoWarn })
@@ -2692,6 +2699,7 @@ export function buildContainer(
                       apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
                       socialProviders: opts.deploymentConfig.values.auth.socialProviders,
                       sso: opts.deploymentConfig.values.auth.sso,
+                      ssoMemberSource: opts.deploymentConfig.values.logto?.ssoConnector?.memberSource ?? null,
                       organizationSso: orgSsoConnections !== undefined
                     }
                   : null,

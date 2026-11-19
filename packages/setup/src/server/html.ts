@@ -20,6 +20,7 @@ const ssoForm = (prefix: string) => String.raw`
               <label class="field">Email attribute<input id="${prefix}-email-attribute" autocomplete="off" placeholder="email"></label>
             </div>
             <label class="field">Email domains (at least one), comma-separated<input id="${prefix}-domains" autocomplete="off" placeholder="example.com" required></label>
+            <label class="field">New members<select id="${prefix}-member-source"><option value="domain">Anyone who signs in with SSO</option><option value="invite">Invite only</option></select></label>
             <div class="row"><button id="${prefix}-submit">Save SSO and configure Logto</button></div>
           </div>`
 
@@ -739,6 +740,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el(prefix + '-protocol').value = connector.protocol;
         el(prefix + '-name').value = connector.name;
         el(prefix + '-domains').value = (connector.domains || []).join(', ');
+        el(prefix + '-member-source').value = connector.memberSource || 'domain';
         renderUriList(prefix + '-urls', ssoUrls(connector));
         const oidc = connector.oidc || {};
         el(prefix + '-issuer').value = oidc.issuer || '';
@@ -770,7 +772,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({ protocol: el(prefix + '-protocol').value, name })
       }));
-      renderSso(prefix, { connectorId: result.connectorId, protocol: result.protocol, name, domains: [], oidc: null, saml: null });
+      renderSso(prefix, { connectorId: result.connectorId, protocol: result.protocol, name, domains: [], memberSource: 'domain', oidc: null, saml: null });
       message('SSO connector created. Register its URLs with the identity provider, then enter the provider details.');
     }
 
@@ -783,6 +785,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const connector = {
         name: el(prefix + '-name').value,
         domains: el(prefix + '-domains').value.split(',').map((domain) => domain.trim()).filter(Boolean),
+        memberSource: el(prefix + '-member-source').value,
         ...(protocol === 'oidc'
           ? { oidc: {
               issuer: el(prefix + '-issuer').value.trim(),

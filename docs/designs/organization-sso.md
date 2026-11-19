@@ -32,7 +32,7 @@ identity provider. Four things are missing:
 | D3  | Binding a verified domain to an active connection makes the connection the only sign-in for that domain at the identity service. Binding is refused until a sign-in through the connection has succeeded.                         |
 | D4  | The login page offers "Continue with SSO" beside the social buttons; it leads to an SSO page that asks for an email address and routes by its domain.                                                                             |
 | D5  | An organization chooses how new members arrive: by invitation only, or also by an address on one of its verified domains, which makes the account a member once when it signs in. The choice is separate from the connection.     |
-| D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
+| D6  | A deployment that belongs to one company keeps the deployment connector: no domain verification, no lookup, no organization settings. It takes only the member source (§4.3), set on the connector in Setup.                      |
 | D7  | Enforcing is a second, explicit step after activation: an enforced organization accepts every member, owners included, only from a browser session that signed in through its connection.                                         |
 
 ## 3. Model
@@ -258,6 +258,30 @@ so would miss an existing account's first sign-in after an owner chose `domain`.
   API keys and OAuth grants stay. Ending those needs the provider to notify the
   deployment, which is out of scope here (§7).
 
+**The deployment's connector.** Where the deployment owns the connector (D1, D6), the
+same choice belongs to the connector, and its `domains` play the part of an
+organization's verified domains: the operator who configures them owns the deployment,
+so they are not verified by DNS. Setup's SSO form holds it as "New members", with
+`domain` ("Anyone who signs in with SSO") the default and `invite` ("Invite only") the
+other value; the document stores it as `logto.ssoConnector.memberSource`, and a
+document without it reads as `domain`. The Control Plane reads it at startup, like the
+rest of the connector.
+
+- With `domain`, an account whose address is on one of the connector's domains
+  (exactly, ignoring case, no subdomains) joins the deployment's organization as
+  `collaborator`, through the same `POST /sso/join` and the same join record, so a
+  removal stands and an existing member keeps their role.
+- The deployment's organization is its only one. With no organization, or more than
+  one, nobody joins, and the Control Plane says so in its log once per process start,
+  without addresses. Organizations are counted as rows: deleting one removes its row.
+- An account that joins is a member, so where the waitlist is on it passes the gate.
+- The console shows the choice read-only on the organization's Members tab, marked as
+  set by the deployment.
+
+One place decides which source answers: the deployment's connector when the deployment
+declares one, otherwise the organizations' own member sources. The two kinds exclude
+each other (D1), so this chooses a source, never merges two.
+
 Members pushed by the identity provider (§7) would be a third member source, chosen
 instead of `domain` and never beside it: the provider's list and "anyone on the
 domain" give different answers to who is a member.
@@ -435,7 +459,9 @@ Outside the organization subtree:
 
 - `POST /sso/test-result`: any signed-in caller presents the nonce.
 - `POST /sso/join`: any signed-in caller, after a sign-in (§4.3).
-  The path keeps its name; the join no longer depends on a connection.
+  The path keeps its name; the join no longer depends on a connection. It exists under
+  both kinds of SSO: the deployment's connector or the organizations' member sources
+  answers, whichever the deployment has.
 - `POST /admin/orgs/:orgId/sso/connection/deactivate`,
   `POST /admin/orgs/:orgId/sso/connection/stop-enforcing` and
   `DELETE /admin/sso/domains/:id`: a deployment `ADMIN`'s recovery paths (§4.1, §4.5).
@@ -443,7 +469,9 @@ Outside the organization subtree:
 
 `/runtime-config` gains one boolean, `auth.organizationSso`, so the login page knows to
 offer the SSO page.
-`auth.sso` keeps describing the deployment connector.
+`auth.sso` keeps describing the deployment connector, and `auth.ssoMemberSource`
+carries its member source (`invite` or `domain`, null without a connector), never its
+domains; the console calls `POST /sso/join` and shows the read-only card from it.
 
 `GET /orgs` gains `ssoSignIn` per organization, and a refused request carries the
 code `ORG_SSO_SIGN_IN_REQUIRED` (§4.5).

@@ -13,6 +13,7 @@ import { OrgSsoDomainService } from '../../src/org-sso/domains.js'
 import { OrgSsoIdpRejected, type OrgSsoAccount, type OrgSsoIdp } from '../../src/org-sso/idp.js'
 import { ORG_SSO_LOOKUP_TTL_MS, OrgSsoSignInLookup } from '../../src/org-sso/lookup.js'
 import { OrgSsoMembership } from '../../src/org-sso/membership.js'
+import { OrganizationMemberSource } from '../../src/org-sso/member-source.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 
@@ -147,7 +148,7 @@ beforeEach(async () => {
   })
   admission = new OrgSsoAdmission({ connections: repo, domains, idp })
   lookup = new OrgSsoSignInLookup({ connections: repo, clock })
-  membership = new OrgSsoMembership({ connections: repo, domains, idp, clock })
+  membership = new OrgSsoMembership({ connections: repo, source: new OrganizationMemberSource(domains), idp, clock })
   await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: OWNER_SUBJECT } })
 })
 

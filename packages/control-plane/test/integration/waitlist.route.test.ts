@@ -6,7 +6,12 @@ import { prisma } from '../setup.db.js'
 import { buildHttpApp, TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { WaitlistJoinTokenCodec } from '../../src/registry/waitlistJoinToken.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
+import { systemClock } from '../../src/domain/clock.js'
+import { OrgSsoMembership } from '../../src/org-sso/membership.js'
+import { DeploymentMemberSource, type MemberSourceChoice } from '../../src/org-sso/member-source.js'
+import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
+import { PgOrgSsoConnectionRepo } from '../../src/persistence/repositories/org-sso-connection.repo.js'
 
 const OIDC_AUDIENCE = 'waitlist-test'
 const codec = new WaitlistJoinTokenCodec(TEST_API_KEY_PEPPER)
@@ -729,6 +734,117 @@ describe('waitlist admission — auth boundaries', () => {
       })
       expect(res.statusCode).toBe(200)
       expect(res.json()).toMatchObject({ email: null, status: 'none' })
+    } finally {
+      await close()
+    }
+  })
+})
+
+describe('membership through the deployment SSO connector — POST /sso/join', () => {
+  const accounts = new Map<string, string>()
+  /** A waitlist-mode app whose deployment owns one SSO connector on acme.example. */
+  const buildSsoApp = (memberSource: MemberSourceChoice) => {
+    const source = new DeploymentMemberSource({
+      connector: { memberSource, domains: ['acme.example'] },
+      orgs: new PgOrgRepo(prisma),
+      log: { warn: () => {} }
+    })
+    const orgSsoMembership = new OrgSsoMembership({
+      connections: new PgOrgSsoConnectionRepo(prisma),
+      source,
+      idp: { account: async (subject) => ({ primaryEmail: accounts.get(subject) ?? null }) as never },
+      clock: systemClock
+    })
+    return buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE, WAITLIST_MODE: true }, undefined, undefined, {
+      orgSsoMembership
+    })
+  }
+  const role = async (userId: string) =>
+    (await prisma.membership.findUnique({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } } }))?.role ?? null
+
+  it('joins an address on the connector’s domains as a collaborator once, and admits it past the waitlist', async () => {
+    const { app, close } = buildSsoApp('domain')
+    try {
+      accounts.set('dsso-ada', 'Ada@ACME.example')
+      const h = await headers('dsso-ada', 'ada@acme.example')
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        status: 'none'
+      })
+      const first = await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })
+      expect(first.statusCode).toBe(200)
+      expect(first.json()).toEqual({ joined: [DEFAULT_ORG_ID] })
+      const user = await prisma.user.findUniqueOrThrow({ where: { oidcSubject: 'dsso-ada' } })
+      expect(await role(user.id)).toBe('collaborator')
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        waitlistMode: true,
+        status: 'active'
+      })
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: []
+      })
+
+      // An owner's removal stands at the next sign-in.
+      await prisma.membership.delete({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: user.id } } })
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: []
+      })
+      expect(await role(user.id)).toBeNull()
+
+      // Another domain joins nobody.
+      accounts.set('dsso-eve', 'eve@sub.acme.example')
+      const other = await headers('dsso-eve', 'eve@sub.acme.example')
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: other })).json()).toEqual({
+        joined: []
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('leaves an existing member’s role alone', async () => {
+    const { app, close } = buildSsoApp('domain')
+    try {
+      const owner = await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: 'dsso-owner' } })
+      accounts.set('dsso-owner', 'owner@acme.example')
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/sso/join',
+        headers: await headers('dsso-owner', 'owner@acme.example')
+      })
+      expect(res.json()).toEqual({ joined: [] })
+      expect(await role(owner.id)).toBe('owner')
+    } finally {
+      await close()
+    }
+  })
+
+  it('joins nobody when the connector is invite only', async () => {
+    const { app, close } = buildSsoApp('invite')
+    try {
+      accounts.set('dsso-invite', 'grace@acme.example')
+      const h = await headers('dsso-invite', 'grace@acme.example')
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: []
+      })
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        status: 'none'
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('joins nobody when the deployment has several organizations', async () => {
+    await prisma.org.create({ data: { slug: 'dsso-second' } })
+    const { app, close } = buildSsoApp('domain')
+    try {
+      accounts.set('dsso-several', 'lin@acme.example')
+      const h = await headers('dsso-several', 'lin@acme.example')
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: []
+      })
+      const user = await prisma.user.findUniqueOrThrow({ where: { oidcSubject: 'dsso-several' } })
+      expect(await prisma.membership.count({ where: { userId: user.id } })).toBe(0)
     } finally {
       await close()
     }

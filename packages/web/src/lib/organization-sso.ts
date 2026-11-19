@@ -10,6 +10,15 @@ export function organizationSsoEnabled(): boolean {
   return raw === 'true'
 }
 
+/** How the deployment's own SSO connector admits members to its organization; null where it has none. */
+export function deploymentSsoMemberSource(): 'invite' | 'domain' | null {
+  const raw =
+    typeof window === 'undefined'
+      ? (process.env.SSO_MEMBER_SOURCE ?? process.env.NEXT_PUBLIC_SSO_MEMBER_SOURCE)
+      : window.__AC_ENV?.SSO_MEMBER_SOURCE
+  return raw === 'invite' || raw === 'domain' ? raw : null
+}
+
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /** The sign-in method this browser used last; it is offered first next time, and the server is never asked. */

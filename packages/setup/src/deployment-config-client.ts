@@ -42,7 +42,10 @@ export function logtoSsoConnectorCreatedPut(
   return DeploymentConfigPutSchema.parse({
     values: {
       ...current.values,
-      logto: { ...logto, ssoConnector: { ...created, domains: [], oidc: null, saml: null } }
+      logto: {
+        ...logto,
+        ssoConnector: { ...created, domains: [], memberSource: 'domain', oidc: null, saml: null }
+      }
     },
     secrets: { 'logto.ssoConnectorClientSecret': null }
   })
@@ -51,6 +54,8 @@ export function logtoSsoConnectorCreatedPut(
 export interface LogtoSsoConnectorSettings {
   name: string
   domains: string[]
+  /** Omitted keeps the saved choice. */
+  memberSource?: 'invite' | 'domain'
   oidc?: { issuer: string; clientId: string; clientSecret?: string; scope: string; trustUnverifiedEmail: boolean }
   saml?: {
     metadataUrl?: string
@@ -76,6 +81,7 @@ export function logtoSsoConnectorPut(
   const existing = logto.ssoConnector
   if (!existing) throw new Error('create the SSO connector first')
   const { oidc, saml } = settings
+  const memberSource = settings.memberSource ?? existing.memberSource
   if (existing.protocol === 'oidc' ? !oidc || saml : !saml || oidc) {
     throw new Error(`this connector uses ${existing.protocol.toUpperCase()}; send its settings only`)
   }
@@ -84,12 +90,13 @@ export function logtoSsoConnectorPut(
     const sameClient = existing.oidc?.issuer === oidc.issuer && existing.oidc.clientId === oidc.clientId
     if (!oidc.clientSecret && !sameClient) throw new Error('a new OIDC client requires its client secret')
     const { clientSecret: _secret, ...stored } = oidc
-    next = { ...existing, name: settings.name, domains: settings.domains, oidc: stored, saml: null }
+    next = { ...existing, name: settings.name, domains: settings.domains, memberSource, oidc: stored, saml: null }
   } else {
     next = {
       ...existing,
       name: settings.name,
       domains: settings.domains,
+      memberSource,
       oidc: null,
       saml: {
         metadataUrl: saml?.metadataUrl ?? null,

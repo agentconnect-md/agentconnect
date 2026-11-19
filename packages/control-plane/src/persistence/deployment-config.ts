@@ -123,6 +123,8 @@ const LogtoSsoConnectorSchema = z.strictObject({
   name: z.string().trim().min(1).max(64),
   /** Email domains Logto routes to this connector; Logto offers the connector only once it has one. */
   domains: z.array(SsoDomainSchema).default([]),
+  /** How accounts become members of the deployment's organization: by an address on `domains`, or only by invitation. */
+  memberSource: z.enum(['invite', 'domain']).default('domain'),
   /** OIDC IdP; the client secret is the write-only 'logto.ssoConnectorClientSecret'. */
   oidc: z
     .strictObject({
