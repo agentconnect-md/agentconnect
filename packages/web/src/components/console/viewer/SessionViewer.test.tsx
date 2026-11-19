@@ -348,7 +348,7 @@ describe('SessionViewer body', () => {
 })
 
 describe('SessionViewer images and downloads', () => {
-  const SHARED = { sessionId: 'session-1', sha256: '0123456789abcdef' }
+  const SHARED = { sessionId: 'session-1' }
   beforeEach(() => {
     let next = 0
     vi.stubGlobal(
@@ -390,10 +390,10 @@ describe('SessionViewer images and downloads', () => {
 
   it('words a refused download as the shared-file chip does', async () => {
     wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
-    wire.blobFailure = 'WORKSPACE_FILE_CHANGED'
+    wire.blobFailure = 'WORKSPACE_FILE_NOT_FOUND'
     await render({ path: 'anim.gif', download: SHARED })
     await settle()
-    expect(text()).toContain('This file has changed since it was shared')
+    expect(text()).toContain('This file is no longer in the workspace')
     expect(text()).not.toContain('may be offline')
   })
 
@@ -436,23 +436,6 @@ describe('SessionViewer images and downloads', () => {
     expect(wire.transferCalls).toEqual([{ path: 'dist/app.tar.gz', sessionId: 'session-1' }])
     expect(wire.blobCalls).toHaveLength(0)
     expect(clicks).toEqual(['https://store.example.test/dl?sig=1'])
-    spy.mockRestore()
-  })
-
-  it('keeps a shared file’s digest on the presigned path', async () => {
-    wire.transferCalls = []
-    wire.slices[0] = { encoding: 'none', content: null, size: 30 * 1024 * 1024 }
-    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
-    await render({
-      path: 'uploads/build.zip',
-      download: { sessionId: 'session-1', sha256: '0123456789abcdef' },
-      transfer: true
-    })
-    await click('[data-viewer-download]')
-    await settle()
-    expect(wire.transferCalls).toEqual([
-      { path: 'uploads/build.zip', sessionId: 'session-1', sha256: '0123456789abcdef' }
-    ])
     spy.mockRestore()
   })
 

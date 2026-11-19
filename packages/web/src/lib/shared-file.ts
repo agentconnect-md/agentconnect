@@ -68,26 +68,9 @@ export function uploadPreviewsCapable(features: readonly string[] | undefined): 
   return transferCapable(features) && features?.includes(WEBCHAT_UPLOADS_FEATURE) === true
 }
 
-/** How the download route names one workspace file: the session whose root holds it, and a share's digest when one names it. */
+/** How the viewer's download names one workspace file: the session whose root holds it, never a share's digest. */
 export interface SessionFileDownload {
   sessionId?: string
-  sha256?: string
-}
-
-/** Any workspace file downloads by path; a file the session shared also carries the digest of its latest share marker. */
-export function sessionFileDownload(
-  path: string,
-  sessionId: string | undefined,
-  rows: Iterable<{ text: string; sessionId: string | undefined }>
-): SessionFileDownload {
-  if (!sessionId) return {}
-  let sha256: string | undefined
-  for (const row of rows) {
-    if (row.sessionId !== sessionId) continue
-    const shared = sharedFileMarker(row.text)
-    if (shared?.file.path === path) sha256 = shared.file.sha256
-  }
-  return sha256 ? { sessionId, sha256 } : { sessionId }
 }
 
 /** Large text and any binary go through the object store when the daemon has one; small text keeps the proxied download. */
