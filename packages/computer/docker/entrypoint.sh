@@ -28,6 +28,8 @@ main_profile="$data/browser/main"
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1
 # The profile lock names the old hostname, which a woken pod no longer has, so it would refuse the profile.
 rm -f "$main_profile"/Singleton{Lock,Cookie,Socket}
+# The browser tier's launch state is this start's daemon's to write; a launch waits briefly for it (computer-use.md §5.8).
+rm -f "$data/browser/devtools.json"
 
 # BROWSER is resolved before the wrappers below shadow it; one that is not installed leaves the choice to the launcher.
 browser_path=

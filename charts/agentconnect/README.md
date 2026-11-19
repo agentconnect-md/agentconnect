@@ -524,6 +524,10 @@ is required.
 | `computerPool.egressTo`               | public addresses      | Where `egressPorts` may lead; private ranges are excluded     |
 | `computerPool.viewerPeerToPeerEgress` | `false`               | Admit UDP on any port to `egressTo`, for punched viewer media |
 
+A desktop pod must run no container but its own: the browser's DevTools endpoint listens on the pod's loopback, which
+every container of a pod shares, so exclude the desktops' namespace from sidecar injection (a service mesh) or the
+desktop turns its browser tier off ([design](../../docs/designs/computer-use.md#58-browser-tools-over-the-devtools-protocol-design)).
+
 A desktop pod may reach DNS, HTTPS, and the ports `egressPorts` lists on the addresses
 `egressTo` allows (public ones by default, so the browser cannot reach the cluster's own
 listeners on 8080; add a private proxy's address there if it needs one). With `relay.turn` or

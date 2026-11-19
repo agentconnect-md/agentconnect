@@ -348,6 +348,22 @@ describe('launchBrowser', () => {
     }
   )
 
+  it.skipIf(!posix)("leaves a profile's port file and chrome://inspect setting alone off the image", async () => {
+    const dir = temp()
+    const browser = fakeBrowser(dir)
+    const profile = join(dir, 'profile')
+    mkdirSync(profile, { recursive: true })
+    const localState = JSON.stringify({ devtools: { remote_debugging: { 'user-enabled': true }, other: 1 }, x: 2 })
+    writeFileSync(join(profile, 'Local State'), localState)
+    writeFileSync(join(profile, 'DevToolsActivePort'), '9222\n/devtools/browser/a')
+
+    await launchBrowser({ profile, sources: [], browser: browser.path })
+
+    await expect.poll(() => browser.calls()[0]?.[0]).toBe(`--user-data-dir=${profile}`)
+    expect(readFileSync(join(profile, 'Local State'), 'utf8')).toBe(localState)
+    expect(existsSync(join(profile, 'DevToolsActivePort'))).toBe(true)
+  })
+
   it.skipIf(!posix)('moves the profile it replaces in before its first start', async () => {
     const dir = temp()
     const old = masterProfile(dir)

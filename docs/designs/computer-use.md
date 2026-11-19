@@ -12,11 +12,12 @@ by forking and merging Chromium profiles when a browser starts (§3.9, §3.10); 
 and it shipped as M6 (§14.9), on by default where supported. v9 (2026-11-18) designs a second way to work a browser,
 beside the screen: the browser a Computer starts accepts the DevTools protocol, and the desktop daemon embeds Chrome
 DevTools MCP to offer its page tools under the same lease (§5.8); the viewer gains a Browser view, the page under an
-address bar, for a person to operate (§7.6); and the image moves from Chromium to Google Chrome (§3.8). None of it is
-built yet (§14.10). v9.1 (2026-11-18) records the browser-tools prototype (§14.10) and the corrections it made: the
+address bar, for a person to operate (§7.6); and the image moves from Chromium to Google Chrome (§3.8). It is built in
+the steps of §14.10. v9.1 (2026-11-18) records the browser-tools prototype (§14.10) and the corrections it made: the
 launcher's flags and first-run file, the endpoint's stale port file and the AutomationControlled flag, the egress
 forwarder's loopback refusal, the child's flags and lifetime, opaque page ids, and the screencast's measured rates and
-limits. The Chinese version lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
+limits. v9.2 (2026-11-19) lands step 3, the DevTools endpoint (§3.10, §5.8), and decides §17-26. The Chinese version
+lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
 AgentConnect operates comes later. The pair mirrors the self-hosted daemon and the managed daemon pool
@@ -823,40 +824,63 @@ then starts the browser. No extension and no DevTools protocol are involved.
   profile is not running, and otherwise hands the request to the running browser, which opens a window. The browser
   gets the main session bus (the keyring that decrypts `v11` cookies lives there, not on the desktop's own bus),
   `--ozone-platform=x11` and `--restore-last-session`, and never the caller's `CHROME_EXTRA_FLAGS`.
-- **DevTools endpoint [design].** Where the Computer has the browser tier (§5.8: an isolated Computer whose policy
-  leaves it on), the launcher also starts the browser with `--remote-debugging-port=0`, on every start whoever asked,
-  since nothing outside a browser started without the switch can attach to it later (a second invocation's switch is
-  dropped at the hand-off) and a profile has only one browser. Elsewhere it never passes the switch, and a policy
-  change applies at the browser's next start. The merge itself still uses no DevTools protocol.
+- **DevTools endpoint [implemented].** Where the Computer has the browser tier (§5.8: an isolated Computer whose
+  policy leaves it on), the launcher also starts Google Chrome with `--remote-debugging-port=0`, on every start
+  whoever asked, since nothing outside a browser started without the switch can attach to it later (a second
+  invocation's switch is dropped at the hand-off) and a profile has only one browser. Elsewhere it never passes the
+  switch, and a policy change applies at the browser's next start. The merge itself still uses no DevTools protocol.
+  - **The launch state.** The launcher is a separate process, so the daemon decides the tier (§5.8) and writes what
+    the next start passes to `browser/devtools.json` in the data directory: the tier on or off, whether to hide the
+    webdriver mark (below), and the port of its own egress forwarder where it runs one (§15.4). It writes the file at
+    start, on every policy and on every namespace check, and the launcher reads it on every start. The image's
+    entrypoint removes the previous start's file, and a launch with no file waits up to 15 s for the daemon's, which a
+    registered daemon writes once its first policy arrives; a file that does not come reads as the tier off. A
+    registered daemon that has no policy 15 s after its start (the Control Plane unreachable) writes the tier off, so
+    later launches do not wait, and its first policy overwrites that. A browser that is not Google Chrome never gets
+    the switch, whatever the file says: the browser's path must resolve to Google's binary
+    (`/usr/lib/google/chrome/chrome` on the image, to which `/opt/google/chrome` links, `/opt/google/chrome/chrome`
+    elsewhere) or to Google's launcher script that execs it, so a `google-chrome` link to Chromium is not Chrome.
+  - **Caller switches.** A caller's arguments (the wrapper's `"$@"`) follow the launcher's flags, and Chrome takes a
+    switch's last value, so on the image the launcher drops a caller's `--remote-debugging-*`,
+    `--remote-allow-origins*`, `--proxy-*`, `--no-proxy-server` and `--disable-blink-features*` and logs that it did.
+    Before reporting `devtools` for a browser the daemon also reads its `/proc/<pid>/cmdline` and refuses one that
+    carries `--remote-allow-origins`, or that names another proxy than the forwarder it expects (a managed pod's or
+    its own); one without the switch started before the tier turned on and gets the endpoint at its next start.
   - **The port file.** Chrome binds a free port on 127.0.0.1 only and writes `<port>\n/devtools/browser/<uuid>`, with
     no trailing newline, to `DevToolsActivePort` in the profile directory about 250 ms after spawn, before the first
     window; that is where the daemon reads the endpoint from. Port 0 is required, not a preference: with a fixed port
     neither Chrome 158 nor Chromium 156 writes the file. The file is never removed: it outlives a graceful exit and a
     crash, a start without the switch leaves it untouched, and until the new browser rewrites it it names the old
-    port. So the launcher deletes it before every start, and the daemon accepts only a file written after that start
-    whose path matches `webSocketDebuggerUrl` from `/json/version` on its port.
+    port. So the launcher deletes it before every start, with the tier on or off, and the daemon accepts only a file
+    written after its browser process started (read from `/proc/<pid>/stat`) whose path matches `webSocketDebuggerUrl`
+    from `/json/version` on its port. It looks at each desktop's browser every 2 s: a new browser process is checked
+    afresh, one that exits drops its endpoint, and one whose file has not checked out 30 s after it was seen is
+    reported as `endpoint not found` (and still retried). The self-test then has three outcomes: a 403 passes, an
+    upgrade or any other answer fails the browser for its life, and no answer (an error or a 3 s timeout) leaves it
+    pending for the next look.
   - **The page-visible cost.** The switch alone sets `navigator.webdriver` in every page (Chrome 158 and Chromium
     156), with no client attached: four of five bot-detection pages then called the browser automated, CreepJS's
     headless score rose from 0% to 33%, and one click no longer passed a server-validated Cloudflare challenge (0 of 4
-    with the switch alone, 0 of 6 counting runs with a client attached). So the launcher passes
-    `--disable-blink-features=AutomationControlled` whenever it passes the switch **[legal]**, which restored every
-    verdict and the challenge's pass (measured, from one hosting-range address and 16 Cloudflare trials, so the
-    differences between configurations are the finding, not the absolute verdicts). Nothing tries to hide an attached
-    client; its cost is in §5.8. This is a product position, not a launcher detail: on a managed computer AgentConnect
-    operates the browser and its egress and suppresses a signal sites use to identify automation, so its line and
-    whether an organization can turn it off are §17-26, settled before step 3 ships on managed computers.
+    with the switch alone, 0 of 6 counting runs with a client attached). So whenever the launcher passes the switch it
+    also passes `--disable-blink-features=AutomationControlled`, which restored every verdict and the challenge's pass
+    (measured, from one hosting-range address and 16 Cloudflare trials, so the differences between configurations are
+    the finding, not the absolute verdicts). The flag is on by default, and an organization can turn it off for its
+    Computers with the policy's `browserHideWebdriver: false` (§17-26, decided 2026-11-19); an unregistered daemon
+    reads the same field from its config. In the container a page read `navigator.webdriver` as `false` with the flag
+    and `true` without it. Nothing tries to hide an attached client; its cost is in §5.8.
   - **Never passed.** `--remote-allow-origins`: with `*`, a page that knows an id read HttpOnly cookies and ran script
     in any tab (measured). `--remote-debugging-pipe` was considered and rejected for now: it opens no socket and
     writes no port file, but Chrome exits with the process holding the pipe (both measured), so the daemon would have
     to be every browser's parent and its only DevTools client, multiplexing for the child and the viewer, and a daemon
     restart would end the browser. It remains the route to an endpoint only the daemon reaches (§17-20). The daemon
     reports `devtools` only after a handshake with a foreign `Origin` got 403.
-  - **Tier off.** The launcher never passes the switch and clears `devtools.remote_debugging` from `Local State`
-    before each start. Limit: `chrome://inspect/#remote-debugging` (Chrome 158 and Chromium 156) has a checkbox that
-    opens 127.0.0.1:9222 on the running browser at once, without the switch; it is saved in `Local State` and so
-    spreads to every fork, which is why the launcher clears it. Whoever operates the browser (a person, or an agent
-    through `computer_*`) can still tick it, and every connection then waits for an in-browser "Allow remote
-    debugging?" approval and shows the automation infobar. While the switch is passed, only the switch's port listens.
+  - **Tier off.** The launcher never passes the switch and removes `devtools.remote_debugging` from `Local State`
+    before each start, keeping the rest of the file. Limit: `chrome://inspect/#remote-debugging` (Chrome 158 and
+    Chromium 156) has a checkbox that opens 127.0.0.1:9222 on the running browser at once, without the switch; it is
+    saved in `Local State` and so spreads to every fork, which is why the launcher clears it. Whoever operates the
+    browser (a person, or an agent through `computer_*`) can still tick it, and every connection then waits for an
+    in-browser "Allow remote debugging?" approval and shows the automation infobar. While the switch is passed, only
+    the switch's port listens.
 - **Lifetime.** The browser outlives a turn, because the next turn usually continues on the same page. It is closed when
   its desktop has had no lease and no viewer for `browserIdleMinutes` (10), and when the desktop stops; the next launch
   then forks again and picks up logins made elsewhere, and `--restore-last-session` brings the tabs back (a GitHub tab
@@ -940,7 +964,8 @@ interface ComputerPolicy {
   appAllowlist?: string[] // apps that may be operated (bundle id / executable name)
   redactApps: string[] // app windows masked in screenshots, such as password managers
   exposeDriverTools: boolean // expose the cua_* pass-through tools (§5.5), default false
-  browserTier: boolean // [design] the browser tier (§5.8, §7.6); on for an isolated Computer, never on elsewhere
+  browserTier?: boolean // the browser tier (§5.8, §7.6); on for an isolated Computer, never elsewhere; absent: off
+  browserHideWebdriver?: boolean // with the tier, hide the switch's webdriver mark (§3.10); absent: hidden
   shell: 'off' | 'ask' | 'on' // computer_exec (§5.7); off on a self-hosted Computer
   files: 'off' | 'read' | 'read-write' // the file tools (§5.7); off on a self-hosted Computer
   fileRoots?: string[] // prefixes the file tools may touch (§5.7); absent: the home directory
@@ -1428,9 +1453,52 @@ daemon can reach. On an isolated Computer the launcher passes the switch only wh
 listens unless whoever operates the browser turns on `chrome://inspect`'s remote debugging, which then asks for
 approval in the browser on every connection. Turning the tier off refuses the `chrome_*` tools and the Browser view at
 once; the listening port goes at the browser's next start. Google Chrome also refuses the switch for its default data
-directory, which is why the image's main profile moves (§3.8). The daemon reports `devtools` in its capabilities, per
-desktop, where it found Google Chrome, opened the endpoint, can start the child, and its network namespace is its own:
-under host networking it reports none, and `doctor` says why (§3.8).
+directory, which is why the image's main profile moves (§3.8).
+
+**[implemented]** The daemon turns the tier on for a desktop's browsers only when all of these hold, read in this
+order: the Computer image (`AGENTCONNECT_COMPUTER_IMAGE=1`), `isolation` `container` or `vm`, a grant, a network
+namespace of its own, and Google Chrome as the main desktop's browser (`BROWSER` when it is set and installed, as the
+entrypoint chooses, else the launcher's choice). The grant is, on a registered desktop, the last `computer/policy`
+with `browserTier: true` (absent or false is off, so an older Control Plane grants none) and none at all once a
+run-time `computer/revoke` arrives; on an unregistered one it is `browserTier` in its own config (off by default).
+Until the tier is granted nothing is scanned. Off the image the daemon builds none of this: a person's Linux machine
+gets no scan, no launch state and no `devtools` check. On the image without isolation it writes the tier off and
+`doctor` shows one static line.
+
+The namespace is its own when every TCP socket in any state and every UDP socket (`/proc/net/tcp`, `tcp6`, `udp`,
+`udp6`, skipping inode 0, which TIME_WAIT rows and closed sockets carry) is held by a process the daemon can see. So a
+sharer needs no listener to be found: a container joined with `--network container:` under another uid turned the tier
+off 42 s after it opened one connection and 57 s after it opened one UDP socket (measured). Host networking, a
+sidecar, and a process inside the container that the daemon cannot inspect (another user's, such as one started with
+`sudo` or a service user) all show such sockets, and `doctor` names both causes. A socket that is gone on a second
+read is ignored. `/proc/net/unix` is not read: in the image ssh-agent and gpg-agent, which make themselves unreadable,
+hold unix sockets that no visible process shows (measured), so it would turn the tier off in every container. Docker's
+embedded DNS is exempt only where `/etc/resolv.conf` names 127.0.0.11 as a nameserver (a user-defined network), and
+only for its TCP listener and UDP socket on 127.0.0.11 present at the daemon's first check, whose inodes it pins, with
+the connections a DNS query over TCP opens on that listener's own address and port, which no other process can bind;
+any other socket on 127.0.0.11 counts, and on the default bridge network nothing on 127.0.0.11 is exempt (a sharer
+listening only on 127.0.0.11 turned the tier off at the next check on both networks, measured). No socket of the
+engine's forwarded queries appeared in the container's namespace during 300 lookups (measured). Limit: DNS sockets the
+engine makes later, as after a network is disconnected and connected again, are not pinned, so the tier stays off
+until the daemon restarts.
+
+The check is detection, not prevention. It runs at start and every 60 s and sees only sockets open at that moment, so
+a sharer is found only if it holds a socket when a check runs: one that connects, uses the port and closes between two
+checks is never found (measured: a sharer that read four cookies and closed within half a second left the tier on
+through two checks), and one found holding a connection keeps it, since turning the tier off closes the running
+browser's endpoint only at its next start. The guarantee is the pod carrying no other container (the chart's pod
+template) and the self-hosted container running in a network namespace of its own; the check turns the tier off when
+that does not hold, the reason is logged once, and `doctor` shows it.
+
+The daemon reports `capabilities.devtools`, the desktops (`main` or an agent desktop's id) whose browser's endpoint it
+read and self-tested, read tolerantly by an older Control Plane, and drops a desktop at once when the tier goes off or
+its browser exits. `doctor`'s `devtools` check says on, with each browser's endpoint port, off by policy, or
+unavailable with the reason (not the image, not isolated, not its own network namespace, Google Chrome missing,
+endpoint not found, self-test failed, started with switches the launcher does not pass). A browser started before the
+tier turned on is information: it gets the endpoint at its next start. After the tier turns off, a browser still
+holding the port it was verified on keeps the endpoint from when the tier was on until its next start, which `doctor`
+says as information. `doctor` warns when a desktop's browser listens on any other port, such as the `chrome://inspect`
+checkbox's 9222.
 
 Loopback isolation was measured in the container. A second account, denied the profile and `DevToolsActivePort`, found
 the port in the world-readable `/proc/net/tcp`, and a container sharing the network namespace under an unrelated uid
@@ -1454,7 +1522,8 @@ the endpoint:
   (measured); whether that backend can steer it into a same-origin read was not tried. Without a proxy the port is not
   secret either: while the Local Network Access prompt is pending, an open port's request hangs and a closed port's is
   refused at once.
-- **Another container.** Containers of one pod share the loopback, so the desktop pod carries no sidecar.
+- **Another container.** Containers of one pod share the loopback, so the desktop pod carries no sidecar: the chart's
+  pod template says so, and the namespace check above finds one within a minute of its first socket.
 - **The agent's own commands.** With `shell` on they run as the desktop's user and reach the port directly, around the
   allowlist, the lease and the audit, which §5.7 already counts as handing over the account.
 
@@ -1482,10 +1551,13 @@ no body), but in the container it answers about half a millisecond sooner at the
 12.4–15.9 ms closed, measured), which a statistical probe can tell apart; a name a page controls that resolves to
 loopback and to an unroutable address also tells them apart, since a closed port falls through to the next address and
 waits for the timeout. That matters little: the port is discoverable by design (above), and the refusal, not its
-secrecy, is the barrier. **[design]** With the browser tier on, every Computer's browser goes through it, the
+secrecy, is the barrier. **[implemented]** With the browser tier on, every Computer's browser goes through it, the
 self-hosted container's included, in direct mode where no organization proxy is set, so one barrier holds in both
 forms; the Local Network Access prompt is not one, since one click allows it and it does not cover a top-level popup
-(above). `doctor` does not report a port the daemon did not open yet.
+(above). Where no `AGENTCONNECT_EGRESS_PORT` names a managed pod's forwarder, the daemon starts its own on a loopback
+port once the tier is on and keeps it for its lifetime. In the self-hosted container a page on a loopback dev server
+then got the same answers from the DevTools port as from a closed one (`fetch` resolved opaque, a `<script>` failed),
+while the dev server's own script loaded (measured).
 
 **The child.** One per desktop, started by a `chrome_*` call, and stopped after `leaseIdleSeconds` (§4.4) without a
 `chrome_*` call, when the session's lease ends, when its browser exits, and when its desktop stops; the next call
@@ -1531,13 +1603,14 @@ writing and `select_page` as read-only although it can change the visible tab. E
 | `chrome_evaluate_script`                                                                                                 | yes   | Only with `shell` not `off`, approved as `computer_exec` is (§5.7)                   |
 
 - **Policy.** `browserTier` (§4.1) is on by default on an isolated Computer, a decision made as `shell`'s default was
-  for managed computers: nothing there is a person's. Off, the launcher opens no endpoint (§3.10's `chrome://inspect`
-  limit aside), so there are no tools and no Browser view (§7.6) either. The tier needs `agentMode: 'control'`, as
-  `shell` does. A `view` agent keeps screenshots only: even the tools that take no lease read more than a screenshot
-  shows (text below the fold, every tab's title and address, console messages, which carry tokens on many sites). A
-  browser that `appAllowlist` leaves out, or that `redactApps` names, gets no tier. Scripts follow `shell` and uploads
-  follow `files`: a script runs inside every site the browser is signed in to, and reads what a screenshot cannot (a
-  field's value, storage a page script can reach).
+  for managed computers: nothing there is a person's. The Control Plane writes that default; a desktop reads an absent
+  field as off. Off, the launcher opens no endpoint (§3.10's `chrome://inspect` limit aside), so there are no tools
+  and no Browser view (§7.6) either. The tier needs `agentMode: 'control'`, as `shell` does. A `view` agent keeps
+  screenshots only: even the tools that take no lease read more than a screenshot shows (text below the fold, every
+  tab's title and address, console messages, which carry tokens on many sites). A browser that `appAllowlist` leaves
+  out, or that `redactApps` names, gets no tier. Scripts follow `shell` and uploads follow `files`: a script runs
+  inside every site the browser is signed in to, and reads what a screenshot cannot (a field's value, storage a page
+  script can reach).
 - **Authority on the desktop.** As for the command-line tier (§5.7). The channel token (§3.7) names the tier beside
   `agentMode`, `shell` and `files`, and the desktop registers only the `chrome_*` tools its token allows, narrowed by
   the last policy the CP pushed, where an unset field reads off, so an older Control Plane grants none. From the
@@ -1937,19 +2010,20 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   and its warning says so.
 - **Least scope**: `appAllowlist`, `redactApps` (window-level masking feasibility to be validated), granting a single display.
 - **Prompt injection**: screen content is untrusted; the session instructions say so (§5.6).
-- **DevTools endpoint [design]**: a browser's remote-debugging port holds every session of every signed-in site, and
-  loopback is no boundary between local principals (measured: another account and a namespace-sharing container each
-  read an HttpOnly cookie with no credential). So the launcher opens the port only on an isolated Computer in a
-  network namespace of its own whose policy has the browser tier on; the agent gets the allowlisted tools and never
-  the endpoint; and the child that holds it reports nothing to its vendor (§5.8). Pages do reach its HTTP side, so
-  what must hold is that no page reads a response, completes a DevTools WebSocket or gets the DevTools front end
-  attached to a target, which rests on Chrome's `Host` and `Origin` checks, on target ids never reaching page content,
-  and on the egress forwarder's refusal of those ports, which every Computer with the tier puts in front of its
-  browser, the self-hosted container included; the Local Network Access prompt is not a barrier. The endpoint is not
-  invisible to sites: the switch sets `navigator.webdriver` unless the launcher passes the AutomationControlled flag
-  (§3.10), and the child's Runtime domain is detectable while it is attached, which is why it stops when idle. The
-  threat model's computer-use section, once it exists (§3.10), lists the endpoint, the forwarder's refusal, the opaque
-  page ids and the child's reporting switches.
+- **DevTools endpoint [implemented; the tools and the child design]**: a browser's remote-debugging port holds every
+  session of every signed-in site, and loopback is no boundary between local principals (measured: another account and
+  a namespace-sharing container each read an HttpOnly cookie with no credential). So the launcher opens the port only
+  on an isolated Computer in a network namespace of its own whose policy has the browser tier on, and the daemon
+  reports it only after its foreign-`Origin` self-test; the agent gets the allowlisted tools and never the endpoint;
+  and the child that holds it reports nothing to its vendor (§5.8). Pages do reach its HTTP side, so what must hold is
+  that no page reads a response, completes a DevTools WebSocket or gets the DevTools front end attached to a target,
+  which rests on Chrome's `Host` and `Origin` checks, on target ids never reaching page content, and on the egress
+  forwarder's refusal of those ports, which every Computer with the tier puts in front of its browser, the self-hosted
+  container included; the Local Network Access prompt is not a barrier. The endpoint is not invisible to sites: the
+  switch sets `navigator.webdriver` unless the launcher passes the AutomationControlled flag, which it does unless the
+  organization turns it off (§3.10), and the child's Runtime domain is detectable while it is attached, which is why
+  it stops when idle. The threat model's computer-use section, once it exists (§3.10), lists the endpoint, the
+  forwarder's refusal, the opaque page ids and the child's reporting switches.
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
   the length of `computer_type` text and no screenshots [validated]. The release adds the agent, session, target window,
   approval outcome, and screenshot reference, reports to the Control Plane, and lets the owner query per Computer.
@@ -2426,8 +2500,8 @@ Then, one pull request each:
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | 1    | This design                                                                                                                                   | Review                                                            |
 | 2    | The image on Google Chrome: flags in the launcher, policies, the main profile's move and migration, the dock, `doctor`, the smoke test        | The `Desktop image` job on both arches; a woken volume's logins   |
-| 3    | The DevTools endpoint and the child: the launcher's switch, reading `DevToolsActivePort`, the child's lifetime, the `devtools` capability     | Unit tests with a fake child; the image test with a real one      |
-| 4    | The `chrome_*` tools on the desktop daemon: allowlist, stripped arguments, the token's tier, lease, arbitration, `uncertain`, audit           | Unit tests; a local client driving a page in the container        |
+| 3    | The DevTools endpoint: the launcher's switch, reading `DevToolsActivePort`, the self-test, the namespace check, the `devtools` capability     | Unit tests; checks in the built image's containers                |
+| 4    | The `chrome_*` tools on the desktop daemon: the child and its lifetime, allowlist, stripped arguments, the token's tier, lease, `uncertain`   | Unit tests with a fake child; a local client driving a page       |
 | 5    | Protocol, Control Plane and agent daemon: the `computer-browser-v1` contract, the policy field and token claim, offering, approvals, guidance | Daemon and CP tests; an agent through the Control Plane on test   |
 | 6    | The daemon's DevTools connection and the viewer's browser API: pages, navigation, screencast frames, input, takeover, the `/view` page        | Unit tests; a takeover that navigates from another machine        |
 | 7    | The console's Browser view in the shared viewer: the switch, the bar, the page, dialogs; Infra's Computer page and the agent side panel       | Web tests; the console against a managed computer, on a phone too |
@@ -2437,15 +2511,17 @@ What the prototype adds to them:
 - **Step 2**: the launcher removes `CHROME_EXTRA_FLAGS`, always passes `--no-first-run` and writes `First Run`; the
   migration keeps the open tabs and leaves out `DevToolsActivePort`; the form-fill master moves to `browser/main`; the
   entrypoint's process names, the panel entry and the `BROWSER_NAMES` order change.
-- **Step 3**: the self-hosted container's browser behind the forwarder, whose loopback refusal landed first with
-  `egress.test.ts`'s direct-mode cases rewritten (§5.8); the AutomationControlled flag beside the switch, once §17-26
-  is settled for managed computers; never `--remote-allow-origins`, and the foreign-`Origin` 403 self-test before
-  reporting `devtools`; `--hide-crash-restore-bubble` on every start; deleting and checking `DevToolsActivePort`, and
-  the seed filter; clearing `Local State` with the tier off; `--wsEndpoint` and the child's flags; the child's stop on
-  idle, lease end and browser exit, and its kill after a restart; no `devtools` under host networking.
-- **Step 4**: filtering the five extra tools; `isolatedContext`, temp-file screenshots, upload roots and the child's
-  `TMPDIR`; opaque page ids; the front tab before acting; the race against the browser's exit, and `isError` on
-  navigation.
+- **Step 3 [implemented]**: the self-hosted container's browser behind the forwarder, whose loopback refusal landed
+  first with `egress.test.ts`'s direct-mode cases rewritten (§5.8); the AutomationControlled flag beside the switch,
+  on by default and an organization's to turn off (§17-26); never `--remote-allow-origins`, and the foreign-`Origin`
+  403 self-test before reporting `devtools`; `--hide-crash-restore-bubble` on every start; deleting and checking
+  `DevToolsActivePort`, and the seed filter; clearing `Local State` with the tier off; no `devtools` under host
+  networking or beside a sidecar. The Chrome DevTools MCP child moved to step 4, since nothing uses it before the
+  tools.
+- **Step 4**: the child: `--wsEndpoint` and its flags, its stop on idle, lease end and browser exit, and its kill
+  after a restart; filtering the five extra tools; `isolatedContext`, temp-file screenshots, upload roots and the
+  child's `TMPDIR`; opaque page ids; the front tab before acting; the race against the browser's exit, and `isError`
+  on navigation.
 - **Step 6**: the daemon's opaque page ids in `/view/api/browser`; no Runtime on the viewer's connection; Page on
   every page for dialogs; a 15–20 fps cap, `maxWidth` for narrow views and binary frames; following the front tab;
   input sent without waiting on replies.
@@ -2616,26 +2692,27 @@ its managed computers' browser traffic leaves:
 The Control Plane hands a managed desktop its organization's egress on `computer/auth/ok` (`egress`, read tolerantly
 by older desktops) and pushes a change with `computer/egress` to the desktops whose capabilities report `egress`;
 self-hosted Computers get none. In the desktop image, a managed pod sets `AGENTCONNECT_EGRESS_PORT` (7691), and
-**[design]** so does a self-hosted container while its browser tier is on, in direct mode and without the WebRTC
-policy, so its browser has the same loopback refusal (§5.8): the launcher of §3.10 reads the port and passes
-`--proxy-server=http://127.0.0.1:<port>` with `<-loopback>` (so loopback goes through it too) and keeps WebRTC to the
-proxy; host names resolve at the proxy, and the desktop daemon serves an HTTP proxy there (`EgressForwarder`) that
-tunnels `CONNECT` and forwards plain requests either straight out or through the organization's proxy with its
-credentials, which the browser never sees. Until the Control Plane names the egress the forwarder answers 503, so a
-desktop whose organization wants a proxy never goes out directly first; a desktop with no registration goes direct. A
-Control Plane that cannot read a managed desktop's egress fails its auth (the desktop redials) rather than omit it,
-and a desktop told `computer-egress-v1` never takes a missing egress as direct. The pod's NetworkPolicy admits TCP 443
-and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the proxy, to `computerPool.egressTo` only
-(public addresses by default, so the browser cannot reach in-cluster listeners on those ports). Limits: only the
-browser started through the launcher of §3.10, which every start in the image goes through (§3.8), is bound to the
-proxy (other programs in the pod, and the binary run directly, keep the pod's network); SOCKS proxies and per-agent
-proxies are not offered; a proxy on another port needs `egressPorts`.
+**[implemented]** a self-hosted container's daemon runs a forwarder of its own on a loopback port while its browser
+tier is on, in direct mode and without the WebRTC policy, and names it in the launch state (§3.10), so its browser has
+the same loopback refusal (§5.8): the launcher of §3.10 reads the port and passes
+`--proxy-server=http://127.0.0.1:<port>` with `<-loopback>` (so loopback goes through it too) and, in a managed pod,
+keeps WebRTC to the proxy; host names resolve at the proxy, and the desktop daemon serves an HTTP proxy there
+(`EgressForwarder`) that tunnels `CONNECT` and forwards plain requests either straight out or through the
+organization's proxy with its credentials, which the browser never sees. Until the Control Plane names the egress the
+forwarder answers 503, so a desktop whose organization wants a proxy never goes out directly first; a desktop with no
+registration goes direct. A Control Plane that cannot read a managed desktop's egress fails its auth (the desktop
+redials) rather than omit it, and a desktop told `computer-egress-v1` never takes a missing egress as direct. The
+pod's NetworkPolicy admits TCP 443 and the chart's `computerPool.egressPorts` (3128 and 8080 by default) for the
+proxy, to `computerPool.egressTo` only (public addresses by default, so the browser cannot reach in-cluster listeners
+on those ports). Limits: only the browser started through the launcher of §3.10, which every start in the image goes
+through (§3.8), is bound to the proxy (other programs in the pod, and the binary run directly, keep the pod's
+network); SOCKS proxies and per-agent proxies are not offered; a proxy on another port needs `egressPorts`.
 
 **Loopback [implemented].** The forwarder also refuses the daemon's loopback ports and every port of a desktop's
-browser (§5.8), with or without the browser tier, wherever it runs: a managed pod today and, **[design]** with the
-tier, the self-hosted container. Since the browser sees every page arrive from a loopback proxy, Chrome classes pages
-as loopback and its Local Network Access does not apply behind the forwarder (measured), so that refusal, Chrome's
-`Host` and `Origin` checks and the opaque page ids are the only page-side barriers to the DevTools endpoint.
+browser (§5.8), with or without the browser tier, wherever it runs: a managed pod, and with the tier the self-hosted
+container. Since the browser sees every page arrive from a loopback proxy, Chrome classes pages as loopback and its
+Local Network Access does not apply behind the forwarder (measured), so that refusal, Chrome's `Host` and `Origin`
+checks and the opaque page ids are the only page-side barriers to the DevTools endpoint.
 
 Under Xvfb the browser has no WebGL context, and CreepJS rated Chromium 156 and Chrome 158 alike 38% "like headless",
 with and without the DevTools endpoint, so this is a reputation cost of the desktop and not of the browser tier.
@@ -2766,10 +2843,12 @@ desktop (a container image, §3.8).
     patterns), or does that belong to the egress policy (§15.4)?
 25. The Browser view on a phone (§7.6) shows a desktop-sized page. DevTools can give the page the phone's viewport
     so it reflows, but that changes what the agent and the Desktop view see. Offer it only while a person is in control?
-26. The AutomationControlled flag (§3.10) keeps the DevTools switch from marking every page automated, a mark the
-    screen tier never set, including while a person operates the browser. Where is the line? The design hides no
-    attached client and keeps CAPTCHAs on screen input; should a challenge go to the person through takeover instead,
-    and can an organization turn the flag off for its Computers? [legal]
+26. ~~The AutomationControlled flag (§3.10) keeps the DevTools switch from marking every page automated, a mark the
+    screen tier never set, including while a person operates the browser. Where is the line, and can an organization
+    turn the flag off for its Computers?~~ **Decided (§3.10, 2026-11-19)**: whenever the launcher opens the port it
+    passes the flag, on by default; an organization can turn it off for its Computers (`browserHideWebdriver`), which
+    the Control Plane's organization setting will set; an attached client is never hidden, and CAPTCHAs stay on screen
+    input.
 
 ## Appendix A: VM desktop pool design summary (reference for managed computers)
 

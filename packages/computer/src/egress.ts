@@ -119,6 +119,11 @@ export class EgressForwarder {
     return this.policy.mode
   }
 
+  /** The port it listens on once started. */
+  get port(): number | undefined {
+    return this.listening
+  }
+
   /** Apply the organization's egress; open connections keep the route they started on. */
   apply(policy: EgressPolicy): void {
     const before = this.describe()

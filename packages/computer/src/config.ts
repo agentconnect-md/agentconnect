@@ -78,6 +78,10 @@ export const DaemonConfig = z.object({
   streamBitrateKbps: z.number().int().min(200).max(50_000).default(2500),
   // Linux: the loopback port the form-fill browser extension dials (computer-form-fill-and-vault.md §8); absent, off.
   formFillPort: z.number().int().min(1024).max(65_535).optional(),
+  // Unregistered only: the browser tier's DevTools endpoint on an isolated Computer (computer-use.md §5.8); a registered one follows its policy.
+  browserTier: z.boolean().default(false),
+  // Unregistered only: with the tier, hide the switch's `navigator.webdriver` mark (§3.10).
+  browserHideWebdriver: z.boolean().default(true),
   // Where clients reach this daemon from outside (a published port or a proxy); printed instead of the local addresses.
   publicUrl: z.string().url().optional(),
   // Behind NAT (e.g. Docker bridge): the only ICE host address offered to viewers, instead of the one they connected to.
