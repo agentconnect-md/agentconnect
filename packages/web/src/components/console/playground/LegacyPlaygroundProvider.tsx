@@ -80,6 +80,11 @@ import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat
 import { createWebchatStallWatch, type WebchatStallWatch } from '@/lib/webchat-stall-watch'
 import { filesMarker, type ComposerFile } from '@/lib/webchat-file'
 import { WEBCHAT_UPLOADS_FEATURE } from '@/lib/shared-file'
+import {
+  newSessionNotice,
+  newSessionVerdict,
+  type NewSessionVerdict
+} from '@/components/console/composer-control-commands'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 export type { QueuedTurn } from './contract'
 
@@ -87,6 +92,8 @@ export type { QueuedTurn } from './contract'
  *  answered at all — the daemon has stopped serving that bridge — so the frame is told plainly
  *  rather than left spinning on a promise nothing will resolve. */
 const APP_RPC_TIMEOUT_MS = 30_000
+// How long `/new` waits for the daemon's verdict before saying it could not.
+const NEW_SESSION_TIMEOUT_MS = 15_000
 
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
 // The prefix lets the provider tell the two apart without extra bookkeeping.
@@ -395,6 +402,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
   const pendingDials = useRef(new Map<string, () => void>())
+  /** A `new_session` awaiting its verdict, by session id; a later request supersedes an earlier one. */
+  const newSessionCalls = useRef(new Map<string, (verdict: NewSessionVerdict) => void>())
   /** MCP App view RPCs awaiting their `app_rpc_result` event, by the browser-minted `callId`. */
   const appCalls = useRef(
     new Map<string, (outcome: { ok: true; result: unknown } | { ok: false; error: string }) => void>()
@@ -1907,6 +1916,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   if (agentIds && laneAgent && !agentIds.includes(laneAgent)) continue
                   resumeStalledLane(ws, key)
                 }
+              } else if (m.type === 'new_session' && m.ack) {
+                newSessionCalls.current.get(id)?.(newSessionVerdict(m.ack))
               } else if (m.type === 'refused' && m.refused?.reason) {
                 // A runtime change the agent refused: only this browser is told, and the reason names who may make it.
                 pushStep(id, { kind: 'notice', text: `🔒 ${m.refused.reason}`, standing: true })
@@ -2773,6 +2784,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, pushStep, setBusy]
   )
 
+  // Request/reply over the conversation socket: the relay answers with a `new_session` frame, else the wait gives up.
+  const pgNewSession = useCallback(
+    (id: string, agentForId: string, conversationId?: string): Promise<NewSessionVerdict> =>
+      new Promise<NewSessionVerdict>((resolve) => {
+        const settle = (verdict: NewSessionVerdict) => {
+          clearTimeout(timer)
+          // A superseded request resolves quietly; only the current one speaks in the conversation.
+          if (newSessionCalls.current.get(id) === settle) {
+            newSessionCalls.current.delete(id)
+            pushStep(id, { kind: 'notice', text: newSessionNotice(verdict), standing: true })
+          }
+          resolve(verdict)
+        }
+        const timer = setTimeout(() => settle({ ok: false, reason: 'unavailable' }), NEW_SESSION_TIMEOUT_MS)
+        newSessionCalls.current.set(id, settle)
+        connect(id, agentForId, conversationId)
+          .ready.then((ws) => ws.send(JSON.stringify({ type: 'new_session' })))
+          .catch(() => settle({ ok: false, reason: 'unavailable' }))
+      }),
+    [connect, pushStep]
+  )
+
   // Once the daemon creates the real session, the route switches from the synthetic
   // `pg_…` id to that durable id. Keep resolving the same in-memory session so the
   // active socket and streamed transcript survive the route replacement.
@@ -2889,6 +2922,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAnswerFill,
       pgOpenFill,
       pgCancel,
+      pgNewSession,
       getPgSession,
       getPgSuggestion,
       pgSessionList,
@@ -2932,6 +2966,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAnswerFill,
       pgOpenFill,
       pgCancel,
+      pgNewSession,
       getPgSession,
       getPgSuggestion,
       pgSessionList,

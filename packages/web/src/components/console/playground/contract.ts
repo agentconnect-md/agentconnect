@@ -3,6 +3,7 @@ import type { McpAppRpc, WebchatFileAttachment } from '@agentconnect.md/protocol
 import type { SessionMessageDto } from '@/lib/api'
 import type { LiveRetireRead } from '@/lib/session-transcript'
 import type { ComposerFile } from '@/lib/webchat-file'
+import type { NewSessionVerdict } from '@/components/console/composer-control-commands'
 
 export interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own).
@@ -117,6 +118,8 @@ export interface PlaygroundData {
   pgSetFast: (id: string, agentId: string, fastMode: boolean, conversationId?: string) => void
   /** Interrupt the running turn without ending the session. */
   pgCancel: (id: string, agentId: string, conversationId?: string) => void
+  /** Start the conversation over (`/new`): a coordinator rotates, an ordinary chat clears its context; absent on a protocol without it. */
+  pgNewSession?: (id: string, agentId: string, conversationId?: string) => Promise<NewSessionVerdict>
   /** Answer the agent's in-band elicitation card; a list answers a multi-select, a number a
    *  numeric field, a record of value-per-field a multi-field form, `null` is Dismiss. */
   pgAnswerElicitation: (

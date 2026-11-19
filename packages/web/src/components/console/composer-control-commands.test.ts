@@ -4,6 +4,8 @@ import {
   draftWithoutCommandLine,
   matchChoices,
   matchControls,
+  newSessionNotice,
+  newSessionVerdict,
   resolveControl,
   syncCommandMirror,
   type ControlCommand,
@@ -31,6 +33,32 @@ describe('resolveControl', () => {
     expect(resolveControl(ALL, 'Models')?.name).toBe('model')
     expect(resolveControl(ALL, 'perm')?.name).toBe('permission')
     expect(resolveControl(ALL, 'mod')).toBeUndefined()
+  })
+
+  it('reaches `new` by the words people bring from Slack and coding agents', () => {
+    const controls = [control('stop'), { name: 'new' as const, choices: null, run: () => {} }]
+    for (const word of ['new', 'clear', 'RESET']) expect(resolveControl(controls, word)?.name).toBe('new')
+  })
+})
+
+describe('newSessionVerdict', () => {
+  it('reads what the daemon did, and anything else as why it did not', () => {
+    expect(newSessionVerdict({ accepted: true, reason: 'rotated' })).toEqual({ ok: true, outcome: 'rotated' })
+    expect(newSessionVerdict({ accepted: true, reason: 'cleared' })).toEqual({ ok: true, outcome: 'cleared' })
+    expect(newSessionVerdict({ accepted: true, reason: 'empty' })).toEqual({ ok: true, outcome: 'empty' })
+    expect(newSessionVerdict({ accepted: false, reason: 'busy' })).toEqual({ ok: false, reason: 'busy' })
+    expect(newSessionVerdict({ accepted: false, reason: 'Only the owner.' })).toEqual({
+      ok: false,
+      reason: 'Only the owner.'
+    })
+    expect(newSessionVerdict({ accepted: true })).toEqual({ ok: false, reason: 'unavailable' })
+  })
+
+  it('says each outcome in the conversation, a refusal in its own words', () => {
+    expect(newSessionNotice({ ok: true, outcome: 'rotated' })).toMatch(/new session/)
+    expect(newSessionNotice({ ok: true, outcome: 'cleared' })).toMatch(/fresh context/)
+    expect(newSessionNotice({ ok: false, reason: 'busy' })).toMatch(/stop it first/)
+    expect(newSessionNotice({ ok: false, reason: 'Only the owner.' })).toBe('🔒 Only the owner.')
   })
 })
 

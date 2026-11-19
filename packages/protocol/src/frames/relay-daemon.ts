@@ -316,6 +316,8 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     callerRole: ChatCallerRole.optional()
   }),
   z.object({ op: z.literal('set_fast'), fastMode: z.boolean(), callerRole: ChatCallerRole.optional() }),
+  // Start over: a coordinator conversation rotates its coordinator, an ordinary one clears its context (auto-session-mode.md §10).
+  z.object({ op: z.literal('new_session'), userId: z.string().optional(), callerRole: ChatCallerRole.optional() }),
   // `agentId` cancels one participant's live turn; absent ⇒ every live turn in
   // the conversation (and the sole agent's, in a single-agent conversation).
   z.object({ op: z.literal('cancel'), agentId: z.string().uuid().optional() }),

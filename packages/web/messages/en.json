@@ -143,6 +143,10 @@
           "title": "Stop",
           "does": "Stop the current answer"
         },
+        "new": {
+          "title": "New session",
+          "does": "Start over with a fresh context"
+        },
         "model": {
           "title": "Model",
           "does": "List or switch models"

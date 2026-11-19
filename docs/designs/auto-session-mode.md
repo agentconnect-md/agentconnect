@@ -1127,6 +1127,8 @@ decided before §6.9's homes are built for it.
   In a room without threads every command is at the root (§6.10).
 - A platform's own "new chat" gesture (Slack's Assistant thread) is a root `!new`: it starts a new
   coordinator, which takes the threaded tasks over. A conversation with no coordinator yet mints none.
+- Webchat parses no `!` text, so its composer's `/new` (also `/clear`, `/reset`) is a console command
+  sent as the `new_session` op (§10).
 
 ## 9. Several agents
 
@@ -1171,6 +1173,14 @@ already running takes the change on its next turn, with no `!new`.
     it, so that text is its reply and holds nothing else.
   - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
+- **Starting over** (`/new` in the composer, the `new_session` op, `webchat-new-session-v1`): in the
+  coordinator conversation it is a root `!new` (§8): the coordinator rotates, its tasks keep working,
+  and the console opens a fresh page that the next message begins. In an ordinary conversation it is
+  Per thread's `!new`: the session keeps its identity and loses its context, its read cursor moved to
+  the newest recorded row, since rows carry both the relay's post clock and the daemon's; it waits
+  for a running turn. Only the conversation's owner or the agent's editors may start over; a
+  continued session starts over from its own platform conversation, and a multi-agent or AHP
+  conversation does not offer it yet.
 - Every task's page accepts messages (today it is read-only), for whoever may continue the parent,
   where the daemon advertises `task-page-messages-v1`, which its Auto switch also turns on.
   - A threaded task's page is its thread's session, which the console already continues. A background
