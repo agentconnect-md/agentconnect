@@ -337,15 +337,23 @@ those records, where another platform's module calls its provider:
   the number of messages after it. For `dm:<address>` that is the list of what
   this member and the agent have written to each other.
 - `getThreadReplies` returns one thread's messages in full, received and sent,
-  oldest first.
+  oldest first, and only those of the conversation it names. One thread key
+  can run through a member's direct conversation and a group conversation
+  (§5.2), and core calls this read itself to recover a thread's context, so a
+  read keyed by thread alone would hand a group session the member's private
+  messages of the same thread.
 
 The agent therefore reads earlier mail with the `getChannelHistory` and
 `getThreadHistory` tools it already has on other platforms, under their
 existing rule: a member's direct conversation is readable when that member is
-asking, and a group conversation when the person asking is one of its
-participants, which the module answers from the addresses the conversation has
-recorded (§5.2). No second store, no mail-specific tool and no second read
-rule is added, and `recall` is unchanged.
+asking, and a group conversation when the person asking is one of its current
+members. The module answers that from the participants of the conversation's
+latest message, not from every address it has ever recorded: someone taken off
+a thread stops being able to read it, as someone removed from a group chat
+does, and is never handed messages sent after they left. The recorded
+addresses of §5.2 keep their one use, deciding whose message may continue the
+conversation. No second store, no mail-specific tool and no second read rule
+is added, and `recall` is unchanged.
 
 How the two reads map onto the daemon's session records, on both of its store
 backends, is to be confirmed in the build (§9).
