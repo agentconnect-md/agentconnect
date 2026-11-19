@@ -181,6 +181,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#discord-section">Discord</a>
       <a href="#azuread-section">Microsoft</a>
       <a href="#googlechat-section">Google Chat</a>
+      <a href="#email-section">Email</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>
       <a href="#options-section">Options</a>
@@ -533,6 +534,42 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label class="field">Service-account key JSON<input id="googlechat-key" type="password" autocomplete="off" placeholder="Required when the project ID changes"></label>
         </div>
         <div class="row"><button id="save-googlechat">Save Google Chat app</button><button id="cancel-googlechat-configuration" hidden>Cancel</button><button id="clear-googlechat" class="danger" hidden>Clear configuration</button></div>
+      </section>
+
+      <section id="email-section" class="panel setup-section" aria-labelledby="email-heading">
+        <div class="provider-head">
+          <div><h3 id="email-heading">Email</h3><p class="muted">One mail domain for the deployment. Each agent gets an address on it, received and sent through Cloudflare Email Service.</p></div>
+          <span id="email-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Mail domain</dt><dd class="value-line"><code id="email-mail-domain">Not configured</code><button class="edit-configuration" data-provider="email">Edit</button></dd>
+          <dt>Cloudflare account ID</dt><dd class="value-line"><code id="email-account-id">Not configured</code><button class="edit-configuration" data-provider="email">Edit</button></dd>
+          <dt>API token</dt><dd class="value-line"><span id="email-token-display" class="muted">Not configured</span><button class="edit-configuration" data-provider="email">Edit</button></dd>
+          <dt>Ingress secret</dt><dd class="value-line"><span id="email-ingress-display" class="muted">Not configured</span></dd>
+          <dt>Daily send limit</dt><dd class="value-line"><code id="email-send-limit">Not configured</code><button class="edit-configuration" data-provider="email">Edit</button></dd>
+        </dl>
+        <p id="email-status" class="muted"></p>
+        <div id="email-drift" class="notice" hidden></div>
+        <div id="email-ingress-once" class="notice" hidden>
+          <p>Ingress secret, shown once. Set it as the Worker's secret now:</p>
+          <pre id="email-ingress-secret"></pre>
+        </div>
+        <p>Inbound URL for the ingress Worker:</p><ul id="email-inbound" class="uris"></ul>
+        <ol class="muted">
+          <li>In Cloudflare, onboard a zone used for nothing else as the mail domain, for Email Routing and for Email Sending. A domain that already receives mail elsewhere cannot be used.</li>
+          <li>Create an API token with the Email Sending: Edit permission for that account, then save the domain, the account ID and the token here. Setup checks the token with one read of the account's Email Sending suppression list and sends nothing.</li>
+          <li>Deploy the ingress Worker with the inbound URL above and the ingress secret shown after the first save, and point the zone's catch-all routing rule at it.</li>
+          <li>The daily send limit is the most mail the whole deployment sends in a day. Left empty, only the limits for each address and each organization apply.</li>
+        </ol>
+        <div class="row"><a id="email-dashboard" class="button" href="https://dash.cloudflare.com/" target="_blank" rel="noopener">Open Cloudflare</a></div>
+        <div id="email-config-controls" class="subsection">
+          <h3 id="email-edit-heading" hidden>Edit Email configuration</h3>
+          <label class="field">Mail domain<input id="email-mail-domain-input" autocomplete="off" placeholder="mail.example.com"></label>
+          <label class="field">Cloudflare account ID<input id="email-account-id-input" autocomplete="off"></label>
+          <label class="field">API token<input id="email-token" type="password" autocomplete="new-password" placeholder="Required when the account ID changes"></label>
+          <label class="field">Daily send limit (optional)<input id="email-send-limit-input" inputmode="numeric" autocomplete="off"></label>
+        </div>
+        <div class="row"><button id="save-email">Save Email</button><button id="cancel-email-configuration" hidden>Cancel</button><button id="rotate-email-ingress" hidden>Replace ingress secret</button><button id="clear-email" class="danger" hidden>Clear configuration</button></div>
       </section>
 
 
@@ -1088,6 +1125,43 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('cancel-googlechat-configuration').hidden = true;
       el('clear-googlechat').hidden = !googleChat;
 
+      const email = values.email;
+      const emailToken = configured(byKey, 'email.apiToken');
+      const emailIngress = configured(byKey, 'email.ingressSecret');
+      const expectedEmail = expected.email;
+      renderUriList('email-inbound', expectedEmail ? [expectedEmail.inboundUrl] : []);
+      text('email-mail-domain', email && email.mailDomain);
+      text('email-account-id', email && email.accountId);
+      text('email-send-limit', email && (email.dailySendLimit ? email.dailySendLimit : 'No deployment-wide limit'));
+      for (const [id, stored] of [['email-token-display', emailToken], ['email-ingress-display', emailIngress]]) {
+        el(id).textContent = stored ? '***' : 'Not configured';
+        el(id).className = stored ? 'redacted' : 'muted';
+      }
+      showIdentityEditors('email', Boolean(email));
+      el('email-mail-domain-input').value = email ? email.mailDomain : '';
+      el('email-account-id-input').value = email ? email.accountId : '';
+      el('email-send-limit-input').value = email && email.dailySendLimit ? String(email.dailySendLimit) : '';
+      el('email-token').value = '';
+      if (expectedEmail) el('email-dashboard').href = expectedEmail.dashboardUrl;
+      el('email-status').textContent = email
+        ? 'Agents get addresses on ' + email.mailDomain + '.'
+        : expectedEmail
+          ? 'Onboard the mail domain in Cloudflare, then save it with the account ID and an API token here.'
+          : 'Publishing the inbound URL needs an HTTPS ingress public URL.';
+      showDiff('email-drift', email && !expectedEmail
+        ? [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'An HTTPS ingress URL' }]
+        : []);
+      const emailReady = email && emailToken && emailIngress;
+      match('email-match', emailReady ? 'pass' : email ? 'warn' : '', !email ? 'Not configured' : !emailReady ? 'Missing secret' : 'Checked on save');
+      el('email-ingress-once').hidden = true;
+      el('email-ingress-secret').textContent = '';
+      el('email-edit-heading').hidden = true;
+      el('email-config-controls').hidden = Boolean(email);
+      el('save-email').hidden = Boolean(email);
+      el('cancel-email-configuration').hidden = true;
+      el('rotate-email-ingress').hidden = !email;
+      el('clear-email').hidden = !email;
+
 
       const linear = values.linear;
       const linearSecrets = configured(byKey, 'linear.clientSecret') && configured(byKey, 'linear.signingSecret');
@@ -1295,6 +1369,19 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('cancel-googlechat-configuration').hidden = false;
         el('clear-googlechat').hidden = true;
         el('googlechat-project-id-input').focus();
+      } else if (provider === 'email') {
+        if (!values.email) return;
+        el('email-mail-domain-input').value = values.email.mailDomain;
+        el('email-account-id-input').value = values.email.accountId;
+        el('email-send-limit-input').value = values.email.dailySendLimit ? String(values.email.dailySendLimit) : '';
+        el('email-token').value = '';
+        el('email-edit-heading').hidden = false;
+        el('email-config-controls').hidden = false;
+        el('save-email').hidden = false;
+        el('cancel-email-configuration').hidden = false;
+        el('rotate-email-ingress').hidden = true;
+        el('clear-email').hidden = true;
+        el('email-mail-domain-input').focus();
       } else if (provider === 'linear') {
         if (!values.linear) return;
         el('linear-id').value = values.linear.clientId;
@@ -1461,7 +1548,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function clearProvider(provider) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
-      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'googlechat' ? 'Google Chat' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
+      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'googlechat' ? 'Google Chat' : provider === 'email' ? 'Email' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
       if (!window.confirm('Clear the saved ' + label + ' configuration and secrets?')) return;
       const values = currentStatus.values;
       let next = values;
@@ -1507,6 +1594,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
       } else if (provider === 'googlechat') {
         next = { ...values, googleChat: null };
         secrets = { 'googleChat.serviceAccountKey': null };
+      } else if (provider === 'email') {
+        next = { ...values, email: null };
+        secrets = { 'email.apiToken': null, 'email.ingressSecret': null };
       } else if (provider === 'linear') {
         next = { ...values, linear: null };
         secrets = { 'linear.clientSecret': null, 'linear.signingSecret': null };
@@ -1841,6 +1931,40 @@ export const SETUP_HTML = String.raw`<!doctype html>
       }
       await load();
       message('Google Chat app saved. ' + saved.probe.message + '. Restart AgentConnect to apply it.');
+    }
+
+    async function saveEmail(rotateIngressSecret) {
+      const stored = currentStatus && currentStatus.values.email;
+      const limit = rotateIngressSecret
+        ? (stored && stored.dailySendLimit ? String(stored.dailySendLimit) : '')
+        : el('email-send-limit-input').value.trim();
+      if (limit && !/^[1-9][0-9]*$/.test(limit)) throw new Error('Enter the daily send limit as a whole number, or leave it empty.');
+      if (rotateIngressSecret && !window.confirm('Replace the ingress secret? Mail is refused until the Worker has the new one.')) return;
+      const apiToken = rotateIngressSecret ? '' : el('email-token').value.trim();
+      let saved;
+      try {
+        saved = await json(await fetch(api + '/configure/email', {
+          method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+          body: JSON.stringify({
+            email: {
+              mailDomain: rotateIngressSecret ? stored.mailDomain : requiredInput('email-mail-domain-input', 'the mail domain'),
+              accountId: rotateIngressSecret ? stored.accountId : requiredInput('email-account-id-input', 'the Cloudflare account ID'),
+              dailySendLimit: limit ? Number(limit) : null,
+              ...(apiToken ? { apiToken } : {}),
+              ...(rotateIngressSecret ? { rotateIngressSecret: true } : {})
+            }
+          })
+        }));
+      } finally {
+        // The token never stays in the page once it has been submitted, whatever the outcome.
+        el('email-token').value = '';
+      }
+      await load();
+      if (saved.ingressSecret) {
+        el('email-ingress-secret').textContent = saved.ingressSecret;
+        el('email-ingress-once').hidden = false;
+      }
+      message('Email saved. ' + saved.probe.message + '. Restart AgentConnect to apply it.');
     }
 
     async function saveLinear() {
@@ -2246,6 +2370,10 @@ export const SETUP_HTML = String.raw`<!doctype html>
     }
     el('cancel-googlechat-configuration').onclick = cancelConfigurationEdit;
     el('clear-googlechat').onclick = () => clearProvider('googlechat').catch((error) => message(error.message, true));
+    el('save-email').onclick = () => saveEmail(false).catch((error) => message(error.message, true));
+    el('rotate-email-ingress').onclick = () => saveEmail(true).catch((error) => message(error.message, true));
+    el('cancel-email-configuration').onclick = cancelConfigurationEdit;
+    el('clear-email').onclick = () => clearProvider('email').catch((error) => message(error.message, true));
     el('save-linear').onclick = () => saveLinear().catch((error) => message(error.message, true));
     el('cancel-linear-configuration').onclick = cancelConfigurationEdit;
     el('clear-linear').onclick = () => clearProvider('linear').catch((error) => message(error.message, true));

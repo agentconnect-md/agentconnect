@@ -3,6 +3,7 @@ import type { DeploymentConfigRuntime } from '../persistence/deployment-config.j
 import { googleChatRelayApp } from '../platforms/googlechat/deployment-app.js'
 import { googleChatClaimAnchor } from '../platforms/googlechat/provider.js'
 import { msTeamsConnectAnchor, msTeamsRelayApp, resolveMsTeamsAgentBots } from '../platforms/msteams/deployment-app.js'
+import { emailRelayDeployment, resolveEmailDeployment } from '../platforms/email/deployment.js'
 import { applyDeploymentEnvironment, relayDeploymentSnapshot } from './deployment.js'
 import { loadConfig } from './env.js'
 
@@ -164,6 +165,41 @@ describe('applyDeploymentEnvironment', () => {
     )
     expect(cleared.GOOGLE_CHAT_PLATFORM_PROJECT_ID).toBeUndefined()
     expect(cleared.GOOGLE_CHAT_PLATFORM_SERVICE_ACCOUNT_KEY).toBeUndefined()
+  })
+
+  it('projects the mail domain with its token and ingress secret, and clears stale startup values', () => {
+    const base = runtime()
+    const email = { mailDomain: 'mail.example.test', accountId: '0123456789abcdef0123456789abcdef' }
+    const secrets = { 'email.apiToken': 'example-api-token', 'email.ingressSecret': 's'.repeat(43) }
+    const managed = applyDeploymentEnvironment(
+      { ...bootstrap, EMAIL_PLATFORM_MAIL_DOMAIN: 'startup.example.test', EMAIL_PLATFORM_DAILY_SEND_LIMIT: '9' },
+      runtime({ values: { ...base.values, email }, secrets })
+    )
+    expect(managed.EMAIL_PLATFORM_MAIL_DOMAIN).toBe('mail.example.test')
+    expect(managed.EMAIL_PLATFORM_ACCOUNT_ID).toBe(email.accountId)
+    expect(managed.EMAIL_PLATFORM_API_TOKEN).toBe('example-api-token')
+    expect(managed.EMAIL_PLATFORM_INGRESS_SECRET).toBe('s'.repeat(43))
+    // The document owns the budget too: none stored means none, whatever the startup environment said.
+    expect(managed.EMAIL_PLATFORM_DAILY_SEND_LIMIT).toBeUndefined()
+    expect(resolveEmailDeployment(loadConfig(managed))).toEqual({
+      ...email,
+      apiToken: 'example-api-token',
+      ingressSecret: 's'.repeat(43)
+    })
+
+    const limited = applyDeploymentEnvironment(
+      bootstrap,
+      runtime({ values: { ...base.values, email: { ...email, dailySendLimit: 500 } }, secrets })
+    )
+    expect(resolveEmailDeployment(loadConfig(limited))?.dailySendLimit).toBe(500)
+
+    const cleared = applyDeploymentEnvironment(
+      { ...bootstrap, EMAIL_PLATFORM_MAIL_DOMAIN: 'startup.example.test', EMAIL_PLATFORM_API_TOKEN: 'startup-token' },
+      runtime()
+    )
+    expect(cleared.EMAIL_PLATFORM_MAIL_DOMAIN).toBeUndefined()
+    expect(cleared.EMAIL_PLATFORM_API_TOKEN).toBeUndefined()
+    expect(resolveEmailDeployment(loadConfig(cleared))).toBeUndefined()
   })
 
   it('projects the Microsoft sign-in app as the Teams app in its home tenant, and clears stale startup values', () => {
@@ -329,6 +365,23 @@ describe('relayDeploymentSnapshot', () => {
       revision: 0,
       googleChatApp: app
     })
+  })
+
+  // email-integration.md §7: the relay receives and sends every address's mail from this alone.
+  it('carries the Email configuration the relay receives and sends with whenever it is set up', () => {
+    const email = emailRelayDeployment(
+      {
+        mailDomain: 'mail.example.test',
+        accountId: '0123456789abcdef0123456789abcdef',
+        apiToken: 'example-api-token',
+        ingressSecret: 's'.repeat(43)
+      },
+      'p'.repeat(32)
+    )!
+    expect(
+      relayDeploymentSnapshot(undefined, undefined, undefined, undefined, undefined, undefined, undefined, email)
+    ).toEqual({ revision: 0, email })
+    expect(emailRelayDeployment(undefined, 'p'.repeat(32))).toBeUndefined()
   })
 
   it('carries the relay pool’s public origin whenever it is configured, with or without a stored document', () => {

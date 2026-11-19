@@ -113,6 +113,28 @@ export const RcMsTeamsDeploymentApp = z.object({
 })
 export type RcMsTeamsDeploymentApp = z.infer<typeof RcMsTeamsDeploymentApp>
 
+/** The deployment's mail domain as the relay receives and sends for it (email-integration.md §7): the provider account and its sending token, the ingress Worker's secret, and the key reply tickets are signed with. */
+export const RcEmailDeployment = z.object({
+  /** The domain every agent address is on, lower-cased. */
+  mailDomain: z
+    .string()
+    .max(253)
+    .regex(/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/),
+  /** The provider account the sending token belongs to. */
+  accountId: z.string().regex(/^[0-9a-f]{32}$/),
+  /** The API token that sends as any address on the mail domain; secret material, never logged, and never sent to a daemon. */
+  apiToken: z.string().min(1),
+  /** The secret the ingress Worker signs each inbound post with; never logged. */
+  ingressSecret: z.string().min(32),
+  /** The authserv-id whose `Authentication-Results` the relay reads a sender's verdict from (§4 step 2). */
+  authservId: z.string().min(1).max(253),
+  /** The most messages the whole deployment sends in a day (§6.3); absent, only the per-address and per-organization budgets apply. */
+  dailySendLimit: z.number().int().positive().optional(),
+  /** The base64url key every relay signs and checks reply tickets with (§6.2); derived from the CP's pepper, never logged. */
+  ticketKey: z.string().min(43)
+})
+export type RcEmailDeployment = z.infer<typeof RcEmailDeployment>
+
 // C→R REP (corr = rc/auth id). Rejection is a `error` REP + close, not a reply.
 // The CP's deployment snapshot, sent on every authentication; the GitHub secret is applied once per relay process, the Google Chat anchor on every registration.
 export const RcDeploymentConfig = z.object({
@@ -122,6 +144,8 @@ export const RcDeploymentConfig = z.object({
   googleChatApp: RcGoogleChatDeploymentApp.optional(),
   msTeamsAnchor: RcMsTeamsAnchor.optional(),
   msTeamsApp: RcMsTeamsDeploymentApp.optional(),
+  // Present once Setup holds the whole Email configuration; absent, the relay serves no mail.
+  email: RcEmailDeployment.optional(),
   // Console links in provider-owned onboarding use the configured origin, without an organization path.
   webAppUrl: z
     .string()

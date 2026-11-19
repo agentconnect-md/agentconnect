@@ -1,5 +1,6 @@
 import type {
   RcDeploymentConfig,
+  RcEmailDeployment,
   RcGoogleChatAnchor,
   RcGoogleChatDeploymentApp,
   RcMsTeamsAnchor,
@@ -45,6 +46,11 @@ const MANAGED_KEYS = [
   'MSTEAMS_AGENT_BOTS_BLUEPRINT_SECRET',
   'MSTEAMS_AGENT_BOTS_SUBSCRIPTION_ID',
   'MSTEAMS_AGENT_BOTS_RESOURCE_GROUP',
+  'EMAIL_PLATFORM_MAIL_DOMAIN',
+  'EMAIL_PLATFORM_ACCOUNT_ID',
+  'EMAIL_PLATFORM_API_TOKEN',
+  'EMAIL_PLATFORM_INGRESS_SECRET',
+  'EMAIL_PLATFORM_DAILY_SEND_LIMIT',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -130,6 +136,17 @@ export function applyDeploymentEnvironment(
     }
   }
 
+  // All four or none, which resolveEmailDeployment checks; the daily budget is the operator's to leave unset.
+  if (values.email) {
+    set('EMAIL_PLATFORM_MAIL_DOMAIN', values.email.mailDomain)
+    set('EMAIL_PLATFORM_ACCOUNT_ID', values.email.accountId)
+    set('EMAIL_PLATFORM_API_TOKEN', secrets['email.apiToken'])
+    set('EMAIL_PLATFORM_INGRESS_SECRET', secrets['email.ingressSecret'])
+    if (values.email.dailySendLimit != null) {
+      set('EMAIL_PLATFORM_DAILY_SEND_LIMIT', String(values.email.dailySendLimit))
+    }
+  }
+
   if (values.feishu) {
     set('FEISHU_PLATFORM_APP_ID', values.feishu.loginAppId)
     set('FEISHU_PLATFORM_APP_SECRET', secrets['feishu.loginAppSecret'])
@@ -157,7 +174,8 @@ export function relayDeploymentSnapshot(
   webAppUrl?: string,
   msTeamsAnchor?: RcMsTeamsAnchor,
   msTeamsApp?: RcMsTeamsDeploymentApp,
-  googleChatApp?: RcGoogleChatDeploymentApp
+  googleChatApp?: RcGoogleChatDeploymentApp,
+  email?: RcEmailDeployment
 ): RcDeploymentConfig | undefined {
   if (
     !deployment &&
@@ -165,6 +183,7 @@ export function relayDeploymentSnapshot(
     !googleChatApp &&
     !msTeamsAnchor &&
     !msTeamsApp &&
+    !email &&
     !publicRelayUrl &&
     !webAppUrl
   )
@@ -178,6 +197,7 @@ export function relayDeploymentSnapshot(
     ...(googleChatApp ? { googleChatApp } : {}),
     ...(msTeamsAnchor ? { msTeamsAnchor } : {}),
     ...(msTeamsApp ? { msTeamsApp } : {}),
+    ...(email ? { email } : {}),
     ...(publicRelayUrl ? { publicRelayUrl } : {}),
     ...(webAppUrl ? { webAppUrl } : {})
   }

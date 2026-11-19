@@ -26,6 +26,7 @@ import { createLinearCpProvider } from './linear/provider.js'
 import { createGoogleChatCpProvider } from './googlechat/provider.js'
 import { createWeChatCpProvider } from './wechat/provider.js'
 import { createMsTeamsCpProvider } from './msteams/provider.js'
+import { createEmailCpProvider } from './email/provider.js'
 
 /** Every supported deployment key. */
 const EXPECTED_KEYS = [
@@ -56,6 +57,11 @@ const EXPECTED_KEYS = [
   'DAEMON_POOL_ENABLED',
   'DATABASE_POOL_MAX',
   'DATABASE_URL',
+  'EMAIL_PLATFORM_ACCOUNT_ID',
+  'EMAIL_PLATFORM_API_TOKEN',
+  'EMAIL_PLATFORM_DAILY_SEND_LIMIT',
+  'EMAIL_PLATFORM_INGRESS_SECRET',
+  'EMAIL_PLATFORM_MAIL_DOMAIN',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'GITEA_BASE_URL',
@@ -249,7 +255,8 @@ describe('platform env declarations', () => {
       createLinearCpProvider({}),
       createGoogleChatCpProvider(),
       createMsTeamsCpProvider(),
-      createWeChatCpProvider({})
+      createWeChatCpProvider({}),
+      createEmailCpProvider()
     ])
     const fromProviders = registry
       .all()

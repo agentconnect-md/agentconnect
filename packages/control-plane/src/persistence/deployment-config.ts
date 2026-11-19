@@ -275,6 +275,18 @@ const MsTeamsAppSchema = z.preprocess(
   })
 )
 
+// The deployment's mail domain and the provider account that receives and sends for it (email-integration.md §7); the sending token and the ingress secret are the write-only 'email.*' secrets.
+const EmailSchema = z.strictObject({
+  mailDomain: SsoDomainSchema,
+  accountId: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-fA-F]{32}$/, 'must be a Cloudflare account ID')
+    .transform((value) => value.toLowerCase()),
+  // The most messages the whole deployment sends in a day (§6.3); absent, only the per-address and per-organization budgets apply.
+  dailySendLimit: z.number().int().positive().max(10_000_000).nullable().optional()
+})
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
@@ -288,6 +300,8 @@ export const DeploymentConfigValuesV1Schema = z
     googleChat: GoogleChatAppSchema.nullable().optional(),
     /** The deployment-owned Teams app: the Microsoft sign-in app (`logto.azureadConnector`) and its secret, in this home tenant. */
     msTeams: MsTeamsAppSchema.nullable().optional(),
+    /** The mail domain agents get addresses on, with its 'email.apiToken' and 'email.ingressSecret' secrets. */
+    email: EmailSchema.nullable().optional(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
     lark: RegionalLoginAppSchema.nullable().optional(),
@@ -430,6 +444,8 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'linear.clientSecret',
   'linear.signingSecret',
   'googleChat.serviceAccountKey',
+  'email.apiToken',
+  'email.ingressSecret',
   'feishu.loginAppSecret',
   'lark.loginAppSecret',
   'logto.managementAppSecret',
@@ -664,6 +680,8 @@ export function deploymentSecretsRequiringRefresh(
   const logtoSsoClientChanged =
     nextSsoOidc &&
     (previousSsoOidc?.issuer !== nextSsoOidc.issuer || previousSsoOidc?.clientId !== nextSsoOidc.clientId)
+  // A token belongs to one account, so another account needs its own; the ingress secret is the deployment's and stays.
+  const emailAccountChanged = next.email && previous?.email?.accountId !== next.email.accountId
   // A secret belongs to one blueprint, so another blueprint needs its own.
   const msTeamsBlueprintChanged =
     next.msTeams?.agentBots && previous?.msTeams?.agentBots?.blueprintId !== next.msTeams.agentBots.blueprintId
@@ -675,6 +693,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(linearIdentityChanged ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(googleChatProjectChanged ? (['googleChat.serviceAccountKey'] as const) : []),
+    ...(emailAccountChanged ? (['email.apiToken'] as const) : []),
     ...(msTeamsBlueprintChanged ? (['msTeams.blueprintClientSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
@@ -699,6 +718,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.linear ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(values.googleChat ? (['googleChat.serviceAccountKey'] as const) : []),
+    ...(values.email ? (['email.apiToken', 'email.ingressSecret'] as const) : []),
     ...(values.msTeams ? (['logto.azureadConnectorClientSecret'] as const) : []),
     ...(values.msTeams?.agentBots ? (['msTeams.blueprintClientSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),

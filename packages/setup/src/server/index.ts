@@ -44,6 +44,7 @@ import {
   githubDeploymentPut,
   giteaDeploymentPut,
   gitlabDeploymentPut,
+  emailDeploymentPut,
   googleChatDeploymentPut,
   linearDeploymentPut,
   localAuthLogtoPut,
@@ -70,6 +71,8 @@ import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
 import { msTeamsConfiguredUrls } from '../msteams-app.js'
+import { emailConfiguredUrls } from '../email-app.js'
+import { probeEmailSendingToken } from '../email-probe.js'
 import { azureDevOpsConfiguredUrls } from '../azure-devops-app.js'
 import { verifyMsTeamsApp } from '@agentconnect.md/control-plane/msteams-credential'
 import {
@@ -188,6 +191,24 @@ const ConfigureGoogleChatBody = z.strictObject({
       projectNumber: z.string().trim().min(1).max(40).optional(),
       /** The downloaded key file's JSON; omitted re-validates the stored key of the same project. */
       serviceAccountKey: z.string().trim().min(1).max(20_000).optional()
+    })
+    .nullable()
+})
+
+const ConfigureEmailBody = z.strictObject({
+  email: z
+    .strictObject({
+      mailDomain: z.string().trim().min(1).max(253),
+      accountId: z
+        .string()
+        .trim()
+        .regex(/^[0-9a-fA-F]{32}$/),
+      /** The token that may send; omitted re-checks the stored token of the same account. */
+      apiToken: z.string().trim().min(1).max(10_000).optional(),
+      /** The deployment-wide daily send budget; null or omitted leaves it unset. */
+      dailySendLimit: z.number().int().positive().max(10_000_000).nullable().optional(),
+      /** Replace the ingress secret; the Worker must then be given the new one. */
+      rotateIngressSecret: z.boolean().optional()
     })
     .nullable()
 })
@@ -783,6 +804,12 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Google Chat needs an HTTPS ingress URL before its HTTP endpoint is publishable.
     }
+    let email: ReturnType<typeof emailConfiguredUrls> | null = null
+    try {
+      email = emailConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // Email needs an HTTPS ingress URL before the Worker's inbound URL is publishable.
+    }
     return {
       github,
       gitlab,
@@ -799,6 +826,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       slack,
       linear,
       googleChat,
+      email,
       msTeams,
       azureDevOps,
       ...Object.fromEntries(
@@ -1311,6 +1339,74 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         restartRequired: true as const,
         callbackUrl: urls.callbackUrl,
         probe: { status: checked.status, message: checked.message }
+      }
+    })
+  })
+
+  app.post('/api/v1/configure/email', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureEmailBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a mail domain and a Cloudflare account ID are required')
+    const email = parsed.data.email
+    if (!email) {
+      return serializeMutation(async () => {
+        const current = await deps.store.getAdmin()
+        if (!current) return problem(reply, 409, 'save deployment settings before configuring Email')
+        const saved = await deps.store.replace({
+          expectedRevision: current.revision,
+          ...emailDeploymentPut(current, null)
+        })
+        return { revision: saved.revision, restartRequired: true as const }
+      })
+    }
+    let urls: ReturnType<typeof emailConfiguredUrls>
+    try {
+      urls = emailConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'the Email inbound URL is unavailable')
+    }
+    const accountId = email.accountId.toLowerCase()
+    let apiToken = email.apiToken
+    if (!apiToken) {
+      // Only the same account may keep its sealed token, and that token is checked again like a new one.
+      const runtime = await deps.store.getRuntime(['email.apiToken'])
+      const stored = runtime?.secrets['email.apiToken']
+      if (!stored || runtime?.values.email?.accountId !== accountId) {
+        return problem(reply, 400, 'paste the API token for this Cloudflare account')
+      }
+      apiToken = stored
+    }
+    const probe = await probeEmailSendingToken({ accountId, apiToken }, fetchImpl)
+    if (probe.status !== 'ok') return problem(reply, probe.status === 'unavailable' ? 502 : 400, probe.message)
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring Email')
+      // The Worker and the relay share one secret, generated here and shown once; it is kept across saves unless replaced.
+      const hasIngressSecret = current.secrets.some(
+        (secret) => secret.key === 'email.ingressSecret' && secret.configured
+      )
+      const ingressSecret =
+        email.rotateIngressSecret || !hasIngressSecret ? randomBytes(32).toString('base64url') : undefined
+      let put: ReturnType<typeof emailDeploymentPut>
+      try {
+        put = emailDeploymentPut(current, {
+          mailDomain: email.mailDomain,
+          accountId,
+          ...(email.dailySendLimit != null ? { dailySendLimit: email.dailySendLimit } : {}),
+          ...(email.apiToken ? { apiToken: email.apiToken } : {}),
+          ...(ingressSecret ? { ingressSecret } : {})
+        })
+      } catch (error) {
+        const message =
+          error instanceof z.ZodError ? 'enter a mail domain and the 32-character Cloudflare account ID' : undefined
+        return problem(reply, 400, message ?? (error instanceof Error ? error.message : 'invalid Email configuration'))
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return {
+        revision: saved.revision,
+        restartRequired: true as const,
+        inboundUrl: urls.inboundUrl,
+        ...(ingressSecret ? { ingressSecret } : {}),
+        probe
       }
     })
   })
