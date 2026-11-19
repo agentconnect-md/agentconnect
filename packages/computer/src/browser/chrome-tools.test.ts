@@ -4,14 +4,15 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { AuditRecord } from '../audit.js'
+import { withCallContext, type AuditRecord } from '../audit.js'
+import { CommandLine } from '../command-line.js'
 import { Computer, type ToolOutput } from '../computer.js'
 import { startHttpServer, type RunningHttpServer } from '../http-server.js'
 import { FakeDriver, testConfig } from '../testing.js'
 import { createComputerMcpServer } from '../tools.js'
 import { chromeAuditArgs } from './chrome-contract.js'
 import type { DevtoolsTarget } from './chrome-pages.js'
-import { ChromeTools } from './chrome-tools.js'
+import { ChromeTools, type ChromeCall } from './chrome-tools.js'
 import type { DevtoolsEndpoint } from './devtools-endpoint.js'
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-chrome-devtools-mcp.mjs', import.meta.url))
@@ -28,6 +29,7 @@ interface FakeState {
   leak?: string
   starts?: number
   startupDelayMs?: number
+  navigationFailure?: boolean
 }
 
 let root: string
@@ -376,6 +378,140 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
     expect(chromeAuditArgs({ url: 'https://example.test/a/b?token=secret', filePath: '/etc/passwd' })).toEqual({
       url: 'https://example.test'
     })
+  })
+
+  function actionSetup(options: Partial<ConstructorParameters<typeof ChromeTools>[0]> = {}) {
+    const activated: string[] = []
+    const context = start({
+      activate: async (_endpoint, target, fence) => {
+        fence()
+        activated.push(target)
+      },
+      ...options
+    })
+    let launches = 0
+    const computer = new Computer({
+      driver: new FakeDriver(),
+      config: testConfig({ actionScreenshot: false }),
+      ...(options.now ? { now: options.now } : {}),
+      launchBrowser: () => async () => {
+        expect(computer.leaseActivity()?.holder).toBe('agent/session')
+        launches++
+        context.endpoints.set('main', { port: 9222, path: BROWSER })
+        return 'launched'
+      }
+    })
+    const action: ChromeCall['action'] = {
+      target: async () => ({ computer, desktop: 'main' }),
+      enabled: () => true
+    }
+    const act = (tool: string, args: Record<string, unknown>, commandLine?: ChromeCall['commandLine']) =>
+      context.tools.call({
+        desktop: 'main',
+        client: 'agent/session',
+        tool,
+        args,
+        action,
+        ...(commandLine ? { commandLine } : {})
+      })
+    return { ...context, activated, computer, act, launches: () => launches }
+  }
+
+  it('opens Chrome under the lease and returns the opened tab’s opaque id', async () => {
+    const { act, launches, endpoints } = actionSetup()
+    endpoints.delete('main')
+    const result = await act('chrome_new_page', { url: 'https://example.test/new', background: true })
+    expect(launches()).toBe(1)
+    expect(textOf(result)).toMatch(/^p[0-9a-f]{10}: New tab \(https:\/\/example\.test\/new\)$/m)
+    expect(logged().find((entry) => entry.name === 'new_page')?.args?.background).toBe(false)
+  })
+
+  it('uses the same lease and human idle gate as desktop input, then activates the exact page', async () => {
+    let now = 10_000
+    const { act, ids, computer, activated, tools } = actionSetup({ now: () => now })
+    const [dev] = await ids()
+    computer.acquire('other')
+    expect(errorOf(await act('chrome_click', { pageId: dev, uid: '1_1' })).error).toBe('computer_busy')
+    computer.release('other')
+    computer.noteHumanInput()
+    expect(errorOf(await act('chrome_click', { pageId: dev, uid: '1_1' })).error).toBe('human_active')
+    now += 60_000
+    computer.pause('owner paused')
+    expect(errorOf(await act('chrome_click', { pageId: dev, uid: '1_1' })).error).toBe('human_in_control')
+    expect(activated).toEqual([])
+    expect(logged().filter(({ name }) => name === 'click')).toEqual([])
+    computer.resume()
+    expect((await act('chrome_click', { pageId: dev, uid: '1_1' })).isError).toBeUndefined()
+    expect(activated).toEqual([TARGET_A])
+    expect(computer.leaseActivity()?.holder).toBe('agent/session')
+    computer.noteHumanInput()
+    const pid = tools.running()[0]!.pid
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(tools.running()[0]?.pid).toBe(pid)
+  })
+
+  it('returns uncertain with a desktop screenshot and never replays an interrupted action', async () => {
+    const { act, ids, records, tools } = actionSetup({ deadlineMs: 300 })
+    const [dev] = await ids()
+    setState({ hang: ['click'] })
+    const result = await act('chrome_click', { pageId: dev, uid: '1_1' })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ error: 'uncertain' })
+    expect(result.content.some(({ type }) => type === 'image')).toBe(true)
+    expect(records.at(-1)).toMatchObject({ tool: 'chrome_click', outcome: 'error', code: 'uncertain' })
+    expect(logged().filter(({ name }) => name === 'click')).toHaveLength(1)
+    expect(tools.running()).toEqual([])
+  })
+
+  it('converts a navigation failure returned as success into an uncertain outcome', async () => {
+    const { act, ids } = actionSetup()
+    const [dev] = await ids()
+    setState({ navigationFailure: true })
+    const result = await act('chrome_navigate_page', { pageId: dev, type: 'url', url: 'https://example.test/fail' })
+    expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ error: 'uncertain' })
+    expect(result.content.some(({ type }) => type === 'image')).toBe(true)
+  })
+
+  it('checks script approval and file roots, and closes the child when the control lease ends', async () => {
+    const { act, ids, computer, tools } = actionSetup({
+      childAccess: async () => ({ scripts: true, fileRoots: [root] })
+    })
+    const [dev] = await ids()
+    const commandLine: NonNullable<ChromeCall['commandLine']> = {
+      runner: new CommandLine({ dataDir: join(root, 'daemon'), home: root }),
+      shell: () => 'ask',
+      files: () => 'read',
+      roots: () => [root]
+    }
+    const script = { pageId: dev, function: '() => document.title' }
+    const firstChild = tools.running()[0]!.pid
+    expect(errorOf(await act('chrome_evaluate_script', script)).error).toBe('denied')
+    expect(errorOf(await act('chrome_evaluate_script', script, commandLine)).error).toBe('approval_required')
+    expect(
+      errorOf(
+        await act('chrome_upload_file', { pageId: dev, uid: '1_1', filePaths: ['/outside/example.txt'] }, commandLine)
+      ).error
+    ).toBe('denied')
+    const approved = await withCallContext({ approval: 'allowed' }, () =>
+      act('chrome_evaluate_script', script, commandLine)
+    )
+    expect(approved.isError).toBeUndefined()
+    expect(logged().filter(({ name }) => name === 'evaluate_script')).toHaveLength(1)
+    expect(tools.running()[0]!.pid).toBe(firstChild)
+    expect(
+      logged()
+        .filter(({ event }) => event === 'start')
+        .at(-1)?.argv
+    ).not.toContain('--no-javascript-evaluation')
+    const file = join(root, 'example.txt')
+    writeFileSync(file, 'example')
+    const upload = await act('chrome_upload_file', { pageId: dev, uid: '1_1', filePaths: [file] }, commandLine)
+    expect(upload.isError).toBeUndefined()
+    expect(logged().find(({ name }) => name === 'upload_file')?.args?.filePaths).toEqual([file])
+    const { pid } = tools.running()[0]!
+    computer.release('agent/session')
+    await until(() => !alive(pid))
+    expect(tools.running()).toEqual([])
   })
 })
 

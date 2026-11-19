@@ -2,13 +2,15 @@
 import { mkdtempSync, lstatSync, readFileSync, realpathSync, rmdirSync, rmSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join, relative, sep } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
-import { computerBrowserTool } from '@agentconnect.md/protocol/computer-browser'
+import { computerBrowserTool, type ComputerBrowserTool } from '@agentconnect.md/protocol/computer-browser'
 import { RELAY_COMPUTER_MAX_BODY_BYTES } from '@agentconnect.md/protocol'
 import { currentCallContext, type AuditSink } from '../audit.js'
-import { ComputerError, type ScreenshotStash, type ToolOutput } from '../computer.js'
-import type { DriverContent } from '../driver/client.js'
+import type { CommandLineAccess } from '../command-line.js'
+import { ComputerError, type Computer, type ScreenshotStash, type ToolOutput } from '../computer.js'
+import { DriverUncertainError, type DriverContent } from '../driver/client.js'
 import { COMPUTER_DAEMON_VERSION } from '../version.js'
 import {
   CHROME_DEVTOOLS_MCP_VERSION,
@@ -21,6 +23,7 @@ import {
 } from './chrome-contract.js'
 import { listedPages, PageIds, pageListText, withoutDevtoolsIds, type DevtoolsTarget } from './chrome-pages.js'
 import { devtoolsTargets, type DevtoolsEndpoint } from './devtools-endpoint.js'
+import { activateChromePage, chromeActionGuard } from './chrome-action.js'
 
 // A call that has not answered by then is abandoned and its child killed; within the relay's 120 s request timeout.
 const DEADLINE_MS = 60_000
@@ -35,6 +38,7 @@ const CONNECT_MS = 30_000
 const SYNC_ATTEMPTS = 6
 const SYNC_RETRY_MS = 500
 const MAX_SCREENSHOT_BYTES = 5_000_000
+const BROWSER_START_MS = 15_000
 const MIME: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.jpg': 'image/jpeg',
@@ -60,16 +64,35 @@ export interface ChromeToolsOptions {
   now?: () => number
   deadlineMs?: number
   watchMs?: number
+  activate?: typeof activateChromePage
+  childAccess?: () => Promise<ChildAccess>
+}
+
+interface ChildAccess {
+  scripts: boolean
+  fileRoots: string[]
 }
 
 interface Child {
   client: Client
   transport: StdioClientTransport
   endpoint: DevtoolsEndpoint
-  // Its HOME and TMPDIR, the only filesystem root it gets; removed with it.
+  // Its private HOME and TMPDIR, removed with the child.
   dir: string
   lastCall: number
   inflight: number
+  access: string
+  leaseFence?: () => void
+}
+
+export interface ChromeActionAccess {
+  target: () => Promise<{ desktop: string; computer: Computer }>
+  enabled: () => boolean
+}
+
+interface ActionFences {
+  beforeEffect: () => void
+  lease: () => void
 }
 
 export interface ChromeCall {
@@ -79,6 +102,8 @@ export interface ChromeCall {
   args: Record<string, unknown>
   signal?: AbortSignal
   refusal?: () => string | undefined
+  commandLine?: CommandLineAccess
+  action?: ChromeActionAccess
 }
 
 type RoutedCall = ChromeCall & { desktop: string }
@@ -118,12 +143,14 @@ export class ChromeTools {
 
   /** One chrome_* call: refused outside the contract, raced against the browser's exit and a deadline, audited. */
   async call(request: ChromeCall): Promise<ToolOutput> {
+    request = { ...request }
     const started = this.now()
     let output: ToolOutput
     let code: string | undefined
     try {
       output = await this.serve(request)
-      if (output.isError) code = 'browser_error'
+      if (output.isError)
+        code = output.content[0]?.text?.startsWith('{"error":"uncertain"') ? 'uncertain' : 'browser_error'
     } catch (error) {
       const refused = failure(error)
       code = refused.code
@@ -134,7 +161,7 @@ export class ChromeTools {
         ]
       }
     }
-    const stored = output.isError ? undefined : this.stash(output)
+    const stored = output.isError && code !== 'uncertain' ? undefined : this.stash(output)
     if (stored) output = stored.output
     this.opts.audit({
       client: request.client,
@@ -168,26 +195,74 @@ export class ChromeTools {
 
   private async serve(request: ChromeCall): Promise<ToolOutput> {
     const contract = computerBrowserTool(request.tool)
-    // Only the contract's tools that take no lease exist here yet; anything else is refused before a child starts.
-    if (!contract || contract.lease)
+    if (!contract || (contract.lease && !request.action))
       throw new ComputerError('denied', `${request.tool} is not offered on this computer`)
+    this.fence(request)
+    if (!contract.lease) return this.serveOnDesktop(request, contract)
+    const action = request.action!
+    chromeActionGuard(contract, request.args, request.commandLine)
+    if (!action.enabled()) throw new ComputerError('unavailable', 'The browser tier is unavailable on this computer.')
+    const { computer, desktop } = await action.target()
+    request.desktop = desktop
+    return computer.leasedBrowserAction(request.client, async (fences) => {
+      const beforeEffect = () => {
+        fences.beforeEffect()
+        this.fence(request)
+        chromeActionGuard(contract, request.args, request.commandLine)
+        if (!action.enabled())
+          throw new ComputerError('unavailable', 'The browser tier is unavailable on this computer.')
+      }
+      beforeEffect()
+      if (!this.opts.endpoint(desktop)) await this.openBrowser(computer, desktop, beforeEffect, request.signal)
+      return this.serveOnDesktop(request, contract, { beforeEffect, lease: fences.lease })
+    })
+  }
+
+  private fence(request: ChromeCall): void {
     const denied = request.refusal?.()
     if (denied) throw new ComputerError('denied', denied)
     const refusal = this.opts.refusal?.()
     if (refusal) throw new ComputerError('unavailable', refusal)
     if (this.stopped) throw new ComputerError('unavailable', 'The computer is stopping.')
+    if (request.signal?.aborted)
+      throw new ComputerError('unavailable', 'The call was cancelled.', { reason: 'cancelled' })
+  }
+
+  private async openBrowser(
+    computer: Computer,
+    desktop: string,
+    fence: () => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await computer.launchBrowserForAction()
+    const until = this.now() + BROWSER_START_MS
+    while (this.now() < until) {
+      fence()
+      if (this.opts.endpoint(desktop)) return
+      await delay(200, undefined, { signal })
+    }
+  }
+
+  private async serveOnDesktop(
+    request: ChromeCall,
+    contract: ComputerBrowserTool,
+    action?: ActionFences
+  ): Promise<ToolOutput> {
     const desktop = request.desktop
     const endpoint = desktop === undefined ? undefined : this.opts.endpoint(desktop)
     if (desktop === undefined || !endpoint)
       throw new ComputerError('unavailable', "this desktop's browser is not running", { reason: 'browser_not_running' })
-    const child = await this.child(desktop, endpoint)
+    const access = (await this.opts.childAccess?.()) ?? { scripts: false, fileRoots: [] }
+    const child = await this.child(desktop, endpoint, access)
     child.inflight++
     child.lastCall = this.now()
+    if (action) child.leaseFence = action.lease
     try {
       const output = await this.run(
         { ...request, desktop },
         child,
-        contract.inputSchema.properties.pageId !== undefined
+        contract.inputSchema.properties.pageId !== undefined,
+        action?.beforeEffect
       )
       if (Buffer.byteLength(JSON.stringify(output)) > RELAY_COMPUTER_MAX_BODY_BYTES - 1024)
         throw new ComputerError('unavailable', 'The browser returned too much data for one call.', {
@@ -200,11 +275,13 @@ export class ChromeTools {
     }
   }
 
-  private async run(request: RoutedCall, child: Child, paged: boolean): Promise<ToolOutput> {
+  private async run(request: RoutedCall, child: Child, paged: boolean, actionFence?: () => void): Promise<ToolOutput> {
     const { desktop } = request
     const name = upstreamName(request.tool)
     const args = upstreamArgs(request.args)
     const pages = this.pageIds(desktop)
+    let target: string | undefined
+    let confirmUploadRoots: (() => void) | undefined
     if (paged) {
       const id = typeof args.pageId === 'string' ? args.pageId : ''
       let number = pages.numberFor(child, id)
@@ -216,14 +293,75 @@ export class ChromeTools {
       if (number === undefined)
         throw new ComputerError('invalid_argument', `unknown page id ${JSON.stringify(id)}; call chrome_list_pages`)
       args.pageId = number
+      target = pages.targetFor(child, id)
+    }
+    if (actionFence && name === 'upload_file') {
+      const commandLine = request.commandLine!
+      const roots = commandLine.roots()
+      const authorizedRoots = JSON.stringify(roots)
+      try {
+        args.filePaths = await Promise.all(
+          (args.filePaths as string[]).map((path) => commandLine.runner.fenced(path, roots))
+        )
+      } catch {
+        throw new ComputerError('denied', 'An upload path is outside the paths this computer allows.')
+      }
+      confirmUploadRoots = () => {
+        if (JSON.stringify(commandLine.roots()) !== authorizedRoots)
+          throw new ComputerError('denied', 'The allowed upload paths changed.')
+      }
     }
     const limit = Math.max(1, this.deadlineMs - TIMEOUT_MARGIN_MS)
     if (typeof args.timeout === 'number' && args.timeout > limit) args.timeout = limit
-    const result = await this.raced(request, child, name, args)
+    if (actionFence) {
+      actionFence()
+      if (target) await (this.opts.activate ?? activateChromePage)(child.endpoint, target, actionFence, request.signal)
+      actionFence()
+      confirmUploadRoots?.()
+      if (name === 'new_page') args.background = false
+      if (name === 'select_page') args.bringToFront = true
+    }
+    let result: ChildResult
+    try {
+      result = await this.raced(request, child, name, args)
+    } catch (error) {
+      if (actionFence) {
+        if (this.children.get(desktop) === child) await this.end(desktop, 'an action was interrupted', true, child)
+        throw new DriverUncertainError('The browser stopped answering during the action', { cause: error })
+      }
+      throw error
+    }
+    const message = result.structuredContent?.message ?? result.content[0]?.text
+    if (
+      actionFence &&
+      result.isError &&
+      typeof message === 'string' &&
+      /timeout|target closed|session closed|browser disconnected/i.test(message)
+    ) {
+      await this.end(desktop, 'an action was interrupted', true, child)
+      throw new DriverUncertainError('Chrome did not confirm the action')
+    }
+    if (
+      actionFence &&
+      (name === 'navigate_page' || name === 'new_page') &&
+      typeof message === 'string' &&
+      /^Unable to (navigate|reload)/m.test(message)
+    )
+      throw new DriverUncertainError('Chrome could not confirm the navigation')
     if (name === 'list_pages' && !result.isError) {
       const listed = await this.syncResult(request.desktop, pages, child, result)
       const text = pageListText(listed, (number) => pages.idFor(child, number))
       return { content: [{ type: 'text', text: withoutDevtoolsIds(text, pages.secrets()) }] }
+    }
+    if (actionFence && Array.isArray(result.structuredContent?.pages)) {
+      try {
+        const listed = await this.syncResult(desktop, pages, child, result)
+        const text = pageListText(listed, (number) => pages.idFor(child, number))
+        const summary = typeof result.structuredContent.message === 'string' ? result.structuredContent.message : ''
+        result.content = [{ type: 'text', text: [summary, text].filter(Boolean).join('\n') }]
+      } catch (error) {
+        throw new DriverUncertainError('Chrome could not confirm the open tabs after the action', { cause: error })
+      }
     }
     return this.inline(child, pages, name, result)
   }
@@ -394,13 +532,17 @@ export class ChromeTools {
   }
 
   // The desktop's child for this endpoint: a child of an earlier endpoint (its browser restarted) is killed first.
-  private async child(desktop: string, endpoint: DevtoolsEndpoint): Promise<Child> {
+  private async child(desktop: string, endpoint: DevtoolsEndpoint, access: ChildAccess): Promise<Child> {
+    const accessKey = JSON.stringify(access)
     const current = this.children.get(desktop)
-    if (current && sameEndpoint(endpoint, current.endpoint) && this.alive(current)) return current
-    if (current) await this.end(desktop, 'its browser restarted', true, current)
+    if (current && sameEndpoint(endpoint, current.endpoint) && this.alive(current)) {
+      if (current.access === accessKey) return current
+      if (current.inflight > 0) throw new ComputerError('computer_busy', 'Another browser call is still running.')
+    }
+    if (current) await this.end(desktop, 'its endpoint or tool permissions changed', true, current)
     let pending = this.starting.get(desktop)
     if (!pending) {
-      const current = this.start(desktop, endpoint)
+      const current = this.start(desktop, endpoint, access)
         .then(async (started) => {
           if (this.starting.get(desktop) !== current || !sameEndpoint(this.opts.endpoint(desktop), endpoint)) {
             await this.kill(started)
@@ -417,10 +559,13 @@ export class ChromeTools {
       pending = current
       this.starting.set(desktop, pending)
     }
-    return pending
+    const child = await pending
+    if (child.access !== accessKey)
+      throw new ComputerError('computer_busy', 'Browser tools are starting with another call’s permissions.')
+    return child
   }
 
-  private async start(desktop: string, endpoint: DevtoolsEndpoint): Promise<Child> {
+  private async start(desktop: string, endpoint: DevtoolsEndpoint, access: ChildAccess): Promise<Child> {
     const command = this.opts.command ?? chromeChildCommand()
     if (!command)
       throw new ComputerError('unavailable', 'Chrome DevTools MCP is not installed here', { reason: 'child_failed' })
@@ -429,14 +574,22 @@ export class ChromeTools {
       command: command[0]!,
       args: [
         ...command.slice(1),
-        ...chromeChildArgs({ endpoint, dir, maxImageDimension: this.opts.maxImageDimension() })
+        ...chromeChildArgs({ endpoint, dir, maxImageDimension: this.opts.maxImageDimension(), ...access })
       ],
       env: chromeChildEnv(dir),
       cwd: dir,
       stderr: 'ignore'
     })
     const client = new Client({ name: 'agentconnect-computer', version: COMPUTER_DAEMON_VERSION })
-    const child: Child = { client, transport, endpoint, dir, lastCall: this.now(), inflight: 0 }
+    const child: Child = {
+      client,
+      transport,
+      endpoint,
+      dir,
+      lastCall: this.now(),
+      inflight: 0,
+      access: JSON.stringify(access)
+    }
     client.onclose = () => {
       if (this.children.get(desktop) === child) this.children.delete(desktop)
       rmSync(dir, { recursive: true, force: true })
@@ -503,6 +656,8 @@ export class ChromeTools {
       for (const [desktop, child] of [...this.children]) {
         if (!sameEndpoint(this.opts.endpoint(desktop), child.endpoint)) {
           void this.end(desktop, 'its browser exited or restarted', true, child)
+        } else if (child.leaseFence && !leaseContinues(child.leaseFence)) {
+          void this.end(desktop, 'the control lease ended', true, child)
         } else if (child.inflight === 0 && this.now() - child.lastCall >= this.opts.idleMs()) {
           void this.end(desktop, `no chrome_* call for ${Math.round(this.opts.idleMs() / 1000)} s`, false, child)
         }
@@ -526,3 +681,12 @@ const screenshotTooLarge = (): ComputerError =>
   new ComputerError('unavailable', 'The screenshot is too large. Try JPEG or capture the viewport.', {
     reason: 'result_too_large'
   })
+
+function leaseContinues(fence: () => void): boolean {
+  try {
+    fence()
+    return true
+  } catch {
+    return false
+  }
+}

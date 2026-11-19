@@ -48,10 +48,10 @@ export function chromeChildArgs(options: {
   // Its own empty directory, the only filesystem root it gets.
   dir: string
   maxImageDimension: number
-  // Scripts follow `shell` (5b); until then the child never evaluates.
   scripts?: boolean
+  fileRoots?: string[]
 }): string[] {
-  const { endpoint, dir, maxImageDimension } = options
+  const { endpoint, dir, maxImageDimension, fileRoots } = options
   return [
     '--wsEndpoint',
     `ws://127.0.0.1:${endpoint.port}${endpoint.path}`,
@@ -71,8 +71,7 @@ export function chromeChildArgs(options: {
     // A full page keeps four screens' height before it is scaled down; past 2 MB the child writes a file (§5.8).
     '--screenshotMaxHeight',
     String(maxImageDimension * 4),
-    '--filesystemRoot',
-    dir
+    ...(fileRoots?.length ? fileRoots : [dir]).flatMap((root) => ['--filesystemRoot', root])
   ]
 }
 
@@ -143,10 +142,26 @@ export function contractFromUpstream(
 /** The audit's arguments: an address reduced to its origin (§5.8); typed text is reduced later, as for computer_*. */
 export function chromeAuditArgs(args: Record<string, unknown>): Record<string, unknown> {
   const out = upstreamArgs(args)
+  for (const field of ['text', 'value', 'promptText']) {
+    const value = out[field]
+    if (typeof value === 'string') out[field] = `<${value.length} chars>`
+  }
+  if (Array.isArray(out.elements))
+    out.elements = out.elements.flatMap((element: { uid?: string; value?: string } | null) =>
+      element && typeof element.uid === 'string'
+        ? [
+            {
+              uid: element.uid,
+              ...(typeof element.value === 'string' ? { value: `<${element.value.length} chars>` } : {})
+            }
+          ]
+        : []
+    )
   if (typeof out.url === 'string') {
     try {
       const url = new URL(out.url)
-      out.url = url.origin === 'null' ? `${url.protocol}` : url.origin
+      out.url = url.origin === 'null' ? url.protocol : url.origin
+      if (url.protocol === 'javascript:') out.script = url.href
     } catch {
       out.url = '[invalid]'
     }
