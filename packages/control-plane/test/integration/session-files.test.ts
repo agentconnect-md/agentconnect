@@ -151,6 +151,14 @@ describe('shared-file snapshots', () => {
     await prisma.sessionMeta.update({ where: { id: purged.sessionId }, data: { contentPurgedAt: new Date(T0) } })
     await prisma.sessionMeta.delete({ where: { id: gone.sessionId } })
 
+    // A purged session's snapshot is unreadable at once, before the reaper deletes its object.
+    const purgedRead = await appAs(DEFAULT_OWNER_ID, h.service).app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions/${purged.sessionId}/shared-files/${HEX.slice(0, 16)}`
+    })
+    expect(purgedRead.statusCode).toBe(404)
+    expect(h.objects.has(purgedKey)).toBe(true)
+
     // A session row that is missing only briefly may still be on its way, so its snapshot waits out the grace.
     expect(await h.service.reap()).toBe(1)
     expect(h.deleted).toEqual([purgedKey])

@@ -23,7 +23,7 @@ export function sessionFileRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Download a file a session shared',
           description:
-            'Resolves the digest a `[shared: …]` marker records (its first 16 hex characters, or the whole SHA-256) to the snapshot taken when the agent shared the file, with a short-lived signed URL that downloads it as an attachment. The snapshot is the published revision even after the workspace file changes, and it is kept until the session’s content is deleted. The caller must be able to view the session. Not found when the deployment has no transfer bucket, the share predates snapshots, or its upload failed; the console then falls back to the digest-checked workspace download.',
+            'Resolves the digest a `[shared: …]` marker records (its first 16 hex characters, or the whole SHA-256) to the snapshot taken when the agent shared the file, with a short-lived signed URL that downloads it as an attachment. The snapshot is the published revision even after the workspace file changes, and it is readable until the session’s content is deleted. The caller must be able to view the session. Not found when the deployment has no transfer bucket, the share predates snapshots, or its upload failed; the console then falls back to the digest-checked workspace download.',
           operationId: 'getSessionSharedFile',
           params: SessionSharedFileParams,
           querystring: SessionSharedFileQuery,
@@ -35,7 +35,8 @@ export function sessionFileRoutes(deps: HttpDeps) {
         if (!files) return reply.code(404).send(notFound)
         // An invisible session reads as absent, as do its snapshots.
         const session = await deps.repos.session.get(orgOf(req), SessionId(req.params.sessionId))
-        if (!session) return reply.code(404).send(notFound)
+        // Purged content is gone at once, whatever the reaper has deleted from the bucket so far.
+        if (!session || session.contentPurgedAt) return reply.code(404).send(notFound)
         const access = await sessionAccess.forSessions(req, [session])
         if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) {
           return reply.code(404).send(notFound)

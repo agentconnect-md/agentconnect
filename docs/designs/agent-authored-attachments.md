@@ -254,7 +254,8 @@ platform turn after the upload succeeds, in a console turn before the chip is em
   collects. A failed or refused snapshot is logged and never fails the share; the chip then
   falls back to the workspace.
 - **Read.** `GET /sessions/{sessionId}/shared-files/{sha256}` (`getSessionSharedFile`) takes
-  the marker's digest prefix, checks that the caller can view the session, HEADs the object
+  the marker's digest prefix, checks that the caller can view the session and that its content
+  is not purged (whatever the reaper has deleted so far), HEADs the object
   for exactly the recorded size and checksum, and answers a short-lived signed GET that
   downloads it as an attachment under its name. The console's chip asks it first and uses
   the digest-checked workspace download only when it answers 404.
