@@ -3,6 +3,7 @@ import { continuableOrigin, originKindOf } from './frames/route.js'
 import {
   DEFAULT_MANIFEST,
   DINGTALK_PLATFORM,
+  EMAIL_PLATFORM,
   GOOGLE_CHAT_PLATFORM,
   MSTEAMS_PLATFORM,
   WECHAT_PLATFORM,
@@ -242,6 +243,19 @@ describe('platform manifest', () => {
     // A chat origin the console composer may not continue.
     expect(originKindOf(WECOM_PLATFORM)).toBe('chat')
     expect(continuableOrigin(WECOM_PLATFORM)).toBe(false)
+  })
+
+  it('keeps Email on the conservative arm of every axis, with a member’s own threads recognizable by key', () => {
+    // No kind appends, so no row is put on one long session and mail never runs a coordinator (email-integration.md §5.2).
+    const { platform, ...axes } = manifestFor(EMAIL_PLATFORM)
+    expect(platform).toBe('email')
+    expect(axes).toEqual({ ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/ })
+    expect(axes.appendKinds).toEqual([])
+    expect(axes.dmChannelPattern?.test('dm:alice@corp.example.test')).toBe(true)
+    expect(axes.dmChannelPattern?.test('group:m1@corp.example.test')).toBe(false)
+    // Not a known id yet: readers ship a release before the Control Plane provider emits it.
+    expect(originKindOf(EMAIL_PLATFORM)).toBeUndefined()
+    expect(continuableOrigin(EMAIL_PLATFORM)).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
