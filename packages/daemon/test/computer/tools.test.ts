@@ -11,6 +11,7 @@ import { ComputerChannelError, type ComputerMcpConnection } from '../../src/comp
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/client'
 import {
   COMPUTER_COMMAND_LINE_TOOLS,
+  COMPUTER_BROWSER_DESCRIPTORS,
   COMPUTER_FILL_TOOLS,
   COMPUTER_TOOLS,
   COMPUTER_TOOL_ARGS,
@@ -182,6 +183,84 @@ function setup(
 const parse = (result: { mcpContent: Array<{ type: string; text?: string }> }) =>
   JSON.parse(result.mcpContent.find((block) => block.type === 'text')!.text!) as Record<string, unknown>
 
+describe('the Chrome tier', () => {
+  const browserCtx = () => ctx(COMPUTER_BROWSER_DESCRIPTORS)
+  const grant = { mode: 'control', browserTier: true }
+  const pageId = 'p0000000001'
+
+  it('forwards read tools without a lease or approval and rejects fields outside the contract', async () => {
+    const { tools, calls, leases, asks } = setup({ grant, approvals: { firstInputPerSession: true } })
+    const result = await tools.call(browserCtx(), 'chrome_take_snapshot', { computer: C1, pageId })
+    expect(result?.result.mcpContent).toContainEqual(IMAGE)
+    const invalid = await tools.call(browserCtx(), 'chrome_take_screenshot', { pageId, filePath: '/tmp/sample.png' })
+    expect(parse(invalid!.result).error).toBe('invalid_argument')
+    expect(calls).toEqual([{ computer: C1, name: 'chrome_take_snapshot', args: { pageId } }])
+    expect(leases.computerLeaseAcquire).not.toHaveBeenCalled()
+    expect(asks).toEqual([])
+  })
+
+  it('requires first input approval before using the shared control lease', async () => {
+    const { tools, calls, asks, metas, leases } = setup({
+      grant,
+      approvals: { firstInputPerSession: true },
+      approve: async () => {
+        expect(leases.computerLeaseAcquire).not.toHaveBeenCalled()
+        expect(calls).toEqual([])
+        return 'allow'
+      }
+    })
+    const result = await tools.call(browserCtx(), 'chrome_click', { pageId, uid: '1_1' })
+    expect(result?.result.mcpIsError).toBeUndefined()
+    expect(asks).toMatchObject([{ tool: 'chrome_click' }])
+    expect(leases.computerLeaseAcquire).toHaveBeenCalledOnce()
+    expect(metas).toEqual([{ 'md.agentconnect/approval': 'allowed' }])
+  })
+
+  it('requires a separate approval for a browser script and refuses uploads without a file grant', async () => {
+    const { tools, calls, asks, leases } = setup({ grant: { ...grant, shell: 'ask' }, approve: async () => 'deny' })
+    const script = await tools.call(browserCtx(), 'chrome_evaluate_script', {
+      pageId,
+      function: '() => document.title'
+    })
+    expect(parse(script!.result).error).toBe('approval_denied')
+    expect(asks).toMatchObject([
+      { tool: 'chrome_evaluate_script', kind: 'command', action: expect.stringContaining('document.title') }
+    ])
+    const upload = await tools.call(browserCtx(), 'chrome_upload_file', {
+      pageId,
+      uid: '1_1',
+      filePaths: ['/tmp/sample.txt']
+    })
+    expect(parse(upload!.result).error).toBe('denied')
+    expect(calls).toEqual([])
+    expect(leases.computerLeaseAcquire).not.toHaveBeenCalled()
+  })
+
+  it('returns an uncertain browser action with a desktop screenshot without sending it twice', async () => {
+    const { tools, calls } = setup({
+      grant,
+      callTool: async ({ name }) => {
+        if (name === 'chrome_click') throw new Error('connection closed')
+        return { content: [IMAGE] }
+      }
+    })
+    const result = await tools.call(browserCtx(), 'chrome_click', { pageId, uid: '1_1' })
+    expect(parse(result!.result).error).toBe('uncertain')
+    expect(result!.result.mcpContent).toContainEqual(IMAGE)
+    expect(calls.map(({ name }) => name)).toEqual(['chrome_click', 'computer_screenshot'])
+  })
+
+  it.each([{}, { mode: 'view', browserTier: true }, { mode: 'control', browserTier: false }])(
+    'refuses a browser read without a control and browser grant (%j)',
+    async (grant) => {
+      const { tools, calls } = setup({ grant })
+      const result = await tools.call(browserCtx(), 'chrome_list_pages', {})
+      expect(parse(result!.result).error).toBe('denied')
+      expect(calls).toEqual([])
+    }
+  )
+})
+
 describe('computerToolsOffered', () => {
   const on = { enabled: true, computers: [C1] }
   it('offers the tools only when enabled, with a Computer, a serving CP and an image-capable runtime', () => {
@@ -229,7 +308,12 @@ describe('computerToolsOffered', () => {
   })
 
   it('advertises an argument schema for every tool it validates', () => {
-    const all = [...COMPUTER_TOOLS, ...COMPUTER_COMMAND_LINE_TOOLS, ...COMPUTER_FILL_TOOLS]
+    const all = [
+      ...COMPUTER_TOOLS,
+      ...COMPUTER_COMMAND_LINE_TOOLS,
+      ...COMPUTER_FILL_TOOLS,
+      ...COMPUTER_BROWSER_DESCRIPTORS
+    ]
     expect(all.map((tool) => tool.name).sort()).toEqual([...COMPUTER_TOOL_ARGS.keys()].sort())
     for (const tool of all) {
       if (tool.name === 'computer_list') continue

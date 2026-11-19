@@ -67,7 +67,8 @@ export const ComputerChannelGrantResult = z.discriminatedUnion('granted', [
     approvers: z.array(z.string().min(1).max(128)).max(500).optional(),
     // The command-line tier the token allows (§5.7); an older CP sends none, which allows none.
     shell: z.enum(COMPUTER_SHELL_MODES).optional(),
-    files: z.enum(COMPUTER_FILES_MODES).optional()
+    files: z.enum(COMPUTER_FILES_MODES).optional(),
+    browserTier: z.boolean().optional()
   }),
   z.object({
     granted: z.literal(false),

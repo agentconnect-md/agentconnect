@@ -62,7 +62,11 @@ async function start(): Promise<{ app: App; base: string }> {
   return { app, base: address.replace(/^http/, 'ws') }
 }
 
-async function registerComputer(app: App, agents: string[]): Promise<{ computerId: string; apiKey: string }> {
+async function registerComputer(
+  app: App,
+  agents: string[],
+  isolation: 'none' | 'container' = 'none'
+): Promise<{ computerId: string; apiKey: string }> {
   const minted = await app.http.inject({ method: 'POST', url: `${ORG}/computers/registrations`, payload: {} })
   const { token } = minted.json() as { token: string }
   const res = await app.http.inject({
@@ -72,6 +76,7 @@ async function registerComputer(app: App, agents: string[]): Promise<{ computerI
       token,
       name: 'ubuntu-desk',
       os: 'linux',
+      isolation,
       osVersion: 'Ubuntu 26.04',
       session: 'x11',
       desktopDaemonVersion: '0.1.0',
@@ -201,12 +206,16 @@ describe('Computer data-plane credentials', () => {
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     const { app, base } = await start()
     const relay = await openRelay(base)
-    const { computerId, apiKey } = await registerComputer(app, [AGENT])
+    const { computerId, apiKey } = await registerComputer(app, [AGENT], 'container')
     const desktop = await connectDesktop(base, apiKey)
     expect(desktop.relays).toEqual([expect.objectContaining({ url: RELAY_DAEMON_URL })])
+    expect(desktop.auth.policy).toMatchObject({ browserTier: true, browserHideWebdriver: true })
 
     const reply = await agentDaemon().grant(computerId)
-    expect(reply).toMatchObject({ type: 'computer-channel/grant/result', payload: { granted: true, mode: 'control' } })
+    expect(reply).toMatchObject({
+      type: 'computer-channel/grant/result',
+      payload: { granted: true, mode: 'control', browserTier: true }
+    })
     const { token } = reply.payload as { token: string }
     // The desktop verifies with the key from its own channel; the CP is never asked.
     const key = Buffer.from(desktop.auth.credential.key, 'base64url')
@@ -217,7 +226,7 @@ describe('Computer data-plane credentials', () => {
         key: (kid) => (kid === desktop.auth.credential.keyId ? key : undefined),
         now: Date.now()
       })
-    expect(verify(computerId)).toMatchObject({ ses: SESSION, agt: AGENT, dmn: DAEMON })
+    expect(verify(computerId)).toMatchObject({ ses: SESSION, agt: AGENT, dmn: DAEMON, br: true })
     expect(verify(randomUUID())).toBeNull()
 
     // The desktop proves its key to a relay; the CP checks it, and stops once the Computer is revoked.

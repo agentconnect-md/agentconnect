@@ -34,6 +34,7 @@ function setup(over: Partial<ComputerRecord> = {}, policy: Record<string, unknow
     name: 'Desk',
     ownerUserId: 'user_owner',
     kind: 'self-hosted',
+    isolation: 'none',
     capabilities: { viewer: true, viewerStun: true },
     status: 'online',
     lastSeenAt: new Date(T0 - 1000),
@@ -53,6 +54,22 @@ function setup(over: Partial<ComputerRecord> = {}, policy: Record<string, unknow
 const who = { agentId: AGENT, sessionId: 'sess-1', daemonId: DAEMON }
 
 describe('ComputerChannelGrants', () => {
+  it.each([
+    { isolation: 'container', policy: {}, allowed: true },
+    { isolation: 'vm', policy: { browserHideWebdriver: false }, allowed: true },
+    { isolation: 'container', policy: { browserTier: false }, allowed: false },
+    { isolation: 'container', policy: { agentMode: 'view' }, allowed: false },
+    { isolation: 'none', policy: { browserTier: true }, allowed: false }
+  ] as const)(
+    'puts the isolated browser grant in the token and reply ($isolation, $policy)',
+    async ({ isolation, policy, allowed }) => {
+      const result = await setup({ isolation }, policy).grants.grant(ORG, CID, who)
+      if (!result.granted) throw new Error('refused')
+      expect(result.browserTier).toBe(allowed)
+      expect(readComputerChannelToken(result.token)?.br).toBe(allowed)
+    }
+  )
+
   it("names the Computer, its owner, approvers and approval policy for the approval cards, turning older daemons' dropped asks off", async () => {
     const policy = { allowedMembers: ['user_member'], approvals: { firstInputPerSession: true } }
     const result = await setup({}, policy).grants.grant(ORG, CID, who)
