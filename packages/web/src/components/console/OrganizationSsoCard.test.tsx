@@ -191,6 +191,10 @@ describe('organization single sign-on card', () => {
     // An active connection marks each domain it binds.
     expect(host.textContent).toContain('VerifiedSSO sign-in only')
 
+    // Settings changed on an active connection are tested again before they can be enforced.
+    await render({ domains, connection: connection({ status: 'active', tested: false }) })
+    expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Test sign-in', 'Edit', 'Deactivate'])
+
     await render({ domains, connection: connection({ status: 'active', needsConfiguration: true, settings: null }) })
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Reconfigure'])
     expect(host.textContent).toContain('Needs configuration')

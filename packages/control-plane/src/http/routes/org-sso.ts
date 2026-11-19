@@ -294,10 +294,17 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Create or change the single sign-on connection',
           description:
-            'Owner-only. Saves the identity provider settings for the organization’s one connection and returns the values to enter at the identity provider. The settings take effect at once, also on an active connection, and the connection reads as untested until a test sign-in succeeds again. The client secret is forwarded to the identity service and not kept; an OIDC save may leave it out to keep the stored secret, which is refused with `SSO_CLIENT_SECRET_REQUIRED` when the issuer changed or no secret is stored. A SAML save carries a metadata URL or a metadata document. Changing the protocol starts a new connection with new service-provider values.',
+            'Owner-only. Saves the identity provider settings for the organization’s one connection and returns the values to enter at the identity provider. The settings take effect at once, also on an active connection, and the connection reads as untested until a test sign-in succeeds again. The client secret is forwarded to the identity service and not kept; an OIDC save may leave it out to keep the stored secret, which is refused with `SSO_CLIENT_SECRET_REQUIRED` when the issuer changed or no secret is stored. A SAML save carries a metadata URL or a metadata document. The protocol is fixed while the connection exists (409 `SSO_PROTOCOL_MISMATCH`): remove the connection to change it.',
           operationId: 'putOrganizationSsoConnection',
           body: PutOrgSsoConnectionBody,
-          response: { 200: OrgSsoConnectionDto, 400: ErrorDto, 401: ErrorDto, 403: ErrorDto, 503: ErrorDto }
+          response: {
+            200: OrgSsoConnectionDto,
+            400: ErrorDto,
+            401: ErrorDto,
+            403: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -316,6 +323,9 @@ export function orgSsoRoutes(deps: HttpDeps) {
           const saved = await connections.save(orgId, body, userId)
           if (saved === 'secret_required')
             return badRequest(reply, 'SSO_CLIENT_SECRET_REQUIRED', 'enter the client secret')
+          if (saved === 'protocol_mismatch') {
+            return conflict(reply, 'SSO_PROTOCOL_MISMATCH', 'remove the connection to change its protocol')
+          }
           return connectionDto(saved)
         })
       }
@@ -454,7 +464,7 @@ export function orgSsoRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Enforce the single sign-on connection',
           description:
-            'Owner-only. From now on a member whose address is in the organization’s verified domains opens it only from a session signed in through the connection; members outside those domains are unaffected. The connection must be active; the caller’s own address must be in the verified domains (409 `SSO_ENFORCER_OUTSIDE_DOMAINS`) and the caller must be signed in through the connection now (409 `SSO_SIGN_IN_REQUIRED`), which shows an owner gets in under the rule. Changing the settings stops enforcing. A deployment administrator can stop enforcing when the identity provider breaks.',
+            'Owner-only. From now on every member, owners included, opens the organization only from a session signed in through the connection; a member whose address is outside the verified domains cannot sign in through it and loses access while it is enforced. The connection must be active (409 `SSO_NOT_ACTIVE`) and a test sign-in must have passed since its settings last changed (409 `SSO_CONNECTION_UNTESTED`); the caller’s own address must be in the verified domains (409 `SSO_ENFORCER_OUTSIDE_DOMAINS`) and the caller must be signed in through the connection now (409 `SSO_SIGN_IN_REQUIRED`), which shows an owner gets in under the rule. Changing the settings stops enforcing. A deployment administrator can stop enforcing when the identity provider breaks.',
           operationId: 'enforceOrganizationSsoConnection',
           response: {
             200: OrgSsoConnectionDto,
@@ -476,6 +486,9 @@ export function orgSsoRoutes(deps: HttpDeps) {
           })
           if (outcome === 'none') return connectionNotFound(reply)
           if (outcome === 'inactive') return conflict(reply, 'SSO_NOT_ACTIVE', 'activate the connection first')
+          if (outcome === 'untested') {
+            return conflict(reply, 'SSO_CONNECTION_UNTESTED', 'run a test sign-in after the last settings change first')
+          }
           if (outcome === 'outside_domains') {
             return conflict(
               reply,
