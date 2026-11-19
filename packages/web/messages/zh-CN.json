@@ -5695,7 +5695,8 @@
         "domain": "域名",
         "submit": "添加域名",
         "invalid": "请输入域名，例如 acme.example",
-        "taken": "该域名已被其他组织验证"
+        "taken": "该域名已被其他组织验证",
+        "limit": "每个组织最多添加 20 个域名。请先移除一个再添加。"
       },
       "connectionDialog": {
         "createTitle": "配置连接",
@@ -5719,7 +5720,8 @@
         "entityId": "Entity ID",
         "save": "保存",
         "saving": "正在保存…",
-        "remove": "删除连接"
+        "remove": "删除连接",
+        "rejected": "身份服务未接受这些设置：{reason}"
       },
       "removeDialog": {
         "title": "删除连接？",
@@ -5737,7 +5739,8 @@
       "activateDialog": {
         "title": "启用单点登录？",
         "body": "这些域名下的邮箱将只能通过 SSO 登录。",
-        "activating": "正在启用…"
+        "activating": "正在启用…",
+        "domainCheckFailed": "暂时无法确认 {domains} 的 DNS 记录。请检查记录后重试。"
       },
       "deactivateDialog": {
         "title": "停用单点登录？",

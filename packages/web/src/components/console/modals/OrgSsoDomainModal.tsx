@@ -43,11 +43,13 @@ export default function OrgSsoDomainModal({
       setError(
         e instanceof ApiError && e.code === 'SSO_DOMAIN_TAKEN'
           ? t('taken')
-          : e instanceof ApiError && e.status === 400
-            ? t('invalid')
-            : e instanceof Error
-              ? e.message
-              : String(e)
+          : e instanceof ApiError && e.code === 'SSO_DOMAIN_LIMIT'
+            ? t('limit')
+            : e instanceof ApiError && e.status === 400
+              ? t('invalid')
+              : e instanceof Error
+                ? e.message
+                : String(e)
       )
       setBusy(false)
     }

@@ -74,8 +74,13 @@ describe('the SSO page', () => {
 
   it('leaves for the connector the address signs in through and remembers the address', async () => {
     mocks.lookupSignIn.mockResolvedValue({ connectorId: 'connector-1' })
+    sessionStorage.setItem(
+      'ac.ssoTest',
+      JSON.stringify({ nonce: 'stale', returnTo: '/settings', expiresAt: '2999-01-01T00:00:00Z' })
+    )
     await render()
     await submit(' dana@acme.example ')
+    expect(sessionStorage.getItem('ac.ssoTest')).toBeNull()
     expect(mocks.lookupSignIn).toHaveBeenCalledWith('dana@acme.example', expect.anything())
     expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-1', 'dana@acme.example')
     // The page is leaving: the field stays busy instead of offering another try.

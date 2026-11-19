@@ -107,6 +107,21 @@ export function stashSsoTest(test: PendingSsoTest): void {
   }
 }
 
+/** The part of a server refusal after its English lead-in (the domains, the reason), or the whole message without one. */
+export function refusalDetail(message: string, lead: string): string {
+  const at = message.indexOf(lead)
+  return at === -1 ? message : message.slice(at + lead.length).trim()
+}
+
+/** Dropped before any ordinary SSO sign-in, and when a test fails to leave, so its landing is never taken for a test. */
+export function clearSsoTest(): void {
+  try {
+    sessionStorage.removeItem(TEST_KEY)
+  } catch {
+    /* nothing was stashed without storage */
+  }
+}
+
 /** Read once: a reload of the landing page must not present the nonce again. */
 export function takeSsoTest(now: number = Date.now()): PendingSsoTest | null {
   try {

@@ -6,6 +6,7 @@ import { LoadingState, OrgIconView } from '@/components/marks'
 import { Button } from '@/components/ui'
 import { currentUser, loginWithSso } from '@/lib/auth'
 import type { OrgDto } from '@/lib/api'
+import { clearSsoTest } from '@/lib/organization-sso'
 import { writeFlowState } from '@/lib/flow-state'
 import { orgColor, useOrgs } from '@/lib/org-context'
 import { MOCK_MODE } from '@/lib/data'
@@ -43,6 +44,7 @@ function OrgSsoSignIn({ org, connection }: { org: OrgDto; connection: { connecto
     try {
       // The sign-in lands on the callback, which returns here.
       writeFlowState('returnTo', window.location.pathname + window.location.search)
+      clearSsoTest()
       await loginWithSso(connection.connectorId, currentUser()?.email ?? undefined)
     } catch (e) {
       setFailed(e instanceof Error ? e.message : String(e))

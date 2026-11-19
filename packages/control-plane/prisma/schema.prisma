@@ -479,7 +479,7 @@ model OrgSsoConnection {
   @@map("org_sso_connection")
 }
 
-// A membership granted by a first sign-in through the organization's connection (organization-sso.md §4.3); it outlives the membership so a removal stands.
+// A membership granted to an address on a verified domain while the member source is `domain` (organization-sso.md §4.3); it outlives the membership so a removal stands.
 model OrgSsoJoin {
   orgId    String
   userId   String

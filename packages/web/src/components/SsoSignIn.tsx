@@ -7,7 +7,7 @@ import { AuthFrame, useLastSignIn } from '@/components/Auth'
 import { Button } from '@/components/ui'
 import { ApiError, lookupSignIn } from '@/lib/api'
 import { loginWithSso } from '@/lib/auth'
-import { EMAIL_RE, notePendingSignIn } from '@/lib/organization-sso'
+import { clearSsoTest, EMAIL_RE, notePendingSignIn } from '@/lib/organization-sso'
 
 type LookupNotice = 'noConnection' | 'tooMany' | 'failed'
 
@@ -42,6 +42,7 @@ export default function SsoSignIn() {
       }
       notePendingSignIn({ method: 'email', email: address })
       // The page leaves for the identity provider; the button keeps its busy state until it does.
+      clearSsoTest()
       await loginWithSso(connector.connectorId, address)
     } catch (error) {
       setNotice(error instanceof ApiError && error.status === 429 ? 'tooMany' : 'failed')

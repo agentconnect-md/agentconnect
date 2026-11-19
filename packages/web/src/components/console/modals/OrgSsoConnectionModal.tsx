@@ -15,6 +15,7 @@ import {
   type OrgSsoSamlSettings,
   type OrgSsoServiceProvider
 } from '@/lib/api'
+import { refusalDetail } from '@/lib/organization-sso'
 
 const DEFAULT_SCOPE = 'openid email profile'
 // Standard SAML and WS-Federation claim names, offered on the attribute fields.
@@ -264,6 +265,8 @@ export default function OrgSsoConnectionModal({
       if (e instanceof ApiError && e.code === 'SSO_CLIENT_SECRET_REQUIRED') {
         setReplaceSecret(true)
         setError(t('secretRequired'))
+      } else if (e instanceof ApiError && e.code === 'SSO_CONNECTION_REJECTED') {
+        setError(t('rejected', { reason: refusalDetail(e.message, 'rejected the settings:') }))
       } else {
         setError(e instanceof Error ? e.message : String(e))
       }
