@@ -357,6 +357,8 @@ import { WorkBoundary } from './messages/message-boundary.js'
 import { attachmentMention } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import {
+  COMPUTER_BROWSER_DESCRIPTORS,
+  COMPUTER_BROWSER_GUIDANCE,
   COMPUTER_COMMAND_LINE_GUIDANCE,
   COMPUTER_COMMAND_LINE_TOOLS,
   COMPUTER_FILL_GUIDANCE,
@@ -369,6 +371,7 @@ import {
   type ComputerApprovalAnswer,
   type ComputerApprovalAsk
 } from './computer/tools.js'
+import { COMPUTER_BROWSER_FEATURE } from '@agentconnect.md/protocol/computer-browser'
 import { AhpFillSubmit, PendingFillCards, type FillCardAnswer } from './computer/fill-cards.js'
 import type { ComputerFillCard, ComputerFillCardOutcome } from '@agentconnect.md/protocol/computer-form-fill'
 import { ADMIN_MCP_SERVER_NAME, RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
@@ -6117,6 +6120,8 @@ export class Daemon {
         // The command-line tier (computer-use.md §5.7) needs a CP whose tokens name it; each Computer's policy decides per call.
         const commandLine = computers && this.cpClient?.supportsServerFeature(COMPUTER_COMMAND_LINE_FEATURE) === true
         if (commandLine) tools.push(...COMPUTER_COMMAND_LINE_TOOLS)
+        const browser = computers && this.cpClient?.supportsServerFeature(COMPUTER_BROWSER_FEATURE) === true
+        if (browser) tools.push(...COMPUTER_BROWSER_DESCRIPTORS)
         // Form filling needs a surface that shows Fill cards: webchat inline, a chat platform as a console link (§6).
         const fills =
           computers && (platform === 'webchat' || this.turnSurfaces.exact(platform)?.fillCards !== undefined)
@@ -6131,6 +6136,7 @@ export class Daemon {
               ? [
                   COMPUTER_USE_GUIDANCE,
                   ...(commandLine ? [COMPUTER_COMMAND_LINE_GUIDANCE] : []),
+                  ...(browser ? [COMPUTER_BROWSER_GUIDANCE] : []),
                   ...(fills ? [COMPUTER_FILL_GUIDANCE] : [])
                 ].join('\n')
               : undefined

@@ -60,6 +60,7 @@ function setup(
     stoppedAt?: () => Date | null
     keyDeliveryMs?: number
     kind?: 'managed' | 'self-hosted'
+    isolation?: ComputerRecord['isolation']
     allocation?: 'manual' | 'per-agent' | 'ephemeral'
     egress?: ComputerConnDeps['egress']
     policies?: ComputerConnDeps['policies']
@@ -76,6 +77,7 @@ function setup(
           name: 'desk',
           ownerUserId: 'u1',
           kind: over.kind ?? 'self-hosted',
+          isolation: over.isolation ?? 'none',
           allocation: over.allocation ?? null,
           status: over.status ?? 'online',
           stoppedAt: over.stoppedAt ? over.stoppedAt() : null,
@@ -118,6 +120,19 @@ const beat = (extra: Record<string, unknown> = {}) =>
   buildComputerCpFrame('computer/heartbeat', { status: 'online', ...extra })
 
 describe('ComputerConnection', () => {
+  it('sends the resolved browser policy on auth and when the owner changes it', async () => {
+    const { transport, registry } = setup({ isolation: 'container' })
+    transport.deliver(auth())
+    await settle()
+    expect(transport.ofType('computer/auth/ok')[0]?.payload).toMatchObject({
+      policy: { browserTier: true, browserHideWebdriver: true }
+    })
+    registry.pushPolicy(CID, ComputerPolicySchema.parse({ browserTier: false, browserHideWebdriver: false }))
+    expect(transport.ofType('computer/policy').at(-1)?.payload).toMatchObject({
+      policy: { browserTier: false, browserHideWebdriver: false }
+    })
+  })
+
   it('tells a managed desktop its organization’s egress on auth, and a change once it reports a forwarder', async () => {
     const proxy = { mode: 'proxy' as const, url: 'http://proxy.example.com:3128', password: 'pw' }
     const egress = vi.fn(async () => proxy)

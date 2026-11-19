@@ -17,6 +17,7 @@ import {
   type ComputerRelayEntry,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
+import { computerBrowserPolicy } from '@agentconnect.md/protocol/computer-browser'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, type OrgId } from '../domain/ids.js'
 import { computerGrantsAgent, isComputerReachable, presentComputerStatus, withOwnerMember } from '../domain/computer.js'
@@ -104,6 +105,8 @@ export class ComputerChannelGrants {
     )
     // The command-line tier the policy allows (§5.7); the desktop enforces the token's, narrowed by later pushes.
     const tier = computerCommandLine(computer.policy, computer)
+    const browserTier =
+      computer.policy.agentMode === 'control' && computerBrowserPolicy(computer.policy, computer.isolation).browserTier
     const token = signComputerChannelToken(
       {
         aud: 'mcp',
@@ -116,7 +119,8 @@ export class ComputerChannelGrants {
         dmn: who.daemonId,
         mode: computer.policy.agentMode,
         sh: tier.shell,
-        fs: tier.files
+        fs: tier.files,
+        br: browserTier
       },
       Buffer.from(credential.key, 'base64url')
     )
@@ -134,7 +138,8 @@ export class ComputerChannelGrants {
       approvals: { ...computer.policy.approvals, ...LEGACY_COMPUTER_APPROVALS_OFF },
       approvers: withOwnerMember(computer.policy, computer.ownerUserId).allowedMembers,
       shell: tier.shell,
-      files: tier.files
+      files: tier.files,
+      browserTier
     }
   }
 
