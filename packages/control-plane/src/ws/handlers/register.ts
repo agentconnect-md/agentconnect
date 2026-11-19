@@ -22,6 +22,7 @@ import {
   DECISION_MODEL_SELECTION_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
+  SESSION_FILE_SNAPSHOT_FEATURE,
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
@@ -174,6 +175,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       'agent-directory-org-scope-v1',
       // webchat-generated-images.md §5: this CP signs `image/original/put|get` and proxies `image/original/resolve`.
       WEBCHAT_IMAGES_FEATURE,
+      // agent-authored-attachments.md §4.1: this CP signs `session/file/put` and keeps snapshots for their session.
+      ...(deps.sessionFiles ? [SESSION_FILE_SNAPSHOT_FEATURE] : []),
       // webchat-preset-agentconnect-mcp.md §5.3: this CP slides an active remote MCP grant's expiry in place.
       ...(deps.webchatRemoteMcp ? [WEBCHAT_MCP_GRANT_RENEW_FEATURE] : []),
       SESSION_LIVE_TAIL_FEATURE,

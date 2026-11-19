@@ -117,7 +117,7 @@ import {
   stageComposerFiles,
   useFileDrop
 } from '@/components/console/ComposerFiles'
-import { transferCapable, uploadPreviewsCapable, sessionFileDownload } from '@/lib/shared-file'
+import { transferCapable, uploadPreviewsCapable, type SessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -2054,16 +2054,12 @@ export default function SessionDetailView() {
   // for one frame under session B's header before the loading effect clears it.
   const transcriptMatchesSession = !wantTranscript || transcriptSessionId === sid
   const visibleMsgs = transcriptMatchesSession ? msgs : null
-  // Any workspace file downloads; a file the focused session shared is pinned to that share's digest.
-  const viewerDownload = useMemo(() => {
+  // The viewer downloads the file it shows, in the focused session's root; a share's digest pins only its chip.
+  const viewerDownload = useMemo((): SessionFileDownload | null => {
     if (!viewerPath) return null
     if (!headerFocusSessionId) return {}
-    const target = headerFocusSessionId === sid ? toolSid : headerFocusSessionId
-    const rows = (visibleMsgs ?? [])
-      .filter((m) => (m.kind || 'text').toLowerCase() === 'text')
-      .map((m) => ({ text: m.text, sessionId: conversationSourceSessionByMessageRef.current.get(m) ?? toolSid }))
-    return sessionFileDownload(viewerPath, target, rows)
-  }, [viewerPath, headerFocusSessionId, sid, toolSid, visibleMsgs, conversationSourceSessionByMessageRef])
+    return { sessionId: headerFocusSessionId === sid ? toolSid : headerFocusSessionId }
+  }, [viewerPath, headerFocusSessionId, sid, toolSid])
   // Binary and large text download through the object store when the viewed agent's daemon presigns transfers.
   const viewerAgent = filesAgentId ? agents.find((a) => a.id === filesAgentId) : undefined
   const viewerTransfer =

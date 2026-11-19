@@ -39,12 +39,18 @@ under the same org scope:
 ```
 <prefix>/src/<org>/transfer/up/<agentId>/<uuid>        one browser upload, for one agent
 <prefix>/src/<org>/transfer/dl/<sha256(identity)>      one revision of one workspace file
+<prefix>/src/<org>/transfer/img/<agentId>/<uuid>        one console image's original
+<prefix>/src/<org>/transfer/session/<agentId>/<hash>/<sha256>   one shared file's snapshot
 ```
 
 `identity` is `[agentId, sessionId, repo, path, size, mtime]`, so a rewritten file gets a
 new key. Every transfer PUT signs `x-amz-tagging: ac-cache=pending`, so the bucket's
 2-day `pending` rule ([source-cache.md](source-cache.md) §10) collects it. No store row
-tracks a transfer: nothing counts toward the org quota and the sweep never sees one.
+tracks a transfer: nothing counts toward the org quota and the sweep never sees one. The
+exceptions are a shared file's snapshot and a console image's original, which live as long
+as their session: they are tagged `ac-cache=live`, recorded in the CP's
+`session_file_snapshot` table, and deleted by the CP once the session's content is purged
+or the session is gone ([agent-authored-attachments.md](agent-authored-attachments.md) §4.1).
 
 The CP reads the bucket's lifecycle configuration at start and every 10 minutes. While
 the `pending` rule is missing, nothing would collect a transfer, so the CP refuses with
@@ -327,8 +333,9 @@ A web identity's role must trust the CP's ServiceAccount as well as the pool's. 
 session must outlive the longest URL it signs plus 6 minutes. When
 `credentials.durationSeconds` is omitted it is derived as the larger of 1 hour and that
 sum; the chart's `sourceCache.credentials.serviceAccount.sessionDurationSeconds` pins it
-for both the CP and the pool. The CP needs `s3:PutObject`, `s3:PutObjectTagging` and
-`s3:GetObject` under `src/*/transfer/`, and `s3:GetLifecycleConfiguration` on the bucket.
+for both the CP and the pool. The CP needs `s3:PutObject`, `s3:PutObjectTagging`,
+`s3:GetObject` and `s3:DeleteObject` (to release session snapshots) under
+`src/*/transfer/`, and `s3:GetLifecycleConfiguration` on the bucket.
 
 The bucket also needs a CORS rule admitting the console origin for `GET`, `PUT` and
 `POST` with the `x-amz-checksum-sha256`, `x-amz-tagging` and `content-type` headers,

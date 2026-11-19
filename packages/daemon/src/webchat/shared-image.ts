@@ -12,6 +12,8 @@ import {
   type SharedImagePutOk,
   type SharedImagePutReq,
   type SharedImageResolveOk,
+  type SessionFilePutOk,
+  type SessionFilePutReq,
   type TransferNetwork,
   type WebchatImageUpdate,
   type WebchatPost
@@ -28,6 +30,8 @@ import { appendWebchatTextRow, closeWebchatSegmentForImage, type WebchatTurnOutp
 const FRAME_OVERHEAD_BYTES = 6 * 1024
 /** One upload's wall-clock bound, matching a console workspace transfer. */
 const ORIGINAL_UPLOAD_TIMEOUT_MS = 15 * 60_000
+/** A snapshot upload's bound: the share waits on it, so a stalled bucket must not hold the tool call for long. */
+const SNAPSHOT_UPLOAD_TIMEOUT_MS = 2 * 60_000
 /** Concurrent original uploads per daemon; later ones wait their turn. */
 const ORIGINAL_UPLOAD_CONCURRENCY = 2
 /** Staged originals awaiting upload, in bytes; past it a large original stays in the workspace. */
@@ -133,7 +137,7 @@ export interface SharedImageReceipt {
   notice?: string
 }
 
-/** A document the console cannot picture: its row carries the share marker only, and the chip downloads it from the workspace. */
+/** A document the console cannot picture: its row carries the share marker only, and the chip downloads its snapshot or workspace copy. */
 export interface SharedFileSource {
   path: string
   caption?: string
@@ -149,7 +153,7 @@ export interface SharedFileReceipt {
   version: 1
   postId: string
   published: true
-  /** The bytes stay in the workspace; the console's chip downloads them by path and digest. */
+  /** The chip downloads the session's snapshot, else the workspace file by path and digest. */
   original: { kind: 'workspace' }
   notice?: string
 }
@@ -413,6 +417,60 @@ export async function publishWebchatSharedFile(
     published: true,
     original: { kind: 'workspace' },
     ...(notice ? { notice } : {})
+  }
+}
+
+/** Shared-file snapshot seams (agent-authored-attachments.md §4.1): CP signing over this daemon's socket. */
+export interface SharedFileSnapshotDeps {
+  /** The deployment's transfer cache from the last register; undefined ⇒ no snapshot is kept. */
+  fileTransfer: () => { maxBytes: number } | undefined
+  signPut: (req: SessionFilePutReq) => Promise<SessionFilePutOk | 'unsupported'>
+  network: () => TransferNetwork
+  stagingRoot: string
+  log: Logger
+}
+
+/** Keep the bytes a share published in the session's snapshot store; never throws, and false when nothing was kept. */
+export async function snapshotSharedFile(
+  deps: SharedFileSnapshotDeps,
+  file: { agentId: string; sessionId: string; name: string; bytes: Buffer; sha256: string }
+): Promise<boolean> {
+  const transfer = deps.fileTransfer()
+  const size = file.bytes.byteLength
+  if (!transfer || size === 0 || size > transfer.maxBytes || stagedBytes + size > ORIGINAL_STAGING_MAX_BYTES)
+    return false
+  const sha256 = Buffer.from(file.sha256, 'hex').toString('base64')
+  stagedBytes += size
+  let staged: string | undefined
+  // No upload slot: the share waits on this, and a slot can be held by a long image original.
+  try {
+    const signed = await deps.signPut({
+      agentId: file.agentId,
+      sessionId: file.sessionId,
+      name: file.name,
+      bytes: size,
+      sha256,
+      network: deps.network()
+    })
+    if (signed === 'unsupported') return false
+    if (signed.stored) return true
+    if (!signed.url || !signed.headers) return false
+    staged = await stageOriginal(deps.stagingRoot, file.bytes)
+    await putStagedFile({
+      file: staged,
+      bytes: size,
+      sha256,
+      url: new URL(signed.url),
+      headers: signed.headers,
+      timeoutMs: SNAPSHOT_UPLOAD_TIMEOUT_MS
+    })
+    return true
+  } catch (err) {
+    deps.log.warn(`shareFile: keeping a snapshot of ${file.name} failed (${(err as Error).message})`)
+    return false
+  } finally {
+    stagedBytes = Math.max(0, stagedBytes - size)
+    if (staged) await rm(join(staged, '..'), { recursive: true, force: true }).catch(() => {})
   }
 }
 

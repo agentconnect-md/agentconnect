@@ -24,6 +24,8 @@ function bucket(opts: { enabled?: boolean; stored?: boolean; seen?: unknown[] } 
       throw new Error('unused')
     },
     uploadedFileUrl: async () => undefined,
+    holds: async () => false,
+    deleteObject: async () => {},
     cachedDownload: async () => undefined,
     signPut: async (input) => {
       seen.push({ signPut: input })
@@ -53,8 +55,32 @@ describe('shared-image originals', () => {
       headers: { 'content-length': '5' }
     })
     expect(seen).toEqual([
-      { signPut: { key: `src/${ORG}/transfer/img/${AGENT}/${ATTACHMENT}`, bytes: 5, sha256: SHA, network: 'cluster' } }
+      {
+        signPut: {
+          key: `src/${ORG}/transfer/img/${AGENT}/${ATTACHMENT}`,
+          bytes: 5,
+          sha256: SHA,
+          network: 'cluster',
+          retain: false
+        }
+      }
     ])
+  })
+
+  it('keeps an original for its session’s lifetime when snapshots are recorded', async () => {
+    const seen: unknown[] = []
+    const retained: unknown[] = []
+    const service = createSharedImageService({
+      transfer: bucket({ seen }),
+      control: { sharedImageResolve: async () => ({ original: { kind: 'inline' } }) },
+      sessionFiles: { retainImage: async (input) => void retained.push(input) }
+    })
+    await service.signPut(ORG, { ...put, network: 'public' })
+    const key = `src/${ORG}/transfer/img/${AGENT}/${ATTACHMENT}`
+    expect(retained).toEqual([
+      { orgId: ORG, agentId: AGENT, sessionId: 's-1', key, bytes: 5, sha256Hex: Buffer.alloc(32, 3).toString('hex') }
+    ])
+    expect(seen).toEqual([{ signPut: { key, bytes: 5, sha256: SHA, network: 'public', retain: true } }])
   })
 
   it('refuses a PUT over the transfer limit, without a bucket, or while the bucket is gated', async () => {

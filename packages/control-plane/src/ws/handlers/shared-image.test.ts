@@ -2,8 +2,9 @@ import { buildEnvelope, decodeEnvelope, encode } from '@agentconnect.md/protocol
 import { describe, expect, it, vi } from 'vitest'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
+import { SessionFileRefusal } from '../../file-transfer/session-file.js'
 import { SharedImageRefusal } from '../../file-transfer/shared-image.js'
-import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
+import { handleSessionFilePut, handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
 
 const agentId = '11111111-1111-4111-8111-111111111111'
 const daemonId = '22222222-2222-4222-8222-222222222222'
@@ -12,7 +13,7 @@ const postId = '44444444-4444-4444-8444-444444444444'
 const orgId = 'example-org'
 const sha256 = Buffer.alloc(32, 7).toString('base64')
 
-function frameOf(type: 'image/original/put' | 'image/original/get', payload: unknown) {
+function frameOf(type: 'image/original/put' | 'image/original/get' | 'session/file/put', payload: unknown) {
   const decoded = decodeEnvelope(encode(buildEnvelope(type, payload as never, { orgId })))
   if (!decoded.ok) throw new Error('invalid request fixture')
   return decoded.frame
@@ -25,9 +26,10 @@ function setup() {
     signGet: vi.fn(async () => ({ url: 'https://store.example.test/g', expiresAt: 1 })),
     resolve: vi.fn()
   }
+  const sessionFiles = { signPut: vi.fn(async () => ({ url: 'https://store.example.test/s', headers: {} })) }
   const conn = { daemonId, orgId, replyTo: vi.fn(), sendError: vi.fn() }
-  const deps = { agent: { get: agent }, sharedImages } as unknown as DaemonWsDeps
-  return { agent, sharedImages, conn, deps, c: conn as unknown as DaemonConnection }
+  const deps = { agent: { get: agent }, sharedImages, sessionFiles } as unknown as DaemonWsDeps
+  return { agent, sharedImages, sessionFiles, conn, deps, c: conn as unknown as DaemonConnection }
 }
 
 describe('image/original/put', () => {
@@ -98,5 +100,37 @@ describe('image/original/get', () => {
     sharedImages.signGet.mockRejectedValueOnce(new Error('network'))
     await handleSharedImageGet(get, c, deps)
     expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'INTERNAL', expect.any(String), true)
+  })
+})
+
+describe('session/file/put', () => {
+  const put = frameOf('session/file/put', {
+    agentId,
+    sessionId: 'session-1',
+    name: 'report.html',
+    bytes: 5,
+    sha256,
+    network: 'cluster'
+  })
+
+  it('signs only for a daemon that currently serves the agent', async () => {
+    const { agent, sessionFiles, conn, deps, c } = setup()
+    await handleSessionFilePut(put, c, deps)
+    expect(sessionFiles.signPut).toHaveBeenCalledWith(orgId, expect.objectContaining({ sessionId: 'session-1' }))
+    expect(conn.replyTo).toHaveBeenCalledWith(expect.anything(), 'session/file/put/ok', expect.anything())
+
+    agent.mockResolvedValueOnce({ id: agentId, orgId, daemonId: 'another-daemon' })
+    await handleSessionFilePut(put, c, deps)
+    expect(sessionFiles.signPut).toHaveBeenCalledTimes(1)
+    expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+  })
+
+  it('answers a refusal with its retryability, and refuses on a deployment without snapshots', async () => {
+    const { sessionFiles, conn, deps, c } = setup()
+    sessionFiles.signPut.mockRejectedValueOnce(new SessionFileRefusal('SCOPE_DENIED', 'not known yet', true))
+    await handleSessionFilePut(put, c, deps)
+    expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'SCOPE_DENIED', 'not known yet', true)
+    await handleSessionFilePut(put, c, { agent: { get: vi.fn() } } as unknown as DaemonWsDeps)
+    expect(conn.sendError).toHaveBeenLastCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
   })
 })

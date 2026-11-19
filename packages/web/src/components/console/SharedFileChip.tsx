@@ -4,8 +4,8 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
-import { ApiError, downloadSessionFile } from '@/lib/api'
-import { saveBlob, type SharedFile } from '@/lib/shared-file'
+import { ApiError, downloadSessionFile, fetchSessionSharedFile } from '@/lib/api'
+import { openDownloadUrl, saveBlob, type SharedFile } from '@/lib/shared-file'
 
 function fmtBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -24,7 +24,7 @@ function refusalOf(err: unknown): Refusal {
   return 'downloadFailed'
 }
 
-/** A file the agent shared, as a chip that downloads its original bytes. */
+/** A file the agent shared, as a chip that downloads the bytes it published. */
 export function SharedFileChip({
   file,
   agentId,
@@ -44,6 +44,12 @@ export function SharedFileChip({
     setBusy(true)
     setRefusal(null)
     try {
+      // The snapshot kept when the file was shared survives later rewrites; without one, the workspace copy must still match.
+      const snapshot = await fetchSessionSharedFile(target.sessionId, file.sha256, file.name).catch(() => undefined)
+      if (snapshot) {
+        openDownloadUrl(snapshot.url)
+        return
+      }
       const blob = await downloadSessionFile(target.agentId, {
         sessionId: target.sessionId,
         path: target.path,

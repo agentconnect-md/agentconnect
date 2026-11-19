@@ -662,6 +662,29 @@ describe('executeTool: sendMessage (channel post)', () => {
       return { d, gw, shares }
     }
 
+    it('keeps the posted bytes as the session’s snapshot, and a failed snapshot never fails the share', async () => {
+      const snapshotSharedFile = vi.fn(async () => {
+        throw new Error('bucket down')
+      })
+      const { d, gw, shares } = shareDeps({ snapshotSharedFile })
+      const res = (await executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)) as Record<string, unknown>
+      expect(res).toMatchObject({ ok: true, post: { ts: 'ts-42' } })
+      expect(gw.uploadFile).toHaveBeenCalledTimes(1)
+      expect(snapshotSharedFile).toHaveBeenCalledWith(ctx, {
+        name: 'chart.png',
+        bytes: image.bytes,
+        sha256: image.sha256
+      })
+      expect(shares).toHaveLength(1)
+
+      const refused = fakeGateway({
+        uploadFile: vi.fn(async () => ({ ok: false as const, reason: 'forbidden' as const }))
+      })
+      const failed = shareDeps({ gatewayFor: () => refused, snapshotSharedFile })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, failed.d)).rejects.toThrow(/may not post/)
+      expect(snapshotSharedFile).toHaveBeenCalledTimes(1)
+    })
+
     it('posts into the active turn’s own conversation with the trusted anchor and identity', async () => {
       const attribution = {
         botName: 'Scout',
@@ -894,13 +917,19 @@ describe('executeTool: sendMessage (channel post)', () => {
           original: { kind: 'workspace' as const }
         }
         const publishImage = vi.fn(async () => receipt)
-        const publishFile = vi.fn(async () => fileReceipt)
+        const order: string[] = []
+        const publishFile = vi.fn(async () => {
+          order.push('publish')
+          return fileReceipt
+        })
+        const snapshotSharedFile = vi.fn(async () => void order.push('snapshot'))
         const csv = { ok: true as const, bytes: Buffer.from('a,b\n1,2\n'), sha256: 'e'.repeat(64) }
         const { d, gw } = shareDeps({
           webchatImagePublisherFor: () => publishImage,
           webchatFilePublisherFor: () => publishFile,
           readWorkspaceSharedFile: async () => csv,
-          consoleDocumentCap: () => 1024
+          consoleDocumentCap: () => 1024,
+          snapshotSharedFile
         })
         const res = await executeTool(ctx, 'shareFile', { path: 'data/rows.csv', caption: 'rows' }, d)
         expect(publishFile).toHaveBeenCalledWith({
@@ -914,17 +943,22 @@ describe('executeTool: sendMessage (channel post)', () => {
         expect(res).toEqual(fileReceipt)
         expect(publishImage).not.toHaveBeenCalled()
         expect(gw.uploadFile).not.toHaveBeenCalled()
+        // The session keeps the published bytes before the chip appears, so a later rewrite cannot lose them.
+        expect(snapshotSharedFile).toHaveBeenCalledWith(ctx, { name: 'rows.csv', bytes: csv.bytes, sha256: csv.sha256 })
+        expect(order).toEqual(['snapshot', 'publish'])
 
         const capped = shareDeps({
           webchatImagePublisherFor: () => publishImage,
           webchatFilePublisherFor: () => publishFile,
           readWorkspaceSharedFile: async () => csv,
-          consoleDocumentCap: () => 4
+          consoleDocumentCap: () => 4,
+          snapshotSharedFile
         })
         await expect(executeTool(ctx, 'shareFile', { path: 'data/rows.csv' }, capped.d)).rejects.toThrow(
           /over the per-file limit \(8 bytes > 4-byte console download cap\)/
         )
         expect(publishFile).toHaveBeenCalledTimes(1)
+        expect(snapshotSharedFile).toHaveBeenCalledTimes(1)
       })
 
       it('hands the fenced bytes to the publisher and returns only its receipt', async () => {

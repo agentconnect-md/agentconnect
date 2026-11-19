@@ -311,12 +311,16 @@ mounts the same credentials there: the Secret, or the projected web identity tok
 a web identity, the role must also trust the Control Plane's ServiceAccount. Its policy
 needs:
 
-- `s3:PutObject`, `s3:PutObjectTagging` and `s3:GetObject` under
+- `s3:PutObject`, `s3:PutObjectTagging`, `s3:GetObject` and `s3:DeleteObject` under
   `<prefix>/src/*/transfer/`;
 - `s3:GetLifecycleConfiguration` on the bucket.
 
 Transfer objects are tagged `ac-cache=pending`, so the 2-day `pending` lifecycle rule
 above collects them. The Control Plane refuses transfers while that rule is missing.
+A shared file's snapshot and a console image's original are the exception: they are
+tagged `ac-cache=live` and kept for their session's lifetime, and the Control Plane
+deletes them (`s3:DeleteObject`) once the session's content is purged or the session is
+gone.
 
 A multipart upload the browser abandons leaves parts that are not objects, so no tag rule
 reaches them. Add a rule that aborts them; until the Control Plane finds it, a browser

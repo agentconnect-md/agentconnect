@@ -8,6 +8,7 @@ import {
   FileTransferError,
   isTransferObjectKey,
   PART_URL_BATCH,
+  sessionFileKey,
   sharedImageKey,
   transferDownloadKey,
   transferUploadKey
@@ -47,6 +48,7 @@ function transfer(
     config: opts.cfg ?? config({ publicEndpoint: 'https://store.example.test' }),
     credentials,
     objects: {
+      delete: async () => {},
       head: async () => head,
       createMultipartUpload: async (key, tagging) => {
         opts.started?.push(`${key} ${tagging}`)
@@ -183,6 +185,7 @@ describe('file transfer signing', () => {
       config: config({ publicEndpoint: 'https://store.example.test' }),
       credentials,
       objects: {
+        delete: async () => {},
         head: async (key) => {
           heads.push(key)
           return key === transferUploadKey(ORG, AGENT, UPLOAD_ID)
@@ -330,7 +333,7 @@ describe('shared-image originals', () => {
   const AGENT = '11111111-1111-4111-8111-111111111111'
   const ATTACHMENT = '22222222-2222-4222-8222-222222222222'
 
-  it('keys an original under the transfer prefix, so the pending lifecycle collects it', () => {
+  it('keys an original under the transfer prefix', () => {
     const key = sharedImageKey(ORG, AGENT, ATTACHMENT)
     expect(key).toBe(`src/${ORG}/transfer/img/${AGENT}/${ATTACHMENT}`)
     expect(isTransferObjectKey(key)).toBe(true)
@@ -351,6 +354,54 @@ describe('shared-image originals', () => {
     expect(await transfer(old).storedDownload({ key, size: 6, sha256: SHA, name: 'a.png' })).toBeUndefined()
     const other = createHash('sha256').update('other').digest('base64')
     expect(await transfer(old).storedDownload({ key, size: 5, sha256: other, name: 'a.png' })).toBeUndefined()
+  })
+})
+
+describe('session file snapshots', () => {
+  const HEX = Buffer.from(SHA, 'base64').toString('hex')
+
+  it('keys a snapshot by agent, a hash of its session and its digest', () => {
+    const key = sessionFileKey(ORG, AGENT, 'session-1', HEX)
+    const session = createHash('sha256').update('session-1').digest('hex').slice(0, 32)
+    expect(key).toBe(`src/${ORG}/transfer/session/${AGENT}/${session}/${HEX}`)
+    expect(isTransferObjectKey(key)).toBe(true)
+    expect(sessionFileKey(ORG, AGENT, 'session-2', HEX)).not.toBe(key)
+    expect(() => sessionFileKey(ORG, '../x', 'session-1', HEX)).toThrow()
+    expect(() => sessionFileKey(ORG, AGENT, 'session-1', HEX.toUpperCase())).toThrow()
+    expect(() => sessionFileKey('../o', AGENT, 'session-1', HEX)).toThrow()
+  })
+
+  it('signs a retained PUT with the tag no lifecycle rule collects, and a plain one with the pending tag', async () => {
+    const key = sessionFileKey(ORG, AGENT, 'session-1', HEX)
+    const t = transfer({ exists: false })
+    expect((await t.signPut({ key, bytes: 5, sha256: SHA, network: 'public', retain: true })).headers).toMatchObject({
+      'x-amz-tagging': 'ac-cache=live'
+    })
+    expect((await t.signPut({ key, bytes: 5, sha256: SHA, network: 'public' })).headers).toMatchObject({
+      'x-amz-tagging': 'ac-cache=pending'
+    })
+  })
+
+  it('says whether the bucket holds exactly those bytes, and deletes through the object client', async () => {
+    const key = sessionFileKey(ORG, AGENT, 'session-1', HEX)
+    const held = { exists: true as const, contentLength: 5, checksumSha256: SHA }
+    expect(await transfer(held).holds({ key, size: 5, sha256: SHA })).toBe(true)
+    expect(await transfer(held).holds({ key, size: 6, sha256: SHA })).toBe(false)
+    expect(await transfer({ exists: false }).holds({ key, size: 5, sha256: SHA })).toBe(false)
+    const deleted: string[] = []
+    const t = createFileTransfer({
+      config: config({ publicEndpoint: 'https://store.example.test' }),
+      credentials,
+      objects: {
+        delete: async (k) => void deleted.push(k),
+        head: async () => ({ exists: false }),
+        createMultipartUpload: async () => 'mp'
+      },
+      enabled: () => true,
+      now: () => NOW
+    })
+    await t.deleteObject(key)
+    expect(deleted).toEqual([key])
   })
 })
 
