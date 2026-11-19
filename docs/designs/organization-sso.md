@@ -20,8 +20,8 @@ identity provider. Four things are missing:
    for everyone on the deployment. A provider chosen by one organization must have no
    say over anyone outside it (§5).
 3. **Entry.** The login page cannot list every organization's identity provider.
-4. **Membership.** A person who signs in through an organization's identity provider
-   lands with no organization and needs an invite.
+4. **Membership.** A person whose address is on an organization's domain lands with
+   no organization and needs an invite.
 
 ## 2. Decisions
 
@@ -31,7 +31,7 @@ identity provider. Four things are missing:
 | D2  | An organization proves it controls an email domain by a DNS record before it can use that domain. A domain belongs to at most one organization.                                                                                   |
 | D3  | Binding a verified domain to an active connection makes the connection the only sign-in for that domain at the identity service. Binding is refused until a sign-in through the connection has succeeded.                         |
 | D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                                                |
-| D5  | A person who first signs in through an organization's active connection becomes a member of that organization once.                                                                                                               |
+| D5  | An organization chooses how new members arrive: by invitation only, or also by an address on one of its verified domains, which makes the account a member once when it signs in. The choice is separate from the connection.     |
 | D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
 | D7  | Enforcing is a second, explicit step after activation: an enforced organization accepts a member whose address is in its verified domains only from a browser session that signed in through its connection.                      |
 
@@ -52,6 +52,9 @@ org_sso_connection
 org_domain
   id, orgId, domain (lowercase; unique among verified rows)
   challenge, challengeExpiresAt, verifiedAt?, lastCheckedAt?, lastCheckOk?
+
+org
+  memberSource: invite | domain (default invite)
 ```
 
 A connection has no name of its own. An organization has one, so the console calls
@@ -195,19 +198,43 @@ A deployment with only a deployment connector keeps its single button.
 
 ### 4.3 Membership
 
-The join is its own step: the console calls `POST /sso/join` after a sign-in. It reads
-from the identity service which connections the caller holds an SSO identity on, and
-it is idempotent on the join record. It does not ride on the sign-in gate, which
-resolves a subject once per process and so would miss an existing account's first
-sign-in through a connection.
+An organization has one member source, which an owner sets on the settings card:
 
-- A caller with an identity on an organization's active connection, an address in
-  that organization's verified domains, and no join record for that organization,
-  gets a membership as `collaborator` (the role an invite link grants) and a join
-  record. The join is audited.
+- `invite` (the default): new members arrive by invitation only.
+- `domain`: an account whose address is on one of the organization's verified domains
+  also becomes a member when it signs in. It needs a verified domain, and releasing
+  the last one returns the organization to `invite`.
+
+The member source is separate from the connection. An organization may take members by
+domain with no connection, where its people sign in by the deployment's other
+methods, and an organization with an active connection may stay on invitations.
+Activating a connection changes how the domain's addresses sign in (§4.1), not who
+is a member.
+
+The address is the account's own at the identity service. It was proven when it was set:
+a social provider reports only an address it has verified, a connection's address is
+bounded by the verified domains (§5), and the deployment offers no sign-up by address
+alone. Where a deployment lets an account change its address, the identity service asks
+for proof of the new one. It is not proven again at each sign-in, so a person who has
+left the company but still signs in with another linked identity joins like anyone else
+on the domain; an owner removes them, and an organization that needs the identity
+provider to decide enforces its connection (§4.5).
+
+The join is its own step: the console calls `POST /sso/join` after a sign-in. It reads
+the caller's address from the identity service and is idempotent on the join record.
+It does not ride on the sign-in gate, which resolves a subject once per process and
+so would miss an existing account's first sign-in after an owner chose `domain`.
+
+- A caller with an address on a domain verified by an organization whose member source
+  is `domain`, and no join record for that organization, gets a membership as
+  `collaborator` (the role an invite link grants) and a join record. A domain is
+  verified by one organization, so at most one organization answers. The join is
+  audited.
 - A caller who is already a member keeps their role and gets the join record.
 - The join record outlives the membership. An owner who removes such a member is not
   overruled at the person's next sign-in; they can be invited back.
+- The check runs at sign-in. Someone already signed in when an owner chooses `domain`
+  joins at their next sign-in.
 - Removing someone at the identity provider stops new sign-ins through the
   connection. On an enforced connection no new session then reaches the
   organization (§4.5), whatever other sign-in identities the account holds. On an
@@ -216,6 +243,10 @@ sign-in through a connection.
   organization. A session already signed in lasts until it ends, and the membership,
   API keys and OAuth grants stay. Ending those needs the provider to notify the
   deployment, which is out of scope here (§7).
+
+Members pushed by the identity provider (§7) would be a third member source, chosen
+instead of `domain` and never beside it: the provider's list and "anyone on the
+domain" give different answers to who is a member.
 
 ### 4.4 Claiming an invited row
 
@@ -362,6 +393,7 @@ authenticate, and one of them carries a client secret), and owner-only except `G
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /`                             | Any member: an owner gets domains, connection state, service-provider values and the saved settings; others get verified domains and the state alone. |
 | `POST /connection/service-provider` | Create the connector if needed and return its service-provider values; refused for the other protocol while a connection exists.                      |
+| `PUT /member-source`                | Choose how new members arrive (§4.3); `domain` needs a verified domain.                                                                               |
 | `POST /domains`                     | Add a domain; returns the challenge.                                                                                                                  |
 | `POST /domains/:id/verify`          | Resolve the TXT record now.                                                                                                                           |
 | `DELETE /domains/:id`               | Release a domain; a verified one only when no connection exists.                                                                                      |
@@ -377,6 +409,7 @@ Outside the organization subtree:
 
 - `POST /sso/test-result`: any signed-in caller presents the nonce.
 - `POST /sso/join`: any signed-in caller, after a sign-in (§4.3).
+  The path keeps its name; the join no longer depends on a connection.
 - `POST /admin/orgs/:orgId/sso/connection/deactivate`,
   `POST /admin/orgs/:orgId/sso/connection/stop-enforcing` and
   `DELETE /admin/sso/domains/:id`: a deployment `ADMIN`'s recovery paths (§4.1, §4.5).
@@ -468,7 +501,8 @@ Each step merges on its own.
    and the ownership rule of §6.1.
 3. **Sign-in lookup** (landed): the anonymous lookup and the `/runtime-config`
    boolean.
-4. **Membership** (landed): the join record and `POST /sso/join`.
+4. **Membership** (landed): the join record and `POST /sso/join`; then the member
+   source, which took the join off the connection and put it on the verified domain.
 5. **Web** (landed): the email field on the login page, the call to `POST /sso/join`
    after a sign-in, the settings card, and the page a test sign-in lands on.
 6. **Per session** (landed): the access-token claims script and its drift check, the
@@ -493,8 +527,9 @@ Verification on a staging deployment with a real identity provider, OIDC and SAM
 - After activation: social sign-in with a bound address is refused; the email field
   routes it to the provider; an existing social account with that address arrives as
   the same user.
-- A first sign-in creates the membership; removing the member and signing in again
-  does not recreate it.
+- With the member source on `domain`, a first sign-in with an address on a verified
+  domain creates the membership, with or without a connection; removing the member
+  and signing in again does not recreate it. On `invite` it creates none.
 - Changing the configuration clears the test result and blocks activation.
 - Deactivating restores social sign-in for the domain.
 - Once an owner inside the domains enforces, a member inside the domains who signed

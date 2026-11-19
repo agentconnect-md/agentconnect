@@ -115,6 +115,8 @@ model Org {
   slackUserConfigs          SlackUserConfig[]
   linearTokens              LinearToken[]
   inviteLink                OrgInviteLink?
+  // How new members arrive: invite | domain (an address on a verified domain joins on sign-in; organization-sso.md §4.3).
+  memberSource              String          @default("invite")
   domains                   OrgDomain[]
   ssoConnection             OrgSsoConnection?
   ssoJoins                  OrgSsoJoin[]

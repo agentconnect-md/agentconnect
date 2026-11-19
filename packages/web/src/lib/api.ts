@@ -5980,8 +5980,12 @@ export interface OrgSsoConnectionDto {
   serviceProvider: OrgSsoServiceProvider
 }
 
+/** `domain`: an account whose address is on a verified domain joins as a collaborator when it signs in. */
+export type OrgMemberSource = 'invite' | 'domain'
+
 export interface OrgSsoStateDto {
   domains: OrgSsoDomainDto[]
+  memberSource: OrgMemberSource
   connection: OrgSsoConnectionDto | null
   /** Owner view of an active connection: whether this session could enforce it now, or what stands in the way. */
   enforce?: 'ready' | 'outside_domains' | 'sign_in_required'
@@ -6011,6 +6015,10 @@ export async function verifyOrgSsoDomain(
   orgId?: string
 ): Promise<{ domain: OrgSsoDomainDto; check: OrgSsoDomainCheck }> {
   return apiPost(`${orgBase(orgId)}/sso/domains/${encodeURIComponent(id)}/verify`, {})
+}
+
+export async function setOrgMemberSource(memberSource: OrgMemberSource, orgId?: string): Promise<void> {
+  await apiPut<{ memberSource: OrgMemberSource }>(`${orgBase(orgId)}/sso/member-source`, { memberSource })
 }
 
 export async function releaseOrgSsoDomain(id: string, orgId?: string): Promise<void> {

@@ -109,7 +109,7 @@ async function land(): Promise<Landing> {
     commitPendingSignIn()
     // Social sign-in can link an identity without passing through the Control Plane.
     await refreshMySocialIdentities(AbortSignal.timeout(5_000)).catch(() => undefined)
-    // A first sign-in through an organization's connection earns its membership before the console loads the list.
+    // An address on a domain whose organization takes members by domain earns its membership before the console loads the list.
     if (organizationSsoEnabled()) await joinOrganizationsBySso(AbortSignal.timeout(5_000)).catch(() => undefined)
     // Only a completed sign-in grants pending activation proof, bound to the signed-in subject.
     promoteActivationProof(await currentSubject())
