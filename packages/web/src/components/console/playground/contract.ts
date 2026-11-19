@@ -1,6 +1,7 @@
 import type { Agent, ElicitAnswerValue, FillCardAnswer, Session, SessionImage, SessionStep } from '@/lib/data'
 import type { McpAppRpc, WebchatFileAttachment } from '@agentconnect.md/protocol'
 import type { SessionMessageDto } from '@/lib/api'
+import type { LiveRetireRead } from '@/lib/session-transcript'
 import type { ComposerFile } from '@/lib/webchat-file'
 
 export interface PlaygroundData {
@@ -166,14 +167,8 @@ export interface PlaygroundData {
    *  superseded regeneration keeps its author's lane open, so the indicator
    *  names the agent actually working, not the primary). */
   getBusyLaneAgentIds: (id: string) => string[]
-  /** Retire only live steps confirmed by authoritative transcript rows: the root's, or with `thread` that thread's. */
-  reconcileLiveSteps: (
-    id: string,
-    persisted: SessionMessageDto[],
-    agentId: string,
-    promptRows?: SessionMessageDto[],
-    thread?: string
-  ) => void
+  /** Retire the live steps a transcript read makes redundant (webchat-transcript-refresh.md §3). */
+  reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string, read?: LiveRetireRead) => void
 }
 
 /** One message waiting behind the in-flight turn. Send args are captured at

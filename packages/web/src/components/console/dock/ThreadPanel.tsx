@@ -57,6 +57,8 @@ import { TaskRuntimePicker } from '@/components/console/dock/TaskRuntimePicker'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId } from '@/lib/session-trigger'
 import type { SenderPeople } from '@/components/console/sender-people'
 import { CONSOLE_SWR_CONFIG, readOnceRegistered } from '@/lib/console-swr'
+import { useConsoleData } from '@/lib/data-context'
+import { liveOverlay } from '@/lib/session-transcript'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { useOrgs } from '@/lib/org-context'
 import { SessionShareButton, SessionShareDialogFor } from '@/components/console/SessionShare'
@@ -68,6 +70,7 @@ const HEADER_BTN =
 
 const EMPTY: readonly never[] = []
 const NO_AGENTS: ReadonlyMap<string, Agent> = new Map()
+const NO_ACTIVITY: Record<string, number> = {}
 // A thread's rows come from one session, so no row names another source.
 /** The panel follows no bottom, so a jump has nothing to let go of. */
 const noRelease = () => {}
@@ -172,13 +175,18 @@ export function ThreadPanel({
   // A turn the reader sent in this thread on their conversation's socket.
   const writing =
     !!writer && !!record && isPgBusy(writer.sessionId) && getPgTurnThread(writer.sessionId) === record.rootId
-  // The record is read first; its footer names the holding task when the caller did not.
-  const thread = useThreadRecord(record ?? null, (sid) => writing || isPgBusy(sid))
+  // The record is read first, again on each transcript signal of the conversation or the task holding the thread.
+  const activity = useConsoleData().sessionActivityVersionById ?? NO_ACTIVITY
+  const holderSeen = useRef<string | null>(null)
+  const holderSignal = task?.sessionId ?? holderSeen.current
+  const signal = (record ? (activity[record.sessionId] ?? 0) : 0) + (holderSignal ? (activity[holderSignal] ?? 0) : 0)
+  const thread = useThreadRecord(record ?? null, (sid) => writing || isPgBusy(sid), signal)
   const summary = thread.summary
   // A daemon without thread reads leaves a task's thread to its session; anything else reads the record.
   const fromRecord = !!record && !(thread.unsupported && task)
   const unreadable = fromRecord && summary?.readable === false
   const holderId = task?.sessionId ?? (unreadable ? null : (summary?.task?.sessionId ?? null))
+  holderSeen.current = holderId
   const id = holderId ?? ''
   // A webchat task takes the thread a message is written in; a platform's task its own, mirrored into the platform thread.
   const shape = threadShapeOf(platform)
@@ -215,11 +223,13 @@ export function ThreadPanel({
     [agents, platform, messages]
   )
   // The owner's turns in this thread stream on their conversation's socket; another member's on the task's.
-  const live = ownThread
-    ? getLiveSteps(ownThread.sessionId).filter((step) => step.thread === ownThread.rootId)
-    : holderId
-      ? getLiveSteps(id)
-      : EMPTY
+  const live = liveOverlay(
+    ownThread
+      ? getLiveSteps(ownThread.sessionId).filter((step) => step.thread === ownThread.rootId)
+      : holderId
+        ? getLiveSteps(id)
+        : EMPTY
+  )
   // Already this thread's own, so no step is left out as another thread's.
   const liveShown = unsavedLive(live, messages, agentId).map(({ thread: _thread, ...step }) => step)
   // The session page's turns: this visit's sends are the reader's own, and a person's name falls back as the page's does.
@@ -340,14 +350,16 @@ export function ThreadPanel({
     </div>
   )
 
-  // A read that lands after the turn ends retires the live copy of what it now carries.
+  // Each read retires the live copies it now carries (webchat-transcript-refresh.md §3).
   const ownSessionId = ownThread?.sessionId
   const ownRootId = ownThread?.rootId
+  const readStartedAtMs = fromRecord ? thread.readStartedAtMs : undefined
   useEffect(() => {
-    if (!page || busy) return
-    if (ownSessionId && ownRootId) reconcileLiveSteps(ownSessionId, page.messages, agentId, undefined, ownRootId)
-    else if (holderId) reconcileLiveSteps(holderId, page.messages, agentId)
-  }, [agentId, busy, holderId, ownRootId, ownSessionId, page, reconcileLiveSteps])
+    if (!page) return
+    if (ownSessionId && ownRootId)
+      reconcileLiveSteps(ownSessionId, page.messages, agentId, { thread: ownRootId, readStartedAtMs })
+    else if (holderId) reconcileLiveSteps(holderId, page.messages, agentId, { readStartedAtMs })
+  }, [agentId, holderId, ownRootId, ownSessionId, page, readStartedAtMs, reconcileLiveSteps])
 
   // The timeline's footer follows what this panel reads.
   const onSummaryRef = useRef(onSummary)
