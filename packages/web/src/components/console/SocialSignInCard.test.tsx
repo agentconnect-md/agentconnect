@@ -159,7 +159,8 @@ describe('SocialSignInCard account state', () => {
     expect(rows[0]!.textContent).toContain('Acme Identity')
     expect(rows[0]!.textContent).toContain('SSO')
     expect(rows[0]!.textContent).toContain('alex@acme.example')
-    expect(rows[1]!.textContent).toContain('Single sign-on')
+    // An organization's connection has no name: the row is labelled SSO once, without the badge.
+    expect(rows[1]!.textContent).toMatch(/^SSO(?!.*SSO).*alex@acme\.example$/)
     expect(rows[0]!.querySelector('button')).toBeNull()
     expect(rows[1]!.querySelector('button')).toBeNull()
     expect(rows[2]!.textContent).toContain('Google')

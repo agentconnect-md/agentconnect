@@ -93,7 +93,7 @@ function socialCallbackUrl(deps: HttpDeps): string | undefined {
   return webUrl ? new URL('/auth/social/callback', webUrl).toString() : undefined
 }
 
-// An organization's connection is named after the organization; then the deployment's connector, then the identity service; never an id.
+// An organization's connection has no name; the deployment's connector has its own, then the identity service's; never an id.
 async function ssoIdentitiesOf(
   deps: HttpDeps,
   identity: LogtoIdentityService,
@@ -102,15 +102,15 @@ async function ssoIdentitiesOf(
 ): Promise<z.infer<typeof SsoIdentitySummaryDto>[]> {
   const held = await identity.ssoIdentitiesFor(sub)
   if (held.length === 0) return []
-  const owned = (await deps.orgSsoConnections?.orgNamesByConnector(held.map((h) => h.connectorId))) ?? new Map()
+  const owned = (await deps.orgSsoConnections?.ownedConnectors(held.map((h) => h.connectorId))) ?? new Set()
   const deployment = deps.runtimeConfig.publicRuntimeConfig?.auth?.sso
   return Promise.all(
     held.map(async ({ connectorId, email }) => {
-      const name =
-        owned.get(connectorId) ??
-        (deployment?.connectorId === connectorId ? deployment.name : undefined) ??
-        (await identity.ssoConnectorNameFor(connectorId)) ??
-        undefined
+      const name = owned.has(connectorId)
+        ? undefined
+        : ((deployment?.connectorId === connectorId ? deployment.name : undefined) ??
+          (await identity.ssoConnectorNameFor(connectorId)) ??
+          undefined)
       const address = email ?? primaryEmail
       return { ...(name ? { connectionName: name } : {}), ...(address ? { email: address } : {}) }
     })
@@ -427,7 +427,7 @@ export function meSocialIdentityRoutes(deps: HttpDeps) {
           tags: [Tag.Profile],
           summary: 'Get your sign-in methods',
           description:
-            'The social accounts linked to your profile, narrowed to what the console renders, the single sign-on identities you hold (the organization or connector each belongs to and its address only; they cannot be unlinked here), plus whether Logto will require you to re-verify before they can change.',
+            'The social accounts linked to your profile, narrowed to what the console renders, the single sign-on identities you hold (a name where the connector has one, and its address only; they cannot be unlinked here), plus whether Logto will require you to re-verify before they can change.',
           operationId: 'getMySocialIdentities',
           response: { 200: SocialAccountDto, 429: ErrorDto, 502: ErrorDto, 503: ErrorDto }
         }

@@ -110,9 +110,10 @@ export class OrgSsoConnectionService {
     }
   ) {}
 
-  /** The organization behind each of these connectors, by its display name, keyed by connector id. */
-  orgNamesByConnector(connectorIds: readonly string[]): Promise<Map<string, string>> {
-    return this.deps.connections.orgNamesByConnector(connectorIds)
+  /** Which of these connectors belong to an organization's connection. */
+  async ownedConnectors(connectorIds: readonly string[]): Promise<Set<string>> {
+    const rows = await this.deps.connections.findByConnectorIds(connectorIds)
+    return new Set(rows.map((row) => row.logtoConnectorId))
   }
 
   /** `withSettings` reads the saved settings back from the identity service. */

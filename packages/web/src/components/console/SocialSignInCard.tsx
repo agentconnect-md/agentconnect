@@ -529,7 +529,7 @@ export default function SocialSignInCard({
                   <Icon name="key-round" size={18} />
                 </span>
                 <span className="min-w-0 font-sans text-[13.5px] font-semibold leading-[1.3] break-words">
-                  {sso.connectionName ?? t('ssoUnnamed')}
+                  {sso.connectionName ?? t('ssoBadge')}
                 </span>
               </div>
               <div className="col-span-2 row-start-2 flex min-h-8 min-w-0 items-center desktop:col-span-1 desktop:col-start-2 desktop:row-start-1">
@@ -544,11 +544,13 @@ export default function SocialSignInCard({
                   </span>
                 )}
               </div>
-              <div className="col-start-2 row-start-1 flex items-center justify-end desktop:col-start-3">
-                <span className="flex-none rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                  {t('ssoBadge')}
-                </span>
-              </div>
+              {sso.connectionName && (
+                <div className="col-start-2 row-start-1 flex items-center justify-end desktop:col-start-3">
+                  <span className="flex-none rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                    {t('ssoBadge')}
+                  </span>
+                </div>
+              )}
             </div>
           ))}
           {socialLoginProviders().map((provider, index) => {

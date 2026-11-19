@@ -55,8 +55,8 @@ org_domain
 ```
 
 A connection has no name of its own. An organization has one, so the console calls
-it single sign-on, and a profile lists the identity it established under the
-organization's name.
+it single sign-on, and a profile lists the identity it established as "SSO"
+beside its address.
 
 Only a verified row holds a domain. Any organization may start a challenge for a
 domain, so nobody can block one they do not control: a pending challenge expires, and
