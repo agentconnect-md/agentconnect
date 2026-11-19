@@ -1,8 +1,8 @@
 # Email Integration Design
 
 Status: Proposed (draft). Provider facts come from Cloudflare's documentation as
-of November 2026. Facts marked **unverified** still need a live probe; nothing
-here is measured yet.
+of November 2026. Facts marked **measured** come from a probe Worker on a test
+zone (§2.2); facts marked **unverified** still need one.
 
 > Related: [platform modules](integration-plugin-architecture.md),
 > [Microsoft Teams §8.5](teams-integration.md#85-egress-for-the-deployment-apps-rows)
@@ -78,8 +78,7 @@ Three properties decide this shape:
 - Before the Worker runs, Email Routing rejects mail that fails its sender
   domain's DMARC policy and mail that fails both SPF and DKIM, and it prepends
   an `Authentication-Results` header whose authserv-id is `mx.cloudflare.net`.
-- `setReject(reason)` ends the SMTP exchange with a permanent error. What the
-  sender's server sees when a Worker throws or times out is **unverified**.
+- `setReject(reason)` ends the SMTP exchange with a permanent error.
 - Email Sending is in beta on the Workers Paid plan: 3,000 messages a month
   included, then a per-thousand price. A new account starts with a daily quota
   the documentation does not state.
@@ -90,6 +89,46 @@ Three properties decide this shape:
 - Cloudflare suppresses a recipient after a complaint or a hard bounce, and a
   send to a suppressed recipient is refused with an error. Delivery, bounce and
   complaint events are published to a Queue, with no webhook.
+
+### 2.2 Measured
+
+Twelve messages sent from one hosted mailbox to a probe Worker behind a test
+zone's catch-all, November 2026. The Worker recorded the envelope, the header
+fields and the size of each message, and ended the event a different way for
+each of four addresses.
+
+- **A rejection reaches the sender at once.** `setReject(reason)` came back to
+  the sender within three seconds as `555 5.7.1 <reason>`, in its own
+  provider's failure notice.
+- **A Worker that fails is retried, not bounced.** For a Worker that threw and
+  for one that never returned, the sender received no notice and its server
+  delivered the message again, on its own backoff: five attempts in 106
+  minutes for the first and four in 58 for the second, each running the Worker
+  again. A failed event is therefore a temporary failure to the sender. Email
+  Routing recorded the Worker that never returned as failed within a minute,
+  so a Worker's answer has well under that long.
+- **One message to two addresses runs the Worker twice**, once for each
+  envelope recipient.
+- **A subaddress arrives intact.** Mail to `<name>+<tag>` reached the catch-all
+  with the tag in the envelope recipient.
+- **The authentication header.** Each message carried one
+  `Authentication-Results`, Cloudflare's, of this shape:
+  `mx.cloudflare.net; dkim=pass header.d=<domain> header.s=<selector>
+header.b=<prefix>; dmarc=pass header.from=<domain> policy.dmarc=<policy>;
+spf=none (<comment>) smtp.helo=<host>; spf=pass (<comment>)
+smtp.mailfrom=<address>; arc=pass`. It holds two `spf` results, one for the
+  HELO name and one for the envelope sender. The pure check of §4 step 2
+  accepts it.
+- **A Worker's `headers` cannot show order.** The `Headers` object merges
+  fields of one name and iterates them sorted, so which
+  `Authentication-Results` is topmost can be read only from the raw message.
+  The relay reads the raw message for exactly this.
+- **A legitimate message can be refused before the Worker.** One of the twelve
+  was rejected by Cloudflare's mail server with `550 Sender IP reverse lookup
+rejected`, naming an address of the sender's own provider. It is a permanent
+  error, so the sender got a failure notice at once, and the same message sent
+  again was accepted. One in twelve says nothing about the rate, and nothing
+  on our side can see or retry such a message.
 
 ## 3. The address
 
@@ -351,9 +390,11 @@ for a message that passes them, from the verdict `forwardStrict` returns:
 | Refused at §4 step 2, 3 or 4, or no such agent | 200 + reason  | `setReject(reason)`.                    |
 | Retryable refusal or timeout                   | 503           | Fails the event, for a later redelivery |
 
-Whether a failed event makes the sender's server retry is **unverified**
-(§2.1). If it does not, the Worker rejects with a temporary-sounding reason
-instead and the sender resends by hand.
+A failed event makes the sender's server retry, on its own schedule, for as
+long as it keeps trying (**measured**, §2.2). Each retry runs the Worker and
+the relay again, which is what the dedup below is for. The relay answers
+within 10 seconds, since a Worker that waits a minute is already recorded as
+failed.
 
 The dedup identity is the bot and the `Message-ID`, in the relay's table and in
 the daemon's durable receipt, so a redelivered message never starts a second
@@ -565,12 +606,16 @@ organization.
 
 ## 9. Unverified and open
 
-- What the sender's server sees when the Worker fails an event (§5.5).
 - That the raw message the Worker receives carries Cloudflare's
   `Authentication-Results` as its topmost header of that name. The whole
-  sender check of §4 step 2 rests on it.
-- Whether one message to two agents runs the Worker twice.
-- That subaddressed mail reaches a catch-all Worker with the tag preserved.
+  sender check of §4 step 2 rests on it, and a Worker's `headers` cannot show
+  it (§2.2); the test is a message sent with an `Authentication-Results` of its
+  own.
+- How often Cloudflare refuses a legitimate message on the sender's reverse
+  lookup before the Worker runs (§2.2), and whether anything configures it. A
+  member whose mail is refused this way gets a notice the product did not
+  write.
+- How long a Worker may wait on the relay before the event is failed.
 - Whether the send call returns the generated `Message-ID` (§5.1), and how mail
   clients thread a reply whose `Message-ID` domain differs from its `From`
   domain.
