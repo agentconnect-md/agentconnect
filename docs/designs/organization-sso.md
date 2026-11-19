@@ -139,8 +139,10 @@ methods for the domain. An enforced connection stops being enforced (§4.5), sin
 the rule must not rest on settings nobody has signed in through; an owner enforces
 again from a session through the changed connection. The owner is still signed in and tests again;
 if the new settings are wrong and nobody can sign in, a deployment `ADMIN`
-deactivates. Changing the protocol starts a new connector with new service-provider
-values.
+deactivates. The protocol is fixed once the connector exists: switching it means
+removing the connection and setting one up again, with new service-provider values.
+Accounts stay, and the new connection reaches them by address as on any first
+sign-in.
 
 An organization-owned OIDC connection takes the address as the provider sends it,
 whether or not the ID token marks it verified: the connector is always written with
@@ -221,8 +223,10 @@ Activating a connection changes how the domain's addresses sign in (§4.1), not 
 is a member.
 
 The address is the account's own at the identity service. It was proven when it was set:
-a social provider reports only an address it has verified, a connection's address is
-bounded by the verified domains (§5), and the deployment offers no sign-up by address
+a social provider reports only an address it has verified, or none (the Microsoft
+connector passes no address, so a sign-in through it neither joins by domain nor
+meets a bound domain; it reaches whichever account its identity is linked to), a
+connection's address is bounded by the verified domains (§5), and the deployment offers no sign-up by address
 alone. Where a deployment lets an account change its address, the identity service asks
 for proof of the new one. It is not proven again at each sign-in, so a person who has
 left the company but still signs in with another linked identity joins like anyone else
@@ -537,6 +541,12 @@ Each step merges on its own.
 Organization SSO stays undeclared on every deployment until its Logto provides §5.
 
 Verification on a staging deployment with a real identity provider, OIDC and SAML:
+a deployment with Microsoft Entra ID as the provider has exercised the test sign-in,
+activation, enforcement and the refusal of a member outside the domains with both
+protocols, the email field's routing, joining by domain and a removal that sticks,
+and deactivation. The refusal of social sign-in with a bound address cannot be
+reproduced there, since no social provider reports an address on the domain; it was
+measured against a local Logto, as were R1 and R2.
 
 - A second organization cannot verify a domain the first has verified, and an
   unverified claim blocks nobody.
@@ -564,4 +574,3 @@ Open points:
 
 - A periodic pass that applies the sign-in check of §5 to accounts that have not
   signed in yet, and deactivates a connection that keeps failing it.
-- SAML has been read but not yet exercised end to end.
