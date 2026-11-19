@@ -153,14 +153,14 @@ describe('SessionsView, Show tasks', () => {
   })
 })
 
-describe('SessionsView, Show memory dreams', () => {
+describe('SessionsView, Show dreams', () => {
   const dreamToggle = () => document.querySelector<HTMLButtonElement>('[data-show-dreams]')
 
   it('turns the toggle on through the URL, keeping the other filters', async () => {
     mocks.search = 'tasks=show'
     await render()
     expect(dreamToggle()?.getAttribute('aria-pressed')).toBe('false')
-    expect(dreamToggle()?.textContent).toBe('Show memory dreams')
+    expect(dreamToggle()?.textContent).toBe('Show dreams')
     await act(async () => dreamToggle()?.click())
     expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions?tasks=show&dreams=show')
   })
@@ -179,7 +179,7 @@ describe('SessionsView, Show memory dreams', () => {
     await render()
     await act(async () => mocks.openSheet?.())
     const pill = Array.from(document.querySelectorAll<HTMLButtonElement>('.msheet-scrim button')).find(
-      (button) => button.textContent === 'Show memory dreams'
+      (button) => button.textContent === 'Show dreams'
     )
     expect(pill).toBeDefined()
     await act(async () => pill?.click())
@@ -189,7 +189,7 @@ describe('SessionsView, Show memory dreams', () => {
     host?.remove()
     mocks.search = 'dreams=show'
     await render()
-    const clear = document.querySelector<HTMLElement>('[aria-label="Clear Memory dreams filter"]')
+    const clear = document.querySelector<HTMLElement>('[aria-label="Clear Dreams filter"]')
     expect(clear).not.toBeNull()
     await act(async () => clear?.click())
     expect(mocks.replace).toHaveBeenLastCalledWith('/acme/sessions')

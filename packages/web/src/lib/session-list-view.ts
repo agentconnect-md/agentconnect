@@ -32,7 +32,7 @@ export function showsDreams(params: SearchParamsReader): boolean {
   return params.get(SHOW_DREAMS_PARAM) === SHOW_DREAMS_VALUE
 }
 
-/** `params` with the Show memory dreams toggle set to `on`, every other key kept. */
+/** `params` with the Show dreams toggle set to `on`, every other key kept. */
 export function withShowDreams(params: URLSearchParams, on: boolean): URLSearchParams {
   const next = new URLSearchParams(params.toString())
   if (on) next.set(SHOW_DREAMS_PARAM, SHOW_DREAMS_VALUE)

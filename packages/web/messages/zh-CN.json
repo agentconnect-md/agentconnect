@@ -777,9 +777,9 @@
       "tasks": "任务",
       "showTasks": "显示 task",
       "hideTasks": "隐藏 task",
-      "dreams": "记忆 Dreaming",
-      "showDreams": "显示记忆 Dreaming",
-      "hideDreams": "隐藏记忆 Dreaming",
+      "dreams": "Dreaming",
+      "showDreams": "显示 Dreaming",
+      "hideDreams": "隐藏 Dreaming",
       "all": "全部",
       "noMatchesShort": "无匹配项"
     },
