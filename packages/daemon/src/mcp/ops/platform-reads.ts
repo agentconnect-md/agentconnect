@@ -181,19 +181,25 @@ const ATTACHMENT_NAME_MAX = 120
 /**
  * The stored name for a downloaded attachment (design §2.1: names are hostile input).
  *
- * Derived from the URL's last path segment — a Slack `url_private` ends in the original file
- * name; a Telegram `file_id` has none and gets a generated one. Path separators, `..`, control
- * characters, leading dots and the marker delimiters are stripped; an empty survivor is named
+ * Derived from the name the platform reports, else the URL's last path segment — a Slack
+ * `url_private` ends in a slug of the file name; a Telegram `file_id` has none and gets a
+ * generated one. Path separators, `..`, control characters, leading dots and the marker delimiters are stripped; an empty survivor is named
  * from the MIME type. The result is a single path component, never a path.
  */
-export function attachmentFileName(url: string, mimeType: string, fallbackStem = 'attachment'): string {
-  let raw = ''
-  try {
-    const u = new URL(url)
-    raw = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '')
-  } catch {
-    // Not a URL (a Telegram file_id): no name to salvage.
-  }
+export function attachmentFileName(
+  url: string,
+  mimeType: string,
+  fallbackStem = 'attachment',
+  reportedName?: string
+): string {
+  let raw = reportedName ?? ''
+  if (!raw)
+    try {
+      const u = new URL(url)
+      raw = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '')
+    } catch {
+      // Not a URL (a Telegram file_id): no name to salvage.
+    }
   let name = raw
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[\\/]/g, '_')
@@ -560,8 +566,8 @@ export async function readAttachment(
   gw: Pick<MessageGateway, 'downloadFile' | 'getFileInfo'>,
   authorizeFileRead?: (source: { platform: string; integrationId: string; channels: string[] }) => Promise<void>
 ): Promise<unknown> {
-  const parsed = parseArgs(READ_ATTACHMENT_ARGS, args)
-  let { url, mimeType: mimeTypeHint } = parsed
+  let { url, mimeType: mimeTypeHint } = parseArgs(READ_ATTACHMENT_ARGS, args)
+  let reportedName: string | undefined
   const max = deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES
   // A bare file ID (the attachment notice's `fileId=`) resolves to its URL; a Telegram file_id has no getFileInfo.
   if (!URL.canParse(url) && gw.getFileInfo && authorizeFileRead && ctx.integrationId) {
@@ -569,6 +575,7 @@ export async function readAttachment(
     if (!info) throw new Error(`could not find a file with id ${url}`)
     await authorizeFileRead({ platform: ctx.platform, integrationId: ctx.integrationId, channels: info.channels })
     url = info.sourceUrl
+    reportedName = info.name
     mimeTypeHint ??= info.mimeType
   }
   const bytes = await gw.downloadFile(url, max)
@@ -590,7 +597,7 @@ export async function readAttachment(
     return result
   }
   // Non-image binary: land it in the workspace and hand back the path.
-  const name = attachmentFileName(url, mimeType)
+  const name = attachmentFileName(url, mimeType, undefined, reportedName)
   const size = `${bytes.byteLength} bytes of ${mimeType}`
   if (!deps.saveAttachment) {
     const result: McpContentResult = {

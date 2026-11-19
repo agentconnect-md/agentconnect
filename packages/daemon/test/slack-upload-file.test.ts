@@ -284,3 +284,17 @@ describe('SlackConnection.uploadFile', () => {
     })
   })
 })
+
+describe('SlackConnection.getFileInfo', () => {
+  it('reports a deleted or unknown file as absent, and leaves any other refusal an error', async () => {
+    const failing = (code: string) =>
+      connWith({
+        info: async () => {
+          throw slackError(code)
+        }
+      })
+    await expect(failing('file_not_found').getFileInfo('F9')).resolves.toBeUndefined()
+    await expect(failing('file_deleted').getFileInfo('F9')).resolves.toBeUndefined()
+    await expect(failing('missing_scope').getFileInfo('F9')).rejects.toThrow('missing_scope')
+  })
+})

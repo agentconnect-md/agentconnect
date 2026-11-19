@@ -2564,9 +2564,9 @@ describe('executeTool: readSlackFile', () => {
     const gw = fakeGateway({
       downloadFile: vi.fn(async () => zip),
       getFileInfo: vi.fn(async () => ({
-        name: 'skill.zip',
+        name: 'Skill 技能.zip',
         mimeType: 'application/zip',
-        sourceUrl: 'https://files.slack.com/files-pri/T1-F1/download/skill.zip',
+        sourceUrl: 'https://files.slack.com/files-pri/T1-F1/download/skill___.zip',
         channels: [ctx.channel]
       }))
     })
@@ -2580,11 +2580,11 @@ describe('executeTool: readSlackFile', () => {
     }
     expect(gw.getFileInfo).toHaveBeenCalledWith('F0CK2QMKE20')
     expect(gw.downloadFile).toHaveBeenCalledWith(
-      'https://files.slack.com/files-pri/T1-F1/download/skill.zip',
+      'https://files.slack.com/files-pri/T1-F1/download/skill___.zip',
       expect.any(Number)
     )
-    expect(saveAttachment).toHaveBeenCalledWith(ctx, 'skill.zip', zip)
-    expect(res.mcpContent[0]!.text).toMatch(/of application\/zip to `uploads\/skill.zip`/)
+    expect(saveAttachment).toHaveBeenCalledWith(ctx, 'Skill 技能.zip', zip)
+    expect(res.mcpContent[0]!.text).toMatch(/of application\/zip to `uploads\/Skill 技能.zip`/)
   })
 
   it('refuses a Slack file ID shared only where this conversation cannot read, before downloading', async () => {

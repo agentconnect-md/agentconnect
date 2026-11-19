@@ -2774,7 +2774,13 @@ export class SlackConnection implements PlatformConnection {
 
   // The caller checks access to a listed conversation before downloading these bytes.
   async getFileInfo(fileId: string): Promise<PlatformFileInfo | undefined> {
-    const file = (await this.app.client.files.info({ file: fileId })).file
+    const file = (
+      await this.app.client.files.info({ file: fileId }).catch((err: unknown) => {
+        // A gone or unknown file is an absent one; any other failure (scope, network) stays an error.
+        if (['file_not_found', 'file_deleted'].includes(slackApiErrorCode(err) ?? '')) return undefined
+        throw err
+      })
+    )?.file
     const sourceUrl = file?.url_private_download ?? file?.url_private
     if (!file || !sourceUrl) return undefined
     return {
