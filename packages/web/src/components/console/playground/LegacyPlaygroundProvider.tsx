@@ -1269,7 +1269,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         else finishedTurnLanes.current.set(id, { turnId: result.done.turnId, agents: new Set([agentId]) })
       }
       if (result.done.turnId) settleLiveElicits(id, agentId, result.done.turnId)
-      if (result.done.error) {
+      // A person's cancel is no failure: the daemon records it in the transcript ("🛑 Turn cancelled.").
+      if (result.done.error && result.done.error !== 'cancel') {
         // The notice STAYS on a failure: a turn that died waiting for its pod is explained by it.
         const name = participantName(id, agentId)
         const thread = streamThreads.current.get(`${id}\n${result.done.turnId}`)

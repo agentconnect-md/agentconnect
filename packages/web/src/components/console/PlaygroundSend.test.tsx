@@ -888,6 +888,26 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  it('shows no failure for a turn a person cancelled, whose cancellation the transcript records', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0, error: 'cancel' } })
+      })
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toEqual([])
+  })
+
   it('retires the notice on a streamed session title', async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()
