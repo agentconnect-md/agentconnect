@@ -1667,7 +1667,9 @@ the sessions this one called or woke, "References", plus a merged conversation's
 Tasks never appear there; they are in the Tasks tab. A phone's related-sessions card follows the
 same rules. The All sessions list leaves tasks out by default and offers a "Show tasks" filter that
 lists them too; the choice is kept in the page's address like the other filters, and the Control
-Plane applies it, so every page of results stays full.
+Plane applies it, so every page of results stays full. Memory dream sessions follow the same rule
+behind their own "Show memory dreams" filter, and Home's Recent sessions never lists them; a dream's
+session stays reachable from the agent's Dreams history.
 
 A person can also ask the conversation that delegated a task to stop it, on any platform:
 "stop the one writing the release notes". The agent asks which one is meant only when that is not

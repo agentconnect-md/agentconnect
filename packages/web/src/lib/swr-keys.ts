@@ -116,7 +116,8 @@ export const consoleKeys = {
     triggeredBy: string,
     githubRepoId: string,
     view: string,
-    tasks: string
+    tasks: string,
+    dreams: string
   ) =>
     consoleKey(
       orgId,
@@ -130,7 +131,8 @@ export const consoleKeys = {
       triggeredBy,
       githubRepoId,
       view,
-      tasks
+      tasks,
+      dreams
     ),
   sessionFacets: (
     orgId: string | null | undefined,
@@ -140,8 +142,21 @@ export const consoleKeys = {
     channel: string,
     triggeredBy: string,
     githubRepoId: string,
-    tasks = ''
-  ) => consoleKey(orgId, 'session-facets', agentId, integration, platform, channel, triggeredBy, githubRepoId, tasks),
+    tasks = '',
+    dreams = ''
+  ) =>
+    consoleKey(
+      orgId,
+      'session-facets',
+      agentId,
+      integration,
+      platform,
+      channel,
+      triggeredBy,
+      githubRepoId,
+      tasks,
+      dreams
+    ),
   sessionDetail: (orgId: string | null | undefined, sessionId: string | null | undefined) =>
     sessionId ? consoleKey(orgId, 'session-detail', sessionId) : null,
   cronRuns: (orgId: string | null | undefined, cronId: string) => consoleKey(orgId, 'cron-runs', cronId),

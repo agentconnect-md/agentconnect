@@ -777,6 +777,9 @@
       "tasks": "Tasks",
       "showTasks": "Show tasks",
       "hideTasks": "Hide tasks",
+      "dreams": "Memory dreams",
+      "showDreams": "Show memory dreams",
+      "hideDreams": "Hide memory dreams",
       "all": "All",
       "noMatchesShort": "No matches"
     },

@@ -253,6 +253,8 @@ left out of the list by default and reached from their owning session's Tasks ta
 A "Show tasks" filter, kept in the URL like the other filters, brings them back. The
 CP applies it as an additive `SessionListFilters` field and list query parameter,
 so paging stays correct; hiding rows in the browser would leave short pages.
+Memory dream sessions are left out the same way, behind a "Show memory dreams"
+filter and a `dreams=exclude` query parameter.
 
 ### 5.3 Routes and cross-links
 
