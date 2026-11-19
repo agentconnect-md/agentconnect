@@ -23508,13 +23508,19 @@ export class Daemon {
           skipUntracked: WORKSPACE_UPLOADS_DIR
         })
     }
-    for (const root of await this.workspaces.sessionAdditionalRoots(agent, {
-      sessionKey: session.key,
-      isolation: 'session'
-    })) {
+    const rootScope = { sessionKey: session.key, isolation: 'session' as const }
+    for (const root of await this.workspaces.sessionAdditionalRoots(agent, rootScope)) {
       if (!roots.some((existing) => existing.path === root.path))
         roots.push({ path: root.path, name: root.repoFullName, branch: root.branch })
     }
+    // Authorized repositories the agent clones on demand join the diff as they appear (multi-repository-workspaces.md decision 20).
+    const discover = async () =>
+      (await this.workspaces.sessionOnDemandCheckouts(agent, rootScope)).flatMap(({ path, repoFullName }) => {
+        const git = roots.some((root) => root.path === path)
+          ? undefined
+          : this.workspaces.consoleWorkspaceGitRunner(agent.id, path, undefined, session.key)
+        return git ? [{ git, name: repoFullName, baseFromOriginHead: true as const }] : []
+      })
     return openTaskDiff(
       roots.map(({ path, ...root }) => {
         const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, path, undefined, session.key)
@@ -23522,7 +23528,8 @@ export class Daemon {
         return { git, ...root }
       }),
       session.key,
-      created && session.lastTurnOutcome == null
+      created && session.lastTurnOutcome == null,
+      (await this.workspaces.sessionOnDemandClones(agent, rootScope)) ? discover : undefined
     )
   }
 

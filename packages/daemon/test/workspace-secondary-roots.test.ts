@@ -858,6 +858,38 @@ describe('materialization modes (decisions 13 and 20)', () => {
     })
   })
 
+  it('finds the finished clones of authorized repositories a session made on demand, and nothing else there', async () => {
+    const agent = agentFixture(ROWS, {
+      additionalInstallations: [{ accountLogin: 'example-org' }, { accountLogin: 'acme' }]
+    })
+    serveAll(agent, { 'acme/infra': 'trunk', 'example-co/shared-library': 'main' })
+    const isolated = { sessionKey: 'session-own', isolation: 'session' as const }
+    await workspaces.prepareSessionWorkspace(agent, isolated)
+    const clones = clonesOf(agent, 'session-own')
+    expect(await workspaces.sessionOnDemandCheckouts(agent, isolated)).toEqual([])
+    const cloneInto = (owner: string, repo: string): string => {
+      const path = join(clones, owner, repo)
+      git(clones, ['clone', '-q', bareRepo(repo, 'main'), path])
+      return path
+    }
+    // A row on demand, matched whatever case the agent cloned it under, and a repository of a granted account.
+    const library = cloneInto('Example-Co', 'Shared-Library')
+    const granted = cloneInto('example-org', 'tools')
+    // An `always` row is already a root of the session, even in a granted account, and an unauthorized repository is not task work.
+    cloneInto('acme', 'infra')
+    cloneInto('elsewhere', 'public')
+    mkdirSync(join(clones, 'example-org', 'notes'))
+    writeFileSync(join(clones, 'example-org', 'README'), 'not a clone\n')
+    symlinkSync(granted, join(clones, 'example-org', 'linked'))
+    // A clone still checking out has no index yet, so every tracked file would read as deleted.
+    rmSync(join(cloneInto('example-org', 'partial'), '.git', 'index'))
+
+    expect(await workspaces.sessionOnDemandCheckouts(agent, isolated)).toEqual([
+      { path: realpathSync(library), repoFullName: 'example-co/shared-library' },
+      { path: realpathSync(granted), repoFullName: 'example-org/tools' }
+    ])
+  })
+
   it('leaves an agent whose rows are all `always` as it was: no clone directory, the same hand-out', async () => {
     const legacy = agentFixture([{ repoFullName: 'acme/infra', repoId: '42' }])
     const explicit = {
