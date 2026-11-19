@@ -20,16 +20,16 @@ The deployment operates the mail domain; an organization configures nothing but
 the address's name. Mail is received and sent through Cloudflare Email Service,
 on Cloud and on a self-hosted deployment alike (§7).
 
-| Capability | First step                                                                                                                    |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Address    | One address per agent on the deployment's mail domain, named by an Agent editor, never reissued (§3).                         |
-| Receiving  | Anyone can send to the address. Only authenticated mail from a member who may use the agent starts or continues work (§4).    |
-| Sessions   | One mail thread is one session, private to the member who started it (§5).                                                    |
-| Replies    | One reply per turn, sent when the turn ends, to the sender and the thread's other eligible members (§6).                      |
-| Content    | Text and HTML bodies as text, up to a size cap. Attachments are named but not delivered (§5.3).                               |
-| History    | Every message received and sent is kept as the agent's Inbox and Sent, which it searches and reads with two tools (§5.5).     |
-| Approvals  | In the Console, as on a platform with no approval card.                                                                       |
-| Setup      | Operator: one mail domain, one Worker, one API token (§7). Organization: pick the address in the agent's Integrations (§3.1). |
+| Capability | First step                                                                                                                                                        |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Address    | One address per agent on the deployment's mail domain, named by an Agent editor, never reissued (§3).                                                             |
+| Receiving  | Anyone can send to the address. Only authenticated mail from a member who may use the agent starts or continues work (§4).                                        |
+| Sessions   | One mail thread is one session: a member's own thread in that member's direct conversation, a thread with several people in a group conversation of its own (§5). |
+| Replies    | One reply per turn, sent when the turn ends, to the sender and the thread's other eligible members (§6).                                                          |
+| Content    | Text and HTML bodies as text, up to a size cap. Attachments are named but not delivered (§5.4).                                                                   |
+| History    | Earlier mail is read from its sessions under the rule for reading other conversations; there is no second store (§5.6).                                           |
+| Approvals  | In the Console, as on a platform with no approval card.                                                                                                           |
+| Setup      | Operator: one mail domain, one Worker, one API token (§7). Organization: pick the address in the agent's Integrations (§3.1).                                     |
 
 Outside the first step, each with what it needs in §10: mail the agent starts on
 its own, mail through the coordinator, senders outside the organization, an
@@ -61,9 +61,9 @@ Three properties decide this shape:
   any address on the mail domain, and a daemon can be enrolled by any member of
   an organization. The token stays on the relay, and a daemon sends through
   `rd/platform/request`, as a Teams row of the deployment's app does.
-- **The relay holds no state.** What a daemon may send is carried by a signed
-  ticket the relay issued with the inbound message (§6.2), so any relay can
-  serve any call.
+- **The relay keeps nothing durable.** What a daemon may send is carried by a
+  signed ticket the relay issued with the inbound message (§6.2), so any relay
+  can serve any call. Its only state is the in-memory counters of §6.3.
 
 ### 2.1 Provider facts
 
@@ -123,7 +123,9 @@ button. There is no credential to paste and nothing to install.
 ## 4. Who may write to an agent
 
 Anyone on the internet can deliver to the address. A message starts or continues
-a session only when all of the following hold, checked in this order:
+a session only when all of the following hold. The relay checks 1, 2 and 4
+itself before it forwards anything; the daemon checks 3 when it admits the
+message:
 
 1. **The message is not automatic.** A message with `Auto-Submitted` other than
    `no`, a `Precedence` of `bulk`, `list` or `junk`, a `List-Id` or
@@ -135,10 +137,15 @@ a session only when all of the following hold, checked in this order:
    Where the sender's domain publishes no DMARC record, a `dkim=pass` whose
    signing domain is the `From` domain or a parent of it is accepted instead.
    Anything else is refused. The envelope sender is never used to identify
-   anyone.
+   anyone. DMARC proves the domain, not the mailbox: the sender domain's own
+   mail system is trusted for the local part, as it is for that domain's
+   sign-in.
 3. **The sender is a member who may use the agent.** The `From` address is the
-   sign-in email of a member of the agent's organization, and the agent's
-   visibility admits that member (everyone in the organization, or its list).
+   verified sign-in email of a member of the agent's organization, and the
+   agent's visibility admits that member (everyone in the organization, or its
+   list). An account whose sign-in method did not verify its email is never
+   matched, including one admitted on an unverified address inside its
+   organization's domains ([organization-sso.md](organization-sso.md)).
 4. **The sender is within the rate limit.** Each address may start work on one
    agent 30 times an hour.
 
@@ -152,7 +159,14 @@ The daemon makes the step 3 decision by asking the Control Plane, as it asks
 whether a chat member is an Agent editor: one question per agent and address,
 an allowed answer reused for two minutes and a refusal for thirty seconds. When
 the Control Plane cannot be asked, the message is not admitted and the relay
-answers for a retry (§5.4), which mail's own redelivery absorbs.
+answers for a retry (§5.5), which mail's own redelivery absorbs.
+
+Step 3 is a new identity rule and a narrow one. Elsewhere a matching email
+address grants nothing, because a chat account and a console account are two
+identities that merely share a string. Here the address is the platform
+identity itself, proven for each message by step 2, and it is matched only
+against an email the sign-in method verified. The Control Plane must record
+that verification before this is built; it is a precondition, not a probe.
 
 Mail is a platform that names its people, so
 "[What people can do in chat](../product-conventions.md#what-people-can-do-in-chat)"
@@ -170,42 +184,88 @@ it is the message's own `Message-ID`, and the message starts a thread. A message
 with no `Message-ID` is refused at step 2 of §4, since nothing could reply to
 it.
 
-A thread key is not a secret, and anyone can write one into a header. A message
-therefore continues a session only when its sender is already a participant of
-that thread: the member who started it, or an address that member or the agent
-wrote to within it. From anyone else it starts a new session, even when its
-headers name an existing thread.
-
 The agent's replies carry the `References` chain of the message they answer, so
 a reply to the agent keeps the thread key. The agent's own `Message-ID` is
 generated by Cloudflare. A mail client that sends only `In-Reply-To` when
-replying to the agent names that generated ID, so the daemon resolves it to the thread through its Sent record (§5.5).
+replying to the agent names that generated ID, so the daemon resolves it to the thread through its index of sent messages (§5.6).
 Whether the send call returns that ID is **unverified**; if it does not, such a
 reply starts a new session.
 
-The conversation coordinates are a fixed channel, `inbox`, and the thread key.
-The manifest takes the conservative arm of every axis and adds
-`dmChannelPattern: /^inbox$/`: every thread is a direct conversation, a message
-that reached the address is addressed to the agent wherever the address appears
-(`To`, `Cc` or `Bcc`), and no place is switched on or off, because admission is
-by person (§4).
+### 5.2 Conversations
+
+The conversation a message belongs to is read from the message itself. Its
+**participants** are its sender and every `To` and `Cc` address other than the
+agent's own.
+
+| Participants                     | Conversation          | Kind       | Session key                         |
+| -------------------------------- | --------------------- | ---------- | ----------------------------------- |
+| The sender alone                 | `dm:<sender address>` | a 1:1 DM   | the conversation and the thread key |
+| The sender and at least one more | `group:<thread key>`  | a group DM | the conversation                    |
+
+So a member's own threads all sit in that member's direct conversation, one
+session a thread, as a direct conversation keyed by person does on every other
+platform, and a thread several people are on is a small private room of its
+own. The manifest takes the conservative arm of every axis and adds
+`dmChannelPattern: /^dm:/`. A message that reached the address is addressed to
+the agent wherever the address appears (`To`, `Cc` or `Bcc`), and no place is
+switched on or off, because admission is by person (§4).
+
+The existing rules then apply with nothing written for mail:
+
+- **Memory.** A direct conversation reads and writes its member's person
+  layer, keyed by the console account the member answer of §4 names. A group
+  conversation has a place layer of its own, and nobody's person layer is
+  injected there
+  ([product conventions](../product-conventions.md#memory-layers)).
+- **A turn nobody typed.** The person of `dm:<address>` is that address's
+  member, read from the key.
+- **Reading elsewhere.** `recall` and every other read are judged by who is
+  asking
+  ([product conventions](../product-conventions.md#reading-other-conversations)).
+  In a member's direct conversation that is the member. In a group conversation
+  it is the sender of the turn's message, and bringing something of theirs into
+  the thread is their call, as in a group DM anywhere. The listing of a
+  person's other direct conversations is offered only in their own.
+
+**No conversation changes kind.** A message in a member's own thread that names
+another recipient is, by the table, a message of `group:<thread key>`: it opens
+that group conversation's session, which starts from this message and the
+history quoted in it. The member's direct session is not continued, and none of
+its context is carried over. A reply that drops the other recipients goes back
+to the member's direct conversation. A group conversation that gains a
+recipient stays the same conversation, as a group chat that gains a member
+does.
+
+**The participant fence.** A thread key is not a secret, and anyone can write
+one into a header. A group conversation therefore records the addresses that
+have appeared on its admitted messages, and a message continues it only when
+its sender is one of them. From anyone else the message is read as starting a
+thread of its own, keyed by its own `Message-ID`. A direct conversation needs
+no fence: its key is the authenticated sender.
 
 Mail never runs a coordinator. A new thread opens its session directly, for an
 assistant-mode agent too: the manifest lists no kind in `appendKinds`, so no
 row is put on `auto` and assistant mode has no place to force onto one session.
 §10 says what routing mail through the coordinator would take.
 
-### 5.2 Visibility
+### 5.3 Visibility
 
-A session is `private` to the member who started the thread and is owned as
+A session of a direct conversation is `private` to its member and owned as
 `user:<member>`, the rule an install-bound sender already follows
 ([session-visibility.md §4.2](session-visibility.md#42-default-rules)). The
-Control Plane provider's `dmOwnerMember` resolves the member from the sender's
-address at ingest. No match, or a failed read, leaves the row private to the
-sender's address, visible to no one, never `org`. Another member who joins the
-thread may continue it by mail but does not gain the session in the Console.
+Control Plane provider's `dmOwnerMember` resolves the member from the address
+at ingest. No match, or a failed read, leaves the row private to the address,
+visible to no one, never `org`.
 
-### 5.3 What the agent reads
+A session of a group conversation is `private` to the member whose message
+opened it, which is a new default row for mail: the general rule would make a
+group conversation `org`, and a mail thread among three people is not the
+organization's. The other participants have the mail itself and continue the
+thread by mail; they do not gain the session, or its place layer, in the
+Console. Showing it to every member on the thread needs the Control Plane to
+know the participants, which the first step keeps on the daemon.
+
+### 5.4 What the agent reads
 
 The agent receives a header block (`From`, `To`, `Cc`, `Subject`, `Date`) and
 the body. The text part is used when there is one; an HTML-only message is
@@ -223,10 +283,10 @@ Everything in a message is the sender's content: the member's own words carry
 the authority a chat message from them would, and text they forwarded is data
 the agent reads, not instructions from its author.
 
-### 5.4 Admission and redelivery
+### 5.5 Admission and redelivery
 
-The relay forwards with `forwardStrict` and answers the Worker from the
-daemon's verdict:
+The relay answers the Worker from its own checks (§4 steps 1, 2 and 4) and,
+for a message that passes them, from the verdict `forwardStrict` returns:
 
 | Verdict                                        | Relay answers | Worker does                             |
 | ---------------------------------------------- | ------------- | --------------------------------------- |
@@ -242,45 +302,30 @@ The dedup identity is the bot and the `Message-ID`, in the relay's table and in
 the daemon's durable receipt, so a redelivered message never starts a second
 turn.
 
-### 5.5 Inbox and Sent
+### 5.6 Earlier mail
 
-A new thread is a new session, which knows nothing of the agent's other
-threads, and the provider keeps no mail to read back. The daemon therefore
-records every admitted message in the agent's **Inbox** and every message it
-sent in its **Sent**: the header block, the body as the agent read or wrote it,
-the thread key, the time, and for Sent the provider's message ID and the
-delivery outcome. The record lives in the daemon's store beside the session
-records, never on the Control Plane, and a thread's messages are kept as long
-as its session's record is. A message refused under §4 is not recorded.
+A new thread is a new session, and the provider keeps no mail to read back.
+What the agent received and sent is nevertheless already kept: every admitted
+message is a turn of its session and every reply is that turn's answer, in the
+daemon's session records. A member's own threads are the sessions of one
+conversation, `dm:<address>`, so `recall` in a new thread of theirs lists and
+reads the earlier ones under the rule of §5.2, and a group thread is read by
+the people the Console shows it to. No second store and no mail-specific tool
+is added, and so no second read rule.
 
-Two read-only tools reach it:
+`recall` must list a direct conversation's sessions with each one's subject
+and correspondents for this to answer "what did you send me last week"; that
+is the one thing mail asks of it.
 
-- `searchMail` lists messages by correspondent, subject words, folder and
-  time, newest first, each with its ID, header block and first lines.
-- `readMail` returns one message in full by its ID.
+The daemon keeps one small index beside the sessions: for each message it
+sent, the provider's message ID, the thread key and the delivery outcome. It
+resolves an `In-Reply-To` that names the agent's own message (§5.1) and marks a
+reply undelivered. On a self-hosted deployment both stay with the daemon that
+wrote them, as session records do.
 
-What they return depends on who can read the session the turn runs in, not
-only on who is behind the turn. A session's transcript, its later turns and its
-reply all reach the thread's participants, so mail read into it must already be
-theirs:
-
-- **A thread with one participant**, the member who started it: on that
-  member's turn the tools return every message of the threads that member takes
-  part in (§5.1).
-- **A thread with several participants**: the tools return that thread's own
-  messages and nothing else, whoever is behind the turn.
-- **A turn no person is behind**: nothing.
-
-A session that has read another thread's mail stays its starter's alone from
-then on. Its replies go to the starter only, even when a later message adds
-recipients, and a message another participant sends in the thread starts a new
-session instead of continuing it. Without this, mail read while the thread was
-private would be in context when someone else joined.
-
-This is a record, not a mailbox: nothing is moved, flagged or deleted through
-it, and incoming mail does not wait in it to be picked up, since each message
-starts or continues a session on arrival. On a self-hosted deployment the
-record stays with the daemon that wrote it, as session records do.
+Nothing is moved, flagged or deleted as in a mailbox, and incoming mail does
+not wait to be picked up: each message starts or continues a session on
+arrival.
 
 ## 6. Replies
 
@@ -292,11 +337,13 @@ asks is the text of its reply, and the member's answer is the next message of
 the thread.
 
 - **From** is the agent's address, with the agent's name as the display name.
-- **To** is the sender of the message the turn answers. **Cc** is every other
-  address on that message that is itself an eligible member (§4 step 3), asked
-  of the Control Plane in one batch. Addresses outside the organization are
-  left off, and the prompt tells the agent which ones, so its reply can say who
-  did not receive it.
+- **To** is the sender of the message the turn answers. In a group
+  conversation **Cc** is every other address on that message that is itself an
+  eligible member (§4 step 3), asked of the Control Plane in one batch.
+  Addresses outside the organization are left off, and the prompt tells the
+  agent which ones, so its reply can say who did not receive it. When the
+  Control Plane cannot be asked as the turn ends, the reply goes to the sender
+  alone and the session records that the others were left off.
 - **Subject** is the thread's subject with a single `Re:`.
 - **In-Reply-To** is the answered message's ID, and **References** is its chain
   with that ID appended, cut from the front past 50 entries.
@@ -318,12 +365,12 @@ beside the session.
 
 The daemon sends `rd/platform/request` with `{ platformId: 'email', botId,
 payload }`, where the payload names the ticket, the recipients, the subject,
-the two threading headers and the body. The relay checks, keeping no state:
+the two threading headers and the body. The relay checks:
 
 1. the socket's daemon is a member of the bot's assignment;
 2. the ticket's MAC holds for this bot and the recipient set the request
    restates, and every `To` and `Cc` of the send is in that set;
-3. the bot has sent fewer than 200 messages in the last day.
+3. the send is within the budgets of §6.3.
 
 It then builds the provider call itself: the `From` address is the
 assignment's, never the request's. A compromised daemon can therefore write
@@ -333,6 +380,42 @@ them.
 One budget of 12 seconds covers the call and a single retry; the daemon waits 15. `refused` and `unavailable` mean the provider was never called and are
 retried as unsent; a send cut off by the budget may have landed and is never
 repeated, as with a Teams post.
+
+### 6.3 Counters and budgets
+
+The relay's counters are in memory, one set per relay instance, and are lost
+on a restart. With several instances a limit is therefore approximate: at most
+the stated number on each.
+
+| Counter                     | Limit                             | On exceeding it                 |
+| --------------------------- | --------------------------------- | ------------------------------- |
+| Dedup of `Message-ID`       | the relay's shared, bounded table | the duplicate is settled (§5.5) |
+| Inbound, per sender and bot | 30 an hour (§4 step 4)            | the message is rejected         |
+| Sends, per bot              | 200 a day                         | the send is refused             |
+| Sends, per organization     | 1,000 a day                       | the send is refused             |
+| Sends, whole deployment     | the operator's figure in Setup    | the send is refused             |
+
+One Cloudflare account, with one daily quota, sends for every organization on
+a shared deployment, so the per-organization budget is what keeps one
+organization from spending the rest's. The provider's own quota remains the
+hard stop behind all three. The daemon's durable receipt, not the relay's
+table, is what finally keeps a redelivered message from starting a second
+turn.
+
+### 6.4 When the Control Plane is unreachable
+
+In [high-availability.md](high-availability.md)'s terms, mail admission and a
+group reply's recipients each need a Control Plane answer, and neither is
+served from the data plane alone:
+
+- **A new sender, or one whose answer is older than two minutes**: not
+  admitted, and the relay answers for a retry (§5.5). A thread already running
+  therefore stops taking new mail two minutes into an outage and resumes when
+  it ends; no message is refused for good.
+- **A turn that ends during an outage**: its reply is sent to the sender alone
+  (§6.1). A direct conversation's reply never asks.
+- **Sending** needs no Control Plane call: the relay serves from its last
+  snapshot, as for Teams.
 
 ## 7. Operator setup
 
@@ -352,9 +435,13 @@ The operator does three things in Cloudflare:
    saving.
 
 The Worker reads the raw message, posts it to the relay's `POST /email/inbound`
-with the envelope sender and recipient and an HMAC over the body and a
-timestamp, and applies the relay's answer (§5.4). It parses nothing and holds
-no other configuration. The relay verifies the HMAC within a five-minute window
+with the envelope sender and recipient, the message's full size and an HMAC
+over the body and a timestamp, and applies the relay's answer (§5.5). It sends
+at most the first 1 MiB of the message: the first step delivers 64 KiB of text
+and no attachment, and the relay must hold the whole body before it can check
+the HMAC, on an ingress every platform shares. A message cut this way is
+parsed as far as it goes, and the prompt says it was cut. The Worker parses
+nothing and holds no other configuration. The relay verifies the HMAC within a five-minute window
 before it reads anything else, then finds the bot by the envelope recipient. A
 recipient no bot holds is rejected as an unknown address.
 
@@ -370,18 +457,18 @@ The integration implements the four host contracts of the
 [platform module design](integration-plugin-architecture.md) plus one registry
 line per host:
 
-- **Relay**: the inbound route with its own raw-buffer parser and a 25 MiB
+- **Relay**: the inbound route with its own raw-buffer parser and a 1 MiB
   limit, HMAC verification, MIME parsing, the checks of §4 steps 1, 2 and 4,
-  `forwardStrict`, ticket minting, `deploymentAssignments` from the snapshot,
-  and `daemonRequest` for the send.
-- **Daemon**: no connection of its own; thread canonicalization and the
-  participant fence (§5.1), the member question (§4), final-only turn output
-  through the relay transport, the Inbox and Sent record, and its two tools
-  (§5.5).
+  `forwardStrict`, ticket minting, the counters of §6.3,
+  `deploymentAssignments` from the snapshot, and `daemonRequest` for the send.
+- **Daemon**: no connection of its own; the conversation and thread keys and
+  the participant fence (§5.2), the member question (§4), final-only turn
+  output through the relay transport, and the index of sent messages (§5.6).
 - **Control Plane**: the provider with name validation, the retired-address
-  table, `dmOwnerMember`, the member answer for one address or a batch, and a
-  spec that names `email-v1` in `requires` so an older daemon never receives
-  one.
+  table, the record of a verified sign-in email, `dmOwnerMember`, the group
+  conversation's visibility row, the member answer for one address or a batch,
+  and a spec that names `email-v1` in `requires` so an older daemon never
+  receives one.
 - **Console**: the one-field add flow, the address display, and the mark.
 
 Normalization lives in the message package with sanitized fixtures. The new
@@ -390,40 +477,56 @@ before writers emit it. The relay route is added to the chart's HTTPRoute in
 the same change. The ingress Worker is a new, small workspace package with no
 runtime dependency.
 
+The build also owes two records outside this document: entries in
+`.oss-scanner/threat_model.md` for the new public route, the relay-held sending
+token and the address-to-member rule, and the mail rows of product conventions'
+session access and memory layer tables.
+
+Accepted: on a shared deployment the name check of §3.1 and the unknown-address
+rejection of §7 both reveal which names other organizations hold. A name is
+half of a public address, and the agent behind it answers nobody outside its
+organization.
+
 ## 9. Unverified and open
 
-- What the sender's server sees when the Worker fails an event (§5.4).
-- Whether the Worker can stream a 25 MiB message to the relay inside its
-  limits, and whether one message to two agents runs the Worker twice.
+- What the sender's server sees when the Worker fails an event (§5.5).
+- That the raw message the Worker receives carries Cloudflare's
+  `Authentication-Results` as its topmost header of that name. The whole
+  sender check of §4 step 2 rests on it.
+- Whether one message to two agents runs the Worker twice.
 - That subaddressed mail reaches a catch-all Worker with the tag preserved.
 - Whether the send call returns the generated `Message-ID` (§5.1), and how mail
   clients thread a reply whose `Message-ID` domain differs from its `From`
   domain.
 - The exact `Authentication-Results` text for a domain with no DMARC record.
 - The starting daily sending quota, and how fast it grows.
-- Whether every sign-in method verifies the email it reports. A member whose
-  sign-in email was never verified must not be matched (§4 step 3).
-- Whether the first step should cut quoted history from a follow-up (§5.3).
+- Whether the first step should cut quoted history from a follow-up (§5.4).
 
 ## 10. Later
 
 - **Mail the agent starts.** A tool that sends a new message, for a schedule's
   report or a hand-off. It needs its own fence at the relay, since no inbound
   ticket exists: recipients limited to eligible members by a Control Plane
-  answer the relay can verify. The message is recorded in Sent with its thread
-  key, and a reply to it opens a session that begins with that record, so the
-  session knows what it answers.
+  answer the relay can verify. The sent message is kept with its thread key,
+  and a reply to it opens a session that begins with it, so the session knows
+  what it answers.
 - **Mail through the coordinator.** Each member's correspondence becomes a
   private place with a coordinator, which hands a new thread to an open task
-  or opens one. It needs the place keyed by member instead of one `inbox`, a
-  thread several members write in kept with the place of the member who
-  started it, and a ticket per member, since a coordinator's root post is a
-  new message to that member.
+  or opens one. The place is already keyed by member (§5.2); it needs `im` in
+  the manifest's `appendKinds` and a ticket per member, since a coordinator's
+  root post is a new message to that member.
 - **Senders outside the organization.** A per-agent choice that lifts §4
   step 3. It needs a decision on who owns such a session, a tighter rate
   limit, and a reply path that is safe to open to strangers.
-- **An organization's own domain.** A paid-plan feature: the organization
-  proves the domain and its mail is routed to the same Worker.
+- **An organization's own domain.** A paid-plan feature. An organization will
+  usually offer a subdomain of the domain its people already use, which
+  Cloudflare cannot take as described in §2.1: it routes only zones in the
+  deployment's own account, and a subdomain there has no catch-all. This step
+  therefore needs either a mail provider that accepts another party's
+  subdomain by its MX and DKIM records, or the organization's own mail system
+  forwarding to the agent's address. The relay's inbound route already takes a
+  raw message and an envelope from any front end, so only the Worker and the
+  send call are provider-specific.
 - **Attachments.** Inbound over the chunked path the Console upload uses, into
   the session's `uploads/` directory; outbound from agent-authored files.
 - **Mail between agents.** Excluded today by §4 step 1, which is also what
@@ -437,14 +540,15 @@ runtime dependency.
   participant fence; `Authentication-Results` parsing, including a forged
   second header and a foreign authserv-id; the automatic-mail filter; name
   validation and reserved names; ticket minting and every refusal of §6.2; the
-  Inbox and Sent record, what the two tools return in a thread of one and of
-  several participants, and a session that read other threads' mail refusing a
-  second participant.
+  conversation a message falls in by its participants, a member's thread that
+  gains a recipient opening a group session with nothing carried over, the
+  memory layer of each kind, and the counters of §6.3.
 - Relay: the inbound route's HMAC window, an unknown recipient, each row of the
-  §5.4 table, and dedup of a redelivered `Message-ID`.
+  §5.5 table, and dedup of a redelivered `Message-ID`.
 - Control Plane: an address is never reissued; the member answer for a member,
-  a member not on a restricted agent's list, another organization's member and
-  an unknown address; session ownership at ingest.
+  a member not on a restricted agent's list, another organization's member, a
+  member whose sign-in email is unverified and an unknown address; session
+  ownership at ingest for both kinds.
 - Live, before release: a round trip from two common mail services, a reply
   that threads in each, a spoofed sender refused, an out-of-office answer that
   starts nothing, and each item of §9.
