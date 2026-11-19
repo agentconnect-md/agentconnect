@@ -1443,34 +1443,46 @@ the endpoint:
   no framing rule: a page that reaches the port and knows a target id can frame it into a live session on that target
   (measured through the forwarder). Target and browser ids are therefore secrets that never reach page content: the
   ids in `computer-browser-v1` and the viewer API are the daemon's own (below, §7.6). The port is not a secret:
-  through today's forwarder a script-element probe found it among the whole ephemeral range in 34 s from a public
-  site. Behind the forwarder Chrome classes every page as loopback, so Local Network Access gives no protection in a
-  managed pod; without a proxy (the self-hosted container) it is a prompt that one click allows, and it does not cover
-  a top-level popup, which opened the front end after one click in every state. The front end a page opens this way
-  does connect to a WebSocket backend the page names in its URL, with Origin `http://127.0.0.1:<port>` (measured);
-  whether that backend can steer it into a same-origin read was not tried. Without a proxy the port is not secret
-  either: while the Local Network Access prompt is pending, an open port's request hangs and a closed port's is
+  through the forwarder before its refusal a script-element probe found it among the whole ephemeral range in 34 s
+  from a public site. Behind the forwarder Chrome classes every page as loopback, so Local Network Access gives no
+  protection in a managed pod; without a proxy (the self-hosted container) it is a prompt that one click allows, and
+  it does not cover a top-level popup, which opened the front end after one click in every state. The front end a page
+  opens this way does connect to a WebSocket backend the page names in its URL, with Origin `http://127.0.0.1:<port>`
+  (measured); whether that backend can steer it into a same-origin read was not tried. Without a proxy the port is not
+  secret either: while the Local Network Access prompt is pending, an open port's request hangs and a closed port's is
   refused at once.
 - **Another container.** Containers of one pod share the loopback, so the desktop pod carries no sidecar.
 - **The agent's own commands.** With `shell` on they run as the desktop's user and reach the port directly, around the
   allowlist, the lease and the audit, which §5.7 already counts as handing over the account.
 
-**The forwarder's refusal [design].** With the browser tier on, every Computer's browser goes through the egress
-forwarder (§15.4), the self-hosted container's included, in direct mode where no organization proxy is set, so one
-barrier holds in both forms; the Local Network Access prompt is not one, since one click allows it and it does not
-cover a top-level popup (above). The forwarder refuses the loopback destinations the daemon owns or must protect: its
-own listeners, the forwarder's port included, and every DevTools port a desktop's browser listens on, however it was
-opened, in every form that reaches them (127.0.0.0/8, `::1`, `::ffff:127.0.0.0/104`, 0.0.0.0/8, `::`, and the pod's
-own interface addresses for listeners bound to 0.0.0.0). The daemon finds a browser's listening ports from its
-processes' sockets in `/proc`, so a port it did not open (the `chrome://inspect` checkbox's 9222, §3.10) is refused
-too, and reported in the log and by `doctor`. It resolves a name once, checks the address it resolved and connects to
-that address, for plain requests and `CONNECT` alike. It does not refuse all of loopback, because an agent's own dev
-server on the Computer must stay reachable from its browser; a loopback destination it allows always connects locally,
-never through the organization's proxy. While a desktop's browser is starting and its ports are not yet known, it
-refuses every loopback destination. It answers a refused destination exactly as a closed port, so a probe cannot tell
-them apart. Today's forwarder refuses none of this: in direct mode it carried pages' requests and `CONNECT` tunnels to
-the DevTools port by `127.0.0.1`, `localhost` and `0.0.0.0`, and to the daemon's own listeners (measured), and
-`egress.test.ts`'s direct-mode cases tunnel to 127.0.0.1; both change in step 3, beside the switch (§14.10).
+**The forwarder's refusal [implemented].** The egress forwarder (§15.4) refuses the loopback destinations the daemon
+owns or must protect: its own listeners (the HTTP port, the form-fill port, the forwarder's port, a pool pod's
+bootstrap port, and any other socket the daemon process listens on) and every port a desktop's browser listens on,
+however it was opened, in every form that reaches them (127.0.0.0/8, `::1`, `::ffff:127.0.0.0/104`, 0.0.0.0/8, `::`,
+and the machine's own interface addresses for listeners bound to every address). `127.0.0.1:<form-fill port>` bypasses
+the forwarder by design (the launcher's `--proxy-bypass-list`), and the endpoint's extension-`Origin` and `/proc`
+checks protect it ([computer-form-fill-and-vault.md §8](computer-form-fill-and-vault.md)), so only the port's other
+spellings reach the forwarder to be refused. For a loopback destination it reads the listening sockets from
+`/proc/net/tcp` and `tcp6` and the processes holding them, so a port it did not open (the `chrome://inspect`
+checkbox's 9222, §3.10) is refused too; a desktop's browser is a browser process started on a desktop's profile or
+holding files there, with its children. It reads them before connecting and again once connected, before it answers
+`200 Connection Established` or writes a byte of the request, so a listener that opens between the two (a browser
+starting) is refused too, and it never pools a direct connection for a later request. A refusal is logged with the
+port and the reason, once a minute per port and five lines a minute at most. It resolves a name once (`*.localhost` as
+`localhost`) within the connect timeout, checks the addresses it resolved and connects to those, for plain requests
+and `CONNECT` alike; a name that does not resolve in time and a check that fails answer as a closed port. It does not
+refuse all of loopback, because an agent's own dev server on the Computer must stay reachable from its browser; a
+loopback destination it allows always connects locally, never through the organization's proxy, to which other names
+go unresolved. While any desktop's launch lock is held (from before the browser's spawn until it owns its profile,
+§3.10), it refuses every loopback destination. A refused destination gets the same bytes as a closed port (`502` with
+no body), but in the container it answers about half a millisecond sooner at the median (11.7–15.2 ms refused against
+12.4–15.9 ms closed, measured), which a statistical probe can tell apart; a name a page controls that resolves to
+loopback and to an unroutable address also tells them apart, since a closed port falls through to the next address and
+waits for the timeout. That matters little: the port is discoverable by design (above), and the refusal, not its
+secrecy, is the barrier. **[design]** With the browser tier on, every Computer's browser goes through it, the
+self-hosted container's included, in direct mode where no organization proxy is set, so one barrier holds in both
+forms; the Local Network Access prompt is not one, since one click allows it and it does not cover a top-level popup
+(above). `doctor` does not report a port the daemon did not open yet.
 
 **The child.** One per desktop, started by a `chrome_*` call, and stopped after `leaseIdleSeconds` (§4.4) without a
 `chrome_*` call, when the session's lease ends, when its browser exits, and when its desktop stops; the next call
@@ -2422,13 +2434,12 @@ What the prototype adds to them:
 - **Step 2**: the launcher removes `CHROME_EXTRA_FLAGS`, always passes `--no-first-run` and writes `First Run`; the
   migration keeps the open tabs and leaves out `DevToolsActivePort`; the form-fill master moves to `browser/main`; the
   entrypoint's process names, the panel entry and the `BROWSER_NAMES` order change.
-- **Step 3**: the forwarder's loopback refusal in the same step as the switch, with the self-hosted container's
-  browser behind the forwarder and `egress.test.ts`'s direct-mode cases rewritten; the AutomationControlled flag
-  beside the switch, once §17-26 is settled for managed computers; never `--remote-allow-origins`, and the
-  foreign-`Origin` 403 self-test before reporting `devtools`; `--hide-crash-restore-bubble` on every start; deleting
-  and checking `DevToolsActivePort`, and the seed filter; clearing `Local State` with the tier off; `--wsEndpoint` and
-  the child's flags; the child's stop on idle, lease end and browser exit, and its kill after a restart; no `devtools`
-  under host networking.
+- **Step 3**: the self-hosted container's browser behind the forwarder, whose loopback refusal landed first with
+  `egress.test.ts`'s direct-mode cases rewritten (§5.8); the AutomationControlled flag beside the switch, once §17-26
+  is settled for managed computers; never `--remote-allow-origins`, and the foreign-`Origin` 403 self-test before
+  reporting `devtools`; `--hide-crash-restore-bubble` on every start; deleting and checking `DevToolsActivePort`, and
+  the seed filter; clearing `Local State` with the tier off; `--wsEndpoint` and the child's flags; the child's stop on
+  idle, lease end and browser exit, and its kill after a restart; no `devtools` under host networking.
 - **Step 4**: filtering the five extra tools; `isolatedContext`, temp-file screenshots, upload roots and the child's
   `TMPDIR`; opaque page ids; the front tab before acting; the race against the browser's exit, and `isError` on
   navigation.
@@ -2617,11 +2628,11 @@ browser started through the launcher of §3.10, which every start in the image g
 proxy (other programs in the pod, and the binary run directly, keep the pod's network); SOCKS proxies and per-agent
 proxies are not offered; a proxy on another port needs `egressPorts`.
 
-**Loopback [design].** With the browser tier the forwarder also refuses the daemon's loopback ports and every DevTools
-port of a desktop's browser (§5.8), in a managed pod and in the self-hosted container alike. Since the browser sees
-every page arrive from a loopback proxy, Chrome classes pages as loopback and its Local Network Access does not apply
-behind the forwarder (measured), so that refusal, Chrome's `Host` and `Origin` checks and the opaque page ids are the
-only page-side barriers to the DevTools endpoint.
+**Loopback [implemented].** The forwarder also refuses the daemon's loopback ports and every port of a desktop's
+browser (§5.8), with or without the browser tier, wherever it runs: a managed pod today and, **[design]** with the
+tier, the self-hosted container. Since the browser sees every page arrive from a loopback proxy, Chrome classes pages
+as loopback and its Local Network Access does not apply behind the forwarder (measured), so that refusal, Chrome's
+`Host` and `Origin` checks and the opaque page ids are the only page-side barriers to the DevTools endpoint.
 
 Under Xvfb the browser has no WebGL context, and CreepJS rated Chromium 156 and Chrome 158 alike 38% "like headless",
 with and without the DevTools endpoint, so this is a reputation cost of the desktop and not of the browser tier.

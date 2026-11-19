@@ -291,10 +291,21 @@ export interface LockTimings {
   refreshMs?: number
 }
 
+const launchLockPath = (profile: string): string => `${profile}.launch-lock`
+
+/** A launch holds the profile's lock: from before its browser is spawned until that browser owns the profile. */
+export function launchLocked(profile: string, now = Date.now()): boolean {
+  try {
+    return now - statSync(launchLockPath(profile)).mtimeMs <= LOCK_STALE_MS
+  } catch {
+    return false
+  }
+}
+
 /** Two launches for one desktop at once must not both merge; a lock not refreshed for a minute is from a crashed launcher. */
 export async function lockProfile(profile: string, timings: LockTimings = {}): Promise<() => void> {
   const { staleMs = LOCK_STALE_MS, waitMs = LOCK_WAIT_MS, refreshMs = LOCK_REFRESH_MS } = timings
-  const path = `${profile}.launch-lock`
+  const path = launchLockPath(profile)
   mkdirSync(dirname(path), { recursive: true })
   const deadline = Date.now() + waitMs
   for (;;) {
