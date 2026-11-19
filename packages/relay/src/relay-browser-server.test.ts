@@ -193,7 +193,7 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
 
     ws.send(JSON.stringify({ text: 'hello agent' }))
     const ack = await nextFrame(ws, 'ack')
-    expect(ack).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT } })
+    expect(ack).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT, postId: expect.any(String) } })
     expect(sent).toHaveLength(1)
     expect(sent[0]).toMatchObject({
       source: 'webchat',
