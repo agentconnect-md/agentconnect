@@ -275,6 +275,12 @@ who enforces the connection makes the organization check it on every request:
   carries the role names the Control Plane reads for `ADMIN`, so it replaces a
   script that did only that. Until it is applied no session carries the claim, and
   members inside the domains cannot open the organization.
+- **The address is not the member's to change.** The rule reads the account's
+  address in the identity service. A member who could edit it would move it out of
+  the verified domains and leave the rule, then sign in with another linked
+  identity. While organization SSO is declared, the Setup Server keeps the identity
+  service's account-center permission for the address from being editable, reports
+  an editable one as drift, and sets it to read-only on apply.
 - **Where it is checked.** In the guard of the `/orgs/:orgId` subtree, after
   membership, so a non-member learns nothing about the organization's sign-in; and
   where a credential for the organization is minted or reissued outside that
@@ -394,10 +400,10 @@ code `ORG_SSO_SIGN_IN_REQUIRED` (§4.5).
 The Control Plane becomes a second writer to Logto beside the Setup Server. Each owns
 a disjoint part:
 
-| Writer        | Owns                                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Setup Server  | The sign-in experience, the one connector with its fixed name, and the access-token claims script while organization SSO is declared. |
-| Control Plane | Connectors named after an organization: their configuration and their domains.                                                        |
+| Writer        | Owns                                                                                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Setup Server  | The sign-in experience, the one connector with its fixed name, and, while organization SSO is declared, the access-token claims script and the account center's address permission. |
+| Control Plane | Connectors named after an organization: their configuration and their domains.                                                                                                      |
 
 The Setup Server's desired value for Logto's `singleSignOnEnabled` becomes "a
 deployment connector exists, or organization SSO is declared". Without that, its next

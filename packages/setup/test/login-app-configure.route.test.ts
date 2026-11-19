@@ -118,6 +118,7 @@ function server(existingConnectors: readonly string[] = ['telegram', 'discord', 
           ssoConnectorsDeleted: [],
           signInExperienceChanged: true,
           tokenClaimsChanged: false,
+          accountEmailChanged: false,
           adminRoleCreated: false
         }
       },

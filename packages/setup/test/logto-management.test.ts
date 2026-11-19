@@ -529,8 +529,18 @@ describe('Logto setup reconciliation', () => {
 })
 
 describe('Logto SSO connector', () => {
-  function fakeLogto(options: { rejectConfig?: string; accessTokenClaims?: Record<string, unknown> } = {}) {
+  function fakeLogto(
+    options: {
+      rejectConfig?: string
+      accessTokenClaims?: Record<string, unknown>
+      accountCenterFields?: Record<string, unknown>
+    } = {}
+  ) {
     let accessTokenClaims = options.accessTokenClaims
+    let accountCenterFields: Record<string, unknown> = options.accountCenterFields ?? {
+      social: 'Edit',
+      email: 'ReadOnly'
+    }
     const ssoConnectors: Record<string, unknown>[] = []
     let minted = 0
     const patches: Record<string, unknown>[] = []
@@ -583,6 +593,12 @@ describe('Logto SSO connector', () => {
         return response(signInExperience)
       }
       if (url.pathname === '/api/sign-in-exp') return response(signInExperience)
+      if (url.pathname === '/api/account-center') {
+        if (init?.method === 'PATCH') {
+          accountCenterFields = (JSON.parse(String(init.body)) as { fields: Record<string, unknown> }).fields
+        }
+        return response({ enabled: true, fields: accountCenterFields })
+      }
       if (url.pathname === '/api/configs/jwt-customizer/access-token') {
         if (init?.method === 'PUT') accessTokenClaims = JSON.parse(String(init.body)) as Record<string, unknown>
         return accessTokenClaims ? response(accessTokenClaims) : response({ code: 'entity.not_found' }, 404)
@@ -596,7 +612,8 @@ describe('Logto SSO connector', () => {
       ssoConnectors,
       patches,
       signInExperience: () => signInExperience,
-      accessTokenClaims: () => accessTokenClaims
+      accessTokenClaims: () => accessTokenClaims,
+      accountCenterFields: () => accountCenterFields
     }
   }
 
@@ -729,6 +746,34 @@ describe('Logto SSO connector', () => {
     expect(logto.ssoConnectors).toEqual([owned])
     await expect(logto.client.inspectSetup({ ...desired, ssoRemoved: true })).resolves.toMatchObject({ sso: null })
     await expect(logto.client.deleteManagedSsoConnectors()).resolves.toEqual([])
+  })
+
+  it('keeps members from editing their own address while organizations run their own SSO', async () => {
+    const editable = { social: 'Edit', email: 'Edit', name: 'Off' }
+    const logto = fakeLogto({ accountCenterFields: editable })
+    const desired = { ...base, socialProviders: [], organizationSso: true }
+
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({
+      accountEmail: {
+        matches: false,
+        diff: [{ field: 'Account center email', current: 'Edit', expected: 'ReadOnly or Off' }]
+      }
+    })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({ accountEmailChanged: true })
+    // Only the address changes; the other permissions, social linking included, stay.
+    expect(logto.accountCenterFields()).toEqual({ social: 'Edit', email: 'ReadOnly', name: 'Off' })
+    await expect(logto.client.reconcileSetup(desired)).resolves.toMatchObject({ accountEmailChanged: false })
+    await expect(logto.client.inspectSetup(desired)).resolves.toMatchObject({ accountEmail: { matches: true } })
+
+    // Off is as good as read-only, and without the declaration the setting is not Setup's.
+    const off = fakeLogto({ accountCenterFields: { social: 'Edit' } })
+    await expect(off.client.inspectSetup(desired)).resolves.toMatchObject({ accountEmail: { matches: true } })
+    const undeclared = fakeLogto({ accountCenterFields: editable })
+    await expect(undeclared.client.inspectSetup({ ...base, socialProviders: [] })).resolves.toMatchObject({
+      accountEmail: null
+    })
+    await undeclared.client.reconcileSetup({ ...base, socialProviders: [] })
+    expect(undeclared.accountCenterFields()).toEqual(editable)
   })
 
   it('owns the access-token claims script only while organizations run their own SSO', async () => {
