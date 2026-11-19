@@ -888,6 +888,28 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  it('shows no failure for a turn a person cancelled, whose cancellation the transcript records', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0, error: 'cancel' } })
+      })
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'notice', text: 'Allocating a sandbox pod…' }
+    ])
+  })
+
   it('retires the notice on a streamed session title', async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()
@@ -1977,7 +1999,7 @@ describe('mid-turn steering', () => {
     socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
   const feed = (socket: SteerSocket, message: unknown) => socket.onmessage?.({ data: JSON.stringify(message) })
 
-  it('retires a completed tool-only turn when its saved prompt arrives', async () => {
+  it('retires a completed tool-only turn on the first read after its lane ends', async () => {
     const { socket, turnId } = await openSteerableStream()
     act(() => {
       feed(socket, {
@@ -1996,7 +2018,8 @@ describe('mid-turn steering', () => {
       reconcileLiveSteps(
         's1',
         [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'hello' }],
-        'agent-1'
+        'agent-1',
+        { readStartedAtMs: Date.now() }
       )
     })
     expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
@@ -2021,7 +2044,8 @@ describe('mid-turn steering', () => {
       reconcileLiveSteps(
         's1',
         [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'hello' }],
-        'agent-1'
+        'agent-1',
+        { readStartedAtMs: Date.now() }
       )
     })
     expect(
@@ -2031,7 +2055,7 @@ describe('mid-turn steering', () => {
     ).toEqual(['tool'])
     act(() => {
       feed(socket, { type: 'done', done: { turnId, agentId: 'agent-2', lastIndex: 0 } })
-      reconcileLiveSteps('s1', [], 'agent-1')
+      reconcileLiveSteps('s1', [], 'agent-1', { readStartedAtMs: Date.now() })
     })
     expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
   })
@@ -2057,19 +2081,18 @@ describe('mid-turn steering', () => {
       reconcileLiveSteps(
         's1',
         [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'hello' }],
-        'agent-1'
+        'agent-1',
+        { readStartedAtMs: Date.now() }
       )
     })
-    expect(
-      getLiveSteps('s1')
-        .filter((step) => step.turnId === turnId)
-        .map((step) => step.kind)
-    ).toEqual(['tool'])
+    // The first participant's lane ended, so its work is the rows'; the turn still waits on the second.
+    expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
+    expect(isPgBusy('s1')).toBe(true)
 
     act(() => {
       feed(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-2' } })
       feed(socket, { type: 'done', done: { turnId, agentId: 'agent-2', lastIndex: -1 } })
-      reconcileLiveSteps('s1', [], 'agent-1')
+      reconcileLiveSteps('s1', [], 'agent-1', { readStartedAtMs: Date.now() })
     })
     expect(getLiveSteps('s1').filter((step) => step.turnId === turnId)).toEqual([])
 
@@ -3017,11 +3040,43 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
           { seq: 5, ts: String(Date.now()), sender: 'agent-1', kind: 'text', text: 'Notes drafted.', postId: 'post-1' }
         ],
         'agent-1',
-        undefined,
-        ROOT
+        { thread: ROOT, readStartedAtMs: Date.now() }
       )
     )
     expect(getLiveSteps('s1').map((step) => step.postId)).toEqual(['post-2'])
+  })
+
+  it('names a sent message by the post the relay’s ack gives, and retires it by that post alone', async () => {
+    const socket = await open(() => pgSend('s1', 'agent-1', 'plan the release', 'c1'))
+    const { turnId } = frames(socket).at(-1) as { turnId: string }
+    act(() => feed(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-1', postId: 'post-sent' } }))
+    expect(getLiveSteps('s1')).toMatchObject([{ kind: 'msg', postId: 'post-sent' }])
+    // Another message with the same words is not this one.
+    act(() =>
+      reconcileLiveSteps(
+        's1',
+        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'plan the release' }],
+        'agent-1'
+      )
+    )
+    expect(getLiveSteps('s1')).toHaveLength(1)
+    act(() =>
+      reconcileLiveSteps(
+        's1',
+        [
+          {
+            seq: 2,
+            ts: String(Date.now()),
+            sender: 'user',
+            kind: 'text',
+            text: 'plan the release',
+            postId: 'post-sent'
+          }
+        ],
+        'agent-1'
+      )
+    )
+    expect(getLiveSteps('s1')).toEqual([])
   })
 
   it('never steers a message in a thread into the running turn: it waits its turn', async () => {

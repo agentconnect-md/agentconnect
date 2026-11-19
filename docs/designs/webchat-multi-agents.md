@@ -670,10 +670,9 @@ Two scope rules:
     misses, never errors. This is what restores the typing indicator and the
     partially streamed reply after a page refresh, instead of both being lost
     until the turn completes and persists. A cold-attached replay carries no
-    local prompt step, so the console's turn-shaped live/persisted
-    reconciliation has nothing to anchor on. Reply message events carry their
-    canonical `postId`, letting each streamed block retire when its saved row
-    arrives. For older daemons, the console takes a fallback `postId` from the
+    local prompt step; its reply message events carry their canonical
+    `postId`, letting each streamed block retire when its saved row arrives
+    ([webchat-transcript-refresh.md](webchat-transcript-refresh.md) §3). For older daemons, the console takes a fallback `postId` from the
     turn's `rd/webchat-post` once the frame and lane's `done` have both arrived.
     Because that post is a reconciliation anchor and not just a record, a
     browser turn's reply posts are fanned out to EVERY relay the

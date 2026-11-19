@@ -5,16 +5,16 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SharedFile } from '@/lib/shared-file'
 
-const api = vi.hoisted(() => ({ download: vi.fn() }))
-const saved = vi.hoisted(() => ({ save: vi.fn() }))
+const api = vi.hoisted(() => ({ download: vi.fn(), snapshot: vi.fn() }))
+const saved = vi.hoisted(() => ({ save: vi.fn(), open: vi.fn() }))
 
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>()
-  return { ...actual, downloadSessionFile: api.download }
+  return { ...actual, downloadSessionFile: api.download, fetchSessionSharedFile: api.snapshot }
 })
 vi.mock('@/lib/shared-file', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/shared-file')>()
-  return { ...actual, saveBlob: saved.save }
+  return { ...actual, saveBlob: saved.save, openDownloadUrl: saved.open }
 })
 
 import { ApiError } from '@/lib/api'
@@ -49,7 +49,11 @@ async function click() {
 
 beforeEach(() => {
   api.download.mockReset()
+  api.snapshot.mockReset()
+  // No snapshot by default: a share from before snapshots, or a deployment without a transfer bucket.
+  api.snapshot.mockRejectedValue(new ApiError('shared file not found', 404))
   saved.save.mockReset()
+  saved.open.mockReset()
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -61,6 +65,22 @@ afterEach(() => {
 })
 
 describe('SharedFileChip', () => {
+  it('downloads the snapshot kept when the file was shared, without reading the workspace', async () => {
+    api.snapshot.mockResolvedValue({
+      name: 'chart.png',
+      bytes: 48_213,
+      url: 'https://store.example.test/snapshot?sig=1',
+      expiresAt: '2026-11-19T08:16:00.000Z'
+    })
+    await render(<SharedFileChip file={FILE} agentId="agent-1" sessionId="session-1" />)
+    await click()
+
+    expect(api.snapshot).toHaveBeenCalledWith('session-1', '1a2b3c4d5e6f7a8b', 'chart.png')
+    expect(saved.open).toHaveBeenCalledWith('https://store.example.test/snapshot?sig=1')
+    expect(api.download).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain('changed since')
+  })
+
   it('downloads the shared bytes by their recorded digest and saves them under the file’s name', async () => {
     const blob = new Blob(['png'])
     api.download.mockResolvedValue(blob)

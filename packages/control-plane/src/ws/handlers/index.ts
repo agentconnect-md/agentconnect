@@ -69,7 +69,7 @@ import { handleReadAccess } from './read-access.js'
 import { handleFollowUpWatch } from './follow-up-watch.js'
 import { handleCapabilityDecide, handleCapabilityRequest, handleCapabilityWithdraw } from './capability-request.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
-import { handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
+import { handleSessionFilePut, handleSharedImageGet, handleSharedImagePut } from './shared-image.js'
 import { handleTransferGet, handleTransferSettle, handleTransferSign } from './file-transfer.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleGithubReviewDeclare } from './github-review-declare.js'
@@ -151,6 +151,7 @@ export class FrameRouter {
       'transfer/get': handleTransferGet,
       'image/original/put': handleSharedImagePut,
       'image/original/get': handleSharedImageGet,
+      'session/file/put': handleSessionFilePut,
       'github/review-result': handleGithubReviewResult,
       'github/review-declare': handleGithubReviewDeclare,
       'codehost/note-result': handleCodeHostNoteResult,

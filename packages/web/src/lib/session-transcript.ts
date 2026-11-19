@@ -48,25 +48,15 @@ function promptKey(text: string, shown?: SessionImage): string {
   ])
 }
 
-/** Which live steps a read of one place reconciles: the root's (`thread` absent) or one thread's (webchat-threads.md §6). */
-export function liveThreadScope(live: readonly SessionStep[], thread?: string): (step: SessionStep) => boolean {
-  // A thread message the coordinator answered is the root's turn: its reply streams into the main timeline.
-  const answeredAtRoot = new Set(live.flatMap((step) => (step.kind !== 'msg' && !step.thread ? [step.turnId] : [])))
-  const rootTurn = (step: SessionStep) => !step.thread || (step.kind === 'msg' && answeredAtRoot.has(step.turnId))
-  return thread === undefined ? rootTurn : (step) => step.thread === thread && !rootTurn(step)
-}
-
-/** Retire streamed work after its prompt and any reply posts are confirmed; steps outside `inScope` stay as they are. */
+/** AHP's live/persisted merge: retire streamed work after its prompt and any reply posts are confirmed. */
 export function reconcilePersistedLiveSteps(
   all: SessionStep[],
   persisted: SessionMessageDto[],
   agentId: string,
-  promptRows: SessionMessageDto[] = persisted,
-  inScope: (step: SessionStep) => boolean = () => true
+  promptRows: SessionMessageDto[] = persisted
 ): SessionStep[] {
   if (all.length === 0) return all
-  const live = all.filter(inScope)
-  if (live.length === 0) return all
+  const live = all
 
   const persistedPostIds = new Set(persisted.flatMap((m) => (m.postId ? [m.postId] : [])))
   const turns: Array<{ start: number; end: number; key: string; observedAtMs: number }> = []
@@ -136,10 +126,83 @@ export function reconcilePersistedLiveSteps(
   }
   let index = -1
   const result = all.flatMap((step) => {
-    if (!inScope(step)) return [step]
     index += 1
     if (removed.has(index) || (!anchored.has(index) && step.postId && persistedPostIds.has(step.postId))) return []
     return hidden.has(index) && !step.hidden ? [{ ...step, hidden: true }] : [step]
   })
   return result.every((step, i) => step === all[i]) && result.length === all.length ? all : result
+}
+
+// Kinds a page backed by transcript rows draws from the rows alone (webchat-transcript-refresh.md §2).
+const ROW_ONLY_KINDS: ReadonlySet<SessionStep['kind']> = new Set(['plan', 'tool', 'edit', 'planblock'])
+
+/** The live steps a page backed by transcript rows draws over them: sent prompts, the reply streaming now, cards and notices. */
+export function liveOverlay<T extends readonly SessionStep[]>(steps: T): T | SessionStep[] {
+  return steps.some((step) => ROW_ONLY_KINDS.has(step.kind))
+    ? steps.filter((step) => !ROW_ONLY_KINDS.has(step.kind))
+    : steps
+}
+
+/** What a transcript read retires: `thread` is the place it read (absent: the root), `readStartedAtMs` when it began. */
+export interface LiveRetireRead {
+  promptRows?: SessionMessageDto[]
+  thread?: string
+  readStartedAtMs?: number
+}
+
+/** Drop the live copies a read makes redundant: anything its rows carry by post id, and what a lane that ended before the read left (webchat-transcript-refresh.md §3). */
+export function retireLiveOverlay(
+  all: SessionStep[],
+  rows: SessionMessageDto[],
+  agentId: string,
+  read: LiveRetireRead = {}
+): SessionStep[] {
+  if (all.length === 0) return all
+  const postIds = new Set(rows.flatMap((m) => (m.postId ? [m.postId] : [])))
+  const here = (step: SessionStep) => (step.thread ?? undefined) === read.thread
+  // The lane ended before the read began, so the read holds everything the lane saved.
+  const settled = (step: SessionStep) =>
+    step.laneDoneAtMs !== undefined && read.readStartedAtMs !== undefined && step.laneDoneAtMs <= read.readStartedAtMs
+  const unnamed = matchUnnamedPrompts(all, read.promptRows ?? rows, agentId, here)
+  const result = all.filter((step, index) => {
+    if (step.postId && postIds.has(step.postId)) return false
+    if (!here(step)) return true
+    if (step.kind === 'msg') return !unnamed.has(index)
+    // A local warning names no segment or post and stays; streamed text and wait notices go with their lane.
+    if (step.kind === 'done') return !((step.segmentId || step.postId) && settled(step))
+    if (step.kind === 'notice') return step.standing === true || !settled(step)
+    if (ROW_ONLY_KINDS.has(step.kind)) return !settled(step)
+    return true
+  })
+  return result.length === all.length ? all : result
+}
+
+// Prompts the relay never named a post for (an older relay), matched to their rows by words and time.
+function matchUnnamedPrompts(
+  all: SessionStep[],
+  promptRows: SessionMessageDto[],
+  agentId: string,
+  here: (step: SessionStep) => boolean
+): Set<number> {
+  const open = all.flatMap((step, index) =>
+    step.kind === 'msg' && !step.postId && here(step) && step.observedAtMs != null && Number.isFinite(step.observedAtMs)
+      ? [{ index, key: promptKey(step.text, step.image), at: step.observedAtMs }]
+      : []
+  )
+  const matched = new Set<number>()
+  if (open.length === 0) return matched
+  for (const message of promptRows) {
+    if (message.kind.toLowerCase() !== 'text' || message.sender === agentId) continue
+    const persistedAtMs = transcriptRowTimeMs(message)
+    if (persistedAtMs == null) continue
+    const key = promptKey(message.text, message.attachments?.[0])
+    let best: { index: number; delta: number } | undefined
+    for (const prompt of open) {
+      if (matched.has(prompt.index) || prompt.key !== key) continue
+      const delta = Math.abs(prompt.at - persistedAtMs)
+      if (delta <= LIVE_TURN_CONFIRM_WINDOW_MS && (!best || delta < best.delta)) best = { index: prompt.index, delta }
+    }
+    if (best) matched.add(best.index)
+  }
+  return matched
 }

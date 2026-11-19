@@ -623,6 +623,8 @@ export interface SessionListFilters {
   githubRepoId?: string
   /** Leave tasks (delegated tasks, follow-ups and approved proposals) out of the rows, the total and the facets. */
   excludeTasks?: boolean
+  /** Leave memory dream sessions out of the rows, the total and the facets. */
+  excludeDreams?: boolean
 }
 
 export interface SessionFacets {
@@ -2810,6 +2812,7 @@ function appendSessionFilters(q: URLSearchParams, filters: SessionListFilters): 
   if (filters.triggeredBy) q.set('triggeredBy', filters.triggeredBy)
   if (filters.githubRepoId) q.set('githubRepoId', filters.githubRepoId)
   if (filters.excludeTasks) q.set('tasks', 'exclude')
+  if (filters.excludeDreams) q.set('dreams', 'exclude')
 }
 
 export async function fetchSessionFacets(orgId?: string, filters: SessionListFilters = {}): Promise<SessionFacets> {
@@ -3422,6 +3425,22 @@ export async function downloadSessionFile(
   const res = await authenticatedFetch(path, { cache: 'no-store' })
   if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
   return await res.blob()
+}
+
+/** A file a session shared, as kept when it was shared: a short-lived signed GET that downloads it as an attachment. */
+export interface SessionSharedFileDto {
+  name: string
+  bytes: number
+  url: string
+  expiresAt: string
+}
+
+/** The snapshot a share marker's digest names (agent-authored-attachments.md §4.1); 404 when none was kept. */
+export function fetchSessionSharedFile(sessionId: string, sha256: string, name: string): Promise<SessionSharedFileDto> {
+  const q = new URLSearchParams({ name })
+  return apiGet<SessionSharedFileDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/shared-files/${encodeURIComponent(sha256)}?${q.toString()}`
+  )
 }
 
 /** Resolve a shared image's cached original for this viewer: its current state and, when ready, a fresh temporary GET. */

@@ -143,6 +143,7 @@ import {
   SESSION_MODE_AUTO_V1_FEATURE,
   COORDINATOR_FILTER_V1_FEATURE,
   WEBCHAT_THREADS_FEATURE,
+  WEBCHAT_NEW_SESSION_FEATURE,
   CONTINUATION_THREADS_FEATURE,
   SESSION_THREAD_READS_FEATURE,
   coordinatorConversationId,
@@ -1210,6 +1211,7 @@ import {
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
 import { coordinatorThreadContext } from './auto-session/coordinator-thread-context.js'
+import { prewarmsTask, TaskPrewarms, TASK_PREWARMS_PER_TURN } from './auto-session/task-prewarm.js'
 import {
   answerThreadOf,
   batchCut,
@@ -1464,7 +1466,11 @@ import type { ChatTurnContext, ChatSink, ChatTurnOutput } from './session/chat-t
 import { resolveChatUploadUrl } from './session/chat-attachments.js'
 import { readBoundedBody } from './codehost/rest-read.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
-import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
+import {
+  WEBCHAT_NEW_SESSION_REFUSAL,
+  WEBCHAT_SETTINGS_REFUSAL,
+  webchatRoleChangesSettings
+} from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as chatTurnOutput from './session/chat-output.js'
 import {
@@ -1476,6 +1482,7 @@ import {
 import {
   publishWebchatSharedFile,
   publishWebchatSharedImage,
+  snapshotSharedFile,
   resolveSharedImageOriginal,
   SHARED_IMAGE_SOURCE_MAX_BYTES,
   SharedImageNotFoundError,
@@ -1483,6 +1490,7 @@ import {
   WEBCHAT_SHARES_IN_FLIGHT,
   WEBCHAT_SHARES_PER_TURN,
   webchatConversationIdOf,
+  type SharedFileSnapshotDeps,
   type SharedImagePublisherDeps,
   type WebchatShareTurn
 } from './webchat/shared-image.js'
@@ -2238,6 +2246,13 @@ export class Daemon {
 
   // Agent→agent collaboration: A2A wake/reply/status (src/collab/).
   private readonly collab = new CollabCoordinator(this.collabHost())
+  // Task hosts started while their coordinator decides, until the task's first turn claims one (auto-session-mode.md §4.8).
+  private readonly taskPrewarms = new TaskPrewarms({
+    start: async (agentId, taskKey) => await this.startTaskPrewarm(agentId, taskKey),
+    releasable: (taskKey) => !this.inflight.has(taskKey),
+    release: async (taskKey) => await this.modelSessions.release(taskKey),
+    warn: (message) => this.log.warn(message)
+  })
   // A conversation's coordinator lookup in flight, so a message arriving meanwhile waits for its adoption (auto-session-mode.md §3.5).
   private readonly coordinatorLookups = new Map<string, Promise<string>>()
   // The `auto` mode's coordinator sessions and their live turns (auto-session-mode.md §4).
@@ -5847,6 +5862,14 @@ export class Daemon {
         if (!turn) return undefined
         return (source) => publishWebchatSharedFile({ store: this.store, log: this.log }, turn, source)
       },
+      // The session's own copy of what a share published, so its chip survives later rewrites of the path (§4.1).
+      snapshotSharedFile: async (ctx, file) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const live = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)?.outwardSessionId
+        const sessionId = live ?? (await this.store.getSession(key).catch(() => undefined))?.sessionId ?? undefined
+        if (!sessionId) return
+        await snapshotSharedFile(this.sharedFileSnapshotDeps(), { agentId: ctx.agentId, sessionId, ...file })
+      },
       // read*File (inbound-file-attachments.md §2): a downloaded non-image binary lands under
       // `uploads/` at the session's working root, so the agent's own tools can open it. The same
       // location resolution as readWorkspaceFile above; the write goes through the WorkspaceFs
@@ -9432,9 +9455,10 @@ export class Daemon {
    * detach/remove may archive or delete the exact paths captured by a pre-Pending
    * SessionManager call, so abort those callers immediately, stop every selected
    * cell, and wait for their uncancellable workspace I/O before returning. */
-  private async quiesceAgentWorkspaceAuthority(agentId: string): Promise<void> {
+  private async quiesceAgentWorkspaceAuthority(agentId: string, keepInbox = false): Promise<void> {
     const selected = [...this.pending.values()].filter((turn) => turn.plan.agentId === agentId)
-    await this.interruptAgentTurns(agentId, 'stop')
+    if (keepInbox) await this.interruptAgentTurns(agentId, 'stop', 'handoff')
+    else await this.interruptAgentTurns(agentId, 'stop')
     for (const entry of this.activeGateEntries.values()) {
       if (entry.agentId !== agentId) continue
       entry.cancelledReason ??= 'stop'
@@ -10290,6 +10314,8 @@ export class Daemon {
       ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Answers a webchat coordinator's messages in their threads (webchat-threads.md §8); it rides the same switch.
       ...(this.cfg.features.autoSessionMode ? [WEBCHAT_THREADS_FEATURE] : []),
+      // Starts a webchat conversation over: rotates its coordinator or clears an ordinary chat's context; static.
+      WEBCHAT_NEW_SESSION_FEATURE,
       // Continues a platform coordinator in one of its threads, mirrored there (webchat-threads.md §7); the same switch.
       ...(this.cfg.features.autoSessionMode ? [CONTINUATION_THREADS_FEATURE] : []),
       // Answers the `roots` view and `session/thread` from the channel record (webchat-threads.md §8); static.
@@ -14587,6 +14613,20 @@ export class Daemon {
     }
   }
 
+  /** Shared-file snapshot seams: CP signing over this daemon's socket, staged beside shared-image originals. */
+  private sharedFileSnapshotDeps(): SharedFileSnapshotDeps {
+    return {
+      fileTransfer: () => this.fileTransfer,
+      signPut: (req) => {
+        if (!this.cpClient) throw new Error('the control plane is not connected')
+        return this.cpClient.signSessionFilePut(req, this.orgForAgent(req.agentId))
+      },
+      network: () => this.transferNetwork(),
+      stagingRoot: join(this.root, 'shared-image-staging'),
+      log: this.log
+    }
+  }
+
   /** `image/original/resolve`: the authoring session's own shared image, for a viewer the CP already authorized. */
   private async resolveSharedImage(req: SharedImageResolveReq): Promise<SharedImageResolveOk> {
     const session = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
@@ -16025,6 +16065,7 @@ export class Daemon {
       )
     )
     this.coordinators.beginTurn(key, entry.agentId, messages)
+    void this.prewarmCoordinatorTasks(entry.agentId, key, messages)
     const { channel } = entry.msg
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
     const transcriptChannel = transcriptChannelKey(channel, entry.msg.transportScope)
@@ -16053,6 +16094,46 @@ export class Daemon {
       { channelId: channel, ...(channelName ? { channelName } : {}), ...(entry.webchat ? { webchat: true } : {}) },
       threads
     )
+  }
+
+  /** Start the model host of each task this coordinator turn may open, so a delegated message skips its task's cold start (auto-session-mode.md §4.8). */
+  private async prewarmCoordinatorTasks(
+    agentId: string,
+    coordinatorKey: string,
+    messages: readonly DeliveredMessage[]
+  ): Promise<void> {
+    // Only a pool member issuing per-session credentials starts a host per session.
+    if (!this.modelSessions.enabled || !this.k8sPlane) return
+    if (this.draining || this.drainingAgents.has(agentId) || !this.servesAgent(agentId)) return
+    const agent = this.agents.get(agentId)
+    // A session-isolated task starts in a pod of its own, which a guess must not create; a model-selection Decision may pick another runtime.
+    if (!agent || effectiveSessionIsolation(agent) !== 'shared' || agent.modelSelection) return
+    try {
+      let started = 0
+      for (const message of messages) {
+        if (started >= TASK_PREWARMS_PER_TURN) break
+        if (!prewarmsTask(message)) continue
+        const taskKey = await this.coordinators.newTaskKey(agentId, message)
+        if (taskKey === undefined || (await this.store.getSession(taskKey))) continue
+        // Checked with no await before `begin`: a drain may have emptied the pool, and a task whose turn owns its key would race it.
+        if (this.draining || this.inflight.has(taskKey) || this.modelSessions.has(taskKey)) continue
+        this.taskPrewarms.begin(coordinatorKey, agentId, taskKey)
+        started += 1
+      }
+    } catch (err) {
+      this.log.debug(`coordinator ${coordinatorKey}: prewarming its tasks failed: ${formatErr(err)}`)
+    }
+  }
+
+  /** Start a prewarmed task's model host as its first turn would, in the agent's pod. */
+  private async startTaskPrewarm(agentId: string, taskKey: string): Promise<void> {
+    const agent = this.sessionAgent(agentId, taskKey)
+    if (!agent) return
+    try {
+      await this.modelSessions.ensure(agent, taskKey)
+    } catch (err) {
+      this.log.debug(`coordinator: prewarming the task host of ${taskKey} failed: ${formatErr(err)}`)
+    }
   }
 
   /** A thread's history for a coordinator's batch, given up after a bounded wait so a slow provider read never holds the turn. */
@@ -16085,6 +16166,7 @@ export class Daemon {
     sessionId: string | null,
     opts: { replayed: boolean }
   ): Promise<void> {
+    this.taskPrewarms.turnEnded(key)
     if (entry.coordinatorBatch === undefined) return
     for (const taken of entry.coordinatorBatch) {
       if (!opts.replayed && !this.retainsInboxRow(taken, false)) await this.removeInbox(taken)
@@ -18260,6 +18342,11 @@ export class Daemon {
     const dedupKey = `${msg.trustedFromAgentId}:${msg.deliveryId}`
     const prior = this.relayAgentMsgAcks.get(dedupKey)
     if (prior) return prior
+    // A draining daemon admits nothing and hands its agents on: refuse retryably, uncached, so the sender re-sends to the next holder.
+    if (this.draining || this.drainingAgents.has(msg.toAgentId)) {
+      this.log.info(`relay: rd/agentmsg/fwd not_ready — ${msg.toAgentId} is draining here`)
+      return nak(RD_AGENTMSG_NOT_READY)
+    }
 
     const record = (ack: RdAgentMsgAck): RdAgentMsgAck => {
       if (this.relayAgentMsgAcks.size >= 2000) this.relayAgentMsgAcks.clear()
@@ -18420,7 +18507,10 @@ export class Daemon {
         settleAdmission({ accepted: false, reason: 'error' })
       })
       const admission = await admitted
-      if (!admission.accepted) return record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
+      if (!admission.accepted)
+        return admission.reason === 'draining'
+          ? nak(RD_AGENTMSG_NOT_READY)
+          : record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
       await this.collab.notePeerReplyAdmitted({
         fromAgentId: msg.trustedFromAgentId,
         ...(msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {}),
@@ -18553,8 +18643,8 @@ export class Daemon {
       callMeta.activationKey = key
     }
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
-    // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
-    // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
+    // target processes the turn in its own time (§6.4). A drain was refused retryably above;
+    // dispatch() still drops the turn on a pause gate.
     void this.dispatch(
       msg.toAgentId,
       normalized,
@@ -19122,6 +19212,13 @@ export class Daemon {
         case 'context':
         case 'image_update':
           return { msgId: msg.msgId, accepted: true }
+        case 'new_session':
+          // A continued session is its platform conversation's, where `!new` is typed (CONTINUATION_COMMANDS).
+          return {
+            msgId: msg.msgId,
+            accepted: false,
+            reason: 'a continued session starts over from its own conversation'
+          }
         default:
           break // resume/cancel/close fall through to the ordinary handlers
       }
@@ -19225,6 +19322,17 @@ export class Daemon {
         const settingsKey =
           coordinator === undefined ? key() : sessionKey('webchat', msg.chatId, coordinator, msg.agentId)
         return this.applyWebchatRuntimeOp(msg.msgId, op, settingsKey)
+      }
+      case 'new_session': {
+        // Starting over is the conversation's to decide, as its runtime settings are.
+        if (!webchatRoleChangesSettings(op.callerRole))
+          return { msgId: msg.msgId, accepted: false, reason: WEBCHAT_NEW_SESSION_REFUSAL }
+        const coordinator = this.cfg.features.autoSessionMode
+          ? await this.store.currentAppendCoordinate(msg.agentId, msg.chatId, null, 'coordinator')
+          : undefined
+        const actor = op.userId ? { userId: op.userId } : undefined
+        const outcome = await this.commands.newWebchatSession(msg.agentId, msg.chatId, coordinator, actor)
+        return { msgId: msg.msgId, accepted: outcome !== 'busy', reason: outcome }
       }
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
@@ -22753,6 +22861,8 @@ export class Daemon {
             initiatedBy: await sessionInitiatedBy((ids) => this.store.getDisplayNames(ids), persisted?.triggeredBy, msg)
           })
         }
+        // A host prewarmed for this task while its coordinator decided is joined, never raced (§4.8).
+        await this.taskPrewarms.claim(key)
         entry.selectedHost = await this.modelSessions.ensure(currentAgent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
@@ -31738,6 +31848,7 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const key of [...this.hosts.keys()]) await this.stopHostByKey(key)
+      await this.taskPrewarms.stop()
       for (const key of this.modelSessions.keys()) await this.modelSessions.release(key)
       await this.webchatMcpRevocations.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
@@ -32549,7 +32660,8 @@ export class Daemon {
       usesMicrosandbox: (agent) => this.usesMicrosandbox(agent),
       gitCreds: () => this.gitCreds,
       agentChannelServer: () => this.agentChannelServer,
-      quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
+      quiesceAgentWorkspaceAuthority: (agentId, keepInbox) => this.quiesceAgentWorkspaceAuthority(agentId, keepInbox),
+      sharedStore: () => this.sharedStore,
       // Best effort: a store error leaves the old coordinator behind, which must not keep the agent from moving.
       retireCoordinatorsForMove: (agentId) =>
         this.retireCoordinatorsForMove(agentId).catch((err) =>
@@ -34103,6 +34215,7 @@ export class Daemon {
     const hostStarts = [...this.hostStarts.values()]
     const hostKeys = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const key of hostKeys) await this.stopHostByKey(key).catch((e) => errors.push(e))
+    await this.taskPrewarms.stop(true).catch((e) => errors.push(e))
     for (const key of this.modelSessions.keys()) {
       await this.modelSessions.release(key).catch((e) => errors.push(e))
     }

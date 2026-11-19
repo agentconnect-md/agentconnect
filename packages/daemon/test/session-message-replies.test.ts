@@ -169,6 +169,25 @@ describe('A → B1 ← C: replies addressed to the message they answer (send-mes
     }
   })
 
+  it('a reply to a source draining here waits until the drain lets it in, instead of failing busy', async () => {
+    const run = await boot()
+    try {
+      const b1 = await openB1(run)
+      const [sent] = await run.fromSource(b1.key, `sid-${A}`)
+      run.d.drainingAgents.add(A)
+      const reply = run.replyFrom(b1, sent!.messageId, 'found it')
+      let settled = false
+      void reply.then(() => (settled = true))
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(settled).toBe(false)
+      run.d.drainingAgents.delete(A)
+      expect(await reply).toMatchObject({ delivered: true, targetSession: callerKeyOf(A) })
+      await vi.waitFor(() => expect(run.prompts.get(A)!.join('\n')).toContain('found it'), WAIT)
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
   it('B1 holds three messages and answers each by id, in C’s turn, later, and after a restart, reaching only its source', async () => {
     const root = scaffold([A, B, C, D])
     const fromC = 'please check the Windows behavior'
@@ -844,6 +863,25 @@ describe('remote sessions: ids travel with the delivery, and a reply lands only 
         inReplyTo: call.messageId
       })
       expect(String(sent.at(-1)!.messageId)).toMatch(/^msg-/)
+    } finally {
+      await run.daemon.stop()
+    }
+  })
+
+  it('refuses a delivery to an agent draining here as not ready, uncached, so its retry reaches the next holder', async () => {
+    const run = await boot()
+    try {
+      const b1 = await openB1(run)
+      const call = fwd(b1, { needsReply: false })
+      run.d.drainingAgents.add(B)
+      expect(await run.d.handleRelayAgentMsg(call)).toEqual({
+        deliveryId: call.deliveryId,
+        delivered: false,
+        reason: 'not_ready'
+      })
+      expect(await run.fromSource(b1.key, 'sid-remote')).toEqual([])
+      run.d.drainingAgents.delete(B)
+      expect(await run.d.handleRelayAgentMsg(call)).toMatchObject({ delivered: true, childSessionId: b1.key })
     } finally {
       await run.daemon.stop()
     }

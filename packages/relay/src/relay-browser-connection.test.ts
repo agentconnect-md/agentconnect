@@ -232,6 +232,9 @@ describe('parseBrowserFrame', () => {
       op: { op: 'set_fast', fastMode: true }
     })
     expect(parseBrowserFrame({ type: 'cancel' }, USER)).toEqual({ op: { op: 'cancel' } })
+    expect(parseBrowserFrame({ type: 'new_session' }, USER, 'user-1')).toEqual({
+      op: { op: 'new_session', userId: 'user-1' }
+    })
     expect(parseBrowserFrame({ type: 'attach' }, USER)).toEqual({ op: { op: 'attach' } })
     expect(parseBrowserFrame({ type: 'attach', agentId: AGENT }, USER)).toEqual({
       op: { op: 'attach', agentId: AGENT }
@@ -420,7 +423,13 @@ describe('RelayBrowserConnection', () => {
       type: 'ready',
       conversationId: CHAT,
       agentId: AGENT,
-      features: ['webchat-images-v1', 'webchat-threads-v1', 'continuation-threads-v1', 'webchat-upload-previews-v1'],
+      features: [
+        'webchat-images-v1',
+        'webchat-threads-v1',
+        'webchat-new-session-v1',
+        'continuation-threads-v1',
+        'webchat-upload-previews-v1'
+      ],
       participants: [{ agentId: AGENT, primary: true }]
     })
   })
@@ -479,6 +488,26 @@ describe('RelayBrowserConnection', () => {
     transport.feed({ type: 'set_fast', fastMode: true })
     await tick()
     expect(sent[0]?.payload).toEqual({ op: 'set_fast', fastMode: true })
+  })
+
+  it("sends a conversation's new_session to its primary with the verified role, and answers with the daemon's verdict", async () => {
+    const PEER = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({
+      ack: { msgId: 'm', accepted: true, reason: 'cleared' },
+      participants: [
+        { agentId: AGENT, daemonId: DAEMON, primary: true, callerRole: 'owner' },
+        { agentId: PEER, daemonId: DAEMON, callerRole: 'participant' }
+      ]
+    })
+    transport.feed({ type: 'new_session', callerRole: 'editor' })
+    await tick()
+    expect(sent.map((frame) => [frame.agentId, frame.payload])).toEqual([
+      [AGENT, expect.objectContaining({ op: 'new_session', callerRole: 'owner' })]
+    ])
+    expect(transport.last('new_session')).toEqual({
+      type: 'new_session',
+      ack: { accepted: true, agentId: AGENT, reason: 'cleared' }
+    })
   })
 
   it('tells only this browser why a runtime change was refused', async () => {
@@ -637,7 +666,9 @@ describe('RelayBrowserConnection', () => {
       sessionKey: CHAT,
       payload: { op: 'turn', text: 'hello there', user: USER }
     })
-    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT } })
+    // The accepted ack names the post the message is recorded under.
+    const postId = (sent[0]!.payload as { post: { postId: string } }).post.postId
+    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT, postId } })
   })
 
   it('copies the verified remote-MCP entitlement to every webchat operation', async () => {
@@ -750,7 +781,7 @@ describe('RelayBrowserConnection', () => {
     expect(sent[0]).toMatchObject({ payload: { op: 'turn', text: 'use staging', turnId, steer: true } })
     expect(transport.last('ack')).toEqual({
       type: 'ack',
-      ack: { accepted: true, turnId, agentId: AGENT, steered: true }
+      ack: { accepted: true, turnId, agentId: AGENT, steered: true, postId: expect.any(String) }
     })
   })
 

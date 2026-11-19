@@ -136,8 +136,9 @@ One card in organization settings, three steps in order:
 **Changing the settings** takes effect at once and clears the test result. An active
 connection stays active: unbinding to rotate a secret would re-open other sign-in
 methods for the domain. An enforced connection stops being enforced (§4.5), since
-the rule must not rest on settings nobody has signed in through; an owner enforces
-again from a session through the changed connection. The owner is still signed in and tests again;
+the rule must not rest on settings nobody has signed in through. An owner's session
+does not show which settings it signed in through, so an owner enforces again only
+once a test sign-in has passed on the changed settings. The owner is still signed in and tests again;
 if the new settings are wrong and nobody can sign in, a deployment `ADMIN`
 deactivates. The protocol is fixed once the connector exists: switching it means
 removing the connection and setting one up again, with new service-provider values.
@@ -167,7 +168,9 @@ any connection, which is the recovery path when an identity provider breaks afte
 activation.
 
 **Removing** the connection deletes the connector and every identity it established.
-Accounts stay, and their owners sign in by another method.
+Accounts stay, and their owners sign in by another method. Deleting the organization
+removes its connection first, the same way, and is refused while the identity service
+cannot be reached: a connector must not outlive the organization that answers for it.
 
 **Releasing a domain.** An owner can release a pending claim at any time, and a
 verified domain only when the organization has no connection: the identities on a
@@ -335,7 +338,9 @@ member, on every request:
   that wants outside members unrestricted does not enforce.
 - **Who may enforce.** An owner whose own address is in the verified domains and
   whose current session signed in through the connection (409
-  `SSO_ENFORCER_OUTSIDE_DOMAINS` or `SSO_SIGN_IN_REQUIRED` otherwise). That one check
+  `SSO_ENFORCER_OUTSIDE_DOMAINS` or `SSO_SIGN_IN_REQUIRED` otherwise), on a
+  connection whose current settings have passed a test sign-in (409
+  `SSO_CONNECTION_UNTESTED` otherwise; the card offers "Enforce" only then). That check
   shows there is an owner the connection speaks for, that this owner's account links
   through it, that the claims script is in place, and that all of it works right
   now, so enforcing cannot be the act that locks every owner out. The rule then

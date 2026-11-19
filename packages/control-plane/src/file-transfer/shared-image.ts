@@ -7,6 +7,7 @@ import type {
   SharedImageResolveOk,
   SharedImageResolveReq
 } from '@agentconnect.md/protocol'
+import type { SessionFileService } from './session-file.js'
 import { FileTransferError, sharedImageKey, type FileTransfer } from './transfer.js'
 
 // Shared-image originals (webchat-generated-images.md §5): the CP authorizes and signs; bytes go daemon → bucket → browser.
@@ -59,6 +60,8 @@ interface ResolveTicket {
 export function createSharedImageService(deps: {
   transfer?: FileTransfer
   control: SharedImageControl
+  /** Records each original so it is released with its session rather than by the bucket's 2-day rule. */
+  sessionFiles?: Pick<SessionFileService, 'retainImage'>
   now?: () => number
 }): SharedImageService {
   const { transfer, control } = deps
@@ -80,11 +83,25 @@ export function createSharedImageService(deps: {
         throw new SharedImageRefusal('TOO_LARGE', `the original exceeds the transfer limit of ${bucket.maxBytes} bytes`)
       }
       try {
+        const key = sharedImageKey(orgId, req.agentId, req.attachmentId)
+        const retained = deps.sessionFiles
+        if (retained) {
+          const sha256Hex = Buffer.from(req.sha256, 'base64').toString('hex')
+          await retained.retainImage({
+            orgId,
+            agentId: req.agentId,
+            sessionId: req.sessionId,
+            key,
+            bytes: req.bytes,
+            sha256Hex
+          })
+        }
         const put = await bucket.signPut({
-          key: sharedImageKey(orgId, req.agentId, req.attachmentId),
+          key,
           bytes: req.bytes,
           sha256: req.sha256,
-          network: req.network
+          network: req.network,
+          retain: retained !== undefined
         })
         return { url: put.url, headers: put.headers }
       } catch (err) {

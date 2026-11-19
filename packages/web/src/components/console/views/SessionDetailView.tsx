@@ -104,6 +104,7 @@ import { useStickToBottom } from '@/lib/stick-to-bottom'
 import { newDividerIndex, useSeenMarker } from '@/lib/transcript-seen'
 import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/components/console/TranscriptNav'
 import { useSessionTranscript } from '@/lib/use-session-transcript'
+import { liveOverlay } from '@/lib/session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
@@ -116,7 +117,7 @@ import {
   stageComposerFiles,
   useFileDrop
 } from '@/components/console/ComposerFiles'
-import { transferCapable, uploadPreviewsCapable, sessionFileDownload } from '@/lib/shared-file'
+import { transferCapable, uploadPreviewsCapable, type SessionFileDownload } from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -130,6 +131,7 @@ import { CommandMenu } from '@/components/console/CommandMenu'
 import {
   commandHighlight,
   syncCommandMirror,
+  WEBCHAT_NEW_SESSION_FEATURE,
   type ControlCommand
 } from '@/components/console/composer-control-commands'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
@@ -288,6 +290,8 @@ const noOwnerIcon = () => undefined
 const EMPTY_CONTROLS: readonly ControlCommand[] = []
 // The textarea's text box, shared with the overlay that marks a leading command so both lay text out identically.
 const COMPOSER_TEXT = 'px-[15px] py-[13px] font-sans text-[14px] leading-[1.55]'
+// How often a running turn's rows are read when no transcript signal arrives.
+const TAIL_FALLBACK_MS = 15_000
 
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
 // the draft lives outside the playground context (usePgDraft subscription), and
@@ -1042,6 +1046,8 @@ export default function SessionDetailView() {
     pgAnswerFill,
     pgOpenFill,
     pgCancel,
+    pgNewSession,
+    openPlayground,
     getPgRelayFeatures,
     getPgTurnThread
   } = usePlayground()
@@ -1314,8 +1320,6 @@ export default function SessionDetailView() {
   const aid = session?.agentId
   const wantTranscript = !!session && session.platform !== 'playground' && session.steps.length === 0 && !!aid
   const sessionBusy = session ? isPgBusy(session.id) : false
-  const sessionBusyRef = useRef(sessionBusy)
-  sessionBusyRef.current = sessionBusy
   // A coordinator's thread shape: webchat's own, or what its platform module declares (webchat-threads.md §7).
   const threadShape = session?.coordinator === true ? threadShapeOf(session.platform) : undefined
   // The transcript fetch machine (history + live tail + cross-source "load earlier") lives in its
@@ -1350,7 +1354,6 @@ export default function SessionDetailView() {
     conversationSourceKey,
     conversationMembers,
     conversationRosterPlatform: conversationRoster?.platform ?? undefined,
-    sessionBusyRef,
     promptSessionIds,
     // A coordinator's page is roots with their threads' footers where its platform threads (webchat-threads.md §6.1, §7).
     rootsView: !MOCK_MODE && threadShape !== undefined,
@@ -2054,16 +2057,12 @@ export default function SessionDetailView() {
   // for one frame under session B's header before the loading effect clears it.
   const transcriptMatchesSession = !wantTranscript || transcriptSessionId === sid
   const visibleMsgs = transcriptMatchesSession ? msgs : null
-  // Any workspace file downloads; a file the focused session shared is pinned to that share's digest.
-  const viewerDownload = useMemo(() => {
+  // The viewer downloads the file it shows, in the focused session's root; a share's digest pins only its chip.
+  const viewerDownload = useMemo((): SessionFileDownload | null => {
     if (!viewerPath) return null
     if (!headerFocusSessionId) return {}
-    const target = headerFocusSessionId === sid ? toolSid : headerFocusSessionId
-    const rows = (visibleMsgs ?? [])
-      .filter((m) => (m.kind || 'text').toLowerCase() === 'text')
-      .map((m) => ({ text: m.text, sessionId: conversationSourceSessionByMessageRef.current.get(m) ?? toolSid }))
-    return sessionFileDownload(viewerPath, target, rows)
-  }, [viewerPath, headerFocusSessionId, sid, toolSid, visibleMsgs, conversationSourceSessionByMessageRef])
+    return { sessionId: headerFocusSessionId === sid ? toolSid : headerFocusSessionId }
+  }, [viewerPath, headerFocusSessionId, sid, toolSid])
   // Binary and large text download through the object store when the viewed agent's daemon presigns transfers.
   const viewerAgent = filesAgentId ? agents.find((a) => a.id === filesAgentId) : undefined
   const viewerTransfer =
@@ -2143,10 +2142,24 @@ export default function SessionDetailView() {
   }, [wantTranscript, visibleMsgs, sessionSteps, sessionUser, me, sid])
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
+  // The rows are read on every transcript signal, mid-turn too, and once a turn ends (webchat-transcript-refresh.md §4).
   useEffect(() => {
-    if (!visibleTailReady || sessionBusy) return
+    if (!visibleTailReady) return
     void refreshTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTail])
+  // A lost signal costs at most one interval while a turn runs, and a page shown again reads at once.
+  useEffect(() => {
+    if (!visibleTailReady) return
+    const onShow = () => {
+      if (!document.hidden) void refreshTail()
+    }
+    document.addEventListener('visibilitychange', onShow)
+    const fallback = sessionBusy ? window.setInterval(() => void refreshTail(), TAIL_FALLBACK_MS) : undefined
+    return () => {
+      document.removeEventListener('visibilitychange', onShow)
+      if (fallback !== undefined) window.clearInterval(fallback)
+    }
+  }, [visibleTailReady, sessionBusy, refreshTail])
 
   // Probe for a still-streaming turn on load and on each activity, since a turn started in another tab never reaches this socket.
   useEffect(() => {
@@ -2598,6 +2611,8 @@ export default function SessionDetailView() {
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
   const liveSteps = isWebchat || isContinuable ? getLiveSteps(session.id) : []
+  // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
+  const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
   // A message in a thread that a task answers there keeps this timeline still; one the coordinator answers streams here.
   const busyThread = pgBusy && threadsView ? getPgTurnThread(session.id) : undefined
   const busyThreadTurn = busyThread
@@ -2909,7 +2924,7 @@ export default function SessionDetailView() {
   const { turns: builtTurns, speakers } = buildTurns({
     session,
     rows: wantTranscript ? (visibleMsgs ?? []) : undefined,
-    liveSteps,
+    liveSteps: overlaySteps,
     source: {
       session: conversationSourceSessionByMessageRef.current,
       turn: conversationSourceTurnByMessageRef.current,
@@ -3210,7 +3225,7 @@ export default function SessionDetailView() {
     wantTranscript && focusedMessages !== null ? activityStatsFromTranscript(focusedMessages) : null
   const focusedLiveActivityStats = isPg
     ? activityStatsFromSteps(stepsForFocusedAgent(session.steps))
-    : activityStatsFromSteps(stepsForFocusedAgent(liveSteps))
+    : activityStatsFromSteps(stepsForFocusedAgent(overlaySteps))
   const durationFirst = minTime(focusedTranscriptStats?.firstMs, focusedLiveActivityStats.firstMs)
   const durationLast = maxTime(
     focusedTranscriptStats?.lastMs,
@@ -3358,6 +3373,30 @@ export default function SessionDetailView() {
       name: 'stop',
       choices: null,
       run: () => pgCancel(session.id, composerAgentId, webchatConversationId)
+    })
+  // `/new` starts the conversation over where its daemon and relay take it; the daemon also checks who may.
+  const newSessionRelayFeatures = pgNewSession && (isPg || isWebchat) ? getPgRelayFeatures(session.id) : undefined
+  if (
+    pgNewSession &&
+    (isPg || isWebchat) &&
+    isLive &&
+    !multiLive &&
+    !beforeFirstTurn &&
+    !resumeDisabled &&
+    (ownsThisConversation !== false || owner?.canEdit === true) &&
+    ownerFeatures?.includes(WEBCHAT_NEW_SESSION_FEATURE) === true &&
+    (newSessionRelayFeatures === undefined || newSessionRelayFeatures.includes(WEBCHAT_NEW_SESSION_FEATURE))
+  )
+    composerControls.push({
+      name: 'new',
+      choices: null,
+      run: () =>
+        void pgNewSession(session.id, composerAgentId, webchatConversationId).then((verdict) => {
+          // A rotated coordinator opens on a fresh page; its next message begins the new session.
+          if (!verdict.ok || verdict.outcome !== 'rotated' || !owner || !webchatConversationId) return
+          const id = openPlayground(owner, undefined, { conversationId: webchatConversationId, coordinator: true })
+          router.push(orgPath(`/sessions/${id}`))
+        })
     })
   if (runtimeCommandsOpen && pgModelOptions.length > 0)
     composerControls.push({

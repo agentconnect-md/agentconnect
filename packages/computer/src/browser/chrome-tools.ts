@@ -93,6 +93,7 @@ export interface ChromeActionAccess {
 interface ActionFences {
   beforeEffect: () => void
   lease: () => void
+  onDispatch: () => void
 }
 
 export interface ChromeCall {
@@ -212,9 +213,23 @@ export class ChromeTools {
         if (!action.enabled())
           throw new ComputerError('unavailable', 'The browser tier is unavailable on this computer.')
       }
-      beforeEffect()
-      if (!this.opts.endpoint(desktop)) await this.openBrowser(computer, desktop, beforeEffect, request.signal)
-      return this.serveOnDesktop(request, contract, { beforeEffect, lease: fences.lease })
+      let actionDispatched = false
+      try {
+        beforeEffect()
+        if (!this.opts.endpoint(desktop)) await this.openBrowser(computer, desktop, beforeEffect, request.signal)
+        return await this.serveOnDesktop(request, contract, {
+          beforeEffect,
+          lease: fences.lease,
+          onDispatch: () => (actionDispatched = true)
+        })
+      } catch (error) {
+        if (error instanceof DriverUncertainError) throw error
+        if (actionDispatched)
+          throw new DriverUncertainError('The browser action result could not be delivered', { cause: error })
+        const refusal = failure(error)
+        if (refusal.code !== 'unavailable') throw refusal
+        throw new ComputerError(refusal.code, refusal.message, { ...refusal.details, actionDispatched: false })
+      }
     })
   }
 
@@ -262,7 +277,7 @@ export class ChromeTools {
         { ...request, desktop },
         child,
         contract.inputSchema.properties.pageId !== undefined,
-        action?.beforeEffect
+        action
       )
       if (Buffer.byteLength(JSON.stringify(output)) > RELAY_COMPUTER_MAX_BODY_BYTES - 1024)
         throw new ComputerError('unavailable', 'The browser returned too much data for one call.', {
@@ -275,7 +290,8 @@ export class ChromeTools {
     }
   }
 
-  private async run(request: RoutedCall, child: Child, paged: boolean, actionFence?: () => void): Promise<ToolOutput> {
+  private async run(request: RoutedCall, child: Child, paged: boolean, action?: ActionFences): Promise<ToolOutput> {
+    const actionFence = action?.beforeEffect
     const { desktop } = request
     const name = upstreamName(request.tool)
     const args = upstreamArgs(request.args)
@@ -326,6 +342,7 @@ export class ChromeTools {
     }
     let result: ChildResult
     try {
+      action?.onDispatch()
       result = await this.raced(request, child, name, args)
     } catch (error) {
       if (actionFence) {

@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { RELAY_COMPUTER_MAX_BODY_BYTES } from '@agentconnect.md/protocol'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { withCallContext, type AuditRecord } from '../audit.js'
 import { CommandLine } from '../command-line.js'
-import { Computer, type ToolOutput } from '../computer.js'
+import { Computer, ComputerError, type ToolOutput } from '../computer.js'
 import { startHttpServer, type RunningHttpServer } from '../http-server.js'
 import { FakeDriver, testConfig } from '../testing.js'
 import { createComputerMcpServer } from '../tools.js'
@@ -30,6 +31,7 @@ interface FakeState {
   starts?: number
   startupDelayMs?: number
   navigationFailure?: boolean
+  newPageResultBytes?: number
 }
 
 let root: string
@@ -461,6 +463,29 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
     expect(records.at(-1)).toMatchObject({ tool: 'chrome_click', outcome: 'error', code: 'uncertain' })
     expect(logged().filter(({ name }) => name === 'click')).toHaveLength(1)
     expect(tools.running()).toEqual([])
+  })
+
+  it('identifies a failure to prepare the browser child before dispatch', async () => {
+    const { act } = actionSetup({
+      childAccess: async () => {
+        throw new ComputerError('unavailable', 'Could not prepare the child.', { reason: 'child_failed' })
+      }
+    })
+    const result = await act('chrome_new_page', { url: 'https://example.test/' })
+    expect(errorOf(result)).toMatchObject({ error: 'unavailable', reason: 'child_failed', actionDispatched: false })
+    expect(logged().filter(({ name }) => name === 'new_page')).toHaveLength(0)
+  })
+
+  it('reports uncertainty when Chrome opened a tab but its result is too large to deliver', async () => {
+    const { act, records } = actionSetup()
+    setState({ newPageResultBytes: RELAY_COMPUTER_MAX_BODY_BYTES })
+    const url = 'https://example.test/opened'
+    const result = await act('chrome_new_page', { url })
+    expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ error: 'uncertain' })
+    expect(result.content).toContainEqual(expect.objectContaining({ type: 'image' }))
+    expect(state().pages).toContainEqual({ title: 'New tab', url })
+    expect(records.at(-1)).toMatchObject({ tool: 'chrome_new_page', outcome: 'error', code: 'uncertain' })
+    expect(logged().filter(({ name }) => name === 'new_page')).toHaveLength(1)
   })
 
   it('converts a navigation failure returned as success into an uncertain outcome', async () => {

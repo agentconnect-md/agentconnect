@@ -28,6 +28,8 @@ function signer(cached?: string, seen: unknown[] = []): FileTransfer {
     },
     uploadedFileUrl: async () => undefined,
     storedDownload: async () => undefined,
+    holds: async () => false,
+    deleteObject: async () => {},
     cachedDownload: async (input) => {
       seen.push({ cachedDownload: input })
       return cached

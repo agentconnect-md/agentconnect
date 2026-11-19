@@ -20,15 +20,17 @@ import type { FileTransferConfig } from './config.js'
 
 /** The tag the bucket's 2-day `pending` lifecycle rule collects (source-cache.md §10). */
 const PENDING_TAGGING = 'ac-cache=pending'
+/** A tag no lifecycle rule collects: a session snapshot lives until the CP deletes it with its session. */
+const LIVE_TAGGING = 'ac-cache=live'
 
-/** A key under `src/<org>/transfer/`, built only here; `pending`-tagged, so the bucket's 2-day rule collects it. */
+/** A key under `src/<org>/transfer/`, built only here; `pending`-tagged unless it is a session snapshot the CP deletes itself. */
 export type TransferObjectKey = string & { readonly __transferObjectKey: true }
 
 const ORG_RE = /^[A-Za-z0-9_-]{1,64}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const ANY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TRANSFER_KEY_RE =
-  /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}\/[0-9a-f-]{36}|dl\/[0-9a-f]{64}|img\/[0-9a-f-]{36}\/[0-9a-f-]{36})$/
+  /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}\/[0-9a-f-]{36}|dl\/[0-9a-f]{64}|img\/[0-9a-f-]{36}\/[0-9a-f-]{36}|session\/[0-9a-f-]{36}\/[0-9a-f]{32}\/[0-9a-f]{64})$/
 const CHECKSUM_RE = /^[A-Za-z0-9+/]{43}=$/
 /** A cached download is reused only while it is well inside the 2-day `pending` lifecycle rule. */
 const CACHED_DOWNLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -67,6 +69,16 @@ export function sharedImageKey(org: string, agentId: string, attachmentId: strin
     throw new Error('agent and attachment ids must be lower-case UUIDs')
   }
   return `src/${org}/transfer/img/${agentId}/${attachmentId}` as TransferObjectKey
+}
+
+/** `src/<org>/transfer/session/<agentId>/<hash(sessionId)>/<sha256>`: one shared file's bytes, kept for its session's lifetime. */
+export function sessionFileKey(org: string, agentId: string, sessionId: string, sha256Hex: string): TransferObjectKey {
+  assertOrg(org)
+  if (!ANY_UUID_RE.test(agentId)) throw new Error('agent id must be a lower-case UUID')
+  if (!/^[0-9a-f]{64}$/.test(sha256Hex)) throw new Error('digest must be a lower-case hex SHA-256')
+  // A session id is an opaque string, so the key carries a fixed-width hash of it.
+  const session = createHash('sha256').update(sessionId, 'utf8').digest('hex').slice(0, 32)
+  return `src/${org}/transfer/session/${agentId}/${session}/${sha256Hex}` as TransferObjectKey
 }
 
 export function isTransferObjectKey(key: unknown): key is TransferObjectKey {
@@ -113,7 +125,7 @@ export interface MultipartGrant {
 export interface FileTransferDeps {
   config: FileTransferConfig
   credentials: CredentialsProvider
-  objects: Pick<SourceCacheObjectClient<TransferObjectKey>, 'head' | 'createMultipartUpload'>
+  objects: Pick<SourceCacheObjectClient<TransferObjectKey>, 'head' | 'createMultipartUpload' | 'delete'>
   /** False while the bucket's pending rule is missing (nothing collects a transfer) or too short (live links break). */
   enabled: () => boolean
   /** False while no lifecycle rule aborts unfinished multipart uploads, so an abandoned one's parts would never be reaped. */
@@ -164,13 +176,18 @@ export interface FileTransfer {
   }): Promise<TransferUrl | undefined>
   /** The digest of a recent copy of this revision, or undefined when it has to be uploaded first. */
   cachedDownload(input: { key: TransferObjectKey; size: number }): Promise<string | undefined>
-  /** Presign a daemon's PUT of a snapshot of exactly these bytes. */
+  /** Presign a daemon's PUT of a snapshot of exactly these bytes; `retain` tags it so no lifecycle rule collects it. */
   signPut(input: {
     key: TransferObjectKey
     bytes: number
     sha256: string
     network: TransferNetwork
+    retain?: boolean
   }): Promise<TransferUrl>
+  /** Whether the bucket holds exactly these bytes under `key`. */
+  holds(input: { key: TransferObjectKey; size: number; sha256: string }): Promise<boolean>
+  /** Delete an object; one already gone resolves too. */
+  deleteObject(key: TransferObjectKey): Promise<void>
   /** Presign the browser's GET that downloads the object as an attachment named `name`. */
   signDownload(input: { key: TransferObjectKey; name: string }): Promise<TransferUrl>
   /** Presign the GET of a shared image's original while the bucket holds exactly those bytes; no reuse cutoff applies. */
@@ -250,12 +267,12 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     }
   }
 
-  const putHeaders = (bytes: number, sha256: string): Record<string, string> => {
+  const putHeaders = (bytes: number, sha256: string, tagging = PENDING_TAGGING): Record<string, string> => {
     if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > maxBytes) {
       throw new FileTransferError('too-large', `a transfer must be 1 byte to ${maxBytes} bytes`)
     }
     assertChecksum(sha256)
-    return { 'content-length': String(bytes), 'x-amz-checksum-sha256': sha256, 'x-amz-tagging': PENDING_TAGGING }
+    return { 'content-length': String(bytes), 'x-amz-checksum-sha256': sha256, 'x-amz-tagging': tagging }
   }
 
   const uploadLimits = (): { maxBytes: number; partBytes?: number } =>
@@ -400,15 +417,23 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
       return recent ? head.checksumSha256 : undefined
     },
 
-    async signPut({ key, bytes, sha256, network }) {
+    async signPut({ key, bytes, sha256, network, retain }) {
       assertEnabled()
       return await sign({
         method: 'PUT',
         key,
         address: addressOn(network),
         lifetimeSeconds: putUrlSeconds,
-        headers: putHeaders(bytes, sha256)
+        headers: putHeaders(bytes, sha256, retain ? LIVE_TAGGING : PENDING_TAGGING)
       })
+    },
+
+    async holds({ key, size, sha256 }) {
+      return headHolds(await objects.head(key), { bytes: size, sha256 })
+    },
+
+    async deleteObject(key) {
+      await objects.delete(key)
     },
 
     async storedDownload({ key, size, sha256, name }) {

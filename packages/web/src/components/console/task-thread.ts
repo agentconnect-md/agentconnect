@@ -2,7 +2,7 @@
 
 // A coordinator's threads (auto-session-mode.md §10, webchat-threads.md §6.2): the task rows its footers and panel read, and a thread's messages from its record or its task's session.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
 import {
   ApiError,
@@ -24,6 +24,10 @@ import type { TaskLink } from '@/components/console/task-link'
 const ROWS_PAGE = 50
 const RUNNING_POLL_MS = 5_000
 const IDLE_POLL_MS = 30_000
+// A thread's record is read on its transcript signals; this only covers a signal that never arrived (webchat-transcript-refresh.md §4).
+const THREAD_FALLBACK_MS = 15_000
+// The least time between two signal-driven reads of one thread.
+const THREAD_MIN_GAP_MS = 1_000
 /** Rows one thread read takes, work included: the newest page; earlier ones are on the task's own page. */
 const THREAD_PAGE = 100
 /** Browser and daemon clocks differ, so a saved prompt may be stamped a little before this visit sent it. */
@@ -152,6 +156,8 @@ export interface ThreadRecord {
   loadingEarlier: boolean
   loadEarlier: () => Promise<void>
   reload: () => Promise<unknown>
+  /** When the newest page's read began: a lane that ended before it has its rows in it. */
+  readStartedAtMs: number | undefined
 }
 
 const NO_ROWS: SessionMessageDto[] = []
@@ -161,20 +167,22 @@ const mergeRows = (...lists: readonly SessionMessageDto[][]): SessionMessageDto[
   ...new Map(lists.flat().map((m) => [m.seq, m])).values()
 ]
 
-/** One thread's record: its newest page, polled faster while a turn runs in it or this visit is answered there. */
-/** How often a thread's record is re-read: quickly while its task runs or is starting, whose thread shows within seconds; an idle thread is still polled, since people and the coordinator write in it whether or not a task runs. */
+/** How often a thread's record is re-read when no signal arrives: sooner while its task runs or starts, and still when idle. */
 export function threadPollMs(
   summary: Pick<SessionThreadSummaryDto, 'running' | 'task'> | undefined,
   busy: (sessionId: string) => boolean
 ): number {
   const holder = summary?.task?.sessionId
-  return summary?.running || summary?.task?.starting || (holder && busy(holder)) ? RUNNING_POLL_MS : IDLE_POLL_MS
+  return summary?.running || summary?.task?.starting || (holder && busy(holder)) ? THREAD_FALLBACK_MS : IDLE_POLL_MS
 }
 
+/** One thread's record: its newest page, read again on its sessions' transcript signals. */
 export function useThreadRecord(
   ref: ThreadRecordRef | null,
   /** Whether this visit is waiting on a turn of the holding task's session. */
-  busy: (sessionId: string) => boolean = () => false
+  busy: (sessionId: string) => boolean = () => false,
+  /** Moves with the transcript signals of the sessions writing in this thread; each move reads it again. */
+  signal = 0
 ): ThreadRecord {
   const [pollMs, pollEvery] = usePollMs()
   // No previous data across keys: another thread's footer would name its task as this panel's reply target.
@@ -184,7 +192,10 @@ export function useThreadRecord(
     mutate
   } = useSWR(
     ref ? ['thread-record', ref.sessionId, ref.rootId] : null,
-    ([, sessionId, rootId]) => fetchSessionThreadMessages(sessionId, rootId, { limit: THREAD_PAGE }),
+    async ([, sessionId, rootId]) => {
+      const readStartedAtMs = Date.now()
+      return { ...(await fetchSessionThreadMessages(sessionId, rootId, { limit: THREAD_PAGE })), readStartedAtMs }
+    },
     {
       ...CONSOLE_SWR_CONFIG,
       refreshInterval: pollMs
@@ -192,6 +203,30 @@ export function useThreadRecord(
   )
   const data = read && ref && read.sessionId === ref.sessionId && read.rootId === ref.rootId ? read : undefined
   pollEvery(threadPollMs(data?.summary, busy))
+  // A signal reads the record again, at most once a gap; signals inside the gap share one read at its end.
+  const signalKey = ref ? `${ref.sessionId}\n${ref.rootId}` : ''
+  const signalSeen = useRef(signal)
+  const lastSignalRead = useRef(0)
+  const signalTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!signalKey || signal === signalSeen.current) return
+    signalSeen.current = signal
+    if (signalTimer.current) return
+    signalTimer.current = setTimeout(
+      () => {
+        signalTimer.current = null
+        lastSignalRead.current = Date.now()
+        void mutate()
+      },
+      Math.max(0, lastSignalRead.current + THREAD_MIN_GAP_MS - Date.now())
+    )
+  }, [mutate, signalKey, signal])
+  useEffect(
+    () => () => {
+      if (signalTimer.current) clearTimeout(signalTimer.current)
+    },
+    []
+  )
   const key = ref ? `${ref.sessionId}\n${ref.rootId}` : ''
   const [older, setOlder] = useState<{ key: string; messages: SessionMessageDto[]; nextCursor: string | null } | null>(
     null
@@ -235,7 +270,8 @@ export function useThreadRecord(
     hasEarlier: nextCursor !== null,
     loadingEarlier,
     loadEarlier,
-    reload: () => mutate()
+    reload: () => mutate(),
+    readStartedAtMs: data?.readStartedAtMs
   }
 }
 
@@ -247,7 +283,9 @@ export function withoutAttribution(text: string): string {
 /** The record's rows less the work this visit is streaming: a running reply's tool and reasoning rows are saved while it streams, and the live turn shows them once. */
 export function threadRows(messages: readonly SessionMessageDto[], live: readonly SessionStep[]): SessionMessageDto[] {
   const liveTools = new Set(live.flatMap((step) => (step.kind === 'tool' && step.toolCallId ? [step.toolCallId] : [])))
-  const liveStarts = live.flatMap((step) => (step.observedAtMs !== undefined ? [step.observedAtMs] : []))
+  const liveStarts = live.flatMap((step) =>
+    step.kind === 'plan' && step.observedAtMs !== undefined ? [step.observedAtMs] : []
+  )
   const liveSince = liveStarts.length ? Math.min(...liveStarts) : undefined
   return messages.filter((m) => {
     const kind = (m.kind || 'text').toLowerCase()

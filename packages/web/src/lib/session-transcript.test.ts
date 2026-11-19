@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionMessageDto } from './api'
 import type { SessionStep } from './data'
-import { liveThreadScope, mergeSessionMessages, reconcilePersistedLiveSteps } from './session-transcript'
+import { liveOverlay, mergeSessionMessages, reconcilePersistedLiveSteps, retireLiveOverlay } from './session-transcript'
 
 function message(seq: number, ts: string, text: string): SessionMessageDto {
   return { seq, ts, text, sender: 'agent', kind: 'reasoning' }
@@ -154,8 +154,6 @@ describe('reconcilePersistedLiveSteps', () => {
       { seq: 2, ts: String(at + 60), text: 'check', sender: agentId, kind: 'tool', toolCallId: 'call-1' },
       persistedReply(3, agentId, 'PELICAN', at + 200, 'post-1')
     ]
-    // Left unmatched, the reply alone retires and the turn's tools stay drawn below the row that replaced it.
-    expect(reconcilePersistedLiveSteps(live, rows, agentId, rows, liveThreadScope(live, 'root-1'))).toEqual([])
     const main = live.map(({ thread: _thread, ...step }) => step)
     expect(reconcilePersistedLiveSteps(main, rows, agentId)).toEqual([])
   })
@@ -289,58 +287,94 @@ describe('reconcilePersistedLiveSteps', () => {
   })
 })
 
-describe('reconciling a coordinator conversation’s threads (webchat-threads.md §6)', () => {
+describe('the live overlay of a page backed by rows (webchat-transcript-refresh.md)', () => {
   const agentId = 'agent'
   const at = 1_785_000_000_000
-  const rootPrompt: SessionStep = { kind: 'msg', who: '@you', turnId: 'r', text: 'plan the release', observedAtMs: at }
-  const rootAnswer: SessionStep = { kind: 'done', agentId, turnId: 'r', text: 'Planned.', observedAtMs: at + 10 }
-  // A task answers this thread message in the thread.
-  const heldPrompt: SessionStep = {
-    kind: 'msg',
-    who: '@you',
-    turnId: 'h',
-    text: 'and the notes?',
-    thread: 'root-1',
-    observedAtMs: at + 20
+  const prompt: SessionStep = { kind: 'msg', who: '@you', turnId: 't', text: 'and the totals?', observedAtMs: at }
+  const thinking: SessionStep = { kind: 'plan', agentId, turnId: 't', text: 'Checking.', observedAtMs: at + 5 }
+  const call: SessionStep = {
+    kind: 'tool',
+    agentId,
+    turnId: 't',
+    text: 'query',
+    toolCallId: 'call-t',
+    observedAtMs: at + 6
   }
-  const heldAnswer: SessionStep = {
+  const preview: SessionStep = {
     kind: 'done',
     agentId,
-    turnId: 'h',
-    text: 'Notes drafted.',
-    thread: 'root-1',
-    observedAtMs: at + 30
+    turnId: 't',
+    text: 'The total is',
+    segmentId: 'seg-t',
+    postId: 'seg-t',
+    observedAtMs: at + 7
   }
-  // The coordinator answers this one, so its turn belongs to the main timeline.
-  const askedPrompt: SessionStep = {
-    kind: 'msg',
-    who: '@you',
-    turnId: 'c',
-    text: 'who owns it?',
-    thread: 'root-2',
-    observedAtMs: at + 40
-  }
-  const askedAnswer: SessionStep = { kind: 'done', agentId, turnId: 'c', text: 'Dana does.', observedAtMs: at + 50 }
-  const live = [rootPrompt, rootAnswer, heldPrompt, heldAnswer, askedPrompt, askedAnswer]
-  const row = (seq: number, sender: string, text: string, ms: number): SessionMessageDto => ({
+  const row = (
+    seq: number,
+    sender: string,
+    text: string,
+    over: Partial<SessionMessageDto> = {}
+  ): SessionMessageDto => ({
     seq,
-    ts: String(ms),
+    ts: String(at + seq),
     text,
     sender,
-    kind: 'text'
+    kind: 'text',
+    ...over
   })
 
-  it('scopes the root to its turns and a thread message the coordinator answered, and a thread to its own', () => {
-    expect(live.filter(liveThreadScope(live))).toEqual([rootPrompt, rootAnswer, askedPrompt, askedAnswer])
-    expect(live.filter(liveThreadScope(live, 'root-1'))).toEqual([heldPrompt, heldAnswer])
-    expect(live.filter(liveThreadScope(live, 'root-2'))).toEqual([])
+  it('draws sends, the reply streaming now, cards and notices, and leaves work to the rows', () => {
+    const card: SessionStep = { kind: 'elicit', agentId, turnId: 't', text: 'Allow?', observedAtMs: at + 8 }
+    const steps = [prompt, thinking, call, { ...thinking, kind: 'planblock' as const }, preview, card]
+    expect(liveOverlay(steps)).toEqual([prompt, preview, card])
+    const drawn = [prompt, preview]
+    expect(liveOverlay(drawn)).toBe(drawn)
   })
 
-  it('retires a thread’s turn from its record and leaves the root’s alone', () => {
-    const record = [row(7, '@you', 'and the notes?', at + 25), row(8, agentId, 'Notes drafted.', at + 35)]
-    const scoped = reconcilePersistedLiveSteps(live, record, agentId, record, liveThreadScope(live, 'root-1'))
-    expect(scoped).toEqual([rootPrompt, rootAnswer, askedPrompt, askedAnswer])
-    // The same rows read at the root confirm nothing there: the thread's turn is not the root's to retire.
-    expect(reconcilePersistedLiveSteps(live, record, agentId, record, liveThreadScope(live))).toBe(live)
+  it('retires a sent message by the post the relay named, wherever it was read', () => {
+    const named = { ...prompt, postId: 'post-p', thread: 'root-1' }
+    expect(retireLiveOverlay([named], [row(1, '@you', 'other words', { postId: 'post-p' })], agentId)).toEqual([])
+    // Its row not read yet, it stays, even beside a row with the same words.
+    expect(
+      retireLiveOverlay([named], [row(1, '@you', 'and the totals?', { thread: 'root-1' })], agentId, {
+        thread: 'root-1'
+      })
+    ).toEqual([named])
+  })
+
+  it('matches a message an older relay named no post for by its words, in the place it was read', () => {
+    const rows = [row(3, '@you', 'and the totals?')]
+    expect(retireLiveOverlay([prompt], rows, agentId)).toEqual([])
+    expect(retireLiveOverlay([prompt], rows, agentId, { thread: 'root-1' })).toEqual([prompt])
+  })
+
+  it('retires the reply streaming now by its post once saved, and its unsaved text once a read follows its lane', () => {
+    const ended = { ...preview, laneDoneAtMs: at + 100 }
+    expect(retireLiveOverlay([preview], [row(9, agentId, 'The total is 3', { postId: 'seg-t' })], agentId)).toEqual([])
+    // Text a handed or superseded turn never posted goes with the first read after its lane, not one started before.
+    expect(retireLiveOverlay([ended], [], agentId, { readStartedAtMs: at + 99 })).toEqual([ended])
+    expect(retireLiveOverlay([ended], [], agentId, { readStartedAtMs: at + 100 })).toEqual([])
+    expect(retireLiveOverlay([preview], [], agentId, { readStartedAtMs: at + 500 })).toEqual([preview])
+  })
+
+  it('keeps a local warning and a standing notice, and drops a wait notice and work once their lane is read', () => {
+    const warning: SessionStep = { kind: 'done', turnId: 'warn', text: '⚠️ Not sent', observedAtMs: at }
+    const settled = { laneDoneAtMs: at + 10 }
+    const wait: SessionStep = { kind: 'notice', agentId, turnId: 't', text: 'Starting…', ...settled }
+    const standing: SessionStep = { ...wait, text: 'Answer in Slack', standing: true }
+    const work = [
+      { ...thinking, ...settled },
+      { ...call, ...settled }
+    ]
+    expect(retireLiveOverlay([warning, wait, standing, ...work], [], agentId, { readStartedAtMs: at + 20 })).toEqual([
+      warning,
+      standing
+    ])
+  })
+
+  it('leaves a thread’s streamed reply to that thread’s read', () => {
+    const inThread = { ...preview, thread: 'root-1', laneDoneAtMs: at + 10 }
+    expect(retireLiveOverlay([inThread], [], agentId, { readStartedAtMs: at + 20 })).toEqual([inThread])
+    expect(retireLiveOverlay([inThread], [], agentId, { thread: 'root-1', readStartedAtMs: at + 20 })).toEqual([])
   })
 })

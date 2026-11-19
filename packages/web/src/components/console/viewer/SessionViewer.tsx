@@ -180,7 +180,7 @@ export function SessionViewer({
   onIndexChanged?: () => void
   /** A relative link in a Markdown preview was followed. Omitted ⇒ such links are drawn unavailable. */
   onOpenPath?: (path: string) => void
-  /** How the download route names this file — its session, and a share's digest. Omitted ⇒ no Download and no image preview. */
+  /** How the download route names this file, by its session; the viewer downloads what it shows. Omitted ⇒ no Download and no image preview. */
   download?: SessionFileDownload
   /** The deployment signs object-store transfers and the daemon speaks them, so binary and large text download through it. */
   transfer?: boolean
@@ -332,7 +332,6 @@ export function SessionViewer({
   const downloadFailureText = (e: unknown) => {
     const code = codeOf(e)
     if (code === 'WORKSPACE_FILE_TOO_LARGE' || code === 'WORKSPACE_TOO_LARGE') return td('fileTooLarge')
-    if (code === 'WORKSPACE_FILE_CHANGED') return td('fileChanged')
     if (code === 'WORKSPACE_FILE_NOT_FOUND') return td('fileGone')
     if (code === 'DAEMON_FEATURE_MISSING' || code === 'WORKSPACE_SANDBOX_OUTDATED') return td('downloadUnsupported')
     return e instanceof ApiError ? readNoticeText(statusOf(e), code, Boolean(sessionId)) : td('downloadFailed')
@@ -340,9 +339,7 @@ export function SessionViewer({
 
   // An image's bytes are read raw once the text read has said what the path is; the key fences an answer to the revision it was asked for.
   const imageKey =
-    isImage && download
-      ? [agentId, download.sessionId ?? '', repo ?? '', download.sha256 ?? '', path, file?.mtime ?? ''].join('\n')
-      : null
+    isImage && download ? [agentId, download.sessionId ?? '', repo ?? '', path, file?.mtime ?? ''].join('\n') : null
   const previewable = imageKey !== null && (file?.size ?? 0) <= MAX_WORKSPACE_DOWNLOAD_BYTES
   const [image, setImage] = useState<ImageRead | null>(null)
   useEffect(() => {
@@ -381,9 +378,7 @@ export function SessionViewer({
     if (file && viaTransfer(file, transfer)) {
       setDownloading(true)
       try {
-        // A shared file keeps its marker's digest check on this path too.
-        const pinned = download.sha256 ? { sha256: download.sha256 } : {}
-        openDownloadUrl((await transferWorkspaceFile(agentId, { ...scope, ...pinned })).url)
+        openDownloadUrl((await transferWorkspaceFile(agentId, scope)).url)
       } catch (e) {
         setDownloadErr(downloadFailureText(e))
       } finally {

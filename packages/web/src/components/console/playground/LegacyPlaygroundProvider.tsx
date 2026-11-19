@@ -56,7 +56,7 @@ import { randomUuid } from '@/lib/random-uuid'
 import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation-addressing'
 import { leadingCommandToken } from '@/components/console/runtime-command-menu'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
-import { liveThreadScope, reconcilePersistedLiveSteps } from '@/lib/session-transcript'
+import { type LiveRetireRead, retireLiveOverlay } from '@/lib/session-transcript'
 import { publishImageState, type SharedImageState, type WebchatImageUpdate } from '@/lib/shared-image'
 import { applyImageUpdateToSteps, upsertImageStep } from '@/lib/shared-image-steps'
 import {
@@ -80,6 +80,11 @@ import { createWebchatDeltaBuffer, type WebchatDeltaBuffer } from '@/lib/webchat
 import { createWebchatStallWatch, type WebchatStallWatch } from '@/lib/webchat-stall-watch'
 import { filesMarker, type ComposerFile } from '@/lib/webchat-file'
 import { WEBCHAT_UPLOADS_FEATURE } from '@/lib/shared-file'
+import {
+  newSessionNotice,
+  newSessionVerdict,
+  type NewSessionVerdict
+} from '@/components/console/composer-control-commands'
 import type { PlaygroundData, QueuedTurn, WebchatRuntimeConfig } from './contract'
 export type { QueuedTurn } from './contract'
 
@@ -87,6 +92,8 @@ export type { QueuedTurn } from './contract'
  *  answered at all — the daemon has stopped serving that bridge — so the frame is told plainly
  *  rather than left spinning on a promise nothing will resolve. */
 const APP_RPC_TIMEOUT_MS = 30_000
+// How long `/new` waits for the daemon's verdict before saying it could not.
+const NEW_SESSION_TIMEOUT_MS = 15_000
 
 // Synthetic playground session ids start with `pg_`; real CP session ids do not.
 // The prefix lets the provider tell the two apart without extra bookkeeping.
@@ -357,12 +364,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // never receive another terminal frame and wedge the busy state. Reset on
   // each send (one in-flight turn per session).
   const finishedTurnLanes = useRef<Map<string, { turnId: string; agents: Set<string> }>>(new Map())
-  // Cold-attached lanes (the `attach` probe reattached a reload to a live turn),
-  // keyed by lane. Such a replay has no local prompt step, so the turn-shaped arm of
-  // `reconcilePersistedLiveSteps` cannot retire it and the reply would render twice
-  // once the transcript tail persists it. The reply post frame carries the canonical
-  // postId — stamp it onto the replayed steps so the exact-postId arm retires them
-  // (the same anchor #753 gave agent-initiated posts).
+  // Lanes a reload reattached to a live turn: the reply post frame names the post their replayed steps retire by.
   const coldAttached = useRef<Map<string, { turnId: string; postId?: string; done?: boolean }>>(new Map())
   // Participant display names per session id, mirrored in a ref: the socket's
   // message handlers are closures captured when the socket opened — often the
@@ -400,6 +402,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const busyRef = useRef<Record<string, boolean>>({})
   const closingAll = useRef(false)
   const pendingDials = useRef(new Map<string, () => void>())
+  /** A `new_session` awaiting its verdict, by session id; a later request supersedes an earlier one. */
+  const newSessionCalls = useRef(new Map<string, (verdict: NewSessionVerdict) => void>())
   /** MCP App view RPCs awaiting their `app_rpc_result` event, by the browser-minted `callId`. */
   const appCalls = useRef(
     new Map<string, (outcome: { ok: true; result: unknown } | { ok: false; error: string }) => void>()
@@ -1243,6 +1247,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       streamCursors.current.delete(cursorKey)
       syncBusyLanes(id)
       const finishedTurnId = result.done.turnId
+      // A read started after this moment holds everything the lane saved (webchat-transcript-refresh.md §3).
+      const laneDoneAtMs = Date.now()
+      mutateSteps(id, (steps) =>
+        steps.some((step) => step.turnId === finishedTurnId && step.kind !== 'msg' && step.laneDoneAtMs === undefined)
+          ? steps.map((step) =>
+              step.turnId === finishedTurnId &&
+              step.kind !== 'msg' &&
+              (step.agentId ?? undefined) === agentId &&
+              step.laneDoneAtMs === undefined
+                ? { ...step, laneDoneAtMs }
+                : step
+            )
+          : steps
+      )
       if (
         !lanesOf(id).some((key) => {
           const cursor = streamCursors.current.get(key)
@@ -1264,14 +1282,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         // The notice STAYS on a failure: a turn that died waiting for its pod is explained by it.
         const name = participantName(id, agentId)
         const thread = streamThreads.current.get(`${id}\n${result.done.turnId}`)
-        pushStep(id, {
-          kind: 'done',
-          turnId: result.done.turnId,
-          ...(agentId ? { agentId } : {}),
-          ...(name ? { who: name } : {}),
-          ...(thread ? { thread } : {}),
-          text: `⚠️ ${result.done.error}`
-        })
+        // A person's cancel is no failure: the daemon records it in the transcript ("🛑 Turn cancelled.").
+        if (result.done.error !== 'cancel')
+          pushStep(id, {
+            kind: 'done',
+            turnId: result.done.turnId,
+            ...(agentId ? { agentId } : {}),
+            ...(name ? { who: name } : {}),
+            ...(thread ? { thread } : {}),
+            text: `⚠️ ${result.done.error}`
+          })
       } else {
         // A lane can end having streamed nothing at all — a silent AC_NO_RESPONSE decline holds
         // every chunk back — so a clean end is the last chance to retire the wait it announced.
@@ -1630,6 +1650,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   agentId?: string
                   generation?: number
                   steered?: boolean
+                  postId?: string
                 }
                 post?: WebchatPost
                 agentIds?: string[]
@@ -1643,6 +1664,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 m = JSON.parse(String(e.data))
               } catch {
                 return
+              }
+              // The post a sent message is recorded under: this copy retires by it (webchat-transcript-refresh.md §3).
+              const ackPost = m.type === 'ack' && m.ack?.accepted !== false ? m.ack : undefined
+              if (ackPost?.postId && ackPost.turnId) {
+                const { turnId: postTurn, postId } = ackPost as { turnId: string; postId: string }
+                mutateSteps(id, (steps) =>
+                  steps.some((step) => step.kind === 'msg' && step.turnId === postTurn && step.postId !== postId)
+                    ? steps.map((step) =>
+                        step.kind === 'msg' && step.turnId === postTurn ? { ...step, postId } : step
+                      )
+                    : steps
+                )
               }
               if (m.type === 'ready') {
                 const features = Array.isArray(m.features) ? m.features : []
@@ -1767,10 +1800,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                           stampStep({
                             kind: 'done',
                             turnId: post.postId,
-                            // The daemon persists this reply before the post frame ever arrives, so
-                            // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
-                            // the canonical row lands in a later transcript refresh (#753) — text/time
-                            // matching (the prompt-turn heuristic) has nothing to anchor on here.
+                            // Saved before this frame arrives: its row retires this step by `postId` (#753).
                             postId: post.postId,
                             agentId,
                             ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
@@ -1888,6 +1918,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   if (agentIds && laneAgent && !agentIds.includes(laneAgent)) continue
                   resumeStalledLane(ws, key)
                 }
+              } else if (m.type === 'new_session' && m.ack) {
+                newSessionCalls.current.get(id)?.(newSessionVerdict(m.ack))
               } else if (m.type === 'refused' && m.refused?.reason) {
                 // A runtime change the agent refused: only this browser is told, and the reason names who may make it.
                 pushStep(id, { kind: 'notice', text: `🔒 ${m.refused.reason}`, standing: true })
@@ -2754,6 +2786,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [connect, pushStep, setBusy]
   )
 
+  // Request/reply over the conversation socket: the relay answers with a `new_session` frame, else the wait gives up.
+  const pgNewSession = useCallback(
+    (id: string, agentForId: string, conversationId?: string): Promise<NewSessionVerdict> =>
+      new Promise<NewSessionVerdict>((resolve) => {
+        const settle = (verdict: NewSessionVerdict) => {
+          clearTimeout(timer)
+          // A superseded request resolves quietly; only the current one speaks in the conversation.
+          if (newSessionCalls.current.get(id) === settle) {
+            newSessionCalls.current.delete(id)
+            pushStep(id, { kind: 'notice', text: newSessionNotice(verdict), standing: true })
+          }
+          resolve(verdict)
+        }
+        const timer = setTimeout(() => settle({ ok: false, reason: 'unavailable' }), NEW_SESSION_TIMEOUT_MS)
+        newSessionCalls.current.set(id, settle)
+        connect(id, agentForId, conversationId)
+          .ready.then((ws) => ws.send(JSON.stringify({ type: 'new_session' })))
+          .catch(() => settle({ ok: false, reason: 'unavailable' }))
+      }),
+    [connect, pushStep]
+  )
+
   // Once the daemon creates the real session, the route switches from the synthetic
   // `pg_…` id to that durable id. Keep resolving the same in-memory session so the
   // active socket and streamed transcript survive the route replacement.
@@ -2768,23 +2822,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgSuggestion = useCallback((id: string) => suggestionBy[id], [suggestionBy])
   const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
-    (
-      id: string,
-      persisted: SessionMessageDto[],
-      agentId: string,
-      promptRows?: SessionMessageDto[],
-      thread?: string
-    ): void => {
+    (id: string, persisted: SessionMessageDto[], agentId: string, read?: LiveRetireRead): void => {
       setWcSteps((cur) => {
         const live = cur[id]
         if (!live) return cur
-        const reconciled = reconcilePersistedLiveSteps(
-          live,
-          persisted,
-          agentId,
-          promptRows,
-          liveThreadScope(live, thread)
-        )
+        const reconciled = retireLiveOverlay(live, persisted, agentId, read)
         if (reconciled === live) return cur
         const next = { ...cur }
         if (reconciled.length === 0) delete next[id]
@@ -2882,6 +2924,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAnswerFill,
       pgOpenFill,
       pgCancel,
+      pgNewSession,
       getPgSession,
       getPgSuggestion,
       pgSessionList,
@@ -2925,6 +2968,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pgAnswerFill,
       pgOpenFill,
       pgCancel,
+      pgNewSession,
       getPgSession,
       getPgSuggestion,
       pgSessionList,

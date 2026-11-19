@@ -1707,7 +1707,9 @@ the tool call. A person taking over the desktop cancels that lease.
   reports a failed navigation as a success with "Unable to navigate … net::ERR_ABORTED", and a `javascript:` address
   it reported that way had run; the adapter turns such results into an error, or `uncertain` where the page may have
   changed. **[implemented]** A failed navigation with ambiguous effects returns `uncertain`, as do actions whose
-  confirmation is lost after dispatch.
+  confirmation is lost after dispatch. The desktop marks unavailable replies from before dispatch with
+  `actionDispatched: false`. For older replies without that field, the agent daemon treats an action timeout,
+  browser exit, child failure or oversized result as uncertain and takes an inspection screenshot.
 - **Audit.** One entry per call like `computer_*` (§8.2), with typed and filled text reduced to its length, an address
   to its origin, and a script, a `javascript:` address included, recorded as a command line is (§5.7).
   **[implemented]** The entry carries the opaque page id, the agent desktop that served the

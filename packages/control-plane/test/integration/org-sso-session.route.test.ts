@@ -332,14 +332,15 @@ describe('organization SSO per session', () => {
     expect(await readiness(await as(MEMBER_SUBJECT, viaConnector(connectorId)))).toBeUndefined()
   })
 
-  it('stops enforcing when the settings change, so untested settings are never enforced', async () => {
+  it('stops enforcing when the settings change, and enforces them again only after a test passes', async () => {
     await memberInDomain()
     const connectorId = await activeConnection()
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
+    const inside = await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId))
     const changed = await app.inject({
       method: 'PUT',
       url: `${SSO}/connection`,
-      headers: await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId)),
+      headers: inside,
       payload: {
         protocol: 'oidc',
         issuer: 'https://idp.example.test',
@@ -350,6 +351,40 @@ describe('organization SSO per session', () => {
     expect(changed.json()).toMatchObject({ status: 'active', enforcedAt: null })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
+
+    // The owner's session predates the change, so it says nothing about the new settings.
+    const early = await enforce(connectorId)
+    expect(early.statusCode).toBe(409)
+    expect(early.json()).toMatchObject({ code: 'SSO_CONNECTION_UNTESTED' })
+    expect((await app.inject({ method: 'GET', url: SSO, headers: inside })).json()).not.toHaveProperty('enforce')
+
+    clock.advance(1000)
+    const test = (await app.inject({ method: 'POST', url: `${SSO}/connection/test`, headers: inside })).json() as {
+      nonce: string
+    }
+    idp.accounts.set(INSIDE_OWNER_SUBJECT, { primaryEmail: 'boss@acme.example', connectorIds: [connectorId] })
+    const landed = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sso/test-result',
+      headers: inside,
+      payload: { nonce: test.nonce }
+    })
+    expect(landed.json()).toEqual({ tested: true })
+    expect((await enforce(connectorId)).statusCode).toBe(200)
+  })
+
+  it('removes the connection with the organization, and keeps both when the identity service cannot be reached', async () => {
+    const connectorId = await activeConnection()
+    const inside = await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId))
+    idp.down = true
+    expect((await app.inject({ method: 'DELETE', url: ORG, headers: inside })).statusCode).toBe(503)
+    expect(await prisma.org.findUnique({ where: { id: DEFAULT_ORG_ID } })).not.toBeNull()
+    expect(idp.connectors.has(connectorId)).toBe(true)
+
+    idp.down = false
+    expect((await app.inject({ method: 'DELETE', url: ORG, headers: inside })).statusCode).toBe(204)
+    expect(idp.connectors.has(connectorId)).toBe(false)
+    expect(await prisma.org.findUnique({ where: { id: DEFAULT_ORG_ID } })).toBeNull()
   })
 
   it('applies to an owner inside the domains like any member', async () => {

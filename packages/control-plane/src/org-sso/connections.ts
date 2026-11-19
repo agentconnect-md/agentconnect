@@ -143,11 +143,14 @@ export class OrgSsoConnectionService {
     orgId: string,
     input: OrgSsoConnectionInput,
     actorUserId: string
-  ): Promise<OrgSsoConnectionView | 'secret_required'> {
+  ): Promise<OrgSsoConnectionView | 'secret_required' | 'protocol_mismatch'> {
     const { idp, connections, clock } = this.deps
+    const existing = await connections.getForOrg(orgId)
+    // A protocol change would replace the connector and every identity it established, so it waits for an explicit removal.
+    if (existing && existing.protocol !== input.protocol) return 'protocol_mismatch'
     let clientSecret = input.protocol === 'oidc' ? input.clientSecret : undefined
     if (input.protocol === 'oidc' && !clientSecret) {
-      clientSecret = await this.keptSecret(orgId, input.issuer)
+      clientSecret = await this.keptSecret(existing, input.issuer)
       if (!clientSecret) return 'secret_required'
     }
     const connectorId = await idp.ensureConnector({
@@ -232,24 +235,26 @@ export class OrgSsoConnectionService {
     orgId: string,
     actorUserId: string,
     actor: { subject: string | null; signInConnectorId: string | null }
-  ): Promise<OrgSsoConnectionView | 'none' | 'inactive' | 'outside_domains' | 'sign_in_required'> {
+  ): Promise<OrgSsoConnectionView | 'none' | 'inactive' | 'untested' | 'outside_domains' | 'sign_in_required'> {
     const { connections, clock } = this.deps
     const current = await connections.getForOrg(orgId)
     if (!current) return 'none'
     if (current.activatedAt === null) return 'inactive'
+    // The owner's session may predate a settings change, so only a test passed since then shows the settings work.
+    if (!isTested(current)) return 'untested'
     const blocked = await this.enforceBlockedBy(current, actor)
     if (blocked) return blocked
     const row = await connections.enforce(orgId, new Date(clock.now()), actorUserId)
     return row ? this.view(row) : 'inactive'
   }
 
-  /** Whether this caller could enforce now; null when the connection is not active. */
+  /** Whether this caller could enforce now; null when the connection is not active or its settings are untested. */
   async enforceReadiness(
     orgId: string,
     actor: { subject: string | null; signInConnectorId: string | null }
   ): Promise<'ready' | 'outside_domains' | 'sign_in_required' | null> {
     const current = await this.deps.connections.getForOrg(orgId)
-    if (!current || current.activatedAt === null) return null
+    if (!current || current.activatedAt === null || !isTested(current)) return null
     return (await this.enforceBlockedBy(current, actor)) ?? 'ready'
   }
 
@@ -328,8 +333,7 @@ export class OrgSsoConnectionService {
   }
 
   /** The stored secret, when it may carry over to a save that leaves it out. */
-  private async keptSecret(orgId: string, issuer: string): Promise<string | undefined> {
-    const row = await this.deps.connections.getForOrg(orgId)
+  private async keptSecret(row: OrgSsoConnectionRecord | null, issuer: string): Promise<string | undefined> {
     if (row?.protocol !== 'oidc') return undefined
     const stored = await this.deps.idp.connector(row.logtoConnectorId)
     if (stored === 'missing') return undefined

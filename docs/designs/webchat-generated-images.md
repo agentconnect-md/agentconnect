@@ -424,12 +424,15 @@ Download may use the existing signed download directly. Release preview/original
 URLs and limit concurrent original fetches and decoding.
 
 URL expiry and object expiry differ. Current transfer GETs default to 30 minutes,
-workspace cache reuse is limited to 24 hours, and transfer objects use the bucket's
-two-day `pending` lifecycle. The attachment resolver checks its saved object identity
+workspace cache reuse is limited to 24 hours, and an original is kept as long as its
+session's content: it is signed `ac-cache=live` and recorded in the CP's
+`session_file_snapshot` table, which deletes it once the session is purged or gone
+([agent-authored-attachments.md](agent-authored-attachments.md) §4.1). An original from
+before that change was signed `pending` and expires after two days. The attachment resolver checks its saved object identity
 and renews GETs while the expected object remains available, rather than applying the
 workspace route's 24-hour reuse cutoff or requiring the workspace file to exist. A
 missing object is expired. Network or signer errors are retryable availability errors,
-not proof of expiry. This proposal makes no permanent full-resolution retention promise.
+not proof of expiry. Full resolution is promised only for the session's lifetime.
 
 Without a configured transfer cache, large originals retain the workspace descriptor
 and existing authenticated, digest-checked download path. If a configured cache upload
@@ -466,7 +469,7 @@ reply-boundary convention. Replay-window exhaustion falls back to transcript ret
 Retained previews use the transcript's access, retention and deletion policies. No
 separate artifact database or permanent full-image object store is required for phase 1.
 Workspace originals follow workspace lifecycle; cache-backed attachment bindings live
-with their transcript posts, while cache objects retain their existing short lifetime.
+with their transcript posts, and their cache objects are released with the session.
 Deleting or losing access to a post prevents fresh URL issuance; already issued URLs
 retain only their bounded validity. After a committed publication, live notification failure is a
 delivery notice, not a tool failure that invites an automatic duplicate share.

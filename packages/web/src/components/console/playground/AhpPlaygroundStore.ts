@@ -425,7 +425,8 @@ export class AhpPlaygroundStore {
         [...(this.entries.get(id)?.connection.peers ?? [])].flatMap(([agentId, peer]) =>
           peer.snapshot.chat?.activeTurn ? [agentId] : []
         ),
-      reconcileLiveSteps: (id, rows, agentId, prompts) => {
+      reconcileLiveSteps: (id, rows, agentId, read) => {
+        const prompts = read?.promptRows
         const entry = this.entries.get(id)
         if (entry) {
           // A tail refresh passes only rows since its cursor, and the tail is re-derived from the snapshot, so rows accumulate.

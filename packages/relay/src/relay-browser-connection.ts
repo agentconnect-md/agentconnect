@@ -6,8 +6,8 @@
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
  * `{text, turnId, thread?, mentions?, targets?, attachments?, runtime?, timeZone?}` (a turn) or
- * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
- * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'resync'|'error'}`.
+ * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'new_session'|'cancel'}`,
+ * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'new_session'|'post'|'resync'|'error'}`.
  * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
  * daemon (targets are validated against the verified roster) plus a transcript-only
  * `context` copy to every other participant's daemon; each `rd/chat` chunk a daemon
@@ -30,6 +30,7 @@ import {
   type RdWebchatPromptSuggestion,
   WEBCHAT_IMAGES_FEATURE,
   WEBCHAT_THREADS_FEATURE,
+  WEBCHAT_NEW_SESSION_FEATURE,
   CONTINUATION_THREADS_FEATURE,
   WebchatTimeZone,
   type WebchatPost,
@@ -192,6 +193,8 @@ export function parseBrowserFrame(
         : null
     case 'set_fast':
       return typeof m.fastMode === 'boolean' ? { op: { op: 'set_fast', fastMode: m.fastMode } } : null
+    case 'new_session':
+      return { op: { op: 'new_session', ...(userId ? { userId } : {}) } }
     case 'cancel':
       return m.agentId === undefined || (typeof m.agentId === 'string' && UUID_RE.test(m.agentId))
         ? { op: { op: 'cancel', ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {}) } }
@@ -342,6 +345,7 @@ export class RelayBrowserConnection implements ChatSink {
       features: [
         WEBCHAT_IMAGES_FEATURE,
         WEBCHAT_THREADS_FEATURE,
+        WEBCHAT_NEW_SESSION_FEATURE,
         CONTINUATION_THREADS_FEATURE,
         WEBCHAT_UPLOADS_FEATURE
       ],
@@ -424,7 +428,7 @@ export class RelayBrowserConnection implements ChatSink {
       return
     }
     // Single-daemon ops: resume/attach/cancel/elicitation_choice/app_*/fill_submit go to the named
-    // participant, everything else (set_*) to the primary — multi-agent conversations
+    // participant, everything else (set_*, new_session) to the primary — multi-agent conversations
     // expose no runtime override (webchat-multi-agents.md §9.3), so set_* is single-agent.
     const targetAgent =
       op.op === 'resume' ||
@@ -546,7 +550,9 @@ export class RelayBrowserConnection implements ChatSink {
         ...(ack.reason ? { reason: ack.reason } : {}),
         ...(ack.detail ? { detail: ack.detail } : {}),
         ...(ack.generation !== undefined ? { generation: ack.generation } : {}),
-        ...(ack.steered ? { steered: true } : {})
+        ...(ack.steered ? { steered: true } : {}),
+        // The post id this turn's message is recorded under, so the browser retires its own copy by it.
+        ...(ack.accepted && op.op === 'turn' && op.post ? { postId: op.post.postId } : {})
       }
       // A refusal is the whole story of a stream that "never came back" — name it, and who
       // refused. Attach misses are the normal idle answer, not worth a line.
@@ -561,6 +567,9 @@ export class RelayBrowserConnection implements ChatSink {
         this.send({ type: 'resumed', ack: browserAck })
       } else if (kind === 'attach') {
         this.send({ type: 'attached', ack: browserAck })
+      } else if (kind === 'new_session') {
+        // Request/reply: the composer waits on this verdict to say what happened.
+        this.send({ type: 'new_session', ack: browserAck })
       } else if (!ack.accepted && ack.reason && kind.startsWith('set_')) {
         // A refused runtime change says why to this browser alone, so its author learns who may make it.
         this.send({ type: 'refused', refused: { op: kind, agentId, reason: ack.reason } })

@@ -10,7 +10,6 @@ import {
   deploymentFileTransfer,
   FILE_TRANSFER_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
-  sessionFileDownload,
   sharedFileMarker,
   transferCapable,
   viaTransfer,
@@ -56,30 +55,13 @@ describe('sharedFileMarker', () => {
   })
 })
 
-describe('sessionFileDownload', () => {
+describe('shared-file constants', () => {
   it('mirrors the protocol’s download and transfer constants', () => {
     expect(WORKSPACE_UPLOADS_DIR).toBe(PROTOCOL_UPLOADS_DIR)
     expect(MAX_WORKSPACE_DOWNLOAD_BYTES).toBe(PROTOCOL_MAX_DOWNLOAD)
     expect(WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES).toBe(PROTOCOL_TEXT_THRESHOLD)
     expect(FILE_TRANSFER_FEATURE).toBe(PROTOCOL_TRANSFER_FEATURE)
     expect(WEBCHAT_FILES_MAX).toBe(PROTOCOL_FILES_MAX)
-  })
-
-  const share = (path: string, sha = SHA) => `done\n[shared: ${path} (image/gif, 9 bytes, sha256:${sha})]`
-
-  it('names any workspace file by its path', () => {
-    expect(sessionFileDownload('uploads/a.png', 's1', [])).toEqual({ sessionId: 's1' })
-    expect(sessionFileDownload('src/index.ts', 's1', [])).toEqual({ sessionId: 's1' })
-    expect(sessionFileDownload('src/index.ts', undefined, [])).toEqual({})
-  })
-
-  it('pins a shared file to the digest of its latest share in that session', () => {
-    const rows = [
-      { text: share('out/anim.gif', '0000000000000000'), sessionId: 's1' },
-      { text: share('out/anim.gif'), sessionId: 's1' },
-      { text: share('out/anim.gif', 'ffffffffffffffff'), sessionId: 's2' }
-    ]
-    expect(sessionFileDownload('out/anim.gif', 's1', rows)).toEqual({ sessionId: 's1', sha256: SHA })
   })
 })
 

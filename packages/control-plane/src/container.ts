@@ -160,6 +160,7 @@ import {
   PgComputerLeaseRepo,
   PgComputerAuditRepo,
   PgComputerScreenshotRepo,
+  PgSessionFileSnapshotRepo,
   PgComputerUsageRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
@@ -329,9 +330,11 @@ import {
   COMPUTER_SCREENSHOT_REAP_INTERVAL_MS,
   ComputerScreenshotReaper
 } from './orchestrator/computerScreenshotReaper.js'
+import { SESSION_FILE_REAP_INTERVAL_MS, SessionFileReaper } from './orchestrator/sessionFileReaper.js'
 import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
+import { createSessionFileService } from './file-transfer/session-file.js'
 import { createFileTransfer, isTransferObjectKey, transferPendingMinimumDays } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
@@ -662,6 +665,7 @@ export function buildContainer(
     computerLease: new PgComputerLeaseRepo(prisma),
     computerAudit: new PgComputerAuditRepo(prisma),
     computerScreenshot: new PgComputerScreenshotRepo(prisma),
+    sessionFileSnapshot: new PgSessionFileSnapshotRepo(prisma),
     computerUsage: new PgComputerUsageRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
@@ -1135,9 +1139,19 @@ export function buildContainer(
         })()
       : undefined
   const fileTransfer = fileTransferBucket?.service
+  // Shared-file snapshots: kept in the transfer bucket for their session's lifetime, so only with a bucket.
+  const sessionFiles = fileTransferBucket
+    ? createSessionFileService({
+        transfer: fileTransferBucket.transfer,
+        snapshots: repos.sessionFileSnapshot,
+        sessions: repos.session,
+        now: () => clock.now()
+      })
+    : undefined
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
   const sharedImages = createSharedImageService({
     ...(fileTransferBucket ? { transfer: fileTransferBucket.transfer } : {}),
+    ...(sessionFiles ? { sessionFiles } : {}),
     control: sender
   })
 
@@ -2884,6 +2898,7 @@ export function buildContainer(
     ...(iconStore ? { iconStore } : {}),
     ...(fileTransfer ? { fileTransfer } : {}),
     sharedImages,
+    ...(sessionFiles ? { sessionFiles } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
@@ -2985,6 +3000,11 @@ export function buildContainer(
     { intervalMs: OAUTH_REAP_INTERVAL_MS, graceMs: OAUTH_REAP_GRACE_MS },
     http.log
   )
+
+  // Releases the snapshots of purged or deleted sessions, objects first (agent-authored-attachments.md §4.1).
+  const sessionFileReaper = sessionFiles
+    ? new SessionFileReaper(sessionFiles, clock, { intervalMs: SESSION_FILE_REAP_INTERVAL_MS }, http.log)
+    : undefined
 
   // Deletes expired and abandoned screenshots, objects first (computer-use.md §9).
   const computerScreenshotReaper = computerScreenshots
@@ -3779,6 +3799,7 @@ export function buildContainer(
     decision: repos.decision,
     ...(fileTransfer ? { fileTransfer } : {}),
     sharedImages,
+    ...(sessionFiles ? { sessionFiles } : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
@@ -4301,6 +4322,7 @@ export function buildContainer(
       computerPool?.start()
       computerPlan.start()
       computerScreenshotReaper?.start()
+      sessionFileReaper?.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
@@ -4347,6 +4369,7 @@ export function buildContainer(
       computerPool?.stop()
       computerPlan.stop()
       computerScreenshotReaper?.stop()
+      sessionFileReaper?.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()

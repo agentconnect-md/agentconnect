@@ -38,7 +38,14 @@ import { useConsoleData } from '@/lib/data-context'
 import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
 import { useSessionFacets } from '@/lib/use-session-facets'
 import { useSessionList } from '@/lib/use-session-list'
-import { isFlatSessionView, sessionListSearchParams, showsTasks, withShowTasks } from '@/lib/session-list-view'
+import {
+  isFlatSessionView,
+  sessionListSearchParams,
+  showsDreams,
+  showsTasks,
+  withShowDreams,
+  withShowTasks
+} from '@/lib/session-list-view'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
@@ -153,6 +160,8 @@ export default function SessionsView() {
   const flatView = isFlatSessionView(params)
   // Tasks (delegated tasks, follow-ups, approved proposals) belong to a session, so the list hides them unless asked.
   const showTasks = showsTasks(params)
+  // A memory dream's execution session is housekeeping, reachable from the agent's Dreams panel, so the list hides it unless asked.
+  const showDreams = showsDreams(params)
   const fGithubRepoId = githubRepoIdFromSessionTriggerFilter(fTrigger)
   const sessionFilters = {
     ...(fAgent !== 'all' ? { agentId: fAgent } : {}),
@@ -163,7 +172,8 @@ export default function SessionsView() {
         ? { channel: fChannel }
         : {}),
     ...(fGithubRepoId ? { githubRepoId: fGithubRepoId } : fTrigger !== 'all' ? { triggeredBy: fTrigger } : {}),
-    ...(showTasks ? {} : { excludeTasks: true })
+    ...(showTasks ? {} : { excludeTasks: true }),
+    ...(showDreams ? {} : { excludeDreams: true })
   } satisfies SessionListFilters
   const sessionList = useSessionList(activeOrg?.id, sessionFilters, { grouped: !flatView })
   const { data: sessionFacets = baseSessionFacets } = useSessionFacets(activeOrg?.id, sessionFilters, baseSessionFacets)
@@ -179,8 +189,9 @@ export default function SessionsView() {
       (excluded === 'trigger' ||
         fTriggerKey === 'all' ||
         (!!session.triggeredBy && personKey(session.triggeredBy) === fTriggerKey)) &&
-      (showTasks || !session.subsession),
-    [fAgent, fChannel, fInt, fTriggerKey, personKey, showTasks]
+      (showTasks || !session.subsession) &&
+      (showDreams || session.platform !== 'dream'),
+    [fAgent, fChannel, fInt, fTriggerKey, personKey, showDreams, showTasks]
   )
   const localSourceSessions = useMemo(() => [...pgSessionList, ...demoSessions], [demoSessions, pgSessionList])
   const localSessions = useMemo(
@@ -249,6 +260,13 @@ export default function SessionsView() {
   const setShowTasks = useCallback(
     (on: boolean) => {
       const qs = withShowTasks(new URLSearchParams(params.toString()), on).toString()
+      router.replace(orgPath(qs ? `/sessions?${qs}` : '/sessions'))
+    },
+    [params, router, orgPath]
+  )
+  const setShowDreams = useCallback(
+    (on: boolean) => {
+      const qs = withShowDreams(new URLSearchParams(params.toString()), on).toString()
       router.replace(orgPath(qs ? `/sessions?${qs}` : '/sessions'))
     },
     [params, router, orgPath]
@@ -524,7 +542,14 @@ export default function SessionsView() {
   const loadedServerIds = new Set(sessionList.sessions.map((session) => session.id))
   const localOnlyCount = localSessions.filter((session) => !loadedServerIds.has(canonicalSessionId(session))).length
   const totalCount = sessionList.total + localOnlyCount
-  const filtActive = !(fAgent === 'all' && fInt === 'all' && fChannel === 'all' && fTrigger === 'all' && !showTasks)
+  const filtActive = !(
+    fAgent === 'all' &&
+    fInt === 'all' &&
+    fChannel === 'all' &&
+    fTrigger === 'all' &&
+    !showTasks &&
+    !showDreams
+  )
   const initialLoading = sessionList.isLoading && sessions.length === 0
   const showEmpty = totalCount === 0 && filtered.length === 0 && !initialLoading
   const countLabel = t('count', { count: totalCount })
@@ -536,8 +561,9 @@ export default function SessionsView() {
     fInt !== 'all' && { key: 'integration' as const, label: platName(fInt) },
     fChannel !== 'all' && { key: 'channel' as const, label: labelOf(channelOpts, fChannel) },
     fTrigger !== 'all' && { key: 'trigger' as const, label: labelOf(triggerFlat, fTriggerOption) },
-    showTasks && { key: 'tasks' as const, label: t('showTasks') }
-  ].filter((c): c is { key: FilterKey | 'tasks'; label: string } => Boolean(c))
+    showTasks && { key: 'tasks' as const, label: t('showTasks') },
+    showDreams && { key: 'dreams' as const, label: t('showDreams') }
+  ].filter((c): c is { key: FilterKey | 'tasks' | 'dreams'; label: string } => Boolean(c))
 
   // ── Mobile filter ─────────────────────────────────────────────────────────
   // Mobile matches the design's own filter: a bottom SHEET with pill chips per
@@ -654,6 +680,22 @@ export default function SessionsView() {
           </span>
           <span className="lbl">{t('showTasks')}</span>
         </button>
+        <button
+          type="button"
+          className={showDreams ? 'selbtn on' : 'selbtn'}
+          aria-pressed={showDreams}
+          data-show-dreams=""
+          onClick={() => setShowDreams(!showDreams)}
+        >
+          <span className="flex h-[18px] w-[18px] flex-none items-center justify-center">
+            <Icon
+              name={showDreams ? 'square-check' : 'square'}
+              size={14}
+              color={showDreams ? 'var(--brand)' : 'var(--text-tertiary)'}
+            />
+          </span>
+          <span className="lbl">{t('showDreams')}</span>
+        </button>
         <span className="mono ml-auto text-[12px] text-(--text-tertiary)">{countLabel}</span>
         {filtActive && (
           <button className="lnk text-(--text-tertiary)" onClick={() => router.replace(orgPath('/sessions'))}>
@@ -675,7 +717,13 @@ export default function SessionsView() {
                 role="button"
                 tabIndex={0}
                 aria-label={t('clearFilter', { filter: t(c.key) })}
-                onClick={() => (c.key === 'tasks' ? setShowTasks(false) : setFilter(c.key, 'all'))}
+                onClick={() =>
+                  c.key === 'tasks'
+                    ? setShowTasks(false)
+                    : c.key === 'dreams'
+                      ? setShowDreams(false)
+                      : setFilter(c.key, 'all')
+                }
                 className="inline-flex h-[18px] w-[18px] cursor-pointer items-center justify-center text-(--text-tertiary)"
               >
                 <Icon name="x" size={11} />
@@ -891,6 +939,15 @@ export default function SessionsView() {
               ]}
               value={showTasks ? 'show' : 'hide'}
               onPick={(v) => setShowTasks(v === 'show')}
+            />
+            <PillSection
+              label={t('dreams')}
+              options={[
+                { v: 'hide', label: t('hideDreams') },
+                { v: 'show', label: t('showDreams') }
+              ]}
+              value={showDreams ? 'show' : 'hide'}
+              onPick={(v) => setShowDreams(v === 'show')}
             />
             <button
               className="mt-[18px] flex h-[46px] w-full items-center justify-center rounded-[10px] border-0 bg-(--brand) font-sans text-[14px] font-semibold leading-normal text-white"
