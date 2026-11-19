@@ -716,8 +716,10 @@ connection administers no project binding at all, deleting it again removes
 the row, and that removal is refused while any binding is still assigned to
 it.
 
-Removing the AgentConnect user from the organization follows the same rule.
-Their OAuth authority must not survive organization membership.
+Removing the AgentConnect user from the organization follows the same rule, and
+so does suspending their membership. Their OAuth authority must not survive
+organization membership, and a lifted suspension does not restore it: the member
+connects again.
 
 ## 10. Project Provisioning and Reconciliation
 
