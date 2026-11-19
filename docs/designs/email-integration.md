@@ -27,7 +27,7 @@ on Cloud and on a self-hosted deployment alike (§7).
 | Sessions   | One mail thread is one session: a member's own thread in that member's direct conversation, a thread with several people in a group conversation of its own (§5). |
 | Replies    | One reply per turn, sent when the turn ends, to the sender and the thread's other eligible members (§6).                                                          |
 | Content    | Text and HTML bodies as text, up to a size cap. Attachments are named but not delivered (§5.4).                                                                   |
-| History    | Earlier mail is read from its sessions under the rule for reading other conversations; there is no second store (§5.6).                                           |
+| History    | Earlier mail is read in full with the existing history tools, served from the daemon's session records; there is no second store (§5.6).                          |
 | Approvals  | In the Console, as on a platform with no approval card.                                                                                                           |
 | Setup      | Operator: one mail domain, one Worker, one API token (§7). Organization: pick the address in the agent's Integrations (§3.1).                                     |
 
@@ -228,8 +228,8 @@ The existing rules then apply with nothing written for mail:
   ([product conventions](../product-conventions.md#memory-layers)).
 - **A turn nobody typed.** The person of `dm:<address>` is that address's
   member, read from the key.
-- **Reading elsewhere.** `recall` and every other read are judged by who is
-  asking
+- **Reading elsewhere.** A history read, `recall` and every other read are
+  judged by who is asking
   ([product conventions](../product-conventions.md#reading-other-conversations)).
   In a member's direct conversation that is the member. In a group conversation
   it is the sender of the turn's message, and bringing something of theirs into
@@ -327,18 +327,28 @@ turn.
 A new thread is a new session, and the provider keeps no mail to read back.
 What the agent received and sent is nevertheless already kept: every admitted
 message is a turn of its session and every reply is that turn's answer, in the
-daemon's session records. A member's own threads are the sessions of one
-conversation, `dm:<address>`, so `recall` in a new thread of theirs lists and
-reads the earlier ones under the rule of §5.2, and a group thread is read by
-the people the Console shows it to. No second store and no mail-specific tool
-is added, and so no second read rule.
+daemon's session records.
 
-`recall` must list a direct conversation's sessions with each one's subject
-and correspondents for this to answer "what did you send me last week"; that
-is the one thing mail asks of it. The change belongs to the rule for reading
-other conversations, in [assistant-mode.md §5.5](assistant-mode.md) and product
-conventions, and is written there when it is built. It applies to every agent,
-in assistant mode or not, as that rule does.
+The mail module serves the daemon platform contract's two history reads from
+those records, where another platform's module calls its provider:
+
+- `getChannelHistory` of a conversation returns the first message of each of
+  its threads, newest first, each with its header block, its thread key and
+  the number of messages after it. For `dm:<address>` that is the list of what
+  this member and the agent have written to each other.
+- `getThreadReplies` returns one thread's messages in full, received and sent,
+  oldest first.
+
+The agent therefore reads earlier mail with the `getChannelHistory` and
+`getThreadHistory` tools it already has on other platforms, under their
+existing rule: a member's direct conversation is readable when that member is
+asking, and a group conversation when the person asking is one of its
+participants, which the module answers from the addresses the conversation has
+recorded (§5.2). No second store, no mail-specific tool and no second read
+rule is added, and `recall` is unchanged.
+
+How the two reads map onto the daemon's session records, on both of its store
+backends, is to be confirmed in the build (§9).
 
 The daemon keeps one small index beside the sessions: for each message it
 received or sent, the message ID and the thread and conversation it belongs
@@ -486,7 +496,8 @@ line per host:
   `deploymentAssignments` from the snapshot, and `daemonRequest` for the send.
 - **Daemon**: no connection of its own; the conversation and thread keys and
   the participant fence (§5.2), the member question (§4), final-only turn
-  output through the relay transport, and the message index (§5.6).
+  output through the relay transport, the two history reads over session
+  records, and the message index (§5.6).
 - **Control Plane**: the provider with name validation, the retired-address
   table, the record of a verified sign-in email, `dmOwnerMember`, the group
   conversation's visibility row, the member answer for one address or a batch,
@@ -524,15 +535,18 @@ organization.
 - The exact `Authentication-Results` text for a domain with no DMARC record.
 - The starting daily sending quota, and how fast it grows.
 - Whether the first step should cut quoted history from a follow-up (§5.4).
+- That the daemon's session records hold each message and reply whole and can
+  be listed by conversation and thread on both store backends, which the
+  history reads of §5.6 rest on.
 
 ## 10. Later
 
 - **Mail the agent starts.** A tool that sends a new message, for a schedule's
   report or a hand-off. It needs its own fence at the relay, since no inbound
   ticket exists: recipients limited to eligible members by a Control Plane
-  answer the relay can verify. The sent message is kept with its thread key,
-  and a reply to it opens a session that begins with it, so the session knows
-  what it answers.
+  answer the relay can verify. Such a message belongs to no mail session, so
+  it is kept whole beside the message index and served by the same history
+  reads, and a reply to it opens a session that begins with it.
 - **Mail through the coordinator.** Each member's correspondence becomes a
   private place with a coordinator, which hands a new thread to an open task
   or opens one. The place is already keyed by member (§5.2); it needs `im` in
@@ -565,7 +579,8 @@ organization.
   validation and reserved names; ticket minting and every refusal of §6.2; the
   conversation a message falls in by its participants, a member's thread that
   gains a recipient opening a group session with nothing carried over, the
-  memory layer of each kind, and the counters of §6.3.
+  memory layer of each kind, the two history reads and who may make them, and
+  the counters of §6.3.
 - Relay: the inbound route's HMAC window, an unknown recipient, each row of the
   §5.5 table, and dedup of a redelivered `Message-ID`.
 - Control Plane: an address is never reissued; the member answer for a member,
