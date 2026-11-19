@@ -18,7 +18,8 @@ launcher's flags and first-run file, the endpoint's stale port file and the Auto
 forwarder's loopback refusal, the child's flags and lifetime, opaque page ids, and the screencast's measured rates and
 limits. v9.2 (2026-11-19) lands step 3, the DevTools endpoint (§3.10, §5.8), and decides §17-26. v9.3 (2026-11-19)
 lands the first half of step 4: the Chrome DevTools MCP child, the `computer-browser-v1` contract and the six tools that
-only read (§5.8). v9.4 (2026-11-19) lands the acting tools on the desktop daemon. The Chinese version
+only read (§5.8). v9.4 (2026-11-19) lands the acting tools on the desktop daemon. v9.5 connects the browser tier
+to the Control Plane and agent sessions. The Chinese version
 lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -1653,8 +1654,8 @@ the tool call. A person taking over the desktop cancels that lease.
 - **Approvals.** Every `chrome_*` tool that acts counts as the session's first input on that Computer (§4.2), one
   that starts the browser included, and under `shell: 'ask'` a `chrome_evaluate_script` asks as `computer_exec`
   does, with the script on the card. The agent daemon asks before it takes the lease and carries the outcome in the
-  call's `_meta` as inputs do (§8.2). The desktop's script check is implemented. The agent daemon's use of the
-  browser contract and its approval prompts ship in the next step.
+  call's `_meta` as inputs do (§8.2). The agent daemon applies the first-input and script approval rules before
+  acquiring the lease. Browser script approvals for a session are separate from shell command approvals.
 - **Arguments.** Every argument that names a file the child would write or read (`filePath`, `sourcePath`) is removed
   from the schemas and from every call, as the driver's are (§5.5), and so is `chrome_new_page`'s `isolatedContext`,
   which opens a window in a separate browser context outside the profile. Results come back inline, except that the
@@ -1707,7 +1708,9 @@ the tool call. A person taking over the desktop cancels that lease.
   reports a failed navigation as a success with "Unable to navigate … net::ERR_ABORTED", and a `javascript:` address
   it reported that way had run; the adapter turns such results into an error, or `uncertain` where the page may have
   changed. **[implemented]** A failed navigation with ambiguous effects returns `uncertain`, as do actions whose
-  confirmation is lost after dispatch.
+  confirmation is lost after dispatch. The desktop marks unavailable replies from before dispatch with
+  `actionDispatched: false`. For older replies without that field, the agent daemon treats an action timeout,
+  browser exit, child failure or oversized result as uncertain and takes an inspection screenshot.
 - **Audit.** One entry per call like `computer_*` (§8.2), with typed and filled text reduced to its length, an address
   to its origin, and a script, a `javascript:` address included, recorded as a command line is (§5.7).
   **[implemented]** The entry carries the opaque page id, the agent desktop that served the
@@ -1740,8 +1743,9 @@ upstream tool names in descriptions prefixed as well. `chrome-contract.test.ts` 
 daemon's flags (scripts on, so all twenty appear), requires exactly the twenty and the five extra `debugging` tools,
 and compares each with the contract through the adapter's own reshaping; it also runs `--version` with the update
 check off and finds no update-check cache written. The flags shape the schemas: under `--screenshotFormat jpeg` the
-screenshot's `format` defaults to `jpeg`. The Control Plane and the agent daemon do not use the contract yet (§14.10
-step 5).
+screenshot's `format` defaults to `jpeg`. The Control Plane resolves the browser policy for auth and policy pushes,
+and sets `br: true` only for a control grant on an isolated Computer whose policy enables the tier. A current agent
+daemon offers the tools and guidance to eligible sessions when the Control Plane advertises the feature.
 
 **Guidance.** `COMPUTER_USE_GUIDANCE` gains: in a browser, prefer `chrome_take_snapshot` and the element tools to
 screenshots and coordinates; take a new snapshot after a navigation or a pause, since element ids belong to the

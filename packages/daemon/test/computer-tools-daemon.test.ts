@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { COMPUTER_CHANNEL_FEATURE, COMPUTER_LEASE_FEATURE, agentComputerUseOf } from '@agentconnect.md/protocol'
+import { COMPUTER_BROWSER_FEATURE } from '@agentconnect.md/protocol/computer-browser'
 import {
+  COMPUTER_BROWSER_DESCRIPTORS,
+  COMPUTER_BROWSER_GUIDANCE,
   COMPUTER_FILL_GUIDANCE,
   COMPUTER_FILL_TOOLS,
   COMPUTER_TOOLS,
@@ -90,11 +93,26 @@ describe('toolContextFor and computer use', () => {
       expect(ordinary.computers).toEqual(COMPUTER_NAMES)
       expect(ordinary.instructions).toContain(COMPUTER_USE_GUIDANCE)
       expect(ordinary.instructions).toContain(COMPUTER_FILL_GUIDANCE)
+      expect(ordinary.names).not.toContain('chrome_list_pages')
       // Slack links its Fill card to the console; a surface that cannot show one gets neither the tool nor its guidance.
       expect(context('append:1', 'slack').computers).toEqual(COMPUTER_NAMES)
       const elsewhere = context('append:1', 'telegram')
       expect(elsewhere.computers).toEqual(COMPUTER_TOOLS.map((tool) => tool.name))
       expect(elsewhere.instructions).not.toContain(COMPUTER_FILL_GUIDANCE)
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('offers Chrome tools and guidance only to eligible sessions when the Control Plane advertises them', async () => {
+    const { daemon, context } = await boot([...BOTH, COMPUTER_BROWSER_FEATURE])
+    try {
+      const ordinary = context()
+      expect(ordinary.names.filter((name) => name.startsWith('chrome_'))).toEqual(
+        COMPUTER_BROWSER_DESCRIPTORS.map(({ name }) => name)
+      )
+      expect(ordinary.instructions).toContain(COMPUTER_BROWSER_GUIDANCE)
+      expect(context(checkCoordinate('7')).names).not.toContain('chrome_list_pages')
     } finally {
       await daemon.stop()
     }

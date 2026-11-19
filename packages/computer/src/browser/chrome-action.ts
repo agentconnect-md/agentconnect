@@ -1,6 +1,10 @@
 import { ComputerError } from '../computer.js'
 import { currentCallContext } from '../audit.js'
-import type { ComputerBrowserTool } from '@agentconnect.md/protocol/computer-browser'
+import {
+  computerBrowserAddressSchemes,
+  computerBrowserNeedsShell,
+  type ComputerBrowserTool
+} from '@agentconnect.md/protocol/computer-browser'
 import type { CommandLineAccess } from '../command-line.js'
 import { DriverUncertainError } from '../driver/client.js'
 import type { DevtoolsEndpoint } from './devtools-endpoint.js'
@@ -10,20 +14,14 @@ export function chromeActionGuard(
   args: Record<string, unknown>,
   commandLine: CommandLineAccess | undefined
 ): void {
-  const address = typeof args.url === 'string' ? args.url : undefined
-  const protocol = (url: string) => URL.parse(url)?.protocol
-  const scheme = address === undefined ? undefined : protocol(address)
-  const nested = scheme === 'view-source:' && address !== undefined ? protocol(address.trim().slice(12)) : undefined
-  if (scheme === 'file:' || nested === 'file:') {
+  const schemes = computerBrowserAddressSchemes(args)
+  if (schemes.includes('file:')) {
     throw new ComputerError('denied', 'Chrome tools cannot open local files.')
   }
   if (tool.requires === 'files' && (!commandLine || commandLine.files() === 'off')) {
     throw new ComputerError('denied', 'This computer does not allow file uploads.')
   }
-  if (
-    tool.requires === 'shell' ||
-    [scheme, nested].some((value) => value && /^(javascript|data|vbscript):$/.test(value))
-  ) {
+  if (computerBrowserNeedsShell(tool, schemes)) {
     const mode = commandLine?.shell() ?? 'off'
     const approval = currentCallContext().approval
     if (mode === 'off') throw new ComputerError('denied', 'This computer does not allow browser scripts.')

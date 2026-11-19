@@ -20,6 +20,7 @@ import {
   type ComputerCpFrameType,
   type ComputerEgress,
   type ComputerHeartbeat,
+  type ComputerIsolation,
   type ComputerPolicy,
   type ComputerRelayEntry,
   type ComputerRevoke,
@@ -28,6 +29,7 @@ import {
   type ComputerStopPush,
   type ErrorCode
 } from '@agentconnect.md/protocol'
+import { computerBrowserPolicy } from '@agentconnect.md/protocol/computer-browser'
 import type { z } from 'zod'
 import type { Clock } from '../domain/clock.js'
 import { ComputerId, OrgId } from '../domain/ids.js'
@@ -88,6 +90,7 @@ export class ComputerConnection implements ComputerChannel {
   orgId = ''
   ownerUserId = ''
   managed = false
+  private isolation: ComputerIsolation = 'none'
   // Whether the desktop reported an egress forwarder, so it can take `computer/egress`.
   private egressCapable = false
   private principal: ComputerPrincipal | undefined
@@ -190,6 +193,7 @@ export class ComputerConnection implements ComputerChannel {
     this.orgId = principal.orgId
     this.ownerUserId = computer.ownerUserId
     this.managed = computer.kind === 'managed'
+    this.isolation = computer.isolation
     this.egressCapable = computer.capabilities?.egress === true
     this.perAgent = Boolean(computer.desktops)
     const egress = this.managed && this.deps.egress ? await this.readEgress() : undefined
@@ -402,9 +406,13 @@ export class ComputerConnection implements ComputerChannel {
     })
   }
 
-  // The desktop does not know its kind, so it gets the command-line tier resolved: an unset field must read as off, never as the token's (§5.7).
+  // Resolve both tiers before pushing them so older policies get this Control Plane's defaults (§5.7, §5.8).
   private desktopPolicy(policy: ComputerPolicy): ComputerPolicy {
-    return { ...policy, ...computerCommandLine(policy, { kind: this.managed ? 'managed' : 'self-hosted' }) }
+    return {
+      ...policy,
+      ...computerCommandLine(policy, { kind: this.managed ? 'managed' : 'self-hosted' }),
+      ...computerBrowserPolicy(policy, this.isolation)
+    }
   }
 
   // A Stop or resume made on another replica, or one the desktop lost, reaches it with the next heartbeat.

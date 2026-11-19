@@ -1,4 +1,5 @@
 // The browser tier's tools (computer-use.md §5.8): `computer-browser-v1`, the chrome_* names and schemas every daemon speaks.
+import type { ComputerIsolation, ComputerPolicy } from './frames/computer.js'
 
 /** The CP advertises it once its tokens and grants name the tier; the agent daemon offers the tools only under such a CP. */
 export const COMPUTER_BROWSER_FEATURE = 'computer-browser-v1'
@@ -536,3 +537,25 @@ const BY_NAME = new Map(COMPUTER_BROWSER_TOOLS.map((tool) => [tool.name, tool]))
 
 /** The v1 tool of this name, or undefined for any name outside the contract. */
 export const computerBrowserTool = (name: string): ComputerBrowserTool | undefined => BY_NAME.get(name)
+
+/** The browser tier a current Control Plane sends, including the default for isolated Computers. */
+export function computerBrowserPolicy(policy: ComputerPolicy, isolation: ComputerIsolation) {
+  return {
+    browserTier: (isolation === 'container' || isolation === 'vm') && policy.browserTier !== false,
+    browserHideWebdriver: policy.browserHideWebdriver !== false
+  }
+}
+
+/** Both daemons use the same navigation classification when checking file and script authority. */
+export function computerBrowserAddressSchemes(args: Record<string, unknown>): string[] {
+  if (typeof args.url !== 'string') return []
+  const address = URL.parse(args.url)
+  if (!address) return []
+  if (address.protocol !== 'view-source:') return [address.protocol]
+  const inner = URL.parse(address.pathname.replace(/^(?:\s*view-source:)+/i, ''))
+  return inner ? [address.protocol, inner.protocol] : [address.protocol]
+}
+
+export function computerBrowserNeedsShell(tool: ComputerBrowserTool, schemes: readonly string[]): boolean {
+  return tool.requires === 'shell' || schemes.some((scheme) => /^(javascript|data|vbscript):$/.test(scheme))
+}
