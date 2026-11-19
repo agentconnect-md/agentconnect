@@ -151,4 +151,34 @@ describe('a suspended membership', () => {
     await suspend(dana)
     expect((await waitlist.accessState(dana)).orgCount).toBe(0)
   })
+
+  it('disconnects the member’s code-host connection, and lifting it does not reconnect', async () => {
+    const dana = await member('dana', 'collaborator')
+    const connect = async (userId: string, gitlabUserId: bigint) => {
+      const row = await prisma.gitlabConnection.create({
+        data: { orgId: DEFAULT_ORG_ID, userId, gitlabUserId, gitlabUsername: `u${gitlabUserId}`, state: 'connected' }
+      })
+      await prisma.gitlabConnectionSecret.create({
+        data: { connectionId: row.id, accessToken: 'sealed-access', refreshToken: 'sealed-refresh' }
+      })
+      return row.id
+    }
+    const state = async (id: string) => {
+      const row = await prisma.gitlabConnection.findUniqueOrThrow({ where: { id }, include: { secret: true } })
+      return { state: row.state, tokenVersion: row.tokenVersion, sealed: row.secret !== null }
+    }
+    const danas = await connect(dana, 7001n)
+    const owners = await connect(DEFAULT_OWNER_ID, 7002n)
+
+    // A change that is not a suspension leaves the connection alone.
+    await users().setMemberRole(DEFAULT_ORG_ID, dana, 'viewer', DEFAULT_OWNER_ID)
+    expect(await state(danas)).toEqual({ state: 'connected', tokenVersion: 1n, sealed: true })
+
+    await suspend(dana)
+    expect(await state(danas)).toEqual({ state: 'disconnected', tokenVersion: 2n, sealed: false })
+    expect(await state(owners)).toEqual({ state: 'connected', tokenVersion: 1n, sealed: true })
+
+    await restore(dana)
+    expect(await state(danas)).toEqual({ state: 'disconnected', tokenVersion: 2n, sealed: false })
+  })
 })

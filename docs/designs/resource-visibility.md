@@ -612,6 +612,24 @@ instead, because the member holds it and nothing renews it on their behalf.
 Keys minted for the organization — a daemon's key, a service account's — belong to
 the organization and not to the member who created them, and are unaffected.
 
+### 8.7 What a member holds open ends with the membership
+
+Two things a member holds stay open on their own and are ended rather than left to
+expire:
+
+- **The code-host connection.** A member's GitLab connection carries their OAuth
+  authority on the code host. A database trigger disconnects it and deletes its
+  sealed tokens when the membership row is deleted or its `suspendedAt` is set, in
+  the same transaction, whichever code path made the change
+  ([gitlab-com-integration.md](gitlab-com-integration.md) §9). Lifting a suspension
+  does not reconnect it.
+- **The live session feed.** `GET /orgs/:orgId/stream` reads the membership before
+  relaying each event and again on every keepalive tick, so a quiet feed is covered
+  too. When the membership has ended the server closes the stream; the browser's
+  redial is refused at the organization guard like any other request. A failed read
+  drops the event and leaves the stream open, so a database blip does not disconnect
+  every console.
+
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
 `AgentSpec`, `CronUpsert`, `RouteAssign`, and the `RegisterOk` reconciliation

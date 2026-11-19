@@ -92,12 +92,13 @@ export function streamRoutes(deps: HttpDeps) {
           daemonOrg.set(daemonId, ok)
           return ok
         }
-        // Organization membership is a live authorization input. Do not pin it
-        // to connection-open state: removing a member must stop this already-open
-        // stream on its next event.
-        const currentCtx = async (): Promise<ViewCtx | null> => {
-          const role = await deps.repos.org.roleOf(orgId, connectedCtx.userId).catch(() => null)
-          return role ? { userId: connectedCtx.userId, role } : null
+        // Membership is read live, never pinned at open: null means it ended, undefined means the read failed.
+        const currentRole = (): Promise<ViewCtx['role'] | null | undefined> =>
+          deps.repos.org.roleOf(orgId, connectedCtx.userId).catch(() => undefined)
+        // The feed ends with the membership; the browser's redial is then refused at the organization guard.
+        const endIfNotMember = (role: ViewCtx['role'] | null | undefined): boolean => {
+          if (role === null) reply.raw.end()
+          return role === null
         }
 
         // Session visibility is deliberately NOT memoized: a §4.3 tightening must
@@ -120,15 +121,21 @@ export function streamRoutes(deps: HttpDeps) {
         const unsubscribe = deps.events.subscribe((envelope) => {
           void (async () => {
             if (!(await inOrg(envelope.daemonId))) return
-            const ctx = await currentCtx()
-            if (!ctx) return
+            const role = await currentRole()
+            if (endIfNotMember(role) || !role) return
+            const ctx: ViewCtx = { userId: connectedCtx.userId, role }
             const agentId = envelope.activity?.agentId ?? envelope.state?.agentId ?? envelope.event?.agentId
             const sessionId = envelope.activity?.sessionId ?? envelope.state?.sessionId ?? envelope.event?.sessionId
             if (!agentId || !sessionId || !(await canSeeSession(agentId, sessionId, ctx))) return
-            writeEvent(reply, envelope)
+            if (!reply.raw.writableEnded) writeEvent(reply, envelope)
           })()
         })
-        const keepalive = setInterval(() => reply.raw.write(`: keepalive\n\n`), KEEPALIVE_MS)
+        // A quiet feed has no event to stop on, so the keepalive tick re-reads the membership too.
+        const keepalive = setInterval(() => {
+          void currentRole().then((role) => {
+            if (!endIfNotMember(role) && !reply.raw.writableEnded) reply.raw.write(`: keepalive\n\n`)
+          })
+        }, KEEPALIVE_MS)
 
         const cleanup = (): void => {
           clearInterval(keepalive)

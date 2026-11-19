@@ -121,6 +121,60 @@ describe('session event stream', () => {
     }
   })
 
+  it('ends an open feed when the membership ends, on the next event or the next keepalive tick', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    await seedSessionMeta(prisma, 'session-shared', agentId, { daemonId })
+    const repo = new PgUserRepo(prisma)
+    const join = async (label: string): Promise<string> => {
+      const email = `${label}-${randomUUID()}@acme.dev`
+      const { userId } = await repo.provisionOidcUser({
+        oidcSubject: `${label}-${randomUUID()}`,
+        email,
+        emailVerified: true
+      })
+      await repo.addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+      return userId
+    }
+    const open = async (userId: string) => {
+      const app = buildHttpApp(prisma, { DEFAULT_OWNER_ID: userId })
+      opened.push(app)
+      const base = await app.app.listen({ port: 0, host: '127.0.0.1' })
+      const { response } = await openStream(`${base}/api/v1/orgs/${DEFAULT_ORG_ID}/stream`)
+      const chunks: string[] = []
+      response.setEncoding('utf8')
+      response.on('data', (chunk: string) => chunks.push(chunk))
+      const ended = new Promise<void>((resolve) => response.once('end', resolve))
+      return { app, chunks, ended }
+    }
+    const activity = { sessionId: 'session-shared', agentId, revision: '1', ts: '2026-07-30T00:00:00.000Z' }
+
+    // Suspended: the next event ends the feed instead of being relayed.
+    const dana = await join('stream-dana')
+    const first = await open(dana)
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: dana } },
+      data: { suspendedAt: new Date() }
+    })
+    first.app.events.publishActivity(daemonId, activity)
+    await first.ended
+    expect(first.chunks.join('')).not.toContain('session-shared')
+
+    // Removed on a quiet feed: the keepalive tick ends it.
+    const erin = await join('stream-erin')
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const second = await open(erin)
+      vi.advanceTimersByTime(25_000)
+      await vi.waitFor(() => expect(second.chunks.join('')).toContain(': keepalive'))
+      await prisma.membership.deleteMany({ where: { orgId: DEFAULT_ORG_ID, userId: erin } })
+      vi.advanceTimersByTime(25_000)
+      await second.ended
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('relays a body-free session activity event for a visible agent', async () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
