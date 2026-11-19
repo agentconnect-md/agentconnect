@@ -17,11 +17,13 @@ const VISIBLE_BUTTONS = 4
 export const DIVIDER_CLASS =
   'flex items-center gap-3 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary) before:h-px before:flex-1 before:bg-(--border-default) after:h-px after:flex-1 after:bg-(--border-default)'
 
-/** The small "Last used" tag over the top edge of the method used last. */
-export function LastUsedTag() {
+/** The small "Last used" tag over the top edge of the method used last; centered on an icon too narrow for a right inset. */
+export function LastUsedTag({ align = 'right' }: { align?: 'right' | 'center' }) {
   const t = useTranslations('Auth.login')
   return (
-    <span className="pointer-events-none absolute -top-2 left-1/2 z-[2] -translate-x-1/2 whitespace-nowrap rounded-full border border-(--border-default) bg-(--surface-card) px-1.5 font-sans text-[10.5px] font-medium leading-[14px] text-(--text-secondary)">
+    <span
+      className={`pointer-events-none absolute -top-2 z-[2] ${align === 'center' ? 'left-1/2 -translate-x-1/2' : 'right-2.5'} whitespace-nowrap rounded-full border border-(--border-default) bg-(--surface-card) px-1.5 font-sans text-[10.5px] font-medium leading-[14px] text-(--text-secondary)`}
+    >
       {t('lastUsed')}
     </span>
   )
@@ -132,7 +134,7 @@ export default function SocialLoginButtons({
             className="sso relative min-w-0 flex-1"
             onClick={() => (pair ? setShowRegional((open) => !open) : onContinue(provider.target))}
           >
-            {(pair ? regionalUsedLast : provider.target === lastUsed) && <LastUsedTag />}
+            {(pair ? regionalUsedLast : provider.target === lastUsed) && <LastUsedTag align="center" />}
             <SocialLoginMark target={provider.target} size={20} />
           </button>
         )
