@@ -159,14 +159,14 @@ const SETTING_CARDS: ConsolePage[] = [
     ownerOnly: true
   },
   {
-    href: '/settings#members',
+    href: '/settings?tab=members#members',
     label: 'Members & roles',
     icon: 'users',
     kind: 'setting',
     keywords: ['settings', 'invite']
   },
   {
-    href: '/settings#invite-links',
+    href: '/settings?tab=members#invite-links',
     label: 'Invite links',
     icon: 'link',
     kind: 'setting',
@@ -174,7 +174,7 @@ const SETTING_CARDS: ConsolePage[] = [
     ownerOnly: true
   },
   {
-    href: '/settings#single-sign-on',
+    href: '/settings?tab=sso#single-sign-on',
     label: 'Single sign-on',
     icon: 'key-round',
     kind: 'setting',
@@ -182,7 +182,7 @@ const SETTING_CARDS: ConsolePage[] = [
     ownerOnly: true
   },
   {
-    href: '/settings#service-accounts',
+    href: '/settings?tab=members#service-accounts',
     label: 'Service accounts',
     icon: 'bot',
     kind: 'setting',

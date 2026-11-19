@@ -41,7 +41,7 @@ vi.mock('@/lib/auth', () => ({
 }))
 vi.mock('next/navigation', () => ({ usePathname: () => '/acme/settings' }))
 
-import { OrganizationSsoCard } from './OrganizationSsoCard'
+import { OrganizationMemberSourceCard, OrganizationSsoCard } from './OrganizationSsoCard'
 
 const domain = (name: string, patch: Partial<OrgSsoDomainDto> = {}): OrgSsoDomainDto => ({
   id: `id-${name}`,
@@ -82,7 +82,7 @@ async function settle() {
 
 type State = Omit<OrgSsoStateDto, 'memberSource'> & { memberSource?: OrgMemberSource }
 
-async function render(state: State, isOwner = true) {
+async function render(state: State, isOwner = true, card: 'sso' | 'memberSource' = 'sso') {
   mocks.fetchOrgSso.mockResolvedValue({ memberSource: 'invite', ...state })
   // A fresh mount per state: a second render would answer from the first one's cache.
   await act(async () => root.unmount())
@@ -90,7 +90,11 @@ async function render(state: State, isOwner = true) {
   await act(async () => {
     root.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <OrganizationSsoCard orgId="org-test" isOwner={isOwner} />
+        {card === 'sso' ? (
+          <OrganizationSsoCard orgId="org-test" isOwner={isOwner} />
+        ) : (
+          <OrganizationMemberSourceCard orgId="org-test" isOwner={isOwner} />
+        )}
       </SWRConfig>
     )
   })
@@ -170,6 +174,11 @@ describe('organization single sign-on card', () => {
     const domains = [domain('acme.example')]
     await render({ domains, connection: null })
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Set up connection'])
+    // Two cards: Domains carries Add domain, Connection carries the connection's actions.
+    expect([...host.querySelectorAll('.cardtitle')].map((title) => title.textContent)).toEqual([
+      'Domains',
+      'Connection'
+    ])
 
     await render({ domains, connection: connection() })
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Test sign-in', 'Edit'])
@@ -322,7 +331,7 @@ describe('organization single sign-on card', () => {
     expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-1')
     expect(JSON.parse(sessionStorage.getItem('ac.ssoTest')!)).toEqual({
       nonce: 'nonce-1',
-      returnTo: '/acme/settings#single-sign-on',
+      returnTo: '/acme/settings?tab=sso#single-sign-on',
       expiresAt
     })
   })
@@ -415,11 +424,17 @@ describe('organization single sign-on card', () => {
   })
 
   it('lets an owner open the organization to its verified domains, after confirming', async () => {
-    // Nothing to choose until a domain is verified.
-    await render({ domains: [domain('acme.example', { status: 'pending' })], connection: null })
-    expect(host.querySelector('[role="radio"]')).toBeNull()
+    // No card at all until a domain is verified.
+    await render({ domains: [domain('acme.example', { status: 'pending' })], connection: null }, true, 'memberSource')
+    expect(host.innerHTML).toBe('')
 
+    // The domain cards no longer carry the choice.
     await render({ domains: [domain('acme.example')], connection: null })
+    expect(host.querySelector('[role="radio"]')).toBeNull()
+    expect(host.textContent).not.toContain('New members')
+
+    await render({ domains: [domain('acme.example')], connection: null }, true, 'memberSource')
+    expect(host.querySelector('.cardtitle')?.textContent).toBe('New members')
     expect(picked()).toEqual(['Invite only'])
     await click('Anyone on your domains', host)
     expect(dialog().textContent).toContain('acme.example')
@@ -442,7 +457,7 @@ describe('organization single sign-on card', () => {
   })
 
   it('shows a member how people join without a way to change it', async () => {
-    await render({ domains: [domain('acme.example')], connection: null, memberSource: 'domain' }, false)
+    await render({ domains: [domain('acme.example')], connection: null, memberSource: 'domain' }, false, 'memberSource')
     expect(host.querySelector('[role="radio"]')).toBeNull()
     expect(host.textContent).toContain('New membersAnyone on your domains')
   })

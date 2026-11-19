@@ -1,6 +1,6 @@
 'use client'
 
-// An organization's domains and single sign-on (organization-sso.md §4.1, §4.3): verify a domain, choose how members join, set up the connection.
+// An organization's domains and single sign-on (organization-sso.md §4.1, §4.3): the Domains and Connection cards, and the New members card.
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
@@ -33,8 +33,6 @@ import { writeFlowState } from '@/lib/flow-state'
 import { canStashSsoTest, stashSsoTest } from '@/lib/organization-sso'
 import { consoleKeys } from '@/lib/swr-keys'
 
-const SECTION =
-  'border-b border-(--border-subtle) bg-(--surface-app) px-4 py-[9px] font-mono text-[11px] font-semibold uppercase leading-normal tracking-[.04em] text-(--text-tertiary)'
 const ROW = 'border-b border-(--border-subtle) px-4 py-3 last:border-b-0'
 const LINE = 'flex flex-wrap items-center gap-[10px]'
 const MUTED = 'font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)'
@@ -51,7 +49,6 @@ type Dialog =
   | { kind: 'enforce' }
   | { kind: 'stopEnforcing' }
   | { kind: 'remove' }
-  | { kind: 'joinByDomain' }
   | { kind: 'verify'; domain: OrgSsoDomainDto }
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -354,7 +351,6 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
   const [problems, setProblems] = useState<Record<string, DomainProblem>>({})
   const [rowBusy, setRowBusy] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [sourceBusy, setSourceBusy] = useState(false)
 
   useEffect(() => {
     setDialog(null)
@@ -369,6 +365,8 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
   }
   const close = () => setDialog(null)
   const refresh = () => void mutate()
+  // A sign-in started here comes back to the Single sign-on tab.
+  const returnTo = `${pathname}?tab=sso#single-sign-on`
 
   const domains = state?.domains ?? []
   const connection = state?.connection ?? null
@@ -411,21 +409,6 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
     }
   }
 
-  // Opening the organization to its domains is confirmed; returning to invitations takes effect at once.
-  const pickSource = async (next: OrgMemberSource) => {
-    if (next === 'domain') return open({ kind: 'joinByDomain' })
-    setSourceBusy(true)
-    setActionError(null)
-    try {
-      await setOrgMemberSource(next, orgId)
-      await mutate()
-    } catch (e) {
-      setActionError(message(e))
-    } finally {
-      setSourceBusy(false)
-    }
-  }
-
   // A confirmed action: the dialog stays up while it runs and shows what the Control Plane refused.
   const confirm = async (run: () => Promise<void>) => {
     setPending(true)
@@ -446,7 +429,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
     setPending(true)
     setDialogError(null)
     try {
-      writeFlowState('returnTo', `${pathname}#single-sign-on`)
+      writeFlowState('returnTo', returnTo)
       await loginWithSso(connectorId, currentUser()?.email ?? undefined)
     } catch (e) {
       setDialogError(message(e))
@@ -463,7 +446,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       const test = await startOrgSsoTest(orgId)
       stashSsoTest({
         nonce: test.nonce,
-        returnTo: `${pathname}#single-sign-on`,
+        returnTo,
         expiresAt: test.expiresAt
       })
       // The page leaves for the identity provider and lands on the sign-in callback.
@@ -483,89 +466,76 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
   const email = currentUser()?.email
 
   return (
-    <div className="card mt-[18px]" id="single-sign-on">
-      <div className="cardhead justify-between">
-        <span className="cardtitle">{t('title')}</span>
-        {isOwner && state && (
-          <Button variant="secondary" size="xs" onClick={() => open({ kind: 'addDomain' })}>
-            <Icon name="plus" size={14} />
-            {t('addDomain.open')}
-          </Button>
+    <>
+      <div className="card mt-[18px]" id="single-sign-on">
+        <div className="cardhead justify-between">
+          <span className="cardtitle">{t('domains')}</span>
+          {isOwner && state && (
+            <Button variant="secondary" size="xs" onClick={() => open({ kind: 'addDomain' })}>
+              <Icon name="plus" size={14} />
+              {t('addDomain.open')}
+            </Button>
+          )}
+        </div>
+
+        {state === undefined && !loadError ? (
+          <LoadingState size={22} padding={20} />
+        ) : state === undefined ? (
+          <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+            {t('loadError')}
+          </div>
+        ) : domains.length === 0 ? (
+          <div className={ROW}>
+            <span className={MUTED}>{t('noDomains')}</span>
+          </div>
+        ) : (
+          domains.map((domain) => (
+            <DomainRow
+              key={domain.id}
+              domain={domain}
+              bound={active}
+              problem={problems[domain.id]}
+              isOwner={isOwner}
+              busy={rowBusy === domain.id}
+              onVerify={() =>
+                active && domain.status === 'pending' ? open({ kind: 'verify', domain }) : void verify(domain)
+              }
+              onRemove={() => void remove(domain)}
+            />
+          ))
+        )}
+
+        {actionError && (
+          <div
+            className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
+            role="alert"
+          >
+            {actionError}
+          </div>
         )}
       </div>
 
-      {state === undefined && !loadError ? (
-        <LoadingState size={22} padding={20} />
-      ) : state === undefined ? (
-        <div className="px-4 py-[15px] font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-          {t('loadError')}
-        </div>
-      ) : (
-        <>
-          {domains.length === 0 ? (
-            <div className={ROW}>
-              <span className={MUTED}>{t('noDomains')}</span>
-            </div>
+      {state && (connection || verified.length > 0) && (
+        <div className="card mt-[18px]" id="sso-connection">
+          <div className="cardhead">
+            <span className="cardtitle">{t('connection')}</span>
+          </div>
+          {connection ? (
+            <ConnectionRow connection={connection} isOwner={isOwner} open={open} />
           ) : (
-            <>
-              <div className={SECTION}>{t('domains')}</div>
-              {domains.map((domain) => (
-                <DomainRow
-                  key={domain.id}
-                  domain={domain}
-                  bound={active}
-                  problem={problems[domain.id]}
-                  isOwner={isOwner}
-                  busy={rowBusy === domain.id}
-                  onVerify={() =>
-                    active && domain.status === 'pending' ? open({ kind: 'verify', domain }) : void verify(domain)
-                  }
-                  onRemove={() => void remove(domain)}
-                />
-              ))}
-            </>
+            <div className={ROW}>
+              <div className={LINE}>
+                <span className={MUTED}>{t('noConnection')}</span>
+                {isOwner && (
+                  <span className="ml-auto flex items-center gap-2">
+                    <Button size="xs" onClick={() => open({ kind: 'connection' })}>
+                      {t('setUpConnection')}
+                    </Button>
+                  </span>
+                )}
+              </div>
+            </div>
           )}
-          {verified.length > 0 && (
-            <>
-              <div className={SECTION}>{t('memberSource.label')}</div>
-              <MemberSourceRow
-                source={state.memberSource}
-                isOwner={isOwner}
-                busy={sourceBusy}
-                onPick={(next) => void pickSource(next)}
-              />
-            </>
-          )}
-          {(connection || verified.length > 0) && (
-            <>
-              <div className={SECTION}>{t('connection')}</div>
-              {connection ? (
-                <ConnectionRow connection={connection} isOwner={isOwner} open={open} />
-              ) : (
-                <div className={ROW}>
-                  <div className={LINE}>
-                    <span className={MUTED}>{t('noConnection')}</span>
-                    {isOwner && (
-                      <span className="ml-auto flex items-center gap-2">
-                        <Button size="xs" onClick={() => open({ kind: 'connection' })}>
-                          {t('setUpConnection')}
-                        </Button>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </>
-      )}
-
-      {actionError && (
-        <div
-          className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
-          role="alert"
-        >
-          {actionError}
         </div>
       )}
 
@@ -578,24 +548,6 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           onSaved={refresh}
           onRemove={() => open({ kind: 'remove' })}
         />
-      )}
-      {dialog?.kind === 'joinByDomain' && (
-        <ConfirmationDialog
-          title={t('joinDialog.title')}
-          confirmLabel={t('joinDialog.confirm')}
-          busy={pending}
-          busyLabel={t('connectionDialog.saving')}
-          error={dialogError}
-          onConfirm={() =>
-            void confirm(async () => {
-              await setOrgMemberSource('domain', orgId)
-            })
-          }
-          onClose={close}
-        >
-          <DomainList domains={verified} />
-          {t('joinDialog.body')}
-        </ConfirmationDialog>
       )}
       {dialog?.kind === 'remove' && connection && (
         <ConfirmationDialog
@@ -727,6 +679,91 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           onClose={close}
         >
           {t.rich('verifyDialog.body', { domain: dialog.domain.domain, b: strong })}
+        </ConfirmationDialog>
+      )}
+    </>
+  )
+}
+
+/** How new members arrive; shown once a domain is verified, beside the other membership cards. */
+export function OrganizationMemberSourceCard({ orgId, isOwner }: { orgId: string; isOwner: boolean }) {
+  const t = useTranslations('Settings.sso')
+  const { data: state, mutate } = useSWR<OrgSsoStateDto>(consoleKeys.orgSso(orgId), ([, id]) =>
+    fetchOrgSso(id as string)
+  )
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [dialogError, setDialogError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setConfirming(false)
+    setError(null)
+  }, [orgId])
+
+  const verified = (state?.domains ?? []).filter((domain) => domain.status === 'verified')
+  if (!state || verified.length === 0) return null
+
+  // Opening the organization to its domains is confirmed; returning to invitations takes effect at once.
+  const pick = async (next: OrgMemberSource) => {
+    if (next === 'domain') {
+      setDialogError(null)
+      setBusy(false)
+      setConfirming(true)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await setOrgMemberSource(next, orgId)
+      await mutate()
+    } catch (e) {
+      setError(message(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const allow = async () => {
+    setBusy(true)
+    setDialogError(null)
+    try {
+      await setOrgMemberSource('domain', orgId)
+      setConfirming(false)
+    } catch (e) {
+      setDialogError(message(e))
+    } finally {
+      setBusy(false)
+      void mutate()
+    }
+  }
+
+  return (
+    <div className="card mt-[18px]" id="new-members">
+      <div className="cardhead">
+        <span className="cardtitle">{t('memberSource.label')}</span>
+      </div>
+      <MemberSourceRow source={state.memberSource} isOwner={isOwner} busy={busy} onPick={(next) => void pick(next)} />
+      {error && (
+        <div
+          className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      {confirming && (
+        <ConfirmationDialog
+          title={t('joinDialog.title')}
+          confirmLabel={t('joinDialog.confirm')}
+          busy={busy}
+          busyLabel={t('connectionDialog.saving')}
+          error={dialogError}
+          onConfirm={() => void allow()}
+          onClose={() => setConfirming(false)}
+        >
+          <DomainList domains={verified} />
+          {t('joinDialog.body')}
         </ConfirmationDialog>
       )}
     </div>

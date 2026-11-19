@@ -140,10 +140,10 @@ describe('SEARCH_PAGES index', () => {
       '/settings#agent-visibility',
       '/settings#session-access',
       '/settings#environment',
-      '/settings#members',
-      '/settings#invite-links',
-      '/settings#single-sign-on',
-      '/settings#service-accounts',
+      '/settings?tab=members#members',
+      '/settings?tab=members#invite-links',
+      '/settings?tab=sso#single-sign-on',
+      '/settings?tab=members#service-accounts',
       '/profile'
     ])
   })
@@ -176,8 +176,8 @@ describe('GlobalSearch pages & settings', () => {
   it('finds a settings card by its own title and navigates to its anchor', () => {
     render()
     type('members')
-    act(() => resultButton('/settings#members').click())
-    expect(push).toHaveBeenCalledWith('/org-test/settings#members')
+    act(() => resultButton('/settings?tab=members#members').click())
+    expect(push).toHaveBeenCalledWith('/org-test/settings?tab=members#members')
   })
 
   it('matches page route aliases (usage → Analytics)', () => {
@@ -196,7 +196,7 @@ describe('GlobalSearch pages & settings', () => {
     expect(host.textContent).toContain('No results')
     // Cards every member can see stay searchable.
     type('members')
-    expect(host.textContent).toContain('/settings#members')
+    expect(host.textContent).toContain('/settings?tab=members#members')
   })
 
   it('hides the Session access entry when the card cannot render', () => {
