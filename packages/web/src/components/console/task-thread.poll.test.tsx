@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// A thread's record keeps being re-read under a parent that re-renders more often than the poll interval.
+// A thread's record is re-read on its sessions' transcript signals, and at its fallback interval under a parent that re-renders more often.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -38,8 +38,8 @@ import { useThreadRecord } from './task-thread'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-function Panel({ tick }: { tick: number }) {
-  const thread = useThreadRecord({ sessionId: 'ses_coordinator', rootId: 'root-1' })
+function Panel({ tick, signal = 0 }: { tick: number; signal?: number }) {
+  const thread = useThreadRecord({ sessionId: 'ses_coordinator', rootId: 'root-1' }, () => false, signal)
   return (
     <span data-tick={tick} data-starting={thread.summary?.task?.starting ? '' : undefined}>
       {thread.summary ? 'read' : 'reading'}
@@ -50,11 +50,11 @@ function Panel({ tick }: { tick: number }) {
 let container: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot> | undefined
 
-const render = (tick: number) =>
+const render = (tick: number, signal = 0) =>
   act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => cache, dedupingInterval: 0 }}>
-        <Panel tick={tick} />
+        <Panel tick={tick} signal={signal} />
       </SWRConfig>
     )
     await Promise.resolve()
@@ -78,7 +78,7 @@ afterEach(() => {
 })
 
 describe('useThreadRecord polling', () => {
-  it('re-reads a starting thread every few seconds while its panel re-renders each second, until it is readable', async () => {
+  it('re-reads a starting thread at the fallback interval while its panel re-renders each second, until it is readable', async () => {
     await render(0)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
@@ -86,21 +86,45 @@ describe('useThreadRecord polling', () => {
     expect(wire.reads).toBe(1)
     expect(container?.querySelector('[data-starting]')).not.toBeNull()
     // A parent that re-renders every second, as a conversation with a live turn does.
-    for (let tick = 1; tick <= 11; tick++) {
+    for (let tick = 1; tick <= 31; tick++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_000)
       })
       await render(tick)
     }
-    // Eleven seconds at the running interval is two more reads; the timer restarted by each render made none.
+    // Thirty-one seconds at the fallback interval is two more reads; the timer restarted by each render made none.
     expect(wire.reads).toBe(3)
     wire.starting = false
-    for (let tick = 12; tick <= 17; tick++) {
+    for (let tick = 32; tick <= 46; tick++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_000)
       })
       await render(tick)
     }
     expect(container?.querySelector('[data-starting]')).toBeNull()
+  })
+
+  it('reads again on a transcript signal, and once for signals that arrive within a second', async () => {
+    wire.starting = false
+    await render(0)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(wire.reads).toBe(1)
+    await render(1, 1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(wire.reads).toBe(2)
+    await render(2, 2)
+    await render(3, 3)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(wire.reads).toBe(2)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+    expect(wire.reads).toBe(3)
   })
 })

@@ -1210,6 +1210,7 @@ import {
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
 import { coordinatorThreadContext } from './auto-session/coordinator-thread-context.js'
+import { prewarmsTask, TaskPrewarms, TASK_PREWARMS_PER_TURN } from './auto-session/task-prewarm.js'
 import {
   answerThreadOf,
   batchCut,
@@ -2238,6 +2239,13 @@ export class Daemon {
 
   // Agent→agent collaboration: A2A wake/reply/status (src/collab/).
   private readonly collab = new CollabCoordinator(this.collabHost())
+  // Task hosts started while their coordinator decides, until the task's first turn claims one (auto-session-mode.md §4.8).
+  private readonly taskPrewarms = new TaskPrewarms({
+    start: async (agentId, taskKey) => await this.startTaskPrewarm(agentId, taskKey),
+    releasable: (taskKey) => !this.inflight.has(taskKey),
+    release: async (taskKey) => await this.modelSessions.release(taskKey),
+    warn: (message) => this.log.warn(message)
+  })
   // A conversation's coordinator lookup in flight, so a message arriving meanwhile waits for its adoption (auto-session-mode.md §3.5).
   private readonly coordinatorLookups = new Map<string, Promise<string>>()
   // The `auto` mode's coordinator sessions and their live turns (auto-session-mode.md §4).
@@ -16025,6 +16033,7 @@ export class Daemon {
       )
     )
     this.coordinators.beginTurn(key, entry.agentId, messages)
+    void this.prewarmCoordinatorTasks(entry.agentId, key, messages)
     const { channel } = entry.msg
     const channelName = (await this.store.getDisplayNames([channel])).get(channel)
     const transcriptChannel = transcriptChannelKey(channel, entry.msg.transportScope)
@@ -16053,6 +16062,46 @@ export class Daemon {
       { channelId: channel, ...(channelName ? { channelName } : {}), ...(entry.webchat ? { webchat: true } : {}) },
       threads
     )
+  }
+
+  /** Start the model host of each task this coordinator turn may open, so a delegated message skips its task's cold start (auto-session-mode.md §4.8). */
+  private async prewarmCoordinatorTasks(
+    agentId: string,
+    coordinatorKey: string,
+    messages: readonly DeliveredMessage[]
+  ): Promise<void> {
+    // Only a pool member issuing per-session credentials starts a host per session.
+    if (!this.modelSessions.enabled || !this.k8sPlane) return
+    if (this.draining || this.drainingAgents.has(agentId) || !this.servesAgent(agentId)) return
+    const agent = this.agents.get(agentId)
+    // A session-isolated task starts in a pod of its own, which a guess must not create; a model-selection Decision may pick another runtime.
+    if (!agent || effectiveSessionIsolation(agent) !== 'shared' || agent.modelSelection) return
+    try {
+      let started = 0
+      for (const message of messages) {
+        if (started >= TASK_PREWARMS_PER_TURN) break
+        if (!prewarmsTask(message)) continue
+        const taskKey = await this.coordinators.newTaskKey(agentId, message)
+        if (taskKey === undefined || (await this.store.getSession(taskKey))) continue
+        // Checked with no await before `begin`: a drain may have emptied the pool, and a task whose turn owns its key would race it.
+        if (this.draining || this.inflight.has(taskKey) || this.modelSessions.has(taskKey)) continue
+        this.taskPrewarms.begin(coordinatorKey, agentId, taskKey)
+        started += 1
+      }
+    } catch (err) {
+      this.log.debug(`coordinator ${coordinatorKey}: prewarming its tasks failed: ${formatErr(err)}`)
+    }
+  }
+
+  /** Start a prewarmed task's model host as its first turn would, in the agent's pod. */
+  private async startTaskPrewarm(agentId: string, taskKey: string): Promise<void> {
+    const agent = this.sessionAgent(agentId, taskKey)
+    if (!agent) return
+    try {
+      await this.modelSessions.ensure(agent, taskKey)
+    } catch (err) {
+      this.log.debug(`coordinator: prewarming the task host of ${taskKey} failed: ${formatErr(err)}`)
+    }
   }
 
   /** A thread's history for a coordinator's batch, given up after a bounded wait so a slow provider read never holds the turn. */
@@ -16085,6 +16134,7 @@ export class Daemon {
     sessionId: string | null,
     opts: { replayed: boolean }
   ): Promise<void> {
+    this.taskPrewarms.turnEnded(key)
     if (entry.coordinatorBatch === undefined) return
     for (const taken of entry.coordinatorBatch) {
       if (!opts.replayed && !this.retainsInboxRow(taken, false)) await this.removeInbox(taken)
@@ -22753,6 +22803,8 @@ export class Daemon {
             initiatedBy: await sessionInitiatedBy((ids) => this.store.getDisplayNames(ids), persisted?.triggeredBy, msg)
           })
         }
+        // A host prewarmed for this task while its coordinator decided is joined, never raced (§4.8).
+        await this.taskPrewarms.claim(key)
         entry.selectedHost = await this.modelSessions.ensure(currentAgent, key, firstTurnModel)
       }
       // A prior provider post-turn operation is serialized. Managed needs this
@@ -31738,6 +31790,7 @@ export class Daemon {
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
       for (const key of [...this.hosts.keys()]) await this.stopHostByKey(key)
+      await this.taskPrewarms.stop()
       for (const key of this.modelSessions.keys()) await this.modelSessions.release(key)
       await this.webchatMcpRevocations.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
@@ -34103,6 +34156,7 @@ export class Daemon {
     const hostStarts = [...this.hostStarts.values()]
     const hostKeys = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const key of hostKeys) await this.stopHostByKey(key).catch((e) => errors.push(e))
+    await this.taskPrewarms.stop(true).catch((e) => errors.push(e))
     for (const key of this.modelSessions.keys()) {
       await this.modelSessions.release(key).catch((e) => errors.push(e))
     }

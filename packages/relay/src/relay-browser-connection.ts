@@ -546,7 +546,9 @@ export class RelayBrowserConnection implements ChatSink {
         ...(ack.reason ? { reason: ack.reason } : {}),
         ...(ack.detail ? { detail: ack.detail } : {}),
         ...(ack.generation !== undefined ? { generation: ack.generation } : {}),
-        ...(ack.steered ? { steered: true } : {})
+        ...(ack.steered ? { steered: true } : {}),
+        // The post id this turn's message is recorded under, so the browser retires its own copy by it.
+        ...(ack.accepted && op.op === 'turn' && op.post ? { postId: op.post.postId } : {})
       }
       // A refusal is the whole story of a stream that "never came back" — name it, and who
       // refused. Attach misses are the normal idle answer, not worth a line.

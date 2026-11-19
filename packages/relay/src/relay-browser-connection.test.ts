@@ -637,7 +637,9 @@ describe('RelayBrowserConnection', () => {
       sessionKey: CHAT,
       payload: { op: 'turn', text: 'hello there', user: USER }
     })
-    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT } })
+    // The accepted ack names the post the message is recorded under.
+    const postId = (sent[0]!.payload as { post: { postId: string } }).post.postId
+    expect(transport.last('ack')).toEqual({ type: 'ack', ack: { accepted: true, agentId: AGENT, postId } })
   })
 
   it('copies the verified remote-MCP entitlement to every webchat operation', async () => {
@@ -750,7 +752,7 @@ describe('RelayBrowserConnection', () => {
     expect(sent[0]).toMatchObject({ payload: { op: 'turn', text: 'use staging', turnId, steer: true } })
     expect(transport.last('ack')).toEqual({
       type: 'ack',
-      ack: { accepted: true, turnId, agentId: AGENT, steered: true }
+      ack: { accepted: true, turnId, agentId: AGENT, steered: true, postId: expect.any(String) }
     })
   })
 

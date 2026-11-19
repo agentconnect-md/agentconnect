@@ -1297,6 +1297,8 @@ export interface SessionStep {
   hidden?: boolean
   /** All stream lanes for this prompt have finished. */
   turnComplete?: boolean
+  /** When this step's stream lane ended; a transcript read started after it holds what the lane saved. */
+  laneDoneAtMs?: number
   /** One streamed message segment; consecutive ACP messages never share this id. */
   segmentId?: string
   /** Stable identity of the turn this step belongs to — the wire/user turnId for a live webchat
@@ -1348,11 +1350,7 @@ export interface SessionStep {
    *  steps where the owning participant's session differs from the row's
    *  primary `realSessionId`; the on-demand tool-body read targets it. */
   toolSessionId?: string
-  /** Canonical webchat post id (#753) — set on a live step rendered from an
-   *  agent-initiated `rd/webchat-post` frame, which has no preceding optimistic
-   *  `msg` prompt to anchor a turn-shaped reconciliation. `reconcilePersistedLiveSteps`
-   *  drops the step outright once a persisted row carries the same `postId`, from
-   *  ANY conversation participant's session — not just this step's own author. */
+  /** The canonical post this live step is saved under: an agent post's, a reply segment's, or a sent message's from the relay ack. */
   postId?: string
   /** A coordinator's post that links to a task, which the transcript draws as the task's card. */
   taskLink?: TaskLinkFacts

@@ -47,11 +47,14 @@ describe('threadRows', () => {
       { ...row(6, 'agent_1', 'gh pr list', 'tool'), toolCallId: 'c0' }
     ]
     const live: SessionStep[] = [
-      { kind: 'msg', turnId: 't2', text: 'run the tests', observedAtMs: since },
+      { kind: 'msg', turnId: 't2', text: 'run the tests', observedAtMs: since - 500 },
+      { kind: 'plan', turnId: 't2', text: 'Checking', observedAtMs: since },
       { kind: 'tool', turnId: 't2', text: 'pnpm test', toolCallId: 'c1', observedAtMs: since + 2000 }
     ]
     expect(threadRows(saved, live).map((m) => m.seq)).toEqual([1, 2, 6])
     expect(threadRows(saved, []).map((m) => m.seq)).toEqual([1, 2, 4, 5, 6])
+    // A live overlay without work leaves every saved row, reasoning included.
+    expect(threadRows(saved, [live[0]!]).map((m) => m.seq)).toEqual([1, 2, 4, 5, 6])
   })
 })
 
