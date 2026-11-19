@@ -18,7 +18,7 @@ import {
 } from '../session/subsession-coordinate.js'
 import type { HostKey } from '../acp/host-key.js'
 import { createHash, randomUUID } from 'node:crypto'
-import type { Clock } from '@agentconnect.md/connection'
+import { Backoff, type Clock } from '@agentconnect.md/connection'
 import {
   hasReachedAgentCallHopLimit,
   type TaskInitiator,
@@ -36,7 +36,7 @@ import type { CpClient } from '../cp/client.js'
 import type { CpAgentRegistry } from '../cp/cp-agent-registry.js'
 import type { CpCollabRoutes } from '../cp/cp-collab-routes.js'
 import type { RelayManager } from '../cp/relay-manager.js'
-import { sendAgentMsgUntilReady } from '../cp/agentmsg-retry.js'
+import { AGENTMSG_NOT_READY_RETRY, sendAgentMsgUntilReady } from '../cp/agentmsg-retry.js'
 import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponseBody } from '../session/no-response.js'
@@ -474,6 +474,8 @@ export interface CollabTurnHost {
 /** Everything the collaboration coordinator touches on the `Daemon`. */
 export interface CollabHost extends CollabCoreHost, CollabRoutingHost, CollabTurnHost {}
 
+/** `deliverReply`'s answer when the source's agent is draining here: the caller tries again once it has moved. */
+const SOURCE_DRAINING = Symbol('source-draining')
 export class CollabCoordinator {
   constructor(private readonly host: CollabHost) {}
 
@@ -723,7 +725,7 @@ export class CollabCoordinator {
         this.host.log().info(`sub-session ${key}: a report after its end was already reported is not delivered`)
         return { delivered: false, inReplyTo: answered.messageId, reason: TASK_ENDED }
       }
-      const result = await this.deliverReply(req, answered, key)
+      const result = await this.deliverReplyThroughDrain(req, answered, key)
       if (result.delivered && ended === undefined) await this.markSubsessionReported(req.callerAgentId, key)
       return result
     })
@@ -2352,7 +2354,23 @@ export class CollabCoordinator {
       !(await this.answersOwnTask(req.callerAgentId, answered, callerKey))
     )
       return await this.reportFromSubsession(req, answered)
-    return await this.deliverReply(req, answered, callerKey)
+    return await this.deliverReplyThroughDrain(req, answered, callerKey)
+  }
+
+  /** A source whose holder is draining moves to the next one: try again until it does, within the agent-call retry window. */
+  private async deliverReplyThroughDrain(
+    req: ReplyToSessionReq,
+    answered: ReceivedSessionMessage,
+    callerKey: string
+  ): Promise<ReplyToSessionResult> {
+    const deadline = this.host.clock().now() + AGENTMSG_NOT_READY_RETRY.windowMs
+    const backoff = new Backoff({ baseMs: AGENTMSG_NOT_READY_RETRY.baseMs, capMs: AGENTMSG_NOT_READY_RETRY.capMs })
+    for (;;) {
+      const delay = backoff.next()
+      const result = await this.deliverReply(req, answered, callerKey, this.host.clock().now() + delay <= deadline)
+      if (result !== SOURCE_DRAINING) return result
+      await new Promise<void>((resolve) => this.host.clock().setTimeout(resolve, delay))
+    }
   }
 
   /** Whether the answered message came from a task the caller opened. */
@@ -2701,8 +2719,9 @@ export class CollabCoordinator {
   private async deliverReply(
     req: ReplyToSessionReq,
     answered: ReceivedSessionMessage,
-    callerKey: string
-  ): Promise<ReplyToSessionResult> {
+    callerKey: string,
+    retryDraining = false
+  ): Promise<ReplyToSessionResult | typeof SOURCE_DRAINING> {
     const store = this.host.store()
     const inReplyTo = answered.messageId
     const inbound = this.host.activeTurnCallMeta().get(callerKey)
@@ -2838,6 +2857,7 @@ export class CollabCoordinator {
       const admission = await admitted
       if (!admission.accepted) {
         await this.forgetSent(messageId)
+        if (admission.reason === 'draining' && retryDraining) return SOURCE_DRAINING
         return failed(admission.reason === 'queue_full' ? 'queue_full' : 'busy', local.key)
       }
       this.host

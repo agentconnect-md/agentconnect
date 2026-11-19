@@ -18336,6 +18336,11 @@ export class Daemon {
     const dedupKey = `${msg.trustedFromAgentId}:${msg.deliveryId}`
     const prior = this.relayAgentMsgAcks.get(dedupKey)
     if (prior) return prior
+    // A draining daemon admits nothing and hands its agents on: refuse retryably, uncached, so the sender re-sends to the next holder.
+    if (this.draining || this.drainingAgents.has(msg.toAgentId)) {
+      this.log.info(`relay: rd/agentmsg/fwd not_ready — ${msg.toAgentId} is draining here`)
+      return nak(RD_AGENTMSG_NOT_READY)
+    }
 
     const record = (ack: RdAgentMsgAck): RdAgentMsgAck => {
       if (this.relayAgentMsgAcks.size >= 2000) this.relayAgentMsgAcks.clear()
@@ -18496,7 +18501,10 @@ export class Daemon {
         settleAdmission({ accepted: false, reason: 'error' })
       })
       const admission = await admitted
-      if (!admission.accepted) return record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
+      if (!admission.accepted)
+        return admission.reason === 'draining'
+          ? nak(RD_AGENTMSG_NOT_READY)
+          : record(nak(admission.reason === 'queue_full' ? 'queue_full' : 'busy'))
       await this.collab.notePeerReplyAdmitted({
         fromAgentId: msg.trustedFromAgentId,
         ...(msg.inReplyTo !== undefined ? { inReplyTo: msg.inReplyTo } : {}),
@@ -18629,8 +18637,8 @@ export class Daemon {
       callMeta.activationKey = key
     }
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
-    // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
-    // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
+    // target processes the turn in its own time (§6.4). A drain was refused retryably above;
+    // dispatch() still drops the turn on a pause gate.
     void this.dispatch(
       msg.toAgentId,
       normalized,
