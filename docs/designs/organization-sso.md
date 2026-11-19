@@ -541,7 +541,7 @@ Each step merges on its own.
 Organization SSO stays undeclared on every deployment until its Logto provides §5.
 
 Verification on a staging deployment with a real identity provider, OIDC and SAML:
-a test deployment against Microsoft Entra ID has exercised the test sign-in,
+a deployment with Microsoft Entra ID as the provider has exercised the test sign-in,
 activation, enforcement and the refusal of a member outside the domains with both
 protocols, the email field's routing, joining by domain and a removal that sticks,
 and deactivation. The refusal of social sign-in with a bound address cannot be
