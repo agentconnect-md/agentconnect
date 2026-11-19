@@ -13,7 +13,8 @@ import {
   buildComputerCpFrame,
   decodeComputerCpFrame,
   decodeComputerCpFrameTolerant,
-  ComputerEgress
+  ComputerEgress,
+  ComputerCapabilitiesSchema
 } from './computer.js'
 import { buildRelayCpFrame } from './relay-cp.js'
 import {
@@ -373,5 +374,40 @@ describe('managed computer egress (computer-use.md §15.4)', () => {
       url: 'http://proxy.example.com:3128',
       password: 'secret'
     })
+  })
+})
+
+describe('the browser tier (computer-use.md §5.8)', () => {
+  it('reads an absent tier as off and an absent webdriver choice as hidden, and a newer CP fails no older desktop', () => {
+    const policy = ComputerPolicySchema.parse({})
+    expect(policy.browserTier).toBeUndefined()
+    expect(policy.browserHideWebdriver).toBeUndefined()
+    expect(ComputerPolicySchema.parse({ browserTier: true, browserHideWebdriver: false })).toMatchObject({
+      browserTier: true,
+      browserHideWebdriver: false
+    })
+    expect(ComputerPolicySchema.safeParse({ browserTier: 'on' }).success).toBe(false)
+    const frame = buildComputerCpFrame('computer/policy', {
+      policy: { ...policy, browserTier: true, laterField: 1 } as never
+    })
+    const decoded = decodeComputerCpFrameTolerant(JSON.stringify(frame))
+    expect(decoded.ok && decoded.frame.type === 'computer/policy' && decoded.frame.payload.policy.browserTier).toBe(
+      true
+    )
+  })
+
+  it('reports the desktops with a checked endpoint, which an older CP drops from the capabilities', () => {
+    const heartbeat = buildComputerCpFrame('computer/heartbeat', {
+      status: 'online',
+      capabilities: { screenshot: true, input: true, devtools: ['main', 'd1'] }
+    })
+    const decoded = roundTrip(heartbeat)
+    expect(
+      decoded.ok && decoded.frame.type === 'computer/heartbeat' && decoded.frame.payload.capabilities?.devtools
+    ).toEqual(['main', 'd1'])
+    expect(ComputerCapabilitiesSchema.parse({}).devtools).toBeUndefined()
+    expect(ComputerCapabilitiesSchema.safeParse({ devtools: ['not a desktop id'] }).success).toBe(false)
+    const older = ComputerCapabilitiesSchema.omit({ devtools: true })
+    expect(older.parse({ devtools: ['main'] })).not.toHaveProperty('devtools')
   })
 })

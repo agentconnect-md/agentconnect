@@ -145,7 +145,11 @@ export const ComputerPolicySchema = z
     // Prefixes the file tools may touch; absent means the user's home directory.
     fileRoots: z.array(ComputerFileRoot).max(COMPUTER_FILE_ROOTS_MAX).optional(),
     // Per-agent desktops fork and merge the registrant's browser logins (§3.9); absent means on.
-    shareBrowserLogins: z.boolean().optional()
+    shareBrowserLogins: z.boolean().optional(),
+    // The browser tier's DevTools endpoint on an isolated Computer (§5.8); absent means off, as an older CP sends.
+    browserTier: z.boolean().optional(),
+    // With the tier, the launcher hides the switch's `navigator.webdriver` mark (§3.10); absent means hidden.
+    browserHideWebdriver: z.boolean().optional()
   })
   .refine((p) => p.leaseIdleSeconds <= p.leaseMaxSeconds, {
     message: 'leaseIdleSeconds must not exceed leaseMaxSeconds',
@@ -157,6 +161,9 @@ export const ComputerPolicySchema = z
     path: ['shell']
   })
 export type ComputerPolicy = z.infer<typeof ComputerPolicySchema>
+
+/** The longest list of agent desktops one heartbeat reports. */
+export const COMPUTER_DESKTOPS_MAX = 64
 
 /** What the desktop daemon reports from `doctor` and its heartbeat (§2.2, §3.5). */
 export const ComputerCapabilitiesSchema = z.object({
@@ -177,6 +184,11 @@ export const ComputerCapabilitiesSchema = z.object({
   files: z.boolean().optional(),
   // The browser extension is installed here and `computer_form_*` are served (computer-form-fill-and-vault.md §8).
   formFill: z.boolean().optional(),
+  // The desktops ('main' or an agent desktop's id) whose browser has a checked DevTools endpoint (§5.8).
+  devtools: z
+    .array(ComputerDesktopId)
+    .max(COMPUTER_DESKTOPS_MAX + 1)
+    .optional(),
   displays: z
     .array(
       z.object({
@@ -291,9 +303,6 @@ export type ComputerAuthOk = z.infer<typeof ComputerAuthOk>
 
 /** Leases, the queue, status and audit per desktop on a Computer with per-agent desktops (computer-use.md §3.9). */
 export const COMPUTER_DESKTOPS_FEATURE = 'computer-desktops-v1'
-
-/** The longest list of agent desktops one heartbeat reports. */
-export const COMPUTER_DESKTOPS_MAX = 64
 
 /** One running agent desktop in a heartbeat: its daemon id, the agent it serves, and its own status and local lease. */
 export const ComputerDesktopReport = z

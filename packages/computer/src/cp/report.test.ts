@@ -64,6 +64,13 @@ describe('Control Plane report', () => {
     )
   })
 
+  it('names the desktops whose browser has a checked DevTools endpoint, and nothing without one', () => {
+    const caps = capabilitiesFrom(linuxChecks, undefined, { platform: 'linux', devtools: ['main', 'd1'] })
+    expect(caps.devtools).toEqual(['main', 'd1'])
+    expect(ComputerCapabilitiesSchema.safeParse(caps).success).toBe(true)
+    expect(capabilitiesFrom(linuxChecks, undefined, { platform: 'linux', devtools: [] })).not.toHaveProperty('devtools')
+  })
+
   it('bounds the doctor report to what the wire accepts', () => {
     const many: Check[] = Array.from({ length: 80 }, (_, i) => ({
       name: `check-${i}`,

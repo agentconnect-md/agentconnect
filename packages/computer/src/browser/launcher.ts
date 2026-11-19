@@ -20,6 +20,7 @@ import {
 import { cp } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { callerArgs, devtoolsFlags, isGoogleChrome, prepareProfile, type DevtoolsLaunch } from './devtools-launch.js'
 import { BASELINE_FILE, forkMerge, renameBaselineSource, type SourceReport } from './profile-merge.js'
 
 /** The names a browser is started by, in the order the launcher looks for the real one off the image. */
@@ -182,6 +183,18 @@ export function findBrowser(
   return undefined
 }
 
+/** The browser the image's entrypoint passes as `--browser`: BROWSER when set and installed, else the launcher's choice. */
+export function chosenBrowser(env: NodeJS.ProcessEnv = process.env, skip: string[] = []): string | undefined {
+  const name = env.BROWSER
+  if (name && name !== 'none') {
+    const found = name.includes('/')
+      ? findBrowser(dirname(resolve(name)), [], [basename(name)])
+      : findBrowser(env.PATH ?? '', skip, [name])
+    if (found) return found
+  }
+  return findBrowser(env.PATH ?? '', skip, browserNames(env))
+}
+
 // A desktop's wrapper (§3.10) runs `browser --desktop <id>`; taking it for the browser would start the launcher again.
 function isWrapper(path: string): boolean {
   const head = Buffer.alloc(1024)
@@ -202,6 +215,10 @@ export interface LaunchOptions extends MoveOptions {
   browser: string
   args?: string[]
   env?: NodeJS.ProcessEnv
+  // The browser tier's state from the daemon (§3.10); absent, the tier is off.
+  devtools?: DevtoolsLaunch
+  // Whether `browser` is Google Chrome; resolved from its path when absent.
+  chrome?: boolean
 }
 
 export interface LaunchResult {
@@ -214,10 +231,11 @@ export interface LaunchResult {
 /** Hands the request to the profile's running browser, or seeds, fork-merges and starts one. */
 export async function launchBrowser(options: LaunchOptions): Promise<LaunchResult> {
   const log = options.log ?? (() => undefined)
+  const chrome = options.chrome ?? isGoogleChrome(options.browser)
   const release = await lockProfile(options.profile)
   try {
     if (profileOwner(options.profile) !== undefined) {
-      start(options).unref()
+      start(options, chrome).unref()
       return { handedOff: true, reports: [] }
     }
     await moveUnderLock({ ...options, log })
@@ -239,7 +257,9 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchResul
     )
     const reports = await forkMerge(options.profile, sources)
     for (const report of reports) log(`browser fork-merge from ${report.source}: ${summarize(report)}`)
-    const child = start(options)
+    // Only where the tier can exist (the image sets `devtools`): a person's own profiles keep their port file and setting.
+    if (options.devtools) prepareProfile(options.profile, options.devtools.tier && chrome)
+    const child = start(options, chrome)
     // The lock holds until the browser owns the profile, so a second launch hands off instead of merging under it.
     if (!(await owned(options.profile, child))) log(`browser for ${options.profile} did not take its profile`)
     return { handedOff: false, reports, ...(child.pid !== undefined ? { pid: child.pid } : {}) }
@@ -248,10 +268,19 @@ export async function launchBrowser(options: LaunchOptions): Promise<LaunchResul
   }
 }
 
-function start(options: LaunchOptions): ChildProcess {
+function start(options: LaunchOptions, chrome: boolean): ChildProcess {
   const env = { ...(options.env ?? process.env) }
   delete env[EXTRA_FLAGS_ENV]
-  const args = [`--user-data-dir=${options.profile}`, ...BASE_FLAGS, ...imageFlags(env), ...(options.args ?? [])]
+  // On the image the endpoint, proxy and webdriver switches are the launcher's: Chrome would take a caller's, passed last.
+  const { kept, dropped } = onImage(env) ? callerArgs(options.args ?? []) : { kept: options.args ?? [], dropped: [] }
+  if (dropped.length > 0) options.log?.(`browser: dropped the caller's switches ${dropped.join(' ')}`)
+  const args = [
+    `--user-data-dir=${options.profile}`,
+    ...BASE_FLAGS,
+    ...imageFlags(env),
+    ...devtoolsFlags(options.devtools, chrome, env),
+    ...kept
+  ]
   const child = spawn(options.browser, args, { detached: true, stdio: 'ignore', env })
   child.on('error', () => undefined)
   return child

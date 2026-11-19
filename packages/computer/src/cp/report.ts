@@ -2,12 +2,13 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { release } from 'node:os'
-import type {
-  ComputerCapabilities,
-  ComputerDoctorReport,
-  ComputerIsolation,
-  ComputerOs,
-  ComputerSession
+import {
+  COMPUTER_DESKTOPS_MAX,
+  type ComputerCapabilities,
+  type ComputerDoctorReport,
+  type ComputerIsolation,
+  type ComputerOs,
+  type ComputerSession
 } from '@agentconnect.md/protocol/computer'
 import type { Check } from '../setup.js'
 
@@ -107,6 +108,8 @@ export function capabilitiesFrom(
     egress?: boolean
     commandLine?: boolean
     formFill?: boolean
+    // Desktops whose browser has a checked DevTools endpoint (computer-use.md §5.8).
+    devtools?: string[]
   } = {}
 ): ComputerCapabilities {
   const platform = options.platform ?? process.platform
@@ -138,6 +141,7 @@ export function capabilitiesFrom(
     ...(options.egress ? { egress: true } : {}),
     ...(options.commandLine ? { exec: true, files: true } : {}),
     ...(options.formFill ? { formFill: true } : {}),
+    ...(options.devtools?.length ? { devtools: options.devtools.slice(0, COMPUTER_DESKTOPS_MAX + 1) } : {}),
     displays:
       display && display.screenWidth > 0 && display.screenHeight > 0
         ? [

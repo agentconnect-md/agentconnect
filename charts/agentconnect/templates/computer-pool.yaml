@@ -209,6 +209,7 @@ spec:
             - name: home
               mountPath: /volume
       {{- end }}
+      # One container only: the pod's loopback holds the browser's DevTools endpoint, which any other container could reach.
       containers:
         - name: computer
           image: {{ include "agentconnect.computerImage" . | quote }}

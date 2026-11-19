@@ -15,7 +15,10 @@ import {
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { browserCloseCommand, browserCommand, browserLaunchersCommand } from './browser/command.js'
-import { onImage } from './browser/launcher.js'
+import { DevtoolsEndpoints } from './browser/devtools-endpoint.js'
+import { isGoogleChrome } from './browser/devtools-launch.js'
+import { DevtoolsTier, tierGrant, type TierGrant } from './browser/devtools-tier.js'
+import { chosenBrowser, onImage } from './browser/launcher.js'
 import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
 import { askYes, installable, offerDesktopInstall, runInherited } from './linux/desktops-install.js'
 import { describeDesktops, desktopsNotice, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
@@ -33,8 +36,10 @@ import { extensionId, extensionKey, installExtension } from './form-fill/package
 import { FormFillService } from './form-fill/service.js'
 import {
   DesktopManager,
+  desktopBrowserPlan,
   desktopBrowserProfiles,
   isBrowserName,
+  MAIN_DESKTOP,
   launchMainBrowser,
   loadDesktopState,
   migrateMainProfile
@@ -685,6 +690,8 @@ function startCpChannel(options: {
   commandLine?: boolean
   // The form-fill extension's endpoint is up (computer-form-fill-and-vault.md §8).
   formFill?: boolean
+  // The desktops whose browser has a checked DevTools endpoint (§5.8).
+  devtools?: () => string[]
   onPolicy?: (policy: ComputerPolicy) => void
   // Linux: the per-agent desktops, whose status the heartbeat reports and whose leases the CP pushes (§3.9).
   desktops?: () => DesktopManager | undefined
@@ -746,7 +753,8 @@ function startCpChannel(options: {
                   keyboardActivity: local?.keyboard() ?? false,
                   egress: options.egress !== undefined,
                   commandLine: options.commandLine === true,
-                  formFill: options.formFill === true
+                  formFill: options.formFill === true,
+                  devtools: options.devtools?.() ?? []
                 }),
                 doctor: doctorReport(
                   [...checks, ...(local?.checks() ?? []), ...(options.liveChecks?.() ?? [])],
@@ -933,23 +941,86 @@ async function registerFromPool(dir: string): Promise<void> {
   await pool.registered
 }
 
+// The image's browser tier (§5.8): the grant is read again on every check; scans run only where the tier can exist.
+async function startDevtools(options: {
+  dir: string
+  config: DaemonConfig
+  registered: boolean
+  revoked: () => boolean
+  policy: () => ComputerPolicy | undefined
+  egressAt: number | undefined
+  startForwarder: () => Promise<number>
+  beat: () => void
+  desktops: () => DesktopManager | undefined
+}): Promise<{ check(): Check; verified(): string[]; refresh(): Promise<void>; stop(): void }> {
+  const { dir, registered } = options
+  let local = options.config
+  const grant = (): TierGrant | undefined => {
+    if (!registered) {
+      try {
+        local = loadConfig(dir)
+      } catch {
+        // A config being edited keeps the last one read.
+      }
+    }
+    return tierGrant({ registered, revoked: options.revoked(), policy: options.policy(), config: local })
+  }
+  const isolation = isolationKind()
+  const mainBrowser = chosenBrowser(process.env, desktopBrowserPlan(dir, MAIN_DESKTOP).skip)
+  const tier: DevtoolsTier = new DevtoolsTier({
+    dataDir: dir,
+    image: true,
+    isolation,
+    // Resolved once, as the entrypoint resolves the main browser it supervises: BROWSER first, at start.
+    chrome: () => mainBrowser !== undefined && isGoogleChrome(mainBrowser),
+    grant,
+    registered,
+    egressPort: options.egressAt,
+    startForwarder: options.startForwarder,
+    log,
+    onChange: () => {
+      void endpoints?.poll()
+      options.beat()
+    }
+  })
+  // No endpoint watcher, and so no browser-port scan per heartbeat, where the tier cannot exist.
+  const endpoints =
+    isolation === 'none'
+      ? undefined
+      : new DevtoolsEndpoints({
+          desktops: () =>
+            options.desktops()?.profiles() ?? [{ desktop: MAIN_DESKTOP, profile: loadDesktopState(dir).master }],
+          active: () => tier.on,
+          proxyPort: () => options.egressAt ?? tier.forwarderPort,
+          log,
+          onChange: options.beat
+        })
+  await tier.start()
+  endpoints?.start()
+  return {
+    check: () => tier.check(endpoints?.report() ?? []),
+    verified: () => (tier.on ? (endpoints?.verified() ?? []) : []),
+    refresh: () => tier.refresh(),
+    stop: () => {
+      tier.stop()
+      endpoints?.stop()
+    }
+  }
+}
+
 async function run(dir: string, initial: DaemonConfig, clientName: string): Promise<void> {
   // First run sets itself up, so unzip + `run` is enough; nothing is installed as a service.
   let config = initial
   // In a managed pod the browser's only proxy; it lets nothing out until the Control Plane names the egress (§15.4).
   const egressAt = egressPort()
+  // The self-hosted container's own forwarder, started in direct mode once the browser tier is on (§15.4).
+  let ownEgress: EgressForwarder | undefined
   // Refuses pages the daemon's listeners and desktop browsers' ports; 127.0.0.1:<form-fill port> bypasses it (§5.8).
-  const egress =
-    egressAt !== undefined
-      ? new EgressForwarder({
-          port: egressAt,
-          log,
-          loopback: new LoopbackGuard({
-            daemonPorts: () => [config.port, config.formFillPort, poolBootstrapPort(), egressAt],
-            profiles: () => desktopBrowserProfiles(dir)
-          })
-        })
-      : undefined
+  const loopback = new LoopbackGuard({
+    daemonPorts: () => [config.port, config.formFillPort, poolBootstrapPort(), egressAt, ownEgress?.port],
+    profiles: () => desktopBrowserProfiles(dir)
+  })
+  const egress = egressAt !== undefined ? new EgressForwarder({ port: egressAt, log, loopback }) : undefined
   if (egress) log(`egress forwarder on 127.0.0.1:${await egress.start()}`)
   await registerFromPool(dir)
   await registerFromEnvironment(dir)
@@ -998,8 +1069,33 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       live.viewer?.disconnectAll(reason)
       // No new data-plane calls without a live key; the next roster push after reconnecting reattaches.
       live.channel?.relays.stop()
+      // A revoke takes the grant with it; the state file says so before the next browser start.
+      if (state.kind === 'revoked') void devtools?.refresh()
     }
   })
+  // The browser tier, decided early: the first browser start waits for the launch state this writes (§5.8).
+  const devtools =
+    process.platform === 'linux' && onImage()
+      ? await startDevtools({
+          dir,
+          config,
+          registered: Boolean(registration),
+          revoked: () => authority.state().kind === 'revoked',
+          policy: () => live.policy,
+          egressAt,
+          startForwarder: async () => {
+            const forwarder = new EgressForwarder({ port: 0, log, loopback })
+            await forwarder.start()
+            forwarder.apply({ mode: 'direct' })
+            ownEgress = forwarder
+            log(`egress forwarder for the browser tier on 127.0.0.1:${forwarder.port} (direct)`)
+            return forwarder.port!
+          },
+          beat: () => live.channel?.client.beat(),
+          desktops: () => live.desktops
+        })
+      : undefined
+  const devtoolsChecks = (): Check[] => (devtools ? [devtools.check()] : [])
   // A registered desktop also reports every call to the Control Plane, which keeps the owner's per-Computer audit (§8.2).
   const auditReport =
     registration && !registration.revokedAt
@@ -1376,7 +1472,11 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     createMcpServer,
     log,
     viewer,
-    localChecks: () => [...(live.local?.checks() ?? []), ...(formFill ? [formFill.endpoint.check()] : [])],
+    localChecks: () => [
+      ...(live.local?.checks() ?? []),
+      ...(formFill ? [formFill.endpoint.check()] : []),
+      ...devtoolsChecks()
+    ],
     ...(live.desktops
       ? {
           desktops: {
@@ -1405,9 +1505,11 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     egress,
     commandLine: commandLine !== undefined,
     formFill: formFill !== undefined,
-    ...(formFill ? { liveChecks: () => [formFill.endpoint.check()] } : {}),
+    liveChecks: () => [...(formFill ? [formFill.endpoint.check()] : []), ...devtoolsChecks()],
+    ...(devtools ? { devtools: () => devtools.verified() } : {}),
     onPolicy: (policy) => {
       live.policy = policy
+      void devtools?.refresh()
       keepAdminPrompts(policy.approvals.adminPrompts)
       live.desktops?.setShareBrowserLogins(policy.shareBrowserLogins !== false)
     },
@@ -1463,8 +1565,15 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     live.accessibility?.stop()
     authority.close()
     releaseDisplay()
+    devtools?.stop()
     await live.desktops?.close().catch(() => undefined)
-    await Promise.allSettled([server.close(), driver.close(), egress?.stop(), formFill?.endpoint.close()])
+    await Promise.allSettled([
+      server.close(),
+      driver.close(),
+      egress?.stop(),
+      ownEgress?.stop(),
+      formFill?.endpoint.close()
+    ])
     process.exit(exitCode)
   }
   process.once('SIGINT', () => void shutdown())

@@ -2,7 +2,8 @@
 import { resolve } from 'node:path'
 import { closeBrowser } from './close.js'
 import { desktopBrowserPlan, writeLaunchers } from '../linux/desktops.js'
-import { findBrowser, launchBrowser } from './launcher.js'
+import { awaitDevtoolsState } from './devtools-launch.js'
+import { findBrowser, launchBrowser, onImage, profileOwner } from './launcher.js'
 
 // A desktop's wrappers run this: X11 on that desktop, and the main session bus whose keyring decrypts the cookies.
 async function desktopBrowser(
@@ -18,6 +19,14 @@ async function desktopBrowser(
   const env: NodeJS.ProcessEnv = { ...process.env }
   delete env.WAYLAND_DISPLAY
   if (plan.mainBus) env.DBUS_SESSION_BUS_ADDRESS = plan.mainBus
+  // Only the image's browsers can have the tier, and a hand-off to a running browser waits for nothing (§5.8).
+  // No state yet reads as the tier off, so the image still clears a stale port file and the `chrome://inspect` setting.
+  const devtools = onImage()
+    ? ((await awaitDevtoolsState(dataDir, profileOwner(plan.profile) === undefined ? undefined : 0)) ?? {
+        tier: false,
+        hideWebdriver: true
+      })
+    : undefined
   const result = await launchBrowser({
     profile: plan.profile,
     ...(plan.master ? { master: plan.master } : {}),
@@ -27,7 +36,8 @@ async function desktopBrowser(
     // The desktop's tabs come back after its browser was closed for idleness (computer-use.md §3.10).
     args: ['--ozone-platform=x11', '--restore-last-session', ...args],
     env,
-    log
+    log,
+    ...(devtools ? { devtools } : {})
   })
   log(
     `desktop ${id}: ${result.handedOff ? 'browser already running; the request went to it' : `browser started (pid ${result.pid ?? '?'})`}`
