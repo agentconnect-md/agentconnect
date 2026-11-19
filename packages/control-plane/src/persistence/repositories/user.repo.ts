@@ -734,6 +734,14 @@ export class PgUserRepo implements UserRepo {
     return rows.map(toMemberRecord)
   }
 
+  async memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null> {
+    const row = await this.db.membership.findFirst({
+      where: { orgId, user: { kind: 'human', oidcSubject }, ...ACTIVE_MEMBERSHIP },
+      include: { user: true }
+    })
+    return row ? toMemberRecord(row) : null
+  }
+
   async setMemberRole(
     orgId: string,
     userId: string,

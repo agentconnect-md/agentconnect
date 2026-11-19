@@ -16,6 +16,7 @@ import type {
 import { AgentId, ComputerId, OrgId, SessionId } from '../domain/ids.js'
 import { withOwnerMember } from '../domain/computer.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
+import { membersLinkedTo, type LinkedMemberDeps } from './linkedMember.js'
 import { canEdit } from '../authorization/policy.js'
 import { assistantResponsibleUser } from '../agents/assistant-mode.js'
 
@@ -24,18 +25,19 @@ export interface ApprovalRouteDeps {
   session: Pick<SessionRepo, 'getUnscoped'>
   integration: Pick<IntegrationRepo, 'activeForAgents'>
   bot: Pick<BotRepo, 'get'>
-  users: Pick<UserRepo, 'listMembers' | 'getOidcSubject'>
+  users: Pick<UserRepo, 'listMembers' | 'getOidcSubject' | 'memberByOidcSubject'>
   /** A computer-use approval's Computer, whose allowed members stand in for the agent's editors (computer-use.md §4.2). */
   computer?: Pick<ComputerRepo, 'getUnscoped'>
   /** Each platform's provider says whether, and under which tenant, its chat members can be matched (`chatMemberTenant`). */
   platforms: Pick<CpPlatformRegistry, 'get'>
   /** Absent when the deployment has no sign-in configured — then nothing is linked. */
-  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> }
+  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> } & LinkedMemberDeps['identity']
   log?: { debug(obj: object, msg: string): void; warn(obj: object, msg: string): void }
 }
 
 /** How one platform's chat members are matched: the bot's tenant, and the member ids a console user linked under it. */
 interface ChatMemberMatcher {
+  platform: string
   tenantOf(bot: BotRecord): string | null
   linkedIds(sub: string, tenant: string): Promise<string[]>
 }
@@ -62,6 +64,7 @@ export async function resolveApprovalRoute(
     const tenantOf = deps.platforms.get(integration.platform)?.chatMemberTenant
     if (!tenantOf) continue
     const matcher: ChatMemberMatcher = {
+      platform: integration.platform,
       tenantOf,
       linkedIds: async (sub, tenant) =>
         (await identity.chatIdentitiesFor(sub))
@@ -108,6 +111,24 @@ export async function resolveApprovalRoute(
     matcher: ChatMemberMatcher,
     tenant: string
   ): Promise<AgentApprovalRouted> => {
+    // Past the cap the link is looked up from the chat side, which names the member whatever their role.
+    if (members.length > MAX_AUDIENCE) {
+      const found = await membersLinkedTo(
+        agent.orgId,
+        { platform: matcher.platform, tenant, memberId: userId },
+        { identity, users: deps.users }
+      ).catch((err: unknown) => {
+        deps.log?.warn({ err }, 'approval route: linked-identity lookup failed — scanning the editors instead')
+        return undefined
+      })
+      if (found) {
+        const editor = found.find((m) => editors.some((e) => e.userId === m.userId))
+        if (editor) {
+          return { requestId, allowed: true, ...(editor.displayName ? { displayName: editor.displayName } : {}) }
+        }
+        return { requestId, allowed: false, linked: found.length > 0 }
+      }
+    }
     if (editors.length > MAX_AUDIENCE) return none
     const scanned = members.length <= MAX_AUDIENCE ? members : editors
     const matches = await mapLimited(scanned, AUDIENCE_CONCURRENCY, async (m) =>

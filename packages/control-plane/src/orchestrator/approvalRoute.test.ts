@@ -43,6 +43,8 @@ interface World {
   integrations?: Array<{ id: string; botId: string; platform?: string }>
   bots?: Record<string, Partial<BotRecord>>
   identityAbsent?: boolean
+  /** The identity provider can look a link up from the chat side; 'down' makes that read fail. */
+  reverse?: boolean | 'down'
   // consoleUserId → linked Feishu/Lark identities
   feishuLinks?: Record<string, FeishuIdentity[]>
   computer?: Partial<ComputerRecord>
@@ -81,7 +83,8 @@ function deps(world: World): ApprovalRouteDeps {
     },
     users: {
       listMembers: async () => members,
-      getOidcSubject: async (userId) => `sub:${userId}`
+      getOidcSubject: async (userId) => `sub:${userId}`,
+      memberByOidcSubject: async (_org, sub) => members.find((m) => `sub:${m.userId}` === sub) ?? null
     },
     platforms: PLATFORMS,
     computer: {
@@ -98,7 +101,25 @@ function deps(world: World): ApprovalRouteDeps {
     },
     ...(world.identityAbsent
       ? {}
-      : { identity: { chatIdentitiesFor: async (sub: string) => chatIdentities(world, sub) } })
+      : {
+          identity: {
+            chatIdentitiesFor: async (sub: string) => chatIdentities(world, sub),
+            // Slack links can be looked up from the chat side; Feishu/Lark keeps its id in the profile.
+            ...(world.reverse
+              ? {
+                  subjectsLinkedTo: async (who: LinkedChatIdentity) => {
+                    if (world.reverse === 'down') throw new Error('identity provider unavailable')
+                    if (who.platform !== 'slack') return undefined
+                    return members
+                      .map((m) => `sub:${m.userId}`)
+                      .filter((sub) =>
+                        chatIdentities(world, sub).some((l) => l.tenant === who.tenant && l.memberId === who.memberId)
+                      )
+                  }
+                }
+              : {})
+          }
+        })
   }
 }
 
@@ -611,6 +632,36 @@ describe('resolveApprovalRoute — a chat member, named by no console user (chat
       requestId: REQUEST_ID,
       allowed: false
     })
+  })
+
+  it('past the cap, finds the actor from the chat side: an editor is allowed, any other member is told apart from a stranger', async () => {
+    const viewers = Array.from({ length: 201 }, (_, i) => ({ userId: `v-${i}`, role: 'viewer' as const }))
+    const many = {
+      members: [{ userId: 'u-editor' }, ...viewers],
+      links: { 'u-editor': linked('U0EDITOR'), 'v-1': linked('U0VIEWER'), 'v-2': linked('U0ELSEWHERE', TEAM_B) }
+    }
+    const found = deps({ ...many, reverse: true })
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR'), found)).allowed).toBe(true)
+    expect(await resolveApprovalRoute(actorReq('U0VIEWER'), found)).toEqual({
+      requestId: REQUEST_ID,
+      allowed: false,
+      linked: true
+    })
+    for (const stranger of ['U0NOBODY', 'U0ELSEWHERE']) {
+      expect(await resolveApprovalRoute(actorReq(stranger), found)).toEqual({
+        requestId: REQUEST_ID,
+        allowed: false,
+        linked: false
+      })
+    }
+    // More editors than the cap is no longer a refusal.
+    const editors = Array.from({ length: 201 }, (_, i) => ({ userId: `u-${i}` }))
+    const manyEditors = deps({ members: editors, links: { 'u-3': linked('U0THREE') }, reverse: true })
+    expect((await resolveApprovalRoute(actorReq('U0THREE'), manyEditors)).allowed).toBe(true)
+    // A failed lookup falls back to scanning the editors, which says nothing about "linked".
+    const down = deps({ ...many, reverse: 'down' })
+    expect((await resolveApprovalRoute(actorReq('U0EDITOR'), down)).allowed).toBe(true)
+    expect(await resolveApprovalRoute(actorReq('U0VIEWER'), down)).toEqual({ requestId: REQUEST_ID, allowed: false })
   })
 
   it('fails closed without sign-in or for an integration with no workspace', async () => {

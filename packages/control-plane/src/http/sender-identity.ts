@@ -7,6 +7,7 @@ import type { Clock } from '../domain/clock.js'
 import { AgentId, type OrgId } from '../domain/ids.js'
 import type { LinkedChatIdentity } from '../github/logto-identity.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from '../orchestrator/linkedDm.js'
+import { membersLinkedTo, type LinkedMemberDeps } from '../orchestrator/linkedMember.js'
 import type { BotRecord, IntegrationRecord, OrgMemberRecord } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { ctxOf, orgOf } from './rbac.js'
@@ -24,11 +25,12 @@ export interface SenderIdentityDeps {
   users: {
     listMembers(orgId: string): Promise<OrgMemberRecord[]>
     getOidcSubject(userId: string): Promise<string | null>
+    memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null>
   }
   /** The platform's `chatMemberTenant`: the tenant a bot's chat members are matched to console accounts under. */
   chatMemberTenant(platform: string): ((bot: BotRecord) => string | null) | undefined
   /** Absent when the deployment has no sign-in configured: then nobody is linked. */
-  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> }
+  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> } & LinkedMemberDeps['identity']
   log?: { warn(obj: object, msg: string): void }
 }
 
@@ -47,6 +49,9 @@ interface BotIndex {
   /** A bot's own sender id to the one agent it speaks for; a bot several agents share names none. */
   agents: ReadonlyMap<string, string>
 }
+
+/** The member index of an organization too large to scan: empty, and told apart by identity. */
+const OVER_CAP: ReadonlyMap<string, string> = new Map()
 
 /** How long a platform's bots and tenants are reused. */
 const BOT_INDEX_TTL_MS = 30_000
@@ -104,6 +109,16 @@ export class SenderIdentityService {
         if (out.has(sender)) continue
         const userId = viewer.userId && own.has(sender) ? viewer.userId : members.get(sender)
         if (userId) out.set(sender, { userId })
+      }
+      // Past the cap there is no index: each sender still unnamed is looked up from the chat side.
+      if (members === OVER_CAP) {
+        const unnamed = [...wanted].filter((sender) => !out.has(sender))
+        const found = await mapLimited(unnamed, AUDIENCE_CONCURRENCY, (sender) =>
+          this.linkedMember(orgId, platform, bots.tenants, sender)
+        )
+        unnamed.forEach((sender, i) => {
+          if (found[i]) out.set(sender, { userId: found[i] })
+        })
       }
     } catch (err) {
       ;(viewer.log ?? this.deps.log)?.warn({ err, platform }, 'sender identity: lookup failed, senders left unnamed')
@@ -184,7 +199,7 @@ export class SenderIdentityService {
     tenants: ReadonlySet<string>
   ): Promise<ReadonlyMap<string, string>> {
     const members = await this.deps.users.listMembers(orgId)
-    if (members.length > MAX_AUDIENCE) return new Map()
+    if (members.length > MAX_AUDIENCE) return OVER_CAP
     const linked = await mapLimited(members, AUDIENCE_CONCURRENCY, async (member) => {
       try {
         const sub = await this.deps.users.getOidcSubject(member.userId)
@@ -204,6 +219,29 @@ export class SenderIdentityService {
     })
     for (const memberId of shared) index.delete(memberId)
     return index
+  }
+
+  /** The one member who linked this sender under any of the platform's tenants; an account two members linked names neither. */
+  private async linkedMember(
+    orgId: OrgId,
+    platform: string,
+    tenants: ReadonlySet<string>,
+    sender: string
+  ): Promise<string | undefined> {
+    const identity = this.deps.identity
+    if (!identity) return undefined
+    try {
+      const found = await Promise.all(
+        [...tenants].map((tenant) =>
+          membersLinkedTo(orgId, { platform, tenant, memberId: sender }, { identity, users: this.deps.users })
+        )
+      )
+      const userIds = new Set(found.flatMap((members) => members ?? []).map((member) => member.userId))
+      return userIds.size === 1 ? [...userIds][0] : undefined
+    } catch (err) {
+      this.deps.log?.warn({ err, platform }, 'sender identity: linked-identity lookup failed')
+      return undefined
+    }
   }
 
   private async linkedIds(

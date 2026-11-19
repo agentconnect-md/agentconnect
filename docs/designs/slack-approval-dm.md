@@ -189,8 +189,18 @@ A verify that names no console user (`chat-actor-v1`) asks whether a chat member
 editor's linked identity, for the in-conversation card where the organization syncs Slack's
 session access (§6.5). `teamId` may be left to the integration's own workspace. It runs the same
 capped forward scan, over the editors, and when the membership is within the cap over every
-member too, so a refusal can say whether the member is linked to anyone; over the editor cap it
-refuses.
+member too, so a refusal can say whether the member is linked to anyone.
+
+Past the cap the members are not scanned. The chat member is looked up from the chat side
+instead: one read asks the identity provider which account holds that external identity
+(`LogtoIdentityService.subjectsLinkedTo`), the account's own record confirms the link and its
+tenant, and the account is matched to an active member of the organization by the subject it
+signs in as. The answer is the same as a scan's, an editor allowed and any other member told
+apart from a stranger, at the cost of one provider read whatever the organization's size. This
+works where the provider stores the chat member id as the identity's own id (Slack, Google
+Chat, Discord, Microsoft Teams). Feishu/Lark and Telegram keep theirs in the profile, so they
+keep the capped scan, and over the editor cap they refuse. A failed lookup falls back to that
+scan as well.
 
 A third form serves assistant-mode drafts ([assistant-mode.md](assistant-mode.md)
 §5.5): `agent/approval-route` with `consoleUserId` set asks for exactly that
@@ -231,7 +241,8 @@ forward read-through is the model: Logto stays the only store, and the
 identity is an assertion because it entered Logto under the user's own
 session. The chain is small by construction (three single candidates plus a
 capped audience), so the forward scan is cheap and this design inherits it
-unchanged.
+unchanged. The lookup §4.2 uses past the cap is a read-through too, the other
+way round: it asks Logto and stores nothing.
 
 ## 5. The DM itself
 
@@ -425,7 +436,8 @@ editor's linked identity: on Slack the pair in the bot's workspace, on Feishu/La
 in the bot's region, which the daemon carries as `InteractionActor.memberId` and refuses a click
 without. It is asked with the anonymous verify of §4.2 and cached on the daemon (an editor two
 minutes, a refusal thirty seconds, an unanswered question never). An unreachable CP, one without `chat-actor-v1`, or an
-agent over the editor cap refuses the click too. A refusal is told only to the clicker and the
+agent over the editor cap on a platform whose link cannot be looked up from the chat side (§4.2)
+refuses the click too. A refusal is told only to the clicker and the
 card stays live: it says only an Agent editor can answer, tells a member linked to no console
 account how to link one, or, when the check could not run, says to try again in a moment. It
 carries no console link: the session is `external` (session-visibility.md §1), so its page
@@ -445,7 +457,7 @@ organization takes the editor path instead of the asker's DM. A task's card keep
 row's `notify*` handle, so the DM beside it keeps its own (`besideIntegrationId`,
 `besideChannel`, `besideTs`), as an editor's card off Slack always does, and the reconnect sweep
 of §5.4 retires both. §4.4 holds: the check
-is a forward scan from the console side, never a reverse index.
+reads through to the identity provider and keeps no reverse index.
 
 ## 7. Console notification states
 

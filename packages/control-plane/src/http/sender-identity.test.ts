@@ -24,10 +24,19 @@ function fixture(
     integrations?: IntegrationRecord[]
     links?: Record<string, LinkedChatIdentity[]>
     botsFail?: boolean
+    /** The identity provider can look a link up from the chat side. */
+    reverse?: boolean
   } = {}
 ) {
   const links = options.links ?? {}
   const chatIdentitiesFor = vi.fn(async (sub: string) => links[sub] ?? [])
+  const subjectsLinkedTo = vi.fn(async (who: LinkedChatIdentity) =>
+    Object.entries(links)
+      .filter(([, linked]) =>
+        linked.some((l) => l.platform === who.platform && l.tenant === who.tenant && l.memberId === who.memberId)
+      )
+      .map(([sub]) => sub)
+  )
   const deps: SenderIdentityDeps = {
     clock: new FakeClock(Date.UTC(2026, 0, 1)),
     bots: {
@@ -39,14 +48,16 @@ function fixture(
     integrations: { listForOrg: async () => options.integrations ?? [] },
     users: {
       listMembers: async () => options.members ?? [member('user-me'), member('user-dana')],
-      getOidcSubject: async (userId) => `sub-${userId}`
+      getOidcSubject: async (userId) => `sub-${userId}`,
+      memberByOidcSubject: async (_org, sub) =>
+        (options.members ?? [member('user-me'), member('user-dana')]).find((m) => `sub-${m.userId}` === sub) ?? null
     },
     // Slack matches members under the bot's workspace, every other platform here under one global tenant.
     chatMemberTenant: (platform) => (b) => (platform === 'slack' ? b.teamId : 'global'),
-    identity: { chatIdentitiesFor }
+    identity: { chatIdentitiesFor, ...(options.reverse ? { subjectsLinkedTo } : {}) }
   }
   const viewer = { userId: 'user-me', oidcSubject: 'sub-user-me', canSeeAgent: async () => true }
-  return { service: new SenderIdentityService(deps), viewer, chatIdentitiesFor }
+  return { service: new SenderIdentityService(deps), viewer, chatIdentitiesFor, subjectsLinkedTo }
 }
 
 const slack = (memberId: string, tenant = WORKSPACE): LinkedChatIdentity => ({ platform: 'slack', tenant, memberId })
@@ -116,6 +127,22 @@ describe('SenderIdentityService', () => {
       links: { 'sub-user-me': [slack('U0ME')] }
     })
     expect((await service.resolve(ORG, 'slack', ['U0ME'], viewer)).get('U0ME')).toEqual({ userId: 'user-me' })
+    expect(chatIdentitiesFor).toHaveBeenCalledTimes(1)
+  })
+
+  it('past the cap, names other members from the chat side, one lookup per unnamed sender', async () => {
+    const { service, viewer, chatIdentitiesFor, subjectsLinkedTo } = fixture({
+      members: Array.from({ length: 201 }, (_, i) => member(`user-${i}`)),
+      links: { 'sub-user-7': [slack('U0SEVEN')], 'sub-user-8': [slack('U0SHARED')], 'sub-user-9': [slack('U0SHARED')] },
+      reverse: true
+    })
+    const named = await service.resolve(ORG, 'slack', ['U0SEVEN', 'U0NOBODY', 'U0SHARED'], viewer)
+    expect(named.get('U0SEVEN')).toEqual({ userId: 'user-7' })
+    // Nobody linked one, and two members linked the other: neither is named.
+    expect(named.has('U0NOBODY')).toBe(false)
+    expect(named.has('U0SHARED')).toBe(false)
+    expect(subjectsLinkedTo).toHaveBeenCalledTimes(3)
+    // No member was scanned: only the reader's own link was read.
     expect(chatIdentitiesFor).toHaveBeenCalledTimes(1)
   })
 

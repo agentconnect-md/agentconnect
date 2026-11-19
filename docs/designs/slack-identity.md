@@ -77,7 +77,13 @@ hygiene we control, not as a defect claim about the provider.
 
 There is still no **reverse** map from a Slack sender to a console user — that
 would need persistence (a `UserIdentity` table,
-[session-visibility.md §7](session-visibility.md)). What exists is the
+[session-visibility.md §7](session-visibility.md)). An organization too large
+to scan member by member is answered by a read-through the other way instead:
+`subjectsLinkedTo` asks Logto which account holds the Slack identity, confirms
+it against that account's own record (which carries the workspace), and the
+account is matched to an active member by its subject. Nothing is stored, and
+an answer is reused for at most the identity lease and dropped whenever any
+account's links change. What exists otherwise is the
 **forward** read: an authenticated console user's own Slack identity, resolved
 per request through `slackIdentityFor` and matched against `ownerIdentity` by
 the session-visibility identity set. It stays a read-through, not an index —

@@ -5,6 +5,7 @@ import type { CpPlatformRegistry } from '../platforms/provider.js'
 import type { AgentRepo, BotRepo, IntegrationRepo, OrgMemberRole, OrgRepo, UserRepo } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { AUDIENCE_CONCURRENCY, MAX_AUDIENCE, mapLimited } from './linkedDm.js'
+import { membersLinkedTo, type LinkedMemberDeps } from './linkedMember.js'
 
 /** A console user as the visibility predicate takes them. */
 export interface ReadAccessViewer {
@@ -18,11 +19,11 @@ export interface ReadAccessDeps {
   integration: Pick<IntegrationRepo, 'activeForAgents'>
   bot: Pick<BotRepo, 'get'>
   org: Pick<OrgRepo, 'roleOf'>
-  users: Pick<UserRepo, 'listMembers' | 'getOidcSubject'>
+  users: Pick<UserRepo, 'listMembers' | 'getOidcSubject' | 'memberByOidcSubject'>
   /** Each platform's provider says whether, and under which tenant, its chat members can be matched (`chatMemberTenant`). */
   platforms: Pick<CpPlatformRegistry, 'get'>
   /** Absent when the deployment has no sign-in configured — then no chat member is linked. */
-  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> }
+  identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> } & LinkedMemberDeps['identity']
   commitAuthorsFor?(viewer: ReadAccessViewer): Promise<CommitAuthor[]>
   /** The agent's sessions among `sessionIds` this viewer could see in the console; `ownerOnly` keeps only those they own. */
   sessionsVisible(
@@ -110,16 +111,23 @@ async function viewerOf(
   const on = identity ? await botTenant(req.agentId, integrationId, deps) : null
   if (!identity || !on) return 'unidentifiable'
   const members = await deps.users.listMembers(orgId)
-  // An audience past the cap cannot be scanned, so nobody is told they are unlinked when they may not be.
-  if (members.length > MAX_AUDIENCE) throw new Error('organization too large to resolve a linked identity')
-  const linked = await mapLimited(members, AUDIENCE_CONCURRENCY, async (member) => {
-    const sub = await deps.users.getOidcSubject(member.userId)
-    const ids = sub ? await identity.chatIdentitiesFor(sub) : []
-    return ids.some((l) => l.platform === on.platform && l.tenant === on.tenant && l.memberId === memberId)
-      ? member
-      : null
-  })
-  const matches = linked.filter((m) => m !== null)
+  let matches: Array<{ userId: string; role: OrgMemberRole }>
+  if (members.length > MAX_AUDIENCE) {
+    // Past the cap the members are not scanned: the link is looked up from the chat side, where the platform allows it.
+    const found = await membersLinkedTo(orgId, { ...on, memberId }, { identity, users: deps.users })
+    // Where it does not, nobody is told they are unlinked when they may not be.
+    if (!found) throw new Error('organization too large to resolve a linked identity')
+    matches = found
+  } else {
+    const linked = await mapLimited(members, AUDIENCE_CONCURRENCY, async (member) => {
+      const sub = await deps.users.getOidcSubject(member.userId)
+      const ids = sub ? await identity.chatIdentitiesFor(sub) : []
+      return ids.some((l) => l.platform === on.platform && l.tenant === on.tenant && l.memberId === memberId)
+        ? member
+        : null
+    })
+    matches = linked.filter((m) => m !== null)
+  }
   if (matches.length === 0) return 'unlinked'
   const [only] = matches
   return matches.length === 1 && only ? { orgId, userId: only.userId, role: only.role } : 'unidentifiable'
