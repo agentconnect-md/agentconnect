@@ -257,10 +257,12 @@ describe('organization SSO per session', () => {
     expect((await orgList(admitted)).find((o) => o.id === DEFAULT_ORG_ID)?.ssoSignIn).toBeNull()
   })
 
-  it('leaves an owner outside the domains and the member’s other organizations alone', async () => {
+  it('applies to every member, owners outside the domains included, and leaves the member’s other organizations alone', async () => {
     await memberInDomain()
     await activeConnection()
-    expect((await agents(await owner())).statusCode).toBe(200)
+    const outsideOwner = await agents(await owner())
+    expect(outsideOwner.statusCode).toBe(403)
+    expect(outsideOwner.json()).toMatchObject({ code: 'ORG_SSO_SIGN_IN_REQUIRED' })
 
     const other = await new PgOrgRepo(prisma).create({ name: null, slug: 'elsewhere', ownerUserId: DEFAULT_OWNER_ID })
     await new PgUserRepo(prisma).addMemberByEmail(other.id, MEMBER_EMAIL, 'collaborator')
@@ -332,12 +334,12 @@ describe('organization SSO per session', () => {
 
   it('stops enforcing when the settings change, so untested settings are never enforced', async () => {
     await memberInDomain()
-    await activeConnection()
+    const connectorId = await activeConnection()
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
     const changed = await app.inject({
       method: 'PUT',
       url: `${SSO}/connection`,
-      headers: await owner(),
+      headers: await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId)),
       payload: {
         protocol: 'oidc',
         issuer: 'https://idp.example.test',
@@ -361,15 +363,20 @@ describe('organization SSO per session', () => {
 
   it('lifts the rule when an owner or a deployment administrator stops enforcing, and on deactivation', async () => {
     await memberInDomain()
-    await activeConnection()
+    const connectorId = await activeConnection()
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
-    const stopped = await ownerPost(`${SSO}/connection/stop-enforcing`)
+    // Enforced, an owner reaches the card only through the connection too.
+    const throughConnection = await as(INSIDE_OWNER_SUBJECT, viaConnector(connectorId))
+    const stopped = await app.inject({
+      method: 'POST',
+      url: `${SSO}/connection/stop-enforcing`,
+      headers: throughConnection
+    })
     expect(stopped.json()).toMatchObject({ status: 'active', enforcedAt: null })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
 
     // The administrator's recovery path needs no membership; a member cannot use it.
-    const connectorId = idp.connectors.keys().next().value!
     await enforce(connectorId)
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
@@ -388,17 +395,22 @@ describe('organization SSO per session', () => {
 
     // Deactivating ends the enforcement too, so activating again does not bring it back.
     await enforce(connectorId)
-    expect((await ownerPost(`${SSO}/connection/deactivate`)).json()).toMatchObject({ enforcedAt: null })
+    const deactivated = await app.inject({
+      method: 'POST',
+      url: `${SSO}/connection/deactivate`,
+      headers: throughConnection
+    })
+    expect(deactivated.json()).toMatchObject({ enforcedAt: null })
     expect((await ownerPost(`${SSO}/connection/activate`)).json()).toMatchObject({ enforcedAt: null })
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
     expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(200)
   })
 
-  it('answers 503 when the account address cannot be read and nothing is cached', async () => {
+  it('keeps refusing when the identity service cannot confirm the connector', async () => {
     await memberInDomain()
     await activeConnection()
     idp.down = true
-    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(503)
+    expect((await agents(await as(MEMBER_SUBJECT))).statusCode).toBe(403)
   })
 
   it('keeps keys minted earlier working, and refuses minting or reissuing one from a session the organization does not accept', async () => {

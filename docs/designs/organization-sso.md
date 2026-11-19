@@ -33,7 +33,7 @@ identity provider. Four things are missing:
 | D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                                                |
 | D5  | An organization chooses how new members arrive: by invitation only, or also by an address on one of its verified domains, which makes the account a member once when it signs in. The choice is separate from the connection.     |
 | D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
-| D7  | Enforcing is a second, explicit step after activation: an enforced organization accepts a member whose address is in its verified domains only from a browser session that signed in through its connection.                      |
+| D7  | Enforcing is a second, explicit step after activation: an enforced organization accepts every member, owners included, only from a browser session that signed in through its connection.                                         |
 
 ## 3. Model
 
@@ -240,7 +240,8 @@ so would miss an existing account's first sign-in after an owner chose `domain`.
   organization (§4.5), whatever other sign-in identities the account holds. On an
   active connection that is not enforced, an account that has also linked a social
   identity reporting another address still signs in with it and reaches the
-  organization. A session already signed in lasts until it ends, and the membership,
+  organization, and so does every member whose address is outside the domains. A
+  session already signed in lasts until it ends, and the membership,
   API keys and OAuth grants stay. Ending those needs the provider to notify the
   deployment, which is out of scope here (§7).
 
@@ -260,23 +261,29 @@ The identity service refuses another sign-in method for an address in a bound
 domain, but it judges the address that sign-in reports. An account holds several
 sign-in identities, and a linked social identity may report another address or none,
 so that refusal alone does not keep such an account out of the organization. An owner
-who enforces the connection makes the organization check it on every request:
+who enforces the connection makes the organization require the connection of every
+member, on every request:
 
 - **Two steps.** Activating binds the domains and routes their addresses to the
   connection (§4.1). Enforcing is a separate owner action on an active connection,
   and stopping it leaves the connection active. The settings card offers "Enforce"
   beside "Deactivate" on an active connection, and "Stop enforcing" once the
   connection reads as enforced. The Enforce dialog lists the domains and says the
-  rule includes owners; when the owner may not enforce yet, it says why instead: an
+  rule covers every member, owners included, and that members whose address is not
+  on these domains lose access; when the owner may not enforce yet, it says why instead: an
   owner outside the domains is told only such an owner can, with nothing to
   confirm, and an owner inside them who did not sign in through the connection is
   offered that sign-in, which returns to the card. `GET /sso` tells an owner which
   of these applies (`enforce`).
-- **The rule.** A request to an enforced organization, from an account whose address
-  is in that organization's verified domains, must come from a browser session whose
-  latest sign-in went through its connection. Otherwise it is refused with 403
-  `ORG_SSO_SIGN_IN_REQUIRED`. The account's other organizations are unaffected, and
-  so is anyone whose address is outside the verified domains.
+- **The rule.** Every request to an enforced organization, from any member whatever
+  their address or role, must come from a browser session whose latest sign-in went
+  through its connection. Otherwise it is refused with 403 `ORG_SSO_SIGN_IN_REQUIRED`.
+  The account's other organizations are unaffected.
+- **Members outside the domains.** The connection speaks only for addresses in the
+  verified domains (§5), so a member whose address is elsewhere cannot meet the rule
+  and loses access while it is enforced. A contractor keeps access by getting an
+  address on the organization's domains at its identity provider; an organization
+  that wants outside members unrestricted does not enforce.
 - **Who may enforce.** An owner whose own address is in the verified domains and
   whose current session signed in through the connection (409
   `SSO_ENFORCER_OUTSIDE_DOMAINS` or `SSO_SIGN_IN_REQUIRED` otherwise). That one check
@@ -299,19 +306,19 @@ who enforces the connection makes the organization check it on every request:
   latest sign-in, so the claim follows that session: a later sign-in by another
   method in the same browser drops it from tokens issued afterwards, a later sign-in
   through the connection adds it, and a session that has ended yields none. The
-  method belongs to a session, not a subject, so nothing caches it; the account's
-  address and whether the connector exists are cached for a minute.
+  method belongs to a session, not a subject, so nothing caches it; whether the
+  connector exists is cached for a minute.
 - **Who configures it.** The Setup Server owns the script while organization SSO is
   declared, and reports a missing or different one as drift (§6.1). The script also
   carries the role names the Control Plane reads for `ADMIN`, so it replaces a
   script that did only that. Until it is applied no session carries the claim, and
-  members inside the domains cannot open the organization.
-- **The address is not the member's to change.** The rule reads the account's
-  address in the identity service. A member who could edit it would move it out of
-  the verified domains and leave the rule, then sign in with another linked
-  identity. While organization SSO is declared, the Setup Server keeps the identity
-  service's account-center permission for the address from being editable, reports
-  an editable one as drift, and sets it to read-only on apply.
+  no owner can enforce.
+- **The address is not the member's to change.** Who may enforce, who joins on a
+  first sign-in (§4.3) and which accounts the sign-in check admits (§5) all read the
+  account's address in the identity service. While organization SSO is declared,
+  the Setup Server keeps the identity service's account-center permission for the
+  address from being editable, reports an editable one as drift, and sets it to
+  read-only on apply.
 - **Where it is checked.** In the guard of the `/orgs/:orgId` subtree, after
   membership, so a non-member learns nothing about the organization's sign-in; and
   where a credential for the organization is minted or reissued outside that
@@ -325,8 +332,8 @@ who enforces the connection makes the organization check it on every request:
   test window, an active connection not enforced, and a deactivated or removed
   connection do not. Nor does an enforced connection whose connector is gone from
   the identity service, since nobody could sign in through it. Enforcing and
-  stopping take effect within the lookup's fifteen seconds (§4.2). When the account's address cannot be read and none
-  is cached, the request answers 503.
+  stopping take effect within the lookup's fifteen seconds (§4.2). When the identity
+  service cannot confirm the connector, the rule still applies.
 - **The console.** `GET /orgs` returns, for each organization, `ssoSignIn` (the
   connector) when this session must first sign in through it. The
   console then shows, in place of the organization's pages, its name
@@ -538,10 +545,11 @@ Verification on a staging deployment with a real identity provider, OIDC and SAM
   and signing in again does not recreate it. On `invite` it creates none.
 - Changing the configuration clears the test result and blocks activation.
 - Deactivating restores social sign-in for the domain.
-- Once an owner inside the domains enforces, a member inside the domains who signed
-  in with a linked social identity is refused in the organization, reaches it after
-  signing in through the connection, and keeps reaching their other organizations
-  meanwhile; an owner outside the domains is unaffected and cannot enforce.
+- An owner outside the domains cannot enforce. Once an owner inside the domains
+  enforces, a member who signed in with a linked social identity is refused in the
+  organization, reaches it after signing in through the connection, and keeps
+  reaching their other organizations meanwhile; a member or owner outside the
+  domains is refused too.
 
 Open points:
 

@@ -344,7 +344,7 @@ describe('organization single sign-on card', () => {
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Enforce', 'Deactivate'])
     await click('Enforce', host)
     expect(dialog().textContent).toContain(
-      'owners included, will open this organization only after signing in with SSO'
+      'Every member, owners included, will open this organization only after signing in with SSO. Members whose address is not on these domains cannot sign in with SSO and lose access.'
     )
     mocks.enforceOrgSsoConnection.mockResolvedValue({ ...active, enforcedAt: '2026-01-03T00:00:00Z' })
     await click('Enforce', dialog())

@@ -5730,7 +5730,7 @@
       },
       "enforceDialog": {
         "title": "Enforce single sign-on?",
-        "body": "Members with addresses on these domains, owners included, will open this organization only after signing in with SSO. If SSO stops working, a deployment administrator can turn this off.",
+        "body": "Every member, owners included, will open this organization only after signing in with SSO. Members whose address is not on these domains cannot sign in with SSO and lose access. If SSO stops working, a deployment administrator can turn this off.",
         "signInFirst": "To enforce, first sign in with SSO.",
         "signIn": "Sign in with SSO",
         "outsideDomains": "Only an owner with an address on these domains can enforce single sign-on.",
@@ -5738,7 +5738,7 @@
       },
       "stopEnforcingDialog": {
         "title": "Stop enforcing single sign-on?",
-        "body": "Members with addresses on these domains will open this organization from any sign-in again. Single sign-on stays active."
+        "body": "Members will open this organization from any sign-in again. Single sign-on stays active."
       },
       "verifyDialog": {
         "title": "Verify {domain}?",
