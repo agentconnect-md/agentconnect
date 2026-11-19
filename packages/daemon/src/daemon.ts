@@ -9449,9 +9449,10 @@ export class Daemon {
    * detach/remove may archive or delete the exact paths captured by a pre-Pending
    * SessionManager call, so abort those callers immediately, stop every selected
    * cell, and wait for their uncancellable workspace I/O before returning. */
-  private async quiesceAgentWorkspaceAuthority(agentId: string): Promise<void> {
+  private async quiesceAgentWorkspaceAuthority(agentId: string, keepInbox = false): Promise<void> {
     const selected = [...this.pending.values()].filter((turn) => turn.plan.agentId === agentId)
-    await this.interruptAgentTurns(agentId, 'stop')
+    if (keepInbox) await this.interruptAgentTurns(agentId, 'stop', 'handoff')
+    else await this.interruptAgentTurns(agentId, 'stop')
     for (const entry of this.activeGateEntries.values()) {
       if (entry.agentId !== agentId) continue
       entry.cancelledReason ??= 'stop'
@@ -32645,7 +32646,8 @@ export class Daemon {
       usesMicrosandbox: (agent) => this.usesMicrosandbox(agent),
       gitCreds: () => this.gitCreds,
       agentChannelServer: () => this.agentChannelServer,
-      quiesceAgentWorkspaceAuthority: (agentId) => this.quiesceAgentWorkspaceAuthority(agentId),
+      quiesceAgentWorkspaceAuthority: (agentId, keepInbox) => this.quiesceAgentWorkspaceAuthority(agentId, keepInbox),
+      sharedStore: () => this.sharedStore,
       // Best effort: a store error leaves the old coordinator behind, which must not keep the agent from moving.
       retireCoordinatorsForMove: (agentId) =>
         this.retireCoordinatorsForMove(agentId).catch((err) =>
