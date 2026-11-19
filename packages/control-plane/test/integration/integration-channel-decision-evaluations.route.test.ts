@@ -186,8 +186,9 @@ describe('GET /integrations/:id/channels/:channelId/decision-evaluations', () =>
   it('proxies the page as-is to a viewer, forwarding cursor and limit, and stores nothing', async () => {
     const { integrationId, agentId } = await seedInstall()
     await seedSessionMeta(prisma, 'audience', agentId, { channel: 'C1' })
+    const viewer = await member('viewer')
     const before = await contentRows()
-    const { app, spy } = appWith({ userId: await member('viewer') })
+    const { app, spy } = appWith({ userId: viewer })
     const res = await list(app, integrationId, 'C1', '?cursor=40&limit=5')
     expect(res.statusCode, res.body).toBe(200)
     expect(res.json()).toEqual(page)
