@@ -259,9 +259,23 @@ Two read-only tools reach it:
   time, newest first, each with its ID, header block and first lines.
 - `readMail` returns one message in full by its ID.
 
-Both are scoped to the person behind the turn: they return only messages of
-threads that person takes part in (§5.1), so one member's mail never reaches a
-session another member started. A turn no person is behind gets nothing.
+What they return depends on who can read the session the turn runs in, not
+only on who is behind the turn. A session's transcript, its later turns and its
+reply all reach the thread's participants, so mail read into it must already be
+theirs:
+
+- **A thread with one participant**, the member who started it: on that
+  member's turn the tools return every message of the threads that member takes
+  part in (§5.1).
+- **A thread with several participants**: the tools return that thread's own
+  messages and nothing else, whoever is behind the turn.
+- **A turn no person is behind**: nothing.
+
+A session that has read another thread's mail stays its starter's alone from
+then on. Its replies go to the starter only, even when a later message adds
+recipients, and a message another participant sends in the thread starts a new
+session instead of continuing it. Without this, mail read while the thread was
+private would be in context when someone else joined.
 
 This is a record, not a mailbox: nothing is moved, flagged or deleted through
 it, and incoming mail does not wait in it to be picked up, since each message
@@ -423,7 +437,9 @@ runtime dependency.
   participant fence; `Authentication-Results` parsing, including a forged
   second header and a foreign authserv-id; the automatic-mail filter; name
   validation and reserved names; ticket minting and every refusal of §6.2; the
-  Inbox and Sent record and the person scope of both tools.
+  Inbox and Sent record, what the two tools return in a thread of one and of
+  several participants, and a session that read other threads' mail refusing a
+  second participant.
 - Relay: the inbound route's HMAC window, an unknown recipient, each row of the
   §5.4 table, and dedup of a redelivered `Message-ID`.
 - Control Plane: an address is never reissued; the member answer for a member,
