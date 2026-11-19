@@ -122,7 +122,11 @@ The platform-owned session tool registry exposes four tools only to Slack sessio
 - `setSlackCodeView`: publish a unified diff, self-contained HTML preview, PR tab, or
   existing Canvas with comment access using `type: canvas`, `canvasId` and `viewKey`.
   Attaching checks both conversation and document write authority. HTML and Canvas keys
-  are stable upsert identities; content is bounded by UTF-8 bytes.
+  are stable upsert identities; content is bounded by UTF-8 bytes. A PR tab is Slack's
+  `pull_request` view where the workspace accepts one. Slack's public API documents no such
+  view, so when Slack answers `invalid_view_type` the tab is published as a Block Kit view
+  linking the PR instead, keyed by its URL and labelled with its number unless the agent
+  names them. Any other refusal is reported as it is, with no substitute tab.
 - `manageSlackCodeChannel`: replace up to three informational context links, list/remove tabs,
   read an attached Canvas with `action: getCanvas` and `canvasId`, or archive a completed task
   with an optional existing summary message. Canvas reads return Markdown, comment threads,
