@@ -108,7 +108,6 @@ class FakeIdp implements OrgSsoIdp {
 interface ConnectionBody {
   id: string
   protocol: OrgSsoProtocol
-  name: string
   status: 'draft' | 'tested' | 'active'
   tested: boolean
   serviceProvider: Record<string, string>
@@ -118,7 +117,6 @@ interface ConnectionBody {
 
 const OIDC = {
   protocol: 'oidc',
-  name: 'Example IdP',
   issuer: 'https://idp.example.test',
   clientId: 'client-1',
   clientSecret: 'secret-1'
@@ -234,7 +232,7 @@ describe('organization SSO settings for the console card', () => {
 
   it('reads SAML settings with missing fields as null', async () => {
     const app = start()
-    await save(app, { protocol: 'saml', name: 'Example IdP', metadataUrl: 'https://idp.example.test/metadata' })
+    await save(app, { protocol: 'saml', metadataUrl: 'https://idp.example.test/metadata' })
     expect((await connectionOf(app))?.settings).toEqual({
       metadataUrl: 'https://idp.example.test/metadata',
       metadata: null,
@@ -360,7 +358,7 @@ describe('organization SSO connection', () => {
     expect(connector).toMatchObject({
       name: `org-${DEFAULT_ORG_ID}`,
       protocol: 'oidc',
-      displayName: 'Example IdP',
+      displayName: 'SSO',
       domains: [],
       config: {
         issuer: 'https://idp.example.test',
@@ -372,7 +370,6 @@ describe('organization SSO connection', () => {
     })
     expect(res.json()).toMatchObject({
       protocol: 'oidc',
-      name: 'Example IdP',
       status: 'draft',
       tested: false,
       serviceProvider: { redirectUri: `https://auth.example.test/callback/${connector.id}` }
@@ -384,6 +381,13 @@ describe('organization SSO connection', () => {
     })
     // The secret is forwarded, never kept.
     expect(JSON.stringify(await prisma.orgSsoConnection.findMany())).not.toContain('secret-1')
+
+    // The connection has no name of its own: a profile shows the organization's, or its slug when it has none.
+    const repo = new PgOrgSsoConnectionRepo(prisma)
+    await prisma.org.update({ where: { id: DEFAULT_ORG_ID }, data: { name: 'Acme' } })
+    expect(await repo.orgNamesByConnector([connector.id, 'unknown'])).toEqual(new Map([[connector.id, 'Acme']]))
+    const { slug } = await prisma.org.update({ where: { id: DEFAULT_ORG_ID }, data: { name: null } })
+    expect(await repo.orgNamesByConnector([connector.id])).toEqual(new Map([[connector.id, slug]]))
   })
 
   it('reports the identity service’s refusal and its absence apart', async () => {
@@ -398,7 +402,7 @@ describe('organization SSO connection', () => {
     idp.down = true
     expect((await save(app)).statusCode).toBe(503)
 
-    const saml = { protocol: 'saml', name: 'Example IdP' }
+    const saml = { protocol: 'saml' }
     expect((await save(app, saml)).statusCode).toBe(400)
     expect((await save(app, { ...saml, metadataUrl: 'https://idp.example.test/m', metadata: '<x/>' })).statusCode).toBe(
       400
@@ -409,7 +413,7 @@ describe('organization SSO connection', () => {
     const app = start()
     await save(app)
     const first = idp.only().id
-    const res = await save(app, { protocol: 'saml', name: 'Example IdP', metadataUrl: 'https://idp.example.test/m' })
+    const res = await save(app, { protocol: 'saml', metadataUrl: 'https://idp.example.test/m' })
     const second = idp.only()
     expect(second.id).not.toBe(first)
     expect(res.json()).toMatchObject({
@@ -603,7 +607,7 @@ describe('organization SSO connection', () => {
     // The answer comes from a snapshot, so it trails the activation by at most the snapshot's lifetime.
     expect(await find('person@example.test')).toBeNull()
     clock.advance(ORG_SSO_LOOKUP_TTL_MS)
-    const connector = { connectorId: idp.only().id, name: 'Example IdP' }
+    const connector = { connectorId: idp.only().id }
     expect(await find('person@example.test')).toEqual(connector)
     expect(await find(' Someone.Else@EXAMPLE.test ')).toEqual(connector)
     // By domain alone: a subdomain, another domain and a string that is no address all sign in the other ways.

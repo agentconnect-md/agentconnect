@@ -24,11 +24,11 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
   }
 
   save(
-    input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol; name: string },
+    input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol },
     at: Date,
     actorUserId: string
   ): Promise<OrgSsoConnectionRecord> {
-    const { orgId, logtoConnectorId, protocol, name } = input
+    const { orgId, logtoConnectorId, protocol } = input
     return this.inTransaction(async (tx) => {
       const current = await tx.orgSsoConnection.findUnique({
         where: { orgId },
@@ -39,7 +39,6 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
       const changed = {
         logtoConnectorId,
         protocol,
-        name,
         configChangedAt: at,
         enforcedAt: null,
         testNonceHash: null,
@@ -195,16 +194,22 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
     return rows.map(toRecord)
   }
 
-  async listActiveDomains(): Promise<
-    { domain: string; orgId: string; connectorId: string; name: string; enforced: boolean }[]
-  > {
+  async orgNamesByConnector(connectorIds: readonly string[]): Promise<Map<string, string>> {
+    if (connectorIds.length === 0) return new Map()
+    const rows = await this.db.orgSsoConnection.findMany({
+      where: { logtoConnectorId: { in: [...connectorIds] } },
+      select: { logtoConnectorId: true, org: { select: { name: true, slug: true } } }
+    })
+    return new Map(rows.map((row) => [row.logtoConnectorId, row.org.name ?? row.org.slug]))
+  }
+
+  async listActiveDomains(): Promise<{ domain: string; orgId: string; connectorId: string; enforced: boolean }[]> {
     const rows = await this.db.orgSsoConnection.findMany({
       where: { activatedAt: { not: null } },
       select: {
         orgId: true,
         enforcedAt: true,
         logtoConnectorId: true,
-        name: true,
         org: { select: { domains: { where: { verifiedAt: { not: null } }, select: { domain: true } } } }
       }
     })
@@ -213,7 +218,6 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
         domain,
         orgId: row.orgId,
         connectorId: row.logtoConnectorId,
-        name: row.name,
         enforced: row.enforcedAt !== null
       }))
     )

@@ -3178,7 +3178,6 @@ export const OrgSsoConnectionDto = z.object({
   /** The identity service's connector, which a direct sign-in through the connection names. */
   connectorId: z.string(),
   protocol: z.enum(['oidc', 'saml']),
-  name: z.string(),
   status: z.enum(['draft', 'tested', 'active']),
   tested: z.boolean(),
   testedAt: z.string().nullable(),
@@ -3213,13 +3212,10 @@ export const OrgSsoStateDto = z.object({
   enforce: z.enum(['ready', 'outside_domains', 'sign_in_required']).optional()
 })
 
-const OrgSsoConnectionName = z.string().trim().min(1).max(64)
-
 /** The client secret is forwarded to the identity service and not kept here; an OIDC save may leave it out to keep the stored one when the issuer is unchanged. */
 export const PutOrgSsoConnectionBody = z.discriminatedUnion('protocol', [
   z.strictObject({
     protocol: z.literal('oidc'),
-    name: OrgSsoConnectionName,
     issuer: z.string().trim().min(1).max(2_000),
     clientId: z.string().trim().min(1).max(500),
     clientSecret: z.string().min(1).max(10_000).optional(),
@@ -3227,7 +3223,6 @@ export const PutOrgSsoConnectionBody = z.discriminatedUnion('protocol', [
   }),
   z.strictObject({
     protocol: z.literal('saml'),
-    name: OrgSsoConnectionName,
     metadataUrl: z.string().trim().min(1).max(2_000).optional(),
     metadata: z.string().trim().min(1).max(200_000).optional(),
     attributeMapping: z
@@ -3258,7 +3253,7 @@ export const SignInLookupBody = z.object({ email: z.string().min(3).max(320) }).
 
 /** `connector` is the one to start a sign-in against; null means the address signs in by the other methods. */
 export const SignInLookupDto = z.object({
-  connector: z.object({ connectorId: z.string(), name: z.string() }).nullable()
+  connector: z.object({ connectorId: z.string() }).nullable()
 })
 
 export const AddOrgSsoDomainBody = z.object({ domain: z.string().min(1).max(253) }).strict()
@@ -3349,7 +3344,7 @@ export const OrgDto = z.object({
    *  onboarding redirect when ANY of the caller's orgs already runs a daemon. */
   daemonCount: z.number().int(),
   /** In `GET /orgs`: the SSO connection this browser session must sign in through before it opens the organization; null when it may. */
-  ssoSignIn: z.object({ connectorId: z.string(), name: z.string() }).nullable().optional(),
+  ssoSignIn: z.object({ connectorId: z.string() }).nullable().optional(),
   createdAt: z.string() // ISO-8601
 })
 export const OrgListDto = z.array(OrgDto)

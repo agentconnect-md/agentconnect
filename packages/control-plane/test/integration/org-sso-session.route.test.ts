@@ -174,7 +174,7 @@ const agents = async (headers: Record<string, string>) => app.inject({ method: '
 const orgList = async (headers: Record<string, string>) =>
   (await app.inject({ method: 'GET', url: '/api/v1/orgs', headers })).json() as {
     id: string
-    ssoSignIn?: { connectorId: string; name: string } | null
+    ssoSignIn?: { connectorId: string } | null
   }[]
 
 /** Verify acme.example, configure and test the connection; returns its connector id. */
@@ -191,7 +191,6 @@ async function testedConnection(): Promise<string> {
     headers: await owner(),
     payload: {
       protocol: 'oidc',
-      name: 'Acme IdP',
       issuer: 'https://idp.example.test',
       clientId: 'c',
       clientSecret: 's'
@@ -247,8 +246,7 @@ describe('organization SSO per session', () => {
     expect(refused.statusCode).toBe(403)
     expect(refused.json()).toMatchObject({ code: 'ORG_SSO_SIGN_IN_REQUIRED' })
     expect((await orgList(await as(MEMBER_SUBJECT))).find((o) => o.id === DEFAULT_ORG_ID)?.ssoSignIn).toEqual({
-      connectorId,
-      name: 'Acme IdP'
+      connectorId
     })
 
     // Another organization's connector does not count.
@@ -342,7 +340,6 @@ describe('organization SSO per session', () => {
       headers: await owner(),
       payload: {
         protocol: 'oidc',
-        name: 'Acme IdP',
         issuer: 'https://idp.example.test',
         clientId: 'c2',
         clientSecret: 's'

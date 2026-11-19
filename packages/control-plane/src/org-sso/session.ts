@@ -36,7 +36,7 @@ export class OrgSsoSessionRule {
     if (email === null || !active.domains.has(domainOf(email))) return null
     // A connector gone from the identity service needs configuring again; nobody can sign in through it, so it does not lock anyone out.
     if (!(await this.present(active.connectorId))) return null
-    return { connectorId: active.connectorId, name: active.name }
+    return { connectorId: active.connectorId }
   }
 
   private async address(subject: string): Promise<string | null> {

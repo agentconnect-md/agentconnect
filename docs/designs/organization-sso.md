@@ -46,13 +46,17 @@ whether one is stored.
 ```
 org_sso_connection
   id, orgId (unique: one connection per organization)
-  logtoConnectorId (unique), protocol: oidc | saml, name
+  logtoConnectorId (unique), protocol: oidc | saml
   testNonceHash?, testExpiresAt?, testedAt?, activatedAt?, configChangedAt
 
 org_domain
   id, orgId, domain (lowercase; unique among verified rows)
   challenge, challengeExpiresAt, verifiedAt?, lastCheckedAt?, lastCheckOk?
 ```
+
+A connection has no name of its own. An organization has one, so the console calls
+it single sign-on, and a profile lists the identity it established under the
+organization's name.
 
 Only a verified row holds a domain. Any organization may start a challenge for a
 domain, so nobody can block one they do not control: a pending challenge expires, and
@@ -172,7 +176,7 @@ When organization SSO is on, the login page shows an email field above the socia
 buttons.
 
 - The page posts the address to an anonymous lookup, which answers with a connector
-  to start (`{ connectorId, name }`) or nothing.
+  to start (`{ connectorId }`) or nothing.
 - With a connector, the page starts the same direct sign-in it uses today for the
   deployment connector.
 - With nothing, the page stays where it is and points at the social buttons. There is
@@ -287,9 +291,9 @@ who enforces the connection makes the organization check it on every request:
   stopping take effect within the lookup's fifteen seconds (§4.2). When the account's address cannot be read and none
   is cached, the request answers 503.
 - **The console.** `GET /orgs` returns, for each organization, `ssoSignIn` (the
-  connector and its name) when this session must first sign in through it. The
-  console then shows, in place of the organization's pages, its name and the
-  connection with one action, "Sign in with" the connection, which starts the same
+  connector) when this session must first sign in through it. The
+  console then shows, in place of the organization's pages, its name
+  with one action, "Sign in with SSO", which starts the same
   direct sign-in as the login page and returns to the same page. The rail and the
   organization switcher stay, so the other organizations remain one click away. A
   refusal on any request makes the console read the list again, which covers a

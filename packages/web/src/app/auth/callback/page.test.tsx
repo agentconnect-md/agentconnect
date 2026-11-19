@@ -66,7 +66,6 @@ const stashTest = () =>
     'ac.ssoTest',
     JSON.stringify({
       nonce: 'nonce-1',
-      connectionName: 'Example IdP',
       returnTo: '/acme/settings#single-sign-on',
       expiresAt: new Date(Date.now() + 600_000).toISOString()
     })
@@ -115,7 +114,7 @@ it('presents the nonce of a test sign-in and shows that it passed', async () => 
   expect(mocks.reportOrgSsoTest).toHaveBeenCalledWith('nonce-1', expect.anything())
   expect(mocks.joinOrganizationsBySso).not.toHaveBeenCalled()
   expect(host.textContent).toContain('Sign-in test passed')
-  expect(host.textContent).toContain('Example IdP · dana@acme.example')
+  expect(host.textContent).toContain('dana@acme.example')
   expect(sessionStorage.getItem('ac.ssoTest')).toBeNull()
 
   await act(async () => host.querySelector('button')!.click())
@@ -165,7 +164,7 @@ it('fails the test when the sign-in did not come through the connection', async 
   mocks.reportOrgSsoTest.mockResolvedValue(false)
   await land('?code=abc')
   expect(host.textContent).toContain('Sign-in test failed')
-  expect(host.textContent).toContain('could not be matched to the test of Example IdP')
+  expect(host.textContent).toContain('could not be matched to the test.')
 })
 
 it('says the provider returned no usable address when the landed account is refused', async () => {
@@ -179,7 +178,7 @@ it('says the provider returned no usable address when the landed account is refu
   await land('?code=abc')
   expect(host.textContent).toContain('Sign-in test failed')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-    'Example IdP returned no email address in this organization'
+    'The identity provider returned no email address in this organization'
   )
   expect(host.textContent).toContain('Attributes the provider sent')
   expect([...host.querySelectorAll('li')].map((li) => li.textContent)).toEqual([

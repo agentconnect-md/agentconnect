@@ -9042,7 +9042,6 @@ export interface OrgSsoConnectionRecord {
   orgId: string
   logtoConnectorId: string
   protocol: OrgSsoProtocol
-  name: string
   testNonceHash: string | null
   testExpiresAt: Date | null
   testedAt: Date | null
@@ -9058,7 +9057,7 @@ export interface OrgSsoConnectionRepo {
   getForOrg(orgId: string): Promise<OrgSsoConnectionRecord | null>
   /** Create the row or record a configuration change; the test result no longer stands, enforcing stops, and an open test window ends at `at`. */
   save(
-    input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol; name: string },
+    input: { orgId: string; logtoConnectorId: string; protocol: OrgSsoProtocol },
     at: Date,
     actorUserId: string
   ): Promise<OrgSsoConnectionRecord>
@@ -9084,10 +9083,10 @@ export interface OrgSsoConnectionRepo {
   remove(orgId: string, actorUserId: string): Promise<OrgSsoConnectionRecord | null>
   /** System tier: the connections that own these identity-service connectors. */
   findByConnectorIds(connectorIds: readonly string[]): Promise<OrgSsoConnectionRecord[]>
+  /** System tier: the display name of the organization behind each of these connectors, keyed by connector id. */
+  orgNamesByConnector(connectorIds: readonly string[]): Promise<Map<string, string>>
   /** System tier: every verified domain of an active connection, with the connector it signs in through. */
-  listActiveDomains(): Promise<
-    { domain: string; orgId: string; connectorId: string; name: string; enforced: boolean }[]
-  >
+  listActiveDomains(): Promise<{ domain: string; orgId: string; connectorId: string; enforced: boolean }[]>
   /** Grant the membership a first sign-in through the connection earns, once; `recorded` means an earlier join stands, whatever became of the membership. */
   joinOnce(
     orgId: string,

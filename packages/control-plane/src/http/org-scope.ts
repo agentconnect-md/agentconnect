@@ -38,7 +38,7 @@ export async function refuseWithoutOrgSso(
   void reply.code(403).send({
     error: 'Forbidden',
     statusCode: 403,
-    message: `sign in through ${required.name} to open this organization`,
+    message: 'sign in through single sign-on to open this organization',
     code: ORG_SSO_SIGN_IN_REQUIRED
   })
   return true

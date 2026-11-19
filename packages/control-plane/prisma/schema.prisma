@@ -464,7 +464,6 @@ model OrgSsoConnection {
   orgId            String    @unique
   logtoConnectorId String    @unique
   protocol         String // oidc | saml
-  name             String
   testNonceHash    String?   @unique
   testExpiresAt    DateTime? @db.Timestamptz(6)
   testedAt         DateTime? @db.Timestamptz(6)
