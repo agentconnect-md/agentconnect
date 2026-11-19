@@ -72,12 +72,12 @@ describe('organization gate', () => {
 
   it('leads a session the organization does not accept straight to its connection, and returns here', async () => {
     window.history.replaceState(null, '', '/acme/agents?tab=all')
-    mocks.activeOrg = org({ ssoSignIn: { connectorId: 'connector-acme', name: 'Acme IdP' } })
+    mocks.activeOrg = org({ ssoSignIn: { connectorId: 'connector-acme' } })
     await render()
     expect(host.textContent).not.toContain('organization pages')
-    expect(host.querySelector('h1')?.textContent).toBe('Acme requires Acme IdP')
+    expect(host.querySelector('h1')?.textContent).toBe('Acme requires single sign-on')
 
-    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Sign in with Acme IdP')!
+    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Sign in with SSO')!
     await act(async () => button.click())
     expect(mocks.writeFlowState).toHaveBeenCalledWith('returnTo', '/acme/agents?tab=all')
     expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-acme', 'dana@acme.example')

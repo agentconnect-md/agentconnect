@@ -57,7 +57,6 @@ const connection = (patch: Partial<OrgSsoConnectionDto> = {}): OrgSsoConnectionD
   id: 'conn',
   connectorId: 'connector-1',
   protocol: 'oidc',
-  name: 'Example IdP',
   status: 'draft',
   tested: false,
   testedAt: null,
@@ -169,8 +168,8 @@ describe('organization single sign-on card', () => {
 
     await render({ domains, connection: connection({ status: 'active', tested: true }) })
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Enforce', 'Deactivate'])
-    // An active connection is named on each domain it binds.
-    expect(host.textContent).toContain('VerifiedExample IdP')
+    // An active connection marks each domain it binds.
+    expect(host.textContent).toContain('VerifiedSSO sign-in only')
 
     await render({ domains, connection: connection({ status: 'active', needsConfiguration: true, settings: null }) })
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Reconfigure'])
@@ -236,7 +235,6 @@ describe('organization single sign-on card', () => {
     expect(mocks.saveOrgSsoConnection).toHaveBeenCalledWith(
       {
         protocol: 'oidc',
-        name: 'Example IdP',
         issuer: 'https://idp.example.test',
         clientId: 'client',
         scope: 'openid email'
@@ -295,7 +293,6 @@ describe('organization single sign-on card', () => {
     expect(mocks.saveOrgSsoConnection).toHaveBeenCalledWith(
       {
         protocol: 'saml',
-        name: 'Example IdP',
         metadataUrl: 'https://idp.example.test/metadata',
         attributeMapping: { id: 'employeeId', email: 'mail', name: 'name' }
       },
@@ -314,7 +311,6 @@ describe('organization single sign-on card', () => {
     expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-1')
     expect(JSON.parse(sessionStorage.getItem('ac.ssoTest')!)).toEqual({
       nonce: 'nonce-1',
-      connectionName: 'Example IdP',
       returnTo: '/acme/settings#single-sign-on',
       expiresAt
     })
@@ -337,7 +333,7 @@ describe('organization single sign-on card', () => {
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Enforce', 'Deactivate'])
     await click('Enforce', host)
     expect(dialog().textContent).toContain(
-      'owners included, will open this organization only after signing in through Example IdP'
+      'owners included, will open this organization only after signing in with SSO'
     )
     mocks.enforceOrgSsoConnection.mockResolvedValue({ ...active, enforcedAt: '2026-01-03T00:00:00Z' })
     await click('Enforce', dialog())
@@ -346,15 +342,15 @@ describe('organization single sign-on card', () => {
     // Not signed in through the connection: the dialog leads there instead.
     await render({ domains: [domain('acme.example')], connection: active, enforce: 'sign_in_required' })
     await click('Enforce', host)
-    expect(dialog().textContent).toContain('To enforce, first sign in through Example IdP.')
-    await click('Sign in with Example IdP', dialog())
+    expect(dialog().textContent).toContain('To enforce, first sign in with SSO.')
+    await click('Sign in with SSO', dialog())
     expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-1', 'dana@acme.example')
     expect(mocks.enforceOrgSsoConnection).toHaveBeenCalledTimes(1)
 
     // An owner outside the domains is told why, with nothing to confirm.
     await render({ domains: [domain('acme.example')], connection: active, enforce: 'outside_domains' })
     await click('Enforce', host)
-    expect(dialog().textContent).toContain('Only an owner with an address on these domains can enforce Example IdP.')
+    expect(dialog().textContent).toContain('Only an owner with an address on these domains can enforce single sign-on.')
     expect(buttons(dialog()).filter((label) => label !== 'Close')).toEqual(['Cancel'])
   })
 
@@ -369,7 +365,7 @@ describe('organization single sign-on card', () => {
     expect(host.textContent).toContain('Enforced')
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Stop enforcing', 'Deactivate'])
     await click('Stop enforcing', host)
-    expect(dialog().textContent).toContain('Example IdP stays active')
+    expect(dialog().textContent).toContain('Single sign-on stays active')
     mocks.stopEnforcingOrgSsoConnection.mockResolvedValue({ ...enforced, enforcedAt: null })
     await click('Stop enforcing', dialog())
     expect(mocks.stopEnforcingOrgSsoConnection).toHaveBeenCalledWith('org-test')
@@ -384,7 +380,7 @@ describe('organization single sign-on card', () => {
     await render({ domains: [domain('acme.example')], connection: connection() })
     await click('Edit', host)
     await click('Remove connection', dialog())
-    expect(dialog().textContent).toContain('Remove Example IdP?')
+    expect(dialog().textContent).toContain('Remove the connection?')
     expect(dialog().textContent).not.toContain('acme.example')
     expect(mocks.removeOrgSsoConnection).not.toHaveBeenCalled()
 

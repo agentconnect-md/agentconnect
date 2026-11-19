@@ -52,7 +52,6 @@ function connectionDto(view: OrgSsoConnectionView): OrgSsoConnectionDtoT {
     id: view.id,
     connectorId: view.connectorId,
     protocol: view.protocol,
-    name: view.name,
     status: view.status,
     tested: view.tested,
     testedAt: view.testedAt?.toISOString() ?? null,

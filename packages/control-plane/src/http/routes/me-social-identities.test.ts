@@ -184,7 +184,7 @@ describe('GET /me/social-identities single sign-on identities', () => {
       ssoConnectorNameFor: vi.fn(async (id: string) => (id === 'other-connector' ? 'Other IdP' : null))
     }
     const orgSsoConnections = {
-      namesByConnector: vi.fn(async () => new Map([['org-connector', 'Acme Identity']]))
+      orgNamesByConnector: vi.fn(async () => new Map([['org-connector', 'Acme']]))
     }
     const runtimeConfig = {
       publicRuntimeConfig: { auth: { sso: { connectorId: 'deployment-connector', name: 'Company SSO' } } }
@@ -194,7 +194,7 @@ describe('GET /me/social-identities single sign-on identities', () => {
       const res = await app.inject({ method: 'GET', url: '/me/social-identities' })
       expect(res.statusCode).toBe(200)
       expect(res.json().ssoIdentities).toEqual([
-        { connectionName: 'Acme Identity', email: 'alex@idp.example.test' },
+        { connectionName: 'Acme', email: 'alex@idp.example.test' },
         { connectionName: 'Company SSO', email: 'alex@acme.example' },
         { connectionName: 'Other IdP', email: 'alex@other.example.test' },
         { email: 'alex@acme.example' }

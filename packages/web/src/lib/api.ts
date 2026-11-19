@@ -1567,7 +1567,7 @@ export interface OrgDto {
   /** Getting-started tutorial position: checklist steps passed (completed or skipped). */
   gettingStartedStep?: number
   /** The SSO connection this browser session must sign in through before it opens the organization. */
-  ssoSignIn?: { connectorId: string; name: string } | null
+  ssoSignIn?: { connectorId: string } | null
   createdAt: string // ISO-8601
 }
 
@@ -5966,7 +5966,6 @@ export interface OrgSsoConnectionDto {
   /** The identity service's connector, which a direct sign-in through the connection names. */
   connectorId: string
   protocol: OrgSsoProtocol
-  name: string
   status: 'draft' | 'tested' | 'active'
   tested: boolean
   testedAt: string | null
@@ -5991,10 +5990,9 @@ export interface OrgSsoStateDto {
 export type OrgSsoDomainCheck = 'ok' | 'not_found' | 'mismatch' | 'lookup_failed'
 
 export type OrgSsoConnectionInput =
-  | { protocol: 'oidc'; name: string; issuer: string; clientId: string; clientSecret?: string; scope?: string }
+  | { protocol: 'oidc'; issuer: string; clientId: string; clientSecret?: string; scope?: string }
   | {
       protocol: 'saml'
-      name: string
       metadataUrl?: string
       metadata?: string
       attributeMapping?: { id?: string; email?: string; name?: string }
@@ -6072,10 +6070,7 @@ export async function joinOrganizationsBySso(signal?: AbortSignal): Promise<stri
 }
 
 /** Anonymous: the connector an address signs in through, or null for the deployment's other methods. */
-export async function lookupSignIn(
-  email: string,
-  signal?: AbortSignal
-): Promise<{ connectorId: string; name: string } | null> {
+export async function lookupSignIn(email: string, signal?: AbortSignal): Promise<{ connectorId: string } | null> {
   const path = '/sign-in/lookup'
   // No bearer: the token helper would send a signed-out browser back to the sign-in page it is already on.
   const res = await fetch(`${cpBase()}${path}`, {
@@ -6085,7 +6080,7 @@ export async function lookupSignIn(
     signal
   })
   if (!res.ok) throw await apiErrorFromResponse('POST', path, res)
-  return ((await res.json()) as { connector: { connectorId: string; name: string } | null }).connector
+  return ((await res.json()) as { connector: { connectorId: string } | null }).connector
 }
 
 // ── me (the caller's own profile) ─────────────────────────────────────────────
@@ -6131,6 +6126,7 @@ export interface MySocialIdentityDto {
 
 /** A single sign-on identity; read-only, since its connection's owner administers it. */
 export interface MySsoIdentityDto {
+  /** The organization that owns the connection, or the deployment connector's name. */
   connectionName?: string
   email?: string
 }

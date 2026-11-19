@@ -65,7 +65,6 @@ export function commitPendingSignIn(): void {
 /** A test sign-in in flight: what the landing page presents and shows. */
 export interface PendingSsoTest {
   nonce: string
-  connectionName: string
   /** Where "Back to Settings" returns. */
   returnTo: string
   /** When the test window closes; a later sign-in in this tab is an ordinary one. */
@@ -100,13 +99,13 @@ export function takeSsoTest(now: number = Date.now()): PendingSsoTest | null {
     sessionStorage.removeItem(TEST_KEY)
     if (!raw) return null
     const value = JSON.parse(raw) as Partial<PendingSsoTest>
-    if (typeof value.nonce !== 'string' || typeof value.connectionName !== 'string') return null
+    if (typeof value.nonce !== 'string') return null
     if (typeof value.expiresAt !== 'string' || !(Date.parse(value.expiresAt) > now)) return null
     const returnTo =
       typeof value.returnTo === 'string' && value.returnTo.startsWith('/') && !value.returnTo.startsWith('//')
         ? value.returnTo
         : '/settings'
-    return { nonce: value.nonce, connectionName: value.connectionName, returnTo, expiresAt: value.expiresAt }
+    return { nonce: value.nonce, returnTo, expiresAt: value.expiresAt }
   } catch {
     return null
   }

@@ -8,11 +8,13 @@ import { orgConnectorName, type OrgSsoIdp } from './idp.js'
 
 export const ORG_SSO_TEST_TTL_MS = 10 * 60 * 1000
 
+// An organization has one connection, so it has no name of its own; the identity service still wants a label for the connector.
+const CONNECTOR_DISPLAY_NAME = 'SSO'
+
 export type OrgSsoConnectionInput =
-  | { protocol: 'oidc'; name: string; issuer: string; clientId: string; clientSecret?: string; scope?: string }
+  | { protocol: 'oidc'; issuer: string; clientId: string; clientSecret?: string; scope?: string }
   | {
       protocol: 'saml'
-      name: string
       metadataUrl?: string
       metadata?: string
       attributeMapping?: Record<string, string>
@@ -35,7 +37,6 @@ export interface OrgSsoConnectionView {
   /** The identity service's connector, which a direct sign-in through the connection names. */
   connectorId: string
   protocol: OrgSsoProtocol
-  name: string
   /** `active` binds the organization's domains whether or not the current settings were tested. */
   status: 'draft' | 'tested' | 'active'
   /** A sign-in through the connection has succeeded since its settings last changed. */
@@ -109,10 +110,9 @@ export class OrgSsoConnectionService {
     }
   ) {}
 
-  /** The name each organization gave the connection behind these connectors, keyed by connector id. */
-  async namesByConnector(connectorIds: readonly string[]): Promise<Map<string, string>> {
-    const rows = await this.deps.connections.findByConnectorIds(connectorIds)
-    return new Map(rows.map((row) => [row.logtoConnectorId, row.name]))
+  /** The organization behind each of these connectors, by its display name, keyed by connector id. */
+  orgNamesByConnector(connectorIds: readonly string[]): Promise<Map<string, string>> {
+    return this.deps.connections.orgNamesByConnector(connectorIds)
   }
 
   /** `withSettings` reads the saved settings back from the identity service. */
@@ -132,7 +132,7 @@ export class OrgSsoConnectionService {
     const connectorId = await this.deps.idp.ensureConnector({
       connectorName: orgConnectorName(orgId),
       protocol,
-      displayName: row?.name ?? 'SSO'
+      displayName: CONNECTOR_DISPLAY_NAME
     })
     return this.serviceProvider(protocol, connectorId)
   }
@@ -152,16 +152,16 @@ export class OrgSsoConnectionService {
     const connectorId = await idp.ensureConnector({
       connectorName: orgConnectorName(orgId),
       protocol: input.protocol,
-      displayName: input.name
+      displayName: CONNECTOR_DISPLAY_NAME
     })
     // The row changes before the settings are tried, so new settings can never stand behind an older test.
     const row = await connections.save(
-      { orgId, logtoConnectorId: connectorId, protocol: input.protocol, name: input.name },
+      { orgId, logtoConnectorId: connectorId, protocol: input.protocol },
       new Date(clock.now()),
       actorUserId
     )
     const configured = await idp.configure(connectorId, {
-      displayName: input.name,
+      displayName: CONNECTOR_DISPLAY_NAME,
       config: connectorConfig(input, clientSecret)
     })
     if (configured === 'missing') throw new LogtoApiError('the sso connector disappeared while it was saved', 0, true)
@@ -381,7 +381,6 @@ export class OrgSsoConnectionService {
       id: row.id,
       connectorId: row.logtoConnectorId,
       protocol: row.protocol,
-      name: row.name,
       status: row.activatedAt ? 'active' : tested ? 'tested' : 'draft',
       tested,
       testedAt: row.testedAt,

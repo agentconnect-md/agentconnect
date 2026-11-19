@@ -6,7 +6,6 @@ export const ORG_SSO_LOOKUP_TTL_MS = 15_000
 
 export interface OrgSsoSignInConnector {
   connectorId: string
-  name: string
 }
 
 /** An organization's active connection and the verified domains it holds. */
@@ -69,10 +68,9 @@ export class OrgSsoSignInLookup {
     const byDomain = new Map<string, OrgSsoSignInConnector>()
     const byOrg = new Map<string, OrgSsoActiveConnection & { domains: Set<string> }>()
     for (const row of await this.deps.connections.listActiveDomains()) {
-      byDomain.set(row.domain, { connectorId: row.connectorId, name: row.name })
+      byDomain.set(row.domain, { connectorId: row.connectorId })
       const org = byOrg.get(row.orgId) ?? {
         connectorId: row.connectorId,
-        name: row.name,
         enforced: row.enforced,
         domains: new Set<string>()
       }

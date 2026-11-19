@@ -35,7 +35,6 @@ it('hands a test sign-in to its landing page once, and only inside the test wind
   const now = Date.parse('2026-01-01T00:00:00Z')
   const test = {
     nonce: 'nonce-1',
-    connectionName: 'Example IdP',
     returnTo: '/acme/settings#single-sign-on',
     expiresAt: '2026-01-01T00:10:00Z'
   }
@@ -50,7 +49,6 @@ it('hands a test sign-in to its landing page once, and only inside the test wind
 it('returns to Settings when the stashed destination is not a same-origin path', () => {
   stashSsoTest({
     nonce: 'nonce-1',
-    connectionName: 'Example IdP',
     returnTo: '//elsewhere.example.test',
     expiresAt: '2026-01-01T00:10:00Z'
   })

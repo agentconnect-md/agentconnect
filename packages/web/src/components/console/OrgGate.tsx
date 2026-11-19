@@ -31,7 +31,7 @@ export function OrgGate({ children }: { children: ReactNode }) {
 }
 
 // The organization accepts this browser session only once it signs in through its SSO connection (organization-sso.md §4.5).
-function OrgSsoSignIn({ org, connection }: { org: OrgDto; connection: { connectorId: string; name: string } }) {
+function OrgSsoSignIn({ org, connection }: { org: OrgDto; connection: { connectorId: string } }) {
   const t = useTranslations('Common.organizationSso')
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
@@ -61,10 +61,10 @@ function OrgSsoSignIn({ org, connection }: { org: OrgDto; connection: { connecto
         className="rounded-md text-[18px]"
       />
       <h1 className="font-sans text-[18px] leading-normal font-semibold text-(--text-primary)">
-        {t('title', { org: orgName, name: connection.name })}
+        {t('title', { org: orgName })}
       </h1>
       <Button disabled={pending} onClick={() => void signIn()}>
-        {t('signIn', { name: connection.name })}
+        {t('signIn')}
       </Button>
       {failed && (
         <p role="alert" className="text-[13px] text-(--status-error)">

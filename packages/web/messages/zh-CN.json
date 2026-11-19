@@ -2,8 +2,8 @@
   "Common": {
     "organizationLoadError": "无法加载你的组织，请检查网络连接后重试。",
     "organizationSso": {
-      "title": "{org} 需要通过 {name} 登录",
-      "signIn": "使用 {name} 登录"
+      "title": "{org} 需要通过单点登录进入",
+      "signIn": "使用 SSO 登录"
     },
     "metadata": {
       "description": "连接即时通信平台与 AI 编程 Agent 的多 Agent 平台"
@@ -1432,8 +1432,8 @@
     "ssoTest": {
       "passed": "登录测试通过",
       "failed": "登录测试未通过",
-      "unconfirmed": "这次登录没有对应上 {name} 的测试，请回到设置重新开始测试。",
-      "noAddress": "{name} 没有返回属于本组织域名的邮箱。请调整邮箱的 claim 或属性，然后重新测试。",
+      "unconfirmed": "这次登录没有对应上测试，请回到设置重新开始测试。",
+      "noAddress": "身份提供方没有返回属于本组织域名的邮箱。请调整邮箱的 claim 或属性，然后重新测试。",
       "attributesSent": "身份提供方发送的属性",
       "inDomainAddress": "本组织域名的邮箱",
       "backToSettings": "返回设置",
@@ -5687,7 +5687,6 @@
         "editTitle": "编辑连接",
         "reconfigureTitle": "重新配置连接",
         "protocol": "协议",
-        "name": "名称",
         "issuer": "Issuer",
         "clientId": "Client ID",
         "clientSecret": "Client secret",
@@ -5708,44 +5707,45 @@
         "remove": "删除连接"
       },
       "removeDialog": {
-        "title": "删除 {name}？",
-        "body": "通过 <b>{name}</b> 建立的登录方式将失效。账号保留，需改用其他方式登录。",
-        "bodyActive": "这些域名下的邮箱将可以重新用任意方式登录。通过 <b>{name}</b> 建立的登录方式将失效；账号保留，需改用其他方式登录。",
+        "title": "删除连接？",
+        "body": "通过这个连接建立的登录方式将失效。账号保留，需改用其他方式登录。",
+        "bodyActive": "这些域名下的邮箱将可以重新用任意方式登录。通过这个连接建立的登录方式将失效；账号保留，需改用其他方式登录。",
         "removing": "正在删除…"
       },
       "testDialog": {
-        "title": "用 {name} 测试登录？",
-        "body": "你将通过 <b>{name}</b> 登录一次。如果 {name} 返回的邮箱不是 <b>{email}</b>，你会登录到那个账户，之后需要重新登录。",
-        "bodyNoEmail": "你将通过 <b>{name}</b> 登录一次。如果 {name} 返回的邮箱不是你的，你会登录到那个账户，之后需要重新登录。",
+        "title": "测试登录？",
+        "body": "你将通过身份提供方登录一次。如果它返回的邮箱不是 <b>{email}</b>，你会登录到那个账户，之后需要重新登录。",
+        "bodyNoEmail": "你将通过身份提供方登录一次。如果它返回的邮箱不是你的，你会登录到那个账户，之后需要重新登录。",
         "starting": "正在开始…",
         "storageBlocked": "浏览器阻止了测试所需的临时存储。请允许本站保存数据后重试。"
       },
       "activateDialog": {
-        "title": "启用 {name}？",
-        "body": "这些域名下的邮箱将只能通过 <b>{name}</b> 登录。",
+        "title": "启用单点登录？",
+        "body": "这些域名下的邮箱将只能通过 SSO 登录。",
         "activating": "正在启用…"
       },
       "deactivateDialog": {
-        "title": "停用 {name}？",
+        "title": "停用单点登录？",
         "body": "这些域名下的邮箱将可以重新用任意方式登录。",
         "deactivating": "正在停用…"
       },
       "enforceDialog": {
-        "title": "强制使用 {name}？",
-        "body": "这些域名下的成员（包括所有者）只有通过 <b>{name}</b> 登录后才能进入这个组织。如果 {name} 无法使用，部署管理员可以关闭这项设置。",
-        "signInFirst": "要强制使用，请先通过 <b>{name}</b> 登录。",
-        "signIn": "使用 {name} 登录",
-        "outsideDomains": "只有邮箱在这些域名下的所有者才能强制使用 <b>{name}</b>。",
+        "title": "强制使用单点登录？",
+        "body": "这些域名下的成员（包括所有者）只有通过 SSO 登录后才能进入这个组织。如果 SSO 无法使用，部署管理员可以关闭这项设置。",
+        "signInFirst": "要强制使用，请先通过 SSO 登录。",
+        "signIn": "使用 SSO 登录",
+        "outsideDomains": "只有邮箱在这些域名下的所有者才能强制使用单点登录。",
         "working": "正在保存…"
       },
       "stopEnforcingDialog": {
-        "title": "停止强制使用 {name}？",
-        "body": "这些域名下的成员将可以用任何方式登录后进入这个组织。<b>{name}</b> 仍保持启用。"
+        "title": "停止强制使用单点登录？",
+        "body": "这些域名下的成员将可以用任何方式登录后进入这个组织。单点登录仍保持启用。"
       },
       "verifyDialog": {
         "title": "验证 {domain}？",
-        "body": "<b>{name}</b> 已启用。验证通过后，<b>{domain}</b> 下的邮箱将只能通过 {name} 登录。"
-      }
+        "body": "单点登录已启用。验证通过后，<b>{domain}</b> 下的邮箱将只能通过 SSO 登录。"
+      },
+      "bound": "只能通过 SSO 登录"
     },
     "serviceAccounts": {
       "title": "服务账号",

@@ -188,7 +188,6 @@ export default function OrgSsoConnectionModal({
   const reconfigure = connection?.needsConfiguration === true
 
   const [protocol, setProtocol] = useState<OrgSsoProtocol>(connection?.protocol ?? 'oidc')
-  const [name, setName] = useState(connection?.name ?? '')
   const [issuer, setIssuer] = useState(savedOidc?.issuer ?? '')
   const [clientId, setClientId] = useState(savedOidc?.clientId ?? '')
   const [clientSecret, setClientSecret] = useState('')
@@ -226,13 +225,10 @@ export default function OrgSsoConnectionModal({
     !reconfigure && savedOidc?.hasClientSecret === true && !replaceSecret && issuer.trim() === savedOidc.issuer
 
   const input = (): OrgSsoConnectionInput | null => {
-    const displayName = name.trim()
-    if (!displayName) return null
     if (protocol === 'oidc') {
       if (!issuer.trim() || !clientId.trim() || (!keepsSecret && !clientSecret)) return null
       return {
         protocol,
-        name: displayName,
         issuer: issuer.trim(),
         clientId: clientId.trim(),
         ...(keepsSecret ? {} : { clientSecret }),
@@ -249,7 +245,6 @@ export default function OrgSsoConnectionModal({
     }
     return {
       protocol,
-      name: displayName,
       ...(source === 'url' ? { metadataUrl: document } : { metadata: document }),
       ...(Object.keys(mapping).length > 0 ? { attributeMapping: mapping } : {})
     }
@@ -342,7 +337,6 @@ export default function OrgSsoConnectionModal({
               setError(null)
             }}
           />
-          <Field label={t('name')} value={name} onChange={setName} placeholder="Okta" autoFocus={!connection} />
           {protocol === 'oidc' ? (
             <>
               <Field

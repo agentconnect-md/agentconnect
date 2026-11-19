@@ -2,8 +2,8 @@
   "Common": {
     "organizationLoadError": "Couldn’t load your organizations. Check your connection and try again.",
     "organizationSso": {
-      "title": "{org} requires {name}",
-      "signIn": "Sign in with {name}"
+      "title": "{org} requires single sign-on",
+      "signIn": "Sign in with SSO"
     },
     "metadata": {
       "description": "Multi-agent platform bridging IM platforms to AI coding agents"
@@ -1432,8 +1432,8 @@
     "ssoTest": {
       "passed": "Sign-in test passed",
       "failed": "Sign-in test failed",
-      "unconfirmed": "This sign-in could not be matched to the test of {name}. Start the test again from Settings.",
-      "noAddress": "{name} returned no email address in this organization's domains. Fix the email claim or attribute, then test again.",
+      "unconfirmed": "This sign-in could not be matched to the test. Start the test again from Settings.",
+      "noAddress": "The identity provider returned no email address in this organization's domains. Fix the email claim or attribute, then test again.",
       "attributesSent": "Attributes the provider sent",
       "inDomainAddress": "Address in your domains",
       "backToSettings": "Back to Settings",
@@ -5687,7 +5687,6 @@
         "editTitle": "Edit connection",
         "reconfigureTitle": "Reconfigure connection",
         "protocol": "Protocol",
-        "name": "Name",
         "issuer": "Issuer",
         "clientId": "Client ID",
         "clientSecret": "Client secret",
@@ -5708,44 +5707,45 @@
         "remove": "Remove connection"
       },
       "removeDialog": {
-        "title": "Remove {name}?",
-        "body": "Sign-ins set up through <b>{name}</b> stop working. Accounts stay, and their owners sign in with another method.",
-        "bodyActive": "Addresses on these domains will be able to sign in with any method again. Sign-ins set up through <b>{name}</b> stop working; accounts stay, and their owners sign in with another method.",
+        "title": "Remove the connection?",
+        "body": "Sign-ins set up through the connection stop working. Accounts stay, and their owners sign in with another method.",
+        "bodyActive": "Addresses on these domains will be able to sign in with any method again. Sign-ins set up through the connection stop working; accounts stay, and their owners sign in with another method.",
         "removing": "Removing…"
       },
       "testDialog": {
-        "title": "Test sign-in with {name}?",
-        "body": "You'll sign in once through <b>{name}</b>. If {name} returns an email other than <b>{email}</b>, you'll be signed in to that account and will need to sign back in.",
-        "bodyNoEmail": "You'll sign in once through <b>{name}</b>. If {name} returns an email other than yours, you'll be signed in to that account and will need to sign back in.",
+        "title": "Test the sign-in?",
+        "body": "You'll sign in once through your identity provider. If it returns an email other than <b>{email}</b>, you'll be signed in to that account and will need to sign back in.",
+        "bodyNoEmail": "You'll sign in once through your identity provider. If it returns an email other than yours, you'll be signed in to that account and will need to sign back in.",
         "starting": "Starting…",
         "storageBlocked": "This browser is blocking the temporary storage the test needs. Allow site data for this site, then try again."
       },
       "activateDialog": {
-        "title": "Activate {name}?",
-        "body": "Addresses on these domains will only be able to sign in through <b>{name}</b>.",
+        "title": "Activate single sign-on?",
+        "body": "Addresses on these domains will only be able to sign in with SSO.",
         "activating": "Activating…"
       },
       "deactivateDialog": {
-        "title": "Deactivate {name}?",
+        "title": "Deactivate single sign-on?",
         "body": "Addresses on these domains will be able to sign in with any method again.",
         "deactivating": "Deactivating…"
       },
       "enforceDialog": {
-        "title": "Enforce {name}?",
-        "body": "Members with addresses on these domains, owners included, will open this organization only after signing in through <b>{name}</b>. If {name} stops working, a deployment administrator can turn this off.",
-        "signInFirst": "To enforce, first sign in through <b>{name}</b>.",
-        "signIn": "Sign in with {name}",
-        "outsideDomains": "Only an owner with an address on these domains can enforce <b>{name}</b>.",
+        "title": "Enforce single sign-on?",
+        "body": "Members with addresses on these domains, owners included, will open this organization only after signing in with SSO. If SSO stops working, a deployment administrator can turn this off.",
+        "signInFirst": "To enforce, first sign in with SSO.",
+        "signIn": "Sign in with SSO",
+        "outsideDomains": "Only an owner with an address on these domains can enforce single sign-on.",
         "working": "Saving…"
       },
       "stopEnforcingDialog": {
-        "title": "Stop enforcing {name}?",
-        "body": "Members with addresses on these domains will open this organization from any sign-in again. <b>{name}</b> stays active."
+        "title": "Stop enforcing single sign-on?",
+        "body": "Members with addresses on these domains will open this organization from any sign-in again. Single sign-on stays active."
       },
       "verifyDialog": {
         "title": "Verify {domain}?",
-        "body": "<b>{name}</b> is active. Once verified, addresses on <b>{domain}</b> will only be able to sign in through {name}."
-      }
+        "body": "Single sign-on is active. Once verified, addresses on <b>{domain}</b> will only be able to sign in with SSO."
+      },
+      "bound": "SSO sign-in only"
     },
     "serviceAccounts": {
       "title": "Service accounts",

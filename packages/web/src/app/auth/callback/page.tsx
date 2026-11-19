@@ -25,7 +25,6 @@ type Landing =
   | {
       kind: 'test'
       passed: boolean
-      connectionName: string
       email: string | null
       error: string | null
       /** The Control Plane refused the account that landed: the provider gave it no address in the organization's domains. */
@@ -64,7 +63,6 @@ async function land(): Promise<Landing> {
   if (test) {
     const outcome = {
       kind: 'test' as const,
-      connectionName: test.connectionName,
       returnTo: test.returnTo,
       refused: false,
       attributes: [] as string[],
@@ -143,17 +141,15 @@ function SsoTestResult({ result }: { result: Extract<Landing, { kind: 'test' }> 
           {result.passed ? t('passed') : t('failed')}
         </h1>
         {result.passed ? (
-          <div className="mono mt-2 break-all text-[12.5px] text-(--text-secondary)">
-            {[result.connectionName, result.email].filter(Boolean).join(' · ')}
-          </div>
+          result.email && (
+            <div className="mono mt-2 break-all text-[12.5px] text-(--text-secondary)">{result.email}</div>
+          )
         ) : (
           <div
             className="mono mt-[10px] rounded-sm bg-(--status-error-soft) px-[10px] py-2 text-[12px] break-words text-(--status-error)"
             role="alert"
           >
-            {result.refused
-              ? t('noAddress', { name: result.connectionName })
-              : (result.error ?? t('unconfirmed', { name: result.connectionName }))}
+            {result.refused ? t('noAddress') : (result.error ?? t('unconfirmed'))}
           </div>
         )}
         {result.refused && result.attributes.length > 0 && (

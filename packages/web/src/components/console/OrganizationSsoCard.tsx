@@ -109,7 +109,7 @@ function DnsRecord({ record }: { record: OrgSsoDomainDto['record'] }) {
 
 function DomainRow({
   domain,
-  boundTo,
+  bound,
   problem,
   isOwner,
   busy,
@@ -117,8 +117,8 @@ function DomainRow({
   onRemove
 }: {
   domain: OrgSsoDomainDto
-  /** The active connection's name: addresses on this domain sign in only through it. */
-  boundTo: string | null
+  /** A connection is active: addresses on this domain sign in only through it. */
+  bound: boolean
   problem: DomainProblem | undefined
   isOwner: boolean
   busy: boolean
@@ -167,10 +167,10 @@ function DomainRow({
             {problemText}
           </span>
         )}
-        {verified && boundTo && (
+        {verified && bound && (
           <span className="inline-flex items-center gap-[5px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
             <Icon name="link" size={13} />
-            {boundTo}
+            {t('bound')}
           </span>
         )}
         {isOwner && (
@@ -215,8 +215,7 @@ function ConnectionRow({
         <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken) text-(--text-secondary)">
           <Icon name="key-round" size={15} />
         </span>
-        <span className="font-sans text-[13.5px] font-semibold leading-normal">{connection.name}</span>
-        <span className="rounded-xs border border-(--border-default) px-[6px] py-px font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
+        <span className="font-sans text-[13.5px] font-semibold leading-normal">
           {connection.protocol === 'oidc' ? 'OIDC' : 'SAML'}
         </span>
         {connection.needsConfiguration ? (
@@ -406,7 +405,6 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       const test = await startOrgSsoTest(orgId)
       stashSsoTest({
         nonce: test.nonce,
-        connectionName: connection.name,
         returnTo: `${pathname}#single-sign-on`,
         expiresAt: test.expiresAt
       })
@@ -457,7 +455,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
                 <DomainRow
                   key={domain.id}
                   domain={domain}
-                  boundTo={active && connection ? connection.name : null}
+                  bound={active}
                   problem={problems[domain.id]}
                   isOwner={isOwner}
                   busy={rowBusy === domain.id}
@@ -514,7 +512,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       )}
       {dialog?.kind === 'remove' && connection && (
         <ConfirmationDialog
-          title={t('removeDialog.title', { name: connection.name })}
+          title={t('removeDialog.title')}
           confirmLabel={t('connectionDialog.remove')}
           busy={pending}
           busyLabel={t('removeDialog.removing')}
@@ -530,12 +528,12 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           onClose={close}
         >
           {active && <DomainList domains={verified} />}
-          {t.rich(active ? 'removeDialog.bodyActive' : 'removeDialog.body', { name: connection.name, b: strong })}
+          {t.rich(active ? 'removeDialog.bodyActive' : 'removeDialog.body', { b: strong })}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'test' && connection && (
         <ConfirmationDialog
-          title={t('testDialog.title', { name: connection.name })}
+          title={t('testDialog.title')}
           confirmLabel={t('testSignIn')}
           busy={pending}
           busyLabel={t('testDialog.starting')}
@@ -543,14 +541,12 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           onConfirm={() => void startTest()}
           onClose={close}
         >
-          {email
-            ? t.rich('testDialog.body', { name: connection.name, email, b: strong })
-            : t.rich('testDialog.bodyNoEmail', { name: connection.name, b: strong })}
+          {email ? t.rich('testDialog.body', { email, b: strong }) : t.rich('testDialog.bodyNoEmail', { b: strong })}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'activate' && connection && (
         <ConfirmationDialog
-          title={t('activateDialog.title', { name: connection.name })}
+          title={t('activateDialog.title')}
           confirmLabel={t('activate')}
           busy={pending}
           busyLabel={t('activateDialog.activating')}
@@ -563,12 +559,12 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           onClose={close}
         >
           <DomainList domains={verified} />
-          {t.rich('activateDialog.body', { name: connection.name, b: strong })}
+          {t.rich('activateDialog.body', { b: strong })}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'deactivate' && connection && (
         <ConfirmationDialog
-          title={t('deactivateDialog.title', { name: connection.name })}
+          title={t('deactivateDialog.title')}
           confirmLabel={t('deactivate')}
           busy={pending}
           busyLabel={t('deactivateDialog.deactivating')}
@@ -587,7 +583,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       )}
       {dialog?.kind === 'enforce' && connection && (
         <ConfirmationDialog
-          title={t('enforceDialog.title', { name: connection.name })}
+          title={t('enforceDialog.title')}
           busy={pending}
           busyLabel={t('enforceDialog.working')}
           error={dialogError}
@@ -601,7 +597,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
               }
             : state?.enforce === 'sign_in_required'
               ? {
-                  confirmLabel: t('enforceDialog.signIn', { name: connection.name }),
+                  confirmLabel: t('enforceDialog.signIn'),
                   onConfirm: () => void signInThrough(connection.connectorId)
                 }
               : {})}
@@ -609,15 +605,15 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
         >
           <DomainList domains={verified} />
           {state?.enforce === 'outside_domains'
-            ? t.rich('enforceDialog.outsideDomains', { name: connection.name, b: strong })
+            ? t.rich('enforceDialog.outsideDomains', { b: strong })
             : state?.enforce === 'sign_in_required'
-              ? t.rich('enforceDialog.signInFirst', { name: connection.name, b: strong })
-              : t.rich('enforceDialog.body', { name: connection.name, b: strong })}
+              ? t.rich('enforceDialog.signInFirst', { b: strong })
+              : t.rich('enforceDialog.body', { b: strong })}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'stopEnforcing' && connection && (
         <ConfirmationDialog
-          title={t('stopEnforcingDialog.title', { name: connection.name })}
+          title={t('stopEnforcingDialog.title')}
           confirmLabel={t('stopEnforcing')}
           busy={pending}
           busyLabel={t('enforceDialog.working')}
@@ -629,7 +625,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           }
           onClose={close}
         >
-          {t.rich('stopEnforcingDialog.body', { name: connection.name, b: strong })}
+          {t.rich('stopEnforcingDialog.body', { b: strong })}
         </ConfirmationDialog>
       )}
       {dialog?.kind === 'verify' && connection && (
@@ -643,7 +639,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           }}
           onClose={close}
         >
-          {t.rich('verifyDialog.body', { name: connection.name, domain: dialog.domain.domain, b: strong })}
+          {t.rich('verifyDialog.body', { domain: dialog.domain.domain, b: strong })}
         </ConfirmationDialog>
       )}
     </div>
