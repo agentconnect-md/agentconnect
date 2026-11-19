@@ -6,7 +6,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { WebchatMcpGrantTokenCodec } from '../../registry/webchatMcpGrantToken.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER, InternalInvocationAuth } from '../mcp/internal-invocation-auth.js'
 import type { InvocationContext } from '../mcp/remote-grant-authenticator.js'
+import { z } from 'zod'
+import { ErrorDto } from '../dto/index.js'
 import { humanAuthPlugin, type EnsureIdentityFresh, type HumanAuthOptions, type VerifyApiKey } from './auth.js'
+import { installZod } from './zod.js'
 
 const CONTEXT: InvocationContext = {
   invocationId: '11111111-1111-4111-8111-111111111111',
@@ -375,6 +378,32 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
       expect(response.json()).toMatchObject(refusal)
     }
     expect(admitSubject).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a refusal’s details on a route whose 403 is serialized through the error schema', async () => {
+    const refusal = { code: 'SSO_ADDRESS_REQUIRED', message: 'no address', details: { attributes: ['mail'] } }
+    const app = Fastify({ logger: false })
+    apps.push(app)
+    installZod(app)
+    await app.register(humanAuthPlugin, {
+      DEFAULT_OWNER_ID: 'dev-owner',
+      OIDC_ISSUER: oidcIssuer,
+      admitSubject: async () => refusal
+    })
+    app.get(
+      '/api/v1/declared',
+      { preHandler: app.humanAuth, schema: { response: { 200: z.object({ ok: z.boolean() }), 403: ErrorDto } } },
+      async () => ({ ok: true })
+    )
+    await app.ready()
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/declared',
+      headers: { authorization: `Bearer ${await mintBearer('declared')}` }
+    })
+    expect(response.statusCode).toBe(403)
+    expect(response.json()).toMatchObject(refusal)
   })
 
   it('answers 503 when the identity check fails and checks again on the next request', async () => {

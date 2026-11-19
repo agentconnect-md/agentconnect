@@ -5093,7 +5093,9 @@ export const ErrorDto = z.object({
    *  github user-authz: GITHUB_IDENTITY_REQUIRED vs USER_NO_ACCESS). */
   code: z.string().optional(),
   /** Field-level validation problems, e.g. a Decision condition that does not fit its question. */
-  issues: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])), message: z.string() })).optional()
+  issues: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])), message: z.string() })).optional(),
+  /** What a refusal names beyond its code; declared here because the serializer drops any key a response schema omits. */
+  details: z.record(z.string(), z.unknown()).optional()
 })
 
 /** The Slack install funnels' error shape. A refusal carrying
