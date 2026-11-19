@@ -172,7 +172,7 @@ describe('my social identities routes', () => {
 describe('GET /me/social-identities single sign-on identities', () => {
   const account = { identities: [], hasSecurityVerificationMethod: true, primaryEmail: 'alex@acme.example' }
 
-  it('names each SSO identity by its organization, the deployment, then the identity service, and exposes no ids', async () => {
+  it('names an SSO identity by the deployment or the identity service, leaves an organization’s unnamed, and exposes no ids', async () => {
     const identity = {
       socialAccountFor: vi.fn(async () => account),
       ssoIdentitiesFor: vi.fn(async () => [
@@ -184,7 +184,7 @@ describe('GET /me/social-identities single sign-on identities', () => {
       ssoConnectorNameFor: vi.fn(async (id: string) => (id === 'other-connector' ? 'Other IdP' : null))
     }
     const orgSsoConnections = {
-      orgNamesByConnector: vi.fn(async () => new Map([['org-connector', 'Acme']]))
+      ownedConnectors: vi.fn(async () => new Set(['org-connector']))
     }
     const runtimeConfig = {
       publicRuntimeConfig: { auth: { sso: { connectorId: 'deployment-connector', name: 'Company SSO' } } }
@@ -194,7 +194,7 @@ describe('GET /me/social-identities single sign-on identities', () => {
       const res = await app.inject({ method: 'GET', url: '/me/social-identities' })
       expect(res.statusCode).toBe(200)
       expect(res.json().ssoIdentities).toEqual([
-        { connectionName: 'Acme', email: 'alex@idp.example.test' },
+        { email: 'alex@idp.example.test' },
         { connectionName: 'Company SSO', email: 'alex@acme.example' },
         { connectionName: 'Other IdP', email: 'alex@other.example.test' },
         { email: 'alex@acme.example' }

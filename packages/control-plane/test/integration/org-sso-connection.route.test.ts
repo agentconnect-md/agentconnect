@@ -381,13 +381,6 @@ describe('organization SSO connection', () => {
     })
     // The secret is forwarded, never kept.
     expect(JSON.stringify(await prisma.orgSsoConnection.findMany())).not.toContain('secret-1')
-
-    // The connection has no name of its own: a profile shows the organization's, or its slug when it has none.
-    const repo = new PgOrgSsoConnectionRepo(prisma)
-    await prisma.org.update({ where: { id: DEFAULT_ORG_ID }, data: { name: 'Acme' } })
-    expect(await repo.orgNamesByConnector([connector.id, 'unknown'])).toEqual(new Map([[connector.id, 'Acme']]))
-    const { slug } = await prisma.org.update({ where: { id: DEFAULT_ORG_ID }, data: { name: null } })
-    expect(await repo.orgNamesByConnector([connector.id])).toEqual(new Map([[connector.id, slug]]))
   })
 
   it('reports the identity service’s refusal and its absence apart', async () => {

@@ -6126,7 +6126,7 @@ export interface MySocialIdentityDto {
 
 /** A single sign-on identity; read-only, since its connection's owner administers it. */
 export interface MySsoIdentityDto {
-  /** The organization that owns the connection, or the deployment connector's name. */
+  /** The connector's name; absent for an organization's connection, which has none. */
   connectionName?: string
   email?: string
 }

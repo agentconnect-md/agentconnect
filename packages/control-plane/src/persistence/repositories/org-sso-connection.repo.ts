@@ -194,15 +194,6 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
     return rows.map(toRecord)
   }
 
-  async orgNamesByConnector(connectorIds: readonly string[]): Promise<Map<string, string>> {
-    if (connectorIds.length === 0) return new Map()
-    const rows = await this.db.orgSsoConnection.findMany({
-      where: { logtoConnectorId: { in: [...connectorIds] } },
-      select: { logtoConnectorId: true, org: { select: { name: true, slug: true } } }
-    })
-    return new Map(rows.map((row) => [row.logtoConnectorId, row.org.name ?? row.org.slug]))
-  }
-
   async listActiveDomains(): Promise<{ domain: string; orgId: string; connectorId: string; enforced: boolean }[]> {
     const rows = await this.db.orgSsoConnection.findMany({
       where: { activatedAt: { not: null } },
