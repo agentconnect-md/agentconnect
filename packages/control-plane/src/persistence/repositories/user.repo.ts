@@ -34,7 +34,7 @@ import {
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
 } from '../ports.js'
-import { OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
+import { MemberDirectoryManaged, OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
 import { bumpAgentsLosingComputersTx } from './computer.repo.js'
 import { IntegrationId } from '../../domain/ids.js'
 import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
@@ -54,6 +54,7 @@ interface LockedOrgMembership {
   userId: string
   role: OrgMemberRole
   suspendedAt: Date | null
+  managedBy: 'manual' | 'directory'
 }
 
 /**
@@ -81,7 +82,7 @@ async function lockOrgMemberships(
 ): Promise<LockedOrgMembership[]> {
   const ids = [...new Set(userIds)].sort()
   return tx.$queryRaw<LockedOrgMembership[]>(Prisma.sql`
-    SELECT "userId", "role"::text AS "role", "suspendedAt"
+    SELECT "userId", "role"::text AS "role", "suspendedAt", "managedBy"::text AS "managedBy"
     FROM "membership"
     WHERE "orgId" = ${orgId}
       AND "userId" IN (${Prisma.join(ids)})
@@ -263,21 +264,24 @@ function chooseAudienceReplacement(
   return snapshot.find((m) => m.role === 'owner' && m.userId !== departingUserId)?.userId ?? null
 }
 
-type MemberChange = 'member_added' | 'role_changed' | 'member_removed' | 'member_left'
+type MemberChange =
+  'member_added' | 'role_changed' | 'member_removed' | 'member_left' | 'member_suspended' | 'member_restored'
 const MEMBER_CHANGE_MESSAGE: Record<MemberChange, string> = {
   member_added: 'member added',
   role_changed: 'member role changed',
   member_removed: 'member removed',
-  member_left: 'member left'
+  member_left: 'member left',
+  member_suspended: 'member suspended',
+  member_restored: 'member restored'
 }
 
-/** Recorded in the transaction that makes the change, by member id and never by address. */
-function auditMemberChange(
+/** Recorded in the transaction that makes the change, by member id and never by address; a change the directory made names its connection and has no acting user. */
+export function auditMemberChange(
   tx: Prisma.TransactionClient,
   orgId: string,
   actorUserId: string | null,
   action: MemberChange,
-  details: { userId: string; role?: string; previousRole?: string }
+  details: { userId: string; role?: string; previousRole?: string; source?: 'directory'; connectionId?: string }
 ) {
   return tx.auditEvent.create({
     data: {
@@ -762,6 +766,8 @@ export class PgUserRepo implements UserRepo {
       const actor = memberships.find((membership) => membership.userId === actingUserId)
       const current = memberships.find((membership) => membership.userId === userId)
       if (actor?.role !== 'owner' || actor.suspendedAt !== null || !current) throw new OrgMembershipMissing()
+      // The directory decides the role of a member it manages; an owner changes it there.
+      if (current.managedBy === 'directory' && current.role !== role) throw new MemberDirectoryManaged()
       if (
         current.role === 'owner' &&
         current.suspendedAt === null &&

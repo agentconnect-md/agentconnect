@@ -7164,6 +7164,51 @@ export interface OrgMemberRecord {
   joinedAt: Date
 }
 
+/** A member as the organization's directory knows it: by the directory's own id, never by address. */
+export interface DirectoryMemberRecord {
+  userId: string
+  externalId: string
+  email: string | null
+  displayName: string | null
+  role: OrgMemberRole
+  /** Who suspended the membership, or null while it is active. */
+  suspendedBy: 'manual' | 'directory' | null
+}
+
+export interface DirectoryProvisionInput {
+  /** The directory's immutable id for the member: the key every later command uses. */
+  externalId: string
+  /** Evidence for the first binding and for display; never the key. */
+  email: string
+  displayName?: string
+  role: OrgMemberRole
+}
+
+/**
+ * `changed` and `unchanged` both mean the member is as asked, so a retry or a replay reads as success.
+ * `held`: an owner suspended the member, and the directory does not lift that.
+ * `conflict`: the address already belongs to a member the directory does not manage, or to something that is not a person.
+ */
+export type DirectoryMemberCommandResult =
+  { outcome: 'changed' | 'unchanged' | 'held'; member: DirectoryMemberRecord } | { outcome: 'conflict' | 'not_found' }
+
+/** The membership changes an organization's directory makes, each attributed to its connection (resource-visibility.md §8.8). */
+export interface DirectoryMemberRepo {
+  provision(orgId: string, connectionId: string, input: DirectoryProvisionInput): Promise<DirectoryMemberCommandResult>
+  setSuspended(
+    orgId: string,
+    connectionId: string,
+    externalId: string,
+    suspended: boolean
+  ): Promise<DirectoryMemberCommandResult>
+  setRole(
+    orgId: string,
+    connectionId: string,
+    externalId: string,
+    role: OrgMemberRole
+  ): Promise<DirectoryMemberCommandResult>
+}
+
 /** A service account is never an owner (daemon-api-key-auth.md §6). */
 export type ServiceAccountRole = Exclude<OrgMemberRole, 'owner'>
 

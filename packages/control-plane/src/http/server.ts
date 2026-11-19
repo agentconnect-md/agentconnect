@@ -274,6 +274,14 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
         message: 'an organization needs at least one owner'
       })
     }
+    if ((err as { code?: string }).code === 'MEMBER_DIRECTORY_MANAGED') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        code: 'MEMBER_DIRECTORY_MANAGED',
+        message: (err as Error).message
+      })
+    }
     if ((err as { code?: string }).code === 'SERVICE_ACCOUNT_NOT_ADDABLE') {
       return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: (err as Error).message })
     }
