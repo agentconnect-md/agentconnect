@@ -19,6 +19,7 @@ import { Prisma, withAmbientTx, type PrismaLike } from '../prisma.js'
 import {
   type UserRepo,
   type ProvisionOidcUserInput,
+  type EmailEvidence,
   type IntegrationChannelKey,
   type MemberChatRelease,
   type MemberRemovalPreview,
@@ -780,16 +781,27 @@ export class PgUserRepo implements UserRepo {
   }
 
   async memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null> {
+    const address = email.trim().toLowerCase()
+    const domain = address.slice(address.lastIndexOf('@') + 1)
     // The address is unique per deployment and stored lower-cased, so at most one row answers.
     const row = await this.db.membership.findFirst({
-      where: {
-        orgId,
-        user: { kind: 'human', email: email.trim().toLowerCase(), emailVerifiedAt: { not: null } },
-        ...ACTIVE_MEMBERSHIP
-      },
-      include: { user: true }
+      where: { orgId, user: { kind: 'human', email: address }, ...ACTIVE_MEMBERSHIP },
+      include: {
+        user: true,
+        org: {
+          select: {
+            ssoConnection: { select: { logtoConnectorId: true } },
+            domains: { where: { domain, verifiedAt: { not: null } }, select: { id: true } }
+          }
+        }
+      }
     })
-    return row ? toMemberRecord(row) : null
+    if (!row) return null
+    // Read live, so removing the connection or releasing the domain ends the match at once.
+    const connectorId = row.org.ssoConnection?.logtoConnectorId
+    const byOrganization =
+      connectorId !== undefined && row.org.domains.length > 0 && row.user.emailSsoConnectorIds.includes(connectorId)
+    return row.user.emailVerifiedAt !== null || byOrganization ? toMemberRecord(row) : null
   }
 
   async setMemberRole(
@@ -1036,18 +1048,25 @@ export class PgUserRepo implements UserRepo {
     })
   }
 
-  async recordVerifiedEmails(userId: string, emails: readonly string[], at: Date): Promise<void> {
-    const vouched = [...new Set(emails.map((email) => email.trim().toLowerCase()))]
-    // Each write is guarded by the stored address, so a row that is already right is left alone.
-    if (vouched.length > 0) {
-      await this.db.user.updateMany({
-        where: { id: userId, kind: 'human', email: { in: vouched }, emailVerifiedAt: null },
-        data: { emailVerifiedAt: at }
-      })
-    }
+  async recordEmailEvidence(userId: string, evidence: EmailEvidence, at: Date): Promise<void> {
+    const user = await this.db.user.findUnique({
+      where: { id: userId },
+      select: { email: true, kind: true, emailVerifiedAt: true, emailSsoConnectorIds: true }
+    })
+    if (!user || user.kind !== 'human') return
+    const stored = (email: string) => email.trim().toLowerCase() === user.email
+    const emailVerifiedAt = evidence.verified.some(stored) ? (user.emailVerifiedAt ?? at) : null
+    const connectorIds = [
+      ...new Set(evidence.asserted.filter((identity) => stored(identity.email)).map((identity) => identity.connectorId))
+    ].sort()
+    const unchanged =
+      emailVerifiedAt?.getTime() === user.emailVerifiedAt?.getTime() &&
+      connectorIds.join('\n') === [...user.emailSsoConnectorIds].sort().join('\n')
+    if (unchanged) return
+    // Guarded by the address the evidence was compared with, so a placeholder upgraded meanwhile keeps nothing of it.
     await this.db.user.updateMany({
-      where: { id: userId, email: { notIn: vouched }, emailVerifiedAt: { not: null } },
-      data: { emailVerifiedAt: null }
+      where: { id: userId, email: user.email },
+      data: { emailVerifiedAt, emailSsoConnectorIds: connectorIds }
     })
   }
 }

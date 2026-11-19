@@ -143,9 +143,9 @@ message:
 3. **The sender is a member who may use the agent.** The `From` address is the
    verified sign-in email of a member of the agent's organization, and the
    agent's visibility admits that member (everyone in the organization, or its
-   list). An account whose sign-in method did not verify its email is never
-   matched, including one admitted on an unverified address inside its
-   organization's domains ([organization-sso.md](organization-sso.md)).
+   list). An address no sign-in method stands behind is never matched, and one
+   that an organization's own single sign-on connection asserts counts in that
+   organization alone ([organization-sso.md](organization-sso.md)).
 4. **The sender is within the rate limit.** Each address may start work on one
    agent 30 times an hour.
 
@@ -165,21 +165,41 @@ Step 3 is a new identity rule and a narrow one. Elsewhere a matching email
 address grants nothing, because a chat account and a console account are two
 identities that merely share a string. Here the address is the platform
 identity itself, proven for each message by step 2, and it is matched only
-against an email the sign-in method verified.
+against an email a sign-in method stands behind.
 
-The Control Plane records that verification on the account, and step 3 reads
-nothing else. `emailVerifiedAt` is set while a social sign-in method linked to
-the account reports the stored address as the account's own, which such a
-method does only for an address its provider verified
-([organization-sso.md](organization-sso.md) §4.3). It is read from the identity
-service each time a Control Plane process first resolves the account's sign-in,
-and cleared when no linked method reports the address any longer. An address
-that only a single sign-on connection supplied never sets it, so that account
-is matched once it links a social method that reports the same address. Where
-the Control Plane cannot read the identity service's accounts, nothing is
-recorded and nobody is matched. The member answer is one read: the active
-member of the agent's organization, a person and not a service account, whose
-stored address equals the lower-cased `From` address and carries the mark.
+The Control Plane records what the account's linked sign-in methods say about
+its stored address, and step 3 reads nothing else. Three kinds of evidence
+count, and no other:
+
+- **A social sign-in method** linked to the account reports the address as the
+  account's own, which such a method does only for an address its provider
+  verified ([organization-sso.md](organization-sso.md) §4.3). The address then
+  counts in every organization the account belongs to.
+- **The organization's own single sign-on connection** asserts the address, and
+  the address's domain is one that organization has verified now. It counts in
+  that organization and in no other. The organization proved it controls the
+  domain, and it chose the provider that signs that domain's addresses in, so
+  for its own agents it answers for both ends: the mailbox step 2 proves and
+  the sign-in that names the member. Another organization the same account
+  belongs to made neither choice, so the address is unproven there. What this
+  accepts is the organization's own risk of
+  [organization-sso.md](organization-sso.md) §4.1: a provider that lets its
+  people set their own address lets one of them be read as a colleague on the
+  same domain. Removing the connection or releasing the domain ends the match
+  at once, because both are read when the question is asked.
+- **The deployment's own connector**, where the deployment has one instead of
+  organization connections, asserts the address and is an OIDC connector that
+  does not trust unverified addresses, so only an address its provider marks
+  verified reaches the account. It counts in every organization. With that
+  setting on it never counts, and neither does a SAML connector, whose
+  assertion carries no such mark.
+
+An invited or directory-provisioned account nobody has signed in to, a service
+account and a suspended membership never match. The evidence is read from the
+identity service each time a Control Plane process first resolves the account's
+sign-in, and again at a sign-in through a connector new to that process;
+evidence that is gone is dropped then. Where the Control Plane cannot read the
+identity service's accounts, nothing is recorded and nobody is matched.
 
 Mail is a platform that names its people, so
 "[What people can do in chat](../product-conventions.md#what-people-can-do-in-chat)"

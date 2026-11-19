@@ -186,9 +186,14 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           { identity: deps.logtoIdentity, users: deps.repos.user },
           { userId: user.userId, oidcSubject: input.oidcSubject }
         ).catch((err: unknown) => app.log.debug({ err }, 'google account id sync failed'))
-        // Record whether a linked sign-in method vouches for the stored address; a failed read keeps the last answer.
+        // Record what the linked sign-in methods say about the stored address; a failed read keeps the last answer.
         void syncEmailVerification(
-          { identity: deps.logtoIdentity, users: deps.repos.user, clock: deps.clock },
+          {
+            identity: deps.logtoIdentity,
+            users: deps.repos.user,
+            clock: deps.clock,
+            verifyingConnectorId: deps.verifyingSsoConnectorId
+          },
           { userId: user.userId, oidcSubject: input.oidcSubject }
         ).catch((err: unknown) => app.log.debug({ err }, 'email verification sync failed'))
       }

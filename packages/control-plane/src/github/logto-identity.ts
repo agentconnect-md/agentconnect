@@ -459,9 +459,9 @@ export class LogtoIdentityService {
     return Array.isArray(ssoIdentities) && ssoIdentities.length > 0
   }
 
-  // The SSO identities an account holds, cached like the user read so a Profile load stays one upstream fetch per lease.
-  async ssoIdentitiesFor(sub: string): Promise<SsoIdentitySummary[]> {
-    const cached = this.ssoUsers.get(sub)
+  // The SSO identities an account holds, cached like the user read so a Profile load stays one upstream fetch per lease; `fresh` skips the cache.
+  async ssoIdentitiesFor(sub: string, fresh = false): Promise<SsoIdentitySummary[]> {
+    const cached = fresh ? undefined : this.ssoUsers.get(sub)
     if (cached && cached.expiresAt > this.clock.now()) return cached.identities
     const epoch = this.epochOf(sub)
     const res = await this.request(`/api/users/${encodeURIComponent(sub)}?includeSsoIdentities=true`)

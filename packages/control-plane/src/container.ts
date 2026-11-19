@@ -305,6 +305,7 @@ import { OrgSsoDomainService } from './org-sso/domains.js'
 import { OrgSsoSweeper } from './org-sso/sweeper.js'
 import { OrgSsoConnectionService } from './org-sso/connections.js'
 import { OrgSsoAdmission } from './org-sso/admission.js'
+import { verifyingConnectorId } from './http/email-verification.js'
 import { OrgSsoSignInLookup } from './org-sso/lookup.js'
 import { OrgSsoMembership } from './org-sso/membership.js'
 import { DeploymentMemberSource, resolveMemberSource } from './org-sso/member-source.js'
@@ -2858,6 +2859,7 @@ export function buildContainer(
     ...(orgSsoDomains ? { orgSsoDomains } : {}),
     ...(orgSsoConnections ? { orgSsoConnections } : {}),
     ...(orgSsoAdmission ? { orgSsoAdmission } : {}),
+    verifyingSsoConnectorId: verifyingConnectorId(opts.deploymentConfig?.values.logto?.ssoConnector),
     ...(orgSsoLookup ? { orgSsoLookup } : {}),
     ...(orgSsoMembership ? { orgSsoMembership } : {}),
     ...(orgSsoSession ? { orgSsoSession } : {}),

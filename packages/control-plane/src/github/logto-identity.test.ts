@@ -123,6 +123,9 @@ describe('LogtoIdentityService SSO display reads', () => {
     svc.forgetUser('sso')
     await svc.ssoIdentitiesFor('sso')
     expect(urls).toHaveLength(2)
+    // A fresh read goes upstream past a live entry.
+    expect(await svc.ssoIdentitiesFor('sso', true)).toEqual(expected)
+    expect(urls).toHaveLength(3)
     expect(await svc.ssoIdentitiesFor('missing')).toEqual([])
   })
 
