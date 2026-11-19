@@ -497,7 +497,10 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   on desktops (§7.4, §11). It runs as the non-root user `computer`, without systemd. `/home/computer` is a volume
   holding the token, config, audit log, and browser profile. The image is 1.26 GB and builds in about 100 s.
 - **Entrypoint**: starts Xvfb (`RESOLUTION`, default `1280x800x24`, the §5.3 screenshot size so agents see it 1:1), a
-  session D-Bus, and Xfce, then runs the daemon in the foreground. `docker stop` stops the daemon, closes Chrome
+  session D-Bus, and Xfce, waits until the Xfce session reports that it has finished starting (at most 30 s), then
+  starts the browser and runs the daemon in the foreground. Nothing that maps windows starts earlier: xfwm4 exits on
+  an X error when a window vanishes during its own start-up, and the session restarts it only once it has registered,
+  so a browser or driver starting beside it could leave a desktop with no window manager. `docker stop` stops the daemon, closes Chrome
   gracefully (so it saves its session), then ends the session, with exit code 0 in under 0.9 s. Xvfb must keep its
   local socket (`-nolisten tcp`, never `-nolisten unix`), and must not reset when its last client leaves (`-noreset`):
   `dbus-launch` connects and leaves before Xfce does, and a reset at that moment drops Xfce's connection mid-handshake
@@ -509,7 +512,7 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   software), the CJK serif faces, Go's test suite, gcc's sanitizers, ffmpeg and the driver's unused SDK library: about
   2.2 GiB uncompressed on amd64, 893 MB compressed. The PR job `Desktop image` builds both arches natively and runs
   `docker/smoke.sh` on them: size under 2.5 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a
-  maximized browser, registration against a stub Control Plane (one exchange, the key kept on restart, the token
+  window manager, a maximized browser, registration against a stub Control Plane (one exchange, the key kept on restart, the token
   absent from the log and from the session's and browser's environments), and `docker stop` exiting 0.
 - **Registration [implemented]**: `run` spends `AGENTCONNECT_REGISTER_TOKEN` (or the file named by
   `AGENTCONNECT_REGISTER_TOKEN_FILE`, such as a Docker or Kubernetes secret) at `AGENTCONNECT_CP_URL` before it starts,
