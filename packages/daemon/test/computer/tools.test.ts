@@ -250,6 +250,44 @@ describe('the Chrome tier', () => {
     expect(calls.map(({ name }) => name)).toEqual(['chrome_click', 'computer_screenshot'])
   })
 
+  it.each(['timeout', 'browser_exited', 'child_failed', 'result_too_large'])(
+    'inspects the desktop when a Chrome action returns an unconfirmed %s error',
+    async (reason) => {
+      const { tools, calls } = setup({
+        grant,
+        callTool: async ({ name }) =>
+          name === 'computer_screenshot'
+            ? { content: [IMAGE] }
+            : { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'unavailable', reason }) }] }
+      })
+      const result = await tools.call(browserCtx(), 'chrome_new_page', { url: 'https://example.test/sample' })
+      expect(result?.result.mcpIsError).toBe(true)
+      expect(parse(result!.result)).toMatchObject({
+        error: 'uncertain',
+        message: expect.stringContaining('NOT retried')
+      })
+      expect(result?.result.mcpContent).toContainEqual(IMAGE)
+      expect(calls.map(({ name }) => name)).toEqual(['chrome_new_page', 'computer_screenshot'])
+    }
+  )
+
+  it.each([
+    { name: 'chrome_new_page', args: { url: 'https://example.test/' }, actionDispatched: false },
+    { name: 'chrome_list_pages', args: {}, actionDispatched: undefined }
+  ])('keeps a definite browser refusal on $name', async ({ name, args, actionDispatched }) => {
+    const failure = { error: 'unavailable', reason: 'child_failed', actionDispatched }
+    const { tools, calls } = setup({
+      grant,
+      callTool: async () => ({
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify(failure) }]
+      })
+    })
+    const result = await tools.call(browserCtx(), name, args)
+    expect(parse(result!.result)).toEqual(JSON.parse(JSON.stringify(failure)))
+    expect(calls.map((call) => call.name)).toEqual([name])
+  })
+
   it.each([{}, { mode: 'view', browserTier: true }, { mode: 'control', browserTier: false }])(
     'refuses a browser read without a control and browser grant (%j)',
     async (grant) => {
@@ -799,23 +837,27 @@ describe('administrator prompts (§4.2.1)', () => {
 describe('managed computers (§15.1)', () => {
   const M = '00000000-0000-4000-8000-0000000000aa'
 
-  it('does not wake and repeat a forwarded Chrome action when the desktop replies unavailable', async () => {
+  it('does not wake and repeat a forwarded Chrome action when the desktop cannot confirm its result', async () => {
     const { tools, poolCalls, calls } = setup({
       granted: [],
       managed: 'ephemeral',
       grant: { mode: 'control', browserTier: true },
       pool: () => ({ state: 'ready', computerId: M, allocation: 'ephemeral' }),
-      callTool: async () => ({
-        isError: true,
-        content: [{ type: 'text', text: JSON.stringify({ error: 'unavailable', reason: 'result_too_large' }) }]
-      })
+      callTool: async ({ name }) =>
+        name === 'computer_screenshot'
+          ? { content: [IMAGE] }
+          : {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: 'unavailable', reason: 'result_too_large' }) }]
+            }
     })
     const result = await tools.call(ctx(COMPUTER_BROWSER_DESCRIPTORS), 'chrome_new_page', {
       url: 'https://example.test'
     })
-    expect(parse(result!.result)).toMatchObject({ error: 'unavailable', reason: 'result_too_large' })
+    expect(parse(result!.result)).toMatchObject({ error: 'uncertain' })
+    expect(result?.result.mcpContent).toContainEqual(IMAGE)
     expect(poolCalls).toHaveLength(1)
-    expect(calls.map(({ name }) => name)).toEqual(['chrome_new_page'])
+    expect(calls.map(({ name }) => name)).toEqual(['chrome_new_page', 'computer_screenshot'])
   })
 
   it('offers the tools to an agent with only a managed mode when the CP runs the pool', () => {
