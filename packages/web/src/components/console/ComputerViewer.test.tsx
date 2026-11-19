@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { computerFixture as computer } from '@/lib/computer-fixtures'
 import type { ComputerViewerSession, ViewerDeps, ViewerState } from '@/lib/computer-viewer'
-import { ComputerViewerCard, formatStats } from './ComputerViewer'
+import { ComputerViewerCard, ComputerViewerScreen, formatStats } from './ComputerViewer'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -36,7 +36,8 @@ function fakeSession() {
     stop: vi.fn(),
     takeControl: vi.fn(async () => fake.deps!.onState({ ...live, status: { ...live.status!, inControl: true } })),
     release: vi.fn(async () => fake.deps!.onState(live)),
-    send: vi.fn(async () => undefined)
+    send: vi.fn(async () => undefined),
+    browserAction: vi.fn(async () => true)
   }
   const create = (deps: ViewerDeps) => {
     fake.deps = deps
@@ -63,7 +64,74 @@ function render(node: React.ReactNode): HTMLDivElement {
 const button = (el: HTMLElement, label: string) =>
   [...el.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)
 
+const browser = {
+  available: true,
+  running: true,
+  pages: [
+    { id: 'page-a', title: 'Example', url: 'https://example.test/' },
+    { id: 'page-b', title: 'Second tab', url: 'https://example.test/second' }
+  ],
+  frontPageId: 'page-a',
+  dialog: null
+}
+
 describe('ComputerViewerCard', () => {
+  it('starts on Desktop and opens an address in Browser before Chrome is running', async () => {
+    const { fake, create } = fakeSession()
+    const absent = { ...browser, running: false, pages: [], frontPageId: null }
+    fake.start.mockImplementation(async () => fake.deps!.onState({ ...live, browser: absent }))
+    const el = render(<ComputerViewerCard computer={computer({ isolation: 'container' })} createSession={create} />)
+    await act(async () => button(el, 'Watch')!.click())
+    expect(button(el, 'Desktop')!.getAttribute('aria-pressed')).toBe('true')
+    expect(fake.deps!.probeBrowser).toBe(true)
+    await act(async () => button(el, 'Browser')!.click())
+    expect(fake.deps!.browser?.maxWidth).toBe(1280)
+    const input = el.querySelector<HTMLInputElement>('input[aria-label="Address"]')!
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input, 'example.test')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => button(el, 'Open')!.click())
+    expect(fake.browserAction).toHaveBeenCalledWith({ action: 'open', url: 'example.test' })
+    await act(async () => button(el, 'Desktop')!.click())
+    expect(fake.deps!.browser).toBeUndefined()
+  })
+
+  it('prefers Browser in the agent panel, selects tabs from the mobile picker, and responds to a page prompt', async () => {
+    const { fake, create } = fakeSession()
+    fake.start.mockImplementation(async () => fake.deps!.onState({ ...live, browser }))
+    const el = render(
+      <ComputerViewerScreen
+        computer={computer({ isolation: 'container' })}
+        desktop="agent-desktop"
+        compact
+        preferBrowser
+        createSession={create}
+      />
+    )
+    expect(button(el, 'Browser')!.getAttribute('aria-pressed')).toBe('true')
+    expect(fake.deps).toMatchObject({ desktop: 'agent-desktop', browser: { maxWidth: 640 } })
+    const picker = el.querySelector<HTMLSelectElement>('select[aria-label="Tabs"]')!
+    expect(picker.options[0]!.textContent).toBe('2 tabs')
+    await act(async () => {
+      picker.value = 'page-b'
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(fake.browserAction).toHaveBeenCalledWith({ action: 'select', pageId: 'page-b' })
+    act(() =>
+      fake.deps!.onState({
+        ...live,
+        browser: { ...browser, dialog: { type: 'prompt', message: 'Name?', defaultPrompt: 'Example' } }
+      })
+    )
+    expect(el.querySelector('[role="dialog"]')!.textContent).toContain('Name?')
+    await act(async () => button(el, 'OK')!.click())
+    expect(fake.browserAction).toHaveBeenCalledWith({ action: 'dialog', accept: true, text: 'Example' })
+    await act(async () => button(el, 'Desktop')!.click())
+    expect(button(el, 'Desktop')!.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('opens only for a live computer', () => {
     const off = render(<ComputerViewerCard computer={computer({ status: 'offline' })} />)
     expect(button(off, 'Watch')!.disabled).toBe(true)

@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { Blob as NodeBlob } from 'node:buffer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ComputerViewerGrantDto } from '@/lib/api'
 import { ComputerViewerSession, keyToInput, mediaStats, type ViewerState } from './computer-viewer'
@@ -14,6 +15,14 @@ const status = {
   unavailable: null,
   lease: null,
   webrtc: { unavailable: null, error: null, turn: true }
+}
+
+const browserStatus = {
+  available: true,
+  running: true,
+  pages: [{ id: 'page-1', title: 'Example', url: 'https://example.test/' }],
+  frontPageId: 'page-1',
+  dialog: null
 }
 
 function grant(over: Partial<ComputerViewerGrantDto> = {}): ComputerViewerGrantDto {
@@ -123,7 +132,9 @@ function peers(
   return { created, createPeer }
 }
 
-function relayFetch(opts: { attachedOn?: string; offerFails?: boolean; stun?: boolean } = {}) {
+function relayFetch(
+  opts: { attachedOn?: string; offerFails?: boolean; stun?: boolean; browser?: boolean; rtcUnavailable?: string } = {}
+) {
   const calls: { url: string; method: string; body?: unknown; auth: string | null }[] = []
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined
@@ -134,7 +145,10 @@ function relayFetch(opts: { attachedOn?: string; offerFails?: boolean; stun?: bo
     // An agent desktop's API sits under its own prefix (§3.9); the desktop answers it the same way.
     const endpoint = url.split('/view/api/')[1]?.replace(/^d\/[^/]+\//, '')
     if (endpoint === 'status')
-      return Response.json({ ...status, webrtc: { ...status.webrtc, stun: opts.stun ?? false } })
+      return Response.json({
+        ...status,
+        webrtc: { ...status.webrtc, stun: opts.stun ?? false, unavailable: opts.rtcUnavailable ?? null }
+      })
     if (endpoint === 'rtc/offer') return Response.json({ id: 'rtc-1', sdp: 'v=0 offer', candidates: 1 })
     if (endpoint === 'rtc/answer' || endpoint === 'rtc/candidate') return Response.json({ ok: true })
     if (endpoint === 'rtc/candidates') {
@@ -145,6 +159,10 @@ function relayFetch(opts: { attachedOn?: string; offerFails?: boolean; stun?: bo
       return Response.json({ candidates: desktop.slice(body.after), done: true })
     }
     if (endpoint === 'control') return Response.json({ ...status, inControl: body.action === 'take' })
+    if (opts.browser && endpoint === 'browser')
+      return Response.json(init.method === 'POST' ? { ok: true } : browserStatus)
+    if (opts.browser && endpoint === 'browser/input') return Response.json({ ok: true })
+    if (opts.browser && endpoint === 'browser/frame') return new Response(new Blob(['jpeg'], { type: 'image/jpeg' }))
     if (endpoint === 'frame') return new Response(new Blob(['png']), { headers: { 'content-type': 'image/png' } })
     return new Response('{}', { status: 404 })
   })
@@ -161,12 +179,14 @@ function open(opts: {
   fetch: typeof fetch
   createPeer: (c: RTCConfiguration) => RTCPeerConnection
   desktop?: string
+  browser?: { maxWidth: number; maxHeight: number }
 }) {
   const states: ViewerState[] = []
   const grants = vi.fn(async () => opts.grant ?? grant())
   const session = new ComputerViewerSession({
     computerId: ID,
     ...(opts.desktop ? { desktop: opts.desktop } : {}),
+    ...(opts.browser ? { browser: opts.browser } : {}),
     grant: grants,
     onState: (s) => states.push(s),
     video: () => null,
@@ -178,6 +198,71 @@ function open(opts: {
 }
 
 describe('ComputerViewerSession', () => {
+  it('receives Browser frames over WebRTC even when desktop video is unavailable', async () => {
+    const { calls, fetchImpl } = relayFetch({ browser: true, rtcUnavailable: 'ffmpeg not installed' })
+    const { created, createPeer } = peers(() => 'connected')
+    const browser = { maxWidth: 640, maxHeight: 512 }
+    const { session } = open({ fetch: fetchImpl, createPeer, browser, desktop: 'agent-1' })
+    await session.start()
+    expect(calls.find(({ url }) => url.endsWith('/rtc/offer'))).toMatchObject({
+      url: expect.stringContaining('/d/agent-1/rtc/offer'),
+      body: { transport: 'direct', browser }
+    })
+    const channel = created[0]!.channel
+    const packet = (frame: number, index: number, bytes: number[]) => {
+      const data = new ArrayBuffer(12 + bytes.length)
+      const header = new DataView(data)
+      header.setUint32(0, 0x41434246)
+      header.setUint32(4, frame)
+      header.setUint16(8, index)
+      header.setUint16(10, 2)
+      new Uint8Array(data, 12).set(bytes)
+      channel.onmessage?.({ data } as MessageEvent)
+    }
+    const createUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:browser-frame')
+    vi.stubGlobal('Blob', NodeBlob)
+    try {
+      packet(1, 0, [255, 216])
+      packet(2, 1, [255, 217])
+      expect(session.snapshot().frameUrl).toBeNull()
+      packet(1, 1, [255, 217])
+      const image = createUrl.mock.calls[0]?.[0] as Blob
+      expect(image.type).toBe('image/jpeg')
+      expect([...new Uint8Array(await image.arrayBuffer())]).toEqual([255, 216, 255, 217])
+      expect(session.snapshot().frameUrl).toBe('blob:browser-frame')
+      await session.send({ type: 'click', x: 0.5, y: 0.5 })
+      expect(JSON.parse(channel.sent[0]!)).toMatchObject({ input: { type: 'click', x: 0.5, y: 0.5 } })
+    } finally {
+      createUrl.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('uses the Browser routes for fallback frames, input and bar actions', async () => {
+    const { calls, fetchImpl } = relayFetch({ browser: true, rtcUnavailable: 'disabled' })
+    const { createPeer } = peers(() => 'failed')
+    const { session } = open({ fetch: fetchImpl, createPeer, browser: { maxWidth: 640, maxHeight: 512 } })
+    await session.start()
+    await vi.waitFor(() => expect(session.snapshot().frameUrl).toBeTruthy())
+    expect(session.snapshot()).toMatchObject({ path: 'screenshots', browser: browserStatus })
+    expect(await session.browserAction({ action: 'navigate', url: 'example.test' })).toBe(true)
+    await session.send({ type: 'type', text: '上海' })
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ url: expect.stringMatching(/\/browser\/frame$/), method: 'GET' }),
+        expect.objectContaining({
+          url: expect.stringMatching(/\/browser$/),
+          method: 'POST',
+          body: { action: 'navigate', url: 'example.test' }
+        }),
+        expect.objectContaining({
+          url: expect.stringMatching(/\/browser\/input$/),
+          body: { type: 'type', text: '上海' }
+        })
+      ])
+    )
+  })
+
   it('signals through the relay the desktop is attached to and goes live on the direct path', async () => {
     const { calls, fetchImpl } = relayFetch({ attachedOn: 'https://relay-b.example.com' })
     const { created, createPeer } = peers(() => 'connected')

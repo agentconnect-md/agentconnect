@@ -1,21 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { z } from 'zod'
+import type { BrowserBarAction, BrowserViewerStatus } from '@agentconnect.md/protocol/computer-viewer'
 import type { AuditSink } from '../audit.js'
 import { ComputerError, type Computer, type ViewerInput } from '../computer.js'
 import { PageIds, withoutDevtoolsIds, type DevtoolsTarget } from './chrome-pages.js'
 import { DevtoolsClient, type DevtoolsEvent } from './devtools-client.js'
 import { devtoolsTargets, type DevtoolsEndpoint } from './devtools-endpoint.js'
-
-const Address = z.string().trim().min(1).max(4096)
-const PageId = z.string().min(1).max(64)
-export const BrowserBarAction = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('open'), url: Address }),
-  z.object({ action: z.literal('navigate'), url: Address }),
-  z.object({ action: z.enum(['back', 'forward', 'reload']) }),
-  z.object({ action: z.enum(['select', 'close']), pageId: PageId }),
-  z.object({ action: z.literal('dialog'), accept: z.boolean(), text: z.string().max(4096).optional() })
-])
-type BarAction = z.infer<typeof BrowserBarAction>
 
 interface BrowserViewerOptions {
   computer: Computer
@@ -190,7 +179,7 @@ export class BrowserViewer {
       .catch(() => undefined)
   }
 
-  async status() {
+  async status(): Promise<BrowserViewerStatus> {
     const available = this.options.enabled()
     const info = await this.targets()
     if (!info) return { available, running: false, pages: [], frontPageId: null, dialog: null }
@@ -227,7 +216,7 @@ export class BrowserViewer {
     return Buffer.from(result.data, 'base64')
   }
 
-  async action(client: string, input: BarAction, authorize: () => void): Promise<void> {
+  async action(client: string, input: BrowserBarAction, authorize: () => void): Promise<void> {
     const started = Date.now()
     const url = 'url' in input ? address(input.url) : undefined
     const audit = (outcome: 'ok' | 'error') =>

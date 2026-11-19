@@ -1974,7 +1974,7 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
   encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then the relay's TURN, then screenshots over the relay) is done.
 
-### 7.6 Browser view [viewer API implemented, console UI design]
+### 7.6 Browser view [implemented]
 
 The viewer shows a desktop. For a desktop that reports `devtools` (§5.8) it gains a second view of that desktop,
 **Browser**, beside **Desktop**: the browser's page, streamed and operated over the DevTools protocol, under a bar
@@ -2230,7 +2230,7 @@ and every `computer/policy`.
   on a phone, editable by the agent's editors, shown where the pool runs or a mode is set) and, for `per-agent`, its
   one computer with its state, or that it is created on first use; the agent's own managed computers are not repeated
   among the Computers that grant it.
-- **Browser view [design]** (§7.6): the viewer's Desktop / Browser switch, with the address bar and tabs, in both
+- **Browser view [implemented]** (§7.6): the viewer's Desktop / Browser switch, with the address bar and tabs, in both
   places the viewer is mounted: the screen on a Computer's page in Infra, and the Computer panel of an agent's side
   panel. Both use the shared viewer component, so one change serves them, each with its mobile layout.
 - Session page: the current lease and an action timeline with screenshots

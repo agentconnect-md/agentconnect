@@ -16,6 +16,8 @@ import { useTranslations } from 'next-intl'
 import { openComputerViewer, type ComputerDto } from '@/lib/api'
 import { useAgo } from '@/lib/computers'
 import { useAgentName } from '@/components/console/computer-members'
+import { ComputerBrowserBar } from '@/components/console/ComputerBrowserBar'
+import type { BrowserBarAction, BrowserViewerStatus } from '@agentconnect.md/protocol/computer-viewer'
 import {
   ComputerViewerSession,
   keyToInput,
@@ -168,6 +170,7 @@ export function ComputerViewerCard({
   const [open, setOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [controls, setControls] = useState<ViewerControls | null>(null)
+  const [modeTarget, setModeTarget] = useState<HTMLDivElement | null>(null)
   const offline = computer.status === 'revoked' || computer.status === 'offline'
   const asleep = computer.status === 'sleeping'
   const idle = offline
@@ -191,6 +194,7 @@ export function ComputerViewerCard({
       <div className="cardhead flex-wrap gap-2">
         <span className="cardtitle flex-none">{t('title')}</span>
         {onDesktop && computer.desktops && <DesktopTabs computer={computer} value={desktop} onChange={onDesktop} />}
+        <div className="empty:hidden" ref={setModeTarget} />
         <span className="ml-[6px] flex min-w-0 flex-1 items-center gap-[6px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           {control}
         </span>
@@ -242,6 +246,7 @@ export function ComputerViewerCard({
           computer={computer}
           desktop={desktop}
           overlay
+          modeTarget={modeTarget}
           expanded={fullscreen}
           onExpanded={setFullscreen}
           onControls={setControls}
@@ -262,6 +267,8 @@ export function ComputerViewerCard({
 export interface ComputerViewerScreenProps extends ComputerViewerProps {
   // The session dock's narrow column: tighter chrome.
   compact?: boolean
+  preferBrowser?: boolean
+  modeTarget?: HTMLDivElement | null
   // The detail card: status and stats as chips over the screen, take-over in the card header, real full screen.
   overlay?: boolean
   // Controlled expanded (full screen) state; uncontrolled without it.
@@ -274,6 +281,8 @@ export function ComputerViewerScreen({
   computer,
   createSession,
   compact = false,
+  preferBrowser = false,
+  modeTarget,
   overlay = false,
   desktop = 'main',
   expanded: expandedProp,
@@ -303,30 +312,54 @@ export function ComputerViewerScreen({
   const frame = useRef<HTMLDivElement>(null)
   const session = useRef<ComputerViewerSession | null>(null)
   const [state, setState] = useState<ViewerState | null>(null)
+  const [browser, setBrowser] = useState<BrowserViewerStatus | null>(null)
+  const [mode, setMode] = useState<'desktop' | 'browser' | null>(null)
   const [text, setText] = useState('')
+  const browserMode = mode === 'browser' && Boolean(browser?.available)
+  const probeBrowser = computer.os === 'linux' && computer.isolation !== 'none'
 
   useEffect(() => {
+    if (preferBrowser && browser?.available && browser.running) setMode((previous) => previous ?? 'browser')
+  }, [preferBrowser, browser?.available, browser?.running])
+
+  useEffect(() => {
+    setState(null)
+    stream.current = null
+    let active = true
     const deps = {
       computerId: computer.id,
       ...(desktop !== 'main' ? { desktop } : {}),
+      ...(probeBrowser ? { probeBrowser } : {}),
+      ...(browserMode
+        ? { browser: compact ? { maxWidth: 640, maxHeight: 512 } : { maxWidth: 1280, maxHeight: 1024 } }
+        : {}),
       grant: () => openComputerViewer(computer.id, desktop),
-      onState: setState,
+      onState: (next: ViewerState) => {
+        if (!active) return
+        setState(next)
+        if (next.browser) setBrowser(next.browser)
+      },
       video: () => video.current
     }
     const created = createSession ? createSession(deps) : new ComputerViewerSession(deps)
     session.current = created
     void created.start()
     return () => {
+      active = false
       created.stop()
       session.current = null
     }
-  }, [computer.id, desktop, createSession])
+  }, [computer.id, desktop, createSession, compact, browserMode, probeBrowser])
 
   const status = state?.status ?? null
   const inControl = status?.inControl ?? false
   const canControl = status?.mode === 'control'
-  const send = (input: ViewerInput) => session.current?.send(input) ?? Promise.resolve()
-  const handlers = useInputHandlers(surface, status, send)
+  const current = session.current
+  const send = (input: ViewerInput) => current?.send(input) ?? Promise.resolve()
+  const act = (action: BrowserBarAction) => session.current?.browserAction(action) ?? Promise.resolve(false)
+  const browserInput = browserMode && Boolean(state?.frameUrl) && !browser?.dialog
+  const showScreen = !browserMode || Boolean(browser?.frontPageId)
+  const handlers = useInputHandlers(surface, status, send, browserMode, browserInput)
 
   const run = useCallback((action: () => Promise<void>) => {
     void action().finally(() => surface.current?.focus())
@@ -365,7 +398,11 @@ export function ComputerViewerScreen({
   }, [overlay, expanded, setExpanded])
 
   // The expanded view leaves room for its toolbar and the control row under the screen.
-  const screenSize = expanded ? 'block max-h-[calc(100vh-112px)] max-w-full' : 'block max-h-[70vh] max-w-full'
+  const screenSize = expanded
+    ? browserMode
+      ? 'block max-h-[calc(100dvh-220px)] max-w-full'
+      : 'block max-h-[calc(100vh-112px)] max-w-full'
+    : 'block max-h-[70vh] max-w-full'
   const line = statusLine(t, state)
   // An agent desktop's size is its own, so only the main desktop names one.
   const display = desktop === 'main' ? computer.capabilities.displays[0] : undefined
@@ -502,13 +539,41 @@ export function ComputerViewerScreen({
     </>
   )
 
+  const modeSwitch = browser?.available ? (
+    <div className="flex gap-1" role="group" aria-label={t('browser.view')}>
+      <Button
+        variant={browserMode ? 'secondary' : 'primary'}
+        size="xs"
+        ariaPressed={!browserMode}
+        onClick={() => setMode('desktop')}
+      >
+        {t('browser.desktop')}
+      </Button>
+      <Button
+        variant={browserMode ? 'primary' : 'secondary'}
+        size="xs"
+        ariaPressed={browserMode}
+        onClick={() => setMode('browser')}
+      >
+        {t('browser.title')}
+      </Button>
+    </div>
+  ) : null
+
   const content = (
     <div
       ref={frame}
       className={expanded ? 'fixed inset-0 z-[70] flex flex-col bg-(--surface-app)' : undefined}
       data-viewer-expanded={expanded ? '' : undefined}
     >
-      {!overlay && toolbar}
+      {(!overlay || (expanded && browserMode)) && toolbar}
+      {modeSwitch &&
+        (modeTarget && !expanded ? (
+          createPortal(modeSwitch, modeTarget)
+        ) : (
+          <div className="border-b border-(--border-subtle) bg-(--surface-card) px-2 py-1.5">{modeSwitch}</div>
+        ))}
+      {browserMode && browser && <ComputerBrowserBar browser={browser} canControl={canControl} act={act} />}
       {state?.error && (
         <div
           role="alert"
@@ -519,14 +584,18 @@ export function ComputerViewerScreen({
       )}
       <div
         className={
-          expanded
-            ? 'relative flex min-h-0 flex-1 items-center justify-center bg-[#111] p-2'
-            : 'relative flex items-center justify-center bg-[#111] p-0 desktop:p-2'
+          !showScreen
+            ? 'hidden'
+            : expanded
+              ? 'relative flex min-h-0 flex-1 items-center justify-center bg-[#111] p-2'
+              : 'relative flex items-center justify-center bg-[#111] p-0 desktop:p-2'
         }
       >
         <div
           className={
-            inControl && !overlay ? 'relative leading-[0] outline-2 outline-(--status-online)' : 'relative leading-[0]'
+            inControl && !overlay
+              ? 'relative min-w-0 max-w-full leading-[0] outline-2 outline-(--status-online)'
+              : 'relative min-w-0 max-w-full leading-[0]'
           }
         >
           <video
@@ -534,12 +603,16 @@ export function ComputerViewerScreen({
             autoPlay
             muted
             playsInline
-            className={state?.path && state.path !== 'screenshots' ? screenSize : 'hidden'}
+            className={!browserMode && state?.path && state.path !== 'screenshots' ? screenSize : 'hidden'}
           />
-          {state?.path === 'screenshots' && state.frameUrl && (
-            <img src={state.frameUrl} alt={t('screenAlt')} className={screenSize} />
+          {(browserMode || state?.path === 'screenshots') && state?.frameUrl && (
+            <img
+              src={state.frameUrl}
+              alt={browserMode ? t('browser.screenAlt') : t('screenAlt')}
+              className={screenSize}
+            />
           )}
-          {(!state || state.phase === 'connecting') && (
+          {(!state || state.phase === 'connecting' || (browserMode && !state.frameUrl && state.phase === 'live')) && (
             <div className="flex h-60 w-full min-w-[280px] items-center justify-center font-sans text-[13px] text-[#cdd6e0]">
               {t('connecting')}
             </div>
@@ -547,16 +620,22 @@ export function ComputerViewerScreen({
           <div
             ref={surface}
             tabIndex={0}
-            aria-label={t('surface')}
+            aria-label={browserMode ? t('browser.surface') : t('surface')}
             data-viewer-surface
-            className={inControl ? 'absolute inset-0 cursor-default outline-none' : 'absolute inset-0 outline-none'}
+            className={
+              browserInput && canControl
+                ? 'absolute inset-0 cursor-default touch-none outline-none'
+                : inControl
+                  ? 'absolute inset-0 cursor-default outline-none'
+                  : 'absolute inset-0 outline-none'
+            }
             {...handlers}
           />
         </div>
         {overlay && chips}
-        {overlay && expanded && floating}
+        {overlay && expanded && !browserMode && floating}
       </div>
-      {inControl && (
+      {showScreen && (browserMode ? canControl && browserInput : inControl) && (
         <div className="flex flex-wrap items-center gap-2 border-t border-(--border-subtle) bg-(--surface-card) px-4 py-[9px]">
           <Button variant="secondary" size="xs" onClick={() => send({ type: 'key', keys: ['escape'] })}>
             Esc
@@ -625,18 +704,40 @@ function StatusLine({ line, inControl }: { line: string; inControl: boolean }) {
 function useInputHandlers(
   surface: React.RefObject<HTMLDivElement | null>,
   status: ViewerStatus | null,
-  send: (input: ViewerInput) => Promise<void>
+  send: (input: ViewerInput) => Promise<void>,
+  browserMode: boolean,
+  browserInput: boolean
 ) {
   const down = useRef<(Point & { button: (typeof BUTTONS)[number] }) | null>(null)
   const lastClick = useRef<{ at: number; button: string; timer: ReturnType<typeof setTimeout> } | null>(null)
   const moving = useRef<{ busy: boolean; next: Point | null }>({ busy: false, next: null })
-  const wheel = useRef<{ delta: number; at: Point | null; timer: ReturnType<typeof setTimeout> | null }>({
-    delta: 0,
+  const wheel = useRef<{ x: number; y: number; at: Point | null; timer: ReturnType<typeof setTimeout> | null }>({
+    x: 0,
+    y: 0,
     at: null,
     timer: null
   })
   const textBuffer = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
-  const active = Boolean(status?.inControl)
+  const active = browserMode ? browserInput && status?.mode === 'control' : Boolean(status?.inControl)
+
+  useEffect(() => {
+    const pointer = moving.current
+    const scroll = wheel.current
+    const buffer = textBuffer.current
+    return () => {
+      if (lastClick.current) clearTimeout(lastClick.current.timer)
+      if (scroll.timer) clearTimeout(scroll.timer)
+      if (buffer.timer) clearTimeout(buffer.timer)
+      down.current = null
+      lastClick.current = null
+      pointer.next = null
+      scroll.x = 0
+      scroll.y = 0
+      scroll.timer = null
+      buffer.text = ''
+      buffer.timer = null
+    }
+  }, [browserMode, active])
 
   // React's wheel listener is passive, so a native one keeps the page from scrolling while the member drives.
   useEffect(() => {
@@ -650,10 +751,21 @@ function useInputHandlers(
   const point = (event: { clientX: number; clientY: number }): Point => {
     const rect = surface.current!.getBoundingClientRect()
     const clamp = (v: number) => Math.min(Math.max(v, 0), 1)
-    return { x: clamp((event.clientX - rect.left) / rect.width), y: clamp((event.clientY - rect.top) / rect.height) }
+    return {
+      x: clamp((event.clientX - rect.left) / Math.max(rect.width, 1)),
+      y: clamp((event.clientY - rect.top) / Math.max(rect.height, 1))
+    }
   }
   const modifiers = (event: { ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) =>
     [event.ctrlKey && 'ctrl', event.shiftKey && 'shift', event.altKey && 'alt'].filter((m): m is string => Boolean(m))
+  const scrollAt = (at: Point, x: number, y: number) => {
+    const horizontal = Math.abs(x) > Math.abs(y)
+    const delta = horizontal ? x : y
+    if (delta === 0) return
+    const amount = Math.min(10, Math.max(1, Math.round(Math.abs(delta) / 60)))
+    const direction = horizontal ? (delta > 0 ? 'right' : 'left') : delta > 0 ? 'down' : 'up'
+    return send({ type: 'scroll', ...at, direction, amount })
+  }
 
   // Hover sends only the latest position, after the previous move is applied: inputs are serial, so a timer outruns the round trip.
   const queueMove = (p: Point) => {
@@ -679,7 +791,7 @@ function useInputHandlers(
   return {
     onContextMenu: (event: React.MouseEvent) => event.preventDefault(),
     onPointerMove: (event: PointerEvent) => {
-      if (active && !down.current && event.pointerType === 'mouse') queueMove(point(event))
+      if (active && status?.inControl && !down.current && event.pointerType === 'mouse') queueMove(point(event))
     },
     onPointerDown: (event: PointerEvent) => {
       surface.current?.focus()
@@ -687,13 +799,19 @@ function useInputHandlers(
       event.preventDefault()
       down.current = { ...point(event), button: BUTTONS[event.button] ?? 'left' }
     },
+    onPointerCancel: () => {
+      down.current = null
+    },
     onPointerUp: (event: PointerEvent) => {
       const start = down.current
       down.current = null
       if (!active || !start) return
       const end = point(event)
       const rect = surface.current!.getBoundingClientRect()
-      const moved = Math.hypot((end.x - start.x) * rect.width, (end.y - start.y) * rect.height)
+      const x = (end.x - start.x) * rect.width
+      const y = (end.y - start.y) * rect.height
+      const moved = Math.hypot(x, y)
+      if (moved > 5 && browserMode && event.pointerType === 'touch') return scrollAt(start, -x, -y)
       if (moved > 5 && start.button === 'left') return send({ type: 'drag', from: { x: start.x, y: start.y }, to: end })
       const mods = modifiers(event)
       // Two quick clicks become one double click, so the remote OS sees a pair despite network latency.
@@ -715,18 +833,20 @@ function useInputHandlers(
     onWheel: (event: WheelEvent) => {
       if (!active) return
       const w = wheel.current
-      w.delta += Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : 0
+      if (Math.abs(event.deltaY) >= Math.abs(event.deltaX)) w.y += event.deltaY
+      else if (browserMode) w.x += event.deltaX
       w.at = point(event)
       if (w.timer) return
       w.timer = setTimeout(() => {
         w.timer = null
-        const amount = Math.min(10, Math.max(1, Math.round(Math.abs(w.delta) / 60)))
-        if (w.delta !== 0 && w.at) send({ type: 'scroll', ...w.at, direction: w.delta > 0 ? 'down' : 'up', amount })
-        w.delta = 0
+        if (w.at) scrollAt(w.at, w.x, w.y)
+        w.x = 0
+        w.y = 0
       }, 120)
     },
     onKeyDown: (event: KeyboardEvent) => {
       if (!active || !status || event.nativeEvent.isComposing) return
+      if (browserMode && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') return
       const input = keyToInput(event, status.os)
       if (!input) return
       event.preventDefault()
@@ -737,6 +857,14 @@ function useInputHandlers(
       }
       flushText()
       send(input)
+    },
+    onPaste: (event: React.ClipboardEvent) => {
+      if (!browserMode || !active) return
+      const text = event.clipboardData.getData('text/plain')
+      if (!text) return
+      event.preventDefault()
+      flushText()
+      send({ type: 'type', text })
     }
   }
 }
