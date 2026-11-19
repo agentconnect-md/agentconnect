@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { isFlatSessionView, sessionListSearchParams, showsTasks, withShowTasks } from './session-list-view'
+import {
+  isFlatSessionView,
+  sessionListSearchParams,
+  showsDreams,
+  showsTasks,
+  withShowDreams,
+  withShowTasks
+} from './session-list-view'
 
 describe('session list view query', () => {
   it('recognizes only the explicit flat view', () => {
@@ -21,5 +28,16 @@ describe('session list view query', () => {
     )
     expect(withShowTasks(new URLSearchParams('agent=agent-1'), true).toString()).toBe('agent=agent-1&tasks=show')
     expect(withShowTasks(new URLSearchParams('agent=agent-1&tasks=show'), false).toString()).toBe('agent=agent-1')
+  })
+
+  it('hides memory dream sessions unless their toggle is on, and carries the toggle', () => {
+    expect(showsDreams(new URLSearchParams(''))).toBe(false)
+    expect(showsDreams(new URLSearchParams('dreams=hide'))).toBe(false)
+    expect(showsDreams(new URLSearchParams('dreams=show'))).toBe(true)
+    expect(sessionListSearchParams(new URLSearchParams('tasks=show&dreams=show')).toString()).toBe(
+      'tasks=show&dreams=show'
+    )
+    expect(withShowDreams(new URLSearchParams('tasks=show'), true).toString()).toBe('tasks=show&dreams=show')
+    expect(withShowDreams(new URLSearchParams('tasks=show&dreams=show'), false).toString()).toBe('tasks=show')
   })
 })

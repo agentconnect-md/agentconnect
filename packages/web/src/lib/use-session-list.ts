@@ -49,6 +49,7 @@ export function useSessionList(
   const triggeredBy = filters.triggeredBy ?? ''
   const githubRepoId = filters.githubRepoId ?? ''
   const tasks = filters.excludeTasks ? 'exclude' : ''
+  const dreams = filters.excludeDreams ? 'exclude' : ''
   const getKey = useCallback(
     (pageIndex: number, previousPage: SessionListPage | null) => {
       if (!orgId) return null
@@ -65,10 +66,11 @@ export function useSessionList(
         triggeredBy,
         githubRepoId,
         grouped ? 'grouped' : 'flat',
-        tasks
+        tasks,
+        dreams
       )
     },
-    [agentId, channel, githubRepoId, grouped, integration, orgId, platform, tasks, triggeredBy]
+    [agentId, channel, dreams, githubRepoId, grouped, integration, orgId, platform, tasks, triggeredBy]
   )
   const {
     data: pages = [],
@@ -94,7 +96,8 @@ export function useSessionList(
         keyTriggeredBy,
         keyGithubRepoId,
         keyView,
-        keyTasks
+        keyTasks,
+        keyDreams
       ] = args as SessionPageKey
       const fetchPage = keyView === 'grouped' ? fetchConversations : fetchSessions
       return fetchPage(cursor || undefined, Number(limit), keyOrgId, {
@@ -104,7 +107,8 @@ export function useSessionList(
         ...(keyChannel ? { channel: keyChannel } : {}),
         ...(keyTriggeredBy ? { triggeredBy: keyTriggeredBy } : {}),
         ...(keyGithubRepoId ? { githubRepoId: keyGithubRepoId } : {}),
-        ...(keyTasks === 'exclude' ? { excludeTasks: true } : {})
+        ...(keyTasks === 'exclude' ? { excludeTasks: true } : {}),
+        ...(keyDreams === 'exclude' ? { excludeDreams: true } : {})
       })
     },
     {

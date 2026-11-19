@@ -17,9 +17,10 @@ export function useSessionFacets(
   const triggeredBy = filters.triggeredBy ?? ''
   const githubRepoId = filters.githubRepoId ?? ''
   const tasks = filters.excludeTasks ? 'exclude' : ''
+  const dreams = filters.excludeDreams ? 'exclude' : ''
 
   return useSWR<SessionFacets>(
-    consoleKeys.sessionFacets(orgId, agentId, integration, platform, channel, triggeredBy, githubRepoId, tasks),
+    consoleKeys.sessionFacets(orgId, agentId, integration, platform, channel, triggeredBy, githubRepoId, tasks, dreams),
     (args) => {
       const [
         ,
@@ -31,7 +32,8 @@ export function useSessionFacets(
         keyChannel,
         keyTriggeredBy,
         keyGithubRepoId,
-        keyTasks
+        keyTasks,
+        keyDreams
       ] = args as SessionFacetKey
       return fetchSessionFacets(keyOrgId, {
         ...(keyAgentId ? { agentId: keyAgentId.split(',') } : {}),
@@ -40,7 +42,8 @@ export function useSessionFacets(
         ...(keyChannel ? { channel: keyChannel } : {}),
         ...(keyTriggeredBy ? { triggeredBy: keyTriggeredBy } : {}),
         ...(keyGithubRepoId ? { githubRepoId: keyGithubRepoId } : {}),
-        ...(keyTasks === 'exclude' ? { excludeTasks: true } : {})
+        ...(keyTasks === 'exclude' ? { excludeTasks: true } : {}),
+        ...(keyDreams === 'exclude' ? { excludeDreams: true } : {})
       })
     },
     { fallbackData }

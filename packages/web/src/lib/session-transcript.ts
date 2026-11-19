@@ -89,6 +89,8 @@ export function reconcilePersistedLiveSteps(
     start = end
   }
   const matched = new Set(turns.flatMap((turn, index) => (live[turn.start]!.hidden ? [index] : [])))
+  // The thread a matched prompt's row was handed into (webchat-threads.md §5.1).
+  const handedTo = new Map<number, string>()
   for (const message of promptRows) {
     if (message.kind.toLowerCase() !== 'text' || message.sender === agentId) continue
     const persistedAtMs = transcriptRowTimeMs(message)
@@ -97,20 +99,36 @@ export function reconcilePersistedLiveSteps(
     let bestTurn = -1
     let bestDelta = Number.POSITIVE_INFINITY
     for (let index = 0; index < turns.length; index++) {
-      if (matched.has(index) || turns[index]!.key !== key) continue
+      // A hidden prompt is matched already, but a later read may bring the mark of its handing.
+      const reopened = !!message.handedTo && live[turns[index]!.start]!.hidden === true && !handedTo.has(index)
+      if ((matched.has(index) && !reopened) || turns[index]!.key !== key) continue
       const delta = Math.abs(turns[index]!.observedAtMs - persistedAtMs)
       if (delta <= LIVE_TURN_CONFIRM_WINDOW_MS && delta < bestDelta) {
         bestTurn = index
         bestDelta = delta
       }
     }
-    if (bestTurn >= 0) matched.add(bestTurn)
+    if (bestTurn < 0) continue
+    matched.add(bestTurn)
+    if (message.handedTo) handedTo.set(bestTurn, message.handedTo)
   }
   const removed = new Set<number>()
   const hidden = new Set<number>()
   const anchored = new Set<number>()
+  const stamped = new Map<number, string>()
   for (const index of matched) {
     const turn = turns[index]!
+    const thread = handedTo.get(index)
+    if (thread !== undefined) {
+      // A message handed to a task gets no reply of its own: its rows are the turn, drawn in the task's thread.
+      const complete = live[turn.start]!.turnComplete === true
+      for (let step = turn.start; step < turn.end; step++) {
+        if (!complete) stamped.set(step, thread)
+        else if (!live[step]!.standing) removed.add(step)
+        anchored.add(step)
+      }
+      continue
+    }
     const replies = live.slice(turn.start + 1, turn.end).filter((step) => step.kind === 'done' && !step.demoted)
     const persistedReply = (sender: string): boolean =>
       persisted.some(
@@ -139,6 +157,12 @@ export function reconcilePersistedLiveSteps(
     if (!inScope(step)) return [step]
     index += 1
     if (removed.has(index) || (!anchored.has(index) && step.postId && persistedPostIds.has(step.postId))) return []
+    const thread = stamped.get(index)
+    // A handed prompt is shown again, in the thread it joined.
+    if (thread !== undefined)
+      return step.thread === thread && !step.hidden
+        ? [step]
+        : [{ ...(({ hidden: _hidden, ...rest }) => rest)(step), thread }]
     return hidden.has(index) && !step.hidden ? [{ ...step, hidden: true }] : [step]
   })
   return result.every((step, i) => step === all[i]) && result.length === all.length ? all : result

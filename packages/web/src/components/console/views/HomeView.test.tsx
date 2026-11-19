@@ -69,10 +69,17 @@ vi.mock('next/link', () => ({
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ orgPath: (p: string) => `/acme${p}`, activeOrg: { id: 'org-1' } })
 }))
-// Answers as the Control Plane does: `tasks=exclude` leaves the `subsession` rows out.
+// Answers as the Control Plane does: `tasks=exclude` leaves the `subsession` rows out, `dreams=exclude` the `dream` platform's.
 vi.mock('@/lib/use-session-list', () => ({
-  useSessionList: (orgId: string | null | undefined, filters: { excludeTasks?: boolean } = {}) => {
-    const sessions = orgId ? mocks.sessionRows.filter((row) => !(filters.excludeTasks && row.subsession)) : []
+  useSessionList: (
+    orgId: string | null | undefined,
+    filters: { excludeTasks?: boolean; excludeDreams?: boolean } = {}
+  ) => {
+    const sessions = orgId
+      ? mocks.sessionRows.filter(
+          (row) => !(filters.excludeTasks && row.subsession) && !(filters.excludeDreams && row.platform === 'dream')
+        )
+      : []
     return { sessions, total: sessions.length, isLoading: false }
   }
 }))
@@ -753,6 +760,17 @@ describe('HomeView Recent', () => {
     await render()
     expect(host.textContent).toContain('Release checklist')
     expect(host.textContent).not.toContain('Follow-up check on the release')
+  })
+
+  it('leaves memory dream sessions out', async () => {
+    const dream = row({ id: 's-dream', title: 'Consolidate memory', platform: 'dream' })
+    mocks.agents = [agent()]
+    mocks.daemons = [daemon()]
+    mocks.allSessions = [dream, conversation]
+    mocks.sessionRows = [dream, conversation]
+    await render()
+    expect(host.textContent).toContain('Release checklist')
+    expect(host.textContent).not.toContain('Consolidate memory')
   })
 })
 

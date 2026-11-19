@@ -143,6 +143,12 @@ const SessionFilterQueryDto = z.object({
     .optional()
     .describe(
       'Whether tasks are listed: the delegated tasks, follow-ups (including getting-to-know tasks) and approved proposals that run on a `subsession:` thread of the session they belong to, and the threaded tasks a session currently owns. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
+    ),
+  dreams: z
+    .enum(['include', 'exclude'])
+    .optional()
+    .describe(
+      'Whether memory dream sessions are listed: the isolated sessions that execute a memory dream. `include` (the default) lists them like any other session; `exclude` leaves them out of the rows, the totals and every facet.'
     )
 })
 
@@ -920,7 +926,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'List session filter facets',
           description:
-            'Lists each distinct session filter facet after applying every other active filter visible to the caller. `tasks=exclude` leaves tasks out of every facet, as it does on `listSessions`.',
+            'Lists each distinct session filter facet after applying every other active filter visible to the caller. `tasks=exclude` leaves tasks out of every facet, and `dreams=exclude` memory dream sessions, as they do on `listSessions`.',
           operationId: 'listSessionFacets',
           querystring: SessionFilterQueryDto,
           response: { 200: SessionFacetsDto }
@@ -954,6 +960,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(triggeredBy ? { triggeredBy } : {}),
           ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
+          ...(req.query.dreams === 'exclude' ? { excludeDreams: true } : {}),
           codeHostHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(repoInstallation ? { hookTriggerInstallationChannel: repoInstallation } : {})
@@ -984,7 +991,7 @@ export function sessionRoutes(deps: HttpDeps) {
             'sharing a thread group into `conversations`, each carrying its current member sessions. `view=flat` ' +
             'returns the raw `sessions` rows (the pre-grouped shape); `conversationKey` resolves one conversation’s ' +
             'members directly. `tasks=exclude` leaves tasks (delegated tasks, follow-ups (including getting-to-know tasks) ' +
-            'and approved proposals) out of the page and its total.',
+            'and approved proposals) out of the page and its total; `dreams=exclude` does the same for memory dream sessions.',
           operationId: 'listSessions',
           querystring: SessionQueryDto,
           response: { 200: SessionListPageDto, 400: ErrorDto }
@@ -1061,6 +1068,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(triggeredBy ? { triggeredBy } : {}),
           ...(req.query.activityState ? { activityState: req.query.activityState } : {}),
           ...(req.query.tasks === 'exclude' ? { excludeSubsessions: true } : {}),
+          ...(req.query.dreams === 'exclude' ? { excludeDreams: true } : {}),
           ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(repoInstallation ? { hookTriggerInstallationChannel: repoInstallation } : {}),

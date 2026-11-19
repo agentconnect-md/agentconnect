@@ -6,6 +6,10 @@ type SearchParamsReader = Pick<URLSearchParams, 'get'>
 export const SHOW_TASKS_PARAM = 'tasks'
 const SHOW_TASKS_VALUE = 'show'
 
+/** The All sessions toggle that lists memory dream sessions; they are hidden unless it is on. */
+export const SHOW_DREAMS_PARAM = 'dreams'
+const SHOW_DREAMS_VALUE = 'show'
+
 export function isFlatSessionView(params: SearchParamsReader): boolean {
   return params.get('view') === 'flat'
 }
@@ -23,6 +27,19 @@ export function withShowTasks(params: URLSearchParams, on: boolean): URLSearchPa
   return next
 }
 
+/** Whether the list shows memory dream sessions as well as conversations. */
+export function showsDreams(params: SearchParamsReader): boolean {
+  return params.get(SHOW_DREAMS_PARAM) === SHOW_DREAMS_VALUE
+}
+
+/** `params` with the Show dreams toggle set to `on`, every other key kept. */
+export function withShowDreams(params: URLSearchParams, on: boolean): URLSearchParams {
+  const next = new URLSearchParams(params.toString())
+  if (on) next.set(SHOW_DREAMS_PARAM, SHOW_DREAMS_VALUE)
+  else next.delete(SHOW_DREAMS_PARAM)
+  return next
+}
+
 /** Query state that remains meaningful while moving between the Sessions list
  *  and one raw session. Unknown list modes are deliberately dropped. */
 export function sessionListSearchParams(params: SearchParamsReader): URLSearchParams {
@@ -33,5 +50,6 @@ export function sessionListSearchParams(params: SearchParamsReader): URLSearchPa
     if (value && value !== 'all') next.set(key, value)
   }
   if (showsTasks(params)) next.set(SHOW_TASKS_PARAM, SHOW_TASKS_VALUE)
+  if (showsDreams(params)) next.set(SHOW_DREAMS_PARAM, SHOW_DREAMS_VALUE)
   return next
 }
