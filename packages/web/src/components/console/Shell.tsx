@@ -1060,9 +1060,8 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
             {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
             {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
             {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
-            {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
-          live state, self-gated (desktop, setup-started, incomplete). */}
-            <GettingStarted />
+            {/* Getting-started checklist; hidden while the organization asks for an SSO sign-in, which would refuse its probes. */}
+            {!activeOrg?.ssoSignIn && <GettingStarted />}
             {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
             <NotificationToastContainer />
