@@ -403,11 +403,18 @@ describe('organization SSO connection', () => {
     )
   })
 
-  it('starts a new connector when the protocol changes', async () => {
+  it('keeps the protocol while the connection exists, and takes another one after a removal', async () => {
     const app = start()
     await save(app)
     const first = idp.only().id
-    const res = await save(app, { protocol: 'saml', metadataUrl: 'https://idp.example.test/m' })
+    const saml = { protocol: 'saml', metadataUrl: 'https://idp.example.test/m' }
+    const refused = await save(app, saml)
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json()).toMatchObject({ code: 'SSO_PROTOCOL_MISMATCH' })
+    expect(idp.only()).toMatchObject({ id: first, protocol: 'oidc' })
+
+    expect((await app.inject({ method: 'DELETE', url: `${SSO}/connection` })).statusCode).toBe(204)
+    const res = await save(app, saml)
     const second = idp.only()
     expect(second.id).not.toBe(first)
     expect(res.json()).toMatchObject({

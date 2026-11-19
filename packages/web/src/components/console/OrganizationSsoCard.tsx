@@ -257,7 +257,7 @@ function ConnectionRow({
                 <Button variant="secondary" size="xs" onClick={() => open({ kind: 'connection' })}>
                   {t('edit')}
                 </Button>
-                {active && !connection.enforcedAt && (
+                {active && connection.tested && !connection.enforcedAt && (
                   <Button size="xs" onClick={() => open({ kind: 'enforce' })}>
                     {t('enforce')}
                   </Button>

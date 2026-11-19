@@ -28,6 +28,8 @@ import { denyNonOwner, orgOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
+import { LogtoApiError } from '../../github/logto-identity.js'
+import { OrgSsoIdpRejected } from '../../org-sso/idp.js'
 import { OrgCreationLimitReached } from '../../persistence/errors.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 
@@ -245,9 +247,9 @@ export function orgScopedRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Delete the organization',
           description:
-            'Delete the organization (owner only). Refused with 409 while it still has daemons — remove them first. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
+            'Delete the organization (owner only). Refused with 409 while it still has daemons — remove them first. An organization with a single sign-on connection has it removed first, and the delete is refused with 503 when the identity service cannot be reached. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
           operationId: 'deleteOrganization',
-          response: { 204: z.null(), 403: ErrorDto, 409: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -260,6 +262,20 @@ export function orgScopedRoutes(deps: HttpDeps) {
             statusCode: 409,
             message: 'the organization still has daemons — remove them first'
           })
+        }
+        // The connector and the identities it established must not outlive the organization, so a failure here stops the delete.
+        if (deps.orgSsoConnections) {
+          try {
+            await deps.orgSsoConnections.remove(orgId, req.principal!.userId)
+          } catch (err) {
+            if (!(err instanceof LogtoApiError) && !(err instanceof OrgSsoIdpRejected)) throw err
+            req.log.warn({ err, orgId }, 'org delete: could not remove the single sign-on connection')
+            return reply.code(503).send({
+              error: 'Service Unavailable',
+              statusCode: 503,
+              message: 'the identity service is unavailable — the organization was not deleted'
+            })
+          }
         }
         // Resolved BEFORE the cascade and sent after it: the duty ledger cascades from the org, so
         // once the delete lands there is nothing left to say which pool member serves these agents.
