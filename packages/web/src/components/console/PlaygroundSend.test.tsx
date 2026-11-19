@@ -905,7 +905,9 @@ describe('stream text delta batching', () => {
     })
     act(runFrame)
 
-    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toEqual([])
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'notice', text: 'Allocating a sandbox pod…' }
+    ])
   })
 
   it('retires the notice on a streamed session title', async () => {

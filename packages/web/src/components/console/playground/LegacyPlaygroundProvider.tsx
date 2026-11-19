@@ -1269,19 +1269,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         else finishedTurnLanes.current.set(id, { turnId: result.done.turnId, agents: new Set([agentId]) })
       }
       if (result.done.turnId) settleLiveElicits(id, agentId, result.done.turnId)
-      // A person's cancel is no failure: the daemon records it in the transcript ("🛑 Turn cancelled.").
-      if (result.done.error && result.done.error !== 'cancel') {
+      if (result.done.error) {
         // The notice STAYS on a failure: a turn that died waiting for its pod is explained by it.
         const name = participantName(id, agentId)
         const thread = streamThreads.current.get(`${id}\n${result.done.turnId}`)
-        pushStep(id, {
-          kind: 'done',
-          turnId: result.done.turnId,
-          ...(agentId ? { agentId } : {}),
-          ...(name ? { who: name } : {}),
-          ...(thread ? { thread } : {}),
-          text: `⚠️ ${result.done.error}`
-        })
+        // A person's cancel is no failure: the daemon records it in the transcript ("🛑 Turn cancelled.").
+        if (result.done.error !== 'cancel')
+          pushStep(id, {
+            kind: 'done',
+            turnId: result.done.turnId,
+            ...(agentId ? { agentId } : {}),
+            ...(name ? { who: name } : {}),
+            ...(thread ? { thread } : {}),
+            text: `⚠️ ${result.done.error}`
+          })
       } else {
         // A lane can end having streamed nothing at all — a silent AC_NO_RESPONSE decline holds
         // every chunk back — so a clean end is the last chance to retire the wait it announced.
