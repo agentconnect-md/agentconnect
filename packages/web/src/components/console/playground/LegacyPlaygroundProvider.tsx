@@ -56,7 +56,7 @@ import { randomUuid } from '@/lib/random-uuid'
 import { resolveRoster, typedMentionIds, wireMentions } from '@/lib/conversation-addressing'
 import { leadingCommandToken } from '@/components/console/runtime-command-menu'
 import { sessionAfterModelSelection } from '@/lib/session-runtime-controls'
-import { liveThreadScope, reconcilePersistedLiveSteps } from '@/lib/session-transcript'
+import { type LiveRetireRead, retireLiveOverlay } from '@/lib/session-transcript'
 import { publishImageState, type SharedImageState, type WebchatImageUpdate } from '@/lib/shared-image'
 import { applyImageUpdateToSteps, upsertImageStep } from '@/lib/shared-image-steps'
 import {
@@ -357,12 +357,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // never receive another terminal frame and wedge the busy state. Reset on
   // each send (one in-flight turn per session).
   const finishedTurnLanes = useRef<Map<string, { turnId: string; agents: Set<string> }>>(new Map())
-  // Cold-attached lanes (the `attach` probe reattached a reload to a live turn),
-  // keyed by lane. Such a replay has no local prompt step, so the turn-shaped arm of
-  // `reconcilePersistedLiveSteps` cannot retire it and the reply would render twice
-  // once the transcript tail persists it. The reply post frame carries the canonical
-  // postId — stamp it onto the replayed steps so the exact-postId arm retires them
-  // (the same anchor #753 gave agent-initiated posts).
+  // Lanes a reload reattached to a live turn: the reply post frame names the post their replayed steps retire by.
   const coldAttached = useRef<Map<string, { turnId: string; postId?: string; done?: boolean }>>(new Map())
   // Participant display names per session id, mirrored in a ref: the socket's
   // message handlers are closures captured when the socket opened — often the
@@ -1243,6 +1238,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       streamCursors.current.delete(cursorKey)
       syncBusyLanes(id)
       const finishedTurnId = result.done.turnId
+      // A read started after this moment holds everything the lane saved (webchat-transcript-refresh.md §3).
+      const laneDoneAtMs = Date.now()
+      mutateSteps(id, (steps) =>
+        steps.some((step) => step.turnId === finishedTurnId && step.kind !== 'msg' && step.laneDoneAtMs === undefined)
+          ? steps.map((step) =>
+              step.turnId === finishedTurnId &&
+              step.kind !== 'msg' &&
+              (step.agentId ?? undefined) === agentId &&
+              step.laneDoneAtMs === undefined
+                ? { ...step, laneDoneAtMs }
+                : step
+            )
+          : steps
+      )
       if (
         !lanesOf(id).some((key) => {
           const cursor = streamCursors.current.get(key)
@@ -1630,6 +1639,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                   agentId?: string
                   generation?: number
                   steered?: boolean
+                  postId?: string
                 }
                 post?: WebchatPost
                 agentIds?: string[]
@@ -1643,6 +1653,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 m = JSON.parse(String(e.data))
               } catch {
                 return
+              }
+              // The post a sent message is recorded under: this copy retires by it (webchat-transcript-refresh.md §3).
+              const ackPost = m.type === 'ack' && m.ack?.accepted !== false ? m.ack : undefined
+              if (ackPost?.postId && ackPost.turnId) {
+                const { turnId: postTurn, postId } = ackPost as { turnId: string; postId: string }
+                mutateSteps(id, (steps) =>
+                  steps.some((step) => step.kind === 'msg' && step.turnId === postTurn && step.postId !== postId)
+                    ? steps.map((step) =>
+                        step.kind === 'msg' && step.turnId === postTurn ? { ...step, postId } : step
+                      )
+                    : steps
+                )
               }
               if (m.type === 'ready') {
                 const features = Array.isArray(m.features) ? m.features : []
@@ -1767,10 +1789,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                           stampStep({
                             kind: 'done',
                             turnId: post.postId,
-                            // The daemon persists this reply before the post frame ever arrives, so
-                            // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
-                            // the canonical row lands in a later transcript refresh (#753) — text/time
-                            // matching (the prompt-turn heuristic) has nothing to anchor on here.
+                            // Saved before this frame arrives: its row retires this step by `postId` (#753).
                             postId: post.postId,
                             agentId,
                             ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
@@ -2768,23 +2787,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgSuggestion = useCallback((id: string) => suggestionBy[id], [suggestionBy])
   const getLiveSteps = useCallback((id: string) => (wcSteps[id] ?? NO_STEPS).filter((step) => !step.hidden), [wcSteps])
   const reconcileLiveSteps = useCallback(
-    (
-      id: string,
-      persisted: SessionMessageDto[],
-      agentId: string,
-      promptRows?: SessionMessageDto[],
-      thread?: string
-    ): void => {
+    (id: string, persisted: SessionMessageDto[], agentId: string, read?: LiveRetireRead): void => {
       setWcSteps((cur) => {
         const live = cur[id]
         if (!live) return cur
-        const reconciled = reconcilePersistedLiveSteps(
-          live,
-          persisted,
-          agentId,
-          promptRows,
-          liveThreadScope(live, thread)
-        )
+        const reconciled = retireLiveOverlay(live, persisted, agentId, read)
         if (reconciled === live) return cur
         const next = { ...cur }
         if (reconciled.length === 0) delete next[id]

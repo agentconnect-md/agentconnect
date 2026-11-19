@@ -104,6 +104,7 @@ import { useStickToBottom } from '@/lib/stick-to-bottom'
 import { newDividerIndex, useSeenMarker } from '@/lib/transcript-seen'
 import { NewDivider, SeenRecorder, TranscriptMap, type MapTurn } from '@/components/console/TranscriptNav'
 import { useSessionTranscript } from '@/lib/use-session-transcript'
+import { liveOverlay } from '@/lib/session-transcript'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { isAuthConfigured } from '@/lib/auth'
 import { clipboardFiles, prepareWebchatImage } from '@/lib/webchat-image'
@@ -288,6 +289,8 @@ const noOwnerIcon = () => undefined
 const EMPTY_CONTROLS: readonly ControlCommand[] = []
 // The textarea's text box, shared with the overlay that marks a leading command so both lay text out identically.
 const COMPOSER_TEXT = 'px-[15px] py-[13px] font-sans text-[14px] leading-[1.55]'
+// How often a running turn's rows are read when no transcript signal arrives.
+const TAIL_FALLBACK_MS = 15_000
 
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
 // the draft lives outside the playground context (usePgDraft subscription), and
@@ -1314,8 +1317,6 @@ export default function SessionDetailView() {
   const aid = session?.agentId
   const wantTranscript = !!session && session.platform !== 'playground' && session.steps.length === 0 && !!aid
   const sessionBusy = session ? isPgBusy(session.id) : false
-  const sessionBusyRef = useRef(sessionBusy)
-  sessionBusyRef.current = sessionBusy
   // A coordinator's thread shape: webchat's own, or what its platform module declares (webchat-threads.md §7).
   const threadShape = session?.coordinator === true ? threadShapeOf(session.platform) : undefined
   // The transcript fetch machine (history + live tail + cross-source "load earlier") lives in its
@@ -1350,7 +1351,6 @@ export default function SessionDetailView() {
     conversationSourceKey,
     conversationMembers,
     conversationRosterPlatform: conversationRoster?.platform ?? undefined,
-    sessionBusyRef,
     promptSessionIds,
     // A coordinator's page is roots with their threads' footers where its platform threads (webchat-threads.md §6.1, §7).
     rootsView: !MOCK_MODE && threadShape !== undefined,
@@ -2143,10 +2143,24 @@ export default function SessionDetailView() {
   }, [wantTranscript, visibleMsgs, sessionSteps, sessionUser, me, sid])
 
   const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
+  // The rows are read on every transcript signal, mid-turn too, and once a turn ends (webchat-transcript-refresh.md §4).
   useEffect(() => {
-    if (!visibleTailReady || sessionBusy) return
+    if (!visibleTailReady) return
     void refreshTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTail])
+  // A lost signal costs at most one interval while a turn runs, and a page shown again reads at once.
+  useEffect(() => {
+    if (!visibleTailReady) return
+    const onShow = () => {
+      if (!document.hidden) void refreshTail()
+    }
+    document.addEventListener('visibilitychange', onShow)
+    const fallback = sessionBusy ? window.setInterval(() => void refreshTail(), TAIL_FALLBACK_MS) : undefined
+    return () => {
+      document.removeEventListener('visibilitychange', onShow)
+      if (fallback !== undefined) window.clearInterval(fallback)
+    }
+  }, [visibleTailReady, sessionBusy, refreshTail])
 
   // Probe for a still-streaming turn on load and on each activity, since a turn started in another tab never reaches this socket.
   useEffect(() => {
@@ -2598,6 +2612,8 @@ export default function SessionDetailView() {
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
   const liveSteps = isWebchat || isContinuable ? getLiveSteps(session.id) : []
+  // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
+  const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
   // A message in a thread that a task answers there keeps this timeline still; one the coordinator answers streams here.
   const busyThread = pgBusy && threadsView ? getPgTurnThread(session.id) : undefined
   const busyThreadTurn = busyThread
@@ -2909,7 +2925,7 @@ export default function SessionDetailView() {
   const { turns: builtTurns, speakers } = buildTurns({
     session,
     rows: wantTranscript ? (visibleMsgs ?? []) : undefined,
-    liveSteps,
+    liveSteps: overlaySteps,
     source: {
       session: conversationSourceSessionByMessageRef.current,
       turn: conversationSourceTurnByMessageRef.current,
@@ -3210,7 +3226,7 @@ export default function SessionDetailView() {
     wantTranscript && focusedMessages !== null ? activityStatsFromTranscript(focusedMessages) : null
   const focusedLiveActivityStats = isPg
     ? activityStatsFromSteps(stepsForFocusedAgent(session.steps))
-    : activityStatsFromSteps(stepsForFocusedAgent(liveSteps))
+    : activityStatsFromSteps(stepsForFocusedAgent(overlaySteps))
   const durationFirst = minTime(focusedTranscriptStats?.firstMs, focusedLiveActivityStats.firstMs)
   const durationLast = maxTime(
     focusedTranscriptStats?.lastMs,

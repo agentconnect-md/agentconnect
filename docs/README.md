@@ -61,6 +61,7 @@ the picture it draws.
 - **(proposal)** [ahp-client-sign-in.md](designs/ahp-client-sign-in.md) — Browser sign-in for AHP clients such as VS Code through the CP OAuth server: an `ahp` scope, per-agent resource binding, and token refresh on a live connection.
 - **(proposal)** [webchat-threads.md](designs/webchat-threads.md) — Slack-like threads in webchat: a coordinator's task holds a thread as on Slack, routing unchanged, and every coordinator page drawn in its platform's thread shape.
 - [webchat-multi-agents.md](designs/webchat-multi-agents.md) — Multi-agent webchat conversations: roster, primary agent, activation.
+- [webchat-transcript-refresh.md](designs/webchat-transcript-refresh.md) — How a session page stays current: rows drawn on every transcript signal, the stream only for the reply being written.
 - [webchat-generated-images.md](designs/webchat-generated-images.md) — Runtime-generated workspace images, explicit publication through `shareFile`, and retained inline previews in webchat.
 - [webchat-side-panels.md](designs/webchat-side-panels.md) — The session-detail right dock.
 - [webchat-cross-integration-continuation.md](designs/webchat-cross-integration-continuation.md) — Continuing other integrations' sessions from webchat.

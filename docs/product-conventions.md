@@ -7,10 +7,12 @@ the source of truth for cross-cutting product conventions.
 ## Webchat reply boundaries
 
 Each agent message shown as a separate block while streaming remains a separate block
-in conversation history. A transcript refresh replaces a live block only after its
-saved reply is available; saving a prompt alone must not hide an unfinished reply.
-A completed turn with no text reply retires its live work on the next transcript
-refresh after its prompt has been saved and all stream lanes finish.
+in conversation history. A page backed by transcript rows draws a turn's work from its
+rows as they are saved, mid-turn too, and streams only the reply text until that text
+is saved; saving a prompt alone must not hide an unfinished reply. Once every stream
+lane of a turn has finished, the next transcript read retires whatever live copy the
+rows do not hold, text the turn never posted included, so the page matches a reload
+without one ([webchat-transcript-refresh.md](designs/webchat-transcript-refresh.md)).
 
 ## Legacy webchat connection retries
 
