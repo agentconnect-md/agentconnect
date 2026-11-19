@@ -5,9 +5,10 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ login: vi.fn(), loginWithSso: vi.fn() }))
+const authState = vi.hoisted(() => ({ on: true }))
 
 vi.mock('@/lib/auth', () => ({
-  isAuthConfigured: () => true,
+  isAuthConfigured: () => authState.on,
   login: mocks.login,
   loginWithSso: mocks.loginWithSso
 }))
@@ -21,9 +22,15 @@ import { selectEnabledProviders } from '@/lib/social-login-providers'
 let host: HTMLDivElement
 let root: Root
 
-async function render(configured: string, organizationSso = true) {
+async function render(configured: string, organizationSso = true, sso?: { connectorId: string; name: string }) {
   await act(async () =>
-    root.render(<Auth providers={selectEnabledProviders(configured)} organizationSso={organizationSso} />)
+    root.render(
+      <Auth
+        providers={selectEnabledProviders(configured)}
+        organizationSso={organizationSso}
+        {...(sso ? { sso } : {})}
+      />
+    )
   )
 }
 
@@ -43,6 +50,7 @@ beforeEach(() => {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
+  authState.on = true
   localStorage.clear()
   sessionStorage.clear()
   for (const mock of Object.values(mocks)) mock.mockReset()
@@ -122,11 +130,60 @@ describe('sign-in where organizations own SSO connections', () => {
 })
 
 describe('sign-in where organizations do not own SSO connections', () => {
-  it('keeps labeled buttons in the new order and no SSO bar or tag', async () => {
-    localStorage.setItem('ac.lastSignIn', JSON.stringify({ method: 'social', target: 'github' }))
+  const remember = (value: object) => localStorage.setItem('ac.lastSignIn', JSON.stringify(value))
+  const deploymentSso = { connectorId: 'deployment-connector', name: 'Example SSO' }
+  const rerender = async () => {
+    await act(async () => root.unmount())
+    root = createRoot(host)
+  }
+
+  it('keeps labeled buttons in the new order, no SSO page link and no tag without a remembered method', async () => {
     await render('slack,github,google', false)
     expect(bars()).toEqual(['Continue with Google', 'Continue with GitHub', 'Continue with Slack'])
     expect(host.querySelector('a')).toBeNull()
     expect(tagged()).toEqual([])
+  })
+
+  it('tags the method used last in place: a labeled button, an icon or the Lark/Feishu slot', async () => {
+    remember({ method: 'social', target: 'github' })
+    await render('*', false)
+    expect(tagged()).toEqual(['Continue with GitHub'])
+    expect(bars()[1]).toBe('Last usedContinue with GitHub')
+    await rerender()
+
+    remember({ method: 'social', target: 'discord' })
+    await render('*', false)
+    expect(tagged()).toEqual(['Continue with Discord'])
+    await rerender()
+
+    remember({ method: 'social', target: 'feishu' })
+    await render('google,github,slack,azuread,lark,feishu,discord', false)
+    expect(tagged()).toEqual(['Continue with Lark / Feishu'])
+  })
+
+  it('remembers a sign-in through the deployment connector and tags its button', async () => {
+    remember({ method: 'social', target: 'github' })
+    await render('google,github', false, deploymentSso)
+    await act(async () =>
+      [...host.querySelectorAll('button')].find((button) => button.textContent === 'Continue with Example SSO')!.click()
+    )
+    expect(mocks.loginWithSso).toHaveBeenCalledWith('deployment-connector')
+    commitPendingSignIn()
+    expect(readLastSignIn()).toEqual({ method: 'sso', connectorId: 'deployment-connector' })
+    await rerender()
+
+    await render('google,github', false, deploymentSso)
+    expect(tagged()).toEqual(['Continue with Example SSO'])
+  })
+
+  it('remembers and tags nothing where sign-in is not configured', async () => {
+    authState.on = false
+    remember({ method: 'social', target: 'github' })
+    await render('google,github', false, deploymentSso)
+    expect(tagged()).toEqual([])
+    await act(async () =>
+      [...host.querySelectorAll('button')].find((button) => button.textContent === 'Continue with Example SSO')!.click()
+    )
+    expect(sessionStorage.getItem('ac.pendingSignIn')).toBeNull()
   })
 })

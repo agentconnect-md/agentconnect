@@ -21,8 +21,11 @@ export function deploymentSsoMemberSource(): 'invite' | 'domain' | null {
 
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-/** The sign-in method this browser used last; it is offered first next time, and the server is never asked. */
-export type LastSignIn = { method: 'email'; email: string } | { method: 'social'; target: SocialLoginTarget }
+/** The sign-in method this browser used last; it is marked "Last used" next time, and the server is never asked. */
+export type LastSignIn =
+  | { method: 'email'; email: string }
+  | { method: 'social'; target: SocialLoginTarget }
+  | { method: 'sso'; connectorId: string }
 
 const LAST_KEY = 'ac.lastSignIn'
 const PENDING_KEY = 'ac.pendingSignIn'
@@ -30,12 +33,15 @@ const PENDING_KEY = 'ac.pendingSignIn'
 function parseSignIn(raw: string | null): LastSignIn | null {
   if (!raw) return null
   try {
-    const value = JSON.parse(raw) as Partial<{ method: string; email: string; target: string }>
+    const value = JSON.parse(raw) as Partial<{ method: string; email: string; target: string; connectorId: string }>
     if (value.method === 'email' && typeof value.email === 'string' && EMAIL_RE.test(value.email)) {
       return { method: 'email', email: value.email }
     }
     if (value.method === 'social' && typeof value.target === 'string') {
       return { method: 'social', target: value.target as SocialLoginTarget }
+    }
+    if (value.method === 'sso' && typeof value.connectorId === 'string' && value.connectorId) {
+      return { method: 'sso', connectorId: value.connectorId }
     }
   } catch {
     /* an unreadable value is no preference */

@@ -205,7 +205,9 @@ more method rather than asking every visitor for an address:
 The field is a convenience, not the control. Logto refuses password, code and social
 sign-in for an address whose domain is bound to a connector, whatever the page shows.
 
-A deployment with only a deployment connector keeps its single button.
+A deployment with only a deployment connector keeps its single button. Its sign-in
+page marks the method used last the same way, the deployment connector's button
+included; where sign-in is not configured nothing is remembered.
 
 ### 4.3 Membership
 
