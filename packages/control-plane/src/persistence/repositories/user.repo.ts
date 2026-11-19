@@ -263,6 +263,33 @@ function chooseAudienceReplacement(
   return snapshot.find((m) => m.role === 'owner' && m.userId !== departingUserId)?.userId ?? null
 }
 
+type MemberChange = 'member_added' | 'role_changed' | 'member_removed' | 'member_left'
+const MEMBER_CHANGE_MESSAGE: Record<MemberChange, string> = {
+  member_added: 'member added',
+  role_changed: 'member role changed',
+  member_removed: 'member removed',
+  member_left: 'member left'
+}
+
+/** Recorded in the transaction that makes the change, by member id and never by address. */
+function auditMemberChange(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  actorUserId: string | null,
+  action: MemberChange,
+  details: { userId: string; role?: string; previousRole?: string }
+) {
+  return tx.auditEvent.create({
+    data: {
+      kind: 'member_change',
+      orgId,
+      actorUserId,
+      message: MEMBER_CHANGE_MESSAGE[action],
+      details: { action, ...details }
+    }
+  })
+}
+
 /** Member routes treat a service account as absent, and service-account routes treat a person as absent. */
 async function assertUserKind(
   db: Pick<Prisma.TransactionClient, 'user'>,
@@ -734,22 +761,33 @@ export class PgUserRepo implements UserRepo {
         data: { role },
         include: { user: true }
       })
+      if (current.role !== role) {
+        await auditMemberChange(tx, orgId, actingUserId, 'role_changed', { userId, role, previousRole: current.role })
+      }
       return toMemberRecord(row)
     })
   }
 
-  async addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord> {
+  async addMemberByEmail(
+    orgId: string,
+    email: string,
+    role: OrgMemberRole,
+    actingUserId?: string
+  ): Promise<OrgMemberRecord> {
     // Reuse the existing user for this email, else create an invited (email-only)
     // row the person claims on first SSO sign-in. `upsert` keyed on the unique
     // email keeps two racers from colliding; normalized like the claim path.
     const normalized = email.trim().toLowerCase()
     const user = await this.db.user.upsert({ where: { email: normalized }, create: { email: normalized }, update: {} })
     if (user.kind !== 'human') throw new ServiceAccountNotAddable()
-    const row = await this.db.membership.create({
-      data: { orgId, userId: user.id, role },
-      include: { user: true }
+    return withAmbientTx(this.db, async (tx) => {
+      const row = await tx.membership.create({
+        data: { orgId, userId: user.id, role },
+        include: { user: true }
+      })
+      await auditMemberChange(tx, orgId, actingUserId ?? null, 'member_added', { userId: user.id, role })
+      return toMemberRecord(row)
     })
-    return toMemberRecord(row)
   }
 
   async removeMember(
@@ -760,7 +798,10 @@ export class PgUserRepo implements UserRepo {
   ): Promise<MemberRemovalResult> {
     return withAmbientTx(this.db, async (tx) => {
       await assertUserKind(tx, userId, 'human')
-      return removeMembershipTx(tx, orgId, userId, actingUserId, chat)
+      const removed = await removeMembershipTx(tx, orgId, userId, actingUserId, chat)
+      const action = userId === actingUserId ? 'member_left' : 'member_removed'
+      await auditMemberChange(tx, orgId, actingUserId, action, { userId })
+      return removed
     })
   }
 

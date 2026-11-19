@@ -574,6 +574,17 @@ first writer on purpose: a version that does not read `suspendedAt` would treat 
 suspended member as active, so every instance must understand the column before
 anything sets it.
 
+### 8.5 Member changes are audited
+
+Adding a member, changing a role, removing a member and a member leaving each write
+one `member_change` audit event, in the transaction that makes the change, so an
+event exists exactly when the change does. It names the member by id and never by
+address, carries the actor (null for a change no person made), the action
+(`member_added`, `role_changed`, `member_removed`, `member_left`) and the role, with
+the previous role on a change. Saving the role a member already has is not a change
+and writes nothing. Joining by an invite link or by a verified domain is recorded by
+those features' own events.
+
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
 `AgentSpec`, `CronUpsert`, `RouteAssign`, and the `RegisterOk` reconciliation
