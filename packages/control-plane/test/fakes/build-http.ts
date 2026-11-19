@@ -361,7 +361,7 @@ export function buildHttpApp(
   const auditRepo = new PgAuditRepo(prisma)
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
   const epoch = new EpochService(daemonRepo, clock)
-  const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock)
+  const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock, new PgOrgRepo(prisma))
   const computerRepo = new PgComputerRepo(prisma)
   const agentRepoForComputers = new PgAgentRepo(prisma)
   // A whole ComputerScreenshots also shortens retention on a policy change, as the container wires it.
@@ -752,7 +752,7 @@ export function buildHttpApp(
       staleAfterMs: 45_000,
       relays: async () => []
     }),
-    oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock),
+    oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock, new PgOrgRepo(prisma)),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
     inviteLinks,
     waitlist,

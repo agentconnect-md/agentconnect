@@ -585,6 +585,33 @@ the previous role on a change. Saving the role a member already has is not a cha
 and writes nothing. Joining by an invite link or by a verified domain is recorded by
 those features' own events.
 
+### 8.6 A member's own credentials stop with the membership
+
+A personal API key and an OAuth grant act for one member of one organization, so
+they are worth exactly what that membership is worth at the moment of use. Each use
+of a personal key or an OAuth access token reads the membership through
+`ACTIVE_MEMBERSHIP`, on every route the credential can reach, and authenticates
+nothing without one.
+
+| Credential       | While suspended                                 | After removal |
+| ---------------- | ----------------------------------------------- | ------------- |
+| Personal API key | Refused; works again when the suspension lifts. | Revoked.      |
+| OAuth grant      | Refused; a refresh attempt ends the grant.      | Revoked.      |
+
+Removal revokes the member's keys and grants in the transaction that deletes the
+membership (§8.1), with the reason `member removed`. They do not come back if the
+person joins again: a new membership is a new decision, and the person mints a key
+or approves the client again under it. A grant is also not issued to someone who is
+no longer a member when the authorization code is exchanged.
+
+A grant that is refreshed while its member is suspended ends there rather than
+pausing: the client asks the person again once they are back, so an approval never
+outlives a period in which the organization did not want it used. A key pauses
+instead, because the member holds it and nothing renews it on their behalf.
+
+Keys minted for the organization — a daemon's key, a service account's — belong to
+the organization and not to the member who created them, and are unaffected.
+
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
 `AgentSpec`, `CronUpsert`, `RouteAssign`, and the `RegisterOk` reconciliation

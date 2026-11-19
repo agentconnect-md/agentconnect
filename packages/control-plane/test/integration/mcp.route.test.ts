@@ -800,17 +800,18 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
   it('a key of a user removed from the org stops granting MCP access (tenant boundary)', async () => {
     const app = build()
     const { userId, key } = await makeUserWithKey('collaborator')
-    // The key is still live (not revoked/expired) — only the membership is gone.
-    // The org-scope guard's live roleOf lookup is what must deny it.
+    // The key row is still live — only the membership is gone, and the key authenticates nothing without it.
     await prisma.membership.deleteMany({ where: { orgId: DEFAULT_ORG_ID, userId } })
 
-    const who = await callTool(app, key, 'whoami')
-    expect(who.isError).toBe(true)
-    expect(toolText(who)).toContain('404')
-
-    const agents = await callTool(app, key, 'listAgents')
-    expect(agents.isError).toBe(true)
-    expect(toolText(agents)).toContain('404')
+    for (const [method, params] of [
+      ['initialize', INIT_PARAMS],
+      ['tools/call', { name: 'whoami', arguments: {} }],
+      ['tools/call', { name: 'listAgents', arguments: {} }]
+    ] as const) {
+      const res = await rpc(app, key, method, params)
+      expect(res.statusCode).toBe(401)
+      expect(res.headers['www-authenticate']).toContain('Bearer')
+    }
   })
 
   it('every registered tool reaches a real route — a REST path/param rename cannot ship green', async () => {

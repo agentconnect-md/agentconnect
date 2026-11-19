@@ -338,6 +338,13 @@ async function removeMembershipTx(
   const computerAgents = await revokeOwnedComputersTx(tx, orgId, userId)
   const removedIntegrationIds = await deleteBoundBotsTx(tx, orgId, chat.botIds)
   const closedDirectMessages = await closeDirectMessagesTx(tx, orgId, chat.directMessages)
+  // The member's own keys and grants end here and do not come back with a later membership; keys they minted for the organization stay.
+  const endedAt = new Date()
+  await tx.apiKey.updateMany({
+    where: { orgId, userId, principalType: { in: ['user', 'oauth'] }, revokedAt: null },
+    data: { revokedAt: endedAt, revokedReason: 'member removed' }
+  })
+  await tx.oAuthGrant.updateMany({ where: { orgId, userId, revokedAt: null }, data: { revokedAt: endedAt } })
   // A membership-delete trigger ends GitLab OAuth authority (§9.4) on every removal path.
   await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
   return { computerAgents, removedIntegrationIds, closedDirectMessages }

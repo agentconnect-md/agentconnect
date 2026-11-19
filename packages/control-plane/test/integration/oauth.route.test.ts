@@ -15,6 +15,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { randomBytes, createHash } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const REDIRECT = 'https://claude.ai/api/mcp/auth_callback'
@@ -308,6 +309,51 @@ describe('OAuth refresh + disconnect', () => {
     })
     expect(refreshed.status).toBe(400)
     expect((refreshed.json() as { error: string }).error).toBe('invalid_grant')
+  })
+
+  it('a grant stops with the membership and does not come back with it', async () => {
+    const { base } = await start()
+    const { clientId, tok } = await fullFlow(base)
+    const tokens = tok.json() as Tokens
+    const where = { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    const refresh = () =>
+      req(base, 'POST', '/oauth/token', {
+        form: { grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId }
+      })
+
+    // Suspended: the access token authenticates nothing, and works again once the suspension is lifted.
+    await prisma.membership.update({ where, data: { suspendedAt: new Date(), suspendedBy: 'manual' } })
+    expect((await mcpWhoami(base, tokens.access_token)).status).toBe(401)
+    await prisma.membership.update({ where, data: { suspendedAt: null, suspendedBy: null } })
+    expect((await mcpWhoami(base, tokens.access_token)).status).toBe(200)
+
+    // A refresh attempted while suspended ends the grant for good.
+    await prisma.membership.update({ where, data: { suspendedAt: new Date(), suspendedBy: 'manual' } })
+    const refused = await refresh()
+    expect(refused.status).toBe(400)
+    expect((refused.json() as { error: string }).error).toBe('invalid_grant')
+    await prisma.membership.update({ where, data: { suspendedAt: null, suspendedBy: null } })
+    expect((await refresh()).status).toBe(400)
+    expect((await mcpWhoami(base, tokens.access_token)).status).toBe(401)
+    expect((await prisma.oAuthGrant.findFirstOrThrow()).revokedAt).not.toBeNull()
+  })
+
+  it('removing the member revokes their grant and its tokens', async () => {
+    const { base } = await start()
+    const { tok } = await fullFlow(base)
+    const tokens = tok.json() as Tokens
+    const users = new PgUserRepo(prisma)
+    const other = await users.provisionOidcUser({
+      oidcSubject: 'sub-other',
+      email: 'other@acme.dev',
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, 'other@acme.dev', 'owner')
+
+    await users.removeMember(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, other.userId)
+    expect((await mcpWhoami(base, tokens.access_token)).status).toBe(401)
+    expect((await prisma.oAuthGrant.findFirstOrThrow()).revokedAt).not.toBeNull()
+    expect((await prisma.apiKey.findFirstOrThrow({ where: { principalType: 'oauth' } })).revokedAt).not.toBeNull()
   })
 })
 
