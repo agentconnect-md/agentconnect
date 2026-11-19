@@ -125,6 +125,9 @@ export const WECHAT_PLATFORM = 'wechat'
 // WeCom's platform id (a smart bot on its long connection), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
 export const WECOM_PLATFORM = 'wecom'
 
+// Email's platform id (email-integration.md); joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it.
+export const EMAIL_PLATFORM = 'email'
+
 /** The fixed thread key every group message of QQ and WeCom carries, which names the group's root (auto-session-mode.md §6.10); their normalizers read it from here. */
 export const THREADLESS_GROUP_ROOT = 'group'
 
@@ -302,6 +305,14 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       appendKinds: ['channel'],
       // WeCom has no threads: every group message carries the fixed thread `THREADLESS_GROUP_ROOT` (`canonicalizeWeComThread`), its root.
       threadlessRoomRoot: THREADLESS_GROUP_ROOT
+    }
+  ],
+  [
+    EMAIL_PLATFORM,
+    {
+      ...DEFAULT_MANIFEST,
+      // A member's own threads are keyed `dm:<sender address>` and a thread with several people `group:<thread key>`; no kind appends, so mail never runs a coordinator (email-integration.md §5.2).
+      dmChannelPattern: /^dm:/
     }
   ]
 ])

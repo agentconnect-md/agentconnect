@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   ELICIT_FORM_WIRE_FIELD_CAP,
+  EMAIL_REFERENCES_MAX,
+  EMAIL_TICKET_MAX,
+  WireEmailAdapterExt,
+  WireEmailCall,
+  WireEmailTicket,
   WireFeishuCardActionEvent,
   WireMsTeamsCardAction,
   WireMsTeamsCardActionResponse,
@@ -1261,5 +1266,75 @@ describe('WireNormalizedMessage', () => {
       isDm: false
     }
     expect(WireNormalizedMessage.parse(msg).leadingMentions).toEqual([{ id: 'ou_bot', text: '@Agent Bot' }])
+  })
+})
+
+describe('email wire shapes (email-integration.md §6.2)', () => {
+  const TICKET = 'e1.ZzFAY29ycC5leGFtcGxlLnRlc3Q.1793612400000.bWFjLXBsYWNlaG9sZGVy'
+  const send = {
+    op: 'send' as const,
+    ticket: TICKET,
+    audience: ['alice@corp.example.test', 'bob@corp.example.test', 'helper@mail.example.test'],
+    to: ['alice@corp.example.test'],
+    cc: ['bob@corp.example.test'],
+    subject: 'Re: Launch plan',
+    inReplyTo: 'g1@corp.example.test',
+    references: ['g1@corp.example.test'],
+    text: 'Done.',
+    html: '<p>Done.</p>'
+  }
+  const ext = {
+    from: { address: 'alice@corp.example.test', name: 'Alice Example' },
+    to: [{ address: 'helper@mail.example.test' }],
+    cc: [{ address: 'bob@corp.example.test' }],
+    subject: 'Launch plan',
+    messageId: 'g1@corp.example.test',
+    references: [],
+    attachments: [{ name: 'plan.pdf', type: 'application/pdf', size: 2048 }]
+  }
+
+  it('reads a ticket as one version, an encoded thread key, an issue time and a MAC', () => {
+    expect(WireEmailTicket.parse(TICKET)).toBe(TICKET)
+    const malformed = [
+      TICKET.replace(/^e1/, 'e2'),
+      'e1.ZzFAY29ycC5leGFtcGxlLnRlc3Q.1793612400000',
+      'e1.g1@corp.example.test.1793612400000.bWFj',
+      'e1.ZzFAY29ycC5leGFtcGxlLnRlc3Q.soon.bWFj',
+      `${TICKET}.extra`,
+      `e1.${'a'.repeat(EMAIL_TICKET_MAX)}.1793612400000.bWFj`
+    ]
+    for (const ticket of malformed) expect(WireEmailTicket.safeParse(ticket).success, ticket).toBe(false)
+  })
+
+  it('accepts a send, which has no sender for a daemon to choose', () => {
+    expect(WireEmailCall.parse({ ...send, from: 'someone@corp.example.test' })).toEqual(send)
+  })
+
+  it('refuses a send that could add a header or an address the relay never checked', () => {
+    const refused = [
+      { subject: 'Hi\r\nBcc: eve@other.example.test' },
+      { to: ['Alice <alice@corp.example.test>'] },
+      { to: ['Alice@corp.example.test'] },
+      { to: [] },
+      { cc: ['bob@corp.example.test, eve@other.example.test'] },
+      { audience: [] },
+      { inReplyTo: 'g1@corp.example.test>\r\nBcc: <eve@other.example.test' },
+      { references: ['<g1@corp.example.test>'] },
+      { references: Array.from({ length: EMAIL_REFERENCES_MAX + 1 }, (_, index) => `r${index}@corp.example.test`) },
+      { ticket: 'not-a-ticket' },
+      { text: '' },
+      { op: 'forward' }
+    ]
+    for (const change of refused)
+      expect(WireEmailCall.safeParse({ ...send, ...change }).success, JSON.stringify(change)).toBe(false)
+  })
+
+  it('carries a mail’s header fields as the adapter extension, with the relay’s ticket beside them', () => {
+    expect(WireEmailAdapterExt.parse(ext)).toEqual(ext)
+    const full = { ...ext, date: 'Mon, 02 Nov 2026 09:30:00 +0000', inReplyTo: 'a1@mail.example.test', truncated: true }
+    expect(WireEmailAdapterExt.parse({ ...full, ticket: TICKET })).toEqual({ ...full, ticket: TICKET })
+    expect(WireEmailAdapterExt.safeParse({ ...ext, subject: 'one\ntwo' }).success).toBe(false)
+    expect(WireEmailAdapterExt.safeParse({ ...ext, from: { address: 'Alice Example' } }).success).toBe(false)
+    expect(WireEmailAdapterExt.safeParse({ ...ext, messageId: '<g1@corp.example.test>' }).success).toBe(false)
   })
 })

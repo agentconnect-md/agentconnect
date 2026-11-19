@@ -1037,6 +1037,89 @@ export function googleChatCallRequest(call: WireGoogleChatCall): GoogleChatHttpR
   }
 }
 
+/** The longest relay mail ticket (email-integration.md §6.2): an encoded thread key, an issue time and a MAC. */
+export const EMAIL_TICKET_MAX = 2048
+/** The longest message ID the wire carries; a longer one is dropped from a chain and refused as a mail's own. */
+export const EMAIL_MESSAGE_ID_MAX = 512
+/** The most message IDs of one `References` chain the wire carries, and the most a reply sends (§6.1). */
+export const EMAIL_REFERENCES_MAX = 50
+/** The most `To` and `Cc` addresses of one mail together, the provider's limit on a send (§2.1). */
+export const EMAIL_RECIPIENTS_MAX = 50
+/** The most attachments of one mail the wire names; none is delivered (§5.4). */
+export const EMAIL_ATTACHMENTS_MAX = 50
+/** The most characters of a reply's plain text and of its HTML; the frame limit still bounds the whole request. */
+export const EMAIL_SEND_TEXT_MAX = 40_000
+export const EMAIL_SEND_HTML_MAX = 120_000
+
+/** A canonical address: lower-cased ASCII `local@domain` with no display name and no quoting, so it can key a conversation. */
+export const EMAIL_ADDRESS_PATTERN = /^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/
+/** A message ID without its angle brackets, which RFC 5322 does not count as part of the ID. */
+export const EMAIL_MESSAGE_ID_PATTERN = /^[^\s<>]+$/
+
+const EmailAddress = z.string().max(320).regex(EMAIL_ADDRESS_PATTERN)
+const EmailMessageId = z.string().max(EMAIL_MESSAGE_ID_MAX).regex(EMAIL_MESSAGE_ID_PATTERN)
+// One header's text; a line break in it would add a header to the mail the relay builds.
+const emailHeaderText = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .regex(/^[^\r\n]*$/)
+
+/** The relay's ticket for one mail thread (§6.2): `e1.<thread key, base64url>.<issue time, epoch milliseconds>.<MAC, base64url>`; only the relay mints and verifies one. */
+export const WireEmailTicket = z
+  .string()
+  .max(EMAIL_TICKET_MAX)
+  .regex(/^e1\.[A-Za-z0-9_-]+\.[0-9]{1,15}\.[A-Za-z0-9_-]+$/)
+export type WireEmailTicket = z.infer<typeof WireEmailTicket>
+
+/** One address of a mail's `From`, `To` or `Cc`, with the display name its header carried. Presentation only. */
+export const WireEmailMailbox = z.object({ address: EmailAddress, name: emailHeaderText(256).optional() })
+export type WireEmailMailbox = z.infer<typeof WireEmailMailbox>
+
+/** A mail's header fields as the relay parsed them, carried as `adapterExt.email` (§5.1, §5.2, §5.4); the daemon resolves the thread and the conversation from these. */
+export const WireEmailAdapterExt = z.object({
+  from: WireEmailMailbox,
+  to: z.array(WireEmailMailbox).max(EMAIL_RECIPIENTS_MAX),
+  cc: z.array(WireEmailMailbox).max(EMAIL_RECIPIENTS_MAX),
+  subject: emailHeaderText(998),
+  /** The `Date` header as written: the sender's clock, never an ordering input. */
+  date: emailHeaderText(128).optional(),
+  messageId: EmailMessageId,
+  inReplyTo: EmailMessageId.optional(),
+  /** The `References` chain, oldest first. */
+  references: z.array(EmailMessageId).max(EMAIL_REFERENCES_MAX),
+  /** The message or its body was cut before the agent read it. */
+  truncated: z.boolean().optional(),
+  attachments: z
+    .array(z.object({ name: emailHeaderText(256), type: emailHeaderText(128), size: z.number().int().nonnegative() }))
+    .max(EMAIL_ATTACHMENTS_MAX),
+  /** The relay's ticket for the thread, which a reply is sent with; never set by the normalizer. */
+  ticket: WireEmailTicket.optional()
+})
+export type WireEmailAdapterExt = z.infer<typeof WireEmailAdapterExt>
+
+/** A mail call in an `rd/platform/request` (email-integration.md §6.2): the relay builds the provider request itself and takes `From` from the assignment. */
+export const WireEmailCall = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('send'),
+    ticket: WireEmailTicket,
+    /** The answered mail's sender and recipients the ticket was minted over, restated because the ticket carries only their MAC. */
+    audience: z
+      .array(EmailAddress)
+      .min(1)
+      .max(EMAIL_RECIPIENTS_MAX + 1),
+    to: z.array(EmailAddress).min(1).max(EMAIL_RECIPIENTS_MAX),
+    cc: z.array(EmailAddress).max(EMAIL_RECIPIENTS_MAX - 1),
+    subject: emailHeaderText(998),
+    inReplyTo: EmailMessageId,
+    /** The answered mail's chain with its own ID appended, oldest first. */
+    references: z.array(EmailMessageId).max(EMAIL_REFERENCES_MAX),
+    text: z.string().min(1).max(EMAIL_SEND_TEXT_MAX),
+    html: z.string().min(1).max(EMAIL_SEND_HTML_MAX)
+  })
+])
+export type WireEmailCall = z.infer<typeof WireEmailCall>
+
 /** The longest note a Teams card click's ack may hand the relay to show the clicker. */
 export const MSTEAMS_CARD_NOTE_MAX = 500
 

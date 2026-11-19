@@ -69,6 +69,9 @@ export const MSTEAMS_RELAY_EGRESS_V1_FEATURE = 'msteams-relay-egress-v1'
 /** The daemon sends a deployment-owned Google Chat app's Chat API calls through the relay and holds none of its credentials (google-chat-integration.md §10.10). */
 export const GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE = 'googlechat-relay-egress-v1'
 
+/** The daemon serves an Email integration, with mail forwarded by the relay and replies sent through it (email-integration.md §8); a spec names it in `requires`. */
+export const EMAIL_V1_FEATURE = 'email-v1'
+
 /** The Markdown mode every create and patch names; a patch without it reverts to Chat syntax (google-chat-integration.md §5). */
 export const GOOGLE_CHAT_MARKUP = 'MARKUP_SYNTAX_MARKDOWN'
 
