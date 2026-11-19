@@ -3379,7 +3379,7 @@ export default function SessionDetailView() {
       run: () => pgCancel(session.id, composerAgentId, webchatConversationId)
     })
   // `/new` starts the conversation over where its daemon and relay take it; the daemon also checks who may.
-  const newSessionRelayFeatures = isPg || isWebchat ? getPgRelayFeatures(session.id) : undefined
+  const newSessionRelayFeatures = pgNewSession && (isPg || isWebchat) ? getPgRelayFeatures(session.id) : undefined
   if (
     pgNewSession &&
     (isPg || isWebchat) &&
