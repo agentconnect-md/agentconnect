@@ -499,6 +499,16 @@ export class OrgOwnerRequired extends Error {
   }
 }
 
+/** An owner tried to change the role of a member whose role the organization's directory decides. */
+export class MemberDirectoryManaged extends Error {
+  readonly code = 'MEMBER_DIRECTORY_MANAGED' as const
+
+  constructor() {
+    super('this member’s role is managed by the organization’s directory')
+    this.name = 'MemberDirectoryManaged'
+  }
+}
+
 /** Adding a member by email reached a service account, which belongs to exactly one organization. */
 export class ServiceAccountNotAddable extends Error {
   readonly code = 'SERVICE_ACCOUNT_NOT_ADDABLE' as const

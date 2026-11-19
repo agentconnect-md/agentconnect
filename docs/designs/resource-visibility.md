@@ -569,10 +569,10 @@ last owner: an organization keeps at least one owner who is not suspended.
 
 The row also records who suspended it (`suspendedBy`) and who manages the
 membership and its role (`managedBy`): an owner in the console, or the
-organization's directory. Nothing writes these columns yet. They ship ahead of the
-first writer on purpose: a version that does not read `suspendedAt` would treat a
-suspended member as active, so every instance must understand the column before
-anything sets it.
+organization's directory. They shipped ahead of the first writer on purpose: a
+version that does not read `suspendedAt` would treat a suspended member as active,
+so every instance must understand the column before anything sets it. The commands
+of §8.8 are that writer, and nothing calls them yet.
 
 ### 8.5 Member changes are audited
 
@@ -580,8 +580,8 @@ Adding a member, changing a role, removing a member and a member leaving each wr
 one `member_change` audit event, in the transaction that makes the change, so an
 event exists exactly when the change does. It names the member by id and never by
 address, carries the actor (null for a change no person made), the action
-(`member_added`, `role_changed`, `member_removed`, `member_left`) and the role, with
-the previous role on a change. Saving the role a member already has is not a change
+(`member_added`, `role_changed`, `member_removed`, `member_left`, and for a directory
+`member_suspended`, `member_restored`) and the role, with the previous role on a change. Saving the role a member already has is not a change
 and writes nothing. Joining by an invite link or by a verified domain is recorded by
 those features' own events.
 
@@ -629,6 +629,51 @@ expire:
   redial is refused at the organization guard like any other request. A failed read
   drops the event and leaves the stream open, so a database blip does not disconnect
   every console.
+
+### 8.8 The changes a directory makes
+
+An organization's directory changes memberships through three commands
+(`DirectoryMemberRepo`), not through the member routes: those act for a signed-in
+owner, and the directory is not a person.
+
+| Command        | What it does                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| `provision`    | Creates the membership ahead of sign-in, with `managedBy = directory` and the directory's id. |
+| `setSuspended` | Suspends the member (§8.4), or lifts a suspension the directory itself made.                  |
+| `setRole`      | Sets the member's role.                                                                       |
+
+What holds for all three:
+
+- **The key is the directory's own id** (`directoryExternalId`), unique in the
+  organization, never the address. The address is evidence for the first binding and
+  for display: a repeat that carries another address still names the same member.
+- **A repeat is a success.** Each command answers `changed` or `unchanged`, both
+  meaning the member is as asked, so a retry or a replay settles on one result. Two
+  simultaneous provisions of one member end in one membership.
+- **The caller is the connection.** The audit event (§8.5) has no acting user and
+  carries `source: directory` and the connection's id. Suspending and lifting are
+  recorded as `member_suspended` and `member_restored`.
+- **The directory touches only what it manages.** Provisioning an address that is
+  already a member by invitation, or already managed under another directory id, or
+  that is not a person, answers `conflict` and changes nothing. An address that has
+  an account but no membership here gains the membership only: an account is never
+  created twice and never merged by a directory.
+- **Each side lifts its own suspension.** The directory does not relabel a
+  suspension an owner made, and lifting it answers `held`.
+- **No owner check.** The directory may suspend or demote the organization's only
+  owner: its answer about a person outranks keeping the console reachable. The
+  organization is reachable again once the directory lifts the suspension or the
+  deployment's operator steps in. A refusal here would
+  also stall the directory, which would retry the same change without end.
+
+In the console the role of a member the directory manages is read-only: an owner's
+change is refused with `409 MEMBER_DIRECTORY_MANAGED`, because the directory would set
+it back. A waiting row a directory provisioned is claimed as
+[organization-sso.md](organization-sso.md) §4.4 describes.
+
+Nothing calls these commands yet. Removal is not among them: a directory's first
+answer to a departure is suspension, which keeps everything in place (§8.4), and
+removal stays an owner's act (§8.1).
 
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
