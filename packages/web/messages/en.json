@@ -5759,6 +5759,11 @@
         "invite": "Invite only",
         "domain": "Anyone on your domains"
       },
+      "deploymentMemberSource": {
+        "setBy": "Set by the deployment",
+        "invite": "Invite only",
+        "domain": "Anyone who signs in with SSO"
+      },
       "joinDialog": {
         "title": "Let anyone on your domains join?",
         "body": "Anyone who signs in with an address on these domains joins as a collaborator.",

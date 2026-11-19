@@ -5759,6 +5759,11 @@
         "invite": "仅邀请",
         "domain": "域内自动加入"
       },
+      "deploymentMemberSource": {
+        "setBy": "由部署设置",
+        "invite": "仅邀请",
+        "domain": "通过 SSO 登录的任何人"
+      },
       "joinDialog": {
         "title": "允许域内的人自动加入？",
         "body": "用这些域名下的邮箱登录的人会自动成为协作者。",

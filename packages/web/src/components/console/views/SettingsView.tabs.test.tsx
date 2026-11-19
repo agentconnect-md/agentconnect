@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const state = vi.hoisted(() => ({
   search: new URLSearchParams(),
   ssoFlag: true,
+  deploymentSource: null as 'invite' | 'domain' | null,
   role: 'owner' as 'owner' | 'collaborator',
   sso: { domains: [] as { status: string }[], connection: null as unknown, memberSource: 'invite' }
 }))
@@ -30,7 +31,10 @@ vi.mock('@/lib/org-context', () => ({
 }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ agents: [] }) }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
-vi.mock('@/lib/organization-sso', () => ({ organizationSsoEnabled: () => state.ssoFlag }))
+vi.mock('@/lib/organization-sso', () => ({
+  organizationSsoEnabled: () => state.ssoFlag,
+  deploymentSsoMemberSource: () => state.deploymentSource
+}))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchMembers: async () => [],
@@ -61,7 +65,10 @@ vi.mock('@/components/console/ServiceAccountsCard', () => ({
 }))
 vi.mock('@/components/console/OrganizationSsoCard', () => ({
   OrganizationSsoCard: () => <div className="card" id="single-sign-on" />,
-  OrganizationMemberSourceCard: () => <div className="card" id="new-members" />
+  OrganizationMemberSourceCard: () => <div className="card" id="new-members" />,
+  DeploymentMemberSourceCard: ({ source }: { source: string }) => (
+    <div className="card" id={`deployment-new-members-${source}`} />
+  )
 }))
 
 import SettingsView from './SettingsView'
@@ -99,6 +106,7 @@ beforeEach(() => {
   document.body.append(host)
   root = createRoot(host)
   state.ssoFlag = true
+  state.deploymentSource = null
   state.role = 'owner'
   state.sso = { domains: [], connection: null, memberSource: 'invite' }
 })
@@ -142,6 +150,14 @@ describe('organization settings tabs', () => {
 
     await render('tab=members')
     expect(cards()).not.toContain('new-members')
+    expect(cards().some((id) => id.startsWith('deployment-new-members'))).toBe(false)
+  })
+
+  it('shows the deployment’s New members choice where the deployment has its own SSO connector', async () => {
+    state.ssoFlag = false
+    state.deploymentSource = 'invite'
+    await render('tab=members')
+    expect(cards()).toEqual(['members', 'deployment-new-members-invite', 'invite-links', 'service-accounts'])
   })
 
   it('shows a non-owner the Single sign-on tab only when there is something to read', async () => {

@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+  DeploymentConfigValuesV1Schema,
   deploymentAdminClaimKey,
   type DeploymentConfigAdmin,
   type DeploymentConfigStore,
   type DeploymentSecretKey
 } from '@agentconnect.md/control-plane/deployment-config-store'
+import { SETUP_HTML } from '../src/server/html.js'
 import { buildSetupServer } from '../src/server/index.js'
 import { LogtoManagementError, type LogtoSetupDesired } from '../src/server/logto-management.js'
 
@@ -134,6 +136,7 @@ describe('SSO configuration', () => {
       protocol: 'oidc',
       name: 'Example SSO',
       domains: [],
+      memberSource: 'domain',
       oidc: null,
       saml: null
     })
@@ -244,5 +247,33 @@ describe('SSO configuration', () => {
       config: { metadataUrl: 'https://idp.example.test/metadata', attributeMapping: { email: 'mail' } }
     })
     expect(admin.values.auth).toMatchObject({ socialProviders: ['google'], sso: { connectorId: 'sso-1' } })
+  })
+
+  it('saves the member source, keeps it when omitted, and reads a document without it as domain', async () => {
+    const { app, admin } = server()
+    await post(app, '/api/v1/create/sso', { protocol: 'saml', name: 'Example SAML' })
+    const saml = { metadataUrl: 'https://idp.example.test/metadata' }
+    const configure = (extra: Record<string, unknown>) =>
+      post(app, '/api/v1/configure/sso', {
+        connector: { name: 'Example SAML', domains: ['acme.example'], saml, ...extra }
+      })
+    expect((await configure({ memberSource: 'invite' })).statusCode).toBe(200)
+    expect(admin.values.logto?.ssoConnector?.memberSource).toBe('invite')
+    expect((await configure({})).statusCode).toBe(200)
+    expect(admin.values.logto?.ssoConnector?.memberSource).toBe('invite')
+    expect((await configure({ memberSource: 'everyone' })).statusCode).toBe(400)
+    const { memberSource: _memberSource, ...legacy } = admin.values.logto!.ssoConnector!
+    const parsed = DeploymentConfigValuesV1Schema.parse({
+      ...admin.values,
+      logto: { ...admin.values.logto, ssoConnector: legacy }
+    })
+    expect(parsed.logto?.ssoConnector?.memberSource).toBe('domain')
+  })
+
+  it('renders the New members control from the saved connector', () => {
+    expect(SETUP_HTML).toContain('<option value="domain">Anyone who signs in with SSO</option>')
+    expect(SETUP_HTML).toContain('<option value="invite">Invite only</option>')
+    expect(SETUP_HTML).toContain("el(prefix + '-member-source').value = connector.memberSource || 'domain'")
+    expect(SETUP_HTML).toContain("memberSource: el(prefix + '-member-source').value")
   })
 })

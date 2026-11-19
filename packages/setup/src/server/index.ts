@@ -206,6 +206,7 @@ const ConfigureSsoBody = z.strictObject({
     .strictObject({
       name: SsoName,
       domains: z.array(z.string().trim().min(1).max(253)).max(50).default([]),
+      memberSource: z.enum(['invite', 'domain']).optional(),
       oidc: z
         .strictObject({
           issuer: z.string().trim().min(1).max(2_000),

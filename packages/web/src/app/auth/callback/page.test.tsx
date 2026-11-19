@@ -100,6 +100,13 @@ it('joins the organizations a sign-in earns before entering the console', async 
   expect(mocks.replace).toHaveBeenCalledWith('/acme/home')
 })
 
+it('joins through the deployment’s own SSO connector too', async () => {
+  window.__AC_ENV = { SSO_MEMBER_SOURCE: 'domain' }
+  await land('?code=abc')
+  expect(mocks.joinOrganizationsBySso).toHaveBeenCalledTimes(1)
+  expect(mocks.replace).toHaveBeenCalledWith('/')
+})
+
 it('does not ask to join where organizations own no connections', async () => {
   await land('?code=abc')
   expect(mocks.joinOrganizationsBySso).not.toHaveBeenCalled()

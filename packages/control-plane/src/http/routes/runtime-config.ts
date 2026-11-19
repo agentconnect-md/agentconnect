@@ -15,6 +15,8 @@ const PublicBrowserAuth = z
       .object({ connectorId: z.string().min(1), name: z.string().min(1) })
       .strict()
       .nullable(),
+    // How the deployment's own SSO connector admits members to its organization; null when it has none.
+    ssoMemberSource: z.enum(['invite', 'domain']).nullable(),
     // Organizations own SSO connections here, so the sign-in page asks for an address and looks its connector up.
     organizationSso: z.boolean()
   })

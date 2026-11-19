@@ -41,7 +41,7 @@ vi.mock('@/lib/auth', () => ({
 }))
 vi.mock('next/navigation', () => ({ usePathname: () => '/acme/settings' }))
 
-import { OrganizationMemberSourceCard, OrganizationSsoCard } from './OrganizationSsoCard'
+import { DeploymentMemberSourceCard, OrganizationMemberSourceCard, OrganizationSsoCard } from './OrganizationSsoCard'
 
 const domain = (name: string, patch: Partial<OrgSsoDomainDto> = {}): OrgSsoDomainDto => ({
   id: `id-${name}`,
@@ -460,5 +460,15 @@ describe('organization single sign-on card', () => {
     await render({ domains: [domain('acme.example')], connection: null, memberSource: 'domain' }, false, 'memberSource')
     expect(host.querySelector('[role="radio"]')).toBeNull()
     expect(host.textContent).toContain('New membersAnyone on your domains')
+  })
+})
+
+describe('DeploymentMemberSourceCard', () => {
+  it('shows the deployment’s choice read-only, marked as set by the deployment', async () => {
+    await act(async () => root.render(<DeploymentMemberSourceCard source="domain" />))
+    expect(host.textContent).toContain('New members')
+    expect(host.textContent).toContain('Set by the deployment')
+    expect(host.textContent).toContain('Anyone who signs in with SSO')
+    expect(host.querySelector('button')).toBeNull()
   })
 })

@@ -89,6 +89,37 @@ it('publishes organization SSO only when the persisted auth config declares it',
   expect(await fresh.resolvePublicEnv()).not.toHaveProperty('ORGANIZATION_SSO')
 })
 
+it('publishes the deployment SSO connector’s member source only when the runtime config carries one', async () => {
+  vi.resetModules()
+  vi.stubEnv('CP_INTERNAL_URL', 'https://example.test/api/v1')
+  vi.stubEnv('SSO_MEMBER_SOURCE', 'domain')
+  const config = (ssoMemberSource: 'invite' | null) => ({
+    auth: {
+      endpoint: 'https://auth.example.test',
+      issuer: 'https://auth.example.test/oidc',
+      appId: 'console',
+      apiResource: null,
+      socialProviders: [],
+      sso: { connectorId: 'sso-1', name: 'SSO' },
+      ssoMemberSource,
+      organizationSso: false
+    }
+  })
+  const fetch = vi.fn(
+    async () => new Response(JSON.stringify({ schemaVersion: '1', revision: 1, config: config('invite') }))
+  )
+  vi.stubGlobal('fetch', fetch)
+  const { resolvePublicEnv } = await import('./public-env')
+  expect(await resolvePublicEnv()).toMatchObject({ SSO_MEMBER_SOURCE: 'invite' })
+
+  vi.resetModules()
+  fetch.mockImplementation(
+    async () => new Response(JSON.stringify({ schemaVersion: '1', revision: 2, config: config(null) }))
+  )
+  const fresh = await import('./public-env')
+  expect(await fresh.resolvePublicEnv()).not.toHaveProperty('SSO_MEMBER_SOURCE')
+})
+
 it('picks up a changed CP protocol after its refresh window and keeps serving through a CP outage', async () => {
   vi.resetModules()
   vi.useFakeTimers()

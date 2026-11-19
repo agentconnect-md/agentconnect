@@ -7582,6 +7582,9 @@ export interface OrgRepo {
    *  Used to build org-scoped session deep links (`<webAppUrl>/<slug>/sessions/<id>`). */
   slugById(orgId: string): Promise<string | null>
 
+  /** Up to `limit` organization ids, oldest first. */
+  listIds(limit: number): Promise<string[]>
+
   /** Per-org daemon/agent/session counts, for the org gauges (observability/org-metrics.ts).
    *  EVERY org is returned, including one holding nothing: a series that vanishes on the way to
    *  zero is invisible on a dashboard, so the zeros have to be stated. `now` fixes the window

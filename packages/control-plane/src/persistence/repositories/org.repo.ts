@@ -202,6 +202,11 @@ export class PgOrgRepo implements OrgRepo {
     return org?.slug ?? null
   }
 
+  async listIds(limit: number): Promise<string[]> {
+    const rows = await this.db.org.findMany({ select: { id: true }, orderBy: { createdAt: 'asc' }, take: limit })
+    return rows.map((row) => row.id)
+  }
+
   async orgTelemetry(now: Date): Promise<OrgTelemetryRow[]> {
     const since30d = new Date(now.getTime() - SESSION_WINDOW_30D_MS)
     const since24h = new Date(now.getTime() - SESSION_WINDOW_24H_MS)

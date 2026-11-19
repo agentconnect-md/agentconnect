@@ -14,7 +14,12 @@ import {
 import { takeFlowState } from '@/lib/flow-state'
 import { promoteActivationProof } from '@/lib/activation-handshake'
 import { ApiError, fetchOrgs, joinOrganizationsBySso, refreshMySocialIdentities, reportOrgSsoTest } from '@/lib/api'
-import { commitPendingSignIn, organizationSsoEnabled, takeSsoTest } from '@/lib/organization-sso'
+import {
+  commitPendingSignIn,
+  deploymentSsoMemberSource,
+  organizationSsoEnabled,
+  takeSsoTest
+} from '@/lib/organization-sso'
 import { Spinner, Wordmark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
@@ -109,8 +114,9 @@ async function land(): Promise<Landing> {
     commitPendingSignIn()
     // Social sign-in can link an identity without passing through the Control Plane.
     await refreshMySocialIdentities(AbortSignal.timeout(5_000)).catch(() => undefined)
-    // An address on a domain whose organization takes members by domain earns its membership before the console loads the list.
-    if (organizationSsoEnabled()) await joinOrganizationsBySso(AbortSignal.timeout(5_000)).catch(() => undefined)
+    // An address on a domain that takes members by domain earns its membership before the console loads the list.
+    if (organizationSsoEnabled() || deploymentSsoMemberSource())
+      await joinOrganizationsBySso(AbortSignal.timeout(5_000)).catch(() => undefined)
     // Only a completed sign-in grants pending activation proof, bound to the signed-in subject.
     promoteActivationProof(await currentSubject())
     // Read the same-origin return destination, including the cookie fallback for blocked sessionStorage.
