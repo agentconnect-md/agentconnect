@@ -163,6 +163,9 @@ export const BOT_CREDENTIAL_CHECK_FEATURE = 'bot-credential-check-v2'
 /** CP records `rc/bot-tenant`, the tenant key a single-tenant Google Chat row learned from its own traffic (google-chat-integration.md §10.3); a relay keeps the fence in memory alone against an older CP. */
 export const BOT_TENANT_FEATURE = 'bot-tenant-v1'
 
+/** CP answers `rc/verify(webchat-access)`, the re-check of an open webchat socket; a relay never sends that kind to an older CP. */
+export const WEBCHAT_ACCESS_RECHECK_FEATURE = 'webchat-access-recheck-v1'
+
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
  * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon

@@ -90,6 +90,36 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
 
 const ACCESS_REVOKED: RcVerifyResult = { ok: false, reason: 'access revoked' }
 
+/** Who holds an open webchat socket, as its dial verified them. */
+export interface WebchatSocketPrincipal {
+  orgId: string
+  userId: string
+  agentId: string
+  conversationId: string
+}
+
+/** The relay's re-check of an open webchat socket: the two conditions that refuse a dial as revoked, read again — still a member, who still sees every agent in the conversation. */
+export function createWebchatAccessVerifier(
+  deps: Pick<WebchatVerificationDeps, 'agents' | 'orgs'> & {
+    conversations: Pick<WebchatVerificationDeps['conversations'], 'participants'>
+  }
+): (who: WebchatSocketPrincipal) => Promise<RcVerifyResult> {
+  return async (who) => {
+    const role = (await deps.orgs.roleOf(who.orgId, who.userId)) as OrgMemberRole | null
+    if (!role) return ACCESS_REVOKED
+    const viewer: ViewCtx = { userId: who.userId, role }
+    const primary = await deps.agents.getUnscoped(AgentId(who.agentId))
+    if (!primary || primary.orgId !== who.orgId || !canView(primary, viewer)) return ACCESS_REVOKED
+    for (const p of await deps.conversations.participants(OrgId(who.orgId), who.conversationId)) {
+      if (p.agentId === who.agentId) continue
+      const member = await deps.agents.getUnscoped(p.agentId)
+      // A deleted member stays best-effort, as on a dial.
+      if (member && member.orgId === who.orgId && !canView(member, viewer)) return ACCESS_REVOKED
+    }
+    return { ok: true }
+  }
+}
+
 /** Everything a verdict needs once a credential proved `claims`: live placement, the conversation, its roster, and the agent's chat APIs. */
 export function webchatBinding(
   deps: Omit<WebchatVerificationDeps, 'tokens'>

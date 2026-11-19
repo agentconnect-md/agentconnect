@@ -291,7 +291,11 @@ import { AhpSessionService } from './registry/ahpSessions.js'
 import { makeSessionAccessResolver } from './http/session-access.js'
 import { AhpAuthorization } from './registry/ahpAuthorization.js'
 import { AhpGrantService } from './registry/ahpGrant.js'
-import { createWebchatTokenVerifier, everyTurnReachesItsContent } from './registry/webchatVerification.js'
+import {
+  createWebchatAccessVerifier,
+  createWebchatTokenVerifier,
+  everyTurnReachesItsContent
+} from './registry/webchatVerification.js'
 import { createAgentChatKeyVerifier } from './registry/agentChatKeyVerification.js'
 import { WebchatRemoteMcpService } from './registry/webchatRemoteMcpService.js'
 import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
@@ -3871,6 +3875,12 @@ export function buildContainer(
       orgs: repos.org,
       remoteMcp: webchatRemoteMcp,
       placement: placementResolver
+    }),
+    // rc/verify(webchat-access): an open socket's principal, re-read by membership and by sight of every agent in the conversation.
+    verifyWebchatAccess: createWebchatAccessVerifier({
+      agents: repos.agent,
+      conversations: repos.webchatConversation,
+      orgs: repos.org
     }),
     // rc/verify(agent-chat-key): the HTTP key checks, then the caller's chat id mapped to its conversation (§10.4).
     verifyAgentChatKey: createAgentChatKeyVerifier({

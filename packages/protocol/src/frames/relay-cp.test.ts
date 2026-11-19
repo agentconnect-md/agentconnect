@@ -193,6 +193,19 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(RcVerify.safeParse({ ...key, chatId: 'x'.repeat(AGENT_CHAT_ID_MAX_CHARS + 1) }).success).toBe(false)
   })
 
+  it('rc/verify accepts the re-check of an open webchat socket by its verified principal, with no credential', () => {
+    const open = {
+      kind: 'webchat-access',
+      orgId: 'org_1',
+      userId: 'usr_1',
+      agentId: AGENT_ID,
+      conversationId: AGENT_ID
+    }
+    expect(RcVerify.safeParse(open).success).toBe(true)
+    expect(RcVerify.safeParse({ ...open, userId: '' }).success).toBe(false)
+    expect(RcVerify.safeParse({ ...open, conversationId: 'not-a-uuid' }).success).toBe(false)
+  })
+
   it('round-trips webchat verification results with and without remote-MCP entitlement', () => {
     const legacyPayload = {
       ok: true,

@@ -21,7 +21,8 @@ import type { Duplex } from 'node:stream'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WsServerTransport, attachKeepalive } from '@agentconnect.md/connection'
 import { RelayBrowserConnection } from './relay-browser-connection.js'
-import type { WebchatVerdict } from './webchat-verdict-cache.js'
+import { VERDICT_TTL_MS, type WebchatVerdict } from './webchat-verdict-cache.js'
+import type { WebchatPrincipal } from './relay-cp-client.js'
 import type { WebchatRouter } from './webchat-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { Logger } from './log.js'
@@ -37,9 +38,16 @@ export interface RelayBrowserServerDeps {
   daemons: RelayDaemonServer
   /** chatId → browser index; the daemon's rd/chat is delivered here. */
   router: WebchatRouter
+  /** Whether an open socket's principal may still hold it (`RelayCpClient.webchatAccess`); undefined is no answer and closes nothing. */
+  access?: (who: WebchatPrincipal) => Promise<boolean | undefined>
+  /** How often an open socket is re-checked; the same minute a verdict is reused for a dial. */
+  accessRecheckMs?: number
   log: Logger
   keepaliveMs?: number
 }
+
+/** The close an open socket gets once its principal may no longer hold it; a redial is then refused at verification. */
+export const WEBCHAT_ACCESS_REVOKED_CLOSE = 4401
 
 /** Refuse the upgrade. The wire answer stays coarse — the `reason` is for the operator, and this line is the ONLY record a refused dial leaves: the browser learns its socket failed and nothing more, so without it a console reporting "could not reach the agent" is indistinguishable from one whose dial never arrived. */
 function refuse(
@@ -118,6 +126,22 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
 
       wss.handleUpgrade(req, socket, head, (raw: WebSocket) => {
         trackAlive(raw)
+        // A dial is verified once; an open socket is asked again on the same clock, by the principal the dial proved.
+        if (deps.access && result.orgId && result.userId) {
+          const who = { orgId: result.orgId, userId: result.userId, agentId, conversationId }
+          const recheck = setInterval(() => {
+            // A failed read is no answer, like an undefined one.
+            void deps.access!(who).then(
+              (allowed) => {
+                if (allowed !== false || raw.readyState !== raw.OPEN) return
+                deps.log.warn(`webchat: closed conversation ${conversationId} — access revoked`)
+                raw.close(WEBCHAT_ACCESS_REVOKED_CLOSE, 'access revoked')
+              },
+              () => {}
+            )
+          }, deps.accessRecheckMs ?? VERDICT_TTL_MS)
+          raw.once('close', () => clearInterval(recheck))
+        }
         const remoteAddr = req.socket.remoteAddress ?? 'unknown'
         new RelayBrowserConnection(new WsServerTransport(raw, remoteAddr), {
           chatId: conversationId,

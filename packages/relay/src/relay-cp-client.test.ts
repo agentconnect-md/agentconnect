@@ -8,6 +8,7 @@ import {
   FOLLOW_UP_WATCH_FEATURE,
   COMPUTER_MEDIA_USAGE_FEATURE,
   BOT_TENANT_FEATURE,
+  WEBCHAT_ACCESS_RECHECK_FEATURE,
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
@@ -738,6 +739,36 @@ describe('RelayCpClient', () => {
     await completeHandshake(older.transport)
     await expect(older.client.reportBotTenant(report)).resolves.toBe(false)
     expect(older.transport.lastReq('rc/bot-tenant')).toBeUndefined()
+  })
+
+  it('re-checks an open webchat socket only with a CP that advertises it, and reads anything but a verdict as no answer', async () => {
+    const who = {
+      orgId: 'org_1',
+      userId: 'usr_1',
+      agentId: '33333333-3333-4333-8333-333333333333',
+      conversationId: '55555555-5555-4555-8555-555555555555'
+    }
+    const { client, transport } = makeClient()
+    await expect(client.webchatAccess(who)).resolves.toBeUndefined() // link down
+
+    client.start()
+    await flush()
+    await completeHandshake(transport, 15, undefined, [WEBCHAT_ACCESS_RECHECK_FEATURE])
+    for (const ok of [true, false]) {
+      const pending = client.webchatAccess(who)
+      await flush()
+      const request = transport.lastReq('rc/verify')!
+      expect(request.payload).toEqual({ kind: 'webchat-access', ...who })
+      transport.inject(buildRelayCpFrame('rc/verify/ok', { ok }, { corr: request.id }))
+      await expect(pending).resolves.toBe(ok)
+    }
+
+    const older = makeClient()
+    older.client.start()
+    await flush()
+    await completeHandshake(older.transport)
+    await expect(older.client.webchatAccess(who)).resolves.toBeUndefined()
+    expect(older.transport.lastReq('rc/verify')).toBeUndefined()
   })
 
   // v1's single bot-wide watermark let replicas overwrite each other, so only v2's per-relay observations are fed.
