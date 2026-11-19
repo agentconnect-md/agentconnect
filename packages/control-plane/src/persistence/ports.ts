@@ -240,6 +240,7 @@ export type AuditKind =
   | 'agent_repo_change'
   | 'org_invite_change'
   | 'org_sso_change'
+  | 'member_change'
   | 'integration_recovery'
   | 'protocol_error'
   | 'api_key_create'
@@ -7495,7 +7496,7 @@ export interface UserRepo {
    * `oidcSubject`) that its owner claims on first SSO sign-in. Throws Prisma
    * P2002 (→ 409) when the user is already a member.
    */
-  addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
+  addMemberByEmail(orgId: string, email: string, role: OrgMemberRole, actingUserId?: string): Promise<OrgMemberRecord>
 
   /** Leave, or remove another member as an owner: prune Selected audiences (repairing any that would empty), revoke their Computers, apply `chat`, then delete the membership; refuses the final owner. */
   removeMember(

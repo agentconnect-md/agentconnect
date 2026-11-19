@@ -159,6 +159,67 @@ describe('POST /members — add by email', () => {
   })
 })
 
+describe('member changes are audited', () => {
+  const trail = async () =>
+    (
+      await prisma.auditEvent.findMany({
+        where: { orgId: DEFAULT_ORG_ID, kind: 'member_change' },
+        orderBy: { id: 'asc' }
+      })
+    ).map((event) => ({ actor: event.actorUserId, ...(event.details as Record<string, unknown>) }))
+
+  it('records who added, re-roled and removed a member, by member id and without the address', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const added = (
+        await app.inject({ method: 'POST', url: `${ORG}/members`, payload: { email: 'dana@acme.dev', role: 'viewer' } })
+      ).json() as MemberBody
+      await app.inject({ method: 'PATCH', url: `${ORG}/members/${added.userId}`, payload: { role: 'collaborator' } })
+      // Saving the role a member already has is not a change.
+      await app.inject({ method: 'PATCH', url: `${ORG}/members/${added.userId}`, payload: { role: 'collaborator' } })
+      await app.inject({ method: 'DELETE', url: `${ORG}/members/${added.userId}` })
+
+      expect(await trail()).toEqual([
+        { actor: DEFAULT_OWNER_ID, action: 'member_added', userId: added.userId, role: 'viewer' },
+        {
+          actor: DEFAULT_OWNER_ID,
+          action: 'role_changed',
+          userId: added.userId,
+          role: 'collaborator',
+          previousRole: 'viewer'
+        },
+        { actor: DEFAULT_OWNER_ID, action: 'member_removed', userId: added.userId }
+      ])
+      const rows = await prisma.auditEvent.findMany({ where: { kind: 'member_change' } })
+      expect(JSON.stringify(rows.map((row) => [row.message, row.details]))).not.toContain('dana@acme.dev')
+    } finally {
+      await close()
+    }
+  })
+
+  it('tells a member leaving from a member being removed, and records nothing for a refused change', async () => {
+    const dana = await signup('sub-dana', 'dana@acme.dev')
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
+    const asDana = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
+    try {
+      // A collaborator may not change roles: refused, so nothing is recorded.
+      const refused = await asDana.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/members/${DEFAULT_OWNER_ID}`,
+        payload: { role: 'viewer' }
+      })
+      expect(refused.statusCode).toBe(403)
+      await asDana.app.inject({ method: 'DELETE', url: `${ORG}/members/${dana.userId}` })
+    } finally {
+      await asDana.close()
+    }
+    expect(await trail()).toEqual([
+      { actor: null, action: 'member_added', userId: dana.userId, role: 'collaborator' },
+      { actor: dana.userId, action: 'member_left', userId: dana.userId }
+    ])
+  })
+})
+
 describe('PATCH /members/:id — role changes', () => {
   it('changes a role, including granting owner (multiple owners allowed)', async () => {
     const dana = await signup('sub-dana', 'dana@acme.dev')

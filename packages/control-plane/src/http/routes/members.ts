@@ -83,7 +83,12 @@ export function memberRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const added = await deps.repos.user.addMemberByEmail(req.orgCtx!.orgId, req.body.email, req.body.role)
+        const added = await deps.repos.user.addMemberByEmail(
+          req.orgCtx!.orgId,
+          req.body.email,
+          req.body.role,
+          req.orgCtx!.userId
+        )
         return reply.code(201).send(toDto(added, req.orgCtx!.userId, deps))
       }
     )

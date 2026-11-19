@@ -3512,6 +3512,7 @@ enum AuditKind {
   agent_repo_change
   org_invite_change
   org_sso_change
+  member_change
   integration_recovery
   protocol_error
   api_key_create

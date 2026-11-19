@@ -208,8 +208,9 @@ const get = (app: HttpApp, botId: string, seq: number, channelId = 'C1') =>
 describe('GET /bots/:id/decision-routing/evaluations', () => {
   it('reads the host across the scoped channels, and one channel with its cursor, storing nothing', async () => {
     const { botId, a } = await routedBot()
+    const viewer = await member('viewer')
     const before = (await prisma.sessionMeta.count()) + (await prisma.auditEvent.count())
-    const { app, spy } = appWith({ userId: await member('viewer') })
+    const { app, spy } = appWith({ userId: viewer })
     const res = await list(app, botId, '?limit=5')
     expect(res.statusCode, res.body).toBe(200)
     // No session names an audience yet, so a viewer reads summaries without their titles.
