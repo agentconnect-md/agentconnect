@@ -1133,6 +1133,14 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
   const chromeTools = devtools
     ? new ChromeTools({
         endpoint: (desktop) => devtools.endpoint(desktop),
+        childAccess: async () => {
+          const policy = live.policy
+          if (!commandLine || policy?.agentMode !== 'control') return { scripts: false, fileRoots: [] }
+          return {
+            scripts: (policy.shell ?? 'off') !== 'off',
+            fileRoots: (policy.files ?? 'off') === 'off' ? [] : await commandLine.fileRoots(policy.fileRoots)
+          }
+        },
         idleMs: () => config.leaseIdleSeconds * 1000,
         maxImageDimension: () => config.maxImageDimension,
         audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : [])),

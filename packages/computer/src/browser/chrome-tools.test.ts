@@ -428,7 +428,7 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
 
   it('uses the same lease and human idle gate as desktop input, then activates the exact page', async () => {
     let now = 10_000
-    const { act, ids, computer, activated } = actionSetup({ now: () => now })
+    const { act, ids, computer, activated, tools } = actionSetup({ now: () => now })
     const [dev] = await ids()
     computer.acquire('other')
     expect(errorOf(await act('chrome_click', { pageId: dev, uid: '1_1' })).error).toBe('computer_busy')
@@ -444,6 +444,10 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
     expect((await act('chrome_click', { pageId: dev, uid: '1_1' })).isError).toBeUndefined()
     expect(activated).toEqual([TARGET_A])
     expect(computer.leaseActivity()?.holder).toBe('agent/session')
+    computer.noteHumanInput()
+    const pid = tools.running()[0]!.pid
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(tools.running()[0]?.pid).toBe(pid)
   })
 
   it('returns uncertain with a desktop screenshot and never replays an interrupted action', async () => {
@@ -469,7 +473,9 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
   })
 
   it('checks script approval and file roots, and closes the child when the control lease ends', async () => {
-    const { act, ids, computer, tools } = actionSetup()
+    const { act, ids, computer, tools } = actionSetup({
+      childAccess: async () => ({ scripts: true, fileRoots: [root] })
+    })
     const [dev] = await ids()
     const commandLine: NonNullable<ChromeCall['commandLine']> = {
       runner: new CommandLine({ dataDir: join(root, 'daemon'), home: root }),
@@ -478,6 +484,8 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
       roots: () => [root]
     }
     const script = { pageId: dev, function: '() => document.title' }
+    const firstChild = tools.running()[0]!.pid
+    expect(errorOf(await act('chrome_evaluate_script', script)).error).toBe('denied')
     expect(errorOf(await act('chrome_evaluate_script', script, commandLine)).error).toBe('approval_required')
     expect(
       errorOf(
@@ -489,6 +497,7 @@ describe.skipIf(process.platform === 'win32')('the Chrome DevTools MCP child (co
     )
     expect(approved.isError).toBeUndefined()
     expect(logged().filter(({ name }) => name === 'evaluate_script')).toHaveLength(1)
+    expect(tools.running()[0]!.pid).toBe(firstChild)
     expect(
       logged()
         .filter(({ event }) => event === 'start')

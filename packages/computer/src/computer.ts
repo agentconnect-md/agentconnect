@@ -841,7 +841,10 @@ export class Computer {
   }
 
   /** Browser input shares the desktop queue and returns a fresh screenshot when the outcome is unknown. */
-  async leasedBrowserAction(client: string, run: (fence: () => void) => Promise<ToolOutput>): Promise<ToolOutput> {
+  async leasedBrowserAction(
+    client: string,
+    run: (fences: { beforeEffect: () => void; lease: () => void }) => Promise<ToolOutput>
+  ): Promise<ToolOutput> {
     this.acquire(client)
     this.assertHumanIdle()
     this.assertNoAdminPrompt()
@@ -849,15 +852,18 @@ export class Computer {
       this.assertHumanIdle()
       this.assertNoAdminPrompt()
       const lease = this.acquire(client)
-      const fence = () => {
-        this.assertHumanIdle()
-        this.assertNoAdminPrompt()
+      const checkLease = () => {
         this.expireLease()
         this.assertStillHolds(client)
         if (this.lease !== lease) throw new ComputerError('unavailable', 'The control lease was revoked.')
       }
+      const beforeEffect = () => {
+        this.assertHumanIdle()
+        this.assertNoAdminPrompt()
+        checkLease()
+      }
       try {
-        const output = await run(fence)
+        const output = await run({ beforeEffect, lease: checkLease })
         if (this.lease) this.lease.lastUsedAt = this.now()
         return output
       } catch (error) {

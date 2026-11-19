@@ -65,6 +65,7 @@ export interface ChromeToolsOptions {
   deadlineMs?: number
   watchMs?: number
   activate?: typeof activateChromePage
+  childAccess?: () => Promise<ChildAccess>
 }
 
 interface ChildAccess {
@@ -203,9 +204,9 @@ export class ChromeTools {
     if (!action.enabled()) throw new ComputerError('unavailable', 'The browser tier is unavailable on this computer.')
     const { computer, desktop } = await action.target()
     request.desktop = desktop
-    return computer.leasedBrowserAction(request.client, async (lease) => {
+    return computer.leasedBrowserAction(request.client, async (fences) => {
       const beforeEffect = () => {
-        lease()
+        fences.beforeEffect()
         this.fence(request)
         chromeActionGuard(contract, request.args, request.commandLine)
         if (!action.enabled())
@@ -213,7 +214,7 @@ export class ChromeTools {
       }
       beforeEffect()
       if (!this.opts.endpoint(desktop)) await this.openBrowser(computer, desktop, beforeEffect, request.signal)
-      return this.serveOnDesktop(request, contract, { beforeEffect, lease })
+      return this.serveOnDesktop(request, contract, { beforeEffect, lease: fences.lease })
     })
   }
 
@@ -251,12 +252,7 @@ export class ChromeTools {
     const endpoint = desktop === undefined ? undefined : this.opts.endpoint(desktop)
     if (desktop === undefined || !endpoint)
       throw new ComputerError('unavailable', "this desktop's browser is not running", { reason: 'browser_not_running' })
-    const commandLine = request.commandLine
-    const access: ChildAccess = {
-      scripts: commandLine !== undefined && commandLine.shell() !== 'off',
-      fileRoots:
-        commandLine && commandLine.files() !== 'off' ? await commandLine.runner.fileRoots(commandLine.roots()) : []
-    }
+    const access = (await this.opts.childAccess?.()) ?? { scripts: false, fileRoots: [] }
     const child = await this.child(desktop, endpoint, access)
     child.inflight++
     child.lastCall = this.now()

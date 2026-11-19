@@ -1596,9 +1596,10 @@ profile, merge and egress flags; with a dead endpoint it returned errors and sta
 integrity hash by the workspace lockfile. The package bundles its dependencies and declares none, so that one entry
 pins the whole tree. The image's build copies it to `/opt/agentconnect/chrome-devtools-mcp`, beside the daemon, and
 nothing fetches it at run time. The daemon runs it with the image's Node and the flags above. It disables script
-evaluation when the grant and policy leave `shell` off. It sets the screenshot width to `maxImageDimension`
-(1280 by default) and the height to four times that. Its filesystem roots are the approved `fileRoots` when the
-caller can upload, otherwise its own empty directory. The directory doubles as its `HOME`, `TMPDIR` and working
+evaluation when the desktop policy leaves `shell` off. It sets the screenshot width to `maxImageDimension`
+(1280 by default) and the height to four times that. Its filesystem roots are the policy's `fileRoots` when the
+policy allows uploads, otherwise its own empty directory. Each call still checks the caller's own grant.
+The directory doubles as its `HOME`, `TMPDIR` and working
 directory and is removed with it. Its
 environment is its own too: the update-check and usage-statistics variables, and
 `CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY=1`, since 1.13.0 otherwise reads its options from `~/.config/cd4a/config.json`,
