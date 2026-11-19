@@ -100,6 +100,24 @@ export const ComputerViewerOfferRequest = z.object({
 })
 export type ComputerViewerOfferRequest = z.infer<typeof ComputerViewerOfferRequest>
 
+const BrowserAddress = z.string().trim().min(1).max(4096)
+export const BrowserBarAction = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('open'), url: BrowserAddress }),
+  z.object({ action: z.literal('navigate'), url: BrowserAddress }),
+  z.object({ action: z.enum(['back', 'forward', 'reload']) }),
+  z.object({ action: z.enum(['select', 'close']), pageId: z.string().min(1).max(64) }),
+  z.object({ action: z.literal('dialog'), accept: z.boolean(), text: z.string().max(4096).optional() })
+])
+export type BrowserBarAction = z.infer<typeof BrowserBarAction>
+
+export interface BrowserViewerStatus {
+  available: boolean
+  running: boolean
+  pages: { id: string; title: string; url: string }[]
+  frontPageId: string | null
+  dialog: { type: string; message: string; defaultPrompt: string } | null
+}
+
 // A binary browser frame chunk starts with ACBF, a big-endian frame id, chunk index and chunk count.
 export const COMPUTER_BROWSER_FRAME_HEADER_BYTES = 12
 export const COMPUTER_BROWSER_FRAME_CHUNK_BYTES = 16 * 1024

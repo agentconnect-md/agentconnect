@@ -43,6 +43,7 @@ export function ComputerPanel({ computerIds, managed, agentId, active, createSes
   // null until someone picks: the agent's own desktop, else the main one.
   const [chosenDesktop, setChosenDesktop] = useState<string | null>(null)
   const [watching, setWatching] = useState(false)
+  const [modeTarget, setModeTarget] = useState<HTMLDivElement | null>(null)
   const key = computerIds.join(',')
   const managedAgentId = managed?.agentId ?? null
   const managedSessionId = managed?.sessionId ?? null
@@ -104,7 +105,7 @@ export function ComputerPanel({ computerIds, managed, agentId, active, createSes
 
   return (
     <div className="flex min-h-0 flex-col" data-computer-panel>
-      <div className="flex items-center gap-2 border-b border-(--border-subtle) px-3 py-[7px]">
+      <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-3 py-[7px]">
         <Icon name="monitor" size={14} />
         {computers.length > 1 ? (
           <select
@@ -129,6 +130,7 @@ export function ComputerPanel({ computerIds, managed, agentId, active, createSes
           </span>
         )}
         {computer.desktops && <DesktopPicker computer={computer} value={desktop} onChange={setChosenDesktop} />}
+        <div className="empty:hidden" ref={setModeTarget} />
         <span className="font-mono text-[11px] font-medium leading-normal text-(--text-tertiary)">
           {computer.status}
         </span>
@@ -150,6 +152,8 @@ export function ComputerPanel({ computerIds, managed, agentId, active, createSes
           computer={computer}
           desktop={desktop}
           compact
+          preferBrowser
+          modeTarget={modeTarget}
           {...(createSession ? { createSession } : {})}
         />
       ) : (

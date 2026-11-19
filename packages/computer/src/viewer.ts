@@ -6,8 +6,9 @@ import {
   ComputerViewerOfferRequest,
   type ComputerIceServer
 } from '@agentconnect.md/protocol/computer'
+import { BrowserBarAction } from '@agentconnect.md/protocol/computer-viewer'
 import { ComputerError, type Computer, type ViewerInput } from './computer.js'
-import { BrowserBarAction, type BrowserViewer } from './browser/viewer.js'
+import type { BrowserViewer } from './browser/viewer.js'
 import type { RtcSessions } from './stream/rtc.js'
 import { VIEWER_PAGE } from './viewer-page.js'
 

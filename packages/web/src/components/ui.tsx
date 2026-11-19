@@ -114,6 +114,7 @@ export function Button({
   style,
   className,
   ariaLabel,
+  ariaPressed,
   ariaExpanded,
   ariaHasPopup,
   ariaControls
@@ -127,6 +128,7 @@ export function Button({
   style?: CSSProperties
   className?: string
   ariaLabel?: string
+  ariaPressed?: boolean
   ariaExpanded?: boolean
   ariaHasPopup?: 'menu' | 'listbox' | 'tree' | 'grid' | 'dialog'
   ariaControls?: string
@@ -140,6 +142,7 @@ export function Button({
       onClick={onClick}
       style={style}
       aria-label={ariaLabel}
+      aria-pressed={ariaPressed}
       aria-expanded={ariaExpanded}
       aria-haspopup={ariaHasPopup}
       aria-controls={ariaControls}

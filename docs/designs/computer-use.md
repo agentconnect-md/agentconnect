@@ -893,9 +893,8 @@ then starts the browser. No extension and no DevTools protocol are involved.
   launcher: it fork-merged from the master and the other desktops first. Closing sends
   `WM_DELETE_WINDOW` to each of its windows and waits for the exit; SIGTERM is only the fallback after a timeout, since
   it loses cookies Chromium has not flushed yet (measured twice). A browser is never closed in the middle of a turn.
-- **Invariants.** A running profile is never written to; a fork reads only profiles of the daemon's own user; an
-  agent desktop never inherits the main session's identity environment. The threat model lists them once it has a
-  computer-use section.
+- **Invariants.** A fork reads only profiles of the daemon's own user and leaves running profiles untouched.
+  Agent desktops have their own identity environment. See the [Computer threat model](#83-computer-threat-model).
 - **Limits.** A deletion reaches only a target that saw the cookie at an earlier fork: a new desktop copies the master
   as it is, so a cookie another agent desktop deleted (a logout there) survives in the new one while the master still
   holds it, until the server rejects it. Shared tombstones would close this; the logout check in validation covers it.
@@ -1976,7 +1975,7 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
   encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then the relay's TURN, then screenshots over the relay) is done.
 
-### 7.6 Browser view [viewer API implemented, console UI design]
+### 7.6 Browser view [implemented]
 
 The viewer shows a desktop. For a desktop that reports `devtools` (§5.8) it gains a second view of that desktop,
 **Browser**, beside **Desktop**: the browser's page, streamed and operated over the DevTools protocol, under a bar
@@ -2091,20 +2090,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   and its warning says so.
 - **Least scope**: `appAllowlist`, `redactApps` (window-level masking feasibility to be validated), granting a single display.
 - **Prompt injection**: screen content is untrusted; the session instructions say so (§5.6).
-- **DevTools endpoint [implemented]**: a browser's remote-debugging port holds every
-  session of every signed-in site, and loopback is no boundary between local principals (measured: another account and
-  a namespace-sharing container each read an HttpOnly cookie with no credential). So the launcher opens the port only
-  on an isolated Computer in a network namespace of its own whose policy has the browser tier on, and the daemon
-  reports it only after its foreign-`Origin` self-test; the agent gets the allowlisted tools and never the endpoint;
-  and the child that holds it reports nothing to its vendor (§5.8). Pages do reach its HTTP side, so what must hold is
-  that no page reads a response, completes a DevTools WebSocket or gets the DevTools front end attached to a target,
-  which rests on Chrome's `Host` and `Origin` checks, on target ids never reaching page content, and on the egress
-  forwarder's refusal of those ports, which every Computer with the tier puts in front of its browser, the self-hosted
-  container included; the Local Network Access prompt is not a barrier. The endpoint is not invisible to sites: the
-  switch sets `navigator.webdriver` unless the launcher passes the AutomationControlled flag, which it does unless the
-  organization turns it off (§3.10), and the child's Runtime domain is detectable while it is attached, which is why
-  it stops when idle. The threat model's computer-use section, once it exists (§3.10), lists the endpoint, the
-  forwarder's refusal, the opaque page ids and the child's reporting switches.
+- **DevTools endpoint [implemented]**: see the [Computer threat model](#83-computer-threat-model) and §5.8.
 - **Audit**: the prototype already writes a JSONL `audit.log` in its data directory, one line per call, recording only
   the length of `computer_type` text and no screenshots [validated]. The release adds the agent, session, target window,
   approval outcome, and screenshot reference, reports to the Control Plane, and lets the owner query per Computer.
@@ -2137,6 +2123,30 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   at once and persists. Once the CP is lost, the desktop keeps working for at most one lifetime after the last
   renewal, and resumes when it reconnects. The tool and viewer channel tokens that the data plane signs with
   this key are in §3.7.
+
+### 8.3 Computer threat model
+
+The browser profile carries signed-in sessions and the operator's page content. The deployment controls which
+processes share the Computer's network namespace. The daemon enforces the desktop, tool and viewer permissions
+described in §4, including takeover for viewer input. Pages and their content remain untrusted.
+
+- **Endpoint and isolation.** The Chrome debugging endpoint confers the browser profile's authority. The browser
+  tier requires its own isolated network namespace and a checked loopback endpoint. A managed pod carries only
+  the Computer container. The namespace check can find a sharing process with an open socket at a check, and
+  turning off the tier invalidates the tools immediately. A live browser can keep its debugging port until restart.
+  A principal with shell access as the desktop user already holds that user's authority (§5.7 and §5.8).
+- **Page boundary.** The browser uses the daemon's egress forwarder, which refuses the daemon's loopback listeners
+  and the desktop browsers' loopback ports. Chrome's `Host` and `Origin` checks complement that refusal.
+  The tools and viewer issue opaque page ids scoped to the desktop and keep the DevTools target ids, browser ids
+  and endpoint private. The browser's Local Network Access prompt is outside this boundary (§5.8 and §15.4).
+- **Child process.** The pinned Chrome DevTools MCP child uses the checked endpoint and a restricted tool surface.
+  The daemon supplies `--no-usage-statistics`, `--no-performance-crux` and
+  `CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1`. The child stops when idle, when its checked endpoint changes
+  or when the desktop stops (§5.8).
+- **Profiles and viewers.** Profile forks read only profiles owned by the daemon's user and leave running profiles
+  untouched. Agent desktops have their own identity environment (§3.10). Browser viewer grants scope the tab
+  state and frames to one desktop. Input requires a control grant and the desktop takeover. Frames, titles and URLs
+  stay on the viewer path. A navigation audit stores the origin (§7.6).
 
 ## 9. Screenshot storage [implemented]
 
@@ -2232,7 +2242,7 @@ and every `computer/policy`.
   on a phone, editable by the agent's editors, shown where the pool runs or a mode is set) and, for `per-agent`, its
   one computer with its state, or that it is created on first use; the agent's own managed computers are not repeated
   among the Computers that grant it.
-- **Browser view [design]** (§7.6): the viewer's Desktop / Browser switch, with the address bar and tabs, in both
+- **Browser view [implemented]** (§7.6): the viewer's Desktop / Browser switch, with the address bar and tabs, in both
   places the viewer is mounted: the screen on a Computer's page in Infra, and the Computer panel of an agent's side
   panel. Both use the shared viewer component, so one change serves them, each with its mobile layout.
 - Session page: the current lease and an action timeline with screenshots

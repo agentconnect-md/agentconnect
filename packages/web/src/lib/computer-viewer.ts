@@ -1,5 +1,12 @@
 // The console's Computer viewer (computer-use.md §7, §10): signaling via the relay; media direct or hole-punched, then TURN, then screenshots.
-import { relayComputerViewBase } from '@agentconnect.md/protocol/computer-viewer'
+import {
+  COMPUTER_BROWSER_FRAME_CHUNK_BYTES,
+  COMPUTER_BROWSER_FRAME_HEADER_BYTES,
+  relayComputerViewBase,
+  type BrowserBarAction,
+  type BrowserViewerStatus,
+  type ComputerViewerOfferRequest
+} from '@agentconnect.md/protocol/computer-viewer'
 import type { ComputerViewerGrantDto } from '@/lib/api'
 
 // `p2p` is a hole-punched pair through the relay's STUN; a full-ICE session that settles on host candidates shows `direct`.
@@ -31,8 +38,9 @@ export interface ViewerState {
   phase: 'connecting' | 'live' | 'error' | 'stopped'
   path: ViewerPath | null
   status: ViewerStatus | null
-  // The latest screenshot while on the screenshot fallback.
+  // The latest browser frame or desktop screenshot.
   frameUrl: string | null
+  browser?: BrowserViewerStatus
   error: string | null
   // Why each richer path was skipped, for the path badge's tooltip.
   notes: string[]
@@ -59,6 +67,8 @@ export interface ViewerDeps {
   computerId: string
   // An agent desktop to watch (computer-use.md §3.9); absent or `main`, the main desktop.
   desktop?: string
+  probeBrowser?: boolean
+  browser?: ComputerViewerOfferRequest['browser']
   onState: (state: ViewerState) => void
   // Where the WebRTC stream is shown; read when the track arrives.
   video: () => HTMLVideoElement | null
@@ -82,6 +92,7 @@ const CANDIDATE_POLL_MS = 300
 const STATUS_INTERVAL_MS = 2000
 const PING_INTERVAL_MS = 2000
 const FRAME_INTERVAL_MS = 200
+const BROWSER_FRAME_INTERVAL_MS = 67
 const STATS_INTERVAL_MS = 1000
 // Renew well before the token lapses; the desktop closes a session whose token is gone.
 const RENEW_FRACTION = 0.5
@@ -122,6 +133,8 @@ export class ComputerViewerSession {
   private shots = { bytes: 0, frames: 0, latencyMs: null as number | null }
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
+  private browserApiMissing = false
+  private browserRead = 0
 
   constructor(private readonly deps: ViewerDeps) {
     this.fetchImpl = deps.fetch ?? ((...args) => fetch(...args))
@@ -135,13 +148,17 @@ export class ComputerViewerSession {
   async start(): Promise<void> {
     try {
       this.grant = await this.deps.grant()
+      if (this.stopped) return
       this.scheduleRenewal()
       await this.refreshStatus()
       if (this.stopped) return
-      const poll = () =>
-        this.refreshStatus().catch((error: Error) => {
+      const poll = () => {
+        void this.refreshStatus().catch((error: Error) => {
           if (!this.stopped && this.state.phase === 'live') this.update({ error: error.message })
         })
+        void this.refreshBrowser()
+      }
+      void this.refreshBrowser()
       this.timers.push(setInterval(() => void poll(), STATUS_INTERVAL_MS))
       this.timers.push(setInterval(() => void this.sampleStats(), STATS_INTERVAL_MS))
       await this.connectMedia()
@@ -173,10 +190,30 @@ export class ComputerViewerSession {
 
   /** Send one input in order; each waits for the previous one to be applied. */
   send(input: ViewerInput): Promise<void> {
-    if (!this.state.status?.inControl) return Promise.resolve()
-    const next = this.inputChain.then(() => this.deliver(input))
-    this.inputChain = next.catch((error: Error) => this.update({ error: error.message }))
+    if (this.stopped || !(this.deps.browser ? this.state.status?.mode === 'control' : this.state.status?.inControl))
+      return Promise.resolve()
+    const next = this.inputChain.then(() => {
+      if (!this.stopped) return this.deliver(input)
+    })
+    this.inputChain = next.catch((error: Error) => {
+      if (!this.stopped) this.update({ error: error.message })
+    })
     return this.inputChain.then(() => undefined)
+  }
+
+  async browserAction(action: BrowserBarAction): Promise<boolean> {
+    if (this.stopped || !this.deps.browser || this.state.status?.mode !== 'control') return false
+    try {
+      const res = await this.api('POST', 'browser', action)
+      if (!res.ok) throw new Error(((await res.json()) as { message?: string }).message ?? `HTTP ${res.status}`)
+      if (this.stopped) return false
+      await Promise.allSettled([this.refreshStatus(), this.refreshBrowser()])
+      if (!this.stopped) this.update({ error: null })
+      return !this.stopped
+    } catch (error) {
+      if (!this.stopped) this.update({ error: (error as Error).message })
+      return false
+    }
   }
 
   private async control(action: 'take' | 'release'): Promise<void> {
@@ -195,10 +232,11 @@ export class ComputerViewerSession {
       const reply = await this.request(channel, { input })
       if (!reply.ok) throw new Error(reply.error ?? 'input refused')
       if (this.state.error) this.update({ error: null })
-      return
+    } else {
+      const res = await this.api('POST', this.deps.browser ? 'browser/input' : 'input', input)
+      if (!res.ok) throw new Error(((await res.json()) as { message?: string }).message ?? `HTTP ${res.status}`)
     }
-    const res = await this.api('POST', 'input', input)
-    if (!res.ok) throw new Error(((await res.json()) as { message?: string }).message ?? `HTTP ${res.status}`)
+    if (this.deps.browser && !this.state.status?.inControl) void this.refreshStatus().catch(() => undefined)
   }
 
   private request(channel: RTCDataChannel, message: object): Promise<{ ok: boolean; error?: string }> {
@@ -267,7 +305,29 @@ export class ComputerViewerSession {
       if (this.state.phase !== 'connecting') this.update({ error: message })
       throw new HttpError(res.status, message)
     }
-    this.update({ status: (await res.json()) as ViewerStatus })
+    const status = (await res.json()) as ViewerStatus
+    if (!this.stopped) this.update({ status })
+  }
+
+  private async refreshBrowser(): Promise<void> {
+    if (!(this.deps.probeBrowser || this.deps.browser) || this.browserApiMissing || this.stopped) return
+    const read = ++this.browserRead
+    try {
+      const res = await this.api('GET', 'browser')
+      if (read !== this.browserRead || this.stopped) return
+      if (res.status === 404) this.browserApiMissing = true
+      if (!res.ok) return
+      const browser = (await res.json()) as BrowserViewerStatus
+      if (read !== this.browserRead || this.stopped) return
+      if (this.deps.browser && !browser.frontPageId && this.state.frameUrl) {
+        URL.revokeObjectURL(this.state.frameUrl)
+        this.update({ browser, frameUrl: null })
+      } else {
+        this.update({ browser })
+      }
+    } catch {
+      // Browser status is optional; the next poll can retry.
+    }
   }
 
   // ---- token renewal ----
@@ -320,7 +380,10 @@ export class ComputerViewerSession {
 
   private async connectMedia(): Promise<void> {
     const notes: string[] = []
-    const unavailable = this.state.status?.webrtc.unavailable
+    const unavailable =
+      this.deps.browser && this.state.status?.webrtc.unavailable !== 'disabled'
+        ? null
+        : this.state.status?.webrtc.unavailable
     if (unavailable) notes.push(`WebRTC: ${unavailable}`)
     else {
       // With relay STUN, one full-ICE attempt covers both: ICE checks host pairs first, then punched ones.
@@ -364,7 +427,7 @@ export class ComputerViewerSession {
   }
 
   private async connectPeer(transport: Transport, timeoutMs: number): Promise<void> {
-    const offerRes = await this.api('POST', 'rtc/offer', { transport })
+    const offerRes = await this.api('POST', 'rtc/offer', { transport, browser: this.deps.browser })
     const offer = (await offerRes.json()) as {
       id: string
       sdp: string
@@ -386,7 +449,10 @@ export class ComputerViewerSession {
       const video = this.deps.video()
       if (video) video.srcObject = event.streams[0] ?? new MediaStream([event.track])
     }
-    pc.ondatachannel = (event) => this.attachChannel(event.channel)
+    pc.ondatachannel = (event) => {
+      if (this.pc === pc) this.attachChannel(event.channel)
+      else event.channel.close()
+    }
     // Only a peer that once connected starts recovery; a failed attempt just fails its own ladder step.
     let established = false
     const connected = new Promise<void>((resolve, reject) => {
@@ -464,17 +530,55 @@ export class ComputerViewerSession {
     // A ping would keep a stopped viewer's desktop session alive.
     if (this.stopped) return channel.close()
     this.channel = channel
+    channel.binaryType = 'arraybuffer'
+    let frame: { id: number; count: number; chunks: ArrayBuffer[] } | undefined
+    let pingAt = 0
     const ping = setInterval(() => {
-      if (channel.readyState === 'open') channel.send('ping')
+      if (channel.readyState === 'open') {
+        pingAt = this.now()
+        channel.send('ping')
+      }
     }, PING_INTERVAL_MS)
     this.timers.push(ping)
     channel.onmessage = (event: MessageEvent) => {
-      if (event.data === 'pong') return
-      const reply = JSON.parse(String(event.data)) as { seq: number; ok: boolean; error?: string }
-      const done = this.pending.get(reply.seq)
-      if (done) {
-        this.pending.delete(reply.seq)
-        done(reply)
+      if (this.channel !== channel || this.stopped) return
+      if (event.data instanceof ArrayBuffer) {
+        if (!this.deps.browser) return
+        const packet = event.data
+        if (
+          packet.byteLength <= COMPUTER_BROWSER_FRAME_HEADER_BYTES ||
+          packet.byteLength > COMPUTER_BROWSER_FRAME_CHUNK_BYTES
+        )
+          return
+        const header = new DataView(packet)
+        if (header.getUint32(0) !== 0x41434246) return
+        const id = header.getUint32(4)
+        const index = header.getUint16(8)
+        const count = header.getUint16(10)
+        if (count === 0 || count > 1024) return
+        if (index === 0) frame = { id, count, chunks: [] }
+        if (!frame || frame.id !== id || frame.count !== count || index !== frame.chunks.length) return
+        frame.chunks.push(packet.slice(COMPUTER_BROWSER_FRAME_HEADER_BYTES))
+        if (frame.chunks.length === count) {
+          this.showFrame(new Blob(frame.chunks, { type: 'image/jpeg' }))
+          frame = undefined
+        }
+        return
+      }
+      if (event.data === 'pong') {
+        if (this.deps.browser && pingAt !== 0) this.shots.latencyMs = this.now() - pingAt
+        return
+      }
+      if (typeof event.data !== 'string') return
+      try {
+        const reply = JSON.parse(event.data) as { seq: number; ok: boolean; error?: string }
+        const done = this.pending.get(reply.seq)
+        if (done) {
+          this.pending.delete(reply.seq)
+          done(reply)
+        }
+      } catch {
+        // Ignore data outside the viewer protocol.
       }
     }
     channel.onclose = () => {
@@ -507,33 +611,38 @@ export class ComputerViewerSession {
         await sleep(500)
         continue
       }
+      if (this.deps.browser && !this.state.browser?.frontPageId) {
+        await sleep(500)
+        continue
+      }
       try {
-        const res = await this.api('GET', 'frame')
+        const res = await this.api('GET', this.deps.browser ? 'browser/frame' : 'frame')
         if (res.ok) {
-          const blob = await res.blob()
-          this.shots = {
-            bytes: this.shots.bytes + blob.size,
-            frames: this.shots.frames + 1,
-            latencyMs: this.now() - started
-          }
-          const url = URL.createObjectURL(blob)
-          const old = this.state.frameUrl
-          if (this.stopped) URL.revokeObjectURL(url)
-          else this.update({ frameUrl: url })
-          if (old) URL.revokeObjectURL(old)
+          this.showFrame(await res.blob(), this.now() - started)
         } else await sleep(1000)
       } catch {
         await sleep(1000)
       }
-      await sleep(Math.max(0, FRAME_INTERVAL_MS - (this.now() - started)))
+      const interval = this.deps.browser ? BROWSER_FRAME_INTERVAL_MS : FRAME_INTERVAL_MS
+      await sleep(Math.max(0, interval - (this.now() - started)))
     }
+  }
+
+  private showFrame(blob: Blob, latencyMs?: number): void {
+    if (this.stopped) return
+    this.shots.bytes += blob.size
+    this.shots.frames++
+    if (latencyMs !== undefined) this.shots.latencyMs = latencyMs
+    const old = this.state.frameUrl
+    this.update({ frameUrl: URL.createObjectURL(blob) })
+    if (old) URL.revokeObjectURL(old)
   }
 
   private async sampleStats(): Promise<void> {
     if (this.stopped || this.state.phase !== 'live') return
     const at = this.now()
     let next: { sample: StatsSample; stats: ViewerStats } | null = null
-    if (this.state.path === 'screenshots') {
+    if (this.deps.browser || this.state.path === 'screenshots') {
       next = sampleDelta(this.statsSample, { at, ...this.shots }, null, this.shots.latencyMs)
     } else if (this.pc && typeof this.pc.getStats === 'function') {
       const pc = this.pc
