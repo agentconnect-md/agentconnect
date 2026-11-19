@@ -149,7 +149,7 @@ export function GlobalSearch({
   // entry never points at a missing anchor. Read only while the panel is open;
   // SWR dedupes these with the Settings page's own reads.
   const accessKey = (provider: SessionAccessProvider) =>
-    open && authed ? consoleKeys.sessionAccess(activeOrg?.id, provider) : null
+    open && authed && !activeOrg?.ssoSignIn ? consoleKeys.sessionAccess(activeOrg?.id, provider) : null
   const accessFetcher = ([, scopedOrgId, , provider]: NonNullable<ReturnType<typeof accessKey>>) =>
     fetchSessionExternalAccess(provider, scopedOrgId)
   const slackAccess = useSWR(accessKey('slack'), accessFetcher)
