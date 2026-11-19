@@ -838,7 +838,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // org id into a cache tenant or an HTTP path.
   const waitingForOrg = orgLoading || (!activeOrg && orgs.length > 0)
   // An organization this session must first sign in to answers every request with a refusal, so nothing is fetched.
-  const orgKey = waitingForOrg || activeOrg?.ssoSignIn ? null : (activeOrg?.id ?? null)
+  const ssoGated = Boolean(activeOrg?.ssoSignIn)
+  const orgKey = waitingForOrg || ssoGated ? null : (activeOrg?.id ?? null)
 
   const {
     data: realAgents,
@@ -1060,7 +1061,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     sessionRefreshInFlightRef.current = false
     sessionRefreshDirtyRef.current = false
     setSessionActivityVersionById({})
-    if (orgLoading || !activeOrg) return
+    // An organization this session must first sign in to refuses the stream too.
+    if (orgLoading || !activeOrg || ssoGated) return
 
     const scheduleSessionRefresh = () => {
       if (sessionRefreshGenerationRef.current !== generation || sessionRefreshTimerRef.current) return
@@ -1091,7 +1093,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         sessionRefreshTimerRef.current = null
       }
     }
-  }, [orgLoading, activeOrg?.id, drainSessionRefreshes, mutatePendingApprovals])
+  }, [orgLoading, activeOrg?.id, ssoGated, drainSessionRefreshes, mutatePendingApprovals])
 
   const members = MOCK_MODE ? MOCK_MEMBERS : (fetchedMembers ?? [])
   const membersLoaded = MOCK_MODE || fetchedMembers !== undefined
