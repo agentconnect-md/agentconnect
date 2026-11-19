@@ -81,6 +81,7 @@ import { waitlistRoutes } from './routes/waitlist.js'
 import { meKeyRoutes } from './routes/me-keys.js'
 import { orgRoutes, orgScopedRoutes } from './routes/orgs.js'
 import { makeOrgScope } from './org-scope.js'
+import { capabilityRoutes } from './routes/capabilities.js'
 import { cronRoutes } from './routes/crons.js'
 import { hookRoutes } from './routes/hooks.js'
 import { trustedActorRoutes } from './routes/trusted-actors.js'
@@ -382,6 +383,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // (docs/designs/agent-assistant.md §6.1). Mounted again at the public
       // `/v1` alias below; the handed-out URL is `<PUBLIC_CP_URL>/v1/mcp`.
       await api.register(mcpRoutes(deps))
+      // An extension's routes outside the organization subtree bring their own authentication; mounted again at `/v1` below.
+      if (deps.extension?.rootRoutes) await api.register(deps.extension.rootRoutes)
       await api.register(
         async (scope) => {
           // preValidation, not preHandler: zod validation strips params a route's
@@ -447,6 +450,9 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           // Uploaded-icon write surface — mounted ONLY when the object store is
           // configured; absent ⇒ the routes don't exist and the console hides Upload.
           if (deps.iconStore) await scope.register(iconUploadRoutes(deps))
+          await scope.register(capabilityRoutes(deps))
+          // Last, so nothing an extension registers can shadow a core route.
+          if (deps.extension?.orgRoutes) await scope.register(deps.extension.orgRoutes)
         },
         { prefix: '/orgs/:orgId' }
       )
@@ -492,6 +498,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       await pub.register(orgIconRoutes(deps))
       await pub.register(computerRegisterRoutes(deps, { hide: true }))
       await pub.register(mcpRoutes(deps))
+      if (deps.extension?.rootRoutes) await pub.register(deps.extension.rootRoutes)
     },
     { prefix: '/v1' }
   )

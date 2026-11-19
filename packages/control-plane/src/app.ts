@@ -28,6 +28,7 @@ import { makeSecretsProvider } from './secrets/providers/memory.js'
 import { buildContainer } from './container.js'
 import type { OrgStanding } from './key-server/org-standing.js'
 import type { TxtLookup } from './org-sso/txt-lookup.js'
+import type { ControlPlaneExtensionFactory } from './extension.js'
 
 /** The seams `buildApp` injects (each swappable for a fake in tests). */
 export interface BuildAppDeps {
@@ -61,6 +62,8 @@ export interface BuildAppDeps {
   orgStanding?: OrgStanding
   /** DNS TXT lookup override for organization SSO domain checks — suites answer without network. */
   orgSsoTxtLookup?: TxtLookup
+  /** What the embedding package adds: routes and capabilities (`extension.ts`). Absent ⇒ nothing is added. */
+  extension?: ControlPlaneExtensionFactory
 }
 
 /** The wired app both prod and tests drive. */
@@ -144,7 +147,8 @@ export function buildApp(deps: BuildAppDeps): App {
     ...(deps.secretCipher ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.deploymentConfig ? { deploymentConfig: deps.deploymentConfig } : {}),
     ...(deps.orgStanding ? { orgStanding: deps.orgStanding } : {}),
-    ...(deps.orgSsoTxtLookup ? { orgSsoTxtLookup: deps.orgSsoTxtLookup } : {})
+    ...(deps.orgSsoTxtLookup ? { orgSsoTxtLookup: deps.orgSsoTxtLookup } : {}),
+    ...(deps.extension ? { extension: deps.extension } : {})
   })
 
   let wss: WebSocketServer | undefined

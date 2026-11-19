@@ -387,6 +387,8 @@ import { ComputerChannelKeys } from './registry/computerChannelKeys.js'
 import type { RelayWsServerDeps } from './ws/relay-gateway.js'
 
 import { buildHttpServer } from './http/server.js'
+import type { ControlPlaneExtensionFactory } from './extension.js'
+import { PgDirectoryMemberRepo } from './persistence/repositories/directory-member.repo.js'
 import { relayHttpBase } from './http/relay-ingress.js'
 import type { HttpDeps } from './http/deps.js'
 import { createReadiness, type Readiness } from './http/readiness.js'
@@ -562,6 +564,8 @@ export interface ContainerOpts {
   orgStanding?: OrgStanding
   /** DNS TXT lookup override for organization SSO domain checks; absent ⇒ the system resolver. */
   orgSsoTxtLookup?: TxtLookup
+  /** What the embedding package adds to the graph (`extension.ts`). */
+  extension?: ControlPlaneExtensionFactory
 }
 
 /**
@@ -2963,6 +2967,15 @@ export function buildContainer(
   // disconnect changes, and a later reconnect republishes only the binding.
   httpDeps.mcpOauthUnbind = async (_orgId, provider) => {
     mcpPush.unbindRelay(provider)
+  }
+
+  // The extension is built once the graph it reads from exists, and before the routes it adds are mounted.
+  if (opts.extension) {
+    httpDeps.extension = opts.extension({
+      prisma: rootPrisma,
+      clock,
+      directoryMembers: new PgDirectoryMemberRepo(prisma)
+    })
   }
 
   const http = buildHttpServer(httpDeps, opts.fastify)
