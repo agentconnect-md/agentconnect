@@ -273,12 +273,22 @@ rest of the connector.
   (exactly, ignoring case, no subdomains) joins the deployment's organization as
   `collaborator`, through the same `POST /sso/join` and the same join record, so a
   removal stands and an existing member keeps their role.
-- The deployment's organization is its only one. With no organization, or more than
-  one, nobody joins, and the Control Plane says so in its log once per process start,
-  without addresses. Organizations are counted as rows: deleting one removes its row.
+- The deployment's organization is the one the connector names. A deployment where
+  people create their own organizations has several, so the operator picks one under
+  "Organization" in Setup's SSO form, which lists the deployment's organizations and
+  stores the id as `logto.ssoConnector.memberOrganization`. If that organization is
+  later deleted, nobody joins until another is picked, and Setup shows the saved id as
+  missing rather than selecting another.
+- Without a named organization (null, the default, offered as "The only
+  organization"), the deployment's organization is its only one. With no organization,
+  or more than one, nobody joins. Organizations are counted as rows: deleting one
+  removes its row.
+- When nobody joins for either reason, the Control Plane says so in its log once per
+  process start, without addresses.
 - An account that joins is a member, so where the waitlist is on it passes the gate.
-- The console shows the choice read-only on the organization's Members tab, marked as
-  set by the deployment.
+- The console shows the choice read-only, marked as set by the deployment, on the
+  Members tab of that one organization alone, under `invite` as well; no other
+  organization shows it. The Control Plane says which organization it is (§6).
 
 One place decides which source answers: the deployment's connector when the deployment
 declares one, otherwise the organizations' own member sources. The two kinds exclude
@@ -473,10 +483,14 @@ Outside the organization subtree:
 offer the SSO page.
 `auth.sso` keeps describing the deployment connector, and `auth.ssoMemberSource`
 carries its member source (`invite` or `domain`, null without a connector), never its
-domains; the console calls `POST /sso/join` and shows the read-only card from it.
+domains or its organization; the console decides from it whether to call
+`POST /sso/join` after a sign-in.
 
 `GET /orgs` gains `ssoSignIn` per organization, and a refused request carries the
-code `ORG_SSO_SIGN_IN_REQUIRED` (§4.5).
+code `ORG_SSO_SIGN_IN_REQUIRED` (§4.5). Where the deployment owns the connector, the
+organization its sign-ins join also carries `deploymentMemberSource` (`invite` or
+`domain`), and every other organization omits it; the console renders the read-only
+card from it (§4.3).
 
 ### 6.1 Two writers to Logto
 

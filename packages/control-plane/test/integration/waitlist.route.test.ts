@@ -743,9 +743,9 @@ describe('waitlist admission — auth boundaries', () => {
 describe('membership through the deployment SSO connector — POST /sso/join', () => {
   const accounts = new Map<string, string>()
   /** A waitlist-mode app whose deployment owns one SSO connector on acme.example. */
-  const buildSsoApp = (memberSource: MemberSourceChoice) => {
+  const buildSsoApp = (memberSource: MemberSourceChoice, memberOrganization: string | null = null) => {
     const source = new DeploymentMemberSource({
-      connector: { memberSource, domains: ['acme.example'] },
+      connector: { memberSource, domains: ['acme.example'], memberOrganization },
       orgs: new PgOrgRepo(prisma),
       log: { warn: () => {} }
     })
@@ -756,9 +756,83 @@ describe('membership through the deployment SSO connector — POST /sso/join', (
       clock: systemClock
     })
     return buildHttpApp(prisma, { OIDC_ISSUER: oidcIssuer, OIDC_AUDIENCE, WAITLIST_MODE: true }, undefined, undefined, {
-      orgSsoMembership
+      orgSsoMembership,
+      deploymentMemberSource: source
     })
   }
+  const orgsOf = async (app: ReturnType<typeof buildSsoApp>['app'], h: Record<string, string>) =>
+    (
+      (await app.inject({ method: 'GET', url: '/api/v1/orgs', headers: h })).json() as {
+        id: string
+        deploymentMemberSource?: string | null
+      }[]
+    ).map((o) => [o.id, o.deploymentMemberSource ?? null] as const)
+
+  it('joins the configured organization among several, past the waitlist, and reports it only there', async () => {
+    const other = await prisma.org.create({ data: { slug: 'dsso-other' } })
+    const chosen = await prisma.org.create({ data: { slug: 'dsso-chosen' } })
+    const { app, close } = buildSsoApp('domain', chosen.id)
+    try {
+      accounts.set('dsso-chosen-ada', 'ada@acme.example')
+      const h = await headers('dsso-chosen-ada', 'ada@acme.example')
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: [chosen.id]
+      })
+      const user = await prisma.user.findUniqueOrThrow({ where: { oidcSubject: 'dsso-chosen-ada' } })
+      const key = { orgId_userId: { orgId: chosen.id, userId: user.id } }
+      expect((await prisma.membership.findUnique({ where: key }))?.role).toBe('collaborator')
+      expect(await prisma.membership.count({ where: { userId: user.id } })).toBe(1)
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        status: 'active'
+      })
+
+      // A member of both sees the field on the configured organization alone.
+      await prisma.membership.create({ data: { orgId: other.id, userId: user.id, role: 'collaborator' } })
+      expect(new Map(await orgsOf(app, h))).toEqual(
+        new Map([
+          [other.id, null],
+          [chosen.id, 'domain']
+        ])
+      )
+
+      await prisma.membership.delete({ where: key })
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: []
+      })
+      expect(await prisma.membership.findUnique({ where: key })).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('joins nobody when the configured organization no longer exists', async () => {
+    const gone = await prisma.org.create({ data: { slug: 'dsso-gone' } })
+    await prisma.org.delete({ where: { id: gone.id } })
+    const { app, close } = buildSsoApp('domain', gone.id)
+    try {
+      accounts.set('dsso-gone-ada', 'ada@acme.example')
+      const h = await headers('dsso-gone-ada', 'ada@acme.example')
+      expect((await app.inject({ method: 'POST', url: '/api/v1/sso/join', headers: h })).json()).toEqual({
+        joined: []
+      })
+      expect((await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })).json()).toMatchObject({
+        status: 'none'
+      })
+    } finally {
+      await close()
+    }
+  })
+
+  it('reports invite on the organization the choice applies to', async () => {
+    const { app, close } = buildSsoApp('invite')
+    try {
+      await prisma.user.update({ where: { id: DEFAULT_OWNER_ID }, data: { oidcSubject: 'dsso-invite-owner' } })
+      const h = await headers('dsso-invite-owner', 'owner@acme.example')
+      expect(await orgsOf(app, h)).toEqual([[DEFAULT_ORG_ID, 'invite']])
+    } finally {
+      await close()
+    }
+  })
   const role = async (userId: string) =>
     (await prisma.membership.findUnique({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } } }))?.role ?? null
 

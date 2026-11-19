@@ -3353,6 +3353,8 @@ export const OrgDto = z.object({
   daemonCount: z.number().int(),
   /** In `GET /orgs`: the SSO connection this browser session must sign in through before it opens the organization; null when it may. */
   ssoSignIn: z.object({ connectorId: z.string() }).nullable().optional(),
+  /** In `GET /orgs`: how the deployment's own SSO connector admits new members, on the one organization they join; absent elsewhere. */
+  deploymentMemberSource: z.enum(['invite', 'domain']).nullable().optional(),
   createdAt: z.string() // ISO-8601
 })
 export const OrgListDto = z.array(OrgDto)

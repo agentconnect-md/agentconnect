@@ -46,8 +46,20 @@ export interface OpenDeploymentConfigStoreOptions extends SecretCipherConfig {
   giteaBaseUrl?: string
 }
 
+/** An organization as Setup offers it for the SSO connector's new members. */
+export interface DeploymentOrganization {
+  id: string
+  name: string | null
+  slug: string
+}
+
+export interface DeploymentOrganizations {
+  list(): Promise<DeploymentOrganization[]>
+}
+
 export interface DeploymentConfigStoreHandle {
   store: PgDeploymentConfigStore
+  organizations: DeploymentOrganizations
   close(): Promise<void>
 }
 
@@ -60,5 +72,9 @@ export function openDeploymentConfigStore(options: OpenDeploymentConfigStoreOpti
     options.gitlabBaseUrl,
     options.giteaBaseUrl
   )
-  return { store, close: disconnectPrisma }
+  const organizations: DeploymentOrganizations = {
+    list: () =>
+      prisma.org.findMany({ select: { id: true, name: true, slug: true }, orderBy: { createdAt: 'asc' }, take: 500 })
+  }
+  return { store, organizations, close: disconnectPrisma }
 }

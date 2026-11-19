@@ -52,7 +52,7 @@ import {
   OrganizationMemberSourceCard,
   OrganizationSsoCard
 } from '@/components/console/OrganizationSsoCard'
-import { deploymentSsoMemberSource, organizationSsoEnabled } from '@/lib/organization-sso'
+import { organizationSsoEnabled } from '@/lib/organization-sso'
 import { resolveSettingsTab, settingsTabHref, settingsTabs, type SettingsTab } from '@/lib/settings-tabs'
 import { ServiceAccountsCard } from '@/components/console/ServiceAccountsCard'
 import { Scrim } from '@/components/console/Scrim'
@@ -736,7 +736,6 @@ export default function SettingsView() {
 
   // Same read as the SSO cards: a non-owner gets the tab only when there is something to read there.
   const ssoFlag = organizationSsoEnabled()
-  const deploymentMemberSource = deploymentSsoMemberSource()
   const { data: ssoState, error: ssoError } = useSWR<OrgSsoStateDto>(
     ssoFlag ? consoleKeys.orgSso(activeOrg?.id) : null,
     ([, id]) => fetchOrgSso(id as string)
@@ -949,7 +948,9 @@ export default function SettingsView() {
           </div>
 
           {activeOrg && ssoFlag && <OrganizationMemberSourceCard orgId={activeOrg.id} isOwner={isOwner} />}
-          {activeOrg && deploymentMemberSource && <DeploymentMemberSourceCard source={deploymentMemberSource} />}
+          {activeOrg?.deploymentMemberSource && (
+            <DeploymentMemberSourceCard source={activeOrg.deploymentMemberSource} />
+          )}
 
           {isOwner && activeOrg && <InviteLinksCard orgId={activeOrg.id} />}
 

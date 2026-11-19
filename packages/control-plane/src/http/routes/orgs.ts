@@ -69,13 +69,21 @@ export function orgRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'List your organizations',
           description:
-            'Every organization the caller belongs to, with their role. An empty list means the caller belongs to none yet and should create or join one.',
+            'Every organization the caller belongs to, with their role. An empty list means the caller belongs to none yet and should create or join one. Where the deployment has its own SSO connector, the organization its sign-ins join (the one named in Setup, or else the deployment’s only organization) carries `deploymentMemberSource`, `invite` or `domain`; no other organization does.',
           operationId: 'listOrganizations',
           response: { 200: OrgListDto }
         }
       },
       async (req) => {
         const rows = await deps.repos.org.listForUser(req.principal!.userId)
+        const members = deps.deploymentMemberSource
+        if (members) {
+          const target = await members.target()
+          return rows.map((o) => ({
+            ...toDto(o, deps),
+            ...(o.id === target ? { deploymentMemberSource: members.choice } : {})
+          }))
+        }
         const rule = deps.orgSsoSession
         const subject = req.apiKeyId === undefined ? req.oidcSubject : undefined
         if (!rule || subject === undefined) return rows.map((o) => toDto(o, deps))

@@ -20,7 +20,7 @@ vi.mock('next/navigation', () => ({
 }))
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({
-    activeOrg: { id: 'org-test', slug: 'acme', name: 'Acme' },
+    activeOrg: { id: 'org-test', slug: 'acme', name: 'Acme', deploymentMemberSource: state.deploymentSource },
     myRole: state.role,
     orgPath: (path: string) => `/acme${path}`,
     refreshOrgs: vi.fn(),
@@ -32,8 +32,7 @@ vi.mock('@/lib/org-context', () => ({
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ agents: [] }) }))
 vi.mock('@/components/console/ModalProvider', () => ({ useModal: () => ({ openModal: vi.fn() }) }))
 vi.mock('@/lib/organization-sso', () => ({
-  organizationSsoEnabled: () => state.ssoFlag,
-  deploymentSsoMemberSource: () => state.deploymentSource
+  organizationSsoEnabled: () => state.ssoFlag
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
@@ -153,7 +152,7 @@ describe('organization settings tabs', () => {
     expect(cards().some((id) => id.startsWith('deployment-new-members'))).toBe(false)
   })
 
-  it('shows the deployment’s New members choice where the deployment has its own SSO connector', async () => {
+  it('shows the deployment’s New members choice only in the organization the Control Plane names', async () => {
     state.ssoFlag = false
     state.deploymentSource = 'invite'
     await render('tab=members')

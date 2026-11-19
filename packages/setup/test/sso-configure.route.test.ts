@@ -49,6 +49,10 @@ function server() {
     'logto.googleConnectorClientSecret': 'google-secret'
   }
   const reconciled: LogtoSetupDesired[] = []
+  const organizations = [
+    { id: 'org-acme', name: 'Acme', slug: 'acme' },
+    { id: 'org-ops', name: null, slug: 'ops' }
+  ]
   const created: Array<{ providerName: string; displayName: string }> = []
   const logto = { deletions: 0, failDelete: false }
   const store: DeploymentConfigStore = {
@@ -73,6 +77,7 @@ function server() {
   }
   const app = buildSetupServer({
     store,
+    organizations: { list: async () => organizations },
     publicUrl: 'http://localhost:8091',
     localAuthBootstrap: {
       issuer: 'https://login.example.test/oidc',
@@ -111,7 +116,7 @@ function server() {
     })
   })
   running = app
-  return { app, admin, secrets, reconciled, created, logto }
+  return { app, admin, secrets, reconciled, created, logto, organizations }
 }
 
 const post = (app: FastifyInstance, url: string, payload: unknown) =>
@@ -137,6 +142,7 @@ describe('SSO configuration', () => {
       name: 'Example SSO',
       domains: [],
       memberSource: 'domain',
+      memberOrganization: null,
       oidc: null,
       saml: null
     })
@@ -275,5 +281,94 @@ describe('SSO configuration', () => {
     expect(SETUP_HTML).toContain('<option value="invite">Invite only</option>')
     expect(SETUP_HTML).toContain("el(prefix + '-member-source').value = connector.memberSource || 'domain'")
     expect(SETUP_HTML).toContain("memberSource: el(prefix + '-member-source').value")
+    expect(SETUP_HTML).toContain('<label class="field">Organization<select id="sso-member-organization">')
+    expect(SETUP_HTML).toContain("memberOrganization: el(prefix + '-member-organization').value || null")
+  })
+
+  it('saves the organization, keeps it when omitted, clears it with null, and refuses an unknown one', async () => {
+    const { app, admin, organizations } = server()
+    await post(app, '/api/v1/create/sso', { protocol: 'saml', name: 'Example SAML' })
+    const saml = { metadataUrl: 'https://idp.example.test/metadata' }
+    const configure = (extra: Record<string, unknown>) =>
+      post(app, '/api/v1/configure/sso', {
+        connector: { name: 'Example SAML', domains: ['acme.example'], saml, ...extra }
+      })
+    const saved = () => admin.values.logto?.ssoConnector?.memberOrganization
+    expect(saved()).toBeNull()
+    expect((await configure({ memberOrganization: 'org-ops' })).statusCode).toBe(200)
+    expect(saved()).toBe('org-ops')
+    expect((await configure({})).statusCode).toBe(200)
+    expect(saved()).toBe('org-ops')
+    const unknown = await configure({ memberOrganization: 'org-unknown' })
+    expect(unknown.statusCode).toBe(400)
+    expect(unknown.body).toContain('organization does not exist')
+    // A saved organization that has since gone can be kept while the rest is edited.
+    organizations.splice(1, 1)
+    expect((await configure({ memberOrganization: 'org-ops' })).statusCode).toBe(200)
+    expect((await configure({ memberOrganization: null })).statusCode).toBe(200)
+    expect(saved()).toBeNull()
+
+    const status = await app.inject({ method: 'GET', url: '/api/v1/deployment-config', headers })
+    expect(status.json().organizations).toEqual([{ id: 'org-acme', name: 'Acme', slug: 'acme' }])
+  })
+
+  it('lists the organizations in the control, shows a gone one as missing, and disables it while invite only', () => {
+    const source =
+      /function renderMemberOrganizations[\s\S]*?\n {4}}\n\n {4}function updateMemberOrganization[\s\S]*?\n {4}}\n/.exec(
+        SETUP_HTML
+      )![0]
+    class FakeElement {
+      children: FakeElement[] = []
+      textContent = ''
+      disabled = false
+      private current = ''
+      get value(): string {
+        return this.current
+      }
+      set value(next: string) {
+        this.current = this.children.length === 0 || this.children.some((c) => c.value === next) ? next : ''
+      }
+      replaceChildren() {
+        this.children = []
+      }
+      append(child: FakeElement) {
+        this.children.push(child)
+      }
+    }
+    const elements: Record<string, FakeElement> = {
+      'sso-member-organization': new FakeElement(),
+      'sso-member-source': new FakeElement()
+    }
+    const run = new Function(
+      'el',
+      'document',
+      'orgs',
+      `let ssoOrganizations = orgs;\n${source}\nreturn renderMemberOrganizations;`
+    ) as (
+      el: (id: string) => FakeElement,
+      document: { createElement(): FakeElement },
+      orgs: unknown[]
+    ) => (prefix: string, selected: string) => void
+    const render = run((id) => elements[id]!, { createElement: () => new FakeElement() }, [
+      { id: 'org-acme', name: 'Acme', slug: 'acme' },
+      { id: 'org-ops', name: null, slug: 'ops' }
+    ])
+    const select = elements['sso-member-organization']!
+    const labels = () => select.children.map((c) => `${c.value}=${c.textContent}`)
+
+    elements['sso-member-source']!.value = 'domain'
+    render('sso', 'org-ops')
+    expect(labels()).toEqual(['=The only organization', 'org-acme=Acme (acme)', 'org-ops=ops (ops)'])
+    expect(select.value).toBe('org-ops')
+    expect(select.disabled).toBe(false)
+
+    render('sso', 'org-gone')
+    expect(labels().at(-1)).toBe('org-gone=Missing organization (org-gone)')
+    expect(select.value).toBe('org-gone')
+
+    elements['sso-member-source']!.value = 'invite'
+    render('sso', '')
+    expect(select.value).toBe('')
+    expect(select.disabled).toBe(true)
   })
 })

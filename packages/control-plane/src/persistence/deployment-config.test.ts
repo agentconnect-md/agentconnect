@@ -156,6 +156,7 @@ describe('DeploymentConfigValuesV1Schema', () => {
       name: 'Example SSO',
       domains: ['example.test'],
       memberSource: 'domain',
+      memberOrganization: null,
       oidc: { ...oidc, scope: '', trustUnverifiedEmail: false },
       saml: null
     })
