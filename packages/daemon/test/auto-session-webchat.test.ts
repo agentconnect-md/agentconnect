@@ -214,6 +214,69 @@ describe("a member's coordinator conversation in webchat (auto-session-mode.md Â
     await daemon.stop()
   })
 
+  it('starts the coordinator over on `new_session`, as a root `!new` does, and the next message begins it', async () => {
+    const prompts: string[] = []
+    const { daemon, d, host, send } = await boot(async (_id, text, say) => {
+      prompts.push(text)
+      say('ok')
+    })
+    await send('remember the word KUMQUAT')
+    const before = await d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')
+    const reset: RdMsgWebchat = {
+      source: 'webchat',
+      agentId: AGENT,
+      sessionKey: CONV,
+      msgId: 'm-new',
+      chatId: CONV,
+      payload: { op: 'new_session', userId: OWNER, callerRole: 'owner' }
+    }
+    expect(await d.handleRelayMsg(reset, () => {})).toMatchObject({ accepted: true, reason: 'rotated' })
+    const after = await d.store.currentAppendCoordinate(AGENT, CONV, null, 'coordinator')
+    expect(isCoordinatorCoordinate(after)).toBe(true)
+    expect(after).not.toBe(before)
+    await send('what was the word?')
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(prompts.at(-1)).not.toContain('KUMQUAT')
+    expect(await d.store.getSession(sessionKey('webchat', CONV, after, AGENT))).toBeDefined()
+    await daemon.stop()
+  })
+
+  it('clears an ordinary chat in place on `new_session`, and refuses a participant and a continued session', async () => {
+    const prompts: string[] = []
+    const { daemon, d, host, send } = await boot(
+      async (_id, text, say) => {
+        prompts.push(text)
+        say('ok')
+      },
+      { autoSessionMode: false }
+    )
+    let resets = 0
+    const reset = (callerRole: 'owner' | 'participant', targetSessionId?: string): RdMsgWebchat => ({
+      source: 'webchat',
+      agentId: AGENT,
+      sessionKey: CONV,
+      msgId: `m-new-${++resets}`,
+      chatId: CONV,
+      ...(targetSessionId ? { targetSessionId } : {}),
+      payload: { op: 'new_session', userId: OWNER, callerRole }
+    })
+    expect(await d.handleRelayMsg(reset('owner'), () => {})).toMatchObject({ accepted: true, reason: 'empty' })
+    await send('remember the word KUMQUAT')
+    const key = sessionKey('webchat', CONV, `webchat:${CONV}`, AGENT)
+    expect(await d.handleRelayMsg(reset('participant'), () => {})).toMatchObject({ accepted: false })
+    expect((await d.store.getSession(key))?.acpSessionId).toBe('acp-1')
+    expect(await d.handleRelayMsg(reset('owner', 'some-session'), () => {})).toMatchObject({ accepted: false })
+    expect(await d.handleRelayMsg(reset('owner'), () => {})).toMatchObject({ accepted: true, reason: 'cleared' })
+    expect((await d.store.getSession(key))?.acpSessionId).toBeNull()
+    await send('what was the word?')
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(prompts.at(-1)).toContain('what was the word?')
+    expect(prompts.at(-1)).not.toContain('KUMQUAT')
+    // The same session keeps its identity: one conversation, one row.
+    expect((await d.store.getSession(key))?.acpSessionId).toBe('acp-2')
+    await daemon.stop()
+  })
+
   it('starts a provider-bound host on the coordinator model, whose credential its provider decides', async () => {
     const { daemon, d, host, send, coordinator } = await boot(async (_id, _text, say) => say('ok'))
     d.agents.get(AGENT).coordinatorModel = { runtime: 'claude', model: 'model-small' }

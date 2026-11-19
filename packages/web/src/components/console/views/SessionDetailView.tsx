@@ -131,6 +131,7 @@ import { CommandMenu } from '@/components/console/CommandMenu'
 import {
   commandHighlight,
   syncCommandMirror,
+  WEBCHAT_NEW_SESSION_FEATURE,
   type ControlCommand
 } from '@/components/console/composer-control-commands'
 import type { DecisionRuntimeTarget } from '@agentconnect.md/protocol/decision'
@@ -1045,6 +1046,8 @@ export default function SessionDetailView() {
     pgAnswerFill,
     pgOpenFill,
     pgCancel,
+    pgNewSession,
+    openPlayground,
     getPgRelayFeatures,
     getPgTurnThread
   } = usePlayground()
@@ -3370,6 +3373,30 @@ export default function SessionDetailView() {
       name: 'stop',
       choices: null,
       run: () => pgCancel(session.id, composerAgentId, webchatConversationId)
+    })
+  // `/new` starts the conversation over where its daemon and relay take it; the daemon also checks who may.
+  const newSessionRelayFeatures = pgNewSession && (isPg || isWebchat) ? getPgRelayFeatures(session.id) : undefined
+  if (
+    pgNewSession &&
+    (isPg || isWebchat) &&
+    isLive &&
+    !multiLive &&
+    !beforeFirstTurn &&
+    !resumeDisabled &&
+    (ownsThisConversation !== false || owner?.canEdit === true) &&
+    ownerFeatures?.includes(WEBCHAT_NEW_SESSION_FEATURE) === true &&
+    (newSessionRelayFeatures === undefined || newSessionRelayFeatures.includes(WEBCHAT_NEW_SESSION_FEATURE))
+  )
+    composerControls.push({
+      name: 'new',
+      choices: null,
+      run: () =>
+        void pgNewSession(session.id, composerAgentId, webchatConversationId).then((verdict) => {
+          // A rotated coordinator opens on a fresh page; its next message begins the new session.
+          if (!verdict.ok || verdict.outcome !== 'rotated' || !owner || !webchatConversationId) return
+          const id = openPlayground(owner, undefined, { conversationId: webchatConversationId, coordinator: true })
+          router.push(orgPath(`/sessions/${id}`))
+        })
     })
   if (runtimeCommandsOpen && pgModelOptions.length > 0)
     composerControls.push({

@@ -1,7 +1,7 @@
 // The composer's console commands: webchat never parses `!stop`-style text, so the picker runs each one as a console action.
 
 /** The chat surfaces' control commands that have a console action in webchat. */
-export type ControlName = 'stop' | 'model' | 'effort' | 'permission' | 'fast'
+export type ControlName = 'stop' | 'new' | 'model' | 'effort' | 'permission' | 'fast'
 
 /** One value a console command can be set to; `current` marks the session's present setting. */
 export interface ControlChoice {
@@ -21,10 +21,37 @@ export interface ControlCommand {
 /** Words that reach each command, mirroring the chat surfaces' parser so Slack habits carry over. */
 export const CONTROL_WORDS: Readonly<Record<ControlName, readonly string[]>> = {
   stop: ['stop', 'cancel'],
+  new: ['new', 'clear', 'reset'],
   model: ['model', 'models'],
   effort: ['effort'],
   permission: ['permission', 'permissions', 'perm'],
   fast: ['fast']
+}
+
+/** A daemon and relay that take `new_session` (protocol `WEBCHAT_NEW_SESSION_FEATURE`). */
+export const WEBCHAT_NEW_SESSION_FEATURE = 'webchat-new-session-v1'
+
+/** What `new_session` did: a coordinator rotated, a chat cleared, or nothing to clear; else why it did not. */
+export type NewSessionVerdict = { ok: true; outcome: 'rotated' | 'cleared' | 'empty' } | { ok: false; reason: string }
+
+/** The verdict a relay's `new_session` ack carries; `busy` and a refusal's own words are the failures. */
+export function newSessionVerdict(ack: { accepted?: unknown; reason?: unknown }): NewSessionVerdict {
+  const reason = typeof ack.reason === 'string' ? ack.reason : ''
+  if (ack.accepted === true && (reason === 'rotated' || reason === 'cleared' || reason === 'empty'))
+    return { ok: true, outcome: reason }
+  return { ok: false, reason: reason || 'unavailable' }
+}
+
+/** The line the conversation shows for a verdict, as Slack's `!new` replies. */
+export function newSessionNotice(verdict: NewSessionVerdict): string {
+  if (verdict.ok) {
+    if (verdict.outcome === 'rotated') return '🆕 Started a new session. Tasks keep working in their threads.'
+    if (verdict.outcome === 'cleared') return '🆕 Cleared. This conversation continues with a fresh context.'
+    return 'Nothing to clear yet — the next message starts a session.'
+  }
+  if (verdict.reason === 'busy') return 'A turn is still running — stop it first, then /new.'
+  if (verdict.reason === 'unavailable') return 'Could not start a new session. Try again.'
+  return `🔒 ${verdict.reason}`
 }
 
 /** Rank of `query` against `words`: 0 for a prefix, 1 for a substring, null for no match. */

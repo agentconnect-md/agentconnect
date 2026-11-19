@@ -127,6 +127,13 @@ export type WebchatImageUpdate = z.infer<typeof WebchatImageUpdate>
 /** Daemon records and routes webchat thread replies (rides `session-mode-auto-v1`); the relay announces it in `ready` once it forwards `thread`. */
 export const WEBCHAT_THREADS_FEATURE = 'webchat-threads-v1'
 
+/** Daemon and relay take a conversation's `new_session` op: a coordinator rotates, an ordinary chat clears its context in place. */
+export const WEBCHAT_NEW_SESSION_FEATURE = 'webchat-new-session-v1'
+
+/** The daemon's `new_session` verdict: `rotated` and `cleared` did it, `empty` had nothing to clear, `busy` waits for the running turn. */
+export const WebchatNewSessionOutcome = z.enum(['rotated', 'cleared', 'empty', 'busy'])
+export type WebchatNewSessionOutcome = z.infer<typeof WebchatNewSessionOutcome>
+
 /** A thread is named by its root's `postId`; the relay checks only this shape, the daemon whether the root exists. */
 export const WebchatThreadId = z.string().uuid()
 

@@ -143,6 +143,7 @@ import {
   SESSION_MODE_AUTO_V1_FEATURE,
   COORDINATOR_FILTER_V1_FEATURE,
   WEBCHAT_THREADS_FEATURE,
+  WEBCHAT_NEW_SESSION_FEATURE,
   CONTINUATION_THREADS_FEATURE,
   SESSION_THREAD_READS_FEATURE,
   coordinatorConversationId,
@@ -1462,7 +1463,11 @@ import type { ChatTurnContext, ChatSink, ChatTurnOutput } from './session/chat-t
 import { resolveChatUploadUrl } from './session/chat-attachments.js'
 import { readBoundedBody } from './codehost/rest-read.js'
 import { webchatAuthorOf, WebchatTransport, type WebchatHost } from './webchat/transport.js'
-import { WEBCHAT_SETTINGS_REFUSAL, webchatRoleChangesSettings } from './webchat/caller-role.js'
+import {
+  WEBCHAT_NEW_SESSION_REFUSAL,
+  WEBCHAT_SETTINGS_REFUSAL,
+  webchatRoleChangesSettings
+} from './webchat/caller-role.js'
 import { WebchatMcpRevocations, type WebchatMcpRevocationHost } from './webchat/mcp-revocations.js'
 import * as chatTurnOutput from './session/chat-output.js'
 import {
@@ -10302,6 +10307,8 @@ export class Daemon {
       ...(this.cfg.features.autoSessionMode ? [TASK_PAGE_MESSAGES_FEATURE] : []),
       // Answers a webchat coordinator's messages in their threads (webchat-threads.md §8); it rides the same switch.
       ...(this.cfg.features.autoSessionMode ? [WEBCHAT_THREADS_FEATURE] : []),
+      // Starts a webchat conversation over: rotates its coordinator or clears an ordinary chat's context; static.
+      WEBCHAT_NEW_SESSION_FEATURE,
       // Continues a platform coordinator in one of its threads, mirrored there (webchat-threads.md §7); the same switch.
       ...(this.cfg.features.autoSessionMode ? [CONTINUATION_THREADS_FEATURE] : []),
       // Answers the `roots` view and `session/thread` from the channel record (webchat-threads.md §8); static.
@@ -19190,6 +19197,13 @@ export class Daemon {
         case 'context':
         case 'image_update':
           return { msgId: msg.msgId, accepted: true }
+        case 'new_session':
+          // A continued session is its platform conversation's, where `!new` is typed (CONTINUATION_COMMANDS).
+          return {
+            msgId: msg.msgId,
+            accepted: false,
+            reason: 'a continued session starts over from its own conversation'
+          }
         default:
           break // resume/cancel/close fall through to the ordinary handlers
       }
@@ -19293,6 +19307,17 @@ export class Daemon {
         const settingsKey =
           coordinator === undefined ? key() : sessionKey('webchat', msg.chatId, coordinator, msg.agentId)
         return this.applyWebchatRuntimeOp(msg.msgId, op, settingsKey)
+      }
+      case 'new_session': {
+        // Starting over is the conversation's to decide, as its runtime settings are.
+        if (!webchatRoleChangesSettings(op.callerRole))
+          return { msgId: msg.msgId, accepted: false, reason: WEBCHAT_NEW_SESSION_REFUSAL }
+        const coordinator = this.cfg.features.autoSessionMode
+          ? await this.store.currentAppendCoordinate(msg.agentId, msg.chatId, null, 'coordinator')
+          : undefined
+        const actor = op.userId ? { userId: op.userId } : undefined
+        const outcome = await this.commands.newWebchatSession(msg.agentId, msg.chatId, coordinator, actor)
+        return { msgId: msg.msgId, accepted: outcome !== 'busy', reason: outcome }
       }
       case 'cancel':
         await this.webchatTransport.handleWebchatCancel(msg.chatId, op.agentId ?? msg.agentId)
