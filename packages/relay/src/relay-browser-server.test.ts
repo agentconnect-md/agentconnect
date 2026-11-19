@@ -58,6 +58,13 @@ async function start(
     daemon?: RelayDaemonConnection | undefined
     ack?: RdAck
     log?: Logger
+    access?: (who: {
+      orgId: string
+      userId: string
+      agentId: string
+      conversationId: string
+    }) => Promise<boolean | undefined>
+    accessRecheckMs?: number
   } = {}
 ): Promise<Harness> {
   http = createServer()
@@ -78,6 +85,7 @@ async function start(
     verify,
     daemons,
     router,
+    ...(opts.access ? { access: opts.access, accessRecheckMs: opts.accessRecheckMs ?? 10 } : {}),
     log: opts.log ?? silentLog
   })
   const port = (http.address() as AddressInfo).port
@@ -417,6 +425,39 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
 
     expect(sent[0]).not.toHaveProperty('remoteMcp')
     ws.close()
+  })
+
+  it('re-checks an open socket by its verified principal and closes it only on a refusal', async () => {
+    const who = { orgId: 'org_1', userId: 'usr_1', agentId: AGENT, conversationId: RESUME }
+    const asked: unknown[] = []
+    let answer: boolean | undefined = true
+    const { base } = await start({
+      verify: async () => ({ ok: true, ...who, daemonId: DAEMON, user: 'ada' }),
+      access: async (principal) => {
+        asked.push(principal)
+        return answer
+      },
+      accessRecheckMs: 10
+    })
+    const ws = await dial(base, `?token=good`)
+    await nextFrame(ws, 'ready')
+    const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+      ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() }))
+    )
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(1))
+    expect(asked[0]).toEqual(who)
+    // No answer (an older CP, the link down) leaves the socket open.
+    answer = undefined
+    const before = asked.length
+    await vi.waitFor(() => expect(asked.length).toBeGreaterThan(before + 1))
+    expect(ws.readyState).toBe(WebSocket.OPEN)
+
+    answer = false
+    expect(await closed).toEqual({ code: 4401, reason: 'access revoked' })
+    // The timer stops with the socket.
+    const after = asked.length
+    await new Promise((r) => setTimeout(r, 50))
+    expect(asked.length).toBeLessThanOrEqual(after + 1)
   })
 
   it('unregisters from the router on browser close', async () => {

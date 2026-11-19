@@ -502,6 +502,7 @@ async function main(): Promise<void> {
     verify: (_kind, token) => webchatVerdicts.verify(token),
     daemons: rdServer,
     router,
+    access: (who) => client.webchatAccess(who),
     log
   })
 

@@ -53,6 +53,7 @@ import {
   BOT_TENANT_FEATURE,
   COMPUTER_MEDIA_USAGE_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  WEBCHAT_ACCESS_RECHECK_FEATURE,
   buildRelayCpFrame,
   decodeRelayCpFrame,
   CODEHOST_FEEDBACK_FEATURE,
@@ -139,6 +140,13 @@ export interface RelayConnDeps {
    *  (userId, user, agentId, daemonId, orgId, conversationId), or `{ ok:false }` (§10). May throw on a
    *  transient store error → the handler answers a retryable error. */
   verifyWebchatToken: (token: string) => Promise<RcVerifyResult>
+  /** Whether the principal of an open webchat socket may still hold it; advertised to relays only when wired. */
+  verifyWebchatAccess?: (who: {
+    orgId: string
+    userId: string
+    agentId: string
+    conversationId: string
+  }) => Promise<RcVerifyResult>
   /** Resolve an API key on the agent chat API to the same verdict, its chat id mapped to a conversation (§10.4); may throw like the token check. */
   verifyAgentChatKey: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
   /** Re-check a GitHub comment sender against the current repository permission.
@@ -346,6 +354,7 @@ export class RelayConnection implements RelayChannel {
         BOT_TENANT_FEATURE,
         // Frames its MCP, hook and memory replays as snapshots, so the relay prunes instead of clearing.
         RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+        ...(this.deps.verifyWebchatAccess ? [WEBCHAT_ACCESS_RECHECK_FEATURE] : []),
         ...(this.deps.onComputerMediaUsage ? [COMPUTER_MEDIA_USAGE_FEATURE] : [])
       ]
     })
@@ -502,6 +511,11 @@ export class RelayConnection implements RelayChannel {
           break
         case 'agent-chat-key':
           result = await this.deps.verifyAgentChatKey(req)
+          break
+        case 'webchat-access':
+          // No verifier means no answer: the relay closes a socket on a refusal alone.
+          if (!this.deps.verifyWebchatAccess) throw new Error('webchat access re-check unavailable')
+          result = await this.deps.verifyWebchatAccess(req)
           break
         case 'computer-relay-token':
           result = (await this.deps.verifyComputerRelayToken?.(req.credential, req.computerId)) ?? {

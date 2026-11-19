@@ -552,7 +552,15 @@ verification re-reads the token owner's organization membership and requires
 them to still see every agent in the conversation; the relay reuses a
 successful verdict for at most a minute and never past the token's expiry, so a
 removed member or a revoked share stops dialing within a minute. A socket that
-is already open is not closed by either check. The relay then resolves
+is already open is asked the same two questions every minute, by the principal
+its dial verified and with no credential (`rc/verify(webchat-access)`): the relay
+closes it with code 4401 once the CP answers that the membership has ended or an
+agent in the conversation is no longer shared with the member, and the redial is
+refused at verification. Only a refusal closes a socket. No answer — the link
+down, a CP that does not advertise `webchat-access-recheck-v1` — leaves it open,
+so a CP outage or a rolling upgrade never disconnects a conversation. The
+re-check does not repeat the placement or continuation gates, which a dial
+settles and a turn re-establishes on its own. The relay then resolves
 the agent's current daemon placement and bridges browser turns and daemon
 output without routing arbitration. Webchat verification carries a
 `conversationBinding: 'v1'` fence and uses a v2 token-signing domain so mixed

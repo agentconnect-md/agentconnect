@@ -251,6 +251,14 @@ export const RcVerify = z.discriminatedUnion('kind', [
     credential: z.string().min(1),
     agentId: z.string().uuid(),
     chatId: z.string().min(1).max(AGENT_CHAT_ID_MAX_CHARS)
+  }),
+  // An open webchat socket, re-checked by the principal its dial verified: no credential, and the answer is `ok` alone.
+  z.object({
+    kind: z.literal('webchat-access'),
+    orgId: z.string().min(1),
+    userId: z.string().min(1),
+    agentId: z.string().uuid(),
+    conversationId: z.string().uuid()
   })
 ])
 export type RcVerify = z.infer<typeof RcVerify>

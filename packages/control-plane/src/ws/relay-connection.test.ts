@@ -13,6 +13,7 @@ import {
   PULL_REQUEST_FEEDBACK_FEATURE,
   FOLLOW_UP_WATCH_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
+  WEBCHAT_ACCESS_RECHECK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -105,6 +106,7 @@ function build(
       Partial<Pick<RelayAuthService, 'verifyDaemonToken'>>
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
     verifyAgentChatKey?: (req: { credential: string; agentId: string; chatId: string }) => Promise<RcVerifyResult>
+    verifyWebchatAccess?: ConstructorParameters<typeof RelayConnection>[1]['verifyWebchatAccess']
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
     onCodeHostFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onCodeHostFeedback']
@@ -189,6 +191,7 @@ function build(
     relayReg,
     verifyWebchatToken,
     verifyAgentChatKey,
+    ...(over.verifyWebchatAccess ? { verifyWebchatAccess: over.verifyWebchatAccess } : {}),
     authorizeGithubComment,
     authorizeGithubRerequest,
     authorizeCodeHostMembership: vi.fn(async () => false)
@@ -994,6 +997,33 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
     expect(verifyAgentChatKey).toHaveBeenCalledWith(req)
     expect(transport.lastRep('rc/verify/ok')!.payload).toMatchObject({ ok: true })
+  })
+
+  it('offers the webchat access re-check only with a verifier, and never answers a refusal without one', async () => {
+    const who = { orgId: 'org-1', userId: 'user-1', agentId: WEBCHAT_AGENT_ID, conversationId: WEBCHAT_CONVERSATION_ID }
+    const without = build()
+    await toReady(without.transport)
+    expect(without.transport.lastRep('rc/registered')!.payload).not.toMatchObject({
+      serverFeatures: expect.arrayContaining([WEBCHAT_ACCESS_RECHECK_FEATURE])
+    })
+    without.transport.feed('rc/verify', { kind: 'webchat-access', ...who })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(without.transport.lastRep('rc/verify/ok')).toBeUndefined()
+    expect(without.transport.sent.at(-1)).toMatchObject({ type: 'error' })
+    expect(without.transport.closed).toBeUndefined()
+
+    const verifyWebchatAccess = vi.fn(async () => ({ ok: false, reason: 'access revoked' }))
+    const wired = build({ verifyWebchatAccess })
+    await toReady(wired.transport)
+    expect(wired.transport.lastRep('rc/registered')!.payload).toMatchObject({
+      serverFeatures: expect.arrayContaining([WEBCHAT_ACCESS_RECHECK_FEATURE])
+    })
+    wired.transport.feed('rc/verify', { kind: 'webchat-access', ...who })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(verifyWebchatAccess).toHaveBeenCalledWith({ kind: 'webchat-access', ...who })
+    expect(wired.transport.lastRep('rc/verify/ok')!.payload).toEqual({ ok: false, reason: 'access revoked' })
   })
 
   it('rc/verify → retryable error (not a link close) when verify throws', async () => {

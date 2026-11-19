@@ -42,6 +42,7 @@ import {
   HOOK_INSTRUCTIONS_V1_FEATURE,
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
+  WEBCHAT_ACCESS_RECHECK_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SCHEMAS,
   type RelayCpFrame,
@@ -133,6 +134,9 @@ interface ReadyWaiter {
 }
 
 export type RelayCpState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'CLOSED' | 'DEGRADED'
+
+/** Who holds an open webchat socket, as its dial verified them. */
+export type WebchatPrincipal = Omit<Extract<RcVerify, { kind: 'webchat-access' }>, 'kind'>
 
 export interface RelayCpClientDeps {
   /** The §8 credential presented on `rc/auth` (shared token or per-relay ApiKey). */
@@ -297,7 +301,7 @@ export class RelayCpClient {
    * `daemonId` is forwarded unverified; CP requires it to match the reviewed install identity.
    */
   async verify(
-    kind: Exclude<RcVerify['kind'], 'agent-chat-key' | 'ahp-client-key' | 'computer-relay-token'>,
+    kind: Exclude<RcVerify['kind'], 'agent-chat-key' | 'ahp-client-key' | 'computer-relay-token' | 'webchat-access'>,
     credential: string,
     daemonId?: string
   ): Promise<RcVerifyResult> {
@@ -317,6 +321,22 @@ export class RelayCpClient {
       throw new WireError('INTERNAL', `expected rc/verify/ok, got ${rep.type}`, false)
     }
     return rep.payload
+  }
+
+  /** Whether an open webchat socket's principal may still hold it; undefined when the CP gave no answer (older CP, link down, error), which never closes a socket. */
+  async webchatAccess(who: WebchatPrincipal): Promise<boolean | undefined> {
+    if (this.state !== 'READY' || !this.transport || !this.serverFeatures.has(WEBCHAT_ACCESS_RECHECK_FEATURE)) {
+      return undefined
+    }
+    try {
+      const rep = await this.sendRequest(buildRelayCpFrame('rc/verify', { kind: 'webchat-access', ...who }), {
+        maxTries: 1,
+        ackTimeoutMs: ACK_TIMEOUT_MS
+      })
+      return rep.type === 'rc/verify/ok' ? rep.payload.ok : undefined
+    } catch {
+      return undefined
+    }
   }
 
   /** A desktop daemon's relay-audience channel token on `cr/hello` (computer-use.md §3.7); waits like {@link verify}. */
