@@ -105,7 +105,8 @@ const DecisionsContext = createContext<DecisionsPrototype | null>(null)
 export function DecisionsPrototypeProvider({ children }: { children: ReactNode }) {
   // The API, cached reads, and prototype gates stay partitioned by organization.
   const { activeOrg } = useOrgs()
-  const orgId = activeOrg?.id ?? ''
+  // An organization that asks for an SSO sign-in refuses every read, so it gets no API.
+  const orgId = activeOrg && !activeOrg.ssoSignIn ? activeOrg.id : ''
   const [apis] = useState(() => new Map<string, DecisionApi>())
   const api = useMemo(() => {
     const cached = apis.get(orgId)

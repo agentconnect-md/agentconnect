@@ -70,6 +70,34 @@ describe('subscribeSessionEvents', () => {
     expect(requestSignal.aborted).toBe(true)
   })
 
+  it('hands an SSO sign-in refusal to the console instead of only reconnecting', async () => {
+    const page = new EventTarget()
+    const refused = vi.fn()
+    page.addEventListener('ORG_SSO_SIGN_IN_REQUIRED', refused)
+    vi.stubGlobal('window', page)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ code: 'ORG_SSO_SIGN_IN_REQUIRED', message: 'sign in with SSO' }), {
+            status: 403,
+            headers: { 'content-type': 'application/json' }
+          })
+      )
+    )
+    const onError = vi.fn()
+
+    const unsubscribe = subscribeSessionEvents(
+      'org-1',
+      { onConnect: vi.fn(), onSession: vi.fn(), onActivity: vi.fn() },
+      onError
+    )
+
+    await vi.waitFor(() => expect(refused).toHaveBeenCalledTimes(1))
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ status: 403, code: 'ORG_SSO_SIGN_IN_REQUIRED' }))
+    unsubscribe()
+  })
+
   it('reopens a live stream to rotate its OIDC resource token', async () => {
     vi.useFakeTimers()
     vi.mocked(getToken).mockReset().mockResolvedValueOnce('oidc-token-1').mockResolvedValue('oidc-token-2')

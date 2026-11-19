@@ -1783,7 +1783,8 @@ async function readSessionEventStream(
       { cache: 'no-store', signal: request.signal },
       { accept: 'text/event-stream' }
     )
-    if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
+    // Read the refusal's code too, so an organization that asks for an SSO sign-in stops the reconnect loop.
+    if (!res.ok) throw await apiErrorFromResponse('GET', path, res)
     if (!res.body) throw new Error('session event stream is not readable')
 
     // The sink has no replay/event ids, so an initial or recovered connection

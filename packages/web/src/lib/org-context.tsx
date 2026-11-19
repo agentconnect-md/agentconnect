@@ -188,7 +188,13 @@ export function OrgProvider({ children }: { children: ReactNode }) {
 
   // A refusal for a missing SSO sign-in means the list is stale; re-reading it shows the way in.
   useEffect(() => {
-    const onRefused = () => void refreshOrgs()
+    // One re-read answers a whole burst of refusals.
+    let pending: Promise<void> | null = null
+    const onRefused = () => {
+      pending ??= refreshOrgs().finally(() => {
+        pending = null
+      })
+    }
     window.addEventListener(ORG_SSO_SIGN_IN_REQUIRED, onRefused)
     return () => window.removeEventListener(ORG_SSO_SIGN_IN_REQUIRED, onRefused)
   }, [refreshOrgs])
@@ -227,7 +233,8 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     if (!activeOrg || !hasOrgSegment) return
     writeLastSlug(activeOrg.slug)
     // Track selection writes separately so a quick B → A switch cannot reuse stale list ordering.
-    if (rememberedOrgId !== activeOrg.id) {
+    // An organization that asks for an SSO sign-in refuses the selection too; it is recorded once the session gets in.
+    if (rememberedOrgId !== activeOrg.id && !activeOrg.ssoSignIn) {
       void apiSelectOrg(activeOrg.id)
         .then(async () => {
           setRememberedOrgId(activeOrg.id)

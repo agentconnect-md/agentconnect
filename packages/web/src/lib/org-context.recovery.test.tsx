@@ -109,3 +109,33 @@ it('keeps a loaded organization usable during a failed background refresh', asyn
   expect(host.querySelector('[data-testid="content"]')).not.toBeNull()
   expect(api.setApiOrgId).toHaveBeenLastCalledWith(org.id)
 })
+
+it('records an organization as selected only once the session gets in', async () => {
+  // The list leads with the organization the server last recorded as selected.
+  const other = { ...org, id: 'other-org', slug: 'other' } as OrgDto
+  const gated = { ...org, ssoSignIn: { connectorId: 'connector-example' } } as OrgDto
+  api.fetchOrgs.mockResolvedValueOnce([other, gated]).mockResolvedValue([other, org])
+  await mount()
+
+  expect(state.activeOrg?.ssoSignIn).toBeTruthy()
+  expect(api.selectOrg).not.toHaveBeenCalled()
+
+  await act(async () => state.refreshOrgs())
+
+  expect(api.selectOrg).toHaveBeenCalledWith(org.id)
+})
+
+it('re-reads the organization list once for a burst of SSO sign-in refusals', async () => {
+  let release!: (orgs: OrgDto[]) => void
+  api.fetchOrgs.mockResolvedValueOnce([org]).mockImplementationOnce(() => new Promise((resolve) => (release = resolve)))
+  await mount()
+
+  await act(async () => {
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new Event('ORG_SSO_SIGN_IN_REQUIRED'))
+    await vi.advanceTimersByTimeAsync(1)
+  })
+  expect(api.fetchOrgs).toHaveBeenCalledTimes(2)
+
+  await act(async () => release([{ ...org, ssoSignIn: { connectorId: 'connector-example' } } as OrgDto]))
+  expect(state.activeOrg?.ssoSignIn).toBeTruthy()
+})
