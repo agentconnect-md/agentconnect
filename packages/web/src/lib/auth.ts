@@ -220,7 +220,7 @@ function clearLocalSessionMetadata(): void {
 // Re-entry returns to the page the session expired on, such as an OAuth consent request, not to the console home.
 function rememberReturnPath(): void {
   const { pathname, search } = window.location
-  if (pathname === '/login' || pathname.startsWith('/auth/')) return
+  if (pathname === '/login' || pathname.startsWith('/login/') || pathname.startsWith('/auth/')) return
   writeFlowState('returnTo', pathname + search)
 }
 

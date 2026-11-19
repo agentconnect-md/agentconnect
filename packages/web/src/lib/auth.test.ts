@@ -152,16 +152,19 @@ describe('console authentication', () => {
     expect(logto.replace).toHaveBeenCalledWith('/login')
   })
 
-  it.each(['/login', '/auth/callback'])('keeps no return path from the sign-in page %s', async (pathname) => {
-    visit(pathname, '?code=abc')
-    logto.getAccessToken.mockRejectedValue(requestError('oidc.invalid_grant'))
-    const { getToken } = await import('./auth')
+  it.each(['/login', '/login/sso', '/auth/callback'])(
+    'keeps no return path from the sign-in page %s',
+    async (pathname) => {
+      visit(pathname, '?code=abc')
+      logto.getAccessToken.mockRejectedValue(requestError('oidc.invalid_grant'))
+      const { getToken } = await import('./auth')
 
-    await getToken().catch(() => undefined)
+      await getToken().catch(() => undefined)
 
-    expect(sessionStorage.getItem('ac.returnTo')).toBeNull()
-    expect(logto.replace).toHaveBeenCalledWith('/login')
-  })
+      expect(sessionStorage.getItem('ac.returnTo')).toBeNull()
+      expect(logto.replace).toHaveBeenCalledWith('/login')
+    }
+  )
 
   it('does not turn other token failures into a login redirect', async () => {
     const error = requestError('oidc.temporarily_unavailable')
