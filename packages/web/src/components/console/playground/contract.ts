@@ -1,7 +1,9 @@
 import type { Agent, ElicitAnswerValue, FillCardAnswer, Session, SessionImage, SessionStep } from '@/lib/data'
 import type { McpAppRpc, WebchatFileAttachment } from '@agentconnect.md/protocol'
 import type { SessionMessageDto } from '@/lib/api'
+import type { LiveRetireRead } from '@/lib/session-transcript'
 import type { ComposerFile } from '@/lib/webchat-file'
+import type { NewSessionVerdict } from '@/components/console/composer-control-commands'
 
 export interface PlaygroundData {
   /** Composer buffer for one session id (each live conversation has its own).
@@ -116,6 +118,8 @@ export interface PlaygroundData {
   pgSetFast: (id: string, agentId: string, fastMode: boolean, conversationId?: string) => void
   /** Interrupt the running turn without ending the session. */
   pgCancel: (id: string, agentId: string, conversationId?: string) => void
+  /** Start the conversation over (`/new`): a coordinator rotates, an ordinary chat clears its context; absent on a protocol without it. */
+  pgNewSession?: (id: string, agentId: string, conversationId?: string) => Promise<NewSessionVerdict>
   /** Answer the agent's in-band elicitation card; a list answers a multi-select, a number a
    *  numeric field, a record of value-per-field a multi-field form, `null` is Dismiss. */
   pgAnswerElicitation: (
@@ -166,14 +170,8 @@ export interface PlaygroundData {
    *  superseded regeneration keeps its author's lane open, so the indicator
    *  names the agent actually working, not the primary). */
   getBusyLaneAgentIds: (id: string) => string[]
-  /** Retire only live steps confirmed by authoritative transcript rows: the root's, or with `thread` that thread's. */
-  reconcileLiveSteps: (
-    id: string,
-    persisted: SessionMessageDto[],
-    agentId: string,
-    promptRows?: SessionMessageDto[],
-    thread?: string
-  ) => void
+  /** Retire the live steps a transcript read makes redundant (webchat-transcript-refresh.md §3). */
+  reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string, read?: LiveRetireRead) => void
 }
 
 /** One message waiting behind the in-flight turn. Send args are captured at

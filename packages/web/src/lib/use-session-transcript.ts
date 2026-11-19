@@ -16,7 +16,7 @@ import {
   type SessionThreadSummaryDto
 } from '@/lib/api'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
-import { mergeSessionMessages } from '@/lib/session-transcript'
+import { type LiveRetireRead, mergeSessionMessages } from '@/lib/session-transcript'
 
 /** A daemon without thread reads answers the roots view 409 `DAEMON_FEATURE_MISSING`; the flat view still reads. */
 function rootsViewMissing(error: unknown): boolean {
@@ -24,6 +24,8 @@ function rootsViewMissing(error: unknown): boolean {
 }
 
 const NO_THREADS: ReadonlyMap<string, SessionThreadSummaryDto> = new Map()
+// The least time between two tail reads, however many activity signals arrive in between.
+export const TAIL_MIN_GAP_MS = 1_000
 
 /** The footers a page carried, over those read before (webchat-threads.md §6.1). */
 function withThreads(
@@ -86,18 +88,11 @@ export interface UseSessionTranscriptInput {
   conversationMembers: readonly TranscriptMember[] | null
   /** The roster's platform, stamped on every member source (defaults to 'slack'). */
   conversationRosterPlatform: string | undefined
-  /** Live busy flag by ref — reconcile is skipped while the owning session is mid-turn. */
-  sessionBusyRef: RefObject<boolean>
   /** Member sessions this page's live turns went to (conversation mode); their human rows confirm the live prompts too. */
   promptSessionIds?: readonly string[]
   /** Read a coordinator's roots view, with its threads' footers, where its daemon serves it (single session only). */
   rootsView?: boolean
-  reconcileLiveSteps: (
-    id: string,
-    persisted: SessionMessageDto[],
-    agentId: string,
-    promptRows?: SessionMessageDto[]
-  ) => void
+  reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string, read?: LiveRetireRead) => void
 }
 
 export interface UseSessionTranscriptResult {
@@ -152,7 +147,6 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     conversationSourceKey,
     conversationMembers,
     conversationRosterPlatform,
-    sessionBusyRef,
     promptSessionIds,
     rootsView = false,
     reconcileLiveSteps
@@ -240,8 +234,15 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     },
     []
   )
-  // Rows a busy-skipped reconcile never saw: the tail passes only its increment and the cursor is already past them, so they ride along next time or a prompt row never retires its live echo.
-  const pendingReconcileRef = useRef<SessionMessageDto[]>([])
+  // Every row this visit read of the single session, so a copy named after its row was read still retires by it.
+  const seenRowsRef = useRef(new Map<number, SessionMessageDto>())
+  const seeRows = useCallback((rows: readonly SessionMessageDto[]): SessionMessageDto[] => {
+    for (const row of rows) seenRowsRef.current.set(row.seq, row)
+    return [...seenRowsRef.current.values()]
+  }, [])
+  // Tail reads are at least this far apart; a signal inside the gap waits for its end (webchat-transcript-refresh.md §4).
+  const lastTailAtRef = useRef(0)
+  const tailTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!wantTranscript || !sid || !aid) return
@@ -249,13 +250,15 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     // unmount, so a superseded fan-out stops occupying the CP proxy instead of running to completion.
     let active = true
     const ac = new AbortController()
+    const startedAt = Date.now()
     setTranscriptSessionId(sid)
     tailSessionRef.current = sid
     tailReadyRef.current = false
     liveCursorRef.current = null
     tailInFlightRef.current = null
     tailDirtyRef.current = false
-    pendingReconcileRef.current = []
+    seenRowsRef.current = new Map()
+    lastTailAtRef.current = 0
     setTailReady(false)
     setMsgLoading(true)
     setMsgErr(null)
@@ -316,8 +319,11 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         liveCursorRef.current = cursors.get(sid) ?? null
         tailReadyRef.current = true
         setTailReady(true)
-        if (merged.length > 0 && !sessionBusyRef.current)
-          reconcileLiveSteps(sid, merged, aid, promptRowsOf(rowsBySession, sid, promptSessionIdsRef.current))
+        if (merged.length > 0)
+          reconcileLiveSteps(sid, merged, aid, {
+            promptRows: promptRowsOf(rowsBySession, sid, promptSessionIdsRef.current),
+            readStartedAtMs: startedAt
+          })
       })().catch((e) => {
         if (!active) return
         setMsgErr(e instanceof Error ? e.message : String(e))
@@ -345,8 +351,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       setMsgPaging(false)
       tailReadyRef.current = true
       setTailReady(true)
-      if (!sessionBusyRef.current) reconcileLiveSteps(sid, page.messages, aid)
-      else pendingReconcileRef.current = page.messages
+      reconcileLiveSteps(sid, seeRows(page.messages), aid, { readStartedAtMs: startedAt })
     })().catch((e) => {
       if (!active) return
       setMsgErr(e instanceof Error ? e.message : String(e))
@@ -356,6 +361,8 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     return () => {
       active = false
       ac.abort()
+      if (tailTimerRef.current) clearTimeout(tailTimerRef.current)
+      tailTimerRef.current = null
       if (tailSessionRef.current === sid) {
         tailSessionRef.current = null
         tailReadyRef.current = false
@@ -363,14 +370,36 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
     }
     // conversationSourceKey keys the fan-out on the member SET — a roster refresh with identical
     // members must not refetch every transcript.
-  }, [wantTranscript, sid, aid, reconcileLiveSteps, conversationKey, conversationSourceKey, rootsView, readPage])
+  }, [
+    wantTranscript,
+    sid,
+    aid,
+    reconcileLiveSteps,
+    conversationKey,
+    conversationSourceKey,
+    rootsView,
+    readPage,
+    seeRows
+  ])
 
   const refreshTail = useCallback((): Promise<void> => {
-    if (!wantTranscript || !sid || !tailReadyRef.current || sessionBusyRef.current) return Promise.resolve()
+    if (!wantTranscript || !sid || !tailReadyRef.current) return Promise.resolve()
     if (tailInFlightRef.current) {
       tailDirtyRef.current = true
       return tailInFlightRef.current
     }
+    // A hidden page reads nothing; showing it again reads once.
+    if (typeof document !== 'undefined' && document.hidden) return Promise.resolve()
+    const wait = lastTailAtRef.current + TAIL_MIN_GAP_MS - Date.now()
+    if (wait > 0) {
+      tailTimerRef.current ??= setTimeout(() => {
+        tailTimerRef.current = null
+        void refreshTail()
+      }, wait)
+      return Promise.resolve()
+    }
+    const startedAt = Date.now()
+    lastTailAtRef.current = startedAt
     const platform = sessionPlatform
     if (conversationKey) {
       const sources = conversationMembersRef.current ?? []
@@ -416,8 +445,11 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
           conversationSourceAgentByMessageRef.current
         )
         setMsgs(merged)
-        if (tailSessionRef.current === sid && !sessionBusyRef.current)
-          reconcileLiveSteps(sid, merged, aid ?? '', promptRowsOf(state.rows, sid, promptSessionIdsRef.current))
+        if (tailSessionRef.current === sid)
+          reconcileLiveSteps(sid, merged, aid ?? '', {
+            promptRows: promptRowsOf(state.rows, sid, promptSessionIdsRef.current),
+            readStartedAtMs: startedAt
+          })
       })()
         .catch(() => {
           // Keep the last good transcript; the next signal retries.
@@ -450,14 +482,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         if (!page.liveMore || page.liveCursor === null) break
       }
       if (tailSessionRef.current !== sid) return
-      const pending = pendingReconcileRef.current
-      const rows = pending.length > 0 ? [...pending, ...persisted] : persisted
-      if (sessionBusyRef.current) {
-        pendingReconcileRef.current = rows
-        return
-      }
-      pendingReconcileRef.current = []
-      reconcileLiveSteps(sid, rows, aid ?? '')
+      reconcileLiveSteps(sid, seeRows(persisted), aid ?? '', { promptRows: persisted, readStartedAtMs: startedAt })
     })()
       .catch(() => {
         // Keep the last good transcript. The next SSE signal or reconnect retries without replacing
@@ -472,7 +497,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
       })
     tailInFlightRef.current = run
     return run
-  }, [wantTranscript, sid, aid, sessionPlatform, reconcileLiveSteps, conversationKey, readPage])
+  }, [wantTranscript, sid, aid, sessionPlatform, reconcileLiveSteps, conversationKey, readPage, seeRows])
 
   // "Load earlier": one strictly-older page, prepended. Single-session pages `sid` off its own
   // cursor; conversation mode (C3 §5.2) pages one older page per member and re-merges the union.
@@ -488,6 +513,7 @@ export function useSessionTranscript(input: UseSessionTranscriptInput): UseSessi
         // into the NEW session and re-point its cursor at the old one (tailSessionRef tracks the open
         // session, like refreshTail's guard).
         if (tailSessionRef.current !== sid) return
+        seeRows(page.messages)
         // Upsert, not concat: a Slack warm-thread backfill can make this older read overlap rows the
         // tail already added, so a raw prepend would duplicate them (and their React keys).
         setMsgs((current) =>

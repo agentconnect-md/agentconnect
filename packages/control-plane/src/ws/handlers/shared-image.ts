@@ -1,6 +1,7 @@
-/** `image/original/put` and `image/original/get`: the daemon's half of shared-image originals (webchat-generated-images.md §5). */
+/** `image/original/*` and `session/file/put`: the daemon's half of shared-image originals and shared-file snapshots. */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId } from '../../domain/ids.js'
+import { SessionFileRefusal } from '../../file-transfer/session-file.js'
 import { SharedImageRefusal } from '../../file-transfer/shared-image.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { frameOrgId } from './frame-org.js'
@@ -8,7 +9,7 @@ import type { Handler } from './index.js'
 import type { DaemonConnection } from '../connection.js'
 
 function sendRefusal(conn: DaemonConnection, id: string, err: unknown, fallback: string): void {
-  if (err instanceof SharedImageRefusal) {
+  if (err instanceof SharedImageRefusal || err instanceof SessionFileRefusal) {
     conn.sendError(id, err.code === 'UNAVAILABLE' ? 'INTERNAL' : 'SCOPE_DENIED', err.message, err.retryable)
     return
   }
@@ -57,5 +58,25 @@ export const handleSharedImageGet: Handler = async (frame, conn, deps) => {
     )
   } catch (err) {
     sendRefusal(conn, frame.id, err, 'the original could not be located')
+  }
+}
+
+export const handleSessionFilePut: Handler = async (frame, conn, deps) => {
+  if (!isFrame('session/file/put')(frame)) return
+  const orgId = frameOrgId(frame, conn)
+  if (!orgId || !deps.sessionFiles) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'this deployment cannot store shared-file snapshots', false)
+    return
+  }
+  // Like an image original, a snapshot needs current placement authority over the agent.
+  const agent = await deps.agent.get(orgId, AgentId(frame.payload.agentId))
+  if (!agent || !(await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, conn.daemonId))) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon does not serve that agent', false)
+    return
+  }
+  try {
+    conn.replyTo(frame, 'session/file/put/ok', await deps.sessionFiles.signPut(orgId, frame.payload))
+  } catch (err) {
+    sendRefusal(conn, frame.id, err, 'the snapshot could not be signed')
   }
 }

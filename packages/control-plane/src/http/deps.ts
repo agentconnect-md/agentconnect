@@ -2,6 +2,7 @@ import type { AzureDevOpsUserIdentityService } from '../azure-devops/user-identi
 import type { FileTransferService } from '../file-transfer/service.js'
 import type { CapabilityRequestService } from '../capability/capability-request.service.js'
 import type { SharedImageService } from '../file-transfer/shared-image.js'
+import type { SessionFileService } from '../file-transfer/session-file.js'
 /**
  * `http/deps.ts` — the dependency bundle the C2 BFF routes receive (design §2.1,
  * §2.4). Routes consume repository **ports** and cross-component services, never
@@ -631,4 +632,6 @@ export interface HttpDeps {
   fileTransfer?: FileTransferService
   /** Shared-image originals (webchat-generated-images.md §5); absent ⇒ `image/original/*` answers SCOPE_DENIED. */
   sharedImages?: SharedImageService
+  /** Shared-file snapshots (agent-authored-attachments.md §4.1); absent ⇒ every snapshot read is not found. */
+  sessionFiles?: Pick<SessionFileService, 'download'>
 }

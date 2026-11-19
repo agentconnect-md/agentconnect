@@ -6,10 +6,10 @@
  * `$update-model-pricing` skill and keep the focused tests in sync.
  *
  * Source: https://developers.openai.com/api/docs/pricing
- * Verified: 2026-09-05
+ * Verified: 2026-11-19
  */
 
-export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-09-05'
+export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-11-19'
 export const OPENAI_PUBLIC_PRICING_SOURCE = 'https://developers.openai.com/api/docs/pricing'
 
 const TOKENS_PER_MILLION = 1_000_000
@@ -34,11 +34,27 @@ interface ModelPricing {
 
 /** Exact public model ids only. Never prefix-match an unknown future model. */
 const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
+  'gpt-6.1-sol': {
+    standard: { input: 2, cachedInput: 0.1, cacheWrite: 2.5, output: 10 },
+    longContext: { input: 4, cachedInput: 0.2, cacheWrite: 5, output: 15 }
+  },
+  'gpt-6.1-terra': {
+    standard: { input: 1, cachedInput: 0.05, cacheWrite: 1.25, output: 5 },
+    longContext: { input: 2, cachedInput: 0.1, cacheWrite: 2.5, output: 7.5 }
+  },
   'gpt-6-astra': {
     standard: { input: 10, cachedInput: 1, cacheWrite: 12.5, output: 50 },
     longContext: { input: 20, cachedInput: 2, cacheWrite: 25, output: 75 }
   },
-  // Promotional list price ("available at least through November 21, 2026"); re-verify when the promo ends.
+  'gpt-6-sol': {
+    standard: { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 10 },
+    longContext: { input: 4, cachedInput: 0.4, cacheWrite: 5, output: 15 }
+  },
+  'gpt-6-luna': {
+    standard: { input: 0.1, cachedInput: 0.01, cacheWrite: 0.125, output: 0.5 },
+    longContext: { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 0.75 }
+  },
+  // Promotional list price ("available until November 30, 2026"); re-verify when the promo ends.
   'gpt-5.6-sol': {
     standard: { input: 4, cachedInput: 0.4, cacheWrite: 5, output: 20 },
     longContext: { input: 8, cachedInput: 0.8, cacheWrite: 10, output: 30 }

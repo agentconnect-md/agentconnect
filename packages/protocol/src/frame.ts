@@ -214,6 +214,8 @@ import {
   WorkspaceGitMessageResult
 } from './frames/workspace.js'
 import {
+  SessionFilePutOk,
+  SessionFilePutReq,
   SharedImageGetOk,
   SharedImageGetReq,
   SharedImagePutOk,
@@ -625,6 +627,8 @@ export const FRAME_SCHEMAS = {
   'image/original/get/ok': SharedImageGetOk,
   'image/original/resolve': SharedImageResolveReq,
   'image/original/resolve/ok': SharedImageResolveOk,
+  'session/file/put': SessionFilePutReq,
+  'session/file/put/ok': SessionFilePutOk,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitdiff': WorkspaceGitDiffReq,
@@ -1027,6 +1031,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('image/original/get/ok', FRAME_SCHEMAS['image/original/get/ok']),
   frame('image/original/resolve', FRAME_SCHEMAS['image/original/resolve']),
   frame('image/original/resolve/ok', FRAME_SCHEMAS['image/original/resolve/ok']),
+  frame('session/file/put', FRAME_SCHEMAS['session/file/put']),
+  frame('session/file/put/ok', FRAME_SCHEMAS['session/file/put/ok']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitdiff', FRAME_SCHEMAS['workspace/gitdiff']),

@@ -143,6 +143,10 @@
           "title": "Stop",
           "does": "Stop the current answer"
         },
+        "new": {
+          "title": "New session",
+          "does": "Start over with a fresh context"
+        },
         "model": {
           "title": "Model",
           "does": "List or switch models"
@@ -777,6 +781,9 @@
       "tasks": "Tasks",
       "showTasks": "Show tasks",
       "hideTasks": "Hide tasks",
+      "dreams": "Dreams",
+      "showDreams": "Show dreams",
+      "hideDreams": "Hide dreams",
       "all": "All",
       "noMatchesShort": "No matches"
     },

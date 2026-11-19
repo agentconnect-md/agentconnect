@@ -73,7 +73,7 @@ export const READ_ATTACHMENT_ARGS = z.object({
 /** The platform-neutral read deps: live gateways plus the history-backed fallbacks for platforms whose bot API cannot enumerate chats or users. `AskDeps` is restated rather than inherited by accident: these reads ask on their OWN (`historyBot`), not only through the resolver. */
 export interface PlatformReadDeps extends GatewayDeps, AskDeps {
   /** Resolve the narrower authenticated-download port for platforms without the generic reply gateway. */
-  attachmentReaderFor?: (integrationId: string) => Pick<MessageGateway, 'downloadFile'> | undefined
+  attachmentReaderFor?: (integrationId: string) => Pick<MessageGateway, 'downloadFile' | 'getFileInfo'> | undefined
   /** Conversation targets this agent has been triggered in on a platform, from local session history; backs the `listChannels` fallback for platforms whose bot API can't enumerate chats (Telegram), and absent ⇒ no fallback (the empty live list stands). `integrationId` scopes the answer to ONE physical bot's history; omitted ⇒ the agent's only bot on the platform, and nothing at all when it has several. */
   observedChannels?: (
     agentId: string,
@@ -557,10 +557,20 @@ export async function readAttachment(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: PlatformReadDeps,
-  gw: Pick<MessageGateway, 'downloadFile'>
+  gw: Pick<MessageGateway, 'downloadFile' | 'getFileInfo'>,
+  authorizeFileRead?: (source: { platform: string; integrationId: string; channels: string[] }) => Promise<void>
 ): Promise<unknown> {
-  const { url, mimeType: mimeTypeHint } = parseArgs(READ_ATTACHMENT_ARGS, args)
+  const parsed = parseArgs(READ_ATTACHMENT_ARGS, args)
+  let { url, mimeType: mimeTypeHint } = parsed
   const max = deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES
+  // A bare file ID (the attachment notice's `fileId=`) resolves to its URL; a Telegram file_id has no getFileInfo.
+  if (!URL.canParse(url) && gw.getFileInfo && authorizeFileRead && ctx.integrationId) {
+    const info = await gw.getFileInfo(url)
+    if (!info) throw new Error(`could not find a file with id ${url}`)
+    await authorizeFileRead({ platform: ctx.platform, integrationId: ctx.integrationId, channels: info.channels })
+    url = info.sourceUrl
+    mimeTypeHint ??= info.mimeType
+  }
   const bytes = await gw.downloadFile(url, max)
   if (!bytes) {
     throw new Error(

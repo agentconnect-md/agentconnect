@@ -1126,11 +1126,14 @@ told "not yet". The peer directory carries a pool agent nobody may be addressed
 at yet — a grant its member has not confirmed in a digest, a lapsed lease a live
 member is about to claim — as a **pending** entry (policy intact, no daemon), the
 relay answers the retryable **`not_ready`** for it (as does a target daemon
-handed an agent it does not run), no hop caches that verdict against the
+handed an agent it does not run, or one it is draining), no hop caches that verdict against the
 `deliveryId`, and the source daemon re-sends the same `deliveryId` with backoff
 for a few lease horizons before recording it as terminal. Exactly-once holds
 because the id never changes: an attempt that landed is replayed from the
-target's dedup on every later attempt.
+target's dedup on every later attempt. A reply to a session whose agent is
+draining on the replying daemon itself waits the same way: within that window it
+is offered again until the drain hands the agent on, and then it travels to the
+next holder like any cross-daemon reply.
 
 ## 7. Ownership and dial-in binding (D3)
 

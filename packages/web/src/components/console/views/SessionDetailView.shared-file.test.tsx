@@ -5,16 +5,22 @@
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { Agent, Session } from '@/lib/data'
 import type { SessionMessageDto } from '@/lib/api'
 
-const wire = vi.hoisted(() => ({ messages: [] as unknown[], download: vi.fn(), save: vi.fn(), resolve: vi.fn() }))
+const wire = vi.hoisted(() => ({
+  messages: [] as unknown[],
+  search: '',
+  download: vi.fn(),
+  save: vi.fn(),
+  resolve: vi.fn()
+}))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'session-1' }),
   usePathname: () => '/acme/sessions/session-1',
-  useSearchParams: () => new URLSearchParams(''),
+  useSearchParams: () => new URLSearchParams(wire.search),
   useRouter: () => ({
     replace: () => {},
     push: () => {},
@@ -44,11 +50,24 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string }) =>
       Promise.resolve({ path: opts.path, exists: true, entries: [], nextCursor: null })
     ),
+    fetchWorkspaceFile: vi.fn((_agentId: string, opts: { path: string }) =>
+      Promise.resolve({
+        path: opts.path,
+        exists: true,
+        type: 'file',
+        encoding: 'utf8',
+        content: '<p>rewritten</p>',
+        size: 16,
+        mtime: '2026-01-02T00:00:00.000Z',
+        truncated: false
+      })
+    ),
     fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
     fetchWorkspaceGitLog: vi.fn(() =>
       Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null })
     ),
     downloadSessionFile: wire.download,
+    fetchSessionSharedFile: vi.fn(() => Promise.reject(new actual.ApiError('shared file not found', 404))),
     resolveSharedImageOriginal: wire.resolve
   }
 })
@@ -187,6 +206,7 @@ async function render() {
 const text = () => container?.textContent ?? ''
 
 beforeEach(() => {
+  wire.search = ''
   wire.download.mockReset()
   wire.save.mockReset()
   wire.messages = [
@@ -240,6 +260,38 @@ describe('a shared file on the session page', () => {
       sha256: SHA
     })
     expect(wire.save).toHaveBeenCalledWith(blob, 'chart.png')
+  })
+
+  it('downloads the file the workspace viewer shows, not the version the session once shared', async () => {
+    wire.messages = [
+      row({
+        seq: 1,
+        sender: 'agent-1',
+        kind: 'text',
+        text: `daily report\n[shared: out/report.html (application/octet-stream, 16 bytes, sha256:${SHA})]`
+      })
+    ]
+    wire.search = 'file=out%2Freport.html&agent=agent-1'
+    // The viewer opens once the session's workspace scope is known; this one shares the agent's checkout.
+    Object.assign(session, { workspaceIsolation: 'shared' })
+    onTestFinished(() => {
+      delete (session as { workspaceIsolation?: string }).workspaceIsolation
+    })
+    const blob = new Blob(['<p>rewritten</p>'])
+    wire.download.mockResolvedValue(blob)
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const button = container?.querySelector('[data-viewer-download]') as HTMLButtonElement | null
+    expect(button).not.toBeNull()
+    await act(async () => {
+      button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(wire.download).toHaveBeenCalledWith('agent-1', { sessionId: 'session-1', path: 'out/report.html' })
+    expect(wire.save).toHaveBeenCalledWith(blob, 'report.html')
   })
 
   it('leaves a person’s message that merely looks like a marker as text', async () => {

@@ -143,6 +143,10 @@
           "title": "停止",
           "does": "停止当前回答"
         },
+        "new": {
+          "title": "新会话",
+          "does": "以全新的上下文重新开始"
+        },
         "model": {
           "title": "模型",
           "does": "列出或切换模型"
@@ -777,6 +781,9 @@
       "tasks": "任务",
       "showTasks": "显示 task",
       "hideTasks": "隐藏 task",
+      "dreams": "Dreaming",
+      "showDreams": "显示 Dreaming",
+      "hideDreams": "隐藏 Dreaming",
       "all": "全部",
       "noMatchesShort": "无匹配项"
     },

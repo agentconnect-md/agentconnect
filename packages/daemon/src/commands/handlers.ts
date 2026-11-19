@@ -22,7 +22,9 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import { routeRules, type RouteVia } from '../router/routing-table.js'
 import { conversationAdmitted, integrationRouting, type RoutingRule } from '../router/routing-rule.js'
-import { sessionKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
+import { sessionKey, transcriptChannelKey, type LocalStore, type SessionRecord } from '../store/local-store.js'
+import { chatSessionKey } from '../session/chat-application.js'
+import type { WebchatNewSessionOutcome } from '@agentconnect.md/protocol'
 import {
   appendCoordinateTs,
   isAppendCoordinate,
@@ -1313,6 +1315,44 @@ export class CommandHandlers {
       rotated++
     }
     return rotated
+  }
+
+  /** A webchat conversation's `new_session` (auto-session-mode.md §10): its coordinator rotates as a root `!new` does, an ordinary chat clears in place. */
+  async newWebchatSession(
+    agentId: string,
+    conversationId: string,
+    coordinator: string | undefined,
+    actor?: InteractionActor
+  ): Promise<WebchatNewSessionOutcome> {
+    if (coordinator !== undefined) {
+      const from = sessionKey('webchat', conversationId, coordinator, agentId)
+      // A running turn finishes on the old coordinate, and a lost CAS reports the rotation that won.
+      const next = await this.host.store().advanceAppendCoordinate(agentId, conversationId, coordinator, null)
+      if (isCoordinatorCoordinate(next) && next !== coordinator)
+        await this.host.adoptCoordinatorTasks(agentId, from, sessionKey('webchat', conversationId, next, agentId))
+      this.logSessionAction('new', from, actor)
+      return 'rotated'
+    }
+    const key = chatSessionKey(conversationId, agentId)
+    // Clearing nulls the runtime id a running turn is identified by (channel-session-mode.md §7.3).
+    if (this.gateActiveFor(key)) return 'busy'
+    const rec = await this.host.store().getSession(key)
+    if (!rec) return 'empty'
+    // Rows carry the relay's post clock and the daemon's, so the cursor is the newest recorded row, never this daemon's now.
+    const scope = {
+      transcriptChannel: transcriptChannelKey(rec.channel, rec.transportScope),
+      coordinate: rec.thread,
+      sessionKey: key,
+      agentId
+    }
+    const unread = await this.host.store().transcriptSince(scope, rec.lastDeliveredTs)
+    const cursor = unread.at(-1)?.ts ?? rec.lastDeliveredTs
+    if (cursor === null) return 'empty'
+    if (!(await this.host.store().clearSessionContext(key, cursor, Date.now(), rec.acpSessionId))) return 'busy'
+    // A turn admitted in the window on an unchanged runtime id restores what was cleared at its end.
+    if (this.gateActiveFor(key)) return 'busy'
+    this.logSessionAction('new', key, actor)
+    return 'cleared'
   }
 
   /** Every addressable session in one Slack conversation, newest first — the native

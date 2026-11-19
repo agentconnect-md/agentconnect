@@ -490,14 +490,15 @@ export default function HomeView() {
     () => [...agents].sort((a, b) => (sessionsByAgent.get(b.id) ?? 0) - (sessionsByAgent.get(a.id) ?? 0)),
     [agents, sessionsByAgent]
   )
-  // Recent leaves tasks out, as All sessions does; the shared window keeps them for lookups by id and search.
+  // Recent leaves tasks and memory dream sessions out, as All sessions does; the shared window keeps them for lookups by id and search.
   const { sessions: recentRows, isLoading: recentRowsLoading } = useSessionList(MOCK_MODE ? null : activeOrg?.id, {
-    excludeTasks: true
+    excludeTasks: true,
+    excludeDreams: true
   })
   const recentSessions = useMemo(
     () =>
       MOCK_MODE
-        ? allSessions.filter((s) => !s.subsession)
+        ? allSessions.filter((s) => !s.subsession && s.platform !== 'dream')
         : recentRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
     [allSessions, getAgent, recentRows]
   )

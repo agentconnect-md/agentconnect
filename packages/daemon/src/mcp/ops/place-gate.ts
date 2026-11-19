@@ -219,7 +219,8 @@ export async function assertPlaceRead(
 export async function assertFileRead(
   ctx: SessionContext,
   source: { platform: string; integrationId: string; channels: string[] },
-  deps: PlaceAccessDeps
+  deps: PlaceAccessDeps,
+  tool = 'sendMessage'
 ): Promise<void> {
   for (const channel of source.channels) {
     if (source.platform === ctx.platform && channel === ctx.channel && source.integrationId !== ctx.integrationId)
@@ -233,7 +234,8 @@ export async function assertFileRead(
     const verdict = await judgePlaceRead(ctx, 'getChannelHistory', described, source.integrationId, deps)
     if (!verdict.refused) return
   }
-  throw new Error('sendMessage: I cannot read that attachment from this conversation. Nothing was sent.')
+  const tail = tool === 'sendMessage' ? ' Nothing was sent.' : ''
+  throw new Error(`${tool}: I cannot read that attachment from this conversation.${tail}`)
 }
 
 /** send-message-guide.md §9.2: whether a calling turn's people may join an existing session, judged as a read of its conversation. */

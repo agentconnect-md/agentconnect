@@ -355,6 +355,54 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
   })
 })
 
+describe("a restarted member's register-time detach keeps the holder's queued work", () => {
+  const snapshot = (agentId: string, action: 'detach' | 'remove') => ({
+    routingEpoch: 1,
+    assignments: [],
+    agents: [],
+    integrations: [],
+    crons: [],
+    leases: [],
+    drop: { assignments: [], crons: [], agents: [{ agentId, action }], integrations: [] }
+  })
+  const queue = (store: LocalStore, id: string, agentId: string) =>
+    store.appendInbox({
+      id,
+      sessionKey: `slack:C1:${id}:${agentId}`,
+      agentId,
+      msg: JSON.stringify({ msgId: id, text: 'queued', platform: 'slack', channel: 'C1' }),
+      integrationId: null,
+      callMeta: null,
+      isQueueCmd: null,
+      enqueuedAt: '100'
+    })
+  const queued = async (store: LocalStore, agentId: string) =>
+    (await store.listInboxBySessionKeyFifo()).filter((row) => row.agentId === agentId).map((row) => row.id)
+
+  it('on a shared store a detach leaves the rows for the member that serves the agent now', async () => {
+    const a = await boot(scaffold(), 'daemon-a')
+    const store: LocalStore = a.inner.store
+    await queue(store, 'held-elsewhere', AGENT_A)
+    await a.inner.cpConfigApply().applyReconcileSnapshot(snapshot(AGENT_A, 'detach'))
+    expect(a.inner.cpDroppedAgents.has(AGENT_A)).toBe(true)
+    expect(await queued(store, AGENT_A)).toEqual(['held-elsewhere'])
+    await a.daemon.stop()
+  })
+
+  it('a removal still deletes them, and so does a detach on a private store', async () => {
+    const a = await boot(scaffold(), 'daemon-a')
+    const store: LocalStore = a.inner.store
+    await queue(store, 'removed', AGENT_A)
+    await a.inner.cpConfigApply().applyReconcileSnapshot(snapshot(AGENT_A, 'remove'))
+    expect(await queued(store, AGENT_A)).toEqual([])
+    a.inner.sharedStore = false
+    await queue(store, 'private', AGENT_B)
+    await a.inner.cpConfigApply().applyReconcileSnapshot(snapshot(AGENT_B, 'detach'))
+    expect(await queued(store, AGENT_B)).toEqual([])
+    await a.daemon.stop()
+  })
+})
+
 describe('on a private store, a daemon judges every agent it keeps rows for (#2246)', () => {
   /** One member on its own store, serving only bot-b: bot-a's duty is held elsewhere, or the agent is gone. */
   async function bootAlone() {

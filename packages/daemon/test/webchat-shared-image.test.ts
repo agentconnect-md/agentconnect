@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { createHash } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -13,7 +14,9 @@ import {
   publishWebchatSharedImage,
   resolveSharedImageOriginal,
   SharedImagePublishError,
+  snapshotSharedFile,
   sweepSharedImageStaging,
+  type SharedFileSnapshotDeps,
   type SharedImagePublisherDeps,
   type WebchatShareTurn
 } from '../src/webchat/shared-image.js'
@@ -464,5 +467,66 @@ describe('original resolution', () => {
     const found = await store.transcriptSharedImageByAttachment(CONVERSATION, '55555555-5555-4555-8555-555555555555')
     expect(found).toMatchObject({ sender: AGENT, image: { revision: 1, original: { status: 'expired' } } })
     await store.close()
+  })
+})
+
+describe('snapshotSharedFile', () => {
+  const bytes = Buffer.from('<p>first draft</p>')
+  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  const file = { agentId: AGENT, sessionId: 'session-1', name: 'report.html', bytes, sha256 }
+
+  function snapshotDeps(over: Partial<SharedFileSnapshotDeps> = {}): SharedFileSnapshotDeps {
+    return {
+      fileTransfer: () => ({ maxBytes: 1024 }),
+      signPut: vi.fn(async () => 'unsupported' as const),
+      network: () => 'cluster',
+      stagingRoot: mkdtempSync(join(tmpdir(), 'ac-share-snapshot-')),
+      log: quietLog,
+      ...over
+    }
+  }
+
+  it('uploads exactly the shared bytes on the URL the control plane signs for the session', async () => {
+    const target = await bucket(200)
+    const signPut = vi.fn(async () => ({ url: target.url, headers: { 'content-length': String(bytes.length) } }))
+    const d = snapshotDeps({ signPut })
+    expect(await snapshotSharedFile(d, file)).toBe(true)
+    expect(target.received()).toEqual(bytes)
+    expect(signPut).toHaveBeenCalledWith({
+      agentId: AGENT,
+      sessionId: 'session-1',
+      name: 'report.html',
+      bytes: bytes.length,
+      sha256: Buffer.from(sha256, 'hex').toString('base64'),
+      network: 'cluster'
+    })
+    // Its staging copy is gone once the upload settles.
+    expect(readdirSync(d.stagingRoot)).toEqual([])
+  })
+
+  it('keeps nothing without a bucket, past its limit, or toward a control plane that predates snapshots', async () => {
+    const signPut = vi.fn(async () => 'unsupported' as const)
+    expect(await snapshotSharedFile(snapshotDeps({ fileTransfer: () => undefined, signPut }), file)).toBe(false)
+    expect(await snapshotSharedFile(snapshotDeps({ fileTransfer: () => ({ maxBytes: 4 }), signPut }), file)).toBe(false)
+    expect(signPut).not.toHaveBeenCalled()
+    expect(await snapshotSharedFile(snapshotDeps({ signPut }), file)).toBe(false)
+  })
+
+  it('reuses bytes the session already holds, and reports a refused upload without throwing', async () => {
+    expect(await snapshotSharedFile(snapshotDeps({ signPut: vi.fn(async () => ({ stored: true })) }), file)).toBe(true)
+    const target = await bucket(403)
+    const warn = vi.fn()
+    const d = snapshotDeps({
+      signPut: vi.fn(async () => ({ url: target.url, headers: {} })),
+      log: { ...(quietLog as object), warn } as never
+    })
+    expect(await snapshotSharedFile(d, file)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('report.html'))
+    const refused = snapshotDeps({
+      signPut: vi.fn(async () => {
+        throw new Error('the control plane does not know this session yet')
+      })
+    })
+    expect(await snapshotSharedFile(refused, file)).toBe(false)
   })
 })

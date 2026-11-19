@@ -5410,6 +5410,18 @@ export const ComputerScreenshotParams = z.object({
   sha256: z.string().regex(/^[0-9a-f]{64}$/)
 })
 export const ComputerScreenshotSessionParam = z.object({ sessionId: z.string().min(1).max(256) })
+/** A shared file's snapshot (agent-authored-attachments.md §4.1): its session and the digest prefix its share marker records. */
+export const SessionSharedFileParams = z.object({
+  sessionId: z.string().min(1).max(256),
+  sha256: z.string().regex(/^[0-9a-f]{16,64}$/)
+})
+export const SessionSharedFileQuery = z.object({ name: z.string().min(1).max(255).optional() })
+export const SessionSharedFileDto = z.object({
+  name: z.string(),
+  bytes: z.number().int(),
+  url: z.string(),
+  expiresAt: z.string()
+})
 /** Screenshot storage an organization used (computer-use.md §9): bytes written in the window and held now. */
 export const ComputerScreenshotUsageDto = z.object({
   from: z.string(),

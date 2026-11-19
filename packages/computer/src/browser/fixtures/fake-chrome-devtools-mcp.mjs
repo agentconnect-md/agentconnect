@@ -54,6 +54,7 @@ function handle(name, args) {
     const pages = [...state.pages, page]
     const targets = [...state.targets, { ...page, type: 'page', id: 'E1E2E3E4E5F60718293A4B5C6D7E8F90' }]
     writeFileSync(stateFile, JSON.stringify({ ...state, pages, targets }))
+    if (state.newPageResultBytes) return text('a'.repeat(state.newPageResultBytes))
     return pagesResult(pages, 'Opened a tab.')
   }
   if (name === 'take_snapshot') {

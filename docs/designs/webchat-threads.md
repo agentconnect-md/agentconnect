@@ -483,8 +483,8 @@ As implemented (PR 11):
   thread and is busy only for a turn sent in it (`getPgTurnThread`).
 - **A thread message never steers**: one sent while a turn runs, or any message while a thread turn
   runs, queues and goes out in turn; the conversation's composer does not list a queued thread message.
-- **Reconciling** is scoped (`liveThreadScope`): a thread's record retires its own turns, and the
-  roots view retires the root's turns and a thread message the coordinator answered.
+- **Reconciling** (superseded by [webchat-transcript-refresh.md](webchat-transcript-refresh.md) §3, which retires by post id) was scoped (`liveThreadScope`): a thread's record retired its own turns, and the
+  roots view retired the root's turns and a thread message the coordinator answered.
 - **Another member** writes in a held thread through the task's session-targeted continuation, now
   with `thread` set to the panel's root, so it lands in that thread among the task's; its steps are
   not stamped, since the frames that answer it carry no thread.

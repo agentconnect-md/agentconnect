@@ -219,21 +219,54 @@ workspace path (a model-chosen label) plus the **type, byte length, and a digest
 was actually published — and, for an image whose bytes fit the existing 160 KB
 `SessionImageAttachment` cap, the bytes themselves, exactly as an inbound image does, so
 the console can render what the agent shared and not only that it shared something. Above
-the cap, and for every document, the row is digest-only; nothing else is kept daemon-side.
+the cap, and for every document, the row is digest-only; the bytes are kept, if at all, as
+the session's snapshot (§4.1), never in the daemon's store.
 Without this, a user's uploaded PNG would preview while the chart the agent produced in
 reply would not. The console reads the marker's path and digest prefix to download the
-shared file's original bytes (inbound-file-attachments.md §5.1) and renders a document's
+shared file (inbound-file-attachments.md §5.1) and renders a document's
 row as a download chip, so the marker's shape is a contract with the console, not only a
 forensic string. In a console-owned turn a document is published through that same
 contract: an ordinary agent message carrying the caption and marker, committed to the
 transcript before it is emitted (webchat-generated-images.md §4's durable-before-visible
-rule), with no preview and no original delivery — the bytes stay in the workspace. The
-chip's workspace download is that document's only delivery path, so a console document is
+rule), with no preview. The chip's fallback when no snapshot was kept is the
+workspace download, so a console document is
 bounded by the outbound per-file cap _clamped to that route's fixed ceiling_
 (`MAX_WORKSPACE_DOWNLOAD_BYTES`, 8 MiB): raising `maxOutboundFileBytes` must never publish
 a chip that can only answer 413.
 
-## 5. Size, time, and refusals that say why
+### 4.1 The session keeps what was shared
+
+A share names a workspace path, and agents rewrite their outputs: a daily report run
+overwrites the morning's draft under the same name. Read from the workspace, every earlier
+chip then answers `WORKSPACE_FILE_CHANGED`, and the revision the conversation shows is
+gone. So when the deployment has a transfer bucket
+([source-cache-file-transfer.md](source-cache-file-transfer.md)), the daemon keeps the
+published bytes as the session's **snapshot** before the share's row is recorded: on a
+platform turn after the upload succeeds, in a console turn before the chip is emitted.
+
+- **Write.** The daemon asks `session/file/put` (agent, outward session, name, size, base64
+  SHA-256; CP feature `session-file-snapshot-v1`). The CP signs only for a daemon placed on
+  the agent and a session of that agent whose content is not purged (an unknown session is
+  a retryable refusal), records a `session_file_snapshot` row, and returns a PUT presigned
+  for exactly those bytes under
+  `src/<org>/transfer/session/<agentId>/<hash(sessionId)>/<sha256>`, or `stored` when the
+  bucket already holds them. The object is tagged `ac-cache=live`, which no lifecycle rule
+  collects. A failed or refused snapshot is logged and never fails the share; the chip then
+  falls back to the workspace.
+- **Read.** `GET /sessions/{sessionId}/shared-files/{sha256}` (`getSessionSharedFile`) takes
+  the marker's digest prefix, checks that the caller can view the session and that its content
+  is not purged (whatever the reaper has deleted so far), HEADs the object
+  for exactly the recorded size and checksum, and answers a short-lived signed GET that
+  downloads it as an attachment under its name. The console's chip asks it first and uses
+  the digest-checked workspace download only when it answers 404.
+- **Lifetime.** A snapshot lives as long as its session's content. Every CP replica sweeps
+  every 10 minutes: rows whose session is purged (`contentPurgedAt`, the daemon's retention
+  receipt), or whose session row has been gone for over an hour (its agent or organization
+  was deleted), have their object deleted first and then the row, so a failed delete is
+  retried. Console image originals (webchat-generated-images.md §5) are recorded in the
+  same table and released the same way.
+
+## 5. Size, time, and refusals that say why## 5. Size, time, and refusals that say why
 
 - **Per file:** an outbound cap, its own config entry defaulting to
   `limits.maxAttachmentBytes` (8 MB). It is not the same knob semantically — inbound
@@ -324,9 +357,8 @@ shim boundary, and generalizes to none of the other three platforms.
   download chip there (§4) and a played animation on every IM platform.
 - **A document card in the console** — a preview-less variant of the shared-image card
   (icon, name, size, download). The existing chip already renders exactly that from the
-  marker, live and from history, so a second card shape bought nothing. Revisit if a
-  document ever needs original delivery through the transfer cache (today it downloads
-  from the workspace, under that route's cap).
+  marker, live and from history, so a second card shape bought nothing. Its original
+  delivery is §4.1's snapshot, with the workspace download as the fallback.
 - **QQ documents** — the adapter's upload is prepared as an image (`file_type: 1`); the
   file arm is QQ's own follow-up (qq-integration.md), and until then QQ answers
   `unsupported_type`.

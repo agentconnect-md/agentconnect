@@ -931,6 +931,21 @@ export interface ComputerScreenshotRecord {
   expiresAt: Date
 }
 
+/** One shared file's snapshot (agent-authored-attachments.md §4.1); the bytes live in the transfer bucket under `objectKey`. */
+export interface SessionFileSnapshotRecord {
+  id: string
+  orgId: string
+  agentId: string
+  sessionId: string
+  /** Lower-case hex SHA-256 of the bytes. */
+  sha256: string
+  bytes: number
+  /** A document's file name; null for an image original. */
+  name: string | null
+  objectKey: string
+  createdAt: Date
+}
+
 /** Screenshot bytes an organization wrote in a window, and what it holds now. */
 export interface ComputerScreenshotUsageTotals {
   written: { count: number; bytes: number }
@@ -993,6 +1008,16 @@ export interface ComputerUsageRepo {
   settings(orgId: string): Promise<ComputerOrgSettingsRecord | null>
   setQuotas(orgId: string, quotas: unknown): Promise<ComputerOrgSettingsRecord>
   setEgress(orgId: string, egress: unknown, sealedPassword: string | null): Promise<ComputerOrgSettingsRecord>
+}
+
+export interface SessionFileSnapshotRepo {
+  /** Record a snapshot's key; an existing row for the same key is returned instead. */
+  reserve(row: Omit<SessionFileSnapshotRecord, 'createdAt'>): Promise<SessionFileSnapshotRecord>
+  /** A session's snapshots whose digest starts with `sha256Prefix`, newest first. */
+  findByDigest(orgId: string, sessionId: string, sha256Prefix: string): Promise<SessionFileSnapshotRecord[]>
+  /** Rows to release: their session's content is purged, or the session row has been gone since before `missingBefore`. */
+  reapable(missingBefore: Date, limit: number): Promise<SessionFileSnapshotRecord[]>
+  delete(id: string): Promise<void>
 }
 
 export interface ComputerScreenshotRepo {
@@ -1949,6 +1974,8 @@ export interface SessionFilterQuery extends SessionQuery {
   activityState?: ActivityState
   /** Leave out tasks: rows whose thread is a `subsession:` coordinate. */
   excludeSubsessions?: boolean
+  /** Leave out memory dream sessions: rows on the `dream` session-identity platform. */
+  excludeDreams?: boolean
   /** Code-host hook ids keyed by provider: each provider is promoted out of the generic
    *  hook bucket into its own integration, and `integration: 'hook'` excludes them all.
    *  Keyed rather than one field per host, so a new provider needs no new field here. */

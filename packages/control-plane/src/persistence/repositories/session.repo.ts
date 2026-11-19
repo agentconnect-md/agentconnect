@@ -359,6 +359,7 @@ function pageWhereSql(
       Prisma.sql`((${a}."thread" IS NULL OR ${a}."thread" NOT LIKE ${`${SUBSESSION_COORDINATE_PREFIX}%`}) AND ${a}."taskParentSessionId" IS NULL)`
     )
   }
+  if (q.excludeDreams) filters.push(Prisma.sql`${a}."platform" IS DISTINCT FROM 'dream'`)
   if (q.hookTriggerIds) {
     const repository = hookTriggerSql(q.hookTriggerIds, a)
     const installation = q.hookTriggerInstallationChannel

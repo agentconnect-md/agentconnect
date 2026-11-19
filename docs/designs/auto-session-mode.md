@@ -364,6 +364,44 @@ question, and the model must answer Boolean questions (400 otherwise). Null remo
 - **Rollout.** The daemon advertises `coordinator-filter-v1`; the console offers the filter only where
   the agent's daemon does. An older daemon ignores the field and runs no filter.
 
+### 4.8 Prewarming the task's host
+
+On a pool member that issues per-session model credentials, every task starts its own model host,
+and before this that start ran only after the coordinator decided. In production that left a new
+task's first output 7–9 s behind the coordinator's `sendMessage`: 1.3–1.9 s before the host launched
+(credential issue, preparation) and 5–7.5 s from launch to first output (runtime spawn, `initialize`,
+`session/new`, the model). The key a new threaded task gets is already fixed by its message
+(`sessionKey(platform, channel, replyThreadOf(msg), agent)`, §6.4), so the daemon starts that host
+while the coordinator is still deciding.
+
+- **What is started.** The host alone: the credential issue, the runtime's spawn and `initialize`.
+  No ACP session, session row or MCP grant exists until the task's first turn, so a message the
+  coordinator answers or ignores leaves no session behind.
+- **Which messages.** A person's message addressed to the agent (a webchat message, a direct
+  message or a mention) whose thread no task holds yet and that has no session of its own. At most
+  `TASK_PREWARMS_PER_TURN` (2) per turn. An unaddressed channel message, which the coordinator mostly
+  leaves, starts nothing. Neither does a post-less console message, whose page task is keyed only
+  when it opens (§10).
+- **Where.** Only for an agent whose sessions share its pod and that has no model-selection
+  Decision, which may start the task on another runtime. A session-isolated task runs in a pod of
+  its own, which a guess must not create or clone into. A self-hosted daemon prewarms nothing, since
+  its hosts are not per-session. A task's dispatch carries no worktree or runtime choice of its own,
+  so its first turn picks the tier and runtime the prewarm used. A model differing from the agent's
+  is switched on that turn, as for any session.
+- **Claim and release.** A task whose turn already owns its session key is never prewarmed; checked
+  with no wait before the start, this puts every prewarm ahead of its task's first turn. That turn
+  waits for a prewarm still starting before it asks the pool for its host, so the two never race,
+  and then finds the host running. A prewarm the task has
+  not claimed is released `TASK_PREWARM_GRACE_MS` (30 s) after the coordinator's turn ends, or
+  `TASK_PREWARM_MAX_MS` (5 min) after it started, whichever comes first. A later coordinator turn
+  deciding on the same message restarts that clock. Its credential is revoked when that release
+  stops the host. A release waits for the start to settle, and a claim arriving during a release
+  waits for it to finish, then starts afresh. A release is put off while a turn of the task owns its
+  key. Shutdown refuses further prewarms, and a drain skips them.
+- **Cost.** An unused prewarm spends one credential issue and a runtime process for up to the
+  grace. Its outward session id, minted for the issue, ages out with the store's other unused ones. It also keeps the agent pod awake as long as it lives, which the coordinator's own turn
+  already does.
+
 ## 5. Tools
 
 ### 5.1 `sendMessage` task actions
@@ -1127,6 +1165,8 @@ decided before §6.9's homes are built for it.
   In a room without threads every command is at the root (§6.10).
 - A platform's own "new chat" gesture (Slack's Assistant thread) is a root `!new`: it starts a new
   coordinator, which takes the threaded tasks over. A conversation with no coordinator yet mints none.
+- Webchat parses no `!` text, so its composer's `/new` (also `/clear`, `/reset`) is a console command
+  sent as the `new_session` op (§10).
 
 ## 9. Several agents
 
@@ -1171,6 +1211,14 @@ already running takes the change on its next turn, with no `!new`.
     it, so that text is its reply and holds nothing else.
   - It runs over the legacy webchat protocol; an AHP conversation stays an ordinary one for now.
 - New session opens an **ordinary webchat session** without the coordinator, as today.
+- **Starting over** (`/new` in the composer, the `new_session` op, `webchat-new-session-v1`): in the
+  coordinator conversation it is a root `!new` (§8): the coordinator rotates, its tasks keep working,
+  and the console opens a fresh page that the next message begins. In an ordinary conversation it is
+  Per thread's `!new`: the session keeps its identity and loses its context, its read cursor moved to
+  the newest recorded row, since rows carry both the relay's post clock and the daemon's; it waits
+  for a running turn. Only the conversation's owner or the agent's editors may start over; a
+  continued session starts over from its own platform conversation, and a multi-agent or AHP
+  conversation does not offer it yet.
 - Every task's page accepts messages (today it is read-only), for whoever may continue the parent,
   where the daemon advertises `task-page-messages-v1`, which its Auto switch also turns on.
   - A threaded task's page is its thread's session, which the console already continues. A background

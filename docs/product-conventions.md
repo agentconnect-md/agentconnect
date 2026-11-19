@@ -7,10 +7,12 @@ the source of truth for cross-cutting product conventions.
 ## Webchat reply boundaries
 
 Each agent message shown as a separate block while streaming remains a separate block
-in conversation history. A transcript refresh replaces a live block only after its
-saved reply is available; saving a prompt alone must not hide an unfinished reply.
-A completed turn with no text reply retires its live work on the next transcript
-refresh after its prompt has been saved and all stream lanes finish.
+in conversation history. A page backed by transcript rows draws a turn's work from its
+rows as they are saved, mid-turn too, and streams only the reply text until that text
+is saved; saving a prompt alone must not hide an unfinished reply. Once every stream
+lane of a turn has finished, the next transcript read retires whatever live copy the
+rows do not hold, text the turn never posted included, so the page matches a reload
+without one ([webchat-transcript-refresh.md](designs/webchat-transcript-refresh.md)).
 
 ## Legacy webchat connection retries
 
@@ -1667,7 +1669,9 @@ the sessions this one called or woke, "References", plus a merged conversation's
 Tasks never appear there; they are in the Tasks tab. A phone's related-sessions card follows the
 same rules. The All sessions list leaves tasks out by default and offers a "Show tasks" filter that
 lists them too; the choice is kept in the page's address like the other filters, and the Control
-Plane applies it, so every page of results stays full.
+Plane applies it, so every page of results stays full. Memory dream sessions follow the same rule
+behind their own "Show dreams" filter, and Home's Recent sessions never lists them; a dream's
+session stays reachable from the agent's Dreams history.
 
 A person can also ask the conversation that delegated a task to stop it, on any platform:
 "stop the one writing the release notes". The agent asks which one is meant only when that is not

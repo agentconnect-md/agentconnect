@@ -62,7 +62,8 @@ function withCallerRole(payload: RelayWebchatOp, participant: WebchatParticipant
     case 'set_model':
     case 'set_effort':
     case 'set_permission_mode':
-    case 'set_fast': {
+    case 'set_fast':
+    case 'new_session': {
       const { callerRole: _unverified, ...op } = payload
       return { ...op, ...(participant?.callerRole ? { callerRole: participant.callerRole } : {}) } as RelayWebchatOp
     }

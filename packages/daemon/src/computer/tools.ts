@@ -616,6 +616,8 @@ function channelError(error: unknown): ComputerChannelError | undefined {
 
 /** How long a forwarded call may take; above the desktop's own longest wait plus its settle screenshot. */
 const CALL_TIMEOUT_MS = 90_000
+// Older desktops can return these errors without saying whether the browser action reached Chrome.
+const UNCONFIRMED_BROWSER_ACTION_REASONS = new Set(['timeout', 'browser_exited', 'child_failed', 'result_too_large'])
 /** A command's call waits its own timeout plus this, inside the relay's 120 s. */
 const COMMAND_TIMEOUT_MARGIN_MS = 20_000
 /** How long a call waits for its managed computer to be allocated or woken before it fails (§15.1). */
@@ -1496,7 +1498,20 @@ export class ComputerTools {
     try {
       const raw = await this.invoke(state, computerId, linked, name, args, approval)
       const isError = (raw as { isError?: unknown }).isError === true
-      return { mcpContent: contentOf(raw), ...(isError ? { mcpIsError: true } : {}) }
+      const result: McpContentResult = { mcpContent: contentOf(raw), ...(isError ? { mcpIsError: true } : {}) }
+      if (input && computerBrowserTool(name)) {
+        const refusal = errorOf(result)
+        if (
+          refusal?.error === 'unavailable' &&
+          refusal.actionDispatched !== false &&
+          typeof refusal.reason === 'string' &&
+          UNCONFIRMED_BROWSER_ACTION_REASONS.has(refusal.reason)
+        ) {
+          const message = typeof refusal.message === 'string' ? refusal.message : 'Chrome did not confirm the action'
+          return await this.uncertain(state, computerId, name, message)
+        }
+      }
+      return result
     } catch (error) {
       // Refused before anything reached the desktop: a definite failure.
       if (
@@ -1508,7 +1523,7 @@ export class ComputerTools {
         throw new ComputerToolError('unavailable', 'This Computer does not offer that browser tool.')
       if (channelError(error) || !input) throw error
       // An input that may have reached the desktop is never replayed (§5.4): report it with a fresh screenshot.
-      return await this.uncertain(state, computerId, name, error as Error)
+      return await this.uncertain(state, computerId, name, (error as Error).message)
     }
   }
 
@@ -1516,14 +1531,14 @@ export class ComputerTools {
     state: SessionState,
     computerId: string,
     name: string,
-    error: Error
+    message: string
   ): Promise<McpContentResult> {
     const content: Content[] = [
       {
         type: 'text',
         text: JSON.stringify({
           error: 'uncertain',
-          message: `${name}: ${error.message}. The action may or may not have happened and was NOT retried; check the screenshot before acting again.`
+          message: `${name}: ${message}. The action may or may not have happened and was NOT retried; check the screenshot before acting again.`
         })
       }
     ]

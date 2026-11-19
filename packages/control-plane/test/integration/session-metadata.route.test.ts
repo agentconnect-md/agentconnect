@@ -443,6 +443,58 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     expect((await running.app.inject({ method: 'GET', url: `${ORG}/sessions?tasks=sometimes` })).statusCode).toBe(400)
   })
 
+  it('leaves memory dream sessions out of the list, its total and its facets on request', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    running = buildHttpApp(prisma)
+
+    const conversation = 'acp-conversation'
+    const dream = 'acp-dream'
+    await reportSession({
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'slack',
+      sessionId: conversation,
+      channel: 'C1',
+      thread: '1700000000.000100',
+      title: 'Plan the release',
+      ts: '2026-07-05T00:00:00.000Z'
+    })
+    await reportSession({
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'dream',
+      sessionId: dream,
+      title: 'Consolidate memory',
+      ts: '2026-07-05T00:01:00.000Z'
+    })
+
+    const list = async (query: string) =>
+      (await running!.app.inject({ method: 'GET', url: `${ORG}/sessions?${query}` })).json() as {
+        sessions?: Array<{ sessionId: string }>
+        conversations?: Array<{ sessions: Array<{ sessionId: string }> }>
+        total: number
+      }
+    const flatAll = await list('view=flat')
+    expect(flatAll.sessions?.map((row) => row.sessionId).sort()).toEqual([conversation, dream].sort())
+    expect(flatAll.total).toBe(2)
+    const flatReal = await list('view=flat&dreams=exclude')
+    expect(flatReal.sessions?.map((row) => row.sessionId)).toEqual([conversation])
+    expect(flatReal.total).toBe(1)
+    const grouped = await list('dreams=exclude')
+    expect(grouped.conversations?.flatMap((c) => c.sessions.map((row) => row.sessionId))).toEqual([conversation])
+    expect(grouped.total).toBe(1)
+    expect((await list('dreams=include&view=flat')).total).toBe(2)
+
+    const facets = async (query: string) =>
+      (await running!.app.inject({ method: 'GET', url: `${ORG}/sessions/facets?${query}` })).json() as {
+        integrations: string[]
+      }
+    expect((await facets('')).integrations).toContain('dream')
+    expect((await facets('dreams=exclude')).integrations).toEqual(['slack'])
+    expect((await running.app.inject({ method: 'GET', url: `${ORG}/sessions?dreams=sometimes` })).statusCode).toBe(400)
+  })
+
   it('stores a Slack-path session (non-UUID ACP id, no launchId) and serves it', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })

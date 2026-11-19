@@ -94,6 +94,8 @@ export interface ShareFileDeps extends GatewayDeps {
   /** The bound a console document shares under: the outbound per-file cap clamped to the workspace-download
    *  ceiling, since the chip's download is a document's only delivery path (docs §4). */
   consoleDocumentCap?: (ctx: SessionContext) => number
+  /** Keep the published bytes as the session's snapshot so its chip outlives later rewrites of the path (§4.1); never throws. */
+  snapshotSharedFile?: (ctx: SessionContext, file: { name: string; bytes: Buffer; sha256: string }) => Promise<void>
   /** Synchronous per-turn count and process-wide in-flight reservation for a console share; `done` says whether it published. */
   reserveWebchatShare?: (
     ctx: SessionContext
@@ -218,6 +220,8 @@ export async function shareFile(
           READ_REFUSALS['too-large'](path, `${read.bytes.byteLength} bytes > ${cap}-byte console download cap`)
         )
       }
+      // Snapshot before the chip appears, so the chip can always fetch the revision it names.
+      await deps.snapshotSharedFile?.(ctx, { name: file.name, bytes: read.bytes, sha256: read.sha256 }).catch(() => {})
       const receipt = await publishFile({
         path,
         ...(escaped ? { caption: escaped } : {}),
@@ -284,6 +288,9 @@ export async function shareFile(
     const refusal = UPLOAD_REFUSALS[outcome.reason](platformLabel(target.platform))
     throw new Error(outcome.detail ? `${refusal} (${outcome.detail})` : refusal)
   }
+
+  // The console's chip for this row downloads the snapshot, so a later rewrite of the path cannot lose what was posted.
+  await deps.snapshotSharedFile?.(ctx, { name: read.name, bytes: read.bytes, sha256: read.sha256 }).catch(() => {})
 
   // Provenance (docs §4): the model-chosen path plus what was ACTUALLY published — type,
   // size, digest — and an image's bytes for console replay when they fit the transcript cap

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// All sessions hides tasks (delegated tasks, follow-ups, approved proposals) unless "Show tasks" is on: a URL param the list and facet reads pass to the CP, on desktop and in the phone's filter sheet.
+// All sessions hides tasks (delegated tasks, follow-ups, approved proposals) and memory dream sessions unless their toggle is on: a URL param the list and facet reads pass to the CP, on desktop and in the phone's filter sheet.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -109,8 +109,8 @@ afterEach(async () => {
 describe('SessionsView, Show tasks', () => {
   it('asks the CP to leave tasks out by default, for the rows and the facets alike', async () => {
     await render()
-    expect(mocks.listFilters.at(-1)).toEqual({ excludeTasks: true })
-    expect(mocks.facetFilters.at(-1)).toEqual({ excludeTasks: true })
+    expect(mocks.listFilters.at(-1)).toEqual({ excludeTasks: true, excludeDreams: true })
+    expect(mocks.facetFilters.at(-1)).toEqual({ excludeTasks: true, excludeDreams: true })
     expect(toggle()?.getAttribute('aria-pressed')).toBe('false')
     expect(toggle()?.textContent).toBe('Show tasks')
   })
@@ -125,8 +125,8 @@ describe('SessionsView, Show tasks', () => {
   it('lists tasks once the toggle is on, and turns it off again', async () => {
     mocks.search = 'tasks=show'
     await render()
-    expect(mocks.listFilters.at(-1)).toEqual({})
-    expect(mocks.facetFilters.at(-1)).toEqual({})
+    expect(mocks.listFilters.at(-1)).toEqual({ excludeDreams: true })
+    expect(mocks.facetFilters.at(-1)).toEqual({ excludeDreams: true })
     expect(toggle()?.getAttribute('aria-pressed')).toBe('true')
     await act(async () => toggle()?.click())
     expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions')
@@ -147,6 +147,49 @@ describe('SessionsView, Show tasks', () => {
     mocks.search = 'tasks=show'
     await render()
     const clear = document.querySelector<HTMLElement>('[aria-label="Clear Tasks filter"]')
+    expect(clear).not.toBeNull()
+    await act(async () => clear?.click())
+    expect(mocks.replace).toHaveBeenLastCalledWith('/acme/sessions')
+  })
+})
+
+describe('SessionsView, Show dreams', () => {
+  const dreamToggle = () => document.querySelector<HTMLButtonElement>('[data-show-dreams]')
+
+  it('turns the toggle on through the URL, keeping the other filters', async () => {
+    mocks.search = 'tasks=show'
+    await render()
+    expect(dreamToggle()?.getAttribute('aria-pressed')).toBe('false')
+    expect(dreamToggle()?.textContent).toBe('Show dreams')
+    await act(async () => dreamToggle()?.click())
+    expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions?tasks=show&dreams=show')
+  })
+
+  it('lists memory dream sessions once the toggle is on, and turns it off again', async () => {
+    mocks.search = 'dreams=show'
+    await render()
+    expect(mocks.listFilters.at(-1)).toEqual({ excludeTasks: true })
+    expect(mocks.facetFilters.at(-1)).toEqual({ excludeTasks: true })
+    expect(dreamToggle()?.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => dreamToggle()?.click())
+    expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions')
+  })
+
+  it('offers the same choice in the phone’s filter sheet, and a chip that clears it', async () => {
+    await render()
+    await act(async () => mocks.openSheet?.())
+    const pill = Array.from(document.querySelectorAll<HTMLButtonElement>('.msheet-scrim button')).find(
+      (button) => button.textContent === 'Show dreams'
+    )
+    expect(pill).toBeDefined()
+    await act(async () => pill?.click())
+    expect(mocks.replace).toHaveBeenCalledWith('/acme/sessions?dreams=show')
+
+    if (root) await act(async () => root?.unmount())
+    host?.remove()
+    mocks.search = 'dreams=show'
+    await render()
+    const clear = document.querySelector<HTMLElement>('[aria-label="Clear Dreams filter"]')
     expect(clear).not.toBeNull()
     await act(async () => clear?.click())
     expect(mocks.replace).toHaveBeenLastCalledWith('/acme/sessions')

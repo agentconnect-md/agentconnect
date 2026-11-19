@@ -662,6 +662,29 @@ describe('executeTool: sendMessage (channel post)', () => {
       return { d, gw, shares }
     }
 
+    it('keeps the posted bytes as the session’s snapshot, and a failed snapshot never fails the share', async () => {
+      const snapshotSharedFile = vi.fn(async () => {
+        throw new Error('bucket down')
+      })
+      const { d, gw, shares } = shareDeps({ snapshotSharedFile })
+      const res = (await executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, d)) as Record<string, unknown>
+      expect(res).toMatchObject({ ok: true, post: { ts: 'ts-42' } })
+      expect(gw.uploadFile).toHaveBeenCalledTimes(1)
+      expect(snapshotSharedFile).toHaveBeenCalledWith(ctx, {
+        name: 'chart.png',
+        bytes: image.bytes,
+        sha256: image.sha256
+      })
+      expect(shares).toHaveLength(1)
+
+      const refused = fakeGateway({
+        uploadFile: vi.fn(async () => ({ ok: false as const, reason: 'forbidden' as const }))
+      })
+      const failed = shareDeps({ gatewayFor: () => refused, snapshotSharedFile })
+      await expect(executeTool(ctx, 'shareFile', { path: 'out/chart.png' }, failed.d)).rejects.toThrow(/may not post/)
+      expect(snapshotSharedFile).toHaveBeenCalledTimes(1)
+    })
+
     it('posts into the active turn’s own conversation with the trusted anchor and identity', async () => {
       const attribution = {
         botName: 'Scout',
@@ -894,13 +917,19 @@ describe('executeTool: sendMessage (channel post)', () => {
           original: { kind: 'workspace' as const }
         }
         const publishImage = vi.fn(async () => receipt)
-        const publishFile = vi.fn(async () => fileReceipt)
+        const order: string[] = []
+        const publishFile = vi.fn(async () => {
+          order.push('publish')
+          return fileReceipt
+        })
+        const snapshotSharedFile = vi.fn(async () => void order.push('snapshot'))
         const csv = { ok: true as const, bytes: Buffer.from('a,b\n1,2\n'), sha256: 'e'.repeat(64) }
         const { d, gw } = shareDeps({
           webchatImagePublisherFor: () => publishImage,
           webchatFilePublisherFor: () => publishFile,
           readWorkspaceSharedFile: async () => csv,
-          consoleDocumentCap: () => 1024
+          consoleDocumentCap: () => 1024,
+          snapshotSharedFile
         })
         const res = await executeTool(ctx, 'shareFile', { path: 'data/rows.csv', caption: 'rows' }, d)
         expect(publishFile).toHaveBeenCalledWith({
@@ -914,17 +943,22 @@ describe('executeTool: sendMessage (channel post)', () => {
         expect(res).toEqual(fileReceipt)
         expect(publishImage).not.toHaveBeenCalled()
         expect(gw.uploadFile).not.toHaveBeenCalled()
+        // The session keeps the published bytes before the chip appears, so a later rewrite cannot lose them.
+        expect(snapshotSharedFile).toHaveBeenCalledWith(ctx, { name: 'rows.csv', bytes: csv.bytes, sha256: csv.sha256 })
+        expect(order).toEqual(['snapshot', 'publish'])
 
         const capped = shareDeps({
           webchatImagePublisherFor: () => publishImage,
           webchatFilePublisherFor: () => publishFile,
           readWorkspaceSharedFile: async () => csv,
-          consoleDocumentCap: () => 4
+          consoleDocumentCap: () => 4,
+          snapshotSharedFile
         })
         await expect(executeTool(ctx, 'shareFile', { path: 'data/rows.csv' }, capped.d)).rejects.toThrow(
           /over the per-file limit \(8 bytes > 4-byte console download cap\)/
         )
         expect(publishFile).toHaveBeenCalledTimes(1)
+        expect(snapshotSharedFile).toHaveBeenCalledTimes(1)
       })
 
       it('hands the fenced bytes to the publisher and returns only its receipt', async () => {
@@ -2523,6 +2557,58 @@ describe('executeTool: readSlackFile', () => {
     )) as { mcpContent: { type: string; text?: string }[] }
     expect(saveAttachment).toHaveBeenCalledWith(ctx, 'Q3 report.pdf', pdf)
     expect(res.mcpContent[0]!.text).toMatch(/Saved 13 bytes of application\/pdf to `uploads\/Q3 report.pdf`/)
+  })
+
+  it('resolves a Slack file ID to its download URL and saves the file', async () => {
+    const zip = Buffer.from('PK zip')
+    const gw = fakeGateway({
+      downloadFile: vi.fn(async () => zip),
+      getFileInfo: vi.fn(async () => ({
+        name: 'skill.zip',
+        mimeType: 'application/zip',
+        sourceUrl: 'https://files.slack.com/files-pri/T1-F1/download/skill.zip',
+        channels: [ctx.channel]
+      }))
+    })
+    const saveAttachment = vi.fn(async (_c: SessionContext, name: string) => ({
+      ok: true as const,
+      path: `uploads/${name}`
+    }))
+    const d = makeDeps({ gatewayFor: () => gw, saveAttachment, now: () => 1000 })
+    const res = (await executeTool(ctx, 'readSlackFile', { url: 'F0CK2QMKE20' }, d)) as {
+      mcpContent: { type: string; text?: string }[]
+    }
+    expect(gw.getFileInfo).toHaveBeenCalledWith('F0CK2QMKE20')
+    expect(gw.downloadFile).toHaveBeenCalledWith(
+      'https://files.slack.com/files-pri/T1-F1/download/skill.zip',
+      expect.any(Number)
+    )
+    expect(saveAttachment).toHaveBeenCalledWith(ctx, 'skill.zip', zip)
+    expect(res.mcpContent[0]!.text).toMatch(/of application\/zip to `uploads\/skill.zip`/)
+  })
+
+  it('refuses a Slack file ID shared only where this conversation cannot read, before downloading', async () => {
+    const gw = fakeGateway({
+      downloadFile: vi.fn(async () => Buffer.from('secret')),
+      getFileInfo: async () => ({
+        name: 'secret.zip',
+        mimeType: 'application/zip',
+        sourceUrl: 'https://files.slack.com/files-pri/T1-F2/download/secret.zip',
+        channels: ['C_PRIVATE']
+      })
+    })
+    const d = makeDeps({
+      gatewayFor: () => gw,
+      placeSnapshot: (_integration, channel) => ({ isPrivate: channel === 'C_PRIVATE' }),
+      readLookups: () => ({
+        ...ASKER_WHO_MAY_WRITE.readLookups!('bot-a'),
+        member: async (_integration, channel) => channel !== 'C_PRIVATE'
+      })
+    })
+    await expect(executeTool(ctx, 'readSlackFile', { url: 'F2' }, d)).rejects.toThrow(
+      /readSlackFile: I cannot read that attachment from this conversation\.$/
+    )
+    expect(gw.downloadFile).not.toHaveBeenCalled()
   })
 
   it('names a Telegram file (no URL) from its MIME type and reports a failed save', async () => {
