@@ -21,6 +21,8 @@ export interface McpPrincipal {
   agent?: { agentId: string; sessionId: string }
   // The command-line tier the token allows (§5.7); absent for a local client token or an older CP's token.
   commandLineGrant?: { shell: ComputerShellMode; files: ComputerFilesMode }
+  // The browser tier the token allows (§5.8): its `br` claim; for a local client token, an unregistered daemon's.
+  browserGrant?: boolean
 }
 
 const bearer = (authorization: string | undefined): string | undefined =>
@@ -41,7 +43,8 @@ export function channelPrincipal(
     client: computerLeaseHolderName({ agentId: claims.agt, sessionId: claims.ses }),
     viewOnly: claims.mode === 'view',
     agent: { agentId: claims.agt, sessionId: claims.ses },
-    ...(claims.sh || claims.fs ? { commandLineGrant: { shell: claims.sh ?? 'off', files: claims.fs ?? 'off' } } : {})
+    ...(claims.sh || claims.fs ? { commandLineGrant: { shell: claims.sh ?? 'off', files: claims.fs ?? 'off' } } : {}),
+    ...(claims.br === true ? { browserGrant: true } : {})
   }
 }
 

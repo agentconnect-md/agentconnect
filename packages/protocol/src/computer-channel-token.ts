@@ -40,6 +40,8 @@ export const ComputerChannelTokenClaims = z
     // `mcp` only: the command-line tier the policy allows (§5.7); absent, as from an older CP, means none.
     sh: z.enum(COMPUTER_SHELL_MODES).optional(),
     fs: z.enum(COMPUTER_FILES_MODES).optional(),
+    // `mcp` only: the browser tier the policy allows (§5.8); absent, as from an older CP, means off.
+    br: z.boolean().optional(),
     // `view` only: the member watching, the TURN servers the desktop may relay media through, and the STUN servers it may punch with.
     usr: z.string().min(1).max(128).optional(),
     ice: z.array(ComputerIceServer).max(COMPUTER_ICE_SERVERS_MAX).optional(),

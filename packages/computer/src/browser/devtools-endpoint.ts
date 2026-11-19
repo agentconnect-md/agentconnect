@@ -4,6 +4,7 @@ import { request } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { browserAncestor, listeningSockets, realProc, socketHolders, type ProcFs } from '../form-fill/attribution.js'
+import type { DevtoolsTarget } from './chrome-pages.js'
 import { PORT_FILE, switches } from './devtools-launch.js'
 import { profileOwner } from './launcher.js'
 
@@ -90,12 +91,12 @@ export function readPortFile(
   }
 }
 
-function httpGet(port: number, path: string): Promise<string | undefined> {
+function httpGet(port: number, path: string, maxChars = 65_536): Promise<string | undefined> {
   return new Promise((resolve) => {
     const req = request({ host: '127.0.0.1', port, path, timeout: HTTP_TIMEOUT_MS }, (res) => {
       let body = ''
       res.setEncoding('utf8')
-      res.on('data', (chunk: string) => (body.length < 65_536 ? (body += chunk) : undefined))
+      res.on('data', (chunk: string) => (body.length < maxChars ? (body += chunk) : undefined))
       res.on('end', () => resolve(res.statusCode === 200 ? body : undefined))
       res.on('error', () => resolve(undefined))
     })
@@ -113,6 +114,29 @@ export async function versionPath(port: number): Promise<string | undefined> {
     return typeof url === 'string' ? new URL(url).pathname : undefined
   } catch {
     return undefined
+  }
+}
+
+/** The browser's targets from `/json/list`, for the opaque page ids (§5.8); their ids never leave the daemon. */
+export async function devtoolsTargets(endpoint: DevtoolsEndpoint): Promise<DevtoolsTarget[]> {
+  const body = await httpGet(endpoint.port, '/json/list', 4 * 1024 * 1024)
+  try {
+    const list = JSON.parse(body ?? '') as unknown
+    if (!Array.isArray(list)) return []
+    return list.flatMap((entry: Record<string, unknown>) =>
+      typeof entry.id === 'string' && typeof entry.type === 'string'
+        ? [
+            {
+              id: entry.id,
+              type: entry.type,
+              url: typeof entry.url === 'string' ? entry.url : '',
+              title: typeof entry.title === 'string' ? entry.title : ''
+            }
+          ]
+        : []
+    )
+  } catch {
+    return []
   }
 }
 

@@ -18,7 +18,9 @@ import {
   ComputerFormFillArgs,
   ComputerFormStatusArgs
 } from '@agentconnect.md/protocol/computer-form-fill'
+import { COMPUTER_BROWSER_TOOLS, computerBrowserTool } from '@agentconnect.md/protocol/computer-browser'
 import { currentCallContext, withCallContext, type CallContext } from './audit.js'
+import type { ChromeTools } from './browser/chrome-tools.js'
 import type { CommandLine } from './command-line.js'
 import { ComputerError, type Computer, type ToolOutput } from './computer.js'
 import type { DriverTool } from './driver/client.js'
@@ -44,6 +46,37 @@ export interface CommandLineAccess {
   roots: () => string[] | undefined
   // The caller's desktop session, where its commands run (computer-use.md §3.9); undefined: the daemon's own.
   env?: () => Promise<NodeJS.ProcessEnv | undefined>
+}
+
+/** The browser tier a caller may use (§5.8); `refusal` is read on every call, so a narrowed policy applies at once. */
+export interface BrowserAccess {
+  tools: ChromeTools
+  // The caller's desktop, never started for this.
+  desktop: () => string | undefined
+  available: () => boolean
+  refusal: () => string | undefined
+}
+
+// Hide unavailable tools from discovery while letting a call from an older list receive a temporary-unavailability error.
+class ComputerMcpServer extends McpServer {
+  browser?: BrowserAccess
+
+  override connect(transport: Parameters<McpServer['connect']>[0]): Promise<void> {
+    const browser = this.browser
+    if (browser) {
+      const send = transport.send.bind(transport)
+      transport.send = (message, options) => {
+        if ('result' in message && Array.isArray(message.result.tools) && (!browser.available() || browser.refusal())) {
+          const tools = message.result.tools.filter(
+            (tool) => typeof tool?.name !== 'string' || !computerBrowserTool(tool.name)
+          )
+          return send({ ...message, result: { ...message.result, tools } }, options)
+        }
+        return send(message, options)
+      }
+    }
+    return super.connect(transport)
+  }
 }
 
 const Point = z.object({ x: z.number().int().min(0), y: z.number().int().min(0) })
@@ -115,6 +148,8 @@ export function createComputerMcpServer(options: {
   adminPrompts?: boolean
   // An agent session's command-line tier, when its token and the policy allow one (§5.7).
   commandLine?: CommandLineAccess
+  // The browser tier's chrome_* tools, when the token, the policy and the desktop's endpoint all allow them (§5.8).
+  browser?: BrowserAccess
   // The browser extension's form operations, for agent daemons only (computer-form-fill-and-vault.md §5.2).
   formFill?: { service: FormFillService; target: () => Promise<{ computer: Computer; desktop: string }> }
 }): McpServer {
@@ -135,7 +170,7 @@ export function createComputerMcpServer(options: {
         return { isError: true, content: [{ type: 'text', text }] } as R
       })
     }
-  const server = new McpServer(
+  const server = new ComputerMcpServer(
     { name: 'agentconnect-computer', version: COMPUTER_DAEMON_VERSION },
     { instructions: SERVER_INSTRUCTIONS }
   )
@@ -326,6 +361,10 @@ export function createComputerMcpServer(options: {
     )
 
   if (options.commandLine) registerCommandLine(server, options.commandLine, client, scoped)
+  if (options.browser && !viewOnly) {
+    server.browser = options.browser
+    registerBrowser(server, options.browser, client, scoped)
+  }
   if (options.formFill && agent) registerFormFill(server, options.formFill, client, viewOnly, scoped)
 
   for (const tool of options.driverTools ?? []) {
@@ -395,6 +434,34 @@ function registerFormFill(
     },
     scoped(async (args) => asResult(formFill.service.status(args)))
   )
+}
+
+// The contract's tools that take no lease (5a); the debugging category's other five and anything else are never registered.
+function registerBrowser(server: McpServer, access: BrowserAccess, client: string, scoped: Scoped): void {
+  const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+  for (const tool of COMPUTER_BROWSER_TOOLS) {
+    if (tool.lease) continue
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description,
+        inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema as unknown as JsonSchemaType),
+        annotations: readOnly
+      },
+      scoped(async (args, ctx) => {
+        return asResult(
+          await access.tools.call({
+            desktop: access.desktop(),
+            client,
+            tool: tool.name,
+            args: args ?? {},
+            signal: ctx.mcpReq.signal,
+            refusal: access.refusal
+          })
+        )
+      })
+    )
+  }
 }
 
 const refused = (code: string, message: string) => ({

@@ -14,8 +14,10 @@ import {
 } from '@agentconnect.md/protocol/computer'
 import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
+import { browserToolsRefusal } from './browser/chrome-access.js'
+import { ChromeTools } from './browser/chrome-tools.js'
 import { browserCloseCommand, browserCommand, browserLaunchersCommand } from './browser/command.js'
-import { DevtoolsEndpoints } from './browser/devtools-endpoint.js'
+import { DevtoolsEndpoints, type DevtoolsEndpoint } from './browser/devtools-endpoint.js'
 import { isGoogleChrome } from './browser/devtools-launch.js'
 import { DevtoolsTier, tierGrant, type TierGrant } from './browser/devtools-tier.js'
 import { chosenBrowser, onImage } from './browser/launcher.js'
@@ -952,7 +954,14 @@ async function startDevtools(options: {
   startForwarder: () => Promise<number>
   beat: () => void
   desktops: () => DesktopManager | undefined
-}): Promise<{ check(): Check; verified(): string[]; refresh(): Promise<void>; stop(): void }> {
+}): Promise<{
+  check(): Check
+  verified(): string[]
+  endpoint(desktop: string): DevtoolsEndpoint | undefined
+  grant(): TierGrant | undefined
+  refresh(): Promise<void>
+  stop(): void
+}> {
   const { dir, registered } = options
   let local = options.config
   const grant = (): TierGrant | undefined => {
@@ -1000,6 +1009,8 @@ async function startDevtools(options: {
   return {
     check: () => tier.check(endpoints?.report() ?? []),
     verified: () => (tier.on ? (endpoints?.verified() ?? []) : []),
+    endpoint: (desktop) => (tier.on ? endpoints?.endpoint(desktop) : undefined),
+    grant,
     refresh: () => tier.refresh(),
     stop: () => {
       tier.stop()
@@ -1116,6 +1127,18 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           log
         })
       : undefined
+  // The chrome_* tools' Chrome DevTools MCP children, one per desktop with a checked endpoint (§5.8).
+  const chromeTools = devtools
+    ? new ChromeTools({
+        endpoint: (desktop) => devtools.endpoint(desktop),
+        idleMs: () => config.leaseIdleSeconds * 1000,
+        maxImageDimension: () => config.maxImageDimension,
+        audit: auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : [])),
+        ...(screenshotStore ? { screenshots: screenshotStore.stash } : {}),
+        refusal: () => authority.refusal(),
+        log
+      })
+    : undefined
   // Windows under the service: the SYSTEM helper watches the secure desktop for UAC prompts (computer-use.md §4.2.1).
   const adminPromptHelper =
     process.platform === 'win32' && windowsService.serviceHost() && existsSync(windowsService.adminPromptHelperPath())
@@ -1215,7 +1238,10 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       },
       log,
       onChange: () => live.local?.update(),
-      onStopped: (id) => live.viewerRouter?.dropDesktop(id)
+      onStopped: (id) => {
+        live.viewerRouter?.dropDesktop(id)
+        void chromeTools?.stop(id, 'its desktop stopped')
+      }
     })
   }
   // The tray's switch applies at once and saves itself so the next start agrees.
@@ -1428,7 +1454,19 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           roots: () => live.policy?.fileRoots
         }
       : undefined
-  const createMcpServer = ({ client, viewOnly, agent, commandLineGrant: granted }: McpPrincipal): McpServer => {
+  // The caller's desktop as calls route to it, never started for this: its own while per-agent desktops are on.
+  const browserDesktop = (key: string): string | undefined =>
+    live.desktops?.enabled() ? live.desktops.idFor(key) : MAIN_DESKTOP
+  const browserRefusal = (principal: McpPrincipal): string | undefined =>
+    browserToolsRefusal({
+      granted: principal.browserGrant === true,
+      viewOnly: principal.viewOnly,
+      registered: Boolean(registration),
+      policy: live.policy,
+      configTier: devtools?.grant()?.granted === true
+    })
+  const createMcpServer = (principal: McpPrincipal): McpServer => {
+    const { client, viewOnly, agent, commandLineGrant: granted } = principal
     // An agent's calls go to its own desktop while per-agent desktops are on; a local client token counts as one agent.
     const key = agent ? agent.agentId : `client:${client}`
     const label = agent ? agent.agentId : client
@@ -1455,7 +1493,20 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       ...(agent ? { agent } : {}),
       ...(formFill ? { formFill: { service: formFill.service, target: formTarget } } : {}),
       ...(adminPromptHelper ? { adminPrompts: true } : {}),
-      ...(access ? { commandLine: access } : {})
+      ...(access ? { commandLine: access } : {}),
+      ...(chromeTools && browserRefusal(principal) === undefined
+        ? {
+            browser: {
+              tools: chromeTools,
+              desktop: () => browserDesktop(key),
+              available: () => {
+                const desktop = browserDesktop(key)
+                return desktop !== undefined && devtools?.endpoint(desktop) !== undefined
+              },
+              refusal: () => browserRefusal(principal)
+            }
+          }
+        : {})
     })
   }
   const server = await startHttpServer({
@@ -1467,7 +1518,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       const channel = registration ? channelPrincipal(header, authority, () => registration.computerId) : undefined
       if (channel) return channel
       const client = authenticate(config, header)
-      return client ? { client, viewOnly: false } : undefined
+      // An unregistered daemon's own clients get the browser tier its config turns on (§5.8).
+      return client ? { client, viewOnly: false, ...(registration ? {} : { browserGrant: true }) } : undefined
     },
     createMcpServer,
     log,
@@ -1566,6 +1618,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     authority.close()
     releaseDisplay()
     devtools?.stop()
+    await chromeTools?.stopAll('the daemon is stopping')
     await live.desktops?.close().catch(() => undefined)
     await Promise.allSettled([
       server.close(),
