@@ -83,7 +83,10 @@ graph TD
 
 ```
 packages/control-plane/src/
-├── index.ts                  # thin bootstrap: loadConfig → buildContainer → listen → attach ws → graceful shutdown
+├── index.ts                  # the entry file: calls startControlPlane() and nothing else
+├── start.ts                  # startControlPlane(): loadConfig → buildApp → listen → attach ws → graceful shutdown
+├── extension.ts              # what a package that embeds the Control Plane may add: routes, capabilities
+├── extension-api.ts          # the one module such a package imports (`./extension-api`)
 ├── app.ts                    # buildApp(deps): assembles Fastify + ws + services for prod AND tests (one graph)
 ├── config/
 │   └── env.ts                # zod-validated process.env → AppConfig (fail-fast on boot)
@@ -165,8 +168,9 @@ packages/control-plane/src/
 └── ports.ts                  # re-exports cross-component ports (C2↔C3↔C4↔C5 seams)
 ```
 
-`src/index.ts` is the thin bootstrap, `app.ts` is the assembly factory used by
-production and tests, and `/health` lives in `http/routes/health.ts`.
+`src/start.ts` is the thin bootstrap that `src/index.ts` runs, `app.ts` is the
+assembly factory used by production and tests, and `/health` lives in
+`http/routes/health.ts`.
 
 Repository implementations live in **`persistence/repositories/*.repo.ts`**
 with port interfaces in **`persistence/ports.ts`**. Fencing primitives live in
@@ -307,9 +311,40 @@ tests call `buildApp` with their Testcontainers-backed `PrismaClient` and
 optional fake clock/providers.
 
 `container.ts` constructs repositories, services, registries, senders, and
-transport edges bottom-up. `index.ts` remains a thin bootstrap:
-`loadConfig()` → `buildApp()` → listen/mount → install signal handlers →
-`shutdown()`.
+transport edges bottom-up. The bootstrap stays thin: `startControlPlane()` in
+`start.ts` runs `loadConfig()` → `buildApp()` → listen/mount → install signal
+handlers → `shutdown()`, and `index.ts` only calls it.
+
+**The extension seam.** The bootstrap is a function so that another package can be
+the process entry and run the same Control Plane with something added.
+`startControlPlane({ extension })` and `buildApp({ extension })` take one optional
+factory. Core calls it once, when the graph is assembled, with the database, the
+clock and the directory's membership commands
+([resource-visibility.md](resource-visibility.md) §8.8), and it answers with any of:
+
+| Member         | Where core uses it                                                                                                    |
+| -------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `orgRoutes`    | Registered under `/api/v1/orgs/:orgId` after sign-in and the organization guard, last, so it shadows no core route.   |
+| `rootRoutes`   | Registered at `/api/v1` and again at the public `/v1`, with no sign-in in front: they authenticate their own callers. |
+| `capabilities` | Answers `GET /orgs/:orgId/capabilities`.                                                                              |
+
+Three rules keep the seam from spreading:
+
+- **Core does not know what is behind it.** No core code asks which package added a
+  route or why a capability exists, the same way a platform name is not core
+  knowledge. With no extension every member is absent and nothing changes.
+- **An extension imports one module.** `@agentconnect.md/control-plane/extension-api`
+  exports the bootstrap, the seam's types and the command interfaces. Core never
+  depends on a package that extends it.
+- **Shared tables are changed through core's commands.** An extension keeps its own
+  tables in the same schema and migration line, and reaches memberships and accounts
+  only through the commands it is handed.
+
+`GET /orgs/:orgId/capabilities` is how the console learns which optional settings
+areas an organization has. Any member may read it. It answers a map from an area's
+name to `active` (shown and editable) or `read_only` (shown, not editable); an area
+that is not named is hidden. Core names none itself, so the map is empty without an
+extension.
 
 ---
 

@@ -217,6 +217,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
 }
 
 export interface HttpDeps {
+  /** Routes and capabilities the embedding package adds (`extension.ts`). */
+  extension?: import('../extension.js').ControlPlaneExtension
   /** Capability requests: the request page, its list, and the console's settle, decline, reopen and forward (capability-requests.md §4.5). */
   capabilityRequests?: CapabilityRequestService
   providerCredentialsChanged?: (orgId: OrgId, provider: ProviderKeyProvider) => void

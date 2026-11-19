@@ -10,6 +10,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./extension-api": {
+      "development": "./src/extension-api.ts",
+      "types": "./dist/extension-api.d.ts",
+      "import": "./dist/extension-api.js",
+      "default": "./dist/extension-api.js"
+    },
     "./deployment-config-store": {
       "development": "./src/deployment-config-store.ts",
       "types": "./dist/deployment-config-store.d.ts",
