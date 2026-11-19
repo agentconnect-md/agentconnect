@@ -239,8 +239,11 @@ does.
 **The participant fence.** A thread key is not a secret, and anyone can write
 one into a header. A group conversation therefore records the addresses that
 have appeared on its admitted messages, and a message continues it only when
-its sender is one of them. From anyone else the message is read as starting a
-thread of its own, keyed by its own `Message-ID`. A direct conversation needs
+its sender is one of them and the member who opened it is among the message's
+participants. Any other message is read as starting a thread of its own, keyed
+by its own `Message-ID`: one from an address the thread never named, and one
+that leaves the opener off, which would otherwise land in a session and a place
+layer whose only Console reader never received it. A direct conversation needs
 no fence: its key is the authenticated sender.
 
 Mail never runs a coordinator. A new thread opens its session directly, for an
@@ -260,10 +263,18 @@ visible to no one, never `org`.
 A session of a group conversation is `private` to the member whose message
 opened it, which is a new default row for mail: the general rule would make a
 group conversation `org`, and a mail thread among three people is not the
-organization's. The other participants have the mail itself and continue the
+organization's. Every message of the session reached that member (§5.2), and
+the other participants have the messages they were sent and continue the
 thread by mail; they do not gain the session, or its place layer, in the
-Console. Showing it to every member on the thread needs the Control Plane to
-know the participants, which the first step keeps on the daemon.
+Console.
+
+Two things are accepted for the first step. Session visibility's rule that a
+shared conversation never takes one initiator as its access owner is set aside
+here: following it needs the Control Plane to know the thread's participants,
+which the first step keeps on the daemon. And a recipient someone adds to a
+group thread receives replies written with the thread's earlier context, as a
+person added to a group chat reads on from what was said; adding them was a
+participant's call.
 
 ### 5.4 What the agent reads
 
@@ -315,7 +326,10 @@ is added, and so no second read rule.
 
 `recall` must list a direct conversation's sessions with each one's subject
 and correspondents for this to answer "what did you send me last week"; that
-is the one thing mail asks of it.
+is the one thing mail asks of it. The change belongs to the rule for reading
+other conversations, in [assistant-mode.md §5.5](assistant-mode.md) and product
+conventions, and is written there when it is built. It applies to every agent,
+in assistant mode or not, as that rule does.
 
 The daemon keeps one small index beside the sessions: for each message it
 sent, the provider's message ID, the thread key and the delivery outcome. It
