@@ -104,6 +104,8 @@ describe('LogtoOrgSsoIdp', () => {
               ssoConnectorId: 'c1',
               issuer: 'https://idp.example.test',
               detail: {
+                // The subject, filed under `id` by the identity service: left out of both lists.
+                id: 'person@example.test',
                 mail: 'person@Example.TEST',
                 upn: 'p',
                 groups: ['admins'],
