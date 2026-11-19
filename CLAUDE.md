@@ -238,7 +238,9 @@ The CP is assembled through one root so prod and tests build the identical graph
   `persistence/` aware of concrete repo classes (repos → services → the two edges).
 - `src/app.ts` — `buildApp({ prisma, clock?, secretsProvider?, ... })`: the factory
   **both** prod and tests call. Returns `{ http, mountWs(), shutdown() }`.
-- `src/index.ts` — thin bootstrap (`loadConfig → buildApp → listen → mountWs → SIGTERM`).
+- `src/start.ts` — `startControlPlane()`: thin bootstrap (`loadConfig → buildApp → listen → mountWs → SIGTERM`);
+  `src/index.ts` only calls it. A package that embeds the Control Plane passes an `extension`
+  (`src/extension.ts`) and imports core through `./extension-api` alone.
 
 Tests never call `index.ts`; they call `buildApp(...)` with the Testcontainers
 `PrismaClient`, a `FakeClock`, and a memory secrets provider.
