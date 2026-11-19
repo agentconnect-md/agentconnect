@@ -18,14 +18,18 @@ export const SLACK_ATTACHMENT_TOOL: ToolDescriptor = {
   description:
     'Fetch the contents of a file shared in Slack, using the bot credentials. You do NOT have direct network access ' +
     "to Slack's private file URLs (they require the bot token) — use this tool instead of curl/fetch. Pass the file's " +
-    '`url` (the `url_private` / `uri` from a shared attachment or resource link). Images are returned as viewable image ' +
+    '`url` (the `url_private` / `uri` from a shared attachment or resource link), or its file ID (the `fileId` an ' +
+    'attached-file note names, e.g. F0123ABCD). Images are returned as viewable image ' +
     'content; text files as text. Any other file (PDF, spreadsheet, archive, …) is saved into `uploads/` in your ' +
     'workspace and the result names the path — open it with your file tools. Supply `mimeType` when known for ' +
     'correct handling.',
   inputSchema: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: "The file's url_private (or url_private_download) / resource-link uri." },
+      url: {
+        type: 'string',
+        description: "The file's url_private (or url_private_download) / resource-link uri, or its Slack file ID."
+      },
       mimeType: { type: 'string', description: 'Optional MIME type hint, e.g. image/png or text/plain.' }
     },
     required: ['url'],
