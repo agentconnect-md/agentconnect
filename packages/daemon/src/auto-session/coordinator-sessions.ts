@@ -142,6 +142,11 @@ function adoptableAs(session: UnownedThreadSession, at: { platform: string; chan
   return [atThreadlessRoot(room) ? { ...session, thread: earlierRoomSessionAnchor(session.thread) } : session]
 }
 
+/** The session key of a threaded task opened for a message in `thread`, as `openTask` keys it and a prewarm guesses it (§4.8). */
+function threadedTaskKey(agentId: string, msg: NormalizedMessage, thread: string): string {
+  return sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
+}
+
 /** A room keyed as one thread, as a task holds a channel it made (§6.8). */
 export interface TaskRoom {
   channel: string
@@ -394,6 +399,16 @@ export class CoordinatorSessions {
     return current === undefined ? callerKey : sessionKey(at.platform, at.channel, current, agentId, at.transportScope)
   }
 
+  /** The key {@link openTask} would give a message's new task: undefined for a report, a page task, or a thread a task already holds. */
+  async newTaskKey(agentId: string, message: DeliveredMessage): Promise<string | undefined> {
+    const { msg } = message
+    if (message.report || postlessWebchat(msg)) return undefined
+    const thread = replyThreadOf(msg)
+    const at = { platform: msg.platform, channel: msg.channel, transportScope: msg.transportScope ?? null, thread }
+    if ((await this.host.store().assistantSubsessions.taskOfThread(agentId, at)) !== undefined) return undefined
+    return threadedTaskKey(agentId, msg, thread)
+  }
+
   /** Open a threaded task for a message (§5.1): its session is the message's thread, which it holds from now on (§6.4). */
   async openTask(
     coordinatorKey: string,
@@ -414,7 +429,7 @@ export class CoordinatorSessions {
           `"messageTask" and that taskId`
       )
     if (postlessWebchat(msg)) return await this.openPageTask(coordinatorKey, agentId, message, title, background)
-    const taskKey = sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
+    const taskKey = threadedTaskKey(agentId, msg, thread)
     const now = this.host.now()
     const parentSessionId = await store.ensureOutwardSessionId(coordinatorKey, agentId, now)
     const opened = await index.open({
