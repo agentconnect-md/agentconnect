@@ -9,5 +9,5 @@ export default async function LoginPage() {
     env.SOCIAL_PROVIDERS || process.env.NEXT_PUBLIC_SOCIAL_PROVIDERS,
     sso !== undefined
   )
-  return <Auth providers={providers} sso={sso} emailFirst={env.ORGANIZATION_SSO === 'true'} />
+  return <Auth providers={providers} sso={sso} organizationSso={env.ORGANIZATION_SSO === 'true'} />
 }

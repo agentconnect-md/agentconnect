@@ -1322,12 +1322,17 @@
       "continueWith": "Continue with {provider}",
       "continueWithPrefix": "Continue with ",
       "or": "or",
-      "email": "Email",
+      "workEmail": "Work email",
       "emailPlaceholder": "you@company.com",
       "continue": "Continue",
-      "notFound": "No sign-in found for this email. Use one of the options below.",
+      "noSsoForEmail": "No single sign-on is set up for this email.",
       "tooMany": "Too many attempts. Try again in a minute.",
-      "lookupFailed": "Couldn't check this email. Try again."
+      "lookupFailed": "Couldn't check this email. Try again.",
+      "continueWithSso": "Continue with SSO",
+      "ssoTitle": "Sign in with SSO",
+      "ssoSubtitle": "Use your work email to continue with your organization's sign-in.",
+      "otherOptions": "Other sign-in options",
+      "lastUsed": "Last used"
     },
     "activation": {
       "storageBlocked": "This browser is blocking the temporary storage this activation link needs, so it cannot verify who is signing in. Allow site data for this site (or use a regular, non-private window), then open the link again.",
