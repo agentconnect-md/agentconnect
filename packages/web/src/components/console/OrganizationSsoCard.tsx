@@ -1,6 +1,6 @@
 'use client'
 
-// Organization single sign-on (organization-sso.md §4.1): add and verify a domain, set up and test the connection, activate.
+// An organization's domains and single sign-on (organization-sso.md §4.1, §4.3): verify a domain, choose how members join, set up the connection.
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
@@ -19,9 +19,11 @@ import {
   fetchOrgSso,
   releaseOrgSsoDomain,
   removeOrgSsoConnection,
+  setOrgMemberSource,
   startOrgSsoTest,
   stopEnforcingOrgSsoConnection,
   verifyOrgSsoDomain,
+  type OrgMemberSource,
   type OrgSsoConnectionDto,
   type OrgSsoDomainDto,
   type OrgSsoStateDto
@@ -49,6 +51,7 @@ type Dialog =
   | { kind: 'enforce' }
   | { kind: 'stopEnforcing' }
   | { kind: 'remove' }
+  | { kind: 'joinByDomain' }
   | { kind: 'verify'; domain: OrgSsoDomainDto }
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -281,6 +284,45 @@ function ConnectionRow({
   )
 }
 
+/** How new members arrive: an owner picks, everyone else reads the choice. */
+function MemberSourceRow({
+  source,
+  isOwner,
+  busy,
+  onPick
+}: {
+  source: OrgMemberSource
+  isOwner: boolean
+  busy: boolean
+  onPick: (next: OrgMemberSource) => void
+}) {
+  const t = useTranslations('Settings.sso.memberSource')
+  const options: readonly OrgMemberSource[] = ['invite', 'domain']
+  return (
+    <div className={ROW}>
+      {isOwner ? (
+        <div className="pillbar self-start" role="radiogroup" aria-label={t('label')}>
+          {options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={source === option}
+              disabled={busy}
+              className={source === option ? 'pill on whitespace-nowrap' : 'pill whitespace-nowrap'}
+              onClick={() => source !== option && onPick(option)}
+            >
+              {t(option)}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <span className="font-sans text-[13px] font-medium leading-normal">{t(source)}</span>
+      )}
+    </div>
+  )
+}
+
 function DomainList({ domains }: { domains: readonly OrgSsoDomainDto[] }) {
   return (
     <div className="mb-[14px] rounded-md border border-(--border-subtle)">
@@ -312,6 +354,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
   const [problems, setProblems] = useState<Record<string, DomainProblem>>({})
   const [rowBusy, setRowBusy] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [sourceBusy, setSourceBusy] = useState(false)
 
   useEffect(() => {
     setDialog(null)
@@ -365,6 +408,21 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       else setActionError(message(e))
     } finally {
       setRowBusy(null)
+    }
+  }
+
+  // Opening the organization to its domains is confirmed; returning to invitations takes effect at once.
+  const pickSource = async (next: OrgMemberSource) => {
+    if (next === 'domain') return open({ kind: 'joinByDomain' })
+    setSourceBusy(true)
+    setActionError(null)
+    try {
+      await setOrgMemberSource(next, orgId)
+      await mutate()
+    } catch (e) {
+      setActionError(message(e))
+    } finally {
+      setSourceBusy(false)
     }
   }
 
@@ -467,6 +525,17 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
               ))}
             </>
           )}
+          {verified.length > 0 && (
+            <>
+              <div className={SECTION}>{t('memberSource.label')}</div>
+              <MemberSourceRow
+                source={state.memberSource}
+                isOwner={isOwner}
+                busy={sourceBusy}
+                onPick={(next) => void pickSource(next)}
+              />
+            </>
+          )}
           {(connection || verified.length > 0) && (
             <>
               <div className={SECTION}>{t('connection')}</div>
@@ -509,6 +578,24 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           onSaved={refresh}
           onRemove={() => open({ kind: 'remove' })}
         />
+      )}
+      {dialog?.kind === 'joinByDomain' && (
+        <ConfirmationDialog
+          title={t('joinDialog.title')}
+          confirmLabel={t('joinDialog.confirm')}
+          busy={pending}
+          busyLabel={t('connectionDialog.saving')}
+          error={dialogError}
+          onConfirm={() =>
+            void confirm(async () => {
+              await setOrgMemberSource('domain', orgId)
+            })
+          }
+          onClose={close}
+        >
+          <DomainList domains={verified} />
+          {t('joinDialog.body')}
+        </ConfirmationDialog>
       )}
       {dialog?.kind === 'remove' && connection && (
         <ConfirmationDialog

@@ -5634,8 +5634,8 @@
       "copy": "复制"
     },
     "sso": {
-      "title": "单点登录（SSO）",
-      "loadError": "无法加载单点登录设置。",
+      "title": "域名与单点登录",
+      "loadError": "无法加载域名与单点登录。",
       "noDomains": "暂无域名",
       "domains": "域名",
       "connection": "连接",
@@ -5744,7 +5744,17 @@
         "title": "验证 {domain}？",
         "body": "单点登录已启用。验证通过后，<b>{domain}</b> 下的邮箱将只能通过 SSO 登录。"
       },
-      "bound": "只能通过 SSO 登录"
+      "bound": "只能通过 SSO 登录",
+      "memberSource": {
+        "label": "新成员",
+        "invite": "仅邀请",
+        "domain": "域内自动加入"
+      },
+      "joinDialog": {
+        "title": "允许域内的人自动加入？",
+        "body": "用这些域名下的邮箱登录的人会自动成为协作者。",
+        "confirm": "允许"
+      }
     },
     "serviceAccounts": {
       "title": "服务账号",

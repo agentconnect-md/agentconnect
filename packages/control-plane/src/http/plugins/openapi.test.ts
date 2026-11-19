@@ -381,6 +381,7 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId/regenerate',
           'DELETE /api/v1/orgs/:orgId/service-accounts/:id/keys/:keyId',
           'GET /api/v1/orgs/:orgId/sso',
+          'PUT /api/v1/orgs/:orgId/sso/member-source',
           'POST /api/v1/orgs/:orgId/sso/domains',
           'POST /api/v1/orgs/:orgId/sso/domains/:id/verify',
           'DELETE /api/v1/orgs/:orgId/sso/domains/:id',

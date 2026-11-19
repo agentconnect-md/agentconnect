@@ -217,7 +217,7 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
   async joinOnce(
     orgId: string,
     userId: string,
-    connectionId: string,
+    domain: string,
     at: Date
   ): Promise<'joined' | 'already_member' | 'recorded'> {
     const run = () =>
@@ -228,9 +228,9 @@ export class PgOrgSsoConnectionRepo implements OrgSsoConnectionRepo {
         // Someone invited earlier keeps their role; the record still stands, so a later removal is not overruled.
         if (await tx.membership.findUnique({ where: key })) return 'already_member' as const
         await tx.membership.create({ data: { orgId, userId, role: 'collaborator' } })
-        await this.audit(tx, orgId, userId, 'member joined through single sign-on', {
+        await this.audit(tx, orgId, userId, `member joined by an address on ${domain}`, {
           action: 'member_joined',
-          connectionId,
+          domain,
           role: 'collaborator'
         })
         return 'joined' as const

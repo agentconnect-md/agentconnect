@@ -5634,8 +5634,8 @@
       "copy": "copy"
     },
     "sso": {
-      "title": "Single sign-on",
-      "loadError": "Couldn't load single sign-on.",
+      "title": "Domains and single sign-on",
+      "loadError": "Couldn't load domains and single sign-on.",
       "noDomains": "No domains",
       "domains": "Domains",
       "connection": "Connection",
@@ -5744,7 +5744,17 @@
         "title": "Verify {domain}?",
         "body": "Single sign-on is active. Once verified, addresses on <b>{domain}</b> will only be able to sign in with SSO."
       },
-      "bound": "SSO sign-in only"
+      "bound": "SSO sign-in only",
+      "memberSource": {
+        "label": "New members",
+        "invite": "Invite only",
+        "domain": "Anyone on your domains"
+      },
+      "joinDialog": {
+        "title": "Let anyone on your domains join?",
+        "body": "Anyone who signs in with an address on these domains joins as a collaborator.",
+        "confirm": "Allow"
+      }
     },
     "serviceAccounts": {
       "title": "Service accounts",
