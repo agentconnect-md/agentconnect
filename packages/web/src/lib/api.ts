@@ -623,6 +623,8 @@ export interface SessionListFilters {
   githubRepoId?: string
   /** Leave tasks (delegated tasks, follow-ups and approved proposals) out of the rows, the total and the facets. */
   excludeTasks?: boolean
+  /** Leave memory dream sessions out of the rows, the total and the facets. */
+  excludeDreams?: boolean
 }
 
 export interface SessionFacets {
@@ -2810,6 +2812,7 @@ function appendSessionFilters(q: URLSearchParams, filters: SessionListFilters): 
   if (filters.triggeredBy) q.set('triggeredBy', filters.triggeredBy)
   if (filters.githubRepoId) q.set('githubRepoId', filters.githubRepoId)
   if (filters.excludeTasks) q.set('tasks', 'exclude')
+  if (filters.excludeDreams) q.set('dreams', 'exclude')
 }
 
 export async function fetchSessionFacets(orgId?: string, filters: SessionListFilters = {}): Promise<SessionFacets> {

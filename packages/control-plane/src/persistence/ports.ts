@@ -1949,6 +1949,8 @@ export interface SessionFilterQuery extends SessionQuery {
   activityState?: ActivityState
   /** Leave out tasks: rows whose thread is a `subsession:` coordinate. */
   excludeSubsessions?: boolean
+  /** Leave out memory dream sessions: rows on the `dream` session-identity platform. */
+  excludeDreams?: boolean
   /** Code-host hook ids keyed by provider: each provider is promoted out of the generic
    *  hook bucket into its own integration, and `integration: 'hook'` excludes them all.
    *  Keyed rather than one field per host, so a new provider needs no new field here. */

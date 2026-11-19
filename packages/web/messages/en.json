@@ -777,6 +777,9 @@
       "tasks": "Tasks",
       "showTasks": "Show tasks",
       "hideTasks": "Hide tasks",
+      "dreams": "Dreams",
+      "showDreams": "Show dreams",
+      "hideDreams": "Hide dreams",
       "all": "All",
       "noMatchesShort": "No matches"
     },
