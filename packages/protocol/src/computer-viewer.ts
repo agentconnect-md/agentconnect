@@ -89,8 +89,20 @@ export const ComputerViewerCandidatesRequest = z.object({
 export type ComputerViewerCandidatesRequest = z.infer<typeof ComputerViewerCandidatesRequest>
 
 /** `POST /view/api/rtc/offer` body; absent means `direct`. */
-export const ComputerViewerOfferRequest = z.object({ transport: z.enum(COMPUTER_VIEWER_TRANSPORTS).optional() })
+export const ComputerViewerOfferRequest = z.object({
+  transport: z.enum(COMPUTER_VIEWER_TRANSPORTS).optional(),
+  browser: z
+    .object({
+      maxWidth: z.number().int().min(64).max(2048).default(1280),
+      maxHeight: z.number().int().min(64).max(2048).default(1024)
+    })
+    .optional()
+})
 export type ComputerViewerOfferRequest = z.infer<typeof ComputerViewerOfferRequest>
+
+// A binary browser frame chunk starts with ACBF, a big-endian frame id, chunk index and chunk count.
+export const COMPUTER_BROWSER_FRAME_HEADER_BYTES = 12
+export const COMPUTER_BROWSER_FRAME_CHUNK_BYTES = 16 * 1024
 
 /** A fresh viewer token sent over the DataChannel before the old one lapses; the session closes without one. */
 export const ComputerViewerRenewal = z.object({ type: z.literal('auth'), token: z.string().min(1).max(4096) })

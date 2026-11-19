@@ -315,7 +315,10 @@ export class ChromeTools {
     if (typeof args.timeout === 'number' && args.timeout > limit) args.timeout = limit
     if (actionFence) {
       actionFence()
-      if (target) await (this.opts.activate ?? activateChromePage)(child.endpoint, target, actionFence, request.signal)
+      if (target) {
+        await (this.opts.activate ?? activateChromePage)(child.endpoint, target, actionFence, request.signal)
+        pages.activated(target)
+      }
       actionFence()
       confirmUploadRoots?.()
       if (name === 'new_page') args.background = false
@@ -394,7 +397,7 @@ export class ChromeTools {
     return targets
   }
 
-  private pageIds(desktop: string): PageIds {
+  pageIds(desktop: string): PageIds {
     let ids = this.pages.get(desktop)
     if (!ids) this.pages.set(desktop, (ids = new PageIds()))
     return ids

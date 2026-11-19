@@ -1,9 +1,20 @@
 import { randomUUID } from 'node:crypto'
 import { isIPv4 } from 'node:net'
-import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters, RtpPacket, type PeerConfig } from 'werift'
+import { setTimeout as delay } from 'node:timers/promises'
 import {
+  MediaStreamTrack,
+  RTCPeerConnection,
+  RTCRtpCodecParameters,
+  RtpPacket,
+  type PeerConfig,
+  type RTCDataChannel
+} from 'werift'
+import {
+  COMPUTER_BROWSER_FRAME_CHUNK_BYTES,
+  COMPUTER_BROWSER_FRAME_HEADER_BYTES,
   ComputerViewerRenewal,
   type ComputerViewerCandidate,
+  type ComputerViewerOfferRequest,
   type ComputerViewerTransport
 } from '@agentconnect.md/protocol/computer'
 import type { ScreenStream } from './screen-stream.js'
@@ -12,7 +23,8 @@ import type { ViewerPrincipal } from '../viewer.js'
 export interface RtcSessionsOptions {
   stream: ScreenStream
   // Handles one DataChannel message from the viewer; the resolved value (or error) is sent back with its seq.
-  onMessage: (principal: ViewerPrincipal, message: unknown) => Promise<unknown>
+  onMessage: (principal: ViewerPrincipal, message: unknown, browser: boolean) => Promise<unknown>
+  browser?: (maxWidth: number, maxHeight: number, send: (jpeg: Buffer) => Promise<void>) => () => void
   // A fresh token the viewer sent over the DataChannel; undefined when it does not hold.
   reauthorize?: (token: string) => ViewerPrincipal | undefined
   log: (line: string) => void
@@ -26,6 +38,7 @@ export interface OfferOptions {
   hostAddress?: string | undefined
   // `direct` is ICE-lite with host candidates; `stun` is full ICE with server-reflexive ones; `turn` relays through TURN.
   transport?: ComputerViewerTransport
+  browser?: ComputerViewerOfferRequest['browser']
 }
 
 /** One trickled ICE candidate in its JSON form. */
@@ -138,6 +151,7 @@ export class RtcSessions {
     offer: OfferOptions = {}
   ): Promise<{ id: string; sdp: string; candidates: number }> {
     if (this.sessions.size >= MAX_SESSIONS) throw new Error('too many viewer sessions')
+    if (offer.browser && !this.options.browser) throw new Error('Browser streaming is unavailable.')
     const transport = offer.transport ?? 'direct'
     const pc = new RTCPeerConnection(this.peerConfig(principal, offer))
     const session: Session = {
@@ -164,8 +178,8 @@ export class RtcSessions {
     })
     const client = () => session.principal.client
     this.sessions.set(session.id, session)
-    const track = new MediaStreamTrack({ kind: 'video' })
-    pc.addTransceiver(track, { direction: 'sendonly' })
+    const track = offer.browser ? undefined : new MediaStreamTrack({ kind: 'video' })
+    if (track) pc.addTransceiver(track, { direction: 'sendonly' })
     const channel = pc.createDataChannel('input')
     let replies = Promise.resolve()
     channel.onMessage.subscribe((data) => {
@@ -181,7 +195,7 @@ export class RtcSessions {
             this.renew(session, renewal.data.token)
             return channel.send(JSON.stringify({ seq: message.seq, ok: true, result: null }))
           }
-          const result = await this.options.onMessage(session.principal, message)
+          const result = await this.options.onMessage(session.principal, message, Boolean(offer.browser))
           channel.send(JSON.stringify({ seq: message.seq, ok: true, result }))
         } catch (error) {
           channel.send(JSON.stringify({ seq: message.seq, ok: false, error: (error as Error).message }))
@@ -193,7 +207,12 @@ export class RtcSessions {
         session.connected = true
         session.lastSeen = Date.now()
         this.options.log(`viewer ${client()}: WebRTC connected (${transport}${selectedPairType(pc)})`)
-        session.unsubscribe ??= this.options.stream.subscribe(continuous(track))
+        if (offer.browser && this.options.browser && !session.unsubscribe) {
+          let frame = 0
+          session.unsubscribe = this.options.browser(offer.browser.maxWidth, offer.browser.maxHeight, (jpeg) =>
+            sendBrowserFrame(channel, ++frame, jpeg, () => session.principal.valid?.() !== false)
+          )
+        } else if (track) session.unsubscribe ??= this.options.stream.subscribe(continuous(track))
       }
       if (state === 'failed' || state === 'closed' || state === 'disconnected') this.close(session.id)
     })
@@ -322,6 +341,34 @@ export class RtcSessions {
   size(): number {
     return this.sessions.size
   }
+}
+
+async function sendBrowserFrame(
+  channel: RTCDataChannel,
+  frame: number,
+  jpeg: Buffer,
+  authorized: () => boolean
+): Promise<void> {
+  const maxBytes = COMPUTER_BROWSER_FRAME_CHUNK_BYTES - COMPUTER_BROWSER_FRAME_HEADER_BYTES
+  const count = Math.ceil(jpeg.length / maxBytes)
+  const deadline = Date.now() + 3000
+  const drain = async (limit: number) => {
+    while (channel.bufferedAmount > limit && channel.readyState === 'open' && authorized() && Date.now() < deadline)
+      await delay(15)
+    return channel.readyState === 'open' && authorized() && channel.bufferedAmount <= limit
+  }
+  for (let index = 0; index < count; index++) {
+    if (!(await drain(128 * 1024))) return
+    const chunk = jpeg.subarray(index * maxBytes, (index + 1) * maxBytes)
+    const packet = Buffer.allocUnsafe(COMPUTER_BROWSER_FRAME_HEADER_BYTES + chunk.length)
+    packet.write('ACBF', 0, 'ascii')
+    packet.writeUInt32BE(frame >>> 0, 4)
+    packet.writeUInt16BE(index, 8)
+    packet.writeUInt16BE(count, 10)
+    chunk.copy(packet, COMPUTER_BROWSER_FRAME_HEADER_BYTES)
+    channel.send(packet)
+  }
+  await drain(0)
 }
 
 // The selected pair's local candidate type (host, srflx, prflx or relay), for the log line.

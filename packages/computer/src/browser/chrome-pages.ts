@@ -46,16 +46,13 @@ export class PageIds {
   private child: object | undefined
   private readonly numbers = new Map<number, string>()
   private targetIds: string[] = []
+  private activation: { target: string; until: number } | undefined
 
   constructor(private readonly newId: () => string = () => `p${randomBytes(5).toString('hex')}`) {}
 
   /** Binds pages only when their address and title, or their address alone, identify one target. */
   sync(child: object, browser: string, listed: ListedPage[], targets: DevtoolsTarget[]): void {
-    if (browser !== this.browser) {
-      for (const entry of this.entries) delete entry.target
-      this.browser = browser
-      this.targetIds = []
-    }
+    this.setBrowser(browser)
     if (child !== this.child) {
       this.numbers.clear()
       this.child = child
@@ -117,6 +114,32 @@ export class PageIds {
     return this.numberFor(child, id) === undefined ? undefined : this.entry(id)?.target
   }
 
+  activated(target: string): void {
+    this.activation = { target, until: Date.now() + 1000 }
+  }
+
+  recentActivation(): string | undefined {
+    return this.activation && this.activation.until > Date.now() ? this.activation.target : undefined
+  }
+
+  /** Shares opaque page ids between the viewer and the Chrome MCP adapter. */
+  observe(browser: string, targets: DevtoolsTarget[]): Map<string, string> {
+    this.setBrowser(browser)
+    const pages = targets.filter((target) => target.type === 'page')
+    if (!pages.length) return new Map()
+    this.targetIds = targets.map((target) => target.id)
+    const live = new Set(pages.map((target) => target.id))
+    const orphans = this.entries.filter((entry) => entry.target === undefined).slice(-ORPHANS_MAX)
+    this.entries = [...orphans, ...this.entries.filter((entry) => entry.target && live.has(entry.target))]
+    return new Map(
+      pages.map((target) => {
+        const entry = this.bind(target, pages, [])
+        Object.assign(entry, { url: target.url, title: target.title })
+        return [target.id, entry.id]
+      })
+    )
+  }
+
   /** The DevTools ids results must never carry: every target bound now, and the browser's own. */
   secrets(): string[] {
     const browser = this.browser?.split('/').pop()
@@ -125,6 +148,15 @@ export class PageIds {
 
   private entry(id: string): PageEntry | undefined {
     return this.entries.find((entry) => entry.id === id)
+  }
+
+  private setBrowser(browser: string): void {
+    if (browser === this.browser) return
+    for (const entry of this.entries) delete entry.target
+    this.numbers.clear()
+    this.browser = browser
+    this.targetIds = []
+    this.activation = undefined
   }
 
   // The entry for a target: its own, else an earlier browser's at the same address (same title first), else a new one.
