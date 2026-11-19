@@ -52,6 +52,7 @@ the picture it draws.
 - **(draft)** [wechat-integration.md](designs/wechat-integration.md) — Personal WeChat through Tencent's iLink (ClawBot): a self-service QR binding of one member to one agent, a daemon-owned long poll, private sessions, complete plain-text replies with no edits, no sends after a long silence, and quotes resolved from a local record.
 - **(draft)** [teams-integration.md](designs/teams-integration.md) — Proposed Microsoft Teams integration: relay ingress with Bot Framework token checks, resource-specific consent filtered like Slack, DingTalk's reply chain for group chats, and Adaptive Card approvals.
 - **(draft)** [google-chat-integration.md](designs/google-chat-integration.md) — Proposed native Google Chat integration with HTTPS relay ingress, threaded replies, durable admission, and a Pub/Sub alternative.
+- **(draft)** [email-integration.md](designs/email-integration.md) — Proposed email integration: one address per agent on the deployment's mail domain, mail from members only, one thread per private session, and replies sent by the relay with a per-thread ticket.
 - **(draft)** [voice-meeting-participation.md](designs/voice-meeting-participation.md) — Agents in voice calls: joining and transcribing Google Meet through a meeting runner first, then speaking, Discord voice channels, the console microphone, and Zoom, Teams, and huddles on the same runner seam.
 
 ### Webchat and console
