@@ -2559,6 +2559,58 @@ describe('executeTool: readSlackFile', () => {
     expect(res.mcpContent[0]!.text).toMatch(/Saved 13 bytes of application\/pdf to `uploads\/Q3 report.pdf`/)
   })
 
+  it('resolves a Slack file ID to its download URL and saves the file', async () => {
+    const zip = Buffer.from('PK zip')
+    const gw = fakeGateway({
+      downloadFile: vi.fn(async () => zip),
+      getFileInfo: vi.fn(async () => ({
+        name: 'skill.zip',
+        mimeType: 'application/zip',
+        sourceUrl: 'https://files.slack.com/files-pri/T1-F1/download/skill.zip',
+        channels: [ctx.channel]
+      }))
+    })
+    const saveAttachment = vi.fn(async (_c: SessionContext, name: string) => ({
+      ok: true as const,
+      path: `uploads/${name}`
+    }))
+    const d = makeDeps({ gatewayFor: () => gw, saveAttachment, now: () => 1000 })
+    const res = (await executeTool(ctx, 'readSlackFile', { url: 'F0CK2QMKE20' }, d)) as {
+      mcpContent: { type: string; text?: string }[]
+    }
+    expect(gw.getFileInfo).toHaveBeenCalledWith('F0CK2QMKE20')
+    expect(gw.downloadFile).toHaveBeenCalledWith(
+      'https://files.slack.com/files-pri/T1-F1/download/skill.zip',
+      expect.any(Number)
+    )
+    expect(saveAttachment).toHaveBeenCalledWith(ctx, 'skill.zip', zip)
+    expect(res.mcpContent[0]!.text).toMatch(/of application\/zip to `uploads\/skill.zip`/)
+  })
+
+  it('refuses a Slack file ID shared only where this conversation cannot read, before downloading', async () => {
+    const gw = fakeGateway({
+      downloadFile: vi.fn(async () => Buffer.from('secret')),
+      getFileInfo: async () => ({
+        name: 'secret.zip',
+        mimeType: 'application/zip',
+        sourceUrl: 'https://files.slack.com/files-pri/T1-F2/download/secret.zip',
+        channels: ['C_PRIVATE']
+      })
+    })
+    const d = makeDeps({
+      gatewayFor: () => gw,
+      placeSnapshot: (_integration, channel) => ({ isPrivate: channel === 'C_PRIVATE' }),
+      readLookups: () => ({
+        ...ASKER_WHO_MAY_WRITE.readLookups!('bot-a'),
+        member: async (_integration, channel) => channel !== 'C_PRIVATE'
+      })
+    })
+    await expect(executeTool(ctx, 'readSlackFile', { url: 'F2' }, d)).rejects.toThrow(
+      /readSlackFile: I cannot read that attachment from this conversation\.$/
+    )
+    expect(gw.downloadFile).not.toHaveBeenCalled()
+  })
+
   it('names a Telegram file (no URL) from its MIME type and reports a failed save', async () => {
     const gw = fakeGateway({ downloadFile: vi.fn(async () => Buffer.from('PK')) })
     const saveAttachment = vi.fn(async () => ({ ok: false as const, reason: 'sandboxed' as const }))

@@ -653,7 +653,7 @@ async function executeRegisteredTool(
       ? (deps.attachmentReaderFor?.(ctx.integrationId) ?? deps.gatewayFor(ctx.integrationId))
       : undefined
     if (!reader) throw new Error(`no live attachment connection for integration ${ctx.integrationId ?? '(none)'}`)
-    return await readAttachment(ctx, args, deps, reader)
+    return await readAttachment(ctx, args, deps, reader, (source) => assertFileRead(ctx, source, deps, name))
   }
 
   // The remaining session-bound read tools need the session's generic message gateway.
