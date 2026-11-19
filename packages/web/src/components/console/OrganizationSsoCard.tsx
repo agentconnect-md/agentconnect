@@ -685,7 +685,6 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
   )
 }
 
-/** How new members arrive; shown once a domain is verified, beside the other membership cards. */
 /** The deployment's own SSO connector sets how members arrive; the organization only reads it. */
 export function DeploymentMemberSourceCard({ source }: { source: OrgMemberSource }) {
   const t = useTranslations('Settings.sso')
@@ -704,6 +703,7 @@ export function DeploymentMemberSourceCard({ source }: { source: OrgMemberSource
   )
 }
 
+/** How new members arrive; shown once a domain is verified, beside the other membership cards. */
 export function OrganizationMemberSourceCard({ orgId, isOwner }: { orgId: string; isOwner: boolean }) {
   const t = useTranslations('Settings.sso')
   const { data: state, mutate } = useSWR<OrgSsoStateDto>(consoleKeys.orgSso(orgId), ([, id]) =>
