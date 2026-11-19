@@ -319,6 +319,46 @@ describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
     expect(warm).toHaveBeenCalledWith({ userId: 'local-sub-42', oidcSubject: 'sub-42' })
   })
 
+  it('does not vouch for an address its token says is unverified, in the bearer or in the id-token hint', async () => {
+    const resolveUser = vi.fn(async ({ oidcSubject }: { oidcSubject: string }) => ({ userId: `local-${oidcSubject}` }))
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, resolveUser })
+    const probe = (headers: Record<string, string>) => app.inject({ method: 'GET', url: '/api/v1/probe', headers })
+    const email = 'dana@example.test'
+
+    await probe({ authorization: `Bearer ${await mintBearer('sub-plain', { email })}` })
+    await probe({ authorization: `Bearer ${await mintBearer('sub-unverified', { email, email_verified: false })}` })
+    await probe({
+      authorization: `Bearer ${await mintBearer('sub-hinted')}`,
+      'x-ac-id-token': await mintBearer('sub-hinted', { email, email_verified: false })
+    })
+    expect(resolveUser.mock.calls.map(([input]) => input)).toMatchObject([
+      { oidcSubject: 'sub-plain', email, emailVerified: true },
+      { oidcSubject: 'sub-unverified', email, emailVerified: false },
+      { oidcSubject: 'sub-hinted', email, emailVerified: false }
+    ])
+  })
+
+  it('provisions a remembered subject again when it signs in through an SSO connector not yet seen for it', async () => {
+    const resolveUser = vi.fn(async ({ oidcSubject }: { oidcSubject: string }) => ({ userId: `local-${oidcSubject}` }))
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, resolveUser })
+    const probe = async (claims?: Record<string, unknown>) =>
+      app.inject({
+        method: 'GET',
+        url: '/api/v1/probe',
+        headers: { authorization: `Bearer ${await mintBearer('sub-sso', claims)}` }
+      })
+
+    await probe()
+    await probe()
+    await probe({ sso_connector_id: 'connector-a' })
+    await probe({ sso_connector_id: 'connector-a' })
+    // Another session of the same account without a connector does not provision again.
+    await probe()
+    expect(
+      resolveUser.mock.calls.map(([input]) => (input as { ssoConnectorId?: string | null }).ssoConnectorId)
+    ).toEqual([null, 'connector-a'])
+  })
+
   it('surfaces the verified ADMIN role on the human principal', async () => {
     const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, resolveUser: async () => ({ userId: 'local-sub-42' }) })
 

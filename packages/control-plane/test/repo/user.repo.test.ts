@@ -272,6 +272,86 @@ describe('PgUserRepo.provisionOidcUser — signup creates no organization', () =
   })
 })
 
+describe('PgUserRepo.provisionOidcUser — a row the organization’s directory manages', () => {
+  const CONNECTOR = 'connector-acme'
+  const connect = (logtoConnectorId: string, activatedAt: Date | null = new Date()) =>
+    prisma.orgSsoConnection.create({
+      data: { orgId: DEFAULT_ORG_ID, logtoConnectorId, protocol: 'oidc', activatedAt, configChangedAt: new Date() }
+    })
+  /** An email-only row whose membership the directory manages, as the directory creates it. */
+  async function managed(email: string): Promise<string> {
+    const { userId } = await repo().addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } },
+      data: { managedBy: 'directory', directoryExternalId: `ext-${randomUUID()}` }
+    })
+    return userId
+  }
+  const subjectOf = async (userId: string) => (await prisma.user.findUnique({ where: { id: userId } }))?.oidcSubject
+
+  it('is claimed only by a sign-in through that organization’s own active connection', async () => {
+    await connect(CONNECTOR)
+    const row = await managed('dana@acme.dev')
+    const signIn = (oidcSubject: string, ssoConnectorId: string | null) =>
+      repo().provisionOidcUser({ oidcSubject, email: 'dana@acme.dev', emailVerified: true, ssoConnectorId })
+
+    // A verified address alone, or another organization's connector, gets its own account and leaves the row waiting.
+    for (const [subject, connector] of [
+      ['sub-social', null],
+      ['sub-elsewhere', 'connector-other']
+    ] as const) {
+      const { userId } = await signIn(subject, connector)
+      expect(userId).not.toBe(row)
+      expect(isSyntheticEmail((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).email)).toBe(true)
+      expect(await prisma.membership.count({ where: { userId } })).toBe(0)
+    }
+    expect(await subjectOf(row)).toBeNull()
+
+    expect((await signIn('sub-dana', CONNECTOR)).userId).toBe(row)
+    expect(await subjectOf(row)).toBe('sub-dana')
+  })
+
+  it('waits while the connection is not active, and an ordinary invite is claimed as before', async () => {
+    await connect(CONNECTOR, null)
+    const row = await managed('erin@acme.dev')
+    const first = await repo().provisionOidcUser({
+      oidcSubject: 'sub-erin',
+      email: 'erin@acme.dev',
+      emailVerified: true,
+      ssoConnectorId: CONNECTOR
+    })
+    expect(first.userId).not.toBe(row)
+
+    const invited = await repo().addMemberByEmail(DEFAULT_ORG_ID, 'frank@acme.dev', 'viewer')
+    const frank = await repo().provisionOidcUser({
+      oidcSubject: 'sub-frank',
+      email: 'frank@acme.dev',
+      emailVerified: true
+    })
+    expect(frank.userId).toBe(invited.userId)
+  })
+
+  it('is merged into an account that signed in earlier only once that account signs in through the connection', async () => {
+    await connect(CONNECTOR)
+    // The account exists first, with no address; the directory then creates the row for its address.
+    const { userId } = await repo().provisionOidcUser({ oidcSubject: 'sub-gail' })
+    const row = await managed('gail@acme.dev')
+    const signIn = (ssoConnectorId: string | null) =>
+      repo().provisionOidcUser({ oidcSubject: 'sub-gail', email: 'gail@acme.dev', emailVerified: true, ssoConnectorId })
+
+    await signIn(null)
+    expect(await prisma.membership.count({ where: { userId } })).toBe(0)
+    expect(await prisma.user.findUnique({ where: { id: row } })).not.toBeNull()
+
+    await signIn(CONNECTOR)
+    expect(await prisma.user.findUnique({ where: { id: row } })).toBeNull()
+    expect(await prisma.membership.findMany({ where: { userId } })).toMatchObject([
+      { orgId: DEFAULT_ORG_ID, role: 'collaborator', managedBy: 'directory' }
+    ])
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: userId } })).email).toBe('gail@acme.dev')
+  })
+})
+
 describe('PgOrgRepo', () => {
   it('lists the orgs a user belongs to with role + member count', async () => {
     const { userId } = await repo().provisionOidcUser({

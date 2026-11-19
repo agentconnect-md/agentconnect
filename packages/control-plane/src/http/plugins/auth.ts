@@ -73,6 +73,8 @@ export type ResolveOidcUser = (input: {
    *  verified email may claim invited member rows or be stored as the user's
    *  real address — an unverified one could squat someone else's identity. */
   emailVerified?: boolean
+  /** The SSO connector this sign-in went through, from the signed token. */
+  ssoConnectorId?: string | null
   displayName?: string
   /** Avatar URL from the `picture` claim (display-only; no verification gate —
    *  it can only ever come from a signature-checked token or id-token hint). */
@@ -298,6 +300,8 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // per request so org switches (x-ac-org-id), role edits and removals take
   // effect immediately.
   const resolved = new Map<string, Promise<{ userId: string }>>()
+  // The SSO connector each memoized subject last provisioned through.
+  const resolvedVia = new Map<string, string>()
   // Short negative memo so a refused subject costs no upstream check per request; a 503 is never remembered.
   const refused = new Map<string, { until: number; refusal?: SubjectRefusal }>()
   function rememberRefusal(sub: string, refusal?: SubjectRefusal): void {
@@ -418,6 +422,8 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // browser forwards the id token it already holds). The legacy plain-text
       // `x-ac-user-email` header remains display-only: never used to provision.
       let email = payload.email as string | undefined
+      // A token that says its address is unverified does not vouch for it.
+      let emailVouched = payload.email_verified !== false
       let displayName = typeof payload.name === 'string' ? payload.name : undefined
       // The `picture` claim is the avatar URL — display-only, so no verification
       // gate (it rides the same signature-checked sources as name). Resource
@@ -430,7 +436,10 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
           const { payload: idClaims } = await jwtVerify(idTokenHint, await getJwks(), { issuer })
           if (idClaims.sub === sub) {
             isAdmin ||= hasAdminRole(idClaims.roles)
-            if (typeof idClaims.email === 'string') email = idClaims.email
+            if (typeof idClaims.email === 'string') {
+              email = idClaims.email
+              emailVouched = idClaims.email_verified !== false
+            }
             if (!displayName && typeof idClaims.name === 'string') displayName = idClaims.name
             if (!picture && typeof idClaims.picture === 'string') picture = idClaims.picture
           }
@@ -438,7 +447,8 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
           /* invalid hint — ignore; identity stays token-only */
         }
       }
-      const emailVerified = email !== undefined
+      const emailVerified = email !== undefined && emailVouched
+      const ssoConnectorId = typeof payload[SSO_CONNECTOR_CLAIM] === 'string' ? payload[SSO_CONNECTOR_CLAIM] : null
       // Display-only fallback for req.principal.email (creator labels) — never provisioned.
       const rawEmailHint = req.headers['x-ac-user-email']
       const headerEmail = (Array.isArray(rawEmailHint) ? rawEmailHint[0] : rawEmailHint)?.trim() || undefined
@@ -448,7 +458,10 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       const memo = refused.get(sub)
       if (memo !== undefined && Date.now() < memo.until) return identityRequired(reply, memo.refusal)
       let pending = resolved.get(sub)
+      // A sign-in through a connector this process has not seen for the subject provisions again: it may claim what an earlier one could not.
+      if (pending && ssoConnectorId !== null && resolvedVia.get(sub) !== ssoConnectorId) pending = undefined
       if (!pending) {
+        if (ssoConnectorId !== null) resolvedVia.set(sub, ssoConnectorId)
         pending = (async () => {
           // Checked before provisioning and on each process's first sight, so an already-provisioned subject is refused too.
           if (cfg.admitSubject) {
@@ -462,6 +475,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
                 oidcSubject: sub,
                 ...(email ? { email } : {}),
                 emailVerified,
+                ssoConnectorId,
                 ...(displayName ? { displayName } : {}),
                 ...(picture ? { picture } : {})
               })
@@ -522,7 +536,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
         ...(isAdmin ? { isAdmin: true } : {})
       }
       req.oidcSubject = sub
-      req.signInSsoConnectorId = typeof payload[SSO_CONNECTOR_CLAIM] === 'string' ? payload[SSO_CONNECTOR_CLAIM] : null
+      req.signInSsoConnectorId = ssoConnectorId
       // Warm the identity projection behind this response (cold-visit §3). Contained:
       // a throw here must not fall into the outer catch and 401 a valid token.
       try {
