@@ -7138,6 +7138,8 @@ export interface ProvisionOidcUserInput {
    * invited memberships.
    */
   emailVerified?: boolean
+  /** The SSO connector this sign-in went through, from the signed token; a row an organization's directory manages is claimed through that organization's own connection only. */
+  ssoConnectorId?: string | null
   /** Display name from the token (`name` claim), stored on first sight. */
   displayName?: string
   /** Avatar URL from the `picture` claim. Display-only (no verification gate);

@@ -316,6 +316,24 @@ Unchanged for addresses outside any bound domain. For an address inside one, the
 existing claim by email relies on §5: only that organization's connection can assert
 the address.
 
+A token that states its address is unverified (`email_verified: false`, in the access
+token or in the id-token hint) does not vouch for it: the address claims nothing, is
+not stored, and upgrades no placeholder.
+
+A membership the organization's directory manages (`membership.managedBy = directory`)
+is held to more than the address. The row it hangs off is claimed only by a sign-in
+that went through that organization's own active connection, read from the signed
+`sso_connector_id` claim of §4.5; when the row is managed in several organizations,
+through none, because one sign-in goes through one connection. Any other sign-in with
+the same verified address gets its own account under a placeholder address and the row
+keeps waiting, so the membership reaches only someone the organization's identity
+provider has authenticated. The same rule guards the later merge of a waiting row into
+an account that signed in before it existed. The check and the claim run under a lock
+on the row, so a membership added meanwhile cannot slip past it. Because provisioning
+is remembered per subject, a sign-in through a connector not yet seen for the subject
+provisions again: the person who first arrived another way claims the row the first
+time they come through the connection. An ordinary invite is claimed as before.
+
 ### 4.5 Per session
 
 The identity service refuses another sign-in method for an address in a bound

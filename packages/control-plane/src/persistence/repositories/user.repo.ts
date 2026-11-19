@@ -463,6 +463,22 @@ function toServiceAccountRecord(m: {
   }
 }
 
+/** An invite is claimed by its verified address alone; a row an organization's directory manages only by a sign-in through that organization's own active SSO connection, for every such organization. */
+async function signInMayClaim(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  ssoConnectorId: string | null
+): Promise<boolean> {
+  const managed = await tx.membership.findMany({ where: { userId, managedBy: 'directory' }, select: { orgId: true } })
+  if (managed.length === 0) return true
+  if (ssoConnectorId === null) return false
+  const orgIds = [...new Set(managed.map((membership) => membership.orgId))]
+  const vouched = await tx.orgSsoConnection.count({
+    where: { orgId: { in: orgIds }, logtoConnectorId: ssoConnectorId, activatedAt: { not: null } }
+  })
+  return vouched === orgIds.length
+}
+
 export class PgUserRepo implements UserRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -476,7 +492,9 @@ export class PgUserRepo implements UserRepo {
     // Fast path: known subject.
     const existing = await this.db.user.findUnique({ where: { oidcSubject } })
     if (existing) {
-      if (email && isSyntheticEmail(existing.email)) await this.upgradeSyntheticEmail(existing.id, email)
+      if (email && isSyntheticEmail(existing.email)) {
+        await this.upgradeSyntheticEmail(existing.id, email, input.ssoConnectorId ?? null)
+      }
       // Avatars change (a new photo, a switched provider) — keep the stored URL
       // fresh. Cheap: the auth plane memoizes this per subject, so it runs at
       // most once per CP process per user, and only writes on an actual change.
@@ -496,15 +514,21 @@ export class PgUserRepo implements UserRepo {
       if (invited && !invited.oidcSubject && invited.kind === 'human') {
         // Guarded claim: only bind our subject if the row is STILL unclaimed —
         // count 0 means a concurrent racer (same or another subject) won.
-        const res = await this.db.user.updateMany({
-          where: { id: invited.id, oidcSubject: null, kind: 'human' },
-          data: {
-            oidcSubject,
-            ...(displayName && !invited.displayName ? { displayName } : {}),
-            ...(picture ? { picture } : {})
-          }
+        const claimed = await withAmbientTx(this.db, async (tx) => {
+          // The row lock holds off a membership being added to it until the claim has settled.
+          await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "app_user" WHERE "id" = ${invited.id} FOR UPDATE`)
+          if (!(await signInMayClaim(tx, invited.id, input.ssoConnectorId ?? null))) return false
+          const res = await tx.user.updateMany({
+            where: { id: invited.id, oidcSubject: null, kind: 'human' },
+            data: {
+              oidcSubject,
+              ...(displayName && !invited.displayName ? { displayName } : {}),
+              ...(picture ? { picture } : {})
+            }
+          })
+          return res.count === 1
         })
-        if (res.count === 1) return { userId: invited.id }
+        if (claimed) return { userId: invited.id }
         const winner = await this.db.user.findUnique({ where: { oidcSubject } })
         if (winner) return { userId: winner.id }
         // The row was claimed by a DIFFERENT subject — fall through and create
@@ -544,7 +568,7 @@ export class PgUserRepo implements UserRepo {
    * invite reaches the person it was meant for; any other holder wins and the
    * placeholder stays.
    */
-  private async upgradeSyntheticEmail(userId: string, email: string): Promise<void> {
+  private async upgradeSyntheticEmail(userId: string, email: string, ssoConnectorId: string | null): Promise<void> {
     // A new membership can appear between the discovery read and our locks
     // (another owner may invite this email to a second org). Retry from a fresh
     // snapshot instead of locking a newly discovered child after its parent/user:
@@ -644,6 +668,8 @@ export class PgUserRepo implements UserRepo {
         }
 
         const holderMemberships = currentMemberships.filter((membership) => membership.userId === holder.id)
+        // Checked under the locks: the invited row's memberships can no longer change.
+        if (!(await signInMayClaim(tx, holder.id, ssoConnectorId))) return 'refused' as const
         const canonicalByOrg = new Map(
           currentMemberships
             .filter((membership) => membership.userId === userId)
@@ -689,7 +715,7 @@ export class PgUserRepo implements UserRepo {
         await tx.user.update({ where: { id: userId }, data: { email } })
         return 'merged' as const
       })
-      if (outcome === 'merged') return
+      if (outcome === 'merged' || outcome === 'refused') return
     }
 
     // A rejected provisioning promise is evicted by the auth plugin, so the
