@@ -16,6 +16,7 @@ import { AdminPromptHelper } from './admin-prompts.js'
 import { auditSinks, fileAuditSink, type AuditSink } from './audit.js'
 import { browserToolsRefusal } from './browser/chrome-access.js'
 import { ChromeTools } from './browser/chrome-tools.js'
+import { BrowserViewer } from './browser/viewer.js'
 import { browserCloseCommand, browserCommand, browserLaunchersCommand } from './browser/command.js'
 import { DevtoolsEndpoints, type DevtoolsEndpoint } from './browser/devtools-endpoint.js'
 import { isGoogleChrome } from './browser/devtools-launch.js'
@@ -832,7 +833,8 @@ function buildViewer(
   onFfmpegInstalled?: () => void,
   // An agent desktop's display and id (computer-use.md §3.9); its viewer leaves fetching ffmpeg to the main one.
   display?: string,
-  desktopId = 'main'
+  desktopId = 'main',
+  browser?: BrowserViewer
 ): Viewer & { statusChanged(): void } {
   const ffmpeg = (): string => resolveFfmpegPath(dir, config.ffmpegPath)
   let ffmpegState: 'ok' | 'missing' | 'downloading' = 'missing'
@@ -867,7 +869,8 @@ function buildViewer(
     ? new RtcSessions({
         stream,
         log,
-        onMessage: (principal, message) => viewer.channelMessage(principal, message),
+        onMessage: (principal, message, mode) => viewer.channelMessage(principal, message, mode),
+        ...(browser ? { browser: (width, height, send) => browser.subscribe(width, height, send) } : {}),
         reauthorize: (token) => {
           const principal = consoleViewer?.(`Bearer ${token}`)
           return principal && mayWatch(principal, desktopId) ? principal : undefined
@@ -892,6 +895,7 @@ function buildViewer(
           ? 'ffmpeg is still downloading'
           : 'ffmpeg not found',
     streamError: () => stream.lastError,
+    ...(browser ? { browser } : {}),
     ...(refusal ? { refusal } : {})
   })
   return { ...viewer, statusChanged: () => stream.refresh() }
@@ -1291,6 +1295,17 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     ? (header: string | undefined) => viewerPrincipal(header, authority, () => registration.computerId)
     : undefined
   const advertiseAddress = config.webrtc ? await rtcAdvertiseAddress(config, undefined, log) : undefined
+  const browserAudit = auditSinks(fileAuditSink(join(dir, 'audit.log')), ...(auditReport ? [auditReport.sink] : []))
+  const browserViewer = (computer: Computer, desktop: string): BrowserViewer | undefined =>
+    devtools && chromeTools
+      ? new BrowserViewer({
+          computer,
+          enabled: () => devtools.enabled() && authority.refusal() === undefined,
+          endpoint: () => devtools.endpoint(desktop),
+          pages: chromeTools.pageIds(desktop),
+          audit: (record) => browserAudit({ ...record, ...(desktop === MAIN_DESKTOP ? {} : { desktop }) })
+        })
+      : undefined
   const mainViewer = buildViewer(
     dir,
     config,
@@ -1299,7 +1314,10 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     consoleViewer,
     advertiseAddress,
     // A first start downloads ffmpeg, so report the viewer then instead of at the next 30-minute doctor run.
-    () => live.channel?.refreshDoctor()
+    () => live.channel?.refreshDoctor(),
+    undefined,
+    MAIN_DESKTOP,
+    browserViewer(computer, MAIN_DESKTOP)
   )
   // With per-agent desktops the viewer also serves each desktop under /view/api/d/<id> (computer-use.md §3.9).
   live.viewerRouter = live.desktops
@@ -1316,7 +1334,8 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
             advertiseAddress,
             undefined,
             desktop.display,
-            desktop.record.id
+            desktop.record.id,
+            browserViewer(desktop.computer, desktop.record.id)
           ),
         authenticate: viewerAuthenticator(
           (header) => consoleViewer?.(header),

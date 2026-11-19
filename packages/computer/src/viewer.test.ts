@@ -10,6 +10,10 @@ import { createComputerMcpServer } from './tools.js'
 import { createViewer } from './viewer.js'
 import { ChannelAuthority } from './cp/authority.js'
 import type { RtcSessions } from './stream/rtc.js'
+import { BrowserViewer } from './browser/viewer.js'
+import type { DevtoolsClient } from './browser/devtools-client.js'
+import { PageIds } from './browser/chrome-pages.js'
+import type { AuditRecord } from './audit.js'
 
 const COMPUTER = '00000000-0000-4000-8000-000000000001'
 const key = randomBytes(32)
@@ -60,6 +64,28 @@ function harness() {
     stop: () => undefined,
     closeAll: () => undefined
   } as unknown as RtcSessions
+  const commands: Array<{ method: string; params: Record<string, unknown> }> = []
+  const audit: AuditRecord[] = []
+  const targetId = '1234567890abcdef'
+  const browser = new BrowserViewer({
+    computer,
+    enabled: () => true,
+    endpoint: () => ({ port: 9222, path: '/devtools/browser/1234567890abcdef' }),
+    pages: new PageIds(),
+    audit: (record) => audit.push(record),
+    targets: async () => [{ id: targetId, title: 'Test page', url: 'https://example.test/', type: 'page' }],
+    connect: () =>
+      ({
+        closed: false,
+        close: () => undefined,
+        call: async (method: string, params: Record<string, unknown> = {}) => {
+          commands.push({ method, params })
+          if (method === 'Target.attachToTarget') return { sessionId: 'test-page-session' }
+          if (method === 'Page.captureScreenshot') return { data: '/9g=' }
+          return {}
+        }
+      }) as unknown as DevtoolsClient
+  })
   const viewer = createViewer({
     computer,
     // The desktop's own wiring: view tokens anywhere, the local client token only on the local port.
@@ -69,6 +95,7 @@ function harness() {
     ),
     log: () => undefined,
     rtc,
+    browser,
     refusal: () => authority.refusal()
   })
   stops.push(() => viewer.close())
@@ -92,10 +119,51 @@ function harness() {
     const res = await call(path, token, body)
     return { status: res.status, json: JSON.parse(res.body.toString() || 'null') as Record<string, unknown> }
   }
-  return { computer, authority, viewer, offers, trickled, call, json, localToken: issued.token }
+  return { computer, authority, viewer, offers, trickled, call, json, localToken: issued.token, commands, audit }
 }
 
 describe('console viewer through the relay', () => {
+  it('serves opaque browser tabs and frames to a watch-only member, who cannot navigate', async () => {
+    const { call, json, commands } = harness()
+    const token = viewToken({ mode: 'view' })
+    const status = await json('/view/api/browser', token)
+    expect(status).toMatchObject({
+      status: 200,
+      json: {
+        available: true,
+        running: true,
+        frontPageId: expect.stringMatching(/^p[0-9a-f]{10}$/),
+        pages: [{ id: expect.stringMatching(/^p[0-9a-f]{10}$/), title: 'Test page', url: 'https://example.test/' }]
+      }
+    })
+    const frame = await call('/view/api/browser/frame', token)
+    expect(frame.headers['content-type']).toBe('image/jpeg')
+    expect(frame.body).toEqual(Buffer.from([0xff, 0xd8]))
+    expect(
+      (await json('/view/api/browser', token, { action: 'navigate', url: 'https://example.test/next' })).status
+    ).toBe(403)
+    expect(commands.some(({ method }) => method === 'Page.navigate')).toBe(false)
+  })
+
+  it('takes over the desktop before navigating and audits only the address origin', async () => {
+    const { computer, json, commands, audit } = harness()
+    const result = await json('/view/api/browser', viewToken(), {
+      action: 'navigate',
+      url: 'https://example.test/next?detail=hidden'
+    })
+    expect(result.status).toBe(200)
+    expect(computer.controlledBy('console:user-1')).toBe(true)
+    expect(() => computer.acquire('agent')).toThrow(/paused|took control/)
+    expect(commands).toContainEqual({
+      method: 'Page.navigate',
+      params: { url: 'https://example.test/next?detail=hidden' }
+    })
+    expect(audit).toMatchObject([
+      { client: 'console:user-1', tool: 'browser_navigate', args: { origin: 'https://example.test' } }
+    ])
+    expect(JSON.stringify(audit)).not.toContain('detail')
+  })
+
   it('serves status, frames and takeover to a member holding a view token', async () => {
     const { computer, call, json } = harness()
     const token = viewToken({ ice })

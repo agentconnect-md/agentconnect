@@ -309,6 +309,16 @@ export class Computer {
 
   // ---- remote human takeover (web viewer): blocks agents exactly like an owner pause ----
 
+  browserViewerControl(client: string): () => void {
+    if (!this.controlledBy(client)) this.takeOver(client)
+    const takeover = this.paused
+    return () => {
+      this.assertAuthorized()
+      if (!this.controlledBy(client) || this.paused !== takeover)
+        throw new ComputerError('human_in_control', 'The browser viewer no longer holds control.')
+    }
+  }
+
   takeOver(client: string): void {
     this.assertAuthorized()
     if (this.paused && this.paused.by !== client) {

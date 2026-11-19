@@ -91,7 +91,7 @@ export function createViewerRouter(options: ViewerRouterOptions): LiveViewer & {
 
   return {
     api,
-    channelMessage: (principal, message) => options.main.channelMessage(principal, message),
+    channelMessage: (principal, message, browser) => options.main.channelMessage(principal, message, browser),
     async handle(req: IncomingMessage, res: ServerResponse, path: string) {
       if (!(path === '/view/api/desktops' || DESKTOP_PATH.test(path))) return options.main.handle(req, res, path)
       const chunks: Buffer[] = []

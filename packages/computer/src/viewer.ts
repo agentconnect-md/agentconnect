@@ -7,6 +7,7 @@ import {
   type ComputerIceServer
 } from '@agentconnect.md/protocol/computer'
 import { ComputerError, type Computer, type ViewerInput } from './computer.js'
+import { BrowserBarAction, type BrowserViewer } from './browser/viewer.js'
 import type { RtcSessions } from './stream/rtc.js'
 import { VIEWER_PAGE } from './viewer-page.js'
 
@@ -87,11 +88,12 @@ export interface ViewerOptions {
   streamError?: () => string | undefined
   // Why the Control Plane's authority is missing; while set, no frame, stream or input is served.
   refusal?: () => string | undefined
+  browser?: BrowserViewer
 }
 
 export interface Viewer {
   // DataChannel input from a WebRTC viewer, validated like the HTTP path.
-  channelMessage(principal: ViewerPrincipal, message: unknown): Promise<unknown>
+  channelMessage(principal: ViewerPrincipal, message: unknown, browser?: boolean): Promise<unknown>
   // The viewer API (`/view/api/*`) for the local port and the relay alike.
   api(request: ViewerRequest): Promise<ViewerResponse>
   handle(req: IncomingMessage, res: ServerResponse, path: string): Promise<void>
@@ -153,11 +155,42 @@ export function createViewer(options: ViewerOptions): Viewer {
     }
   }
 
+  const browserControl = (principal: ViewerPrincipal): (() => void) => {
+    let fence: (() => void) | undefined
+    return () => {
+      if (!principal.control || principal.valid?.() === false) throw watchOnly()
+      const refusal = options.refusal?.()
+      if (refusal) throw new ComputerError('unavailable', refusal)
+      fence ??= computer.browserViewerControl(principal.client)
+      fence()
+    }
+  }
+
   async function route(request: ViewerRequest, principal: ViewerPrincipal): Promise<ViewerResponse> {
     const { method, path } = request
     if (path === '/view/api/status' && method === 'GET') return json(200, status(principal))
     const refusal = options.refusal?.()
     if (refusal) return json(403, { error: 'unavailable', message: refusal })
+    if (options.browser && path === '/view/api/browser' && method === 'GET')
+      return json(200, await options.browser.status())
+    if (options.browser && path === '/view/api/browser' && method === 'POST') {
+      const body = BrowserBarAction.parse(parseJson(request.body))
+      await options.browser.action(principal.client, body, browserControl(principal))
+      return json(200, { ok: true })
+    }
+    if (options.browser && path === '/view/api/browser/frame' && method === 'GET') {
+      return {
+        status: 200,
+        headers: { 'content-type': 'image/jpeg', 'cache-control': 'no-store' },
+        body: await options.browser.frame()
+      }
+    }
+    if (options.browser && path === '/view/api/browser/input' && method === 'POST') {
+      if (!principal.control) throw watchOnly()
+      const input = ViewerInputSchema.parse(parseJson(request.body))
+      await options.browser.input(input, browserControl(principal))
+      return json(200, { ok: true })
+    }
     if (path === '/view/api/frame' && method === 'GET') {
       const frame = await computer.frame()
       return {
@@ -172,9 +205,10 @@ export function createViewer(options: ViewerOptions): Viewer {
       }
     }
     if (path === '/view/api/rtc/offer' && method === 'POST') {
-      const unavailable = options.rtc ? options.rtcUnavailable?.() : 'disabled'
+      const { transport = 'direct', browser } = ComputerViewerOfferRequest.parse(parseJson(request.body))
+      const unavailable = options.rtc ? (browser ? undefined : options.rtcUnavailable?.()) : 'disabled'
       if (!options.rtc || unavailable) return json(503, { error: 'webrtc_unavailable', message: unavailable })
-      const { transport = 'direct' } = ComputerViewerOfferRequest.parse(parseJson(request.body))
+      if (browser && !options.browser) return json(503, { error: 'webrtc_unavailable' })
       if (transport === 'turn' && !principal.iceServers?.length) {
         return json(409, { error: 'turn_unavailable', message: 'no TURN server was issued with this viewer token' })
       }
@@ -182,7 +216,14 @@ export function createViewer(options: ViewerOptions): Viewer {
         return json(409, { error: 'stun_unavailable', message: 'no STUN server was issued with this viewer token' })
       }
       try {
-        return json(200, await options.rtc.offer(principal, { hostAddress: request.hostAddress, transport }))
+        return json(
+          200,
+          await options.rtc.offer(principal, {
+            hostAddress: request.hostAddress,
+            transport,
+            ...(browser ? { browser } : {})
+          })
+        )
       } catch (error) {
         return json(502, { error: 'webrtc_failed', message: (error as Error).message })
       }
@@ -253,17 +294,23 @@ export function createViewer(options: ViewerOptions): Viewer {
     close: () => {
       clearInterval(reaper)
       options.rtc?.stop()
+      options.browser?.close()
     },
     disconnectAll(reason) {
       options.rtc?.closeAll()
+      options.browser?.close()
       lastSeen.clear()
       log(`viewers disconnected: ${reason}`)
     },
-    async channelMessage(principal, message) {
+    async channelMessage(principal, message, browser) {
       lastSeen.set(principal.client, Date.now())
       if (!principal.control) throw watchOnly()
       const { input } = ChannelMessage.parse(message)
-      await computer.viewerInput(principal.client, ViewerInputSchema.parse(input) as ViewerInput)
+      const parsed = ViewerInputSchema.parse(input) as ViewerInput
+      if (browser) {
+        if (!options.browser) throw new ComputerError('unavailable', 'Browser view is unavailable.')
+        await options.browser.input(parsed, browserControl(principal))
+      } else await computer.viewerInput(principal.client, parsed)
       return null
     },
     api,

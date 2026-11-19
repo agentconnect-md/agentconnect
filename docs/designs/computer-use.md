@@ -19,7 +19,7 @@ forwarder's loopback refusal, the child's flags and lifetime, opaque page ids, a
 limits. v9.2 (2026-11-19) lands step 3, the DevTools endpoint (§3.10, §5.8), and decides §17-26. v9.3 (2026-11-19)
 lands the first half of step 4: the Chrome DevTools MCP child, the `computer-browser-v1` contract and the six tools that
 only read (§5.8). v9.4 (2026-11-19) lands the acting tools on the desktop daemon. v9.5 connects the browser tier
-to the Control Plane and agent sessions. The Chinese version
+to the Control Plane and agent sessions. v9.6 implements the Browser viewer API and frame transport. The Chinese version
 lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -1976,7 +1976,7 @@ libx264) on macOS and Linux, arm64 and x64. The container image includes it at b
 - To do: native capture and hardware encoding (ScreenCaptureKit plus VideoToolbox, Desktop Duplication plus hardware
   encoders), display selection, audio, clipboard sync. NAT traversal (hole punching through relay STUN, then the relay's TURN, then screenshots over the relay) is done.
 
-### 7.6 Browser view [design]
+### 7.6 Browser view [viewer API implemented, console UI design]
 
 The viewer shows a desktop. For a desktop that reports `devtools` (§5.8) it gains a second view of that desktop,
 **Browser**, beside **Desktop**: the browser's page, streamed and operated over the DevTools protocol, under a bar
@@ -2057,6 +2057,16 @@ address and works the page without the desktop around it.
 /view/api/browser` takes the bar's actions, `GET /view/api/browser/frame` is the polling frame, and a WebRTC session
   carries frames and input as DataChannel messages. Page ids are the daemon's opaque ids of §5.8, never DevTools
   target ids, so nothing a viewer page, the console or a log shows lets a site attach to a tab.
+
+**[implemented]** The desktop serves the Browser routes through either the local viewer or the existing relay
+path, with the same viewer token and desktop scoping. `POST /view/api/browser/input` supports input on the
+polling path. A WebRTC offer with `browser: { maxWidth, maxHeight }` sends JPEG chunks on the input DataChannel
+without starting the desktop video encoder. Each binary chunk starts with `ACBF`, a big-endian frame id, chunk
+index and chunk count. WebRTC browser input uses the same input message as Desktop. The viewer connection enables
+Page for dialogs and uses layout metrics for normalized pointer input. The viewer and the agent's Chrome tools
+share opaque page ids and signal their most recent explicit tab activation. Physical tab switches use Chrome's
+target ordering, which can be stale while the MCP child emulates focus.
+
 - **Data.** Frames, titles and URLs are page content: they travel between the desktop and the person's browser on
   the viewer's channels like the Desktop view's video, are not stored, and never reach the Control Plane, whose
   audit holds an address's origin and nothing more.
