@@ -26,9 +26,9 @@
 /** Every target this console can render. Order is display order. */
 export const SOCIAL_LOGIN_CATALOG = [
   { target: 'google', name: 'Google' },
+  { target: 'github', name: 'GitHub' },
   { target: 'slack', name: 'Slack' },
   { target: 'azuread', name: 'Microsoft' },
-  { target: 'github', name: 'GitHub' },
   { target: 'gitlab', name: 'GitLab' },
   { target: 'lark', name: 'Lark' },
   { target: 'feishu', name: 'Feishu' },

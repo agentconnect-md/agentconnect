@@ -12,18 +12,18 @@ describe('social login provider selection', () => {
   it('reads an empty list as SSO-only once an SSO connector is configured', () => {
     expect(selectOfferedProviders('', true)).toEqual([])
     expect(selectOfferedProviders('github', true).map((provider) => provider.target)).toEqual(['github'])
-    expect(selectOfferedProviders('', false).map((provider) => provider.target)).toEqual(['google', 'slack', 'github'])
+    expect(selectOfferedProviders('', false).map((provider) => provider.target)).toEqual(['google', 'github', 'slack'])
   })
 
   it('keeps the original providers by default and requires an explicit wildcard for the whole catalog', () => {
     expect(parseEnabledTargets(undefined)).toEqual(new Set(['github', 'google', 'slack']))
-    expect(targets(undefined)).toEqual(['google', 'slack', 'github'])
+    expect(targets(undefined)).toEqual(['google', 'github', 'slack'])
     expect(targets('*')).toEqual(SOCIAL_LOGIN_CATALOG.map((p) => p.target))
-    expect(targets('   ')).toEqual(['google', 'slack', 'github'])
+    expect(targets('   ')).toEqual(['google', 'github', 'slack'])
   })
 
   it('keeps catalog order except for the configured Lark/Feishu preference', () => {
-    expect(targets('github,slack')).toEqual(['slack', 'github'])
+    expect(targets('github,slack')).toEqual(['github', 'slack'])
     expect(targets('discord,feishu,lark,google')).toEqual(['google', 'feishu', 'lark', 'discord'])
     expect(targets(' google , slack ')).toEqual(['google', 'slack'])
     expect(targets('lark,feishu')).toEqual(['lark', 'feishu'])
@@ -35,7 +35,7 @@ describe('social login provider selection', () => {
   it('offers Microsoft sign-in under its Logto target', () => {
     expect(SOCIAL_LOGIN_CATALOG).toContainEqual({ target: 'azuread', name: 'Microsoft' })
     expect(targets('azuread,google')).toEqual(['google', 'azuread'])
-    expect(targets('github,azuread,slack,google')).toEqual(['google', 'slack', 'azuread', 'github'])
+    expect(targets('github,azuread,slack,google')).toEqual(['google', 'github', 'slack', 'azuread'])
   })
 
   it('ignores targets it cannot render rather than rendering a blank button', () => {
@@ -44,8 +44,8 @@ describe('social login provider selection', () => {
 
   it('falls back to the original providers when the setting names nothing usable', () => {
     // Leaving the sign-in page with zero ways in is worse than ignoring a typo.
-    expect(targets('facebook')).toEqual(['google', 'slack', 'github'])
-    expect(targets(',,')).toEqual(['google', 'slack', 'github'])
+    expect(targets('facebook')).toEqual(['google', 'github', 'slack'])
+    expect(targets(',,')).toEqual(['google', 'github', 'slack'])
   })
 
   // The invariant this variable exists for: whatever the console offers must be

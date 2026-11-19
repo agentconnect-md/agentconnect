@@ -68,8 +68,8 @@ it('renders the configured sign-in buttons before hydration and keeps the same D
   const buttons = [...container.querySelectorAll('button')]
   expect(buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent)).toEqual([
     'Continue with Google',
-    'Continue with Slack',
     'Continue with GitHub',
+    'Continue with Slack',
     'Continue with GitLab',
     'Continue with Discord'
   ])

@@ -51,9 +51,9 @@ describe('SocialLoginButtons layout', () => {
 
     expect(labels()).toEqual([
       'Continue with Google',
+      'Continue with GitHub',
       'Continue with Slack',
       'Continue with Microsoft',
-      'Continue with GitHub',
       'Continue with GitLab',
       'Continue with Lark / Feishu',
       'Continue with Discord',
@@ -76,8 +76,8 @@ describe('SocialLoginButtons layout', () => {
     })
     expect(labels()).toEqual([
       'Continue with Google',
-      'Continue with Slack',
       'Continue with GitHub',
+      'Continue with Slack',
       'Continue with GitLab',
       'Continue with Discord'
     ])
@@ -96,5 +96,35 @@ describe('SocialLoginButtons layout', () => {
       'Continue with Discord',
       'Continue with Telegram'
     ])
+  })
+})
+
+describe('SocialLoginButtons icons', () => {
+  const named = () => [...container.querySelectorAll('button')].map((b) => [b.getAttribute('aria-label'), b.title])
+
+  it('renders one icon per provider, Lark and Feishu sharing one, with names and tooltips', async () => {
+    const onContinue = vi.fn()
+    await act(async () => {
+      root.render(
+        <SocialLoginButtons
+          providers={selectEnabledProviders('google,github,lark,feishu')}
+          onContinue={onContinue}
+          variant="icons"
+          lastUsed="feishu"
+        />
+      )
+    })
+    expect(named()).toEqual([
+      ['Continue with Google', 'Continue with Google'],
+      ['Continue with GitHub', 'Continue with GitHub'],
+      ['Continue with Lark / Feishu', 'Continue with Lark / Feishu']
+    ])
+    const pair = container.querySelector<HTMLButtonElement>('button[aria-label="Continue with Lark / Feishu"]')!
+    expect(pair.textContent).toBe('Last used')
+    await act(async () => pair.click())
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[aria-label="Continue with Feishu"]')!.click()
+    )
+    expect(onContinue).toHaveBeenCalledWith('feishu')
   })
 })

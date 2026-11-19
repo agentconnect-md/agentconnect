@@ -30,7 +30,7 @@ identity provider. Four things are missing:
 | D1  | An SSO connection is owned by the deployment (today's connector, unchanged) or by one organization (new). A deployment has one kind: its operator declares organization SSO, and the declaration excludes a deployment connector. |
 | D2  | An organization proves it controls an email domain by a DNS record before it can use that domain. A domain belongs to at most one organization.                                                                                   |
 | D3  | Binding a verified domain to an active connection makes the connection the only sign-in for that domain at the identity service. Binding is refused until a sign-in through the connection has succeeded.                         |
-| D4  | The login page asks for an email address and routes by its domain. Social sign-in buttons stay on the same screen.                                                                                                                |
+| D4  | The login page offers "Continue with SSO" beside the social buttons; it leads to an SSO page that asks for an email address and routes by its domain.                                                                             |
 | D5  | An organization chooses how new members arrive: by invitation only, or also by an address on one of its verified domains, which makes the account a member once when it signs in. The choice is separate from the connection.     |
 | D6  | A deployment that belongs to one company keeps the deployment connector and needs none of this: no domain verification, no lookup, no organization settings.                                                                      |
 | D7  | Enforcing is a second, explicit step after activation: an enforced organization accepts every member, owners included, only from a browser session that signed in through its connection.                                         |
@@ -175,21 +175,30 @@ lost control of one; a verified domain takes the connection with it.
 
 ### 4.2 Signing in
 
-When organization SSO is on, the login page shows an email field above the social
-buttons.
+When organization SSO is on, the login page (`/login`) offers single sign-on as one
+more method rather than asking every visitor for an address:
 
-- The page posts the address to an anonymous lookup, which answers with a connector
-  to start (`{ connectorId }`) or nothing.
-- With a connector, the page starts the same direct sign-in it uses today for the
-  deployment connector.
-- With nothing, the page stays where it is and points at the social buttons. There is
-  no password sign-in, so the field has no further step for such an address.
+- The first three offered social providers are labeled buttons, followed by a
+  "Continue with SSO" button. The remaining providers sit below an "or" divider as
+  one row of icon buttons. With three or fewer providers there is no row, and a lone
+  leftover becomes a labeled button rather than a single icon.
+- "Continue with SSO" leads to the SSO page, `/login/sso`. It has a stable URL so
+  that people who always sign in through their organization can bookmark it and skip
+  the choice. Where organization SSO is off or sign-in is not configured, that URL
+  sends the visitor to `/login`.
+- The SSO page asks for a work email and posts it to an anonymous lookup, which
+  answers with a connector to start (`{ connectorId }`) or nothing. With a connector,
+  the page starts the same direct sign-in it uses for the deployment connector. With
+  nothing, it says no single sign-on is set up for the address and links back to the
+  other options. There is no password sign-in, so the field has no further step.
 - The lookup decides by domain, never by whether the address has an account. It
   answers from an in-memory snapshot of the active domains, refreshed at most every
   fifteen seconds, so an anonymous request costs no query; limiting request volume
   is the ingress's job. It does reveal that a domain uses SSO; that is accepted.
-- The browser remembers the last method that worked and puts it first next time. The
-  server is not asked.
+- The browser remembers the last method that worked and marks it "Last used" in
+  place, on its button, its icon, or "Continue with SSO" for an organization's
+  connection; nothing moves. The SSO page prefills an address used last. The server
+  is not asked.
 
 The field is a convenience, not the control. Logto refuses password, code and social
 sign-in for an address whose domain is bound to a connector, whatever the page shows.
@@ -429,7 +438,7 @@ Outside the organization subtree:
 - `POST /sign-in/lookup`: anonymous (§4.2).
 
 `/runtime-config` gains one boolean, `auth.organizationSso`, so the login page knows to
-show the email field.
+offer the SSO page.
 `auth.sso` keeps describing the deployment connector.
 
 `GET /orgs` gains `ssoSignIn` per organization, and a refused request carries the
@@ -516,7 +525,7 @@ Each step merges on its own.
    boolean.
 4. **Membership** (landed): the join record and `POST /sso/join`; then the member
    source, which took the join off the connection and put it on the verified domain.
-5. **Web** (landed): the email field on the login page, the call to `POST /sso/join`
+5. **Web** (landed): the SSO page and its entry on the login page, the call to `POST /sso/join`
    after a sign-in, the settings card, and the page a test sign-in lands on.
 6. **Per session** (landed): the access-token claims script and its drift check, the
    enforce step and the check of §4.5, `ssoSignIn` on `GET /orgs`, and the console's

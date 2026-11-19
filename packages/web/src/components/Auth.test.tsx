@@ -4,12 +4,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ lookupSignIn: vi.fn(), login: vi.fn(), loginWithSso: vi.fn() }))
+const mocks = vi.hoisted(() => ({ login: vi.fn(), loginWithSso: vi.fn() }))
 
-vi.mock('@/lib/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/api')>()),
-  lookupSignIn: mocks.lookupSignIn
-}))
 vi.mock('@/lib/auth', () => ({
   isAuthConfigured: () => true,
   login: mocks.login,
@@ -19,36 +15,28 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/i18n/actions', () => ({ setLocale: vi.fn() }))
 
 import Auth from './Auth'
-import { ApiError } from '@/lib/api'
 import { commitPendingSignIn, readLastSignIn } from '@/lib/organization-sso'
-import { SOCIAL_LOGIN_CATALOG } from '@/lib/social-login-providers'
-
-const providers = SOCIAL_LOGIN_CATALOG.filter(
-  (provider) => provider.target === 'github' || provider.target === 'google'
-)
+import { selectEnabledProviders } from '@/lib/social-login-providers'
 
 let host: HTMLDivElement
 let root: Root
 
-async function render() {
-  await act(async () => root.render(<Auth providers={providers} emailFirst />))
+async function render(configured: string, organizationSso = true) {
+  await act(async () =>
+    root.render(<Auth providers={selectEnabledProviders(configured)} organizationSso={organizationSso} />)
+  )
 }
 
-const field = () => host.querySelector('input[type="email"]') as HTMLInputElement
-const labels = () => [...host.querySelectorAll('button')].map((button) => button.textContent)
-
-async function submit(email: string) {
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field(), email)
-    field().dispatchEvent(new Event('input', { bubbles: true }))
-  })
-  await act(async () => {
-    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-  })
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0))
-  })
-}
+const bars = () =>
+  [...host.querySelectorAll('button.sso, a.sso, div.sso')]
+    .filter((node) => !node.hasAttribute('title'))
+    .map((node) => node.textContent)
+const icons = () => [...host.querySelectorAll('button[title]')].map((node) => node.getAttribute('title'))
+const hasDivider = () => [...host.querySelectorAll('div')].some((node) => node.textContent === 'or')
+const tagged = () =>
+  [...host.querySelectorAll('.sso')]
+    .filter((node) => node.textContent?.includes('Last used'))
+    .map((node) => node.getAttribute('aria-label') ?? node.textContent!.replace('Last used', ''))
 
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -65,70 +53,80 @@ afterEach(async () => {
   host.remove()
 })
 
-describe('sign-in with an address first', () => {
-  it('puts the address field above the social buttons', async () => {
-    await render()
-    expect(labels()).toEqual(['Continue', 'Continue with Google', 'Continue with GitHub'])
+describe('sign-in where organizations own SSO connections', () => {
+  it('shows three provider bars, the SSO bar, then the rest as icons', async () => {
+    await render('*')
+    expect(host.querySelector('input')).toBeNull()
+    expect(bars()).toEqual(['Continue with Google', 'Continue with GitHub', 'Continue with Slack', 'Continue with SSO'])
+    expect(hasDivider()).toBe(true)
+    expect(icons()).toEqual([
+      'Continue with Microsoft',
+      'Continue with GitLab',
+      'Continue with Lark / Feishu',
+      'Continue with Discord',
+      'Continue with Telegram'
+    ])
+    expect(host.querySelector('a.sso')!.getAttribute('href')).toBe('/login/sso')
+    expect(host.textContent).toContain('First time here?')
   })
 
-  it('leaves for the connector the address signs in through and remembers the address', async () => {
-    mocks.lookupSignIn.mockResolvedValue({ connectorId: 'connector-1', name: 'Example IdP' })
-    await render()
-    await submit(' dana@acme.example ')
-    expect(mocks.lookupSignIn).toHaveBeenCalledWith('dana@acme.example', expect.anything())
-    expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-1', 'dana@acme.example')
-    // The page is leaving: the field stays busy instead of offering another try.
-    expect(field().readOnly).toBe(true)
-
-    commitPendingSignIn()
-    expect(readLastSignIn()).toEqual({ method: 'email', email: 'dana@acme.example' })
+  it('shows three or fewer providers as bars with no icon row', async () => {
+    await render('slack,google')
+    expect(bars()).toEqual(['Continue with Google', 'Continue with Slack', 'Continue with SSO'])
+    expect(icons()).toEqual([])
+    expect(hasDivider()).toBe(false)
   })
 
-  it('stays and points at the other methods when no connection owns the domain', async () => {
-    mocks.lookupSignIn.mockResolvedValue(null)
-    await render()
-    await submit('dana@mail.example')
-    expect(mocks.loginWithSso).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('No sign-in found for this email')
-    expect(field().readOnly).toBe(false)
+  it('draws a lone leftover as a bar above the SSO bar', async () => {
+    await render('google,github,slack,gitlab')
+    expect(bars()).toEqual([
+      'Continue with Google',
+      'Continue with GitHub',
+      'Continue with Slack',
+      'Continue with GitLab',
+      'Continue with SSO'
+    ])
+    expect(icons()).toEqual([])
+    expect(hasDivider()).toBe(false)
   })
 
-  it('tells a rate limit from a failed lookup', async () => {
-    mocks.lookupSignIn.mockRejectedValueOnce(new ApiError('slow down', 429))
-    await render()
-    await submit('dana@acme.example')
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Too many attempts. Try again in a minute.')
-
-    mocks.lookupSignIn.mockRejectedValueOnce(new Error('offline'))
-    await submit('dana@acme.example')
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe("Couldn't check this email. Try again.")
-  })
-
-  it('does not look up something that is not an address', async () => {
-    await render()
-    await submit('dana')
-    expect(mocks.lookupSignIn).not.toHaveBeenCalled()
-  })
-
-  it('prefills the address used last', async () => {
-    localStorage.setItem('ac.lastSignIn', JSON.stringify({ method: 'email', email: 'dana@acme.example' }))
-    await render()
-    expect(field().value).toBe('dana@acme.example')
-  })
-
-  it('moves the social button used last above the field', async () => {
+  it('tags the method used last in place: a bar, an icon or the SSO bar', async () => {
     localStorage.setItem('ac.lastSignIn', JSON.stringify({ method: 'social', target: 'github' }))
-    await render()
-    expect(labels()).toEqual(['Continue with GitHub', 'Continue', 'Continue with Google'])
+    await render('*')
+    expect(tagged()).toEqual(['Continue with GitHub'])
+    expect(bars()[1]).toBe('Last usedContinue with GitHub')
+    await act(async () => root.unmount())
+    root = createRoot(host)
+
+    localStorage.setItem('ac.lastSignIn', JSON.stringify({ method: 'social', target: 'discord' }))
+    await render('*')
+    expect(tagged()).toEqual(['Continue with Discord'])
+    expect(icons()[3]).toBe('Continue with Discord')
+    await act(async () => root.unmount())
+    root = createRoot(host)
+
+    localStorage.setItem('ac.lastSignIn', JSON.stringify({ method: 'email', email: 'dana@acme.example' }))
+    await render('*')
+    expect(tagged()).toEqual(['Continue with SSO'])
   })
 
-  it('notes a social sign-in so it is offered first next time', async () => {
-    await render()
+  it('notes a social sign-in so it is tagged next time', async () => {
+    await render('google,github')
     await act(async () =>
       [...host.querySelectorAll('button')].find((button) => button.textContent === 'Continue with Google')!.click()
     )
     expect(mocks.login).toHaveBeenCalledWith('google')
     commitPendingSignIn()
     expect(readLastSignIn()).toEqual({ method: 'social', target: 'google' })
+  })
+})
+
+describe('sign-in where organizations do not own SSO connections', () => {
+  it('keeps labeled buttons in the new order and no SSO bar or tag', async () => {
+    localStorage.setItem('ac.lastSignIn', JSON.stringify({ method: 'social', target: 'github' }))
+    await render('slack,github,google', false)
+    expect(bars()).toEqual(['Continue with Google', 'Continue with GitHub', 'Continue with Slack'])
+    expect(host.querySelector('a')).toBeNull()
+    expect(tagged()).toEqual([])
   })
 })

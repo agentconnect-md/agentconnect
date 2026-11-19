@@ -1322,12 +1322,17 @@
       "continueWith": "使用 {provider} 继续",
       "continueWithPrefix": "使用 ",
       "or": "或",
-      "email": "邮箱",
+      "workEmail": "工作邮箱",
       "emailPlaceholder": "you@company.com",
       "continue": "继续",
-      "notFound": "没有找到这个邮箱对应的登录方式，请使用下面的方式登录。",
+      "noSsoForEmail": "这个邮箱没有设置单点登录。",
       "tooMany": "尝试次数过多，请一分钟后再试。",
-      "lookupFailed": "无法查询这个邮箱，请重试。"
+      "lookupFailed": "无法查询这个邮箱，请重试。",
+      "continueWithSso": "使用 SSO 继续",
+      "ssoTitle": "使用 SSO 登录",
+      "ssoSubtitle": "输入工作邮箱，通过你所在组织的登录方式继续。",
+      "otherOptions": "其他登录方式",
+      "lastUsed": "上次使用"
     },
     "activation": {
       "storageBlocked": "此浏览器阻止了激活链接所需的临时存储，因此无法验证登录身份。请允许本站使用站点数据（或改用普通的非隐私窗口），然后重新打开链接。",
