@@ -31,6 +31,10 @@ function addressDomain(value: unknown): string | null {
   return null
 }
 
+// The identity service files the sign-in's subject under `id`: not an attribute the owner can map, though its value is often an address.
+const sentAttributes = (detail: unknown): [string, unknown][] =>
+  Object.entries(record(detail)).filter(([name]) => name !== 'id')
+
 /** `missing` means the connector is gone from the identity service, so the connection needs its configuration again. */
 export interface OrgSsoIdp {
   /** Create the organization's connector, or return the one a retried create left; a protocol change replaces it. */
@@ -127,7 +131,7 @@ export class LogtoOrgSsoIdp implements OrgSsoIdp {
       attributeNames: Object.fromEntries(
         identities.flatMap((identity) =>
           typeof identity.ssoConnectorId === 'string'
-            ? [[identity.ssoConnectorId, Object.keys(record(identity.detail))] as const]
+            ? [[identity.ssoConnectorId, sentAttributes(identity.detail).map(([name]) => name)] as const]
             : []
         )
       ),
@@ -137,7 +141,7 @@ export class LogtoOrgSsoIdp implements OrgSsoIdp {
             ? [
                 [
                   identity.ssoConnectorId,
-                  Object.entries(record(identity.detail)).flatMap(([name, value]) => {
+                  sentAttributes(identity.detail).flatMap(([name, value]) => {
                     const domain = addressDomain(value)
                     return domain ? [{ name, domain }] : []
                   })
