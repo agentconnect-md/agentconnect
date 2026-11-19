@@ -960,6 +960,42 @@ export class WorkspaceManager {
     }
   }
 
+  /** The finished clones in that directory of repositories this session may clone, at `<owner>/<repo>` as the prompt asks; an unauthorized directory, a link or a clone still checking out is left out. */
+  async sessionOnDemandCheckouts(
+    agent: Agent,
+    request?: SessionRootScope
+  ): Promise<readonly { path: string; repoFullName: string }[]> {
+    if (request?.sessionKey === undefined || !this.hasOnDemandAuthorizations(agent)) return []
+    const rows = new Map(
+      this.onDemandRootsOf(agent, await this.sessionCwdSubtreeName(agent, request), request.sessionKey).map(
+        (root) => [cloneTargetKey(root.repoFullName), root.repoFullName] as const
+      )
+    )
+    const accounts = new Set(this.onDemandInstallationsOf(agent).map((grant) => grant.accountLogin.toLowerCase()))
+    const handed = new Set(
+      this.secondaryRootsFor(agent)
+        .filter((root) => this.materializedFor(root, request.sessionKey))
+        .map((root) => cloneTargetKey(root.repoFullName))
+    )
+    const { dir, fs } = this.onDemandCloneDir(agent, { ...request, sessionKey: request.sessionKey })
+    if ((await fs.stat(dir)) !== 'dir') return []
+    const found: { path: string; repoFullName: string }[] = []
+    for (const owner of await fs.readdir(dir)) {
+      if ((await fs.stat(join(dir, owner))) !== 'dir') continue
+      for (const repo of await fs.readdir(join(dir, owner))) {
+        const key = `${owner}/${repo}`.toLowerCase()
+        const repoFullName = rows.get(key) ?? (accounts.has(owner.toLowerCase()) ? `${owner}/${repo}` : undefined)
+        if (repoFullName === undefined || handed.has(key)) continue
+        const clone = join(dir, owner, repo)
+        // A clone of its own (not a worktree's pointer elsewhere) whose checkout has written its index.
+        if ((await fs.stat(clone)) !== 'dir' || (await fs.stat(join(clone, '.git'))) !== 'dir') continue
+        if ((await fs.stat(join(clone, '.git', 'index'))) !== 'file') continue
+        found.push({ path: this.canonicalWorkspacePath(agent.id, clone), repoFullName })
+      }
+    }
+    return found.sort((a, b) => a.repoFullName.localeCompare(b.repoFullName))
+  }
+
   /** Whether a session standing in `cwdSubtreeName` (a reviewed root, else the primary) has anything to clone on demand. */
   private hasOnDemandFor(agent: Agent, cwdSubtreeName?: string, sessionKey?: string): boolean {
     if (!this.hasOnDemandAuthorizations(agent)) return false
@@ -3717,6 +3753,12 @@ function repoKey(repoFullName: string): string {
     .trim()
     .replace(/\.git$/i, '')
     .toLowerCase()
+}
+
+/** Where the prompt tells the agent to clone one repository, as a key: its top group and its own name, case-insensitive. */
+function cloneTargetKey(repoFullName: string): string {
+  const segments = repoKey(repoFullName).split('/')
+  return `${segments[0]}/${segments.at(-1)}`
 }
 
 /** `ref: refs/heads/<name>\tHEAD` from `ls-remote --symref`; undefined when HEAD names no branch. */

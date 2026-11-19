@@ -96,7 +96,10 @@ export async function startSlackCodeDiff(
   const repositories = new Intl.ListFormat('en').format(
     source.repositories.map(({ title, base }) => `${title} (against ${base ?? 'where this task started'})`)
   )
-  return `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. Work there: changes anywhere else, including a repository you clone yourself, do not appear in it. Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.`
+  const scope = source.discovers
+    ? 'An authorized repository you clone on demand joins it, compared with its default branch, once the clone finishes; changes anywhere else, including any other repository you clone, do not appear in it.'
+    : 'Work there: changes anywhere else, including a repository you clone yourself, do not appear in it.'
+  return `The platform maintains the Code diff of ${repositories}, including uncommitted changes and commits. ${scope} Do not call setSlackCodeView(type: diff) for this task or overwrite its Code view. HTML and PR views remain available.`
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.

@@ -5,6 +5,8 @@ import type { GitRunner } from './git-runner.js'
 export interface TaskDiff {
   /** The repositories the diff covers, each with the base branch it compares against; no base means the task's saved start. */
   repositories: readonly { title: string; base?: string }[]
+  /** Whether a repository cloned during the task joins the diff once it appears. */
+  discovers?: boolean
   read(signal?: AbortSignal): Promise<string>
 }
 
@@ -16,6 +18,8 @@ export interface TaskDiffRoot {
   title?: string
   /** The branch the task's checkout was cut from; its `origin/` copy is the comparison base. */
   branch?: string
+  /** A clone the agent made itself: its remote's default branch is the base, and it has no saved start to fall back on. */
+  baseFromOriginHead?: true
   /** A directory whose untracked files are not task work, such as the landing zone for saved chat attachments. */
   skipUntracked?: string
 }
@@ -26,36 +30,46 @@ export class TaskDiffIneligible extends TaskDiffUnavailable {}
 const DIFF_LIMIT = 180_000
 const PATHS_LIMIT = 16_000
 const DIFF_OPTIONS = ['--no-ext-diff', '--no-textconv', '--no-color', '--ignore-submodules=all']
+const ORIGIN = 'refs/remotes/origin/'
+
+interface TaskDiffSource {
+  git: GitRunner
+  from: string[]
+  base?: string
+  name: string
+  title: string
+  skipUntracked?: string
+}
 
 // A repository with its base branch diffs from where the task's branch left it, so commits, rebases and merges never widen the diff.
 export async function openTaskDiff(
   roots: readonly TaskDiffRoot[],
   sessionKey: string,
-  initialize: boolean
+  initialize: boolean,
+  discover?: () => Promise<readonly TaskDiffRoot[]>
 ): Promise<TaskDiff> {
-  if (!roots.length) throw new TaskDiffIneligible('No task repository is available for automatic diff updates.')
+  if (!roots.length && !discover)
+    throw new TaskDiffIneligible('No task repository is available for automatic diff updates.')
   const ref = `refs/agentconnect/task-diff/${createHash('sha256').update(sessionKey).digest('hex')}`
-  const sources: Array<{
-    git: GitRunner
-    from: string[]
-    base?: string
-    name: string
-    title: string
-    skipUntracked?: string
-  }> = []
+  const sources: TaskDiffSource[] = []
+  const repositories: { title: string; base?: string }[] = []
+  const add = (source: TaskDiffSource): void => {
+    sources.push(source)
+    repositories.push({ title: source.title, ...(source.base ? { base: source.base } : {}) })
+  }
   let ineligible: TaskDiffIneligible | undefined
-  for (const root of roots) {
+  const open = async (root: TaskDiffRoot): Promise<TaskDiffSource | undefined> => {
     const git = root.git.withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
     const verify = async (name: string): Promise<string | undefined> =>
       (await git.readBounded(['rev-parse', '--verify', '--quiet', name], 256).catch(() => undefined))?.out
         .toString()
         .trim() || undefined
     const source = { git, name: root.name, title: root.title ?? root.name, skipUntracked: root.skipUntracked }
-    const upstream = root.branch ? `refs/remotes/origin/${root.branch}` : undefined
-    if (upstream && (await verify(upstream))) {
-      sources.push({ ...source, from: ['--merge-base', upstream], base: `origin/${root.branch}` })
-      continue
-    }
+    const branch = root.branch ?? (root.baseFromOriginHead ? await originHead(git) : undefined)
+    const upstream = branch ? `${ORIGIN}${branch}` : undefined
+    if (upstream && (await verify(upstream)))
+      return { ...source, from: ['--merge-base', upstream], base: `origin/${branch}` }
+    if (root.baseFromOriginHead) return undefined
     // Without a base branch, a task's immutable Git ref survives commits and daemon restarts without changing the user's index.
     let base = await verify(ref)
     if (!base) {
@@ -63,27 +77,44 @@ export async function openTaskDiff(
         ineligible ??= new TaskDiffIneligible(
           'This task has no saved starting point; its earlier changes will not be published automatically.'
         )
-        continue
+        return undefined
       }
       const status = await git.readBounded(['status', '--porcelain', '-uall'], PATHS_LIMIT)
       if (status.overflow || status.out.length) {
         ineligible ??= new TaskDiffIneligible(
           'The task repository already has changes, so an automatic diff cannot safely choose a starting point.'
         )
-        continue
+        return undefined
       }
       base = (await git.readBounded(['rev-parse', '--verify', 'HEAD'], 256)).out.toString().trim()
       if (!/^[a-f0-9]{40,64}$/.test(base)) throw new TaskDiffUnavailable('The task repository has no starting commit.')
       await git.raw(['update-ref', ref, base, ''])
     }
     if (!/^[a-f0-9]{40,64}$/.test(base)) throw new TaskDiffUnavailable('The saved task starting point is unavailable.')
-    sources.push({ ...source, from: [base] })
+    return { ...source, from: [base] }
   }
-  if (!sources.length) throw ineligible!
-  const prefixed = sources.length > 1
+  // A clone still being written, or one that cannot be read yet, stays out until a later read finds it ready.
+  const join = async (signal?: AbortSignal): Promise<void> => {
+    for (const root of discover ? await discover().catch(() => []) : []) {
+      signal?.throwIfAborted()
+      if (sources.some((source) => source.name === root.name)) continue
+      const source = await open({ ...root, baseFromOriginHead: true }).catch(() => undefined)
+      if (source) add(source)
+    }
+  }
+  for (const root of roots) {
+    const source = await open(root)
+    if (source) add(source)
+  }
+  await join()
+  if (!sources.length)
+    throw ineligible ?? new TaskDiffIneligible('No task repository is available for automatic diff updates.')
   return {
-    repositories: sources.map(({ title, base }) => ({ title, ...(base ? { base } : {}) })),
+    repositories,
+    discovers: discover !== undefined,
     async read(signal) {
+      await join(signal)
+      const prefixed = sources.length > 1
       let result = ''
       const append = (text: string): void => {
         result += text
@@ -131,4 +162,11 @@ export async function openTaskDiff(
       return result
     }
   }
+}
+
+/** The branch `origin/HEAD` names, as a clone records its remote's default; undefined when it names none. */
+async function originHead(git: GitRunner): Promise<string | undefined> {
+  const head = await git.readBounded(['symbolic-ref', '--quiet', `${ORIGIN}HEAD`], 256).catch(() => undefined)
+  const name = head?.out.toString().trim()
+  return name?.startsWith(ORIGIN) && name.length > ORIGIN.length ? name.slice(ORIGIN.length) : undefined
 }

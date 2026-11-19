@@ -126,6 +126,71 @@ describe('task diff against a fixed baseline', () => {
     await expect(plain.read()).rejects.toThrow('too many new files')
   })
 
+  it('adds a repository cloned during the task, against its remote default branch, under its own name', async () => {
+    const root = repository()
+    git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+    const remote = mkdtempSync(join(tmpdir(), 'task-diff-remote-'))
+    roots.push(remote)
+    git(remote, ['init', '-q', '--initial-branch=develop'])
+    writeFileSync(join(remote, 'links.js'), 'export const store = "branch"\n')
+    git(remote, ['add', '.'])
+    git(remote, ['commit', '-qm', 'initial'])
+    const clone = join(mkdtempSync(join(tmpdir(), 'task-diff-clones-')), 'acme', 'web')
+    roots.push(join(clone, '..', '..'))
+    const cloned: Array<{ git: ReturnType<typeof hostGitRunner>; name: string; baseFromOriginHead: true }> = []
+    const diff = await openTaskDiff(
+      [{ git: hostGitRunner(root), name: 'workspace', branch: 'main' }],
+      'task-clone',
+      false,
+      async () => cloned
+    )
+    expect(diff.discovers).toBe(true)
+    expect(await diff.read()).toBe('')
+    execFileSync('git', ['clone', '-q', remote, clone])
+    git(clone, ['checkout', '-q', '-b', 'task'])
+    writeFileSync(join(clone, 'links.js'), 'export const store = "adjust"\n')
+    git(clone, ['commit', '-qam', 'swap the store link'])
+    writeFileSync(join(clone, 'notes.txt'), 'uncommitted\n')
+    cloned.push({ git: hostGitRunner(clone), name: 'acme/web', baseFromOriginHead: true })
+    const patch = await diff.read()
+    expect(patch).toContain('a/acme/web/links.js')
+    expect(patch).toContain('+export const store = "adjust"')
+    expect(patch).toContain('b/acme/web/notes.txt')
+    expect(diff.repositories).toEqual([
+      { title: 'workspace', base: 'origin/main' },
+      { title: 'acme/web', base: 'origin/develop' }
+    ])
+    // The primary's own files take its name once it shares the diff.
+    writeFileSync(join(root, 'app.js'), 'export const count = 2\n')
+    expect(await diff.read()).toContain('a/workspace/app.js')
+  })
+
+  it('leaves out a discovered repository until it has a remote default branch, without failing the diff', async () => {
+    const root = repository()
+    const loose = repository()
+    const diff = await openTaskDiff([{ git: hostGitRunner(root), name: 'workspace' }], 'task-loose', true, async () => [
+      { git: hostGitRunner(loose), name: 'acme/loose', baseFromOriginHead: true }
+    ])
+    writeFileSync(join(loose, 'app.js'), 'clone work\n')
+    writeFileSync(join(root, 'app.js'), 'export const count = 2\n')
+    const patch = await diff.read()
+    expect(patch).toContain('+export const count = 2')
+    expect(patch).not.toContain('clone work')
+    expect(diff.repositories).toEqual([{ title: 'workspace' }])
+    // A clone still being written gains its remote refs a moment later, and a later read takes it.
+    git(loose, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+    git(loose, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
+    expect(await diff.read()).toContain('b/acme/loose/app.js')
+    expect(diff.repositories).toEqual([{ title: 'workspace' }, { title: 'acme/loose', base: 'origin/main' }])
+  })
+
+  it('does not report discovery on a diff opened without it', async () => {
+    const root = repository()
+    expect((await openTaskDiff([{ git: hostGitRunner(root), name: 'project' }], 'task-plain', true)).discovers).toBe(
+      false
+    )
+  })
+
   it('refuses an oversized diff instead of publishing a partial patch', async () => {
     const root = repository()
     const snapshot = await openTaskDiff([{ git: hostGitRunner(root), name: 'project' }], 'task-large', true)

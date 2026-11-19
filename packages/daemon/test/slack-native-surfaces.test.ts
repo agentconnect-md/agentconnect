@@ -545,6 +545,42 @@ describe('Slack native surfaces', () => {
     }
   })
 
+  it('tells the agent that an authorized repository it clones on demand joins the diff, where one can', async () => {
+    const f = await fixture()
+    const turn = {
+      conn: f.conn,
+      plan: { channel: 'C1', sessionThread: 'C1', statusThread: 'C1', isDm: false }
+    } as SlackTurn
+    const host = { authorize: async () => {}, active: () => true, mask: (text: string) => text }
+    const quiet = { notice: async () => {}, debug: () => {}, info: () => {} }
+    const repositories = [{ title: 'the working directory', base: 'origin/develop' }]
+    try {
+      const discovering = await startSlackCodeDiff(
+        turn,
+        {},
+        {
+          ...host,
+          ...quiet,
+          open: async () => ({ repositories, discovers: true, read: async () => '' })
+        }
+      )
+      expect(discovering).toContain('An authorized repository you clone on demand joins it')
+      expect(discovering).not.toContain('including a repository you clone yourself')
+      const fixed = await startSlackCodeDiff(
+        turn,
+        {},
+        {
+          ...host,
+          ...quiet,
+          open: async () => ({ repositories, read: async () => '' })
+        }
+      )
+      expect(fixed).toContain('including a repository you clone yourself, do not appear in it')
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
   it('reports a failure that persists across turns once, and again after the diff has published', async () => {
     const f = await fixture()
     const turn = {

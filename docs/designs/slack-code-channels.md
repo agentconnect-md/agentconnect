@@ -234,9 +234,19 @@ clean HEAD before the session's first runtime prompt; later turns and daemon res
 Such a repository is not adopted without a saved baseline, and a dirty initial checkout is
 refused; it is left out of the diff, and a session left with no repository retains its existing
 output path without a recurring error message. Reads use the session's execution-plane Git
-runner and never change its working tree or index. Other directories, shared checkouts and
-repositories the agent clones itself are not scanned. The turn's context names the
-repositories the diff covers and the base of each.
+runner and never change its working tree or index. Other directories and shared checkouts are
+not scanned.
+
+Of the repositories the agent clones itself, the diff takes only an authorized one cloned on
+demand into the session's clone directory
+([multi-repository-workspaces.md](multi-repository-workspaces.md) decision 20). Every read looks
+there for `<owner>/<repo>` clones of a row or granted account the session was not handed: a real
+clone, not a link, whose checkout has written its index, since a clone still checking out would
+read as every file deleted. Each compares with the merge base of its remote's default branch
+(`origin/HEAD`), so one made mid-turn joins at the next sample. It never takes a saved baseline;
+one without a default-branch ref stays out until a later read finds it. A diff covering several
+repositories puts each one's files under its name. The turn's context names the repositories the
+diff covers and the base of each, and whether on-demand clones join it.
 
 One serialized publisher samples the workspace every five seconds while the turn runs and
 flushes once at settlement. Unchanged content is deduplicated, secrets are masked, and oversized
