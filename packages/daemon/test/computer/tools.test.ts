@@ -799,6 +799,25 @@ describe('administrator prompts (§4.2.1)', () => {
 describe('managed computers (§15.1)', () => {
   const M = '00000000-0000-4000-8000-0000000000aa'
 
+  it('does not wake and repeat a forwarded Chrome action when the desktop replies unavailable', async () => {
+    const { tools, poolCalls, calls } = setup({
+      granted: [],
+      managed: 'ephemeral',
+      grant: { mode: 'control', browserTier: true },
+      pool: () => ({ state: 'ready', computerId: M, allocation: 'ephemeral' }),
+      callTool: async () => ({
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify({ error: 'unavailable', reason: 'result_too_large' }) }]
+      })
+    })
+    const result = await tools.call(ctx(COMPUTER_BROWSER_DESCRIPTORS), 'chrome_new_page', {
+      url: 'https://example.test'
+    })
+    expect(parse(result!.result)).toMatchObject({ error: 'unavailable', reason: 'result_too_large' })
+    expect(poolCalls).toHaveLength(1)
+    expect(calls.map(({ name }) => name)).toEqual(['chrome_new_page'])
+  })
+
   it('offers the tools to an agent with only a managed mode when the CP runs the pool', () => {
     const use = { enabled: true, computers: [], managed: { mode: 'ephemeral' as const } }
     expect(computerToolsOffered({ computerUse: use, controlPlaneServes: true, runtimeShowsImages: true })).toBe(false)
