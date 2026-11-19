@@ -246,14 +246,17 @@ recipient stays the same conversation, as a group chat that gains a member
 does.
 
 **The participant fence.** A thread key is not a secret, and anyone can write
-one into a header. A group conversation therefore records the addresses that
-have appeared on its admitted messages, and a message continues it only when
-its sender is one of them and the member who opened it is among the message's
-participants. Any other message is read as starting a thread of its own, keyed
-by its own `Message-ID`: one from an address the thread never named, and one
-that leaves the opener off, which would otherwise land in a session and a place
-layer whose only Console reader never received it. A direct conversation needs
-no fence: its key is the authenticated sender.
+one into a header. A group conversation's **current members** are the
+participants of its latest admitted message, and a message continues the
+conversation only when its sender is one of them and the member who opened it
+is among the message's participants. Any other message is read as starting a
+thread of its own, keyed by its own `Message-ID`: one from an address the
+thread never named, one from someone since taken off it, whose reply would
+otherwise be written with messages they were never sent, and one that leaves
+the opener off, which would otherwise land in a session and a place layer whose
+only Console reader never received it. A current member brings someone back by
+naming them on a message. A direct conversation needs no fence: its key is the
+authenticated sender.
 
 Mail never runs a coordinator. A new thread opens its session directly, for an
 assistant-mode agent too: the manifest lists no kind in `appendKinds`, so no
@@ -347,13 +350,10 @@ The agent therefore reads earlier mail with the `getChannelHistory` and
 `getThreadHistory` tools it already has on other platforms, under their
 existing rule: a member's direct conversation is readable when that member is
 asking, and a group conversation when the person asking is one of its current
-members. The module answers that from the participants of the conversation's
-latest message, not from every address it has ever recorded: someone taken off
-a thread stops being able to read it, as someone removed from a group chat
-does, and is never handed messages sent after they left. The recorded
-addresses of §5.2 keep their one use, deciding whose message may continue the
-conversation. No second store, no mail-specific tool and no second read rule
-is added, and `recall` is unchanged.
+members, the same list the fence of §5.2 uses. Someone taken off a thread stops
+being able to read it, as someone removed from a group chat does, and is never
+handed messages sent after they left. No second store, no mail-specific tool
+and no second read rule is added, and `recall` is unchanged.
 
 How the two reads map onto the daemon's session records, on both of its store
 backends, is to be confirmed in the build (§9).
