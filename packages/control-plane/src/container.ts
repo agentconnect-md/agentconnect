@@ -787,7 +787,7 @@ export function buildContainer(
     repos.memberSet,
     clusterIdentity
   )
-  const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock)
+  const apiKeys = new ApiKeyService(codec, repos.apiKey, repos.daemon, repos.audit, clock, repos.org)
   // Live Computer channels (computer-use.md §3.6): revoke, delete and policy changes reach a connected desktop at once.
   const computerChannels = new ComputerChannelRegistry()
   // Three missed heartbeats, the daemon watchdog's freeze threshold: for a desktop's status and a lease holder alike.
@@ -849,7 +849,7 @@ export function buildContainer(
       log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
     })
   })
-  const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock)
+  const oauth = new OAuthService(repos.oauth, apiKeys, codec, clock, repos.org)
   const inviteLinks = new OrgInviteLinkService(
     new OrgInviteLinkCodec(config.API_KEY_PEPPER),
     repos.orgInviteLink,

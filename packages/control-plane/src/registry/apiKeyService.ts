@@ -16,7 +16,14 @@ import type {
   MintedKeyView,
   ProvisionedDaemon
 } from '../ports.js'
-import type { ApiKeyRepo, ApiKeyRecord, UserApiKeyRecord, DaemonRepo, AuditRepo } from '../persistence/ports.js'
+import type {
+  ApiKeyRepo,
+  ApiKeyRecord,
+  UserApiKeyRecord,
+  DaemonRepo,
+  AuditRepo,
+  OrgRepo
+} from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
 import { DaemonId, OrgId } from '../domain/ids.js'
 import { isAgentLevelPermission, type ApiKeyPermission } from '../domain/api-key-permission.js'
@@ -72,7 +79,9 @@ export class ApiKeyService implements ApiKeyAdmin {
     private readonly apiKeys: ApiKeyRepo,
     private readonly daemons: DaemonRepo,
     private readonly audit: AuditRepo,
-    private readonly clock: Clock
+    private readonly clock: Clock,
+    /** A user key or an OAuth token acts for a member, so it stops with the membership. */
+    private readonly orgs: Pick<OrgRepo, 'roleOf'>
   ) {}
 
   async provisionDaemon(opts: { orgId: string; createdByUserId?: string }): Promise<ProvisionedDaemon> {
@@ -315,6 +324,8 @@ export class ApiKeyService implements ApiKeyAdmin {
     if (row.revokedAt) return null
     const nowMs = this.clock.now()
     if (row.expiresAt && row.expiresAt.getTime() <= nowMs) return null
+    // The key acts for a member: once they are removed or suspended it authenticates nothing, on any route.
+    if ((await this.orgs.roleOf(row.orgId, row.userId)) === null) return null
     // Best-effort, throttled liveness touch — never blocks or fails the request.
     if (!row.lastUsedAt || nowMs - row.lastUsedAt.getTime() >= LAST_USED_THROTTLE_MS) {
       void this.apiKeys.touchLastUsed(row.id, new Date(nowMs)).catch(() => {})

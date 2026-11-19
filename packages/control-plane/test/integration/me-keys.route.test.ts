@@ -193,6 +193,44 @@ describe('a minted key is a live REST credential', () => {
     }
   })
 
+  it('stops with the membership: paused while suspended, ended for good on removal', async () => {
+    const users = new PgUserRepo(prisma)
+    const other = await users.provisionOidcUser({
+      oidcSubject: 'sub-other',
+      email: 'other@acme.dev',
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, 'other@acme.dev', 'owner')
+    const where = { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const minted = (
+        await app.inject({ method: 'POST', url: '/api/v1/me/keys', payload: { orgId: DEFAULT_ORG_ID } })
+      ).json() as Minted
+      // The identity route sits outside the organization subtree, so only the key's own check guards it.
+      const me = async () =>
+        (await app.inject({ method: 'GET', url: '/api/v1/me', headers: bearer(minted.apiKey) })).statusCode
+      expect(await me()).toBe(200)
+
+      await prisma.membership.update({ where, data: { suspendedAt: new Date(), suspendedBy: 'manual' } })
+      expect(await me()).toBe(401)
+      await prisma.membership.update({ where, data: { suspendedAt: null, suspendedBy: null } })
+      expect(await me()).toBe(200)
+
+      await users.removeMember(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, other.userId)
+      expect(await me()).toBe(401)
+      const row = await prisma.apiKey.findFirstOrThrow({ where: { userId: DEFAULT_OWNER_ID, principalType: 'user' } })
+      expect(row).toMatchObject({ revokedReason: 'member removed' })
+      expect(row.revokedAt).not.toBeNull()
+
+      // Coming back as a member does not bring the key back.
+      await prisma.membership.create({ data: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID, role: 'owner' } })
+      expect(await me()).toBe(401)
+    } finally {
+      await close()
+    }
+  })
+
   it('cannot be used to mint more keys (no self-propagation)', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {

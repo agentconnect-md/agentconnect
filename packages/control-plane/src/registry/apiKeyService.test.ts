@@ -34,7 +34,7 @@ function record(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
   }
 }
 
-function service(row: ApiKeyRecord | null): ApiKeyService {
+function service(row: ApiKeyRecord | null, member = true): ApiKeyService {
   const repo = {
     findByHash: vi.fn(async () => row),
     touchLastUsed: vi.fn(async () => {})
@@ -44,7 +44,8 @@ function service(row: ApiKeyRecord | null): ApiKeyService {
     repo,
     {} as DaemonRepo,
     { append: vi.fn(async () => ({})) } as unknown as AuditRepo,
-    clock
+    clock,
+    { roleOf: async () => (member ? 'collaborator' : null) }
   )
 }
 
@@ -98,5 +99,10 @@ describe('ApiKeyService.authenticateUser — fail-closed contract', () => {
     expect(await service(record({ expiresAt: new Date(NOW - 1) })).authenticateUser(token)).toBeNull()
     expect(await service(null).authenticateUser(token)).toBeNull()
     expect(await service(record()).authenticateUser('not-a-key')).toBeNull()
+  })
+
+  it('rejects a key whose user is not an active member of its organization', async () => {
+    const { token } = codec.mint()
+    expect(await service(record(), false).authenticateUser(token)).toBeNull()
   })
 })

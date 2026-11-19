@@ -13,7 +13,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { OrgId } from '../domain/ids.js'
 import type { Clock } from '../domain/clock.js'
 import type { ApiKeyAdmin } from '../ports.js'
-import type { OAuthRepo, OAuthClientRecord, OAuthGrantRecord } from '../persistence/ports.js'
+import type { OAuthRepo, OAuthClientRecord, OAuthGrantRecord, OrgRepo } from '../persistence/ports.js'
 import { ApiKeyCodec } from './apiKey.js'
 
 /** base64url(SHA-256(input)) — the PKCE S256 transform (agent-assistant.md §7). */
@@ -130,7 +130,9 @@ export class OAuthService {
     private readonly oauth: OAuthRepo,
     private readonly apiKeys: ApiKeyAdmin,
     private readonly codec: ApiKeyCodec,
-    private readonly clock: Clock
+    private readonly clock: Clock,
+    /** A grant acts for a member of its organization, so it stops with the membership. */
+    private readonly orgs: Pick<OrgRepo, 'roleOf'>
   ) {}
 
   private now(): number {
@@ -220,6 +222,10 @@ export class OAuthService {
     if (code.codeChallengeMethod !== 'S256' || s256(input.codeVerifier) !== code.codeChallenge) {
       return fail('invalid_grant', 'PKCE verification failed')
     }
+    // Consent checked the membership; it may have ended since.
+    if ((await this.orgs.roleOf(code.orgId, code.userId)) === null) {
+      return fail('invalid_grant', 'no longer a member of the organization')
+    }
     return this.mintGrantTokens({
       userId: code.userId,
       orgId: code.orgId,
@@ -238,6 +244,12 @@ export class OAuthService {
     if (!grant) return fail('invalid_grant', 'unknown refresh token')
     if (grant.revokedAt) return fail('invalid_grant', 'grant revoked')
     if (grant.rtExpiresAt && grant.rtExpiresAt.getTime() <= this.now()) return fail('invalid_grant', 'refresh expired')
+    // A grant does not outlive the membership it was given under, and does not come back with it: the client asks again.
+    if ((await this.orgs.roleOf(grant.orgId, grant.userId)) === null) {
+      await this.oauth.revokeGrant(grant.id, new Date(this.now()))
+      await this.apiKeys.revokeOauthGrantTokens(grant.id)
+      return fail('invalid_grant', 'no longer a member of the organization')
+    }
 
     const newRt = this.codec.mint()
     const rotated = await this.oauth.rotateGrant(grant.id, grant.rtHash, {
