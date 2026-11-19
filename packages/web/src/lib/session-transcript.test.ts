@@ -343,4 +343,72 @@ describe('reconciling a coordinator conversation’s threads (webchat-threads.md
     // The same rows read at the root confirm nothing there: the thread's turn is not the root's to retire.
     expect(reconcilePersistedLiveSteps(live, record, agentId, record, liveThreadScope(live))).toBe(live)
   })
+
+  describe('a root the coordinator handed into a task’s thread (§5.1)', () => {
+    const handedPrompt: SessionStep = {
+      kind: 'msg',
+      who: '@you',
+      turnId: 'd',
+      text: 'and the totals?',
+      observedAtMs: at
+    }
+    const thinking: SessionStep = {
+      kind: 'plan',
+      agentId,
+      turnId: 'd',
+      text: 'The release task owns this.',
+      observedAtMs: at + 5
+    }
+    const handOff: SessionStep = {
+      kind: 'tool',
+      agentId,
+      turnId: 'd',
+      text: 'sendMessage',
+      toolCallId: 'call-d',
+      observedAtMs: at + 6
+    }
+    // Its row reads in the thread it joined, and the coordinator's work on it is drawn there.
+    const rows = [
+      { ...row(9, '@you', 'and the totals?', at + 2), postId: 'post-d', thread: 'post-d', handedTo: 'root-1' },
+      { seq: 10, ts: String(at + 6), text: 'sendMessage', sender: agentId, kind: 'tool', thread: 'post-d' }
+    ] satisfies SessionMessageDto[]
+
+    it('retires the finished turn, whose rows hold it, though it posted no reply', () => {
+      const steps = [{ ...handedPrompt, turnComplete: true }, thinking, handOff]
+      expect(reconcilePersistedLiveSteps(steps, rows, agentId, rows, liveThreadScope(steps))).toEqual([])
+    })
+
+    it('retires the finished turn though text it streamed was never posted', () => {
+      const unposted: SessionStep = {
+        kind: 'done',
+        agentId,
+        turnId: 'd',
+        text: 'Passing it on.',
+        postId: 'seg-d',
+        observedAtMs: at + 7
+      }
+      const steps = [{ ...handedPrompt, turnComplete: true }, thinking, handOff, unposted]
+      expect(reconcilePersistedLiveSteps(steps, rows, agentId, rows, liveThreadScope(steps))).toEqual([])
+    })
+
+    it('moves a running turn into that thread, out of the main timeline', () => {
+      const steps = [handedPrompt, thinking, handOff]
+      const moved = reconcilePersistedLiveSteps(steps, rows, agentId, rows, liveThreadScope(steps))
+      expect(moved.map((step) => step.thread)).toEqual(['root-1', 'root-1', 'root-1'])
+      expect(moved.filter(liveThreadScope(moved))).toEqual([])
+      expect(moved.filter(liveThreadScope(moved, 'root-1'))).toHaveLength(3)
+      // The thread's record, where the handed row joined, retires it once it finishes.
+      const finished = moved.map((step) => (step.kind === 'msg' ? { ...step, turnComplete: true } : step))
+      expect(reconcilePersistedLiveSteps(finished, rows, agentId, rows, liveThreadScope(finished, 'root-1'))).toEqual(
+        []
+      )
+    })
+
+    it('shows a prompt an earlier read hid in the thread once a read brings its handing', () => {
+      const steps = [{ ...handedPrompt, hidden: true }, thinking, handOff]
+      const moved = reconcilePersistedLiveSteps(steps, rows, agentId, rows, liveThreadScope(steps))
+      expect(moved[0]).toEqual({ ...handedPrompt, thread: 'root-1' })
+      expect(moved.filter(liveThreadScope(moved))).toEqual([])
+    })
+  })
 })
