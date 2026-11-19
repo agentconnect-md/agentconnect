@@ -66,9 +66,9 @@ describe('PgUserRepo verified address', () => {
       select: { emailVerifiedAt: true, emailSsoConnectorIds: true }
     })
   const otherOrg = async () => (await prisma.org.create({ data: { slug: `org-${randomUUID()}` } })).id
-  const connect = (orgId: string, logtoConnectorId: string) =>
+  const connect = (orgId: string, logtoConnectorId: string, activatedAt: Date | null = AT) =>
     prisma.orgSsoConnection.create({
-      data: { orgId, logtoConnectorId, protocol: 'oidc', activatedAt: AT, configChangedAt: AT }
+      data: { orgId, logtoConnectorId, protocol: 'oidc', activatedAt, configChangedAt: AT }
     })
   const claim = (orgId: string, domain: string, verifiedAt: Date | null = AT) =>
     prisma.orgDomain.create({
@@ -170,6 +170,22 @@ describe('PgUserRepo verified address', () => {
     expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(true)
     await prisma.orgSsoConnection.delete({ where: { orgId: DEFAULT_ORG_ID } })
     expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(false)
+  })
+
+  it('counts the organization’s connection only while it is active', async () => {
+    const userId = await member('sso@draft.example.test')
+    // A draft connection: a test sign-in can leave an identity on it before it is ever activated.
+    await connect(DEFAULT_ORG_ID, 'connector-draft', null)
+    await claim(DEFAULT_ORG_ID, 'draft.example.test')
+    await repo().recordEmailEvidence(userId, sso('connector-draft', 'sso@draft.example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'sso@draft.example.test')).toBe(false)
+
+    await prisma.orgSsoConnection.update({ where: { orgId: DEFAULT_ORG_ID }, data: { activatedAt: AT } })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@draft.example.test')).toBe(true)
+
+    // Deactivating keeps the connection and its identities, and still ends the match.
+    await prisma.orgSsoConnection.update({ where: { orgId: DEFAULT_ORG_ID }, data: { activatedAt: null } })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@draft.example.test')).toBe(false)
   })
 
   it('ignores a connection that asserts another address, and forgets one whose identity is gone', async () => {

@@ -175,9 +175,9 @@ count, and no other:
   account's own, which such a method does only for an address its provider
   verified ([organization-sso.md](organization-sso.md) §4.3). The address then
   counts in every organization the account belongs to.
-- **The organization's own single sign-on connection** asserts the address, and
-  the address's domain is one that organization has verified now. It counts in
-  that organization and in no other. The organization proved it controls the
+- **The organization's own single sign-on connection** asserts the address,
+  the connection is active, and the address's domain is one that organization
+  has verified now. It counts in that organization and in no other. The organization proved it controls the
   domain, and it chose the provider that signs that domain's addresses in, so
   for its own agents it answers for both ends: the mailbox step 2 proves and
   the sign-in that names the member. Another organization the same account
@@ -185,8 +185,9 @@ count, and no other:
   accepts is the organization's own risk of
   [organization-sso.md](organization-sso.md) §4.1: a provider that lets its
   people set their own address lets one of them be read as a colleague on the
-  same domain. Removing the connection or releasing the domain ends the match
-  at once, because both are read when the question is asked.
+  same domain. A draft connection never counts, and deactivating or removing
+  the connection or releasing the domain ends the match at once, because all
+  three are read when the question is asked.
 - **The deployment's own connector**, where the deployment has one instead of
   organization connections, asserts the address and is an OIDC connector that
   does not trust unverified addresses, so only an address its provider marks

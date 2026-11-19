@@ -790,17 +790,20 @@ export class PgUserRepo implements UserRepo {
         user: true,
         org: {
           select: {
-            ssoConnection: { select: { logtoConnectorId: true } },
+            ssoConnection: { select: { logtoConnectorId: true, activatedAt: true } },
             domains: { where: { domain, verifiedAt: { not: null } }, select: { id: true } }
           }
         }
       }
     })
     if (!row) return null
-    // Read live, so removing the connection or releasing the domain ends the match at once.
-    const connectorId = row.org.ssoConnection?.logtoConnectorId
+    // Read live, so deactivating or removing the connection, or releasing the domain, ends the match at once.
+    const connection = row.org.ssoConnection
     const byOrganization =
-      connectorId !== undefined && row.org.domains.length > 0 && row.user.emailSsoConnectorIds.includes(connectorId)
+      connection != null &&
+      connection.activatedAt !== null &&
+      row.org.domains.length > 0 &&
+      row.user.emailSsoConnectorIds.includes(connection.logtoConnectorId)
     return row.user.emailVerifiedAt !== null || byOrganization ? toMemberRecord(row) : null
   }
 
