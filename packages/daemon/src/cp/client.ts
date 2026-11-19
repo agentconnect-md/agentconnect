@@ -180,6 +180,9 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
+  SESSION_FILE_SNAPSHOT_FEATURE,
+  type SessionFilePutOk,
+  type SessionFilePutReq,
   WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
@@ -1175,6 +1178,17 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected image/original/put/ok, got ${rep.type}`, false)
     }
     return rep.payload as SharedImagePutOk
+  }
+
+  /** Presign the PUT of a shared file's snapshot (agent-authored-attachments.md §4.1); `unsupported` on an older CP. */
+  async signSessionFilePut(payload: SessionFilePutReq, orgId?: string): Promise<SessionFilePutOk | 'unsupported'> {
+    this.requireReady('session/file/put')
+    if (!this.supportsServerFeature(SESSION_FILE_SNAPSHOT_FEATURE)) return 'unsupported'
+    const rep = await this.request('session/file/put', payload, orgId)
+    if (rep.type !== 'session/file/put/ok') {
+      throw new WireError('INTERNAL', `expected session/file/put/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as SessionFilePutOk
   }
 
   /** Presign a browser GET for a cached shared-image original; `missing` when the bucket no longer holds it. */

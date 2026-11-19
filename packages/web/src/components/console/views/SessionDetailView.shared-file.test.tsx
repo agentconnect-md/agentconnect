@@ -67,6 +67,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
       Promise.resolve({ isRepo: false, commits: [], truncated: false, tracking: null })
     ),
     downloadSessionFile: wire.download,
+    fetchSessionSharedFile: vi.fn(() => Promise.reject(new actual.ApiError('shared file not found', 404))),
     resolveSharedImageOriginal: wire.resolve
   }
 })

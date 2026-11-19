@@ -32,6 +32,7 @@ import { keyRoutes } from './routes/keys.js'
 import { computerRoutes, computerRegisterRoutes } from './routes/computers.js'
 import { computerPlanAdminRoutes, computerPlanRoutes } from './routes/computer-plan.js'
 import { computerScreenshotRoutes } from './routes/computer-screenshots.js'
+import { sessionFileRoutes } from './routes/session-files.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
@@ -376,6 +377,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(computerRoutes(deps))
           await scope.register(computerPlanRoutes(deps))
           await scope.register(computerScreenshotRoutes(deps))
+          await scope.register(sessionFileRoutes(deps))
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))
           await scope.register(webchatTokenRoutes(deps))

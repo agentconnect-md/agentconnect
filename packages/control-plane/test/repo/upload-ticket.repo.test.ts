@@ -33,6 +33,8 @@ function signer(signed: string[]): FileTransfer {
     },
     uploadedFileUrl: async () => undefined,
     storedDownload: async () => undefined,
+    holds: async () => false,
+    deleteObject: async () => {},
     cachedDownload: async () => undefined,
     signPut: async (input) => {
       signed.push(input.key)

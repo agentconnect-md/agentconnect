@@ -284,11 +284,13 @@ mode of the same bounded workspace read the file viewer already uses:
 
 The console hangs the download on the agent's share marker: a transcript row ending in
 `[shared: path (type, N bytes, sha256:…)]` renders its caption as the message and the
-marker as a chip (name, size) that downloads by path and digest, and says why when the
-server refuses. An upload has no such marker yet. Until prompt-build materialization (§8
+marker as a chip (name, size) that downloads the session's snapshot of the shared bytes
+(agent-authored-attachments.md §4.1), else the workspace file by path and digest, and says
+why when the server refuses. An upload has no such marker yet. Until prompt-build materialization (§8
 phase 1) writes the saved path into the `[attached: …]` entry (§3), the only record of
 where an upload landed is the read tool's own result. The console's workspace viewer
-offers a download for any file it opens.
+offers a download for any file it opens: the file it shows, never pinned to a share's
+digest.
 
 `sendMessage`'s cross-conversation forwarding contract is **unchanged**: it resolves only
 the retained ≤ 160 KB transcript image copies. A file's marker names it, but forwarding

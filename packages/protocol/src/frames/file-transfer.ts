@@ -19,6 +19,8 @@ export {
 /** Daemon moves bytes on CP-signed URLs: it answers `workspace/upload` and asks `transfer/sign` and `transfer/get`. */
 export const FILE_TRANSFER_FEATURE = 'file-transfer-v2'
 export const WEBCHAT_UPLOADS_FEATURE = 'webchat-upload-previews-v1'
+/** This CP signs `session/file/put`: a shared file's snapshot kept in the bucket for its session's lifetime. */
+export const SESSION_FILE_SNAPSHOT_FEATURE = 'session-file-snapshot-v1'
 
 /** At most this many uploaded files ride one webchat turn. */
 export const WEBCHAT_FILES_MAX = MESSAGE_ATTACHMENTS_MAX
@@ -196,3 +198,24 @@ export const SharedImageResolveOk = z.object({
   download: SharedImageDownload.optional()
 })
 export type SharedImageResolveOk = z.infer<typeof SharedImageResolveOk>
+
+// ── Shared-file snapshots: the bytes a share published, kept in the transfer bucket while its session lives ──
+
+/** D→C REQ: presign the PUT of one shared file's snapshot, keyed by its session and digest. */
+export const SessionFilePutReq = z.object({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(200),
+  name: TransferFileName,
+  bytes: z.number().int().positive(),
+  sha256: TransferSha256,
+  network: TransferNetwork
+})
+export type SessionFilePutReq = z.infer<typeof SessionFilePutReq>
+
+/** C→D REP: the presigned PUT and its exact headers, or `stored` when the bucket already holds these bytes. */
+export const SessionFilePutOk = z.object({
+  url: z.string().url().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  stored: z.boolean().optional()
+})
+export type SessionFilePutOk = z.infer<typeof SessionFilePutOk>

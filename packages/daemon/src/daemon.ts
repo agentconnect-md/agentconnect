@@ -1474,6 +1474,7 @@ import {
 import {
   publishWebchatSharedFile,
   publishWebchatSharedImage,
+  snapshotSharedFile,
   resolveSharedImageOriginal,
   SHARED_IMAGE_SOURCE_MAX_BYTES,
   SharedImageNotFoundError,
@@ -1481,6 +1482,7 @@ import {
   WEBCHAT_SHARES_IN_FLIGHT,
   WEBCHAT_SHARES_PER_TURN,
   webchatConversationIdOf,
+  type SharedFileSnapshotDeps,
   type SharedImagePublisherDeps,
   type WebchatShareTurn
 } from './webchat/shared-image.js'
@@ -5851,6 +5853,14 @@ export class Daemon {
         const turn = this.webchatShareTurn(ctx)
         if (!turn) return undefined
         return (source) => publishWebchatSharedFile({ store: this.store, log: this.log }, turn, source)
+      },
+      // The session's own copy of what a share published, so its chip survives later rewrites of the path (§4.1).
+      snapshotSharedFile: async (ctx, file) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const live = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)?.outwardSessionId
+        const sessionId = live ?? (await this.store.getSession(key).catch(() => undefined))?.sessionId ?? undefined
+        if (!sessionId) return
+        await snapshotSharedFile(this.sharedFileSnapshotDeps(), { agentId: ctx.agentId, sessionId, ...file })
       },
       // read*File (inbound-file-attachments.md §2): a downloaded non-image binary lands under
       // `uploads/` at the session's working root, so the agent's own tools can open it. The same
@@ -14585,6 +14595,20 @@ export class Daemon {
       network: () => this.transferNetwork(),
       stagingRoot: join(this.root, 'shared-image-staging'),
       sendUpdate: (update) => this.relays?.sendWebchatImageUpdate(update),
+      log: this.log
+    }
+  }
+
+  /** Shared-file snapshot seams: CP signing over this daemon's socket, staged beside shared-image originals. */
+  private sharedFileSnapshotDeps(): SharedFileSnapshotDeps {
+    return {
+      fileTransfer: () => this.fileTransfer,
+      signPut: (req) => {
+        if (!this.cpClient) throw new Error('the control plane is not connected')
+        return this.cpClient.signSessionFilePut(req, this.orgForAgent(req.agentId))
+      },
+      network: () => this.transferNetwork(),
+      stagingRoot: join(this.root, 'shared-image-staging'),
       log: this.log
     }
   }
