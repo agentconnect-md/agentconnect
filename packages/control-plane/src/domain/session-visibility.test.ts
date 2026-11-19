@@ -126,6 +126,41 @@ describe('classifySession — the §4.2 default rules', () => {
     })
   })
 
+  it('classifies a group conversation private to the member who opened it where the platform gives it to them', () => {
+    const group = {
+      platform: 'email',
+      conversationKind: 'group_dm' as const,
+      transportScope: 'mail.example.test',
+      triggeredBy: 'alice@corp.example.test'
+    }
+    expect(classifySession({ ...group, groupOwnerUserId: 'member-1' })).toEqual({
+      visibility: 'private',
+      ownerIdentity: 'user:member-1',
+      source: 'default'
+    })
+    // The opener matched no member: private to their address, visible to no one, never the organization's.
+    expect(classifySession({ ...group, groupOwnerUserId: null })).toEqual({
+      visibility: 'private',
+      ownerIdentity: 'email:mail.example.test:alice@corp.example.test',
+      source: 'default'
+    })
+    expect(classifySession({ ...group, transportScope: undefined, groupOwnerUserId: null })).toEqual({
+      visibility: 'private',
+      ownerIdentity: null,
+      source: 'default'
+    })
+    // Without the platform's rule a group conversation is the organization's, and a channel always is.
+    expect(classifySession(group)).toMatchObject({ visibility: 'org' })
+    expect(classifySession({ ...group, conversationKind: 'channel', groupOwnerUserId: 'member-1' })).toMatchObject({
+      visibility: 'org'
+    })
+    // A DM takes no group owner.
+    expect(classifySession({ ...group, conversationKind: 'dm', groupOwnerUserId: 'member-1' })).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: 'email:mail.example.test:alice@corp.example.test'
+    })
+  })
+
   it('classifies an IM DM org, still recording its sender, where the platform cannot name people', () => {
     const dm = {
       conversationKind: 'dm' as const,

@@ -6263,6 +6263,14 @@ export interface MsTeamsAgentBotRequestStore {
   delete(orgId: OrgId, id: string): Promise<void>
 }
 
+// EmailAddressRepo — every address an Email integration has taken (email-integration.md §3), in use or retired; rows are never deleted.
+export interface EmailAddressRepo {
+  /** Whether the lower-cased address was ever taken. */
+  taken(address: string): Promise<boolean>
+  /** Record the address as taken; false when it already was, so one caller wins a race. */
+  claim(address: string): Promise<boolean>
+}
+
 // WechatPendingLoginStore — a personal-WeChat QR login (wechat-integration.md §2.2). The login handle and the
 // confirmed bot token are sealed at rest; every read and write is org-fenced.
 export type WechatLoginState = 'waiting' | 'scanned' | 'verify_code' | 'authorized' | 'completed' | 'failed'

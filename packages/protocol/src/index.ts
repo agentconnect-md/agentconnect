@@ -22,6 +22,7 @@ export {
   WEBCHAT_ACCESS_RECHECK_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
+  EMAIL_MEMBERS_V1_FEATURE,
   EMAIL_V1_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITCRED_PROVIDER_V2_FEATURE,
@@ -147,6 +148,7 @@ export * from './frames/codehost-note.js'
 export * from './frames/codehost-review.js'
 export * from './frames/approval-route.js'
 export * from './frames/read-access.js'
+export * from './frames/email.js'
 export * from './frames/integration.js'
 export * from './frames/mcpserver.js'
 export * from './frames/memory-connection.js'

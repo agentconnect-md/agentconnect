@@ -181,6 +181,7 @@ import {
   PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
   PgWechatPendingLoginStore,
+  PgEmailAddressRepo,
   PgMsTeamsAgentBotRequestStore,
   PgSlackUserConfigStore,
   PgLinearTokenStore,
@@ -260,6 +261,7 @@ import { createSocketBotTenant } from './orchestrator/socketBotTenant.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
 import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
 import { resolveReadAccess } from './orchestrator/readAccess.js'
+import { resolveEmailMembers } from './orchestrator/emailMembers.js'
 import { sessionsVisibleTo } from './http/read-access.js'
 import { convergeIntegrationGating } from './orchestrator/integrationPush.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
@@ -421,6 +423,8 @@ import { createMsTeamsCpProvider } from './platforms/msteams/provider.js'
 import { createWeChatCpProvider } from './platforms/wechat/provider.js'
 import { createWeComCpProvider } from './platforms/wecom/provider.js'
 import { weComCredentialRoutes } from './platforms/wecom/routes.js'
+import { createEmailCpProvider } from './platforms/email/provider.js'
+import { emailAddressRoutes } from './platforms/email/routes.js'
 import { weChatLoginRoutes } from './platforms/wechat/routes.js'
 import { WeChatLoginService } from './platforms/wechat/login.js'
 import { createWeChatLoginClient, WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from './platforms/wechat/ilink.js'
@@ -703,6 +707,7 @@ export function buildContainer(
     slackWorkspaceInstall: new PgSlackWorkspaceInstallStore(prisma, secretCipher),
     feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
     wechatPendingLogin: new PgWechatPendingLoginStore(prisma, secretCipher),
+    emailAddress: new PgEmailAddressRepo(prisma),
     msTeamsAgentBotRequest: new PgMsTeamsAgentBotRequestStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
     linearToken: new PgLinearTokenStore(prisma, secretCipher),
@@ -3555,6 +3560,12 @@ export function buildContainer(
       installRoutes: [weComCredentialRoutes(httpDeps)],
       isInstalled: async (botId) =>
         (await repos.bot.getByExternalIdentity(WECOM_PLATFORM, botId, TENANTLESS_SENTINEL)) !== null
+    }),
+    // Registered unconditionally; with no mail domain set up nothing is created or delivered (email-integration.md §7).
+    createEmailCpProvider({
+      addresses: repos.emailAddress,
+      memberByVerifiedEmail: (orgId, email) => repos.user.memberByVerifiedEmail(orgId, email),
+      installRoutes: [emailAddressRoutes({ addresses: repos.emailAddress })]
     })
   ])
 
@@ -3690,6 +3701,13 @@ export function buildContainer(
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,
     approvalRoute,
+    // email-integration.md §4: the member answer a daemon admits mail by.
+    emailMembers: (req, expectedOrgId) =>
+      resolveEmailMembers(
+        req,
+        { agent: repos.agent, integration: repos.integration, users: repos.user },
+        expectedOrgId
+      ),
     // The console's own session visibility for whoever asks a cross-platform read; lazy over the HTTP deps built above.
     readAccess: (req, expectedOrgId) =>
       resolveReadAccess(

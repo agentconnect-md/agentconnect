@@ -65,6 +65,7 @@ import { handleRepoCandidates } from './repo-candidates.js'
 import { handleHookStart } from './hook-start.js'
 import { handleHookPreparing } from './hook-preparing.js'
 import { handleApprovalRoute } from './approval-route.js'
+import { handleEmailMembers } from './email-members.js'
 import { handleReadAccess } from './read-access.js'
 import { handleFollowUpWatch } from './follow-up-watch.js'
 import { handleCapabilityDecide, handleCapabilityRequest, handleCapabilityWithdraw } from './capability-request.js'
@@ -141,6 +142,7 @@ export class FrameRouter {
       'hook/start': handleHookStart,
       'agent/approval-route': handleApprovalRoute,
       'agent/read-access': handleReadAccess,
+      'agent/email-members': handleEmailMembers,
       'assistant/follow-up-watch': handleFollowUpWatch,
       'capability/request': handleCapabilityRequest,
       'capability/withdraw': handleCapabilityWithdraw,

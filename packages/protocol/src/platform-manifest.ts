@@ -125,7 +125,7 @@ export const WECHAT_PLATFORM = 'wechat'
 // WeCom's platform id (a smart bot on its long connection), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
 export const WECOM_PLATFORM = 'wecom'
 
-// Email's platform id (email-integration.md); joins `KNOWN_PLATFORMS` with its Control Plane provider, a release after readers accept it.
+// Email's platform id (email-integration.md), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
 export const EMAIL_PLATFORM = 'email'
 
 /** The fixed thread key every group message of QQ and WeCom carries, which names the group's root (auto-session-mode.md §6.10); their normalizers read it from here. */

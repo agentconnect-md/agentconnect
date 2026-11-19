@@ -3002,6 +3002,14 @@ model BotSecret {
   @@map("bot_secret")
 }
 
+// Every address an Email integration has taken (email-integration.md §3), deployment-wide and with no relation, so a row outlives its bot, agent and organization and the address is never issued twice.
+model EmailAddress {
+  address   String   @id // the full address, lower-cased
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("email_address")
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // SharedThreadAgent (slack-http-mode §10) — durable per-sessionKey thread affinity
 // for http-transport shared bots. A relay reports (botId, sessionKey)→{agentId,

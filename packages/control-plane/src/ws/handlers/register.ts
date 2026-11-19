@@ -43,6 +43,7 @@ import {
   WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
+  EMAIL_MEMBERS_V1_FEATURE,
   COMPUTER_APPROVERS_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
@@ -219,6 +220,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       READ_ACCESS_LINKED_V1_FEATURE,
       // …and answers that for up to 64 sessions at once, which `recall` lists a person's own conversations by.
       READ_ACCESS_BATCH_V1_FEATURE,
+      // email-integration.md §4: this CP answers which addresses are members who may write to an agent by mail.
+      ...(deps.emailMembers ? [EMAIL_MEMBERS_V1_FEATURE] : []),
       // memory-evolution.md §3.2.1: this CP serves the whole `memory/store` family, the migration completion included.
       AGENT_MEMORY_STORE_V1_FEATURE,
       AGENT_MEMORY_HISTORY_READ_V1_FEATURE,

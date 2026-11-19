@@ -49,7 +49,8 @@ export const CP_PLATFORM_IDS = [
   'dingtalk',
   'msteams',
   'wechat',
-  'wecom'
+  'wecom',
+  'email'
 ] as const
 
 /** One served chat platform. The closed static type behind `DbPlatform` and the

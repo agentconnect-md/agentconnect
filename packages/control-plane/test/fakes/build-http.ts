@@ -86,6 +86,7 @@ import {
   PgSlackWorkspaceInstallStore,
   PgFeishuAppRegistrationStore,
   PgWechatPendingLoginStore,
+  PgEmailAddressRepo,
   PgMsTeamsAgentBotRequestStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
@@ -153,6 +154,8 @@ import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js
 import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
 import { createWeComCpProvider, type WeComDial } from '../../src/platforms/wecom/provider.js'
 import { weComCredentialRoutes } from '../../src/platforms/wecom/routes.js'
+import { createEmailCpProvider } from '../../src/platforms/email/provider.js'
+import { emailAddressRoutes } from '../../src/platforms/email/routes.js'
 import { TENANTLESS_SENTINEL } from '../../src/persistence/ports.js'
 import { weChatLoginRoutes } from '../../src/platforms/wechat/routes.js'
 import { WeChatLoginService } from '../../src/platforms/wechat/login.js'
@@ -275,6 +278,8 @@ export interface PlatformStubs {
   weChatLoginClient?: WeChatLoginClient
   /** WeCom's long connection, stubbed; absent ⇒ every credential check is a connectivity failure. */
   weComDial?: WeComDial
+  /** The deployment's mail domain; absent ⇒ Email is not set up. */
+  emailMailDomain?: string
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -303,7 +308,8 @@ const PLATFORM_STUB_KEYS = [
   'msTeamsFetch',
   'msTeamsPlatformApp',
   'weChatLoginClient',
-  'weComDial'
+  'weComDial',
+  'emailMailDomain'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -927,6 +933,7 @@ export function buildHttpApp(
         }
       : {})
   }
+  const emailAddresses = new PgEmailAddressRepo(prisma)
   const weComDial: WeComDial = (url, handlers) => {
     if (!platformStubs.weComDial) throw new TypeError('no wecom dial stub installed')
     return platformStubs.weComDial(url, handlers)
@@ -1063,6 +1070,17 @@ export function buildHttpApp(
       installRoutes: [weComCredentialRoutes(deps)],
       isInstalled: async (botId) =>
         (await deps.repos.bot.getByExternalIdentity('wecom', botId, TENANTLESS_SENTINEL)) !== null
+    }),
+    createEmailCpProvider({
+      ...(platformStubs.emailMailDomain ? { mailDomain: platformStubs.emailMailDomain } : {}),
+      addresses: emailAddresses,
+      memberByVerifiedEmail: (orgId, email) => deps.repos.user.memberByVerifiedEmail(orgId, email),
+      installRoutes: [
+        emailAddressRoutes({
+          ...(platformStubs.emailMailDomain ? { mailDomain: platformStubs.emailMailDomain } : {}),
+          addresses: emailAddresses
+        })
+      ]
     })
   ])
 

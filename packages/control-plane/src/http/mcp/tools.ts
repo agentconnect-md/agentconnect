@@ -606,7 +606,8 @@ export const MCP_TOOLS: McpToolDef[] = [
             'dingtalk',
             'msteams',
             'wechat',
-            'wecom'
+            'wecom',
+            'email'
           ])
           .optional(),
         channel: z.string().min(1).optional(),

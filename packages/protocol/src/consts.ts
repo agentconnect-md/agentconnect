@@ -72,6 +72,9 @@ export const GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE = 'googlechat-relay-egress-v1'
 /** The daemon serves an Email integration, with mail forwarded by the relay and replies sent through it (email-integration.md §8); a spec names it in `requires`. */
 export const EMAIL_V1_FEATURE = 'email-v1'
 
+/** CP answers `agent/email-members`: which addresses are members who may write to an agent (email-integration.md §4). A daemon must not send that REQ before seeing this: a new request type is frame-fatal to an older CP. */
+export const EMAIL_MEMBERS_V1_FEATURE = 'email-members-v1'
+
 /** The Markdown mode every create and patch names; a patch without it reverts to Chat syntax (google-chat-integration.md §5). */
 export const GOOGLE_CHAT_MARKUP = 'MARKUP_SYNTAX_MARKDOWN'
 

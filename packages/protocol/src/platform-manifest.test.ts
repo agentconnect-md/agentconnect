@@ -253,8 +253,8 @@ describe('platform manifest', () => {
     expect(axes.appendKinds).toEqual([])
     expect(axes.dmChannelPattern?.test('dm:alice@corp.example.test')).toBe(true)
     expect(axes.dmChannelPattern?.test('group:m1@corp.example.test')).toBe(false)
-    // Not a known id yet: readers ship a release before the Control Plane provider emits it.
-    expect(originKindOf(EMAIL_PLATFORM)).toBeUndefined()
+    // A chat origin the console composer may not continue.
+    expect(originKindOf(EMAIL_PLATFORM)).toBe('chat')
     expect(continuableOrigin(EMAIL_PLATFORM)).toBe(false)
   })
 

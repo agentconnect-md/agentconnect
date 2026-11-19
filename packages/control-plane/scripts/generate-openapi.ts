@@ -37,6 +37,8 @@ import { createDingTalkCpProvider } from '../src/platforms/dingtalk/provider.js'
 import { createMsTeamsCpProvider } from '../src/platforms/msteams/provider.js'
 import { createWeChatCpProvider } from '../src/platforms/wechat/provider.js'
 import { createWeComCpProvider } from '../src/platforms/wecom/provider.js'
+import { createEmailCpProvider } from '../src/platforms/email/provider.js'
+import { emailAddressRoutes } from '../src/platforms/email/routes.js'
 
 /** `config` plus the platform registry are read at spec-build time; repos stay
  *  untouched (the docs/spec routes hit no DB-backed handler). Same stub shape as
@@ -66,7 +68,8 @@ function stubDeps(): HttpDeps {
       createDingTalkCpProvider(),
       createMsTeamsCpProvider(),
       createWeChatCpProvider({}),
-      createWeComCpProvider()
+      createWeComCpProvider(),
+      createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] })
     ])
   } as unknown as HttpDeps
 }

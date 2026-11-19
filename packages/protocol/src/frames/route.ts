@@ -43,7 +43,8 @@ export const KNOWN_PLATFORMS = [
   'dingtalk',
   'msteams',
   'wechat',
-  'wecom'
+  'wecom',
+  'email'
 ] as const
 export type KnownPlatform = (typeof KNOWN_PLATFORMS)[number]
 export function isKnownPlatform(p: string): p is KnownPlatform {

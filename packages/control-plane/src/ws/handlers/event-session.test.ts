@@ -13,6 +13,7 @@ import { createDiscordCpProvider } from '../../platforms/discord/provider.js'
 import { createGoogleChatCpProvider } from '../../platforms/googlechat/provider.js'
 import { createMsTeamsCpProvider } from '../../platforms/msteams/provider.js'
 import { createWeChatCpProvider } from '../../platforms/wechat/provider.js'
+import { createEmailCpProvider } from '../../platforms/email/provider.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -540,6 +541,64 @@ describe('handleEventSession', () => {
         ownerIdentity: 'wechat:ilink:wx-user@im.wechat',
         source: 'default'
       })
+    })
+  })
+
+  describe('a mail session belongs to the member its sender’s address is verified for', () => {
+    const ALICE = 'alice@corp.example.test'
+    const bot = { id: BOT_ID, orgId: ORG_ID, platform: 'email', externalAppId: 'helper@mail.example.test' }
+    const integration = { id: INTEGRATION_ID, agentId: AGENT_ID, botId: BOT_ID, orgId: ORG_ID, platform: 'email' }
+    async function classifyMail(
+      kind: 'dm' | 'group_dm',
+      memberByVerifiedEmail: (orgId: string, email: string) => Promise<{ userId: string } | null>
+    ) {
+      const recordMilestone = vi.fn().mockResolvedValue(recorded())
+      const deps = scopedDeps({
+        platforms: buildCpPlatformRegistry([
+          createEmailCpProvider({
+            mailDomain: 'mail.example.test',
+            memberByVerifiedEmail: memberByVerifiedEmail as never
+          })
+        ]),
+        session: { recordMilestone, getExternalAccessPolicy: vi.fn(async () => null) },
+        integration: { listForAgent: vi.fn(async () => [integration]) },
+        bot: { get: vi.fn().mockResolvedValue(bot) },
+        events: { publish: vi.fn() }
+      })
+      const frame = eventSessionFrame()
+      Object.assign(frame.payload as Record<string, unknown>, {
+        platform: 'email',
+        channel: kind === 'dm' ? `dm:${ALICE}` : 'group:m1@corp.example.test',
+        conversationKind: kind,
+        transportScope: 'mail.example.test',
+        triggeredBy: ALICE
+      })
+      await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+      const [call] = recordMilestone.mock.calls[0] as [{ classification: unknown }]
+      return call.classification
+    }
+    const verified = async (orgId: string, email: string) =>
+      orgId === ORG_ID && email === ALICE ? { userId: 'member-1' } : null
+    const tuple = `email:mail.example.test:${ALICE}`
+
+    it('keeps a direct conversation and a group conversation private to that member', async () => {
+      const owned = { visibility: 'private', ownerIdentity: 'user:member-1', source: 'default' }
+      expect(await classifyMail('dm', verified)).toEqual(owned)
+      expect(await classifyMail('group_dm', verified)).toEqual(owned)
+    })
+
+    it('keeps both private to the address, never the organization’s, when no member matches', async () => {
+      const unowned = { visibility: 'private', ownerIdentity: tuple, source: 'default' }
+      expect(await classifyMail('dm', async () => null)).toEqual(unowned)
+      expect(await classifyMail('group_dm', async () => null)).toEqual(unowned)
+    })
+
+    it('keeps both private when the member cannot be read', async () => {
+      const failing = async () => {
+        throw new Error('db unavailable')
+      }
+      expect(await classifyMail('dm', failing)).toMatchObject({ visibility: 'private', ownerIdentity: tuple })
+      expect(await classifyMail('group_dm', failing)).toMatchObject({ visibility: 'private', ownerIdentity: tuple })
     })
   })
 

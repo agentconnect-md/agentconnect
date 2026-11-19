@@ -325,6 +325,11 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'bot integrations changed; refresh and retry the integration change'
               })
             }
+            // A platform whose bot is one fixed identity never moves it to another install.
+            const reuseRefusal = provider.reuseRefusal?.(bot)
+            if (reuseRefusal) {
+              return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: reuseRefusal })
+            }
             // A dead credential is not reusable. `inUseByAgentId` goes null when the
             // last install is removed, so a REVOKED bot (workspace uninstalled the
             // app / killed its tokens) looks "free" to the picker — reusing it would
