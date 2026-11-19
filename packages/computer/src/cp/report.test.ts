@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ComputerCapabilitiesSchema, ComputerDoctorReport } from '@agentconnect.md/protocol/computer'
 import type { Check } from '../setup.js'
@@ -79,5 +82,20 @@ describe('Control Plane report', () => {
     expect(sessionKind('win32', { SESSIONNAME: 'Console' })).toBe('console')
     expect(sessionKind('linux', { WAYLAND_DISPLAY: 'wayland-0' })).toBe('wayland-gnome')
     expect(isolationKind({ AGENTCONNECT_COMPUTER_ISOLATION: 'container' })).toBe('container')
+  })
+
+  it('finds Xvfb past processes that exit during the scan', () => {
+    const proc = mkdtempSync(join(tmpdir(), 'report-proc-'))
+    try {
+      mkdirSync(join(proc, '7'))
+      writeFileSync(join(proc, '7', 'cmdline'), 'Xvfb\0:1\0-nolisten\0tcp\0')
+      // A pid directory without cmdline reads like a process that exited between readdir and read.
+      for (let pid = 100; pid < 140; pid++) mkdirSync(join(proc, String(pid)))
+      expect(sessionKind('linux', { DISPLAY: ':1' }, proc)).toBe('xvfb')
+      expect(sessionKind('linux', { DISPLAY: ':2' }, proc)).toBe('x11')
+      expect(sessionKind('linux', { DISPLAY: ':1' }, join(proc, 'missing'))).toBe('x11')
+    } finally {
+      rmSync(proc, { recursive: true, force: true })
+    }
   })
 })

@@ -14,7 +14,7 @@ echo "image size: $((size / 1024 / 1024)) MiB"
 }
 
 net="$name-net"
-# What a failed run leaves to read: the container's log, the Xfce session's log and its processes.
+# What a failed run leaves to read: the container's log, the Xfce session's log, its processes and window manager.
 diagnose() {
   docker inspect "$1" > /dev/null 2>&1 || return 0
   echo "== $1: container log"
@@ -23,6 +23,8 @@ diagnose() {
   docker exec "$1" tail -n 200 /tmp/xfce4-session.log 2>&1 || true
   echo "== $1: processes"
   docker exec "$1" ps -eo pid,ppid,etimes,stat,comm 2>&1 || true
+  echo "== $1: window manager"
+  docker exec -e DISPLAY=:1 "$1" wmctrl -m 2>&1 || true
 }
 cleanup() {
   local status=$?
@@ -74,6 +76,14 @@ grep -q 'token written to' <<< "$logs" || {
   echo "the first start did not write the client token to its file" >&2
   exit 1
 }
+
+# The desktop has a window manager: without one nothing is maximized, decorated or focused.
+wm=$(docker exec -e DISPLAY=:1 "$name" wmctrl -m 2> /dev/null | sed -n 's/^Name: //p')
+[ "$wm" = Xfwm4 ] || {
+  echo "no window manager on the desktop: ${wm:-none}" >&2
+  exit 1
+}
+echo "window manager: $wm"
 
 # The browser starts beside the daemon, so give it a moment to map and maximize its window.
 maximized=

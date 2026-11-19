@@ -34,29 +34,39 @@ export function osVersion(platform: NodeJS.Platform = process.platform): string 
 }
 
 // Xvfb is a virtual X server whose command line names the display it serves.
-function xvfbServes(display: string): boolean {
+function xvfbServes(display: string, proc: string): boolean {
   const number = /^:(\d+)/.exec(display)?.[1]
   if (number === undefined) return false
+  let pids: string[]
   try {
-    for (const pid of readdirSync('/proc')) {
-      if (!/^\d+$/.test(pid)) continue
-      const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
-      if (/(^|\/)Xvfb$/.test(argv[0] ?? '') && argv.includes(`:${number}`)) return true
-    }
+    pids = readdirSync(proc)
   } catch {
     // An unreadable /proc reads as a real X server.
+    return false
+  }
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue
+    let argv: string[]
+    try {
+      argv = readFileSync(`${proc}/${pid}/cmdline`, 'utf8').split('\0')
+    } catch {
+      // A process that exits mid-scan, common while a desktop starts, must not end the scan.
+      continue
+    }
+    if (/(^|\/)Xvfb$/.test(argv[0] ?? '') && argv.includes(`:${number}`)) return true
   }
   return false
 }
 
 export function sessionKind(
   platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  proc = '/proc'
 ): ComputerSession {
   if (platform === 'darwin') return 'aqua'
   if (platform === 'win32') return env.SESSIONNAME?.startsWith('RDP') ? 'rdp' : 'console'
   if (env.WAYLAND_DISPLAY) return 'wayland-gnome'
-  return env.DISPLAY && xvfbServes(env.DISPLAY) ? 'xvfb' : 'x11'
+  return env.DISPLAY && xvfbServes(env.DISPLAY, proc) ? 'xvfb' : 'x11'
 }
 
 export function isolationKind(env: NodeJS.ProcessEnv = process.env): ComputerIsolation {

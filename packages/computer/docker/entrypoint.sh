@@ -63,6 +63,14 @@ eval "$(dbus-launch --sh-syntax)"
 export DBUS_SESSION_BUS_ADDRESS
 xfce4-session > /tmp/xfce4-session.log 2>&1 &
 session=$!
+# xfwm4 exits on a window that vanishes while it starts and is restarted only once registered, so windows wait for the session.
+state=
+for _ in $(seq 1 300); do
+  state=$(dbus-send --session --print-reply=literal --dest=org.xfce.SessionManager /org/xfce/SessionManager \
+    org.xfce.Session.Manager.GetState 2> /dev/null) && [ "${state##* }" = 1 ] && break
+  sleep 0.1
+done
+[ "${state##* }" = 1 ] || echo "[entrypoint] the Xfce session did not finish starting in 30s; starting the browser anyway" >&2
 
 # The main desktop's browser, from its profile's lock: not an agent desktop's own (computer-use.md §3.9).
 main_browser_pid() {
