@@ -594,3 +594,99 @@ describe('LogtoIdentityService.googleAccountIdFor (google-chat-integration.md §
     await expect(svc.googleAccountEmailFor('sub-2')).resolves.toBeNull()
   })
 })
+
+describe('subjectsLinkedTo — a chat identity looked up from the chat side', () => {
+  const slack = (memberId: string, tenant = 'T0EXAMPLE1') => ({ platform: 'slack', tenant, memberId })
+
+  /** Fake Logto whose user list answers the identity filter, or ignores it when `ignoresFilter`. */
+  function directory(users: Record<string, unknown>, opts: { ignoresFilter?: boolean; listStatus?: number } = {}) {
+    const lists: URLSearchParams[] = []
+    const fetchImpl: FetchImpl = async (url) => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'tok', expires_in: 3600 })
+      const { pathname, searchParams } = new URL(url)
+      if (pathname !== '/api/users') {
+        const user = users[decodeURIComponent(pathname.split('/').pop()!)]
+        return user ? Response.json(user) : new Response('{}', { status: 404 })
+      }
+      lists.push(searchParams)
+      if (opts.listStatus) return new Response('{}', { status: opts.listStatus })
+      const target = searchParams.get('identityProvider')!
+      const matches = Object.entries(users).filter(
+        ([, user]) =>
+          opts.ignoresFilter ||
+          (user as { identities?: Record<string, { userId?: string }> }).identities?.[target]?.userId ===
+            searchParams.get('identityId')
+      )
+      return Response.json(matches.map(([id]) => ({ id })))
+    }
+    return { fetchImpl, lists }
+  }
+
+  it('asks for the one account holding the identity and confirms it by that account’s own record', async () => {
+    const { fetchImpl, lists } = directory({ 'sub-1': slackUser(), 'sub-2': githubUser('octocat') })
+    const svc = svcOf(fetchImpl, new FakeClock(0))
+    expect(await svc.subjectsLinkedTo(slack('U0EXAMPLE1'))).toEqual(['sub-1'])
+    expect(Object.fromEntries(lists[0]!)).toEqual({
+      identityType: 'social',
+      identityProvider: 'slack',
+      identityId: 'U0EXAMPLE1'
+    })
+    // The same user id in another workspace is somebody else, and an id nobody linked is nobody.
+    expect(await svc.subjectsLinkedTo(slack('U0EXAMPLE1', 'T0OTHER000'))).toEqual([])
+    expect(await svc.subjectsLinkedTo(slack('U0NOBODY00'))).toEqual([])
+  })
+
+  it('reuses an answer within its lease and drops every answer when any account’s links change', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = { 'sub-1': slackUser() }
+    const { fetchImpl, lists } = directory(users)
+    const svc = svcOf(fetchImpl, clock)
+    await svc.subjectsLinkedTo(slack('U0EXAMPLE1'))
+    await svc.subjectsLinkedTo(slack('U0EXAMPLE1'))
+    expect(lists).toHaveLength(1)
+
+    // Unlinked, and the console tells the service: the next read asks again.
+    users['sub-1'] = githubUser('octocat')
+    svc.forgetUser('sub-1')
+    expect(await svc.subjectsLinkedTo(slack('U0EXAMPLE1'))).toEqual([])
+    expect(lists).toHaveLength(2)
+
+    // A miss is kept for a minute.
+    await svc.subjectsLinkedTo(slack('U0EXAMPLE1'))
+    expect(lists).toHaveLength(2)
+    clock.advance(60_001)
+    await svc.subjectsLinkedTo(slack('U0EXAMPLE1'))
+    expect(lists).toHaveLength(3)
+  })
+
+  it('maps each platform to where the provider keeps its id, and has no answer where it keeps it in the profile', async () => {
+    const { fetchImpl, lists } = directory({})
+    const svc = svcOf(fetchImpl, new FakeClock(0))
+    const teams = '00000000-0000-4000-8000-0000000000a2'
+    await svc.subjectsLinkedTo({ platform: 'googlechat', tenant: 'global', memberId: 'users/1234567' })
+    await svc.subjectsLinkedTo({ platform: 'discord', tenant: 'global', memberId: '987654321' })
+    await svc.subjectsLinkedTo({ platform: 'msteams', tenant: 'global', memberId: teams })
+    expect(lists.map((q) => [q.get('identityProvider'), q.get('identityId')])).toEqual([
+      ['google', '1234567'],
+      ['discord', '987654321'],
+      ['azuread', teams]
+    ])
+    for (const platform of ['feishu', 'telegram']) {
+      expect(await svc.subjectsLinkedTo({ platform, tenant: 'global', memberId: 'x' })).toBeUndefined()
+    }
+    expect(lists).toHaveLength(3)
+  })
+
+  it('has no answer when the provider did not apply the filter, and fails when the provider does', async () => {
+    const unfiltered = directory({ 'sub-1': slackUser(), 'sub-2': githubUser('octocat') }, { ignoresFilter: true })
+    expect(await svcOf(unfiltered.fetchImpl, new FakeClock(0)).subjectsLinkedTo(slack('U0EXAMPLE1'))).toBeUndefined()
+    // One account in the whole directory: the answer still rests on that account's own record.
+    const lone = directory({ 'sub-2': githubUser('octocat') }, { ignoresFilter: true })
+    expect(await svcOf(lone.fetchImpl, new FakeClock(0)).subjectsLinkedTo(slack('U0EXAMPLE1'))).toEqual([])
+    const down = directory({}, { listStatus: 503 })
+    await expect(svcOf(down.fetchImpl, new FakeClock(0)).subjectsLinkedTo(slack('U0EXAMPLE1'))).rejects.toMatchObject({
+      status: 503,
+      retryable: true
+    })
+  })
+})

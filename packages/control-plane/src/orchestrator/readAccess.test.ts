@@ -16,7 +16,13 @@ const ORG = 'org-1'
 const PLATFORMS = buildCpPlatformRegistry([createSlackCpProvider({}), createFeishuCpProvider({})])
 
 function deps(
-  over: { links?: Record<string, LinkedChatIdentity[]>; members?: string[]; identityAbsent?: boolean } = {}
+  over: {
+    links?: Record<string, LinkedChatIdentity[]>
+    members?: string[]
+    identityAbsent?: boolean
+    /** The identity provider can look a link up from the chat side (Slack here; Feishu/Lark keeps its id in the profile). */
+    reverse?: boolean
+  } = {}
 ) {
   const integrations = [
     { id: SLACK, botId: 'bot-slack', platform: 'slack' },
@@ -28,6 +34,15 @@ function deps(
     'user-q': [{ platform: 'slack', tenant: 'T0OTHER', memberId: 'U_P' }]
   }
   const members = over.members ?? ['user-p', 'user-q', 'user-r']
+  const subjectsLinkedTo = vi.fn(async (who: LinkedChatIdentity) =>
+    who.platform === 'slack'
+      ? Object.entries(links)
+          .filter(([, linked]) =>
+            linked.some((l) => l.platform === who.platform && l.tenant === who.tenant && l.memberId === who.memberId)
+          )
+          .map(([userId]) => `sub:${userId}`)
+      : undefined
+  )
   const sessionsVisible = vi.fn(async (_viewer: unknown, _agent: string, ids: readonly string[]) =>
     ids.filter((id) => id.startsWith('visible'))
   )
@@ -49,15 +64,22 @@ function deps(
     org: { roleOf: async (_org, userId) => (members.includes(userId) ? 'viewer' : null) },
     users: {
       listMembers: async () => members.map((userId) => ({ userId, role: 'collaborator' }) as OrgMemberRecord),
-      getOidcSubject: async (userId) => `sub:${userId}`
+      getOidcSubject: async (userId) => `sub:${userId}`,
+      memberByOidcSubject: async (_org, sub) =>
+        members.includes(sub.slice(4)) ? ({ userId: sub.slice(4), role: 'collaborator' } as OrgMemberRecord) : null
     },
     platforms: PLATFORMS,
     ...(over.identityAbsent
       ? {}
-      : { identity: { chatIdentitiesFor: async (sub: string) => links[sub.slice(4)] ?? [] } }),
+      : {
+          identity: {
+            chatIdentitiesFor: async (sub: string) => links[sub.slice(4)] ?? [],
+            ...(over.reverse ? { subjectsLinkedTo } : {})
+          }
+        }),
     sessionsVisible
   }
-  return { deps: built, sessionsVisible }
+  return { deps: built, sessionsVisible, subjectsLinkedTo }
 }
 
 const ask = (asker: AgentReadAccess['asker'], sessionIds = ['visible-1', 'hidden-1']): AgentReadAccess => ({
@@ -253,6 +275,39 @@ describe('resolveReadAccess', () => {
   it('refuses to answer rather than call someone unlinked when the organization is too large to scan', async () => {
     const many = deps({ members: Array.from({ length: 201 }, (_, i) => `user-${i}`) })
     await expect(resolveReadAccess(ask({ integrationId: SLACK, memberId: 'U_P' }), many.deps, ORG)).rejects.toThrow(
+      /too large/
+    )
+  })
+
+  it('past the cap, finds the member from the chat side instead of scanning', async () => {
+    const members = ['user-p', 'user-q', ...Array.from({ length: 200 }, (_, i) => `user-${i}`)]
+    const many = deps({ members, reverse: true })
+    const answer = await resolveReadAccess(
+      ask({ integrationId: SLACK, memberId: 'U_P' }, ['visible-1']),
+      many.deps,
+      ORG
+    )
+    expect(answer).toMatchObject({ asker: 'linked', consoleUserId: 'user-p', visibleSessionIds: ['visible-1'] })
+    expect(many.subjectsLinkedTo).toHaveBeenCalledWith({ platform: 'slack', tenant: 'T0AAA', memberId: 'U_P' })
+    // Nobody linked it: unlinked, not a refusal.
+    expect((await resolveReadAccess(ask({ integrationId: SLACK, memberId: 'U_NOBODY' }), many.deps, ORG)).asker).toBe(
+      'unlinked'
+    )
+    // An account that linked it but is not a member of this organization is nobody here.
+    const outsider = deps({
+      members: members.filter((id) => id !== 'user-p'),
+      links: { 'user-p': [{ platform: 'slack', tenant: 'T0AAA', memberId: 'U_P' }] },
+      reverse: true
+    })
+    expect((await resolveReadAccess(ask({ integrationId: SLACK, memberId: 'U_P' }), outsider.deps, ORG)).asker).toBe(
+      'unlinked'
+    )
+  })
+
+  it('past the cap, still refuses on a platform whose link cannot be looked up from the chat side', async () => {
+    const members = Array.from({ length: 201 }, (_, i) => `user-${i}`)
+    const many = deps({ members, reverse: true })
+    await expect(resolveReadAccess(ask({ integrationId: LARK, memberId: 'on_x' }), many.deps, ORG)).rejects.toThrow(
       /too large/
     )
   })

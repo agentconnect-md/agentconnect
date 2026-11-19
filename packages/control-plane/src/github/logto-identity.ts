@@ -261,6 +261,9 @@ export class LogtoIdentityService {
   // its full TTL. Every invalidation bumps the subject's epoch; a lookup only
   // caches its result if the epoch it started under is still current.
   private readonly cacheEpochs = new Map<string, number>()
+  // Chat identity → the accounts that linked it, fenced by one epoch that every invalidation bumps.
+  private readonly linkedSubjects = new Map<string, { subs: string[]; expiresAt: number }>()
+  private linkedEpoch = 0
   // Display-only SSO reads for the Profile card, invalidated with the user cache.
   private readonly ssoUsers = new Map<string, { identities: SsoIdentitySummary[]; expiresAt: number }>()
   private readonly ssoConnectorNames = new Map<string, { name: string | null; expiresAt: number }>()
@@ -689,6 +692,38 @@ export class LogtoIdentityService {
 
   private bumpEpoch(sub: string): void {
     this.cacheEpochs.set(sub, this.epochOf(sub) + 1)
+    // Any account's link or unlink may change who a chat identity names, so every cached answer goes with it.
+    this.linkedEpoch++
+    this.linkedSubjects.clear()
+  }
+
+  /** The accounts that linked this chat identity, each confirmed by its own record; undefined when it cannot be looked up from the chat side. */
+  async subjectsLinkedTo(identity: LinkedChatIdentity): Promise<string[] | undefined> {
+    const key = reverseKeyOf(identity)
+    if (!key) return undefined
+    const cacheKey = `${identity.platform}\0${identity.tenant}\0${identity.memberId}`
+    const cached = this.linkedSubjects.get(cacheKey)
+    if (cached && cached.expiresAt > this.clock.now()) return cached.subs
+    const epoch = this.linkedEpoch
+    const query = new URLSearchParams({ identityType: 'social', identityProvider: key.target, identityId: key.id })
+    const res = await this.request(`/api/users?${query.toString()}`)
+    if (!res.ok) throw new LogtoApiError(`logto identity lookup failed: ${res.status}`, res.status, res.status >= 500)
+    const found = (await res.json()) as Array<{ id?: unknown }>
+    // An identity is linked to one account at most: a longer answer means the filter was not applied, which is no answer.
+    if (!Array.isArray(found) || found.length > 1) return undefined
+    const subs: string[] = []
+    for (const user of found) {
+      if (typeof user.id !== 'string') continue
+      const linked = await this.chatIdentitiesFor(user.id)
+      // The account's own record decides: it carries the tenant, and it is what every other read of this link trusts.
+      if (linked.some((l) => sameChatIdentity(l, identity))) subs.push(user.id)
+    }
+    if (this.linkedEpoch === epoch) {
+      const now = this.clock.now()
+      const ttl = subs.length > 0 ? this.identityTtlMs : NEGATIVE_TTL_MS
+      this.setBounded(this.linkedSubjects, cacheKey, { subs, expiresAt: now + Math.min(ttl, PROVIDER_IDENTITY_TTL_MS) })
+    }
+    return subs
   }
 
   private async lookupUser(sub: string): Promise<LogtoUser | null> {
@@ -942,6 +977,19 @@ function globalChatIdentitiesOf(user: LogtoUser | null): LinkedChatIdentity[] {
   ].flatMap(({ platform, memberId }) =>
     typeof memberId === 'string' && /^[1-9]\d*$/.test(memberId) ? [{ platform, tenant: 'global', memberId }] : []
   )
+}
+
+const sameChatIdentity = (a: LinkedChatIdentity, b: LinkedChatIdentity): boolean =>
+  a.platform === b.platform && a.tenant === b.tenant && a.memberId === b.memberId
+
+// Where the provider keeps a chat identity, for the platforms whose stored identity id is the chat member id; Feishu/Lark and Telegram keep theirs in the profile, so they match from the account side only.
+function reverseKeyOf(identity: LinkedChatIdentity): { target: string; id: string } | null {
+  const { platform, memberId } = identity
+  if (platform === 'slack') return { target: 'slack', id: memberId }
+  if (platform === 'discord') return { target: 'discord', id: memberId }
+  if (platform === 'msteams') return { target: 'azuread', id: memberId }
+  if (platform === 'googlechat' && memberId.startsWith('users/')) return { target: 'google', id: memberId.slice(6) }
+  return null
 }
 
 const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/

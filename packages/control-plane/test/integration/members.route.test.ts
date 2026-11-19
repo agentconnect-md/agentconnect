@@ -602,3 +602,24 @@ describe('concurrent owner transitions', () => {
     }
   })
 })
+
+describe('a member found by the subject they sign in as', () => {
+  it('names the active member of that organization, and nobody for a suspended, removed or unknown one', async () => {
+    const repo = new PgUserRepo(prisma)
+    const subject = `subject-${randomUUID()}`
+    const email = `${subject}@acme.dev`
+    const { userId } = await repo.provisionOidcUser({ oidcSubject: subject, email, emailVerified: true })
+    expect(await repo.memberByOidcSubject(DEFAULT_ORG_ID, subject)).toBeNull()
+
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
+    expect(await repo.memberByOidcSubject(DEFAULT_ORG_ID, subject)).toMatchObject({ userId, role: 'viewer' })
+    expect(await repo.memberByOidcSubject(`org-${randomUUID()}`, subject)).toBeNull()
+    expect(await repo.memberByOidcSubject(DEFAULT_ORG_ID, `subject-${randomUUID()}`)).toBeNull()
+
+    const where = { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } }
+    await prisma.membership.update({ where, data: { suspendedAt: new Date() } })
+    expect(await repo.memberByOidcSubject(DEFAULT_ORG_ID, subject)).toBeNull()
+    await prisma.membership.delete({ where })
+    expect(await repo.memberByOidcSubject(DEFAULT_ORG_ID, subject)).toBeNull()
+  })
+})

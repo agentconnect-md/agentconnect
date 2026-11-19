@@ -7482,6 +7482,8 @@ export interface UserRepo {
 
   /** The org's members (oldest first) for the console Settings page. */
   listMembers(orgId: string): Promise<OrgMemberRecord[]>
+  /** The active member of the organization who signs in as this subject, or null. */
+  memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null>
 
   /**
    * Change one member's role under the organization owner-transition lock.
