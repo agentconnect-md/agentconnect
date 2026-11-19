@@ -21,7 +21,7 @@ export class PgGoogleChatBindingMutations implements GoogleChatBindingMutations 
       if (!held.length) throw recoveryExpired()
       const members = await tx.$queryRaw<
         { role: OrgMemberRole }[]
-      >`SELECT role FROM membership WHERE "orgId" = ${replacement.orgId} AND "userId" = ${input.userId} FOR SHARE`
+      >`SELECT role FROM membership WHERE "orgId" = ${replacement.orgId} AND "userId" = ${input.userId} AND "suspendedAt" IS NULL FOR SHARE`
       const users = await tx.$queryRaw<
         { googleAccountId: string | null }[]
       >`SELECT "googleAccountId" FROM app_user WHERE id = ${input.userId} FOR SHARE`

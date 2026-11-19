@@ -398,13 +398,27 @@ model Membership {
   // The last time THIS user selected THIS org in the console. Nullable keeps
   // existing memberships in their original insertion order until a choice is made.
   lastSelectedAt DateTime? @db.Timestamptz(6)
+  // Set while the member is suspended: the row and what it owns stay, and every access check reads the member as absent.
+  suspendedAt         DateTime?         @db.Timestamptz(6)
+  // Who suspended it, so that only the same side lifts it.
+  suspendedBy         MembershipSource?
+  // Who keeps this membership and its role: an owner in the console, or the organization's directory.
+  managedBy           MembershipSource  @default(manual)
+  // The directory's own stable id for this member; null for a membership a person manages.
+  directoryExternalId String?
 
   org  Org  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, userId])
+  @@unique([orgId, directoryExternalId])
   @@index([userId])
   @@map("membership")
+}
+
+enum MembershipSource {
+  manual
+  directory
 }
 
 // One shareable join link per org. The token is stored as a peppered hash and

@@ -110,7 +110,7 @@ export class PgGitlabConnectionRepo implements GitlabConnectionRepo {
       // this locked read finds nothing) — a deterministic winner either way.
       const membership = await tx.$queryRaw<{ userId: string }[]>`
         SELECT "userId" FROM "membership"
-         WHERE "orgId" = ${input.orgId} AND "userId" = ${input.userId} FOR SHARE`
+         WHERE "orgId" = ${input.orgId} AND "userId" = ${input.userId} AND "suspendedAt" IS NULL FOR SHARE`
       if (membership.length === 0) throw new GitlabMembershipGone()
       const row = await tx.gitlabConnection.upsert({
         where: { orgId_gitlabUserId: { orgId: input.orgId, gitlabUserId: input.gitlabUserId } },

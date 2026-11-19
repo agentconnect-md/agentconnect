@@ -51,8 +51,8 @@ export async function lockResourceWriteMemberships(
   const rows =
     ids.length === 0
       ? []
-      : await tx.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
-          SELECT "userId"
+      : await tx.$queryRaw<Array<{ userId: string; suspendedAt: Date | null }>>(Prisma.sql`
+          SELECT "userId", "suspendedAt"
           FROM "membership"
           WHERE "orgId" = ${input.orgId}
             AND "userId" IN (${Prisma.join(ids)})
@@ -60,11 +60,13 @@ export async function lockResourceWriteMemberships(
           FOR SHARE
         `)
   const current = new Set(rows.map((row) => row.userId))
+  // A suspended member keeps a place in an audience and may not write.
+  const active = new Set(rows.filter((row) => row.suspendedAt === null).map((row) => row.userId))
 
   // Keep a concurrent actor removal indistinguishable from a missing scoped
   // resource. The audience is intersected with current membership below; a
   // restricted write must retain at least one member after that intersection.
-  if (input.actorUserId !== undefined && !current.has(input.actorUserId)) throw new OrgMembershipMissing()
+  if (input.actorUserId !== undefined && !active.has(input.actorUserId)) throw new OrgMembershipMissing()
   if (input.sharedWith === undefined) {
     if (input.visibility === 'restricted') throw new ResourceAudienceEmpty()
     return {}

@@ -36,6 +36,7 @@ import {
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { OrgMembershipMissing } from '../errors.js'
+import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
 
 // Prisma enum members cannot hold `-`, so the client spells the wire values with `_` (the columns keep the wire spelling via @map).
 const toDbKind = (k: ComputerKind) => (k === 'self-hosted' ? 'self_hosted' : k)
@@ -196,7 +197,7 @@ export class PgComputerRepo implements ComputerRepo {
         })
         // The role is rechecked at the exchange: a registrant demoted to viewer since minting may no longer register.
         const role = await tx.membership.findUnique({
-          where: { orgId_userId: { orgId: registration.orgId, userId: owner } },
+          where: { orgId_userId: { orgId: registration.orgId, userId: owner }, ...ACTIVE_MEMBERSHIP },
           select: { role: true }
         })
         if (!role || role.role === 'viewer') throw new OrgMembershipMissing()
@@ -617,7 +618,7 @@ export class PgComputerRepo implements ComputerRepo {
 
   async orgOwnerUserId(orgId: OrgId): Promise<string | null> {
     const owner = await this.db.membership.findFirst({
-      where: { orgId, role: 'owner' },
+      where: { orgId, role: 'owner', ...ACTIVE_MEMBERSHIP },
       orderBy: { createdAt: 'asc' },
       select: { userId: true }
     })

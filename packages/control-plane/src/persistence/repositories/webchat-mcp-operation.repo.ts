@@ -38,6 +38,7 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
           JOIN "membership" AS member
             ON member."orgId" = authority."orgId"
            AND member."userId" = authority."userId"
+           AND member."suspendedAt" IS NULL
           JOIN "agent" AS delegated_agent
             ON delegated_agent."id" = authority."agentId"
            AND delegated_agent."orgId" = authority."orgId"
@@ -186,6 +187,7 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
           JOIN "membership" AS member
             ON member."orgId" = authority."orgId"
            AND member."userId" = authority."userId"
+           AND member."suspendedAt" IS NULL
           JOIN "agent" AS delegated_agent
             ON delegated_agent."id" = authority."agentId"
            AND delegated_agent."orgId" = authority."orgId"

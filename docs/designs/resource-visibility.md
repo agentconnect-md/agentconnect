@@ -541,6 +541,39 @@ Chat actions on synced platforms need no step here: approvals and in-chat
 settings are checked against current editors on every request, and a daemon
 reuses an allowed verdict for at most two minutes.
 
+### 8.4 A suspended membership is not a removal
+
+A membership can be suspended (`membership.suspendedAt`). The row stays, and so does
+everything that hangs off it: the member's place in every Selected audience, what
+they created, their role. Nothing is pruned or repaired, so lifting the suspension
+puts the person back exactly where they were.
+
+While it is set, every check that asks "is this person a member" reads the row as
+absent. There is one definition, `ACTIVE_MEMBERSHIP` in
+`persistence/active-membership.ts`, and every such read uses it: the organization
+guard and `roleOf`, the organization list and its member count, the member list,
+the actor of a resource, decision, daemon-approval or computer-registration write,
+the owner an organization must keep, the repair member of §8.2, chat-platform
+recovery, a code-host connection, a delegated webchat grant, and waitlist admission.
+A new read of `membership` that decides access uses it too.
+
+Two kinds of read keep seeing the row, because they ask whether it exists rather
+than whether the person may act: the audience intersection of a resource write
+(§8.1), so a suspended member is not dropped from an audience by someone else's
+edit, and the checks that stop a second membership being created for the same
+person (an invite link, joining by domain).
+
+An owner can remove a suspended member; removal then works as §8.1 describes.
+A suspended owner is not the owner §8.2 falls back to and does not count as the
+last owner: an organization keeps at least one owner who is not suspended.
+
+The row also records who suspended it (`suspendedBy`) and who manages the
+membership and its role (`managedBy`): an owner in the console, or the
+organization's directory. Nothing writes these columns yet. They ship ahead of the
+first writer on purpose: a version that does not read `suspendedAt` would treat a
+suspended member as active, so every instance must understand the column before
+anything sets it.
+
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
 `AgentSpec`, `CronUpsert`, `RouteAssign`, and the `RegisterOk` reconciliation
