@@ -46,6 +46,72 @@ describe('PgUserRepo Google account id (google-chat-integration.md §10.6)', () 
   })
 })
 
+describe('PgUserRepo verified address', () => {
+  const AT = new Date('2026-01-01T00:00:00Z')
+  const member = async (email: string, role: 'owner' | 'collaborator' | 'viewer' = 'collaborator') => {
+    const { userId } = await repo().provisionOidcUser({
+      oidcSubject: `sub-${randomUUID()}`,
+      email,
+      emailVerified: true
+    })
+    await repo().addMember(DEFAULT_ORG_ID, userId, role)
+    return userId
+  }
+  const verifiedAt = async (userId: string) =>
+    (await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { emailVerifiedAt: true } })).emailVerifiedAt
+
+  it('matches a member only once a sign-in method vouches for the stored address', async () => {
+    const userId = await member('verified@example.test')
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, 'verified@example.test')).toBeNull()
+
+    // An address the sign-in methods report for another mailbox proves nothing about the stored one.
+    await repo().recordVerifiedEmails(userId, ['elsewhere@example.test'], AT)
+    expect(await verifiedAt(userId)).toBeNull()
+
+    await repo().recordVerifiedEmails(userId, ['elsewhere@example.test', ' Verified@Example.Test '], AT)
+    expect(await verifiedAt(userId)).toEqual(AT)
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, ' Verified@Example.TEST')).toMatchObject({
+      userId,
+      email: 'verified@example.test',
+      role: 'collaborator'
+    })
+    expect(await repo().memberByVerifiedEmail(`org-${randomUUID()}`, 'verified@example.test')).toBeNull()
+  })
+
+  it('keeps the first mark while the address stays vouched for, and drops it when it no longer is', async () => {
+    const userId = await member('kept@example.test')
+    await repo().recordVerifiedEmails(userId, ['kept@example.test'], AT)
+    await repo().recordVerifiedEmails(userId, ['kept@example.test'], new Date('2026-02-01T00:00:00Z'))
+    expect(await verifiedAt(userId)).toEqual(AT)
+
+    await repo().recordVerifiedEmails(userId, [], new Date('2026-03-01T00:00:00Z'))
+    expect(await verifiedAt(userId)).toBeNull()
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, 'kept@example.test')).toBeNull()
+  })
+
+  it('never matches an invited row, a suspended member, or a service account', async () => {
+    const owner = await member('owner-verified@example.test', 'owner')
+    const invited = await repo().addMemberByEmail(DEFAULT_ORG_ID, 'invited@example.test', 'viewer', owner)
+    expect(await verifiedAt(invited.userId)).toBeNull()
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, 'invited@example.test')).toBeNull()
+
+    const suspended = await member('suspended@example.test')
+    await repo().recordVerifiedEmails(suspended, ['suspended@example.test'], AT)
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: suspended } },
+      data: { suspendedAt: AT }
+    })
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, 'suspended@example.test')).toBeNull()
+
+    const account = await repo().createServiceAccount(DEFAULT_ORG_ID, { name: 'mailer', role: 'collaborator' })
+    await repo().recordVerifiedEmails(account.userId, [account.email], AT)
+    expect(await verifiedAt(account.userId)).toBeNull()
+    // Even a mark written some other way does not make a service account a mail sender.
+    await prisma.user.update({ where: { id: account.userId }, data: { emailVerifiedAt: AT } })
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, account.email)).toBeNull()
+  })
+})
+
 describe('PgUserRepo.provisionOidcUser — signup creates no organization', () => {
   it('creates the user (real email + display name) and no membership at all', async () => {
     const { userId } = await repo().provisionOidcUser({

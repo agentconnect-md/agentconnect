@@ -165,8 +165,21 @@ Step 3 is a new identity rule and a narrow one. Elsewhere a matching email
 address grants nothing, because a chat account and a console account are two
 identities that merely share a string. Here the address is the platform
 identity itself, proven for each message by step 2, and it is matched only
-against an email the sign-in method verified. The Control Plane must record
-that verification before this is built; it is a precondition, not a probe.
+against an email the sign-in method verified.
+
+The Control Plane records that verification on the account, and step 3 reads
+nothing else. `emailVerifiedAt` is set while a social sign-in method linked to
+the account reports the stored address as the account's own, which such a
+method does only for an address its provider verified
+([organization-sso.md](organization-sso.md) §4.3). It is read from the identity
+service each time a Control Plane process first resolves the account's sign-in,
+and cleared when no linked method reports the address any longer. An address
+that only a single sign-on connection supplied never sets it, so that account
+is matched once it links a social method that reports the same address. Where
+the Control Plane cannot read the identity service's accounts, nothing is
+recorded and nobody is matched. The member answer is one read: the active
+member of the agent's organization, a person and not a service account, whose
+stored address equals the lower-cased `From` address and carries the mark.
 
 Mail is a platform that names its people, so
 "[What people can do in chat](../product-conventions.md#what-people-can-do-in-chat)"

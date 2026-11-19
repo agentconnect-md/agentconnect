@@ -779,6 +779,19 @@ export class PgUserRepo implements UserRepo {
     return row ? toMemberRecord(row) : null
   }
 
+  async memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null> {
+    // The address is unique per deployment and stored lower-cased, so at most one row answers.
+    const row = await this.db.membership.findFirst({
+      where: {
+        orgId,
+        user: { kind: 'human', email: email.trim().toLowerCase(), emailVerifiedAt: { not: null } },
+        ...ACTIVE_MEMBERSHIP
+      },
+      include: { user: true }
+    })
+    return row ? toMemberRecord(row) : null
+  }
+
   async setMemberRole(
     orgId: string,
     userId: string,
@@ -1020,6 +1033,21 @@ export class PgUserRepo implements UserRepo {
         await tx.user.updateMany({ where: { googleAccountId, NOT: { id: userId } }, data: { googleAccountId: null } })
       }
       await tx.user.updateMany({ where: { id: userId }, data: { googleAccountId } })
+    })
+  }
+
+  async recordVerifiedEmails(userId: string, emails: readonly string[], at: Date): Promise<void> {
+    const vouched = [...new Set(emails.map((email) => email.trim().toLowerCase()))]
+    // Each write is guarded by the stored address, so a row that is already right is left alone.
+    if (vouched.length > 0) {
+      await this.db.user.updateMany({
+        where: { id: userId, kind: 'human', email: { in: vouched }, emailVerifiedAt: null },
+        data: { emailVerifiedAt: at }
+      })
+    }
+    await this.db.user.updateMany({
+      where: { id: userId, email: { notIn: vouched }, emailVerifiedAt: { not: null } },
+      data: { emailVerifiedAt: null }
     })
   }
 }

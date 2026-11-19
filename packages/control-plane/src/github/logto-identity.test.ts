@@ -595,6 +595,42 @@ describe('LogtoIdentityService.googleAccountIdFor (google-chat-integration.md §
   })
 })
 
+describe('LogtoIdentityService.socialEmailsFor', () => {
+  it('returns the lower-cased addresses of the linked social identities, once each', async () => {
+    const users: Record<string, unknown> = {
+      'sub-1': {
+        primaryEmail: 'Someone@Example.Test',
+        identities: {
+          google: { userId: '1', details: { email: 'Someone@Example.Test' } },
+          github: { userId: '2', details: { email: 'someone@example.test' } },
+          gitlab: { userId: '3', details: { email: 'other@example.test' } }
+        }
+      }
+    }
+    const svc = svcOf(fakeLogto(users).fetchImpl, new FakeClock(0))
+
+    await expect(svc.socialEmailsFor('sub-1')).resolves.toEqual(['someone@example.test', 'other@example.test'])
+  })
+
+  it('never takes the account address, an SSO identity, or a raw profile field as a social address', async () => {
+    const users: Record<string, unknown> = {
+      'sub-sso': {
+        primaryEmail: 'member@example.test',
+        ssoIdentities: [{ ssoConnectorId: 'connector-1', detail: { email: 'member@example.test' } }]
+      },
+      'sub-raw': {
+        primaryEmail: 'member@example.test',
+        identities: { azuread: { userId: '4', details: { rawData: { mail: 'member@example.test' } } } }
+      }
+    }
+    const svc = svcOf(fakeLogto(users).fetchImpl, new FakeClock(0))
+
+    await expect(svc.socialEmailsFor('sub-sso')).resolves.toEqual([])
+    await expect(svc.socialEmailsFor('sub-raw')).resolves.toEqual([])
+    await expect(svc.socialEmailsFor('sub-missing')).resolves.toEqual([])
+  })
+})
+
 describe('subjectsLinkedTo — a chat identity looked up from the chat side', () => {
   const slack = (memberId: string, tenant = 'T0EXAMPLE1') => ({ platform: 'slack', tenant, memberId })
 

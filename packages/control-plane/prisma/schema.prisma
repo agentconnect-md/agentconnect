@@ -181,6 +181,8 @@ model ProviderKeyHeader {
 model User {
   id                      String    @id @default(cuid())
   email                   String    @unique
+  // Set while a linked social sign-in method reports `email` as the account's own; an address only an SSO connection supplied leaves it null.
+  emailVerifiedAt         DateTime? @db.Timestamptz(6)
   displayName             String?
   picture                 String? // OIDC `picture` claim (avatar URL); display-only, refreshed on sign-in
   // Set when the user uploads a profile photo. The image itself lives in the icon

@@ -7531,6 +7531,8 @@ export interface UserRepo {
   listMembers(orgId: string): Promise<OrgMemberRecord[]>
   /** The active member of the organization who signs in as this subject, or null. */
   memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null>
+  /** The active human member whose stored address a sign-in method verified (`recordVerifiedEmails`), or null; any other holder of the address never matches. */
+  memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null>
 
   /**
    * Change one member's role under the organization owner-transition lock.
@@ -7613,6 +7615,8 @@ export interface UserRepo {
   getGoogleAccountId(userId: string): Promise<string | null>
   /** Record what the identity provider reported (null clears); the id moves off any other row that held it. */
   setGoogleAccountId(userId: string, googleAccountId: string | null): Promise<void>
+  /** Record whether the stored address is among those the identity provider's linked social sign-in methods report; one that is not loses its mark. */
+  recordVerifiedEmails(userId: string, emails: readonly string[], at: Date): Promise<void>
 }
 
 export interface OrgRepo {
