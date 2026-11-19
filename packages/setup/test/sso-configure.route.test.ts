@@ -93,6 +93,7 @@ function server() {
           ssoConnectorsDeleted: [],
           signInExperienceChanged: true,
           tokenClaimsChanged: false,
+          accountEmailChanged: false,
           adminRoleCreated: false
         }
       },
