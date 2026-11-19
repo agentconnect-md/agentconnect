@@ -13,6 +13,7 @@ import { PgHookRepo } from './hook.repo.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
 import { provisionPresetAgents, type PresetPoolPlacement } from '../preset-agents.js'
 import { OrgCreationLimitReached } from '../errors.js'
+import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
 
 /** The session-start windows the org gauges report beside the lifetime total. */
 const SESSION_WINDOW_30D_MS = 30 * 24 * 60 * 60 * 1000
@@ -44,12 +45,16 @@ export class PgOrgRepo implements OrgRepo {
 
   async listForUser(userId: string): Promise<OrgRecord[]> {
     const rows = await this.db.membership.findMany({
-      where: { userId },
+      where: { userId, ...ACTIVE_MEMBERSHIP },
       // Provisioned-but-never-connected daemons (an abandoned wizard mint) don't count —
       // daemonCount feeds the console's "this org is set up" onboarding signal.
       include: {
         org: {
-          include: { _count: { select: { members: true, daemons: { where: { status: { not: 'provisioned' } } } } } }
+          include: {
+            _count: {
+              select: { members: { where: ACTIVE_MEMBERSHIP }, daemons: { where: { status: { not: 'provisioned' } } } }
+            }
+          }
         }
       },
       orderBy: [
@@ -188,7 +193,7 @@ export class PgOrgRepo implements OrgRepo {
   }
 
   async roleOf(orgId: string, userId: string): Promise<OrgMemberRole | null> {
-    const m = await this.db.membership.findUnique({ where: { orgId_userId: { orgId, userId } } })
+    const m = await this.db.membership.findUnique({ where: { orgId_userId: { orgId, userId }, ...ACTIVE_MEMBERSHIP } })
     return m ? (m.role as OrgMemberRole) : null
   }
 

@@ -34,7 +34,7 @@ export class PgMsTeamsBindingMutations implements MsTeamsBindingMutations {
       const appId = replacement.externalAppId
       if (typeof tenantId !== 'string' || !tenantId || !appId || !held.length) throw msTeamsRecoveryChanged()
       const members = await tx.$queryRaw<{ role: OrgMemberRole }[]>`
-        SELECT role FROM membership WHERE "orgId" = ${replacement.orgId} AND "userId" = ${input.userId} FOR SHARE`
+        SELECT role FROM membership WHERE "orgId" = ${replacement.orgId} AND "userId" = ${input.userId} AND "suspendedAt" IS NULL FOR SHARE`
       if (!members[0] || members[0].role === 'viewer') throw msTeamsRecoveryChanged()
       const agents = await tx.$queryRaw<Shareable[]>`
         SELECT visibility, "sharedWith" FROM agent WHERE id = ${input.agentId}::uuid AND "orgId" = ${replacement.orgId} FOR SHARE`

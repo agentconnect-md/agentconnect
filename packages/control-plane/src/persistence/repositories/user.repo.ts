@@ -37,6 +37,7 @@ import {
 import { OrgMembershipMissing, OrgOwnerRequired, ServiceAccountNotAddable } from '../errors.js'
 import { bumpAgentsLosingComputersTx } from './computer.repo.js'
 import { IntegrationId } from '../../domain/ids.js'
+import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
 
 const RESOURCE_AUDIENCE_TABLES = [
   'agent',
@@ -52,6 +53,7 @@ const ORG_ROLE_RANK: Record<OrgMemberRole, number> = { viewer: 0, collaborator: 
 interface LockedOrgMembership {
   userId: string
   role: OrgMemberRole
+  suspendedAt: Date | null
 }
 
 /**
@@ -79,7 +81,7 @@ async function lockOrgMemberships(
 ): Promise<LockedOrgMembership[]> {
   const ids = [...new Set(userIds)].sort()
   return tx.$queryRaw<LockedOrgMembership[]>(Prisma.sql`
-    SELECT "userId", "role"::text AS "role"
+    SELECT "userId", "role"::text AS "role", "suspendedAt"
     FROM "membership"
     WHERE "orgId" = ${orgId}
       AND "userId" IN (${Prisma.join(ids)})
@@ -282,21 +284,23 @@ async function removeMembershipTx(
   await lockOrgOwnerTransition(tx, orgId)
   const membershipSnapshot = await tx.membership.findMany({
     where: { orgId },
-    select: { userId: true, role: true },
+    select: { userId: true, role: true, suspendedAt: true },
     orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
   })
-  const actor = membershipSnapshot.find((membership) => membership.userId === actingUserId)
+  const activeSnapshot = membershipSnapshot.filter((membership) => membership.suspendedAt === null)
+  const actor = activeSnapshot.find((membership) => membership.userId === actingUserId)
   const departing = membershipSnapshot.find((membership) => membership.userId === userId)
   const leaving = userId === actingUserId
-  if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
+  if (!departing || !actor || (!leaving && actor.role !== 'owner')) throw new OrgMembershipMissing()
 
-  const replacementUserId = chooseAudienceReplacement(membershipSnapshot, userId, actingUserId)
+  const replacementUserId = chooseAudienceReplacement(activeSnapshot, userId, actingUserId)
   if (!replacementUserId) throw new OrgOwnerRequired()
 
   // Fence audience writes on both ends and recheck the snapshot; the transition lock holds out competing removals.
   const locked = await lockOrgMemberships(tx, orgId, [userId, replacementUserId])
   const byUserId = new Map(locked.map((membership) => [membership.userId, membership]))
-  if (!byUserId.has(userId) || byUserId.get(replacementUserId)?.role !== 'owner') {
+  const replacement = byUserId.get(replacementUserId)
+  if (!byUserId.has(userId) || replacement?.role !== 'owner' || replacement.suspendedAt !== null) {
     throw new OrgMembershipMissing()
   }
 
@@ -617,7 +621,10 @@ export class PgUserRepo implements UserRepo {
             data: missingMemberships.map((membership) => ({
               orgId: membership.orgId,
               userId,
-              role: membership.role
+              role: membership.role,
+              suspendedAt: membership.suspendedAt,
+              suspendedBy: membership.suspendedBy,
+              managedBy: membership.managedBy
             })),
             skipDuplicates: true
           })
@@ -693,7 +700,7 @@ export class PgUserRepo implements UserRepo {
 
   async listMembers(orgId: string): Promise<OrgMemberRecord[]> {
     const rows = await this.db.membership.findMany({
-      where: { orgId, user: { kind: 'human' } },
+      where: { orgId, user: { kind: 'human' }, ...ACTIVE_MEMBERSHIP },
       include: { user: true },
       orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
     })
@@ -712,11 +719,12 @@ export class PgUserRepo implements UserRepo {
       const memberships = await lockOrgMemberships(tx, orgId, [actingUserId, userId])
       const actor = memberships.find((membership) => membership.userId === actingUserId)
       const current = memberships.find((membership) => membership.userId === userId)
-      if (actor?.role !== 'owner' || !current) throw new OrgMembershipMissing()
+      if (actor?.role !== 'owner' || actor.suspendedAt !== null || !current) throw new OrgMembershipMissing()
       if (
         current.role === 'owner' &&
+        current.suspendedAt === null &&
         role !== 'owner' &&
-        (await tx.membership.count({ where: { orgId, role: 'owner' } })) === 1
+        (await tx.membership.count({ where: { orgId, role: 'owner', ...ACTIVE_MEMBERSHIP } })) === 1
       ) {
         throw new OrgOwnerRequired()
       }
@@ -773,7 +781,9 @@ export class PgUserRepo implements UserRepo {
     if (!rows.some((row) => row.userId === userId)) throw new OrgMembershipMissing()
 
     const replacementId = chooseAudienceReplacement(
-      rows.map((row) => ({ userId: row.userId, role: row.role as OrgMemberRole })),
+      rows
+        .filter((row) => row.suspendedAt === null)
+        .map((row) => ({ userId: row.userId, role: row.role as OrgMemberRole })),
       userId,
       actingUserId
     )

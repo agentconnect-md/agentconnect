@@ -2,6 +2,7 @@ import { Prisma } from '../../generated/prisma/client.js'
 import type { DaemonAdmissionRepo, DaemonApproval } from '../ports.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
 import { lockDaemonMembership } from './member-set.repo.js'
 
 // Pool trust requires the server-recorded TokenReview identity, never advertised capabilities.
@@ -66,7 +67,7 @@ export class PgDaemonAdmissionRepo implements DaemonAdmissionRepo {
       if (!input.actorUserId) throw refusal('only an organization owner can do this', 403)
       await lockResourceWriteMemberships(tx, { orgId: input.orgId, actorUserId: input.actorUserId, visibility: 'org' })
       const actor = await tx.membership.findUnique({
-        where: { orgId_userId: { orgId: input.orgId, userId: input.actorUserId } },
+        where: { orgId_userId: { orgId: input.orgId, userId: input.actorUserId }, ...ACTIVE_MEMBERSHIP },
         select: { role: true }
       })
       if (actor?.role !== 'owner') throw refusal('only an organization owner can do this', 403)

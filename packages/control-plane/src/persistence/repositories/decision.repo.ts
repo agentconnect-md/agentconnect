@@ -21,6 +21,7 @@ import type { CodeHostRoutingScope, DecisionRepo, ViewCtx } from '../ports.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
 
 const toolSelect = { id: true, name: true, providerId: true, model: true, question: true } as const
 
@@ -86,7 +87,9 @@ export class PgDecisionRepo implements DecisionRepo {
   async create(orgId: OrgId, draft: DecisionDraft, actor: ViewCtx): Promise<DecisionDefinition> {
     return withAmbientTx(this.db, async (tx) => {
       const audience = await lockResourceWriteMemberships(tx, { orgId, ...draft, actorUserId: actor.userId })
-      const membership = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actor.userId } } })
+      const membership = await tx.membership.findUnique({
+        where: { orgId_userId: { orgId, userId: actor.userId }, ...ACTIVE_MEMBERSHIP }
+      })
       if (!membership || membership.role === 'viewer') throw new OrgMembershipMissing()
       return definition(
         await tx.decision.create({
@@ -125,7 +128,9 @@ export class PgDecisionRepo implements DecisionRepo {
       await tx.$queryRaw`SELECT "id" FROM "decision" WHERE "orgId" = ${orgId} AND "id" = ${id}::uuid FOR NO KEY UPDATE`
       const existing = await tx.decision.findUnique({ where: { id, orgId } })
       if (!existing) return null
-      const membership = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actor.userId } } })
+      const membership = await tx.membership.findUnique({
+        where: { orgId_userId: { orgId, userId: actor.userId }, ...ACTIVE_MEMBERSHIP }
+      })
       if (!membership || !canEdit(existing, { userId: actor.userId, role: membership.role }))
         throw new OrgMembershipMissing()
       const next = {
@@ -281,7 +286,9 @@ export class PgDecisionRepo implements DecisionRepo {
   async delete(orgId: OrgId, id: string, actor: ViewCtx): Promise<void> {
     await withAmbientTx(this.db, async (tx) => {
       await lockResourceWriteMemberships(tx, { orgId, visibility: 'org', actorUserId: actor.userId })
-      const membership = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actor.userId } } })
+      const membership = await tx.membership.findUnique({
+        where: { orgId_userId: { orgId, userId: actor.userId }, ...ACTIVE_MEMBERSHIP }
+      })
       if (!membership || membership.role === 'viewer') throw new OrgMembershipMissing()
       await tx.$queryRaw`SELECT "id" FROM "decision" WHERE "orgId" = ${orgId} AND "id" = ${id}::uuid FOR UPDATE`
       const visible = await tx.decision.findFirst({

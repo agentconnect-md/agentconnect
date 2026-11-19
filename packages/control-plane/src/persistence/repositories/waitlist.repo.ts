@@ -11,6 +11,7 @@
  */
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
+import { ACTIVE_MEMBERSHIP } from '../active-membership.js'
 import {
   isSyntheticEmail,
   type WaitlistAccessState,
@@ -34,7 +35,7 @@ export class PgWaitlistRepo implements WaitlistRepo {
       select: { email: true, activatedAt: true }
     })
     if (!user) return { activated: false, orgCount: 0, email: null, entryStatus: null }
-    const orgCount = await this.db.membership.count({ where: { userId } })
+    const orgCount = await this.db.membership.count({ where: { userId, ...ACTIVE_MEMBERSHIP } })
     // Only a real verified email is a valid waitlist key — a synthetic placeholder
     // reads as "no email" (§5), so we neither look it up nor echo it.
     const email = isSyntheticEmail(user.email) ? null : user.email

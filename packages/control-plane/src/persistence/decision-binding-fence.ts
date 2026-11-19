@@ -3,6 +3,7 @@ import { Prisma } from '../generated/prisma/client.js'
 import type { OrgId } from '../domain/ids.js'
 import type { ResourceVisibility } from './ports.js'
 import { lockResourceWriteMemberships } from './resource-membership-lock.js'
+import { ACTIVE_MEMBERSHIP } from './active-membership.js'
 import {
   DecisionQuestion,
   decisionChainIds,
@@ -48,7 +49,9 @@ export async function enterDecisionBindingFence(
   if (!submitted?.length) return () => {}
   if (!actorUserId) throw new DecisionBindingDenied()
   await lockResourceWriteMemberships(tx, { orgId, visibility: 'org', actorUserId })
-  const member = await tx.membership.findUnique({ where: { orgId_userId: { orgId, userId: actorUserId } } })
+  const member = await tx.membership.findUnique({
+    where: { orgId_userId: { orgId, userId: actorUserId }, ...ACTIVE_MEMBERSHIP }
+  })
   if (!member || member.role === 'viewer') throw new DecisionBindingDenied()
   const rows = await tx.$queryRaw<Array<{ id: string; visibility: ResourceVisibility; sharedWith: string[] }>>(
     Prisma.sql`SELECT "id", "visibility", "sharedWith" FROM "decision"
