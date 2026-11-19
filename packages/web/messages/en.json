@@ -5695,7 +5695,8 @@
         "domain": "Domain",
         "submit": "Add domain",
         "invalid": "Enter a domain, like acme.example",
-        "taken": "This domain is verified by another organization"
+        "taken": "This domain is verified by another organization",
+        "limit": "An organization can have at most 20 domains. Remove one before adding another."
       },
       "connectionDialog": {
         "createTitle": "Set up connection",
@@ -5719,7 +5720,8 @@
         "entityId": "Entity ID",
         "save": "Save",
         "saving": "Saving…",
-        "remove": "Remove connection"
+        "remove": "Remove connection",
+        "rejected": "The identity service rejected these settings: {reason}"
       },
       "removeDialog": {
         "title": "Remove the connection?",
@@ -5737,7 +5739,8 @@
       "activateDialog": {
         "title": "Activate single sign-on?",
         "body": "Addresses on these domains will only be able to sign in with SSO.",
-        "activating": "Activating…"
+        "activating": "Activating…",
+        "domainCheckFailed": "The DNS record could not be confirmed for {domains}. Check the record, then try again."
       },
       "deactivateDialog": {
         "title": "Deactivate single sign-on?",

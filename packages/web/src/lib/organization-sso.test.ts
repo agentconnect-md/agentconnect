@@ -1,7 +1,15 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, expect, it } from 'vitest'
-import { commitPendingSignIn, notePendingSignIn, readLastSignIn, stashSsoTest, takeSsoTest } from './organization-sso'
+import {
+  clearSsoTest,
+  commitPendingSignIn,
+  notePendingSignIn,
+  readLastSignIn,
+  refusalDetail,
+  stashSsoTest,
+  takeSsoTest
+} from './organization-sso'
 
 beforeEach(() => {
   localStorage.clear()
@@ -55,6 +63,19 @@ it('hands a test sign-in to its landing page once, and only inside the test wind
 
   stashSsoTest(test)
   expect(takeSsoTest(Date.parse('2026-01-01T00:10:01Z'))).toBeNull()
+})
+
+it('drops a pending test sign-in so a later landing is an ordinary one', () => {
+  stashSsoTest({ nonce: 'nonce-1', returnTo: '/settings', expiresAt: '2026-01-01T00:10:00Z' })
+  clearSsoTest()
+  expect(takeSsoTest(Date.parse('2026-01-01T00:00:00Z'))).toBeNull()
+})
+
+it('keeps what follows a refusal’s lead-in, or the whole message without one', () => {
+  expect(refusalDetail('the identity service rejected the settings: bad issuer', 'rejected the settings:')).toBe(
+    'bad issuer'
+  )
+  expect(refusalDetail('something else', 'rejected the settings:')).toBe('something else')
 })
 
 it('returns to Settings when the stashed destination is not a same-origin path', () => {

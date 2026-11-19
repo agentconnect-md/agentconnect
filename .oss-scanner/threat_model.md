@@ -165,7 +165,16 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   bound (`org-sso/domains.ts`), and the Control Plane must be the only writer of a connector's domain
   list, writing verified domains and only while the connection is active or in a test window
   (`org-sso/connections.ts`). A verified domain must not leave an organization while its connection
-  exists. The test nonce proves who started a test, never who signed in.
+  exists. The test nonce proves who started a test, never who signed in. Every request to an enforced
+  organization must come from a session whose latest sign-in went through its connection
+  (`org-sso/session.ts`), read only from the access token's `sso_connector_id` claim
+  (`http/plugins/auth.ts`) and applied to every member, owners included (`http/org-scope.ts`). An
+  account must join an organization by domain only when its own address is on one of that
+  organization's verified domains and the member source is `domain`, and a removal must stand
+  (`org-sso/membership.ts`, `org-sso/member-source.ts`). The claim must be set only by the
+  Setup-owned access-token claims script, for a connector the account has linked
+  (`org-sso/token-claims.ts`), and an account must not edit its own email
+  (`packages/setup/src/server/logto-management.ts`).
 - **Thread reads** (`webchat-threads.md` §7.1): `GET /sessions/:id/messages?view=roots` and
   `GET /sessions/:id/threads/:rootId/messages` show a coordinator conversation's threads, including
   observations, messages people wrote in the channel without addressing an agent, to whoever may view

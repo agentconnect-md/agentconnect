@@ -30,7 +30,7 @@ import {
 } from '@/lib/api'
 import { currentUser, loginWithSso } from '@/lib/auth'
 import { writeFlowState } from '@/lib/flow-state'
-import { canStashSsoTest, stashSsoTest } from '@/lib/organization-sso'
+import { canStashSsoTest, clearSsoTest, refusalDetail, stashSsoTest } from '@/lib/organization-sso'
 import { consoleKeys } from '@/lib/swr-keys'
 
 const ROW = 'border-b border-(--border-subtle) px-4 py-3 last:border-b-0'
@@ -430,6 +430,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
     setDialogError(null)
     try {
       writeFlowState('returnTo', returnTo)
+      clearSsoTest()
       await loginWithSso(connectorId, currentUser()?.email ?? undefined)
     } catch (e) {
       setDialogError(message(e))
@@ -452,6 +453,7 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
       // The page leaves for the identity provider and lands on the sign-in callback.
       await loginWithSso(test.connectorId)
     } catch (e) {
+      clearSsoTest()
       setDialogError(message(e))
       setPending(false)
     }
@@ -592,7 +594,13 @@ export function OrganizationSsoCard({ orgId, isOwner }: { orgId: string; isOwner
           error={dialogError}
           onConfirm={() =>
             void confirm(async () => {
-              await activateOrgSsoConnection(orgId)
+              try {
+                await activateOrgSsoConnection(orgId)
+              } catch (e) {
+                if (!(e instanceof ApiError && e.code === 'SSO_DOMAIN_CHECK_FAILED')) throw e
+                const domains = refusalDetail(e.message, 'could not be confirmed for ')
+                throw new Error(t('activateDialog.domainCheckFailed', { domains }))
+              }
             })
           }
           onClose={close}

@@ -9,7 +9,7 @@ import { LogoMark, Wordmark } from '@/components/marks'
 import SocialLoginButtons, { LastUsedTag } from '@/components/SocialLoginButtons'
 import { Icon } from '@/components/ui'
 import { isAuthConfigured, login, loginWithSso } from '@/lib/auth'
-import { notePendingSignIn, readLastSignIn, type LastSignIn } from '@/lib/organization-sso'
+import { clearSsoTest, notePendingSignIn, readLastSignIn, type LastSignIn } from '@/lib/organization-sso'
 import type { SocialLoginProvider, SocialLoginTarget } from '@/lib/social-login-providers'
 
 function BrandPanel() {
@@ -98,6 +98,7 @@ export default function Auth({
   const signInWithSso = (connectorId: string) => {
     if (!authOn) return router.push('/')
     notePendingSignIn({ method: 'sso', connectorId })
+    clearSsoTest()
     void loginWithSso(connectorId)
   }
   const withSsoPage = organizationSso && authOn

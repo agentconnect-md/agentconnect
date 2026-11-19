@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   enforceOrgSsoConnection: vi.fn(),
   stopEnforcingOrgSsoConnection: vi.fn(),
   setOrgMemberSource: vi.fn(),
+  addOrgSsoDomain: vi.fn(),
   loginWithSso: vi.fn()
 }))
 
@@ -33,7 +34,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   removeOrgSsoConnection: mocks.removeOrgSsoConnection,
   enforceOrgSsoConnection: mocks.enforceOrgSsoConnection,
   stopEnforcingOrgSsoConnection: mocks.stopEnforcingOrgSsoConnection,
-  setOrgMemberSource: mocks.setOrgMemberSource
+  setOrgMemberSource: mocks.setOrgMemberSource,
+  addOrgSsoDomain: mocks.addOrgSsoDomain
 }))
 vi.mock('@/lib/auth', () => ({
   currentUser: () => ({ name: 'Dana', email: 'dana@acme.example', initials: 'D' }),
@@ -338,6 +340,64 @@ describe('organization single sign-on card', () => {
       returnTo: '/acme/settings?tab=sso#single-sign-on',
       expiresAt
     })
+  })
+
+  it('drops the stash when a test sign-in cannot leave, and before an ordinary SSO sign-in', async () => {
+    await render({ domains: [domain('acme.example')], connection: connection() })
+    await click('Test sign-in', host)
+    const expiresAt = new Date(Date.now() + 600_000).toISOString()
+    mocks.startOrgSsoTest.mockResolvedValue({ nonce: 'nonce-1', connectorId: 'connector-1', expiresAt })
+    mocks.loginWithSso.mockRejectedValueOnce(new Error('unreachable'))
+    await click('Test sign-in', dialog())
+    expect(dialog().textContent).toContain('unreachable')
+    expect(sessionStorage.getItem('ac.ssoTest')).toBeNull()
+
+    // A test abandoned at the identity provider leaves its stash; the next ordinary sign-in drops it.
+    sessionStorage.setItem('ac.ssoTest', JSON.stringify({ nonce: 'stale', returnTo: '/settings', expiresAt }))
+    const active = connection({ status: 'active', tested: true, activatedAt: '2026-01-02T00:00:00Z' })
+    await render({ domains: [domain('acme.example')], connection: active, enforce: 'sign_in_required' })
+    await click('Enforce', host)
+    await click('Sign in with SSO', dialog())
+    expect(mocks.loginWithSso).toHaveBeenLastCalledWith('connector-1', 'dana@acme.example')
+    expect(sessionStorage.getItem('ac.ssoTest')).toBeNull()
+  })
+
+  it('names the domains whose DNS record could not be confirmed at activation', async () => {
+    const { ApiError } = await import('@/lib/api')
+    await render({ domains: [domain('acme.example')], connection: connection({ status: 'tested', tested: true }) })
+    await click('Activate', host)
+    mocks.activateOrgSsoConnection.mockRejectedValue(
+      new ApiError(
+        'the DNS record could not be confirmed for acme.example, beta.example',
+        409,
+        'SSO_DOMAIN_CHECK_FAILED'
+      )
+    )
+    await click('Activate', dialog())
+    expect(dialog().textContent).toContain(
+      'The DNS record could not be confirmed for acme.example, beta.example. Check the record, then try again.'
+    )
+  })
+
+  it('says when the organization already has the most domains it can add', async () => {
+    const { ApiError } = await import('@/lib/api')
+    await render({ domains: [domain('acme.example')], connection: null })
+    await click('Add domain', host)
+    await type(dialog().querySelector('input')!, 'beta.example')
+    mocks.addOrgSsoDomain.mockRejectedValue(new ApiError('at most 20 domains', 409, 'SSO_DOMAIN_LIMIT'))
+    await click('Add domain', dialog())
+    expect(dialog().textContent).toContain('An organization can have at most 20 domains.')
+  })
+
+  it('leads the identity service’s refusal of the settings with its own words and keeps the reason', async () => {
+    const { ApiError } = await import('@/lib/api')
+    await render({ domains: [domain('acme.example')], connection: connection() })
+    await click('Edit', host)
+    mocks.saveOrgSsoConnection.mockRejectedValue(
+      new ApiError('the identity service rejected the settings: issuer unreachable', 400, 'SSO_CONNECTION_REJECTED')
+    )
+    await click('Save', dialog())
+    expect(dialog().textContent).toContain('The identity service rejected these settings: issuer unreachable')
   })
 
   it('keeps the activation dialog open with what the Control Plane refused', async () => {

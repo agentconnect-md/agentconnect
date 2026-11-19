@@ -37,8 +37,9 @@ identity provider. Four things are missing:
 
 ## 3. Model
 
-Two tables in the Control Plane. Identity provider settings and the client secret stay
-in Logto, which already owns them for the deployment connector; the Control Plane
+Three tables in the Control Plane, and a column on the organization. Identity provider
+settings and the client secret stay in Logto, which already owns them for the
+deployment connector; the Control Plane
 forwards a secret on save and does not keep it. The settings card reads the saved
 settings back from Logto when an owner opens it, with the secret reported only by
 whether one is stored.
@@ -47,11 +48,15 @@ whether one is stored.
 org_sso_connection
   id, orgId (unique: one connection per organization)
   logtoConnectorId (unique), protocol: oidc | saml
-  testNonceHash?, testExpiresAt?, testedAt?, activatedAt?, configChangedAt
+  testNonceHash? (unique), testExpiresAt?, testedAt?, activatedAt?, enforcedAt?
+  configChangedAt
 
 org_domain
   id, orgId, domain (lowercase; unique among verified rows)
   challenge, challengeExpiresAt, verifiedAt?, lastCheckedAt?, lastCheckOk?
+
+org_sso_join
+  orgId, userId (together the key), joinedAt
 
 org
   memberSource: invite | domain (default invite)
@@ -68,6 +73,10 @@ when one organization verifies the domain the pending rows of the others are dro
 A connection is **draft** until `testedAt` is later than `configChangedAt`, **tested**
 after that, and **active** once `activatedAt` is set. An active connection whose
 settings changed stays active and reads as untested until a test succeeds again.
+An active connection is **enforced** while `enforcedAt` is set (§4.5).
+
+A join record says an account became a member by its domain (§4.3). It outlives the
+membership, so an owner's removal of that member stands.
 
 A connection carries one list in the identity service, Logto's `domains`, and the
 Control Plane is its only writer. Logto routes by this list, allows only single
