@@ -22,6 +22,17 @@ it('remembers a sign-in method only once the sign-in completes', () => {
   notePendingSignIn({ method: 'social', target: 'google' })
   commitPendingSignIn()
   expect(readLastSignIn()).toEqual({ method: 'social', target: 'google' })
+
+  notePendingSignIn({ method: 'sso', connectorId: 'deployment-connector' })
+  commitPendingSignIn()
+  expect(readLastSignIn()).toEqual({ method: 'sso', connectorId: 'deployment-connector' })
+})
+
+it('reads values written before a connector sign-in was remembered', () => {
+  localStorage.setItem('ac.lastSignIn', '{"method":"social","target":"github"}')
+  expect(readLastSignIn()).toEqual({ method: 'social', target: 'github' })
+  localStorage.setItem('ac.lastSignIn', '{"method":"sso"}')
+  expect(readLastSignIn()).toBeNull()
 })
 
 it('ignores a remembered value it cannot read', () => {

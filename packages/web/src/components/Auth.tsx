@@ -95,9 +95,13 @@ export default function Auth({
     notePendingSignIn({ method: 'social', target: provider })
     void login(provider)
   }
-  const signInWithSso = (connectorId: string) => (authOn ? void loginWithSso(connectorId) : router.push('/'))
+  const signInWithSso = (connectorId: string) => {
+    if (!authOn) return router.push('/')
+    notePendingSignIn({ method: 'sso', connectorId })
+    void loginWithSso(connectorId)
+  }
   const withSsoPage = organizationSso && authOn
-  const last = useLastSignIn(withSsoPage)
+  const last = useLastSignIn(authOn)
 
   return (
     <AuthFrame title={t('title')} subtitle={t('subtitle')}>
@@ -120,11 +124,16 @@ export default function Auth({
       ) : (
         <div className="mt-[26px] flex flex-col gap-[10px]">
           {sso && (
-            <button type="button" className="sso" onClick={() => signInWithSso(sso.connectorId)}>
+            <button type="button" className="sso relative" onClick={() => signInWithSso(sso.connectorId)}>
+              {last?.method === 'sso' && last.connectorId === sso.connectorId && <LastUsedTag />}
               <KeyContent label={t('continueWith', { provider: sso.name })} />
             </button>
           )}
-          <SocialLoginButtons providers={providers} onContinue={social} />
+          <SocialLoginButtons
+            providers={providers}
+            onContinue={social}
+            {...(last?.method === 'social' ? { lastUsed: last.target } : {})}
+          />
         </div>
       )}
       <p className="mt-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
