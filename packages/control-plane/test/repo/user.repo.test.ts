@@ -46,6 +46,185 @@ describe('PgUserRepo Google account id (google-chat-integration.md §10.6)', () 
   })
 })
 
+describe('PgUserRepo verified address', () => {
+  const AT = new Date('2026-01-01T00:00:00Z')
+  const NONE = { verified: [], asserted: [] }
+  const social = (...verified: string[]) => ({ verified, asserted: [] })
+  const sso = (connectorId: string, email: string) => ({ verified: [], asserted: [{ connectorId, email }] })
+  const member = async (email: string, role: 'owner' | 'collaborator' | 'viewer' = 'collaborator') => {
+    const { userId } = await repo().provisionOidcUser({
+      oidcSubject: `sub-${randomUUID()}`,
+      email,
+      emailVerified: true
+    })
+    await repo().addMember(DEFAULT_ORG_ID, userId, role)
+    return userId
+  }
+  const evidenceOf = (userId: string) =>
+    prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { emailVerifiedAt: true, emailSsoConnectorIds: true }
+    })
+  const otherOrg = async () => (await prisma.org.create({ data: { slug: `org-${randomUUID()}` } })).id
+  const connect = (orgId: string, logtoConnectorId: string, activatedAt: Date | null = AT) =>
+    prisma.orgSsoConnection.create({
+      data: { orgId, logtoConnectorId, protocol: 'oidc', activatedAt, configChangedAt: AT }
+    })
+  const claim = (orgId: string, domain: string, verifiedAt: Date | null = AT) =>
+    prisma.orgDomain.create({
+      data: {
+        orgId,
+        domain,
+        challenge: `challenge-${randomUUID()}`,
+        challengeExpiresAt: new Date(Date.now() + 60_000),
+        verifiedAt
+      }
+    })
+  const matches = async (orgId: string, email: string) => (await repo().memberByVerifiedEmail(orgId, email)) !== null
+
+  it('matches a member only once a sign-in method that verifies addresses reports the stored one', async () => {
+    const userId = await member('verified@example.test')
+    expect(await matches(DEFAULT_ORG_ID, 'verified@example.test')).toBe(false)
+
+    // An address the sign-in methods report for another mailbox proves nothing about the stored one.
+    await repo().recordEmailEvidence(userId, social('elsewhere@example.test'), AT)
+    expect((await evidenceOf(userId)).emailVerifiedAt).toBeNull()
+
+    await repo().recordEmailEvidence(userId, social('elsewhere@example.test', ' Verified@Example.Test '), AT)
+    expect((await evidenceOf(userId)).emailVerifiedAt).toEqual(AT)
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, ' Verified@Example.TEST')).toMatchObject({
+      userId,
+      email: 'verified@example.test',
+      role: 'collaborator'
+    })
+    expect(await matches(`org-${randomUUID()}`, 'verified@example.test')).toBe(false)
+  })
+
+  it('keeps the first mark while the address stays vouched for, and drops it when it no longer is', async () => {
+    const userId = await member('kept@example.test')
+    await repo().recordEmailEvidence(userId, social('kept@example.test'), AT)
+    await repo().recordEmailEvidence(userId, social('kept@example.test'), new Date('2026-02-01T00:00:00Z'))
+    expect((await evidenceOf(userId)).emailVerifiedAt).toEqual(AT)
+
+    await repo().recordEmailEvidence(userId, NONE, new Date('2026-03-01T00:00:00Z'))
+    expect((await evidenceOf(userId)).emailVerifiedAt).toBeNull()
+    expect(await matches(DEFAULT_ORG_ID, 'kept@example.test')).toBe(false)
+  })
+
+  it('never matches an invited row, a suspended member, or a service account', async () => {
+    const owner = await member('owner-verified@example.test', 'owner')
+    const invited = await repo().addMemberByEmail(DEFAULT_ORG_ID, 'invited@example.test', 'viewer', owner)
+    expect((await evidenceOf(invited.userId)).emailVerifiedAt).toBeNull()
+    expect(await matches(DEFAULT_ORG_ID, 'invited@example.test')).toBe(false)
+
+    const suspended = await member('suspended@example.test')
+    await repo().recordEmailEvidence(suspended, social('suspended@example.test'), AT)
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: suspended } },
+      data: { suspendedAt: AT }
+    })
+    expect(await matches(DEFAULT_ORG_ID, 'suspended@example.test')).toBe(false)
+
+    const account = await repo().createServiceAccount(DEFAULT_ORG_ID, { name: 'mailer', role: 'collaborator' })
+    await repo().recordEmailEvidence(account.userId, social(account.email), AT)
+    expect((await evidenceOf(account.userId)).emailVerifiedAt).toBeNull()
+    // Even a mark written some other way does not make a service account a mail sender.
+    await prisma.user.update({ where: { id: account.userId }, data: { emailVerifiedAt: AT } })
+    expect(await matches(DEFAULT_ORG_ID, account.email)).toBe(false)
+  })
+
+  it('takes an organization’s own connection at its word inside that organization only', async () => {
+    const userId = await member('sso@corp.example.test')
+    const second = await otherOrg()
+    await repo().addMember(second, userId, 'collaborator')
+    await connect(DEFAULT_ORG_ID, 'connector-corp')
+    await claim(DEFAULT_ORG_ID, 'corp.example.test')
+
+    await repo().recordEmailEvidence(userId, sso('connector-corp', 'SSO@corp.example.test'), AT)
+    expect(await evidenceOf(userId)).toEqual({ emailVerifiedAt: null, emailSsoConnectorIds: ['connector-corp'] })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@corp.example.test')).toBe(true)
+    expect(await matches(second, 'sso@corp.example.test')).toBe(false)
+
+    // A connection of its own does not let the second organization read the first one's evidence.
+    await connect(second, 'connector-second')
+    await claim(second, 'second.example.test')
+    expect(await matches(second, 'sso@corp.example.test')).toBe(false)
+  })
+
+  it('needs the address’s domain verified by that organization now, and its connection still there', async () => {
+    const userId = await member('sso@pending.example.test')
+    await connect(DEFAULT_ORG_ID, 'connector-pending')
+    const pending = await claim(DEFAULT_ORG_ID, 'pending.example.test', null)
+    await repo().recordEmailEvidence(userId, sso('connector-pending', 'sso@pending.example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(false)
+
+    await prisma.orgDomain.update({ where: { id: pending.id }, data: { verifiedAt: AT } })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(true)
+
+    // Releasing the domain deletes its row, and a subdomain or a sibling domain never stands in for it.
+    await prisma.orgDomain.delete({ where: { id: pending.id } })
+    await claim(DEFAULT_ORG_ID, 'example.test')
+    expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(false)
+
+    await claim(DEFAULT_ORG_ID, 'pending.example.test')
+    expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(true)
+    await prisma.orgSsoConnection.delete({ where: { orgId: DEFAULT_ORG_ID } })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@pending.example.test')).toBe(false)
+  })
+
+  it('counts the organization’s connection only while it is active', async () => {
+    const userId = await member('sso@draft.example.test')
+    // A draft connection: a test sign-in can leave an identity on it before it is ever activated.
+    await connect(DEFAULT_ORG_ID, 'connector-draft', null)
+    await claim(DEFAULT_ORG_ID, 'draft.example.test')
+    await repo().recordEmailEvidence(userId, sso('connector-draft', 'sso@draft.example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'sso@draft.example.test')).toBe(false)
+
+    await prisma.orgSsoConnection.update({ where: { orgId: DEFAULT_ORG_ID }, data: { activatedAt: AT } })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@draft.example.test')).toBe(true)
+
+    // Deactivating keeps the connection and its identities, and still ends the match.
+    await prisma.orgSsoConnection.update({ where: { orgId: DEFAULT_ORG_ID }, data: { activatedAt: null } })
+    expect(await matches(DEFAULT_ORG_ID, 'sso@draft.example.test')).toBe(false)
+  })
+
+  it('ignores a connection that asserts another address, and forgets one whose identity is gone', async () => {
+    const userId = await member('stored@corp.example.test')
+    await connect(DEFAULT_ORG_ID, 'connector-corp')
+    await claim(DEFAULT_ORG_ID, 'corp.example.test')
+
+    await repo().recordEmailEvidence(userId, sso('connector-corp', 'colleague@corp.example.test'), AT)
+    expect((await evidenceOf(userId)).emailSsoConnectorIds).toEqual([])
+    expect(await matches(DEFAULT_ORG_ID, 'stored@corp.example.test')).toBe(false)
+    expect(await matches(DEFAULT_ORG_ID, 'colleague@corp.example.test')).toBe(false)
+
+    await repo().recordEmailEvidence(userId, sso('connector-corp', 'stored@corp.example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'stored@corp.example.test')).toBe(true)
+    await repo().recordEmailEvidence(userId, NONE, AT)
+    expect((await evidenceOf(userId)).emailSsoConnectorIds).toEqual([])
+    expect(await matches(DEFAULT_ORG_ID, 'stored@corp.example.test')).toBe(false)
+  })
+
+  it('takes the deployment’s connector at its word everywhere only while it reports verified addresses', async () => {
+    const userId = await member('staff@example.test')
+    const second = await otherOrg()
+    await repo().addMember(second, userId, 'collaborator')
+    const asserted = [{ connectorId: 'connector-deployment', email: 'staff@example.test' }]
+
+    // Trusting unverified addresses: the address is only asserted, by a connector no organization owns.
+    await repo().recordEmailEvidence(userId, { verified: [], asserted }, AT)
+    expect(await matches(DEFAULT_ORG_ID, 'staff@example.test')).toBe(false)
+
+    // Not trusting them: the sync reports the same address as verified.
+    await repo().recordEmailEvidence(userId, { verified: ['staff@example.test'], asserted }, AT)
+    expect(await matches(DEFAULT_ORG_ID, 'staff@example.test')).toBe(true)
+    expect(await matches(second, 'staff@example.test')).toBe(true)
+
+    await repo().recordEmailEvidence(userId, { verified: [], asserted }, AT)
+    expect(await matches(DEFAULT_ORG_ID, 'staff@example.test')).toBe(false)
+  })
+})
+
 describe('PgUserRepo.provisionOidcUser — signup creates no organization', () => {
   it('creates the user (real email + display name) and no membership at all', async () => {
     const { userId } = await repo().provisionOidcUser({

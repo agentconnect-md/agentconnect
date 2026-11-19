@@ -385,6 +385,17 @@ export class LogtoIdentityService {
     return firstString(user?.identities?.google?.details?.email)
   }
 
+  /** Addresses the linked social sign-in methods report as the account's own, lower-cased; an SSO identity's address is never among them. */
+  async socialEmailsFor(sub: string): Promise<string[]> {
+    const user = await this.logtoUser(sub, this.identityTtlMs)
+    // Only the normalized address counts: a connector's raw profile can carry one the provider never verified.
+    const emails = Object.values(user?.identities ?? {}).flatMap((identity) => {
+      const email = firstString(identity.details?.email)?.trim().toLowerCase()
+      return email ? [email] : []
+    })
+    return [...new Set(emails)]
+  }
+
   /**
    * Warm-at-touch trigger (session-access-cold-visit.md §3): start, fire-and-forget,
    * the background lookups a later authorization read of this subject would block on.
@@ -448,9 +459,9 @@ export class LogtoIdentityService {
     return Array.isArray(ssoIdentities) && ssoIdentities.length > 0
   }
 
-  // The SSO identities an account holds, cached like the user read so a Profile load stays one upstream fetch per lease.
-  async ssoIdentitiesFor(sub: string): Promise<SsoIdentitySummary[]> {
-    const cached = this.ssoUsers.get(sub)
+  // The SSO identities an account holds, cached like the user read so a Profile load stays one upstream fetch per lease; `fresh` skips the cache.
+  async ssoIdentitiesFor(sub: string, fresh = false): Promise<SsoIdentitySummary[]> {
+    const cached = fresh ? undefined : this.ssoUsers.get(sub)
     if (cached && cached.expiresAt > this.clock.now()) return cached.identities
     const epoch = this.epochOf(sub)
     const res = await this.request(`/api/users/${encodeURIComponent(sub)}?includeSsoIdentities=true`)

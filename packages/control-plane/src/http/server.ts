@@ -21,6 +21,7 @@ import { hasZodFastifySchemaValidationErrors, isResponseSerializationError } fro
 import type { HttpDeps } from './deps.js'
 import { createIdentityWarmTrigger } from './identity-warm.js'
 import { syncGoogleAccountId } from './google-account-id.js'
+import { syncEmailVerification } from './email-verification.js'
 import { installZod } from './plugins/zod.js'
 import { installOpenapi } from './plugins/openapi.js'
 import { humanAuthPlugin } from './plugins/auth.js'
@@ -186,6 +187,16 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           { identity: deps.logtoIdentity, users: deps.repos.user },
           { userId: user.userId, oidcSubject: input.oidcSubject }
         ).catch((err: unknown) => app.log.debug({ err }, 'google account id sync failed'))
+        // Record what the linked sign-in methods say about the stored address; a failed read keeps the last answer.
+        void syncEmailVerification(
+          {
+            identity: deps.logtoIdentity,
+            users: deps.repos.user,
+            clock: deps.clock,
+            verifyingConnectorId: deps.verifyingSsoConnectorId
+          },
+          { userId: user.userId, oidcSubject: input.oidcSubject }
+        ).catch((err: unknown) => app.log.debug({ err }, 'email verification sync failed'))
       }
       return user
     },

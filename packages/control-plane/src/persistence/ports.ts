@@ -7488,6 +7488,14 @@ export interface OrgDeleteResult {
   removedHookIds: string[]
 }
 
+/** What the identity provider's linked sign-in methods say about an account's addresses. */
+export interface EmailEvidence {
+  /** Addresses reported by a method that verifies them: a social method, or the deployment's connector when it takes only verified ones. */
+  verified: readonly string[]
+  /** The address each SSO connector's identity on the account asserts. */
+  asserted: readonly { connectorId: string; email: string }[]
+}
+
 export interface UserRepo {
   /**
    * Just-in-time provision (or fetch) the local user behind a verified OIDC `sub`.
@@ -7531,6 +7539,8 @@ export interface UserRepo {
   listMembers(orgId: string): Promise<OrgMemberRecord[]>
   /** The active member of the organization who signs in as this subject, or null. */
   memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null>
+  /** The active human member whose stored address is verified for this organization (`recordEmailEvidence`), or null; verified for another organization never matches. */
+  memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null>
 
   /**
    * Change one member's role under the organization owner-transition lock.
@@ -7613,6 +7623,8 @@ export interface UserRepo {
   getGoogleAccountId(userId: string): Promise<string | null>
   /** Record what the identity provider reported (null clears); the id moves off any other row that held it. */
   setGoogleAccountId(userId: string, googleAccountId: string | null): Promise<void>
+  /** Record what the linked sign-in methods say about the stored address; evidence that is gone is dropped. */
+  recordEmailEvidence(userId: string, evidence: EmailEvidence, at: Date): Promise<void>
 }
 
 export interface OrgRepo {

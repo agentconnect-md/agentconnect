@@ -519,6 +519,8 @@ export interface HttpDeps {
   orgSsoConnections?: OrgSsoConnectionService
   /** The sign-in check organization SSO adds to subject admission. */
   orgSsoAdmission?: OrgSsoAdmission
+  /** The deployment's own SSO connector when an address it asserts counts as verified (`verifyingConnectorId`); null when none does. */
+  verifyingSsoConnectorId?: string | null
   /** The login page's lookup from an address to its organization's connector. */
   orgSsoLookup?: OrgSsoSignInLookup
   /** Membership on a first sign-in through an organization's active connection. */
