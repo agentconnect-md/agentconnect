@@ -323,6 +323,11 @@ export class DesktopManager {
     return entries.filter((entry): entry is { desktop: string; profile: string } => entry.profile !== undefined)
   }
 
+  /** The id of the desktop a key was given, without starting or assigning one. */
+  idFor(key: string): string | undefined {
+    return this.state.desktops[key]?.id
+  }
+
   /** A viewer watching a desktop keeps it, and its browser, from the idle sweep. */
   touch(id: string): void {
     const desktop = this.running.get(id)

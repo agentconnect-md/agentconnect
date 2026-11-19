@@ -16,7 +16,9 @@ address bar, for a person to operate (§7.6); and the image moves from Chromium 
 the steps of §14.10. v9.1 (2026-11-18) records the browser-tools prototype (§14.10) and the corrections it made: the
 launcher's flags and first-run file, the endpoint's stale port file and the AutomationControlled flag, the egress
 forwarder's loopback refusal, the child's flags and lifetime, opaque page ids, and the screencast's measured rates and
-limits. v9.2 (2026-11-19) lands step 3, the DevTools endpoint (§3.10, §5.8), and decides §17-26. The Chinese version
+limits. v9.2 (2026-11-19) lands step 3, the DevTools endpoint (§3.10, §5.8), and decides §17-26. v9.3 (2026-11-19)
+lands the first half of step 4: the Chrome DevTools MCP child, the `computer-browser-v1` contract and the six tools that
+only read (§5.8). The Chinese version
 lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -513,7 +515,8 @@ image running **the same desktop daemon**. The prototype was built and run on a 
   software), the CJK serif faces, Go's test suite, gcc's sanitizers, ffmpeg and the driver's unused SDK library: about
   2.2 GiB uncompressed on amd64, 893 MB compressed. The PR job `Desktop image` builds both arches natively and runs
   `docker/smoke.sh` on them: size under 2.5 GiB, healthy, every `doctor` check ok once ffmpeg is downloaded, a
-  window manager, a maximized browser, registration against a stub Control Plane (one exchange, the key kept on restart, the token
+  window manager, a maximized browser, the pinned Chrome DevTools MCP answering `--version` with no update check,
+  registration against a stub Control Plane (one exchange, the key kept on restart, the token
   absent from the log and from the session's and browser's environments), and `docker stop` exiting 0.
 - **Registration [implemented]**: `run` spends `AGENTCONNECT_REGISTER_TOKEN` (or the file named by
   `AGENTCONNECT_REGISTER_TOKEN_FILE`, such as a Docker or Kubernetes secret) at `AGENTCONNECT_CP_URL` before it starts,
@@ -1078,12 +1081,14 @@ Whatever the policy, the desktop daemon refuses locally:
 - **Driver tools**: the script, configuration, extension, screen recording, process-kill, clipboard, and file-transfer
   tools among the `cua_*` pass-throughs are never exposed (§5.5). A shell and files come only from the desktop daemon's
   own §5.7 tools, behind their own policy, which narrows this rule on purpose.
-- **Browser tools [design]**: only the allowlisted `chrome_*` tools of §5.8 are offered, and only on an isolated
-  Computer. Chrome DevTools MCP's other tools (network inspection and mocking, emulation, performance, memory,
-  extensions, PWA, WebAuthn, coordinate clicks, CSS inspection, Lighthouse, screencasts, logpoints, automation of
-  DevTools itself) and the raw DevTools endpoint are never exposed, and no argument or `file:` navigation may make the
-  child read or write a file on the Computer outside the §5.7 file policy. With `shell` on, the agent's own commands
-  reach the endpoint as the desktop's user anyway, which §5.7 already counts as handing over the account.
+- **Browser tools [implemented for the tools that read]**: only the allowlisted `chrome_*` tools of §5.8 are offered,
+  and only on an isolated Computer. Chrome DevTools MCP's other tools (network inspection and mocking, emulation,
+  performance, memory, extensions, PWA, WebAuthn, coordinate clicks, CSS inspection, Lighthouse, screencasts,
+  logpoints, automation of DevTools itself) and the raw DevTools endpoint are never exposed, and no argument or `file:`
+  navigation may make the child read or write a file on the Computer outside the §5.7 file policy. With `shell` on, the
+  agent's own commands reach the endpoint as the desktop's user anyway, which §5.7 already counts as handing over the
+  account. The desktop registers only the contract's tools, and its adapter refuses any other name before a child
+  starts, the five extra `debugging` tools included.
 
 ### 4.4 Leases and concurrency [validated]
 
@@ -1406,7 +1411,7 @@ command runs; the prototype's local client tokens, which get no tier.
   would move the session onto the Computer: that is "run the agent on this machine" (§17-2), not "use this machine".
 - **A terminal driven through the GUI.** What agents do today: every keystroke and every read is a screenshot.
 
-### 5.8 Browser tools over the DevTools protocol [design]
+### 5.8 Browser tools over the DevTools protocol [design; the child, the contract and the tools that read implemented]
 
 Most of what an agent does on a Computer happens in a browser, and the screen is a poor interface to a page: every
 step costs a screenshot, a click lands on a coordinate that moves when the layout does, and text below the fold needs
@@ -1587,6 +1592,21 @@ profile, merge and egress flags; with a dead endpoint it returned errors and sta
 - `--screenshotFormat jpeg` with a maximum width and height, `--filesystemRoot` for each `fileRoots` entry (never
   `--allowUnrestrictedPaths`), and an empty `TMPDIR` of its own (Arguments, below).
 
+**[implemented]** The child is `chrome-devtools-mcp` 1.13.0, a dev dependency of `packages/computer` pinned with its
+integrity hash by the workspace lockfile. The package bundles its dependencies and declares none, so that one entry
+pins the whole tree. The image's build copies it to `/opt/agentconnect/chrome-devtools-mcp`, beside the daemon, and
+nothing fetches it at run time. The daemon runs it with the image's Node and the flags above: `--no-javascript-evaluation`
+always until scripts land, `--screenshotMaxWidth` at `maxImageDimension` (1280 by default) and `--screenshotMaxHeight`
+at four times that, so a full page keeps four screens' height before it is scaled down, and one `--filesystemRoot`, the
+child's own empty directory, which is also its `HOME`, `TMPDIR` and working directory and is removed with it. Its
+environment is its own too: the update-check and usage-statistics variables, and
+`CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY=1`, since 1.13.0 otherwise reads its options from `~/.config/cd4a/config.json`,
+a file the desktop's user, and an agent with `shell`, can write. A desktop's first `chrome_*` call starts its child.
+The child is closed after `leaseIdleSeconds` without a call; it is killed when its desktop's checked endpoint changes or
+goes (the daemon looks every second), when a call passes its 60 s deadline, and when the desktop stops. Each call races
+the same endpoint check and the deadline, and a tool's own `timeout` is held 5 s inside the deadline. The stop at the
+end of a session's lease comes with the lease, in the tools that act.
+
 **Tools.** The upstream names behind a `chrome_` prefix, with the pinned version's schemas. The list is an allowlist,
 so an upgrade adds nothing by itself; all twenty worked against a windowed Chrome 158 with trusted input events
 (measured). The lease column is this table's, not the child's annotations, which mark the snapshot and screenshot as
@@ -1602,6 +1622,9 @@ writing and `select_page` as read-only although it can change the visible tab. E
 | `chrome_upload_file`                                                                                                     | yes   | Only with `files` not `off`; paths inside `fileRoots` (§5.7)                         |
 | `chrome_evaluate_script`                                                                                                 | yes   | Only with `shell` not `off`, approved as `computer_exec` is (§5.7)                   |
 
+**[implemented]** The six tools that take no lease are registered on `/mcp`; the fourteen that act wait for the lease,
+arbitration and approvals.
+
 - **Policy.** `browserTier` (§4.1) is on by default on an isolated Computer, a decision made as `shell`'s default was
   for managed computers: nothing there is a person's. The Control Plane writes that default; a desktop reads an absent
   field as off. Off, the launcher opens no endpoint (§3.10's `chrome://inspect` limit aside), so there are no tools
@@ -1615,7 +1638,15 @@ writing and `select_page` as read-only although it can change the visible tab. E
   `agentMode`, `shell` and `files`, and the desktop registers only the `chrome_*` tools its token allows, narrowed by
   the last policy the CP pushed, where an unset field reads off, so an older Control Plane grants none. From the
   `shell` and `files` it already holds, the desktop itself leaves out `chrome_evaluate_script` and
-  `chrome_upload_file`. The agent daemon's own check is not the guard.
+  `chrome_upload_file`. The agent daemon's own check is not the guard. **[implemented]** The token's `br` claim names
+  the tier; absent, as from an older Control Plane, it is off, as `sh` and `fs` are. A request gets the tools that read
+  only when the token's `br` is true, it is not a `view` token, the last pushed policy has `browserTier: true` and
+  `agentMode: 'control'`, `appAllowlist` (when set) names a browser, `redactApps` names none, and the caller's desktop
+  (its own agent desktop while per-agent desktops are on, else `main`) has a checked endpoint. Each call checks the
+  grant and policy again and refuses a withdrawn grant as `denied`; if the browser exits, the tools disappear from
+  discovery and calls using the earlier list get `unavailable` with `browser_not_running`. An unregistered daemon has no Control Plane to sign
+  a token, so its local client tokens get the tools while `browserTier` is on in its config; that is how the tier is
+  exercised without a Control Plane.
 - **Approvals.** Every `chrome_*` tool that acts counts as the session's first input on that Computer (§4.2), one
   that starts the browser included, and under `shell: 'ask'` a `chrome_evaluate_script` asks as `computer_exec`
   does, with the script on the card. The agent daemon asks before it takes the lease and carries the outcome in the
@@ -1630,11 +1661,24 @@ writing and `select_page` as read-only although it can change the visible tab. E
   check of its own, which by default allows only the OS temporary directory and keeps allowing it whatever roots it is
   given, so the desktop passes each `fileRoots` entry as `--filesystemRoot` and gives the child an empty `TMPDIR` of
   its own, which closed `/tmp` (measured). `initScript` on a navigation is a script and goes with
-  `chrome_evaluate_script`, and so does a `javascript:` address.
+  `chrome_evaluate_script`, and so does a `javascript:` address. **[implemented]** The four arguments are absent from
+  the contract's schemas, which refuse arguments they do not name, and the adapter removes them from every call as
+  well. The screenshot adapter reads and deletes only the child's temporary screenshot at its expected path. It
+  returns an image up to 5,000,000 bytes, which fits the 8 MiB response limit after base64 encoding. Larger images
+  return an error suggesting JPEG or a viewport screenshot. Results carry text and images only.
 - **Page ids.** The ids in `computer-browser-v1` are opaque ids the daemon issues, never DevTools target ids, since a
   page that learns a target id can frame Chrome's DevTools front end into a live session (above). The adapter maps
   them to target ids and to the current child's page ids, which are small integers the child assigns and which change
-  with every child.
+  with every child. **[implemented]** A page id is `p` and ten hex digits, kept per desktop for the desktop's life. The
+  child's structured list has addresses and titles but no target ids. The desktop binds them to the endpoint's
+  `/json/list` by unique address and title, then by unique address. If two tabs cannot be matched unambiguously,
+  the listing tells the caller to inspect them on the desktop. After a browser restart the old ids, up to 50, wait
+  for unambiguous matches among the tabs restored by the image's `RestoreOnStartup`. Right after a restart the new browser answered `/json/list` with no page
+  targets while the child already listed the restored tabs (measured in the container), so the desktop asks again, up to
+  six times 500 ms apart, and looks a known id up again as often before it calls it unknown. An empty target list
+  while the child still sees tabs preserves existing ids. Results lose every target id the desktop knows, the browser id, any
+  `/devtools/<type>/<id>` path, every `ws://` URL and every `wss://` URL with `/devtools/`, and the child's own
+  selected-page marker, which means nothing when tools address pages by id.
 - **Lease and arbitration.** The tools that act wait for and hold the desktop's control lease exactly as
   `computer_click` does (§4.4), and are refused with the same errors while a person is in control, the owner has
   paused, or, on a main desktop, a person is active (§6): DevTools input moves no pointer, but it acts on the pages
@@ -1643,8 +1687,14 @@ writing and `select_page` as read-only although it can change the visible tab. E
   clicked and typed on a background tab without bringing it forward (measured). So before a tool acts, the daemon
   brings its page to the front (`Target.activateTarget`), so a person watching sees the agent's work and can take over
   on it; that also raises and focuses the browser's X window (§7.6).
+  A reading tool brings nothing forward, and a screenshot of a tab not in front waits for a frame Chrome never draws: it
+  ran into the 60 s deadline in the container, while a snapshot of the same tab took 1 s and screenshots of the front
+  tab 0.4–1.0 s, a 10.9 MB full-page PNG included. **[implemented]** So `chrome_take_screenshot` has a deadline of 15 s,
+  after which it returns `unavailable` with `timeout`, names that cause, and the child is killed.
 - **No browser running.** A tool that acts starts the desktop's browser through the launcher first (§3.10); one that
-  only reads returns `unavailable` with the reason `browser_not_running`.
+  only reads returns `unavailable` with the reason `browser_not_running` **[implemented]**. A reading call whose
+  browser exits returns `unavailable` with `browser_exited`, and one past the deadline `unavailable` with `timeout`,
+  both after the child is killed; a reading call is safe to repeat.
 - **Unknown outcomes.** A timeout, a child crash, or a browser that went away during a tool that acts returns
   `uncertain` with a fresh screenshot, and is never replayed (§5.4). A call running when the browser exits does not
   fail fast but waits out its own timeout (measured), so the daemon races every call against the browser's exit and
@@ -1654,6 +1704,8 @@ writing and `select_page` as read-only although it can change the visible tab. E
   changed.
 - **Audit.** One entry per call like `computer_*` (§8.2), with typed and filled text reduced to its length, an address
   to its origin, and a script, a `javascript:` address included, recorded as a command line is (§5.7).
+  **[implemented]** for the tools that read: the entry carries the opaque page id, the agent desktop that served the
+  call, and the `screenshotRef` of a screenshot stored as `computer_screenshot`'s are (§9).
 - **Form fill.** Fills still go through the extension
   ([computer-form-fill-and-vault.md](computer-form-fill-and-vault.md)), never through `chrome_fill`, whose values are
   model-visible arguments. A snapshot masks a password field's value but shows one bullet per character, so its
@@ -1675,6 +1727,15 @@ allow the tier refuses it as `denied`, and one without it as `unavailable`, befo
 of the agent spec, so neither a policy change nor a desktop's capability re-ships anything. The tools add twenty
 schemas to such a session's context: 16,143 bytes of JSON with the prefix and the file arguments removed, about 4,000
 tokens, and 13,910 bytes without the script and upload tools (measured, 1.13.0).
+
+**[implemented]** `computer-browser-v1` is `packages/protocol/src/computer-browser.ts`: the twenty names, whether each
+takes the lease (the table above), the `files` or `shell` the upload and script tools need, and their schemas, with
+upstream tool names in descriptions prefixed as well. `chrome-contract.test.ts` starts the pinned child with the
+daemon's flags (scripts on, so all twenty appear), requires exactly the twenty and the five extra `debugging` tools,
+and compares each with the contract through the adapter's own reshaping; it also runs `--version` with the update
+check off and finds no update-check cache written. The flags shape the schemas: under `--screenshotFormat jpeg` the
+screenshot's `format` defaults to `jpeg`. The Control Plane and the agent daemon do not use the contract yet (§14.10
+step 5).
 
 **Guidance.** `COMPUTER_USE_GUIDANCE` gains: in a browser, prefer `chrome_take_snapshot` and the element tools to
 screenshots and coordinates; take a new snapshot after a navigation or a pause, since element ids belong to the
@@ -2010,7 +2071,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   and its warning says so.
 - **Least scope**: `appAllowlist`, `redactApps` (window-level masking feasibility to be validated), granting a single display.
 - **Prompt injection**: screen content is untrusted; the session instructions say so (§5.6).
-- **DevTools endpoint [implemented; the tools and the child design]**: a browser's remote-debugging port holds every
+- **DevTools endpoint [implemented; the tools that act design]**: a browser's remote-debugging port holds every
   session of every signed-in site, and loopback is no boundary between local principals (measured: another account and
   a namespace-sharing container each read an HttpOnly cookie with no credential). So the launcher opens the port only
   on an isolated Computer in a network namespace of its own whose policy has the browser tier on, and the daemon
@@ -2161,17 +2222,17 @@ and every `computer/policy`.
 
 ### 11.1 Dependencies
 
-| Component                                            | License                          | Use                                                            | Distribution                                                                                                                                                                        |
-| ---------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cua Driver (`libs/cua-driver`)                       | MIT                              | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                     |
-| werift                                               | MIT                              | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                       |
-| Node.js (SEA)                                        | MIT                              | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                  |
-| ffmpeg (with libx264)                                | GPL                              | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal]   |
-| GStreamer, PipeWire, python3-gi                      | LGPL and others                  | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                     |
-| libei                                                | MIT                              | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                    |
-| Xvfb, Xfce, LibreOffice, toolchains, Debian base     | MIT / GPL / MPL / BSD and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                          |
-| Chrome DevTools MCP (`chrome-devtools-mcp`) [design] | Apache-2.0                       | Browser tools (§5.8)                                           | Pinned npm package in the image                                                                                                                                                     |
-| Google Chrome                                        | Proprietary (Google's terms)     | The image's browser (§3.8)                                     | Google's apt package installed at build time, replacing Chromium (the maintainers' choice, 2026-11-18); whose acceptance of Google's terms covers a Computer is for counsel [legal] |
+| Component                                                 | License                          | Use                                                            | Distribution                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cua Driver (`libs/cua-driver`)                            | MIT                              | Input, screenshots, accessibility on three OSes, GNOME Wayland | Pinned download, sha256-checked                                                                                                                                                                                                                                                |
+| werift                                                    | MIT                              | WebRTC (pure TypeScript)                                       | In the bundle                                                                                                                                                                                                                                                                  |
+| Node.js (SEA)                                             | MIT                              | Runtime inside the macOS app and the container                 | In the app / image                                                                                                                                                                                                                                                             |
+| ffmpeg (with libx264)                                     | GPL                              | Viewer encoding                                                | **Not bundled**: downloaded from a third-party build and checked on first run, in the published container image too (into its volume); preinstalling it waits for counsel [legal]                                                                                              |
+| GStreamer, PipeWire, python3-gi                           | LGPL and others                  | GNOME Wayland capture helper                                   | System packages                                                                                                                                                                                                                                                                |
+| libei                                                     | MIT                              | GNOME Wayland input (through Cua)                              | System component                                                                                                                                                                                                                                                               |
+| Xvfb, Xfce, LibreOffice, toolchains, Debian base          | MIT / GPL / MPL / BSD and others | Container image                                                | Distribution packages in the image; source obligations when the image is published [legal]                                                                                                                                                                                     |
+| Chrome DevTools MCP (`chrome-devtools-mcp`) [implemented] | Apache-2.0                       | Browser tools (§5.8)                                           | 1.13.0, pinned by the workspace lockfile and copied into the image beside the daemon. `license-scan` checks its own license, every package its `THIRD_PARTY_NOTICES` lists and its files; axe-core (MPL-2.0, inside its Lighthouse bundle, unmodified) is a reviewed exception |
+| Google Chrome                                             | Proprietary (Google's terms)     | The image's browser (§3.8)                                     | Google's apt package installed at build time, replacing Chromium (the maintainers' choice, 2026-11-18); whose acceptance of Google's terms covers a Computer is for counsel [legal]                                                                                            |
 
 xdotool and wayvnc are no longer needed. Never used: `cua-spacesd`, the Cua HTML5 viewer and streaming crates
 (FSL-1.1-MIT); `cua-perception` (AGPL models); ydotool, RustDesk (AGPL-3.0); Sunshine (GPL-3.0); the official nut.js
@@ -2521,7 +2582,10 @@ What the prototype adds to them:
 - **Step 4**: the child: `--wsEndpoint` and its flags, its stop on idle, lease end and browser exit, and its kill
   after a restart; filtering the five extra tools; `isolatedContext`, temp-file screenshots, upload roots and the
   child's `TMPDIR`; opaque page ids; the front tab before acting; the race against the browser's exit, and `isError`
-  on navigation.
+  on navigation. **[first half implemented]** The child, its flags and lifetime but the lease end, the filter,
+  `isolatedContext`, temp-file screenshots, its `TMPDIR`, opaque page ids, the race, the token's `br` claim, the
+  contract and the six tools that read; the lease, the front tab, upload roots, scripts and `isError` on navigation come
+  with the tools that act.
 - **Step 6**: the daemon's opaque page ids in `/view/api/browser`; no Runtime on the viewer's connection; Page on
   every page for dialogs; a 15–20 fps cap, `maxWidth` for narrow views and binary frames; following the front tab;
   input sent without waiting on replies.

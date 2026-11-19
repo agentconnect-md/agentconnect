@@ -5,7 +5,13 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { afterEach, describe, expect, it } from 'vitest'
-import { classifyExpression, forbiddenText, scanArtifacts } from './license-scan.js'
+import {
+  classifyExpression,
+  forbiddenText,
+  installedChromeDevtoolsMcp,
+  scanArtifacts,
+  scanChromeDevtoolsMcp
+} from './license-scan.js'
 
 const scanner = fileURLToPath(new URL('./license-scan.ts', import.meta.url))
 let roots: string[] = []
@@ -188,5 +194,62 @@ describe('scanArtifacts', () => {
     expect(scanArtifacts(pkg, options).violations).toEqual([
       'AgentConnect Computer.app/Contents/MacOS/helper: undeclared executable; declare its component and license in license-scan.ts'
     ])
+  })
+})
+
+describe('scanChromeDevtoolsMcp (the image\u2019s pinned child, computer-use.md \u00a711.1)', () => {
+  const notice = (name: string, license: string, text = '') =>
+    `Name: ${name}\nVersion: 1.0.0\nLicense: ${license}\n\n${text}\n`
+  function child(notices: string[], files: Record<string, string | Buffer> = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-license-scan-'))
+    roots.push(dir)
+    const write = (path: string, body: string | Buffer) => {
+      mkdirSync(join(dir, path, '..'), { recursive: true })
+      writeFileSync(join(dir, path), body)
+    }
+    write('package.json', JSON.stringify({ name: 'chrome-devtools-mcp', version: '1.13.0', license: 'Apache-2.0' }))
+    write('LICENSE', 'Apache License 2.0')
+    write(
+      'out/Default/gen/src/third_party/THIRD_PARTY_NOTICES',
+      notices.join('\n-------------------- DEPENDENCY DIVIDER --------------------\n\n')
+    )
+    for (const [path, body] of Object.entries(files)) write(path, body)
+    return dir
+  }
+
+  it('passes permissive bundled packages and the reviewed axe-core exception, whatever their license texts quote', () => {
+    const dir = child([
+      notice('puppeteer-core', 'Apache-2.0'),
+      notice('marked', 'BSD-3-Clause, MIT'),
+      notice('axe-core', 'MPL-2.0', 'Secondary License means the GNU General Public License, Version 2.0')
+    ])
+    const result = scanChromeDevtoolsMcp(dir)
+    expect(result.violations).toEqual([])
+    expect(result.components.map((component) => component.name)).toEqual([
+      'axe-core@1.0.0',
+      'chrome-devtools-mcp@1.13.0',
+      'marked@1.0.0',
+      'puppeteer-core@1.0.0'
+    ])
+  })
+
+  it('fails another MPL package, a forbidden one, a GPL source file and a native binary', () => {
+    const dir = child([notice('other-mpl', 'MPL-2.0'), notice('seeded-gpl', 'GPL-3.0-only')], {
+      'out/vendored.js': '/*! SPDX-License-Identifier: AGPL-3.0-only */',
+      'out/helper': Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0])
+    })
+    expect(scanChromeDevtoolsMcp(dir).violations.sort()).toEqual([
+      'chrome-devtools-mcp@1.13.0/out/helper: a native executable has no place in this package',
+      'chrome-devtools-mcp@1.13.0/out/vendored.js: names a forbidden license (AGPL)',
+      'chrome-devtools-mcp@1.13.0/out/vendored.js: names a forbidden license (AGPL-3.0-only)',
+      'other-mpl@1.0.0: license "MPL-2.0" is not on the allowlist (chrome-devtools-mcp@1.13.0 (bundled))',
+      'seeded-gpl@1.0.0: forbidden license "GPL-3.0-only" (chrome-devtools-mcp@1.13.0 (bundled))'
+    ])
+  })
+
+  it('passes the pinned package the workspace installed', () => {
+    const installed = installedChromeDevtoolsMcp(fileURLToPath(new URL('..', import.meta.url)))
+    expect(installed).toBeDefined()
+    expect(scanChromeDevtoolsMcp(installed!).violations).toEqual([])
   })
 })

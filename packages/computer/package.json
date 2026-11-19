@@ -44,6 +44,7 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
+    "chrome-devtools-mcp": "1.13.0",
     "esbuild": "0.28.2",
     "happy-dom": "^21.0.4",
     "json": "^11.0.0",

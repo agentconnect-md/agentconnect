@@ -1,5 +1,6 @@
 // License scan of the desktop release artifacts (design §11): fails on AGPL / FSL / BSL / SSPL / GPL in bundled components.
 import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -248,6 +249,79 @@ export function scanArtifacts(
   return { components: [...components.values()].sort((a, b) => a.name.localeCompare(b.name)), violations }
 }
 
+// Reviewed exceptions inside the image's Chrome DevTools MCP: axe-core, inside its Lighthouse bundle, is MPL-2.0 (file-level, unmodified).
+const CHILD_EXCEPTIONS = new Set(['axe-core MPL-2.0'])
+const NOTICES = join('out', 'Default', 'gen', 'src', 'third_party', 'THIRD_PARTY_NOTICES')
+
+/** `Name:` / `Version:` / `License:` blocks of a THIRD_PARTY_NOTICES file; a comma between licenses means all apply. */
+export function noticeEntries(text: string): { name: string; version: string; license: string }[] {
+  return text.split(/^-+ DEPENDENCY DIVIDER -+$/m).flatMap((block) => {
+    const field = (key: string) => new RegExp(`^${key}: (.*)$`, 'm').exec(block)?.[1]?.trim()
+    const name = field('Name')
+    return name ? [{ name, version: field('Version') ?? '?', license: field('License') ?? '' }] : []
+  })
+}
+
+/** The image's pinned Chrome DevTools MCP (computer-use.md §11.1): its own license, each bundled package's, and no binaries. */
+export function scanChromeDevtoolsMcp(dir: string): ScanResult {
+  const components: Component[] = []
+  const violations: string[] = []
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+    name?: string
+    version?: string
+    license?: string
+  }
+  const self = `${manifest.name ?? '?'}@${manifest.version ?? '?'}`
+  const add = (component: Component) => {
+    components.push(component)
+    if (component.verdict === 'forbidden')
+      violations.push(`${component.name}: forbidden license "${component.license}" (${component.source})`)
+    else if (component.verdict === 'unknown')
+      violations.push(
+        `${component.name}: license "${component.license || 'none'}" is not on the allowlist (${component.source})`
+      )
+  }
+  add({
+    name: self,
+    license: manifest.license ?? '',
+    verdict: classifyExpression(manifest.license ?? ''),
+    source: 'package.json'
+  })
+  if (!existsSync(join(dir, NOTICES))) violations.push(`${self}: no ${NOTICES} to attribute its bundled packages`)
+  else {
+    for (const entry of noticeEntries(readFileSync(join(dir, NOTICES), 'utf8'))) {
+      const expression = entry.license.split(/\s*,\s*/).join(' AND ')
+      const excepted = CHILD_EXCEPTIONS.has(`${entry.name} ${entry.license}`)
+      add({
+        name: `${entry.name}@${entry.version}`,
+        license: entry.license,
+        verdict: excepted ? 'allowed' : classifyExpression(expression),
+        source: `${self} (bundled${excepted ? ', reviewed exception' : ''})`
+      })
+    }
+  }
+  for (const file of walk(dir)) {
+    const path = relative(dir, file).split(sep).join('/')
+    // License texts quote other licenses by name (MPL-2.0's lists the GPL family); their entries are classified above.
+    if (path === 'LICENSE' || path === NOTICES.split(sep).join('/')) continue
+    if (/\.(zip|tar|tgz|gz|xz|7z|dmg|pkg|msi)$/i.test(path)) violations.push(`${self}/${path}: undeclared archive`)
+    else if (isExecutable(file)) violations.push(`${self}/${path}: a native executable has no place in this package`)
+    else
+      for (const family of forbiddenText(readFileSync(file, 'utf8')))
+        violations.push(`${self}/${path}: names a forbidden license (${family})`)
+  }
+  return { components: components.sort((a, b) => a.name.localeCompare(b.name)), violations }
+}
+
+/** Where the workspace installed the pinned child (a dev dependency the image copies), if it did. */
+export function installedChromeDevtoolsMcp(packageRoot: string): string | undefined {
+  try {
+    return dirname(createRequire(join(packageRoot, 'package.json')).resolve('chrome-devtools-mcp/package.json'))
+  } catch {
+    return undefined
+  }
+}
+
 export function report(result: ScanResult): string {
   const rows = result.components.map(
     (component) => `| ${component.name} | ${component.license || '—'} | ${component.verdict} | ${component.source} |`
@@ -274,11 +348,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   })
   const packageRoot = resolve(values.root ?? join(dirname(fileURLToPath(import.meta.url)), '..'))
   const workspaceRoot = resolve(values.workspace ?? join(packageRoot, '..', '..'))
-  const result = scanArtifacts(resolve(positionals[0] ?? join(packageRoot, 'bundle')), {
+  const bundle = scanArtifacts(resolve(positionals[0] ?? join(packageRoot, 'bundle')), {
     packageRoot,
     workspaceRoot,
     binariesOnly: values['binaries-only']
   })
+  // The release run also covers the image's Chrome DevTools MCP, which the image installs beside the bundle.
+  const child = positionals[0] === undefined ? installedChromeDevtoolsMcp(packageRoot) : undefined
+  if (positionals[0] === undefined && !child)
+    bundle.violations.push('chrome-devtools-mcp is not installed: run pnpm install')
+  const extra = child ? scanChromeDevtoolsMcp(child) : { components: [], violations: [] }
+  const result = {
+    components: [...bundle.components, ...extra.components],
+    violations: [...bundle.violations, ...extra.violations]
+  }
   const text = report(result)
   console.log(text)
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${text}\n`)

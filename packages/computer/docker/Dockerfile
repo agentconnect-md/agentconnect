@@ -21,6 +21,9 @@ COPY packages/protocol/ packages/protocol/
 COPY packages/connection/ packages/connection/
 COPY packages/computer/ packages/computer/
 RUN pnpm --filter @agentconnect.md/computer bundle
+# The pinned Chrome DevTools MCP of the browser tier (§5.8), from the workspace lockfile: one package that bundles its dependencies.
+RUN cp -RL packages/computer/node_modules/chrome-devtools-mcp /app/chrome-devtools-mcp \
+  && test "$(node -p 'require("/app/chrome-devtools-mcp/package.json").version')" = 1.13.0
 
 FROM debian:trixie-slim AS computer
 
@@ -63,6 +66,8 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     ln -s /opt/node/bin/* /usr/local/bin/; node --version; npm --version
 
 COPY --from=bundle /app/packages/computer/bundle/agentconnect-computer.mjs /app/packages/computer/bundle/agentconnect-computer.mjs.LEGAL.txt /opt/agentconnect/
+# Beside the daemon, which finds it there; never fetched at run time, and not on a system volume (§3.8).
+COPY --from=bundle /app/chrome-devtools-mcp /opt/agentconnect/chrome-devtools-mcp
 # The pinned Cua Driver lives in the image; GPL ffmpeg is not bundled, the daemon downloads it on first start (§11).
 RUN AGENTCONNECT_COMPUTER_HOME=/opt/agentconnect/tools node /opt/agentconnect/agentconnect-computer.mjs install-driver \
   && rm -f /opt/agentconnect/tools/cua-driver/*/libcua_driver_sdk.so /opt/agentconnect/tools/cua-driver/*/cua_driver_node_runtime.node \

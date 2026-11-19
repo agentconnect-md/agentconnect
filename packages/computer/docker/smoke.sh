@@ -125,6 +125,19 @@ if grep -q '^CHROME_EXTRA_FLAGS=' <<< "$browser"; then
 fi
 echo "browser: Google Chrome maximized on browser/main"
 
+# The browser tier's Chrome DevTools MCP is the pinned one beside the daemon, and starts with no update check (§5.8).
+cdm=$(docker exec "$name" sh -c 'home=$(mktemp -d) && CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1 HOME="$home" \
+  node /opt/agentconnect/chrome-devtools-mcp/out/Default/gen/src/bin/chrome-devtools-mcp.js --version \
+  && ! test -e "$home/.cache"; status=$?; rm -rf "$home"; exit $status') || {
+  echo "Chrome DevTools MCP is missing, or checked for updates" >&2
+  exit 1
+}
+[ "$cdm" = 1.13.0 ] || {
+  echo "expected Chrome DevTools MCP 1.13.0, found $cdm" >&2
+  exit 1
+}
+echo "chrome devtools mcp: $cdm, no update check"
+
 # Registration from the environment against a stub Control Plane: one exchange, the key kept on restart, the token never shown.
 token="acr_smoke_$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
 stub='
