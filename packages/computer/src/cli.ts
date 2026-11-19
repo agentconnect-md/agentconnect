@@ -21,7 +21,7 @@ import { DevtoolsEndpoints, type DevtoolsEndpoint } from './browser/devtools-end
 import { isGoogleChrome } from './browser/devtools-launch.js'
 import { DevtoolsTier, tierGrant, type TierGrant } from './browser/devtools-tier.js'
 import { chosenBrowser, onImage } from './browser/launcher.js'
-import { CommandLine, commandLineSupported, narrowedCommandLine } from './command-line.js'
+import { CommandLine, commandLineSupported, narrowedCommandLine, type CommandLineAccess } from './command-line.js'
 import { askYes, installable, offerDesktopInstall, runInherited } from './linux/desktops-install.js'
 import { describeDesktops, desktopsNotice, probeDesktopSupport, type DesktopSupport } from './linux/desktops-support.js'
 import { attributeSocket, realProc } from './form-fill/attribution.js'
@@ -71,7 +71,7 @@ import { canInstallFfmpeg, ffmpegAvailable, FFMPEG_VERSION, installFfmpeg, resol
 import { RtcSessions } from './stream/rtc.js'
 import { ScreenStream } from './stream/screen-stream.js'
 import type { McpServer } from '@modelcontextprotocol/server'
-import { createComputerMcpServer, exposedDriverTools, type CommandLineAccess } from './tools.js'
+import { createComputerMcpServer, exposedDriverTools } from './tools.js'
 import { createViewer, type Viewer, type ViewerPrincipal } from './viewer.js'
 import { createViewerRouter } from './viewer-router.js'
 import { hasCommand, keepDisplayAwake } from './keep-awake.js'
@@ -958,6 +958,7 @@ async function startDevtools(options: {
   check(): Check
   verified(): string[]
   endpoint(desktop: string): DevtoolsEndpoint | undefined
+  enabled(): boolean
   grant(): TierGrant | undefined
   refresh(): Promise<void>
   stop(): void
@@ -1010,6 +1011,7 @@ async function startDevtools(options: {
     check: () => tier.check(endpoints?.report() ?? []),
     verified: () => (tier.on ? (endpoints?.verified() ?? []) : []),
     endpoint: (desktop) => (tier.on ? endpoints?.endpoint(desktop) : undefined),
+    enabled: () => tier.on,
     grant,
     refresh: () => tier.refresh(),
     stop: () => {
@@ -1481,7 +1483,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
           env: () => (mine && desktops?.enabled() ? mine().then((desktop) => desktop.env) : Promise.resolve(undefined))
         }
       : undefined
-    const formTarget = async (): Promise<{ computer: Computer; desktop: string }> =>
+    const desktopTarget = async (): Promise<{ computer: Computer; desktop: string }> =>
       mine && desktops?.enabled()
         ? mine().then((desktop) => ({ computer: desktop.computer, desktop: desktop.record.id }))
         : { computer, desktop: 'main' }
@@ -1491,7 +1493,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
       driverTools,
       viewOnly,
       ...(agent ? { agent } : {}),
-      ...(formFill ? { formFill: { service: formFill.service, target: formTarget } } : {}),
+      ...(formFill ? { formFill: { service: formFill.service, target: desktopTarget } } : {}),
       ...(adminPromptHelper ? { adminPrompts: true } : {}),
       ...(access ? { commandLine: access } : {}),
       ...(chromeTools && browserRefusal(principal) === undefined
@@ -1503,7 +1505,9 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
                 const desktop = browserDesktop(key)
                 return desktop !== undefined && devtools?.endpoint(desktop) !== undefined
               },
-              refusal: () => browserRefusal(principal)
+              refusal: () => browserRefusal(principal),
+              action: { target: desktopTarget, enabled: () => devtools?.enabled() === true },
+              ...(access ? { commandLine: access } : {})
             }
           }
         : {})

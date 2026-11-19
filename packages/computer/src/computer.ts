@@ -837,19 +837,41 @@ export class Computer {
     args: Record<string, unknown>,
     run: () => Promise<ToolOutput>
   ): Promise<ToolOutput> {
-    return this.audited(client, tool, args, async () => {
-      this.acquire(client)
+    return this.audited(client, tool, args, () => this.leasedBrowserAction(client, run))
+  }
+
+  /** Browser input shares the desktop queue and returns a fresh screenshot when the outcome is unknown. */
+  async leasedBrowserAction(client: string, run: (fence: () => void) => Promise<ToolOutput>): Promise<ToolOutput> {
+    this.acquire(client)
+    this.assertHumanIdle()
+    this.assertNoAdminPrompt()
+    return this.exclusive(async () => {
       this.assertHumanIdle()
       this.assertNoAdminPrompt()
-      return this.exclusive(async () => {
-        // Pause, release or a person's input may have happened while this call waited in the queue.
+      const lease = this.acquire(client)
+      const fence = () => {
         this.assertHumanIdle()
-        this.acquire(client)
-        const output = await run()
+        this.assertNoAdminPrompt()
+        this.expireLease()
+        this.assertStillHolds(client)
+        if (this.lease !== lease) throw new ComputerError('unavailable', 'The control lease was revoked.')
+      }
+      try {
+        const output = await run(fence)
         if (this.lease) this.lease.lastUsedAt = this.now()
         return output
-      })
+      } catch (error) {
+        if (error instanceof DriverUncertainError) return this.uncertain(error)
+        throw error
+      }
     })
+  }
+
+  /** The image's own browser launcher, called inside the browser action's lease and queue. */
+  async launchBrowserForAction(): Promise<void> {
+    const launch = this.launchBrowser?.('chrome')
+    if (!launch) throw new ComputerError('unavailable', 'This computer has no browser launcher.')
+    await launch()
   }
 
   // Lease-gated pass-through for raw Cua Driver tools (window-scoped background input, AX tokens, ...).

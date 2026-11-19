@@ -30,6 +30,10 @@ const TOOLS = [
   'set_logpoints'
 ]
 const text = (value) => ({ content: [{ type: 'text', text: value }] })
+const pagesResult = (pages, message) => ({
+  ...text('## Pages'),
+  structuredContent: { pages: pages.map((page, index) => ({ ...page, id: base + index })), message }
+})
 const pageOf = (args) => {
   const page = read().pages[Number(args.pageId) - base]
   if (!page) throw new Error(`No page found with id ${args.pageId}`)
@@ -39,11 +43,18 @@ const pageOf = (args) => {
 function handle(name, args) {
   const state = read()
   if (state.hang?.includes(name)) return new Promise(() => undefined)
-  if (name === 'list_pages') {
-    return {
-      ...text('## Pages'),
-      structuredContent: { pages: state.pages.map((page, index) => ({ ...page, id: base + index })) }
-    }
+  if (name === 'list_pages') return pagesResult(state.pages)
+  if (name === 'navigate_page')
+    return pagesResult(
+      state.pages,
+      state.navigationFailure ? 'Unable to navigate in the selected page: net::ERR_ABORTED.' : 'Navigated.'
+    )
+  if (name === 'new_page') {
+    const page = { url: args.url, title: 'New tab' }
+    const pages = [...state.pages, page]
+    const targets = [...state.targets, { ...page, type: 'page', id: 'E1E2E3E4E5F60718293A4B5C6D7E8F90' }]
+    writeFileSync(stateFile, JSON.stringify({ ...state, pages, targets }))
+    return pagesResult(pages, 'Opened a tab.')
   }
   if (name === 'take_snapshot') {
     const page = pageOf(args)

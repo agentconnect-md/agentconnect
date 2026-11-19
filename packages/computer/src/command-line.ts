@@ -64,6 +64,16 @@ export interface CommandLineDeps {
   env?: NodeJS.ProcessEnv
 }
 
+/** The caller's command-line grant, narrowed by the current Computer policy on each use. */
+export interface CommandLineAccess {
+  runner: CommandLine
+  shell: () => ComputerShellMode
+  files: () => ComputerFilesMode
+  roots: () => string[] | undefined
+  // The caller's desktop session environment, if different from the daemon's (§3.9).
+  env?: () => Promise<NodeJS.ProcessEnv | undefined>
+}
+
 /** A token's tier narrowed by the policy the CP pushed since; that policy names the tier resolved, so an unset field reads off. */
 export function narrowedCommandLine(
   granted: { shell: ComputerShellMode; files: ComputerFilesMode },
@@ -400,12 +410,16 @@ export class CommandLine {
     const data = await realOrPlanned(resolve(this.deps.dataDir))
     if (within(real, data))
       throw new CommandLineError('path_refused', "the computer daemon's own data directory is out of reach")
-    const allowed = await Promise.all((roots?.length ? roots : ['~']).map((root) => realOrPlanned(this.expand(root))))
+    const allowed = await this.fileRoots(roots)
     if (!allowed.some((root) => within(real, root)))
       throw new CommandLineError('path_refused', `${path} is outside the paths this computer allows`, {
         roots: roots?.length ? roots : ['~']
       })
     return real
+  }
+
+  async fileRoots(roots: readonly string[] | undefined): Promise<string[]> {
+    return Promise.all((roots?.length ? roots : ['~']).map((root) => realOrPlanned(this.expand(root))))
   }
 
   private async audited(

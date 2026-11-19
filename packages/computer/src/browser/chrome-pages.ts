@@ -113,6 +113,10 @@ export class PageIds {
     return this.entry(id) !== undefined
   }
 
+  targetFor(child: object, id: string): string | undefined {
+    return this.numberFor(child, id) === undefined ? undefined : this.entry(id)?.target
+  }
+
   /** The DevTools ids results must never carry: every target bound now, and the browser's own. */
   secrets(): string[] {
     const browser = this.browser?.split('/').pop()

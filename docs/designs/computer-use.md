@@ -18,7 +18,7 @@ launcher's flags and first-run file, the endpoint's stale port file and the Auto
 forwarder's loopback refusal, the child's flags and lifetime, opaque page ids, and the screencast's measured rates and
 limits. v9.2 (2026-11-19) lands step 3, the DevTools endpoint (§3.10, §5.8), and decides §17-26. v9.3 (2026-11-19)
 lands the first half of step 4: the Chrome DevTools MCP child, the `computer-browser-v1` contract and the six tools that
-only read (§5.8). The Chinese version
+only read (§5.8). v9.4 (2026-11-19) lands the acting tools on the desktop daemon. The Chinese version
 lives in the extensions repository (`docs/designs/computer-use.md`, PR #147).
 
 The first source of Computers is the user's own machine (a **self-hosted computer**). A **managed computer** that
@@ -1081,7 +1081,7 @@ Whatever the policy, the desktop daemon refuses locally:
 - **Driver tools**: the script, configuration, extension, screen recording, process-kill, clipboard, and file-transfer
   tools among the `cua_*` pass-throughs are never exposed (§5.5). A shell and files come only from the desktop daemon's
   own §5.7 tools, behind their own policy, which narrows this rule on purpose.
-- **Browser tools [implemented for the tools that read]**: only the allowlisted `chrome_*` tools of §5.8 are offered,
+- **Browser tools [implemented on the desktop daemon]**: only the allowlisted `chrome_*` tools of §5.8 are offered,
   and only on an isolated Computer. Chrome DevTools MCP's other tools (network inspection and mocking, emulation,
   performance, memory, extensions, PWA, WebAuthn, coordinate clicks, CSS inspection, Lighthouse, screencasts,
   logpoints, automation of DevTools itself) and the raw DevTools endpoint are never exposed, and no argument or `file:`
@@ -1411,7 +1411,7 @@ command runs; the prototype's local client tokens, which get no tier.
   would move the session onto the Computer: that is "run the agent on this machine" (§17-2), not "use this machine".
 - **A terminal driven through the GUI.** What agents do today: every keystroke and every read is a screenshot.
 
-### 5.8 Browser tools over the DevTools protocol [design; the child, the contract and the tools that read implemented]
+### 5.8 Browser tools over the DevTools protocol [implemented on the desktop daemon]
 
 Most of what an agent does on a Computer happens in a browser, and the screen is a poor interface to a page: every
 step costs a screenshot, a click lands on a coordinate that moves when the layout does, and text below the fold needs
@@ -1595,17 +1595,18 @@ profile, merge and egress flags; with a dead endpoint it returned errors and sta
 **[implemented]** The child is `chrome-devtools-mcp` 1.13.0, a dev dependency of `packages/computer` pinned with its
 integrity hash by the workspace lockfile. The package bundles its dependencies and declares none, so that one entry
 pins the whole tree. The image's build copies it to `/opt/agentconnect/chrome-devtools-mcp`, beside the daemon, and
-nothing fetches it at run time. The daemon runs it with the image's Node and the flags above: `--no-javascript-evaluation`
-always until scripts land, `--screenshotMaxWidth` at `maxImageDimension` (1280 by default) and `--screenshotMaxHeight`
-at four times that, so a full page keeps four screens' height before it is scaled down, and one `--filesystemRoot`, the
-child's own empty directory, which is also its `HOME`, `TMPDIR` and working directory and is removed with it. Its
+nothing fetches it at run time. The daemon runs it with the image's Node and the flags above. It disables script
+evaluation when the grant and policy leave `shell` off. It sets the screenshot width to `maxImageDimension`
+(1280 by default) and the height to four times that. Its filesystem roots are the approved `fileRoots` when the
+caller can upload, otherwise its own empty directory. The directory doubles as its `HOME`, `TMPDIR` and working
+directory and is removed with it. Its
 environment is its own too: the update-check and usage-statistics variables, and
 `CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY=1`, since 1.13.0 otherwise reads its options from `~/.config/cd4a/config.json`,
 a file the desktop's user, and an agent with `shell`, can write. A desktop's first `chrome_*` call starts its child.
 The child is closed after `leaseIdleSeconds` without a call; it is killed when its desktop's checked endpoint changes or
 goes (the daemon looks every second), when a call passes its 60 s deadline, and when the desktop stops. Each call races
-the same endpoint check and the deadline, and a tool's own `timeout` is held 5 s inside the deadline. The stop at the
-end of a session's lease comes with the lease, in the tools that act.
+the same endpoint check and the deadline, and a tool's own `timeout` is held 5 s inside the deadline. The child used
+for an action also stops when that desktop's control lease ends.
 
 **Tools.** The upstream names behind a `chrome_` prefix, with the pinned version's schemas. The list is an allowlist,
 so an upgrade adds nothing by itself; all twenty worked against a windowed Chrome 158 with trusted input events
@@ -1622,8 +1623,9 @@ writing and `select_page` as read-only although it can change the visible tab. E
 | `chrome_upload_file`                                                                                                     | yes   | Only with `files` not `off`; paths inside `fileRoots` (§5.7)                         |
 | `chrome_evaluate_script`                                                                                                 | yes   | Only with `shell` not `off`, approved as `computer_exec` is (§5.7)                   |
 
-**[implemented]** The six tools that take no lease are registered on `/mcp`; the fourteen that act wait for the lease,
-arbitration and approvals.
+**[implemented]** The six read tools and fourteen acting tools use `/mcp`. Acting tools enter the same desktop
+queue as screen input. The desktop checks the lease and authority immediately before selecting a tab and sending
+the tool call. A person taking over the desktop cancels that lease.
 
 - **Policy.** `browserTier` (§4.1) is on by default on an isolated Computer, a decision made as `shell`'s default was
   for managed computers: nothing there is a person's. The Control Plane writes that default; a desktop reads an absent
@@ -1643,14 +1645,15 @@ arbitration and approvals.
   only when the token's `br` is true, it is not a `view` token, the last pushed policy has `browserTier: true` and
   `agentMode: 'control'`, `appAllowlist` (when set) names a browser, `redactApps` names none, and the caller's desktop
   (its own agent desktop while per-agent desktops are on, else `main`) has a checked endpoint. Each call checks the
-  grant and policy again and refuses a withdrawn grant as `denied`; if the browser exits, the tools disappear from
-  discovery and calls using the earlier list get `unavailable` with `browser_not_running`. An unregistered daemon has no Control Plane to sign
-  a token, so its local client tokens get the tools while `browserTier` is on in its config; that is how the tier is
-  exercised without a Control Plane.
+  grant and policy again. If the browser exits, the read tools disappear from discovery and calls using the earlier
+  list get `unavailable` with `browser_not_running`. Acting tools can start Chrome while the effective browser tier
+  is enabled. Upload and script tools also require their respective grants. An unregistered daemon uses
+  `browserTier` from its config for local client tokens. Those tokens have no file or shell grant.
 - **Approvals.** Every `chrome_*` tool that acts counts as the session's first input on that Computer (§4.2), one
   that starts the browser included, and under `shell: 'ask'` a `chrome_evaluate_script` asks as `computer_exec`
   does, with the script on the card. The agent daemon asks before it takes the lease and carries the outcome in the
-  call's `_meta` as inputs do (§8.2); the desktop refuses a script under `ask` without it.
+  call's `_meta` as inputs do (§8.2). The desktop's script check is implemented. The agent daemon's use of the
+  browser contract and its approval prompts ship in the next step.
 - **Arguments.** Every argument that names a file the child would write or read (`filePath`, `sourcePath`) is removed
   from the schemas and from every call, as the driver's are (§5.5), and so is `chrome_new_page`'s `isolatedContext`,
   which opens a window in a separate browser context outside the profile. Results come back inline, except that the
@@ -1690,7 +1693,8 @@ arbitration and approvals.
   A reading tool brings nothing forward, and a screenshot of a tab not in front waits for a frame Chrome never draws: it
   ran into the 60 s deadline in the container, while a snapshot of the same tab took 1 s and screenshots of the front
   tab 0.4–1.0 s, a 10.9 MB full-page PNG included. **[implemented]** So `chrome_take_screenshot` has a deadline of 15 s,
-  after which it returns `unavailable` with `timeout`, names that cause, and the child is killed.
+  after which it returns `unavailable` with `timeout`, names that cause, and the child is killed. The adapter
+  opens new tabs in the foreground and selects existing tabs with focus.
 - **No browser running.** A tool that acts starts the desktop's browser through the launcher first (§3.10); one that
   only reads returns `unavailable` with the reason `browser_not_running` **[implemented]**. A reading call whose
   browser exits returns `unavailable` with `browser_exited`, and one past the deadline `unavailable` with `timeout`,
@@ -1701,10 +1705,11 @@ arbitration and approvals.
   its own deadline, kills the child, and returns `uncertain`. `isError` is not trusted for navigation: `navigate_page`
   reports a failed navigation as a success with "Unable to navigate … net::ERR_ABORTED", and a `javascript:` address
   it reported that way had run; the adapter turns such results into an error, or `uncertain` where the page may have
-  changed.
+  changed. **[implemented]** A failed navigation with ambiguous effects returns `uncertain`, as do actions whose
+  confirmation is lost after dispatch.
 - **Audit.** One entry per call like `computer_*` (§8.2), with typed and filled text reduced to its length, an address
   to its origin, and a script, a `javascript:` address included, recorded as a command line is (§5.7).
-  **[implemented]** for the tools that read: the entry carries the opaque page id, the agent desktop that served the
+  **[implemented]** The entry carries the opaque page id, the agent desktop that served the
   call, and the `screenshotRef` of a screenshot stored as `computer_screenshot`'s are (§9).
 - **Form fill.** Fills still go through the extension
   ([computer-form-fill-and-vault.md](computer-form-fill-and-vault.md)), never through `chrome_fill`, whose values are
@@ -2071,7 +2076,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   and its warning says so.
 - **Least scope**: `appAllowlist`, `redactApps` (window-level masking feasibility to be validated), granting a single display.
 - **Prompt injection**: screen content is untrusted; the session instructions say so (§5.6).
-- **DevTools endpoint [implemented; the tools that act design]**: a browser's remote-debugging port holds every
+- **DevTools endpoint [implemented]**: a browser's remote-debugging port holds every
   session of every signed-in site, and loopback is no boundary between local principals (measured: another account and
   a namespace-sharing container each read an HttpOnly cookie with no credential). So the launcher opens the port only
   on an isolated Computer in a network namespace of its own whose policy has the browser tier on, and the daemon
@@ -2579,13 +2584,10 @@ What the prototype adds to them:
   `DevToolsActivePort`, and the seed filter; clearing `Local State` with the tier off; no `devtools` under host
   networking or beside a sidecar. The Chrome DevTools MCP child moved to step 4, since nothing uses it before the
   tools.
-- **Step 4**: the child: `--wsEndpoint` and its flags, its stop on idle, lease end and browser exit, and its kill
-  after a restart; filtering the five extra tools; `isolatedContext`, temp-file screenshots, upload roots and the
-  child's `TMPDIR`; opaque page ids; the front tab before acting; the race against the browser's exit, and `isError`
-  on navigation. **[first half implemented]** The child, its flags and lifetime but the lease end, the filter,
-  `isolatedContext`, temp-file screenshots, its `TMPDIR`, opaque page ids, the race, the token's `br` claim, the
-  contract and the six tools that read; the lease, the front tab, upload roots, scripts and `isError` on navigation come
-  with the tools that act.
+- **Step 4 [implemented]**: the pinned child and its lifetime, the `computer-browser-v1` contract, the token's
+  `br` claim, opaque page ids, the six read tools and the fourteen acting tools on the desktop daemon. Acting calls
+  hold the control lease, bring the tab to the front, check file and script grants, and return an uncertain outcome
+  when the daemon loses confirmation of what Chrome did.
 - **Step 6**: the daemon's opaque page ids in `/view/api/browser`; no Runtime on the viewer's connection; Page on
   every page for dialogs; a 15–20 fps cap, `maxWidth` for narrow views and binary frames; following the front tab;
   input sent without waiting on replies.
