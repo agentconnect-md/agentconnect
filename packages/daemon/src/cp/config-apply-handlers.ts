@@ -145,7 +145,10 @@ export interface ConfigApplyRuntimeHost {
   usesMicrosandbox(agent: Agent): boolean
   gitCreds(): GitCredentialCache | undefined
   agentChannelServer(): AgentChannelServer | undefined
-  quiesceAgentWorkspaceAuthority(agentId: string): Promise<void>
+  /** `keepInbox`: the agent's unrun rows stay for whoever serves it next, as at a duty handover. */
+  quiesceAgentWorkspaceAuthority(agentId: string, keepInbox?: boolean): Promise<void>
+  /** Whether the session store is shared with the group's other members. */
+  sharedStore(): boolean
   /** End the agent's coordinators and their tasks where this machine's own store holds them, at a move's source cutover. */
   retireCoordinatorsForMove(agentId: string): Promise<void>
   discardClusterSandbox(agentId: string): Promise<void>
@@ -236,7 +239,8 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
           async () => {
             host.drainingAgents().add(agentId)
             host.cpDroppedAgents().add(agentId)
-            await host.quiesceAgentWorkspaceAuthority(agentId)
+            // On a shared store a detached agent's queued work is its current holder's: a restarted member's own stale roster must not delete it.
+            await host.quiesceAgentWorkspaceAuthority(agentId, action === 'detach' && host.sharedStore())
             const cpAgents = host.cpAgents()
             if (!cpAgents) throw new Error('agent registry is not ready')
             try {

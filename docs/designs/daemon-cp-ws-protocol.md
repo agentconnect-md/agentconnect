@@ -936,7 +936,10 @@ rollback fence above remains unchanged. The operator must separately confirm tha
 source machine is permanently stopped: while it is disconnected, the CP cannot fence a
 direct platform connection or erase its credential copies. If it reconnects after the
 CAS, the authoritative placement snapshot gives it an ownership-aware `drop.agents`
-detach for the stale local copy.
+detach for the stale local copy. On a shared session store that detach stops the
+local turns as a handover and leaves the agent's queued inbox rows in place: they are
+the work of the member that serves the agent now, which a pool member restarting with
+its earlier roster must not delete. A `remove` still deletes them.
 
 If target activation fails, the CP must positively detach the target before rolling placement back and reactivating the source; without that ACK it fails closed on the target to avoid split brain. A same-target API retry replays the authoritative bundle as a repair operation. Daemons advertise this hard-cutover lifecycle with the `agent-move-v1` feature; single-agent mode does not advertise it.
 
