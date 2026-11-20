@@ -218,7 +218,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, realpathSync } from 'node:fs'
-import { basename, dirname, join, posix, resolve } from 'node:path'
+import hostPath, { basename, dirname, join, posix, resolve } from 'node:path'
 import {
   installMicrosandbox,
   installedMicrosandbox,
@@ -14599,14 +14599,17 @@ export class Daemon {
     const location = this.workspaces.sessionFilesLocation(agent, key, row?.workspaceIsolation)
     const named = parseSessionFileName(path)
     if (named) return { ...named, location }
-    if (!posix.isAbsolute(path)) return undefined
     const offDisk = this.workspaces.offDiskFsFor(ctx.agentId, location.scope) !== undefined
+    // A pod or executor path is POSIX; one on this disk takes this host's rules, Windows included.
+    const paths = offDisk ? posix : hostPath
+    if (!paths.isAbsolute(path)) return undefined
     // The same directory by the path the agent was told and, locally, by its canonical one.
     const anchors = offDisk ? [location.anchor] : [location.anchor, realpathSync(location.anchor)]
     for (const anchor of anchors) {
       for (const area of SessionFileArea.options) {
-        const root = posix.join(anchor, ...location.segments, area)
-        if (path.startsWith(`${root}/`)) return { area, path: path.slice(root.length + 1), location }
+        const rel = paths.relative(paths.join(anchor, ...location.segments, area), path)
+        if (!rel || paths.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${paths.sep}`)) continue
+        return { area, path: rel.split(paths.sep).join('/'), location }
       }
     }
     return undefined
