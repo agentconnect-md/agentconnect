@@ -202,17 +202,24 @@ export class RtcSessions {
         }
       })
     })
+    const browser = offer.browser
+    const subscribeBrowser = this.options.browser
+    if (browser && subscribeBrowser) {
+      let frame = 0
+      // A static page can send its only frame as soon as the cast starts, so wait for the DataChannel to open.
+      channel.stateChanged.subscribe((state) => {
+        if (state !== 'open' || !this.sessions.has(session.id)) return
+        session.unsubscribe ??= subscribeBrowser(browser.maxWidth, browser.maxHeight, (jpeg) =>
+          sendBrowserFrame(channel, ++frame, jpeg, () => session.principal.valid?.() !== false)
+        )
+      })
+    }
     pc.connectionStateChange.subscribe((state) => {
       if (state === 'connected') {
         session.connected = true
         session.lastSeen = Date.now()
         this.options.log(`viewer ${client()}: WebRTC connected (${transport}${selectedPairType(pc)})`)
-        if (offer.browser && this.options.browser && !session.unsubscribe) {
-          let frame = 0
-          session.unsubscribe = this.options.browser(offer.browser.maxWidth, offer.browser.maxHeight, (jpeg) =>
-            sendBrowserFrame(channel, ++frame, jpeg, () => session.principal.valid?.() !== false)
-          )
-        } else if (track) session.unsubscribe ??= this.options.stream.subscribe(continuous(track))
+        if (track) session.unsubscribe ??= this.options.stream.subscribe(continuous(track))
       }
       if (state === 'failed' || state === 'closed' || state === 'disconnected') this.close(session.id)
     })
