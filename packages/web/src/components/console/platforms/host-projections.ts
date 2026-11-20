@@ -58,18 +58,27 @@ export function platformTiles(ids: readonly string[]): PlatformTile[] {
  */
 export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegistry.ids())
 
-/** Every picker choice: the chat platforms plus the core trigger kinds. None of
- *  the triggers is gated by daemon adapters — all live on the relay pool, and a
- *  code host the deployment has not configured says so in its own pane. */
-export const PLATFORMS: readonly PlatformTile[] = [
-  ...BOT_PLATFORMS,
+/** Place each module right before the tile its `pickerBefore` names; the rest keep registry order ahead of `core`. */
+function pickerOrder(core: readonly PlatformTile[]): PlatformTile[] {
+  const before = (tile: PlatformTile) => platformRegistry.get(tile.key)?.pickerBefore
+  const tiles = [...BOT_PLATFORMS.filter((tile) => !before(tile)), ...core]
+  // In registry order, each lands just ahead of its anchor, so modules sharing one anchor keep registry order.
+  for (const tile of BOT_PLATFORMS.filter(before)) {
+    const anchor = tiles.findIndex((candidate) => candidate.key === before(tile))
+    tiles.splice(anchor < 0 ? tiles.length : anchor, 0, tile)
+  }
+  return tiles
+}
+
+/** Every picker choice: the chat platforms plus the core trigger kinds, none gated by daemon adapters (they ride the relay pool). */
+export const PLATFORMS: readonly PlatformTile[] = pickerOrder([
   // One tile per code host with triggers the console can open a pane for; a tile that opens nothing is worse than none.
   ...TRIGGER_CODE_HOST_PROVIDERS.map((provider) => ({ key: provider, label: CODE_HOST_PROJECTION[provider].label })),
-  // The generic trigger closes the row: chat platforms and code hosts are the named products.
+  // The generic trigger follows the named products.
   { key: 'webhook', label: 'Webhook' },
   // The agent's chat APIs, one entry per protocol; not a trigger, but it lives in the same Workflow group.
   { key: 'api', label: 'API' }
-]
+])
 
 /** The core trigger kinds — every picker choice that is NOT a registry platform.
  *  Derived from the two lists rather than restated, so adding a trigger kind above

@@ -275,7 +275,8 @@ goes to the agent's editors in the Console.
 
 ### 4.1 The address's settings
 
-An Agent editor sets two things on the address, in its integration panel:
+An Agent editor sets two things on the address, in the Email settings dialog its
+integration card opens; the card states both in one line under the address:
 
 - **Who may write**: **Members** (the default, step 3 as above) or
   **Anyone**. Anyone admits every sender that is not automatic (step 1),
