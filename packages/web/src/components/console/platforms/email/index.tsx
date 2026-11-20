@@ -13,6 +13,7 @@ export const EMAIL_CHANNEL_LIST: WebChannelListSemantics = {
   roomNoun: 'thread',
   roomGlyph: '',
   leave: 'none',
+  roster: 'none',
   sessionModes: ['createNew']
 }
 

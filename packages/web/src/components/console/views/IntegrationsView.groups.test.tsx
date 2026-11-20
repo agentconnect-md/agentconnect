@@ -122,7 +122,7 @@ describe('the Integrations page’s groups', () => {
     expect(isOpen('sl-1')).toBe(false)
   })
 
-  it('promises a roster only for a platform that lists conversations', async () => {
+  it('promises a roster only for a platform that lists rooms', async () => {
     await render('bot=em-1')
     expect(host.querySelector('#integration-bot-em-1')?.parentElement?.textContent).not.toContain('No conversations')
 
