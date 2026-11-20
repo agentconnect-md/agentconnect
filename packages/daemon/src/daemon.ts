@@ -3087,6 +3087,7 @@ export class Daemon {
       root: () => this.opts.root,
       configPath: () => this.opts.configPath,
       upgradeInstaller: () => this.opts.upgradeInstaller,
+      microsandboxInUse: () => (this.k8s ? undefined : this.microsandboxInUse()),
       reportProgress: async (progress) => {
         await this.cpClient?.reportLifecycleProgress(progress)
       },
@@ -4884,9 +4885,11 @@ export class Daemon {
     }
   }
 
-  /** Probe the image's runtimes in a VM, as the host sweep probes the host install, whenever the strategy is available here; in the background, once a run (§5). */
+  /** Probe the image's runtimes in a VM once an agent here runs in microsandbox; in the background, once a run (§5). */
   private startMicrosandboxModelProbe(): void {
     if (this.k8s || this.vmModelProbe || !this.localExecutor || !this.strategyTable().microsandbox.available) return
+    // The probe installs msb and pulls the image, which no machine without a microsandbox agent should pay for.
+    if (!this.microsandboxInUse()) return
     // As for the host sweep, fake hosts spawn nothing unless a probe seam is injected.
     if (this.opts.hostFactory && !this.opts.probeHostFactory) return
     const probe = new AbortController()
@@ -6954,6 +6957,8 @@ export class Daemon {
       await this.decisionRouter.recover()
     }
     if (!this.reconcileRun && !this.reconcilePending) {
+      // An agent that moved into microsandbox starts the probe a boot without one skipped.
+      if (this.startupComplete) this.startMicrosandboxModelProbe()
       this.decisionGate.retainAgents(new Set(this.agents.keys()))
       this.decisionGate.kick()
       this.decisionRouter.retainHosted()
@@ -7853,6 +7858,11 @@ export class Daemon {
 
   private usesMicrosandbox(agent: Agent): boolean {
     return !this.k8s && this.agentStrategy(agent) === 'microsandbox'
+  }
+
+  private microsandboxInUse(): boolean {
+    for (const agent of this.agents.values()) if (this.usesMicrosandbox(agent)) return true
+    return false
   }
 
   private microsandboxPlacement(agent: LoadedAgent, cwd: string, key?: HostKey): LocalMicrosandboxPlacement {

@@ -314,8 +314,9 @@ it; its startup probe makes it available or records why not, and placement reads
 the effective table. On-by-default is safe only because every availability probe is
 cheap and has no side effects: the microsandbox probe checks a usable `/dev/kvm`, and
 msb and libkrunfw where the daemon's store already holds them, and installs, pulls and
-boots nothing. A machine without KVM stops there. Only when it passes does the daemon,
-in the background and after it is ready, install msb when needed, prepare the image and
+boots nothing. A machine without KVM stops there. Only when it passes and one of its
+agents names `microsandbox` does the daemon, in the background and after it is ready,
+install msb when needed, prepare the image and
 probe the image's models (below); the runtime table that preparation reads is recorded
 against the image's identity, so a restart on the same image boots no preparation VM.
 The backend's state collection runs whenever the strategy is enabled, not only when it
@@ -443,7 +444,7 @@ entry per strategy the machine offers — available or unavailable with a reason
 advertised `models`, and their `modelsSource` — and each entry comes from the install
 that strategy starts: the host store's probe for `host` and `srt`, and for
 `microsandbox` the same runtime probe run in the image. Whenever the strategy is
-available, the daemon boots one probe VM in the background, once a run and after the
+available and an agent names it, the daemon boots one probe VM in the background, once a run and after the
 image is prepared, and probes the image's runtimes through its shim one at a time:
 spawn, `initialize` and a throwaway `session/new` within the host probe's per-runtime
 budget, each runtime launched as a local VM session of it would be, with this

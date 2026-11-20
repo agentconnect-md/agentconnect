@@ -32,6 +32,9 @@ export const UPGRADE_TRIAL_MAX_FAILURES = 3
 /** File under the AgentConnect root recording a version prune a live daemon deferred; its next start on `current` runs it. */
 export const VERSION_PRUNE_DEFERRED_FILE = 'version-prune-deferred.json'
 
+/** Default retention for automatic and manual version pruning: how many installed versions to keep in total. */
+export const DEFAULT_KEEP_VERSIONS = 3
+
 export const DeferredVersionPrune = z.object({
   keep: z.number().int().min(1),
   protect: z.array(z.string().min(1)).default([])

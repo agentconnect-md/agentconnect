@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -271,6 +271,8 @@ describe('a session in a strategy this machine cannot run', () => {
 
 describe('a runtime under each strategy this machine offers', () => {
   const IMAGE = { microsandbox: { image: 'registry.example.test/runtime:test' } }
+  // The probe pulls the image, so it runs only on a machine with an agent in microsandbox.
+  const VM_AGENT = { execution: 'microsandbox' }
 
   it('reports the host probe’s models for host and srt, and none for a VM whose image is not read yet', async () => {
     const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
@@ -344,7 +346,7 @@ describe('a runtime under each strategy this machine offers', () => {
   })
 
   it('probes the image’s runtimes in a VM where the strategy is available, replacing a carried list', async () => {
-    const root = scaffold({ sandbox: IMAGE })
+    const root = scaffold({ sandbox: IMAGE }, VM_AGENT)
     recordImageModels(root, { 'arbitrary-acp': ['m-previous'] })
     const { daemon, stop } = await boot({ root, srt: true, kvm: true })
     const vm = () => daemon.runtimeFacts.profileFor('arbitrary-acp').strategies.microsandbox
@@ -372,7 +374,7 @@ describe('a runtime under each strategy this machine offers', () => {
   })
 
   it('keeps the carried list when the runtime fails in the VM', async () => {
-    const root = scaffold({ sandbox: IMAGE })
+    const root = scaffold({ sandbox: IMAGE }, VM_AGENT)
     recordImageModels(root, { 'arbitrary-acp': ['m-previous'] })
     const { daemon, stop } = await boot({ root, srt: true, kvm: true })
     const { manager } = probeMachine(daemon)
@@ -393,7 +395,7 @@ describe('a runtime under each strategy this machine offers', () => {
   })
 
   it('adopts no manager and prepares no image once shutdown began during the msb install', async () => {
-    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }, VM_AGENT), srt: true, kvm: true })
     const manager = { recover: vi.fn(async () => {}), prepare: vi.fn(), stopAll: vi.fn(async () => {}) }
     let installed!: (value: unknown) => void
     install.mockImplementationOnce(() => new Promise((resolve) => (installed = resolve)))
@@ -409,7 +411,7 @@ describe('a runtime under each strategy this machine offers', () => {
   })
 
   it('prepares no image once shutdown began while the manager recovered', async () => {
-    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }), srt: true, kvm: true })
+    const { daemon, stop } = await boot({ root: scaffold({ sandbox: IMAGE }, VM_AGENT), srt: true, kvm: true })
     let recovered!: () => void
     const manager = {
       recover: vi.fn(() => new Promise<void>((resolve) => (recovered = resolve))),
@@ -425,6 +427,26 @@ describe('a runtime under each strategy this machine offers', () => {
     recovered()
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(manager.prepare).not.toHaveBeenCalled()
+  })
+
+  it('pulls nothing until an agent runs in microsandbox, then probes once one moves in', async () => {
+    install.mockClear()
+    const root = scaffold({ sandbox: IMAGE })
+    const { daemon, stop } = await boot({ root, srt: true, kvm: true })
+    try {
+      daemon.opts.probeHostFactory = probeHosts({})
+      daemon.startMicrosandboxModelProbe()
+      await daemon.reconcile()
+      expect(daemon.vmModelProbe).toBeUndefined()
+      expect(install).not.toHaveBeenCalled()
+      const agentFile = join(root, 'agents', AGENT_ID, 'agent.json')
+      writeFileSync(agentFile, JSON.stringify({ ...JSON.parse(readFileSync(agentFile, 'utf8')), ...VM_AGENT }))
+      await daemon.reconcile()
+      expect(daemon.vmModelProbe).toBeDefined()
+      await vi.waitFor(() => expect(install).toHaveBeenCalled())
+    } finally {
+      await stop()
+    }
   })
 
   it('probes no VM where microsandbox is unavailable or withdrawn', async () => {

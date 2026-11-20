@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FakeClock, WireError } from '@agentconnect.md/connection'
@@ -21,6 +21,7 @@ import {
   writeTrialMarker
 } from '../src/lifecycle/auto-upgrade-store.js'
 import type { Quiescence } from '../src/lifecycle/quiescence.js'
+import { recordUpgradePrune } from '../src/lifecycle/cli-upgrade.js'
 
 const silent = { trace() {}, debug() {}, info() {}, warn() {}, error() {} }
 const roots: string[] = []
@@ -362,6 +363,53 @@ describe('AutoUpgrader', () => {
     await h.upgrader.onCpReady()
     await flush()
     expect(h.cli.mock.calls.filter(([a]) => a[1] === 'prune')).toEqual([[['version', 'prune', '--deferred', '1.1.0']]])
+  })
+
+  // A CLI older than the deferral record rejects `--deferred`; its plain prune keeps current and previous.
+  const legacyRoot = (current: string) => {
+    const root = mkdtempSync(join(tmpdir(), 'agentconnect-auto-upgrade-'))
+    mkdirSync(join(root, 'versions', current), { recursive: true })
+    symlinkSync(`versions/${current}`, join(root, 'current'))
+    writeFileSync(join(root, VERSION_PRUNE_DEFERRED_FILE), JSON.stringify({ keep: 2, protect: [current] }))
+    return root
+  }
+  const legacyCli = async (args: string[]): Promise<CliRunResult> =>
+    args.includes('--deferred')
+      ? { ok: false, stderr: "error: unknown option '--deferred'\n" }
+      : { ok: true, stderr: '' }
+
+  it.skipIf(process.platform === 'win32')('falls back to the plain prune for a CLI without --deferred', async () => {
+    const root = legacyRoot('1.1.0')
+    const h = harness({ root, version: '1.1.0' })
+    h.cli.mockImplementation(legacyCli)
+    await h.upgrader.onCpReady()
+    await flush()
+    expect(h.cli.mock.calls.map(([a]) => a)).toEqual([
+      ['version', 'prune', '--deferred', '1.1.0'],
+      ['version', 'prune', '--keep', '2']
+    ])
+    expect(existsSync(join(root, VERSION_PRUNE_DEFERRED_FILE))).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('keeps the legacy prune for a daemon not running current', async () => {
+    const root = legacyRoot('1.2.0')
+    const h = harness({ root, version: '1.1.0' })
+    h.cli.mockImplementation(legacyCli)
+    await h.upgrader.onCpReady()
+    await flush()
+    expect(h.cli.mock.calls.map(([a]) => a)).toEqual([['version', 'prune', '--deferred', '1.1.0']])
+    expect(existsSync(join(root, VERSION_PRUNE_DEFERRED_FILE))).toBe(true)
+  })
+
+  it('records the prune after an upgrade unless the CLI already deferred one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agentconnect-auto-upgrade-'))
+    roots.push(root)
+    const file = join(root, VERSION_PRUNE_DEFERRED_FILE)
+    recordUpgradePrune(root, '1.1.0', silent)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ keep: 3, protect: ['1.1.0'] })
+    writeFileSync(file, JSON.stringify({ keep: 5, protect: ['1.0.0'] }))
+    recordUpgradePrune(root, '1.2.0', silent)
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ keep: 5, protect: ['1.0.0'] })
   })
 
   it('spawns no prune without a deferral or when the daemon cannot run the CLI', async () => {
