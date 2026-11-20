@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import type { IntegrationRow } from '@/lib/data'
 import { Button, Icon } from '@/components/ui'
+import { platformAgentCard } from '@/components/console/platforms/registry'
 
 // Confirm-delete an integration: the bot identity stays freed for reuse, unless its platform releases it with the last install.
 export default function DeleteIntegrationModal({
@@ -18,6 +19,7 @@ export default function DeleteIntegrationModal({
   const { deleteIntegration, bots } = useConsoleData()
   const bot = bots.find((candidate) => candidate.id === integration.botId)
   const released = bot?.releasedWhenFreed === true && bot.agentIds.every((id) => id === integration.agentId)
+  const RemoveBody = platformAgentCard(integration.platform)?.RemoveBody
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -47,9 +49,13 @@ export default function DeleteIntegrationModal({
       </div>
       <div className="modalbody">
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          {t.rich(released ? 'bodyReleased' : 'body', {
-            name: () => <span className="mono text-(--text-primary)">{integration.name}</span>
-          })}
+          {RemoveBody ? (
+            <RemoveBody integration={integration} />
+          ) : (
+            t.rich(released ? 'bodyReleased' : 'body', {
+              name: () => <span className="mono text-(--text-primary)">{integration.name}</span>
+            })
+          )}
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>

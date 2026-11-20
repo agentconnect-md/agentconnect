@@ -15,6 +15,7 @@ import type {
   WebUnnamedSubject
 } from './contract'
 import { discordModule } from './discord'
+import { emailModule } from './email'
 import { feishuModule } from './feishu'
 import { dingTalkModule } from './dingtalk'
 import { googleChatModule } from './googlechat'
@@ -49,7 +50,8 @@ const MODULES: readonly WebPlatformModule[] = [
   weComModule,
   weChatModule,
   QQModule,
-  linearModule
+  linearModule,
+  emailModule
 ]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))

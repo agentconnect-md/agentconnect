@@ -18,13 +18,13 @@ const integration = { id: 'int-1', agentId: 'agent-a', botId: 'bot-1', name: 'Go
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 
-async function render(bot: Partial<BotDto> | null): Promise<string> {
+async function render(bot: Partial<BotDto> | null, row: IntegrationRow = integration): Promise<string> {
   data.bots = bot ? [{ id: 'bot-1', agentIds: ['agent-a'], ...bot }] : []
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
-    root!.render(<DeleteIntegrationModal integration={integration} onClose={() => {}} />)
+    root!.render(<DeleteIntegrationModal integration={row} onClose={() => {}} />)
   })
   return host.textContent ?? ''
 }
@@ -51,6 +51,17 @@ describe('DeleteIntegrationModal', () => {
     const text = await render({ releasedWhenFreed: true })
     expect(text).toContain('The bot identity is deleted with it')
     expect(text).not.toContain('Settings → Bots')
+  })
+
+  it('says an email address is retired for good, never that it can be connected again', async () => {
+    const text = await render(
+      { releasedWhenFreed: true },
+      { ...integration, platform: 'email', name: 'help@example.test' }
+    )
+    expect(text).toContain(
+      'help@example.test will be removed, and its address is retired for good: it is never issued again.'
+    )
+    expect(text).not.toContain('connected again')
   })
 
   it('keeps the default while another agent still holds the bot', async () => {

@@ -3,6 +3,7 @@
 
 import type { ComponentType } from 'react'
 import { DiscordMark } from './discord/mark'
+import { EmailMark } from './email/mark'
 import { FeishuMark } from './feishu/mark'
 import { DingTalkMark } from './dingtalk/mark'
 import { GoogleChatMark } from './googlechat/mark'
@@ -46,6 +47,7 @@ const MARKS = new Map<string, PlatformMarkComponent>([
   ['msteams', MsTeamsMark],
   ['wechat', WeChatMark],
   ['wecom', WeComMark],
+  ['email', EmailMark],
   // Lark and Feishu are one platform id (`feishu`) with the cloud on a separate
   // `region` field, so nothing in the console routes a bare 'lark' here today.
   // The alias is kept because the id IS the other cloud's brand name and the

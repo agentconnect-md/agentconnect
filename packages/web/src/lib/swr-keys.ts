@@ -61,6 +61,10 @@ export const consoleKeys = {
   googleChatApp: (orgId: string | null | undefined) => consoleKey(orgId, 'googlechat-app'),
   /** The deployment's own Teams app (`GET /integrations/msteams/app`). */
   msTeamsApp: (orgId: string | null | undefined) => consoleKey(orgId, 'msteams-app'),
+  /** Which registry platforms a deployment setting offers, as their modules' `offered` reads answer. */
+  platformOffers: (orgId: string | null | undefined) => consoleKey(orgId, 'platform-offers'),
+  /** One email address name's availability (`GET /integrations/email/address`); the empty name reads the mail domain alone. */
+  emailAddress: (orgId: string | null | undefined, name: string) => consoleKey(orgId, 'email-address', name),
   /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
   githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
   /** The built-in App's slug (`GET /github/app`). */

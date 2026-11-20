@@ -41,7 +41,7 @@ const wizardOf = (id: string) => {
 }
 
 describe('platform registry', () => {
-  it('registers exactly the eleven chat platforms, in picker order', () => {
+  it('registers exactly the twelve chat platforms, in picker order', () => {
     const ids = [
       'slack',
       'msteams',
@@ -53,7 +53,8 @@ describe('platform registry', () => {
       'wecom',
       'wechat',
       'qq',
-      'linear'
+      'linear',
+      'email'
     ]
     expect(platformRegistry.ids()).toEqual(ids)
     expect(platformRegistry.all().map((m) => m.platformId)).toEqual(ids)
@@ -350,6 +351,12 @@ describe('invite hint copy', () => {
       undefined,
       'invite the bot to any issue in Linear and @-mention it to start.',
       '把机器人拉进Linear的任意议题，并 @ 它即可开始使用。'
+    ],
+    [
+      'email',
+      undefined,
+      'write to the address from your sign-in email to start.',
+      '用你的登录邮箱给这个地址写信即可开始。'
     ]
   ]
 

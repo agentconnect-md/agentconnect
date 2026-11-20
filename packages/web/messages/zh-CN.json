@@ -2633,6 +2633,7 @@
         "listen": "把机器人拉进{platform}的任意{target}，它就会开始接收消息。",
         "mention": "把机器人拉进{platform}的任意{target}，并 @ 它即可开始使用。",
         "direct": "在{platform}里直接给机器人发消息即可开始；它不能加入{target}。",
+        "mail": "用你的登录邮箱给这个地址写信即可开始。",
         "targets": {
           "channel": "频道",
           "group": "群",
@@ -2688,6 +2689,10 @@
         "wecom": {
           "create": "在企业微信中创建智能机器人",
           "existing": "未使用的企业微信机器人"
+        },
+        "email": {
+          "create": "为这个 agent 选择地址",
+          "existing": "地址不会转给其他 agent"
         }
       },
       "api": {
@@ -6625,7 +6630,8 @@
   "Platforms": {
     "unnamed": {
       "wecomGroup": "企业微信群 · {tag}",
-      "wecomMember": "企业微信成员 · {tag}"
+      "wecomMember": "企业微信成员 · {tag}",
+      "emailThread": "邮件会话 · {tag}"
     },
     "chrome": {
       "delivery": {
@@ -7426,6 +7432,30 @@
         "updated": "Secret 已保存，机器人会使用它重新连接。"
       },
       "brand": "企业微信"
+    },
+    "email": {
+      "brand": "邮件",
+      "address": "地址",
+      "placeholder": "名称",
+      "checking": "正在检查…",
+      "available": "{address} 可以使用。",
+      "checkFailed": "无法检查这个名称，请稍后重试。",
+      "reason": {
+        "not_configured": "此部署尚未设置邮件。",
+        "length": "地址名称长度为 3 到 40 个字符。",
+        "characters": "只能使用小写字母、数字、点和连字符，并以字母或数字开头和结尾。",
+        "reserved": "这个名称已被保留，请换一个。",
+        "taken": "这个地址正在使用或曾经使用过，地址不会重复分配。请换一个名称。"
+      },
+      "create": "创建",
+      "creating": "正在创建…",
+      "done": "完成",
+      "created": "成员用登录邮箱发往这个地址的邮件会送达这个 agent。",
+      "copy": "复制",
+      "copied": "已复制",
+      "copyAddress": "复制地址",
+      "remove": "将移除 <name></name>，它的地址会永久停用，不会再分配给任何人。",
+      "retired": "这个地址会永久停用，不会再分配给任何人。"
     }
   },
   "Computers": {
