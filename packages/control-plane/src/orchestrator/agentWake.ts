@@ -48,7 +48,11 @@ export class AgentWakeCoordinator {
     if (recent && this.clock.now() - recent.at < this.debounceMs) return { state: recent.state, coalesced: true }
     const attempt = send()
       .then((ok) => {
-        this.settled.set(key, { state: ok.state, at: this.clock.now() })
+        const now = this.clock.now()
+        // Keyed per agent and caller for a prewarm, so answers that can no longer be reused are dropped.
+        for (const [settledKey, entry] of this.settled)
+          if (now - entry.at >= this.debounceMs) this.settled.delete(settledKey)
+        this.settled.set(key, { state: ok.state, at: now })
         return ok.state
       })
       .finally(() => this.inflight.delete(key))

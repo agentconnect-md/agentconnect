@@ -6,6 +6,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { deliveredMessage } from '../src/auto-session/coordinator-sessions.js'
 import {
+  COORDINATOR_PREWARM_MS,
   prewarmsTask,
   TaskPrewarms,
   TASK_PREWARM_GRACE_MS,
@@ -13,6 +14,7 @@ import {
   TASK_PREWARMS_PER_TURN
 } from '../src/auto-session/task-prewarm.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import { coordinatorConversationId } from '@agentconnect.md/protocol'
 import { sessionKey } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
@@ -147,6 +149,16 @@ describe('a prewarmed task host', () => {
     expect(release).toHaveBeenCalledWith('task-1')
   })
 
+  it('is released at its own window when one is given, as a page’s prewarm is', async () => {
+    vi.useFakeTimers()
+    const { release, prewarms: p } = prewarms()
+    p.begin('page:u1', 'bot-a', 'coordinator-1', COORDINATOR_PREWARM_MS)
+    await vi.advanceTimersByTimeAsync(COORDINATOR_PREWARM_MS - 1)
+    expect(release).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(release).toHaveBeenCalledWith('coordinator-1')
+  })
+
   it('starts nothing once shut down', async () => {
     const { start, prewarms: p } = prewarms()
     await p.stop(true)
@@ -256,5 +268,49 @@ describe('a coordinator turn prewarms', () => {
     const local = await boot({ mode: 'from-scratch' }, false)
     await local.d.prewarmCoordinatorTasks('bot-a', 'coord', [deliveredMessage(slack('1.1', { isDm: true }))])
     expect(local.prewarmed()).toEqual([])
+  })
+})
+
+describe('opening the console prewarms the member’s coordinator (§4.9)', () => {
+  const ORG_ID = 'org-1'
+  const conversation = (userId: string) => coordinatorConversationId(ORG_ID, userId, 'bot-a')
+
+  async function withCoordinator(userId: string) {
+    const booted = await boot()
+    booted.d.orgForAgent = () => ORG_ID
+    const coordinate: string = await booted.d.store.resolveAppendCoordinate(
+      'bot-a',
+      conversation(userId),
+      null,
+      1,
+      'coordinator'
+    )
+    return { ...booted, key: sessionKey('webchat', conversation(userId), coordinate, 'bot-a') }
+  }
+
+  it('starts the host of the member’s existing coordinator, held for its own window', async () => {
+    const { d, key, prewarmed } = await withCoordinator('u1')
+    await d.prewarmWebchatCoordinator('bot-a', 'u1')
+    expect(prewarmed()).toEqual([key])
+    await d.taskPrewarms.stop()
+  })
+
+  it('only wakes for a member with no coordinator yet, and mints none', async () => {
+    const { d, prewarmed } = await boot()
+    d.orgForAgent = () => ORG_ID
+    await d.prewarmWebchatCoordinator('bot-a', 'u2')
+    expect(prewarmed()).toEqual([])
+    expect(await d.store.currentAppendCoordinate('bot-a', conversation('u2'), null, 'coordinator')).toBeUndefined()
+  })
+
+  it('leaves a running coordinator host, and one whose coordinator runs on another runtime', async () => {
+    const running = await withCoordinator('u1')
+    running.d.modelSessions.has = (key: string) => key === running.key
+    await running.d.prewarmWebchatCoordinator('bot-a', 'u1')
+    expect(running.prewarmed()).toEqual([])
+    const moved = await withCoordinator('u1')
+    moved.d.agents.get('bot-a').coordinatorModel = { runtime: 'codex-acp', model: 'gpt-6-luna' }
+    await moved.d.prewarmWebchatCoordinator('bot-a', 'u1')
+    expect(moved.prewarmed()).toEqual([])
   })
 })

@@ -155,6 +155,7 @@ import {
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   SESSION_WAKE_FEATURE,
+  COORDINATOR_PREWARM_FEATURE,
   RUNTIME_PROBE_FEATURE,
   COMPUTER_POOL_MEMBER_FEATURE,
   COMPUTER_POOL_FEATURE,
@@ -1217,7 +1218,12 @@ import {
   THREADED_TASK_IDLE_CLOSE_MS
 } from './auto-session/coordinator-sessions.js'
 import { coordinatorThreadContext } from './auto-session/coordinator-thread-context.js'
-import { prewarmsTask, TaskPrewarms, TASK_PREWARMS_PER_TURN } from './auto-session/task-prewarm.js'
+import {
+  COORDINATOR_PREWARM_MS,
+  prewarmsTask,
+  TaskPrewarms,
+  TASK_PREWARMS_PER_TURN
+} from './auto-session/task-prewarm.js'
 import {
   answerThreadOf,
   batchCut,
@@ -10357,7 +10363,7 @@ export class Daemon {
       ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
-      ...(this.k8s ? [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE] : []),
+      ...(this.k8s ? [AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE, COORDINATOR_PREWARM_FEATURE] : []),
       // Only a cluster daemon places a watcher by session; elsewhere the loop runs in this process either way.
       ...(this.k8s ? [AUTO_MERGE_SESSION_FEATURE] : []),
       // A managed pool refreshes on its timer alone; only a deployment that opts in takes requests.
@@ -16156,14 +16162,41 @@ export class Daemon {
     }
   }
 
-  /** Start a prewarmed task's model host as its first turn would, in the agent's pod. */
+  /** Start a member's coordinator host when they open the console on the agent, before their first message (auto-session-mode.md §4.9). */
+  private async prewarmWebchatCoordinator(agentId: string, userId: string): Promise<void> {
+    if (!this.modelSessions.enabled || !this.k8sPlane) return
+    if (this.draining || this.drainingAgents.has(agentId) || !this.servesAgent(agentId)) return
+    const agent = this.agents.get(agentId)
+    const orgId = this.orgForAgent(agentId)
+    if (!agent || orgId === undefined) return
+    // A coordinator on another runtime than the agent's moves there at its turn, which a host started here would miss.
+    const settings = this.coordinatorSettings(agentId)
+    if (settings && settings.runtime !== agent.runtime) return
+    try {
+      const conversationId = coordinatorConversationId(orgId, userId, agentId)
+      // Never minted here: a member's first message mints their coordinator, so one who has none gets only the pod wake.
+      const coordinate = await this.webchatCoordinator(agentId, conversationId, userId, false)
+      if (coordinate === undefined) return
+      const key = sessionKey('webchat', conversationId, coordinate, agentId)
+      // Checked with no await before `begin`: a running host is the coordinator's own, and a turn owning the key would race it.
+      if (this.draining || this.inflight.has(key) || this.modelSessions.has(key)) return
+      this.taskPrewarms.begin(`page:${userId}`, agentId, key, COORDINATOR_PREWARM_MS)
+    } catch (err) {
+      this.log.debug(
+        `coordinator: prewarming the host of ${userId}'s coordinator with ${agentId} failed: ${formatErr(err)}`
+      )
+    }
+  }
+
+  /** Start a prewarmed session's model host as its first turn would, in the agent's pod. */
   private async startTaskPrewarm(agentId: string, taskKey: string): Promise<void> {
     const agent = this.sessionAgent(agentId, taskKey)
     if (!agent) return
     try {
+      // No model named: the pool resolves the session's override, then a coordinator's model, as the turn does.
       await this.modelSessions.ensure(agent, taskKey)
     } catch (err) {
-      this.log.debug(`coordinator: prewarming the task host of ${taskKey} failed: ${formatErr(err)}`)
+      this.log.debug(`coordinator: prewarming the host of ${taskKey} failed: ${formatErr(err)}`)
     }
   }
 
@@ -32912,6 +32945,7 @@ export class Daemon {
       cancelSessionByKey: (key, actor) => this.stopSessionByKey(key, actor),
       autoMerge: () => this.autoMergeWatcher,
       sandboxHolds: () => this.sandboxHolds,
+      prewarmCoordinator: (agentId, userId) => void this.prewarmWebchatCoordinator(agentId, userId),
       withWorkspaceFileWrite: <T>(agentId: string, write: () => Promise<T>): Promise<T> =>
         this.withWorkspaceFileWrite(agentId, write),
       withWorkspacePull: <T>(agentId: string, pull: () => Promise<T>): Promise<T> =>

@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { AGENT_WAKE_FEATURE, SESSION_WAKE_FEATURE } from '@agentconnect.md/protocol'
+import { AGENT_WAKE_FEATURE, COORDINATOR_PREWARM_FEATURE, SESSION_WAKE_FEATURE } from '@agentconnect.md/protocol'
 import type { AgentWakeOk, AgentWakeReq, AgentWakeState } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
@@ -275,5 +275,56 @@ describe('POST /agents/:id/wake?sessionId= — one session’s own sandbox', () 
     control.failure = null
     expect((await wakeSession(running, session)).statusCode).toBe(202)
     expect(control.calls).toHaveLength(2)
+  })
+})
+
+describe('POST /agents/:id/prewarm — the console opened on the agent', () => {
+  const PREWARM_CAPS = { ...CAPS, features: [AGENT_WAKE_FEATURE, COORDINATOR_PREWARM_FEATURE] }
+  const prewarm = (running: HttpApp, id = AGENT) =>
+    running.app.inject({ method: 'POST', url: `${ORG}/agents/${id}/prewarm` })
+
+  it('wakes the sandbox and names the caller’s coordinator, stamped from the session and debounced per caller', async () => {
+    await poolMember(HOLDER, PREWARM_CAPS)
+    await seedPoolAgent()
+    await grantDuty(HOLDER, AGENT)
+    const control = new WakeSpy()
+    const running = app(control)
+
+    expect((await prewarm(running)).statusCode).toBe(202)
+    expect((await prewarm(running)).statusCode).toBe(202)
+    expect(control.calls).toEqual([
+      {
+        daemonId: HOLDER,
+        req: { agentId: AGENT, prewarmCoordinator: { userId: DEFAULT_OWNER_ID } },
+        orgId: DEFAULT_ORG_ID
+      }
+    ])
+    // Another member's console is another caller's coordinator.
+    const member = await makeUser(`prewarm-member-${randomUUID()}`, 'collaborator')
+    expect((await prewarm(app(control, { userId: member }))).statusCode).toBe(202)
+    expect(control.calls.map((c) => c.req.prewarmCoordinator?.userId)).toEqual([DEFAULT_OWNER_ID, member])
+  })
+
+  it('sends a member too old to start a coordinator host the plain wake', async () => {
+    await poolMember(HOLDER)
+    await seedPoolAgent()
+    await grantDuty(HOLDER, AGENT)
+    const control = new WakeSpy()
+
+    expect((await prewarm(app(control))).statusCode).toBe(202)
+    expect(control.calls.map((c) => c.req)).toEqual([{ agentId: AGENT }])
+  })
+
+  it('answers 200 unsupported for a machine-placed agent, and refuses a viewer', async () => {
+    await seedDaemon(prisma, MACHINE)
+    await seedAgent(prisma, AGENT, { daemonId: MACHINE })
+    const control = new WakeSpy()
+
+    const res = await prewarm(app(control))
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ state: 'unsupported' })
+    const viewer = await makeUser(`prewarm-viewer-${randomUUID()}`, 'viewer')
+    expect((await prewarm(app(control, { userId: viewer }))).statusCode).toBe(403)
+    expect(control.calls).toHaveLength(0)
   })
 })

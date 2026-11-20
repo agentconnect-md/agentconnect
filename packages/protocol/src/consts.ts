@@ -201,6 +201,9 @@ export const AGENT_WAKE_FEATURE = 'agent-wake-v1'
 /** Daemon honours `agent/wake.sessionId` — resume that session's own pod, never the agent's; an older daemon strips the field and wakes the agent pod, so the CP sends it only to one advertising this. */
 export const SESSION_WAKE_FEATURE = 'session-wake-v1'
 
+/** Daemon honours `agent/wake.prewarmCoordinator` — also start that member's coordinator host (auto-session-mode.md §4.9); the CP sends the field only to one advertising this. */
+export const COORDINATOR_PREWARM_FEATURE = 'coordinator-prewarm-v1'
+
 /** Daemon serves `daemon/runtimes/probe` (the self-hosted console's "refresh runtimes"); a managed pool refreshes on its timer alone. */
 export const RUNTIME_PROBE_FEATURE = 'runtime-probe-v1'
 

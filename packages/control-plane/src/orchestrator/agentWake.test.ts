@@ -68,3 +68,14 @@ describe('AgentWakeCoordinator', () => {
     await expect(wakes.wake('a3', send)).resolves.toEqual({ state: 'starting', coalesced: false })
   })
 })
+
+describe('AgentWakeCoordinator memory', () => {
+  it('drops answers past the window, so per-caller keys do not pile up', async () => {
+    const clock = new FakeClock(0)
+    const wakes = new AgentWakeCoordinator(clock)
+    await wakes.wake('a1:u1', async () => ok('starting'))
+    clock.advance(AGENT_WAKE_DEBOUNCE_MS)
+    await wakes.wake('a1:u2', async () => ok('starting'))
+    expect([...(wakes as unknown as { settled: Map<string, unknown> }).settled.keys()]).toEqual(['a1:u2'])
+  })
+})

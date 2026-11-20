@@ -80,7 +80,7 @@ import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
 import { openCoordinatorConversation } from '@/lib/api'
-import { opensCoordinator } from '@/components/console/playground/coordinator'
+import { opensCoordinator, prewarmAgentOnOpen, prewarmsOnOpen } from '@/components/console/playground/coordinator'
 
 // Design composer selectors: agent/model are "pills" (rounded, with a leading
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
@@ -378,6 +378,12 @@ export default function HomeView() {
   const notReadyMember = members.find((m) => !agentReady(m))
   // auto-session-mode.md §10: one agent opens the member's private coordinator with it, which follows the agent's own settings.
   const coordinated = !multi && !!agent && !MOCK_MODE && opensCoordinator(agent, daemons, memberSets)
+  // auto-session-mode.md §4.9: the agent's pod and the member's coordinator start while they compose.
+  // Keyed on the id alone, so a refetch that only renews the agent row asks nothing again.
+  const prewarmAgentId = coordinated && agent && prewarmsOnOpen(agent, orgSetIds) ? agent.id : undefined
+  useEffect(() => {
+    if (prewarmAgentId) prewarmAgentOnOpen(prewarmAgentId)
+  }, [prewarmAgentId])
 
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return

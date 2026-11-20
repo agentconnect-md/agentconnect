@@ -4264,6 +4264,11 @@ export async function wakeAgent(agentId: string, sessionId?: string): Promise<Ag
   return apiPost<AgentWakeDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/wake${q}`, {})
 }
 
+// POST /agents/:id/prewarm — the console opened on an agent: wake its sandbox and start the caller's coordinator host (auto-session-mode.md §4.9).
+export async function prewarmAgent(agentId: string): Promise<AgentWakeDto> {
+  return apiPost<AgentWakeDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/prewarm`, {})
+}
+
 export async function fetchAgentTasks(agentId: string, sessionId: string): Promise<AgentTasksDto> {
   const q = new URLSearchParams({ sessionId })
   return apiGet<AgentTasksDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/tasks?${q.toString()}`)

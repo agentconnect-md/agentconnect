@@ -226,6 +226,8 @@ export interface CpClientSeamHost {
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
   sandboxHolds(): SandboxHolds
+  /** Start a member's coordinator host ahead of their first message (auto-session-mode.md §4.9). */
+  prewarmCoordinator(agentId: string, userId: string): void
   withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T>
   /** The file-write coordination for a pull of the agent's own checkout, which stops only the hosts that can read it. */
   withWorkspacePull<T>(agentId: string, pull: () => Promise<T>): Promise<T>
@@ -528,6 +530,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         host.agents().has(id) && (!host.dutyCoordinator().dutyEnforced() || host.duties().holdsAgent(id)),
       claimDuty: async (id) =>
         host.dutyCoordinator().dutyEnforced() && (await host.dutyCoordinator().claimDutyForTrigger(id)).granted,
+      prewarmCoordinator: (id, userId) => host.prewarmCoordinator(id, userId),
       log: host.log()
     }),
     memoryEntriesWrite: createMemoryEntriesWriter(
