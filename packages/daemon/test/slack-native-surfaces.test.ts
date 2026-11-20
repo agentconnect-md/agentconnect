@@ -221,6 +221,84 @@ describe('Slack Canvas tools', () => {
   })
 })
 
+describe('Slack PR tab', () => {
+  const prUrl = 'https://github.com/acme/web/pull/3406'
+  const slackError = (code: string) => Object.assign(new Error(code), { data: { ok: false, error: code } })
+
+  it("publishes Slack's own pull-request view where the workspace accepts one", async () => {
+    const f = await fixture()
+    try {
+      f.api.setView.mockResolvedValueOnce({ ok: true, view_id: 'V_PR' })
+      expect(
+        await SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'pull_request', prUrl }, f.env)
+      ).toEqual({ ok: true, view_id: 'V_PR' })
+      expect(f.api.setView).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ channel_id: 'C1', type: 'pull_request', pr_url: prUrl })
+      )
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
+  it('links the PR from a Block Kit tab when Slack has no pull-request view', async () => {
+    const f = await fixture()
+    try {
+      f.api.setView
+        .mockRejectedValueOnce(slackError('invalid_view_type'))
+        .mockResolvedValueOnce({ ok: true, view_id: 'V_PR' })
+      expect(
+        await SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'pull_request', prUrl }, f.env)
+      ).toEqual({ ok: true, view_id: 'V_PR' })
+      expect(f.api.setView).toHaveBeenCalledTimes(2)
+      expect(f.api.setView).toHaveBeenLastCalledWith({
+        channel_id: 'C1',
+        type: 'block_kit',
+        view_key: prUrl,
+        name: 'PR #3406',
+        blocks: [
+          {
+            type: 'rich_text',
+            elements: [
+              {
+                type: 'rich_text_section',
+                elements: [{ type: 'link', url: prUrl, text: 'github.com/acme/web/pull/3406', style: { bold: true } }]
+              }
+            ]
+          }
+        ]
+      })
+      // The agent's own key and label win, and a link with no trailing number still gets a label.
+      const other = 'https://git.example.test/acme/web/-/merge_requests/new-tab'
+      f.api.setView.mockRejectedValueOnce(slackError('invalid_view_type'))
+      await SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'pull_request', prUrl: other }, f.env)
+      expect(f.api.setView).toHaveBeenLastCalledWith(expect.objectContaining({ view_key: other, name: 'Pull request' }))
+      f.api.setView.mockRejectedValueOnce(slackError('invalid_view_type'))
+      await SLACK_SESSION_TOOLS.execute(
+        'setSlackCodeView',
+        ctx,
+        { type: 'pull_request', prUrl, viewKey: 'web-pr', name: 'Web PR' },
+        f.env
+      )
+      expect(f.api.setView).toHaveBeenLastCalledWith(expect.objectContaining({ view_key: 'web-pr', name: 'Web PR' }))
+    } finally {
+      await f.conn.stop()
+    }
+  })
+
+  it('reports any other refusal of a PR tab without publishing a substitute', async () => {
+    const f = await fixture()
+    try {
+      f.api.setView.mockRejectedValueOnce(slackError('too_many_views'))
+      await expect(
+        SLACK_SESSION_TOOLS.execute('setSlackCodeView', ctx, { type: 'pull_request', prUrl }, f.env)
+      ).rejects.toThrow('Slack agents.conversations.setView failed: too_many_views')
+      expect(f.api.setView).toHaveBeenCalledOnce()
+    } finally {
+      await f.conn.stop()
+    }
+  })
+})
+
 describe('Slack native surfaces', () => {
   it('publishes Tasks for its owned code channel and stops reading on archive', async () => {
     const onCodeTasks = vi.fn(async () => ({
