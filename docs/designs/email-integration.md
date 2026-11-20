@@ -833,10 +833,11 @@ organization.
 - Whether the send call returns the generated `Message-ID` (§5.1), and how mail
   clients thread a reply whose `Message-ID` domain differs from its `From`
   domain.
-- That the send call accepts a `Reply-To` header, and that common mail clients
-  reply to it with the subaddress intact (§6.4). Without it a reply to a
-  started mail reaches the address without its tag and falls back on its
-  headers.
+- That common mail clients reply to a started mail's `Reply-To` with the
+  subaddress intact (§6.4). Without it a reply to a started mail reaches the
+  address without its tag and falls back on its headers. **Measured**: the send
+  call refuses `Reply-To` among its `headers` (`email.sending.error.email.invalid`)
+  and takes it only as the request's `reply_to` field, which the relay sets.
 - The exact `Authentication-Results` text for a domain with no DMARC record.
 - The starting daily sending quota, and how fast it grows.
 - Whether the first step should cut quoted history from a follow-up (§5.4).
