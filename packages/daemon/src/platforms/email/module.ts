@@ -101,11 +101,16 @@ export function emailStartedNotes(p: {
   answers: { together: ReadonlySet<string>; alone: ReadonlySet<string> }
   /** The started mail as the agent reads it, given only for the first message of a recipient's own thread. */
   startedMail?: string | undefined
+  /** The thread is the member's who asked for the mail, who may read it from where they asked. */
+  requested?: boolean
 }): string[] {
   const notes: string[] = []
+  const seen = p.requested
+    ? 'none of the other recipients sees this thread, though the member who asked for the mail can read it'
+    : 'none of the others sees this thread'
   if (p.startedMail !== undefined)
     notes.push(
-      `[This answers the mail you started to ${p.recipients.join(', ')}, below, and leaves the others off, so it continues in a thread of its own: your replies here go only to the people on this message, and none of the others sees this thread.]\n\n${p.startedMail}`
+      `[This answers the mail you started to ${p.recipients.join(', ')}, below, and leaves the others off, so it continues in a thread of its own: your replies here go only to the people on this message, and ${seen}.]\n\n${p.startedMail}`
     )
   const others = p.recipients.filter((address) => address !== p.sender)
   const alone = others.filter((address) => p.answers.alone.has(address))
@@ -159,9 +164,10 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       normalized.mentionedBots = group ? [conn.address] : []
       // The started mail is the thread's own root, so a session that never ran reads it once (§6.4).
       if (started) normalized.threadRootIsOwn = true
-      // An outside recipient's own thread is classified for whom the started thread is, the member who asked for it (§5.3).
+      // A recipient's own thread is classified for the member who asked for the mail, so they may read its answers (§5.3).
       const owner = placement.started?.own ? placement.started.owner : undefined
-      if (outsider && owner?.startsWith(EMAIL_STARTED_OWNER_PREFIX)) normalized.sessionTriggerId = owner
+      const requested = owner?.startsWith(EMAIL_STARTED_OWNER_PREFIX) === true
+      if (requested) normalized.sessionTriggerId = owner
       // The daemon's own mark of how the sender was admitted, which the reply and the index read; never the relay's.
       const marked: EmailExt = { ...ext }
       if (outsider) marked.outsider = true
@@ -191,7 +197,7 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
             conn.startedAnswers(tag),
             first ? conn.startedMail(tag) : undefined
           ])
-          return emailStartedNotes({ sender: ext.from.address, recipients, answers, startedMail })
+          return emailStartedNotes({ sender: ext.from.address, recipients, answers, startedMail, requested })
         }
         const notes = await read().catch(() => undefined)
         if (!notes) return 'retry'

@@ -57,6 +57,11 @@ export function emailStartedReplyThread(tag: string, recipient: string): string 
   return `${tag}>${recipient}`
 }
 
+/** A recipient's own thread is a conversation of its own, never their direct one, so the member who asked for the mail may read it and nobody's person memory is in it (§5.2). */
+export function emailStartedReplyConversation(thread: string): EmailConversation {
+  return { kind: 'group', channel: `group:${thread}` }
+}
+
 /** The started tag a thread key belongs to: the started thread itself, or one recipient's own thread of it. */
 export function emailStartedTagOf(thread: string): string | undefined {
   const tag = thread.split('>', 1)[0]!
@@ -105,7 +110,7 @@ export async function placeEmail(
     const thread = emailStartedReplyThread(tag, sender)
     return {
       thread,
-      conversation: emailConversation(mail, agentAddress, thread),
+      conversation: emailStartedReplyConversation(thread),
       redelivered: false,
       started: startedOf(tag, started, true)
     }
@@ -139,7 +144,10 @@ export async function placeEmail(
       const started = await intoStarted(tag)
       if (started) return started
     }
-    const conversation = emailConversation(mail, agentAddress, hit.thread)
+    const conversation =
+      tag && tag !== hit.thread
+        ? emailStartedReplyConversation(hit.thread)
+        : emailConversation(mail, agentAddress, hit.thread)
     if (await continues(conversation, hit))
       return { thread: hit.thread, conversation, redelivered: false, ...(await ownOf(tag)) }
   }

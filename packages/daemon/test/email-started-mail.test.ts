@@ -210,7 +210,17 @@ describe('sending and the record (§6.4)', () => {
 
   it('mails anyone from a member’s turn, with no approval, and opens the thread with the mail as its first message', async () => {
     const h = harness({ turn: ['user-alice'] })
-    expect(await startEmail(h.deps, args)).toEqual({ sent: true, to: [STRANGER], cc: [BOB] })
+    // The member who asked is told where each answer lands, so recall reads them from here.
+    expect(await startEmail(h.deps, args)).toEqual({
+      sent: true,
+      to: [STRANGER],
+      cc: [BOB],
+      replies: {
+        toEveryone: `email:group:${TAG}`,
+        toYouAlone: { [STRANGER]: `email:group:${TAG}>${STRANGER}`, [BOB]: `email:group:${TAG}>${BOB}` },
+        note: expect.stringContaining('call recall with one of these places')
+      }
+    })
     expect(h.sends).toEqual([
       {
         op: 'start',
@@ -290,8 +300,10 @@ describe('sending and the record (§6.4)', () => {
     )
     expect(h.sends).toEqual([])
     expect(h.rows).toEqual([])
-    // Members alone go out, a schedule’s group thread owned by its first member recipient.
-    expect(await startEmail(h.deps, { to: [BOB, ALICE], subject: 'Plan', body: 'Hi' })).toMatchObject({ sent: true })
+    // Members alone go out, a schedule’s group thread owned by its first member recipient, with nobody to recall it.
+    const scheduled = await startEmail(h.deps, { to: [BOB, ALICE], subject: 'Plan', body: 'Hi' })
+    expect(scheduled).toMatchObject({ sent: true })
+    expect(scheduled).not.toHaveProperty('replies')
     expect(h.seeds[0]).toMatchObject({ channel: `group:${TAG}`, owner: BOB })
   })
 
@@ -440,14 +452,14 @@ describe('a reply finds its started thread (§5.1, §5.2)', () => {
     expect(elsewhere.thread).toBe(TAG)
   })
 
-  it('places a recipient’s plain Reply, which leaves the others off, in a thread of their own', async () => {
+  it('places a recipient’s plain Reply, which leaves the others off, in a thread and conversation of their own', async () => {
     expect(await placeEmail(mail(), AGENT, index({ ...started, owner: 'user:user-alice' }))).toEqual({
       thread: `${TAG}>${BOB}`,
-      conversation: { kind: 'dm', channel: `dm:${BOB}` },
+      conversation: { kind: 'group', channel: `group:${TAG}>${BOB}` },
       redelivered: false,
       started: { tag: TAG, recipients: [STRANGER, BOB], own: true, owner: 'user:user-alice' }
     })
-    // Copying someone the started mail never went to makes that own thread a group of its own.
+    // Never the recipient's direct conversation, whether they copy someone the started mail never went to or not.
     const copied = await placeEmail(mail({ cc: [{ address: PAT }] }), AGENT, index())
     expect(copied).toMatchObject({
       thread: `${TAG}>${BOB}`,
@@ -460,14 +472,15 @@ describe('a reply finds its started thread (§5.1, §5.2)', () => {
     const own = emailStartedReplyThread(TAG, STRANGER)
     const answers: EmailPlacementIndex = {
       message: async (id) =>
-        id === 'a1@mail.example.test' ? { thread: own, conversation: `dm:${STRANGER}` } : undefined,
-      conversation: async () => undefined,
+        id === 'a1@mail.example.test' ? { thread: own, conversation: `group:${own}` } : undefined,
+      conversation: async (channel) =>
+        channel === `group:${own}` ? { opener: STRANGER, members: [STRANGER] } : undefined,
       startedThread: async (tag) => (tag === TAG ? started : undefined)
     }
     const followUp = mail({ from: { address: STRANGER }, tag: undefined, inReplyTo: 'a1@mail.example.test' })
     expect(await placeEmail(followUp, AGENT, answers)).toEqual({
       thread: own,
-      conversation: { kind: 'dm', channel: `dm:${STRANGER}` },
+      conversation: { kind: 'group', channel: `group:${own}` },
       redelivered: false,
       started: { tag: TAG, recipients: [STRANGER, BOB], own: true }
     })
@@ -591,25 +604,35 @@ describe('admitting a reply to a started thread under Members (§4 step 3, §5.3
     const plain = delivery(reply(STRANGER, { cc: [] }))
     expect(await h.strategy.admit!(plain.msg, plain.normalized)).toBe('admit')
     expect(plain.normalized).toMatchObject({
-      channel: `dm:${STRANGER}`,
+      channel: `group:${TAG}>${STRANGER}`,
       thread: `${TAG}>${STRANGER}`,
-      isDm: true,
+      isGroupDm: true,
       sessionTriggerId: 'user:user-alice'
     })
     expect(plain.normalized.threadRootIsOwn).toBeUndefined()
     expect((plain.normalized.adapterExt!.email as WireEmailAdapterExt).outsider).toBe(true)
-    expect(h.placeExternal).toHaveBeenCalledWith(['int-email'], `dm:${STRANGER}`, 'externalMember')
+    expect(h.placeExternal).toHaveBeenCalledWith(['int-email'], `group:${TAG}>${STRANGER}`, 'externalMember')
     expect(plain.normalized.text).toContain('continues in a thread of its own')
+    expect(plain.normalized.text).toContain('the member who asked for the mail can read it')
     expect(plain.normalized.text).toContain('Here is the plan.')
     expect(plain.normalized.text).toContain(`Not answered your started mail yet: ${BOB}.`)
   })
 
-  it('leaves a member’s own thread theirs, and tells the started thread who answered alone', async () => {
+  it('gives a member’s own thread to the member who asked too, and tells the started thread who answered alone', async () => {
     const member = admitWith({ ...started, owner: 'user:user-alice' })
     const own = delivery(reply(BOB, { cc: [] }))
     expect(await member.strategy.admit!(own.msg, own.normalized)).toBe('admit')
-    expect(own.normalized).toMatchObject({ channel: `dm:${BOB}`, thread: `${TAG}>${BOB}` })
-    expect(own.normalized.sessionTriggerId).toBeUndefined()
+    expect(own.normalized).toMatchObject({
+      channel: `group:${TAG}>${BOB}`,
+      thread: `${TAG}>${BOB}`,
+      sessionTriggerId: 'user:user-alice'
+    })
+    // With nobody who asked, a member's own thread stays theirs.
+    const scheduled = admitWith({ ...started, owner: BOB })
+    const theirs = delivery(reply(BOB, { cc: [], messageId: 'bob-r2' }))
+    expect(await scheduled.strategy.admit!(theirs.msg, theirs.normalized)).toBe('admit')
+    expect(theirs.normalized.sessionTriggerId).toBeUndefined()
+    expect(theirs.normalized.text).toContain('none of the others sees this thread')
     const shared = admitWith(started, { together: new Set(), alone: new Set([STRANGER]) })
     const all = delivery(reply(BOB, { cc: [{ address: STRANGER }] }))
     expect(await shared.strategy.admit!(all.msg, all.normalized)).toBe('admit')
@@ -791,14 +814,18 @@ describe('the started thread through the daemon (§6.4)', () => {
     await settled()
     expect(await store.emailMessages.get(AGENT, 'r1@other.example.test')).toMatchObject({
       thread: `${TAG}>${STRANGER}`,
-      conversation: `dm:${STRANGER}`,
+      conversation: `group:${TAG}>${STRANGER}`,
       direction: 'received'
     })
     const own = (await store.listSessions(AGENT_NAME)).filter(
       (s: { platform: string; thread: string }) => s.platform === 'email' && s.thread === `${TAG}>${STRANGER}`
     )
     expect(own).toHaveLength(1)
-    expect(own[0]).toMatchObject({ channel: `dm:${STRANGER}`, triggeredBy: 'user:user-alice' })
+    expect(own[0]).toMatchObject({
+      channel: `group:${TAG}>${STRANGER}`,
+      conversationKind: 'group_dm',
+      triggeredBy: 'user:user-alice'
+    })
     // Its first turn reads the started mail before the reply.
     const prompted = JSON.stringify(host.prompt.mock.calls.at(-1))
     expect(prompted).toContain('Here is the plan.')

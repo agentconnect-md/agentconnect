@@ -1028,6 +1028,39 @@ describe('across platforms and bots: as the console would show it to the person'
     expect(await sourceOf(inOwnDm, 'telegram:-1002', deps)).toContain('a private conversation')
   })
 
+  it('reads a recipient’s own thread of a started mail by its place for the member who asked, and for nobody else', async () => {
+    const place = 'email:group:tag1>bob@corp.example.test'
+    const thread = session({
+      key: 's-mail',
+      platform: 'email',
+      channel: 'group:tag1>bob@corp.example.test',
+      conversationKind: 'group_dm',
+      updatedAt: 20
+    })
+    const answer = row('s-mail', 'bob@corp.example.test', 'Thursday works for me', 30).row
+    const base = fakeStore([...SESSIONS, thread])
+    const store: PlaceStore = {
+      ...base,
+      transcriptPageForAgent: async (scope, before, limit) =>
+        scope.sessionKey === 's-mail'
+          ? { rows: [answer], hasMore: false }
+          : await base.transcriptPageForAgent(scope, before, limit)
+    }
+    const { deps, asks } = perAsker({ console: { visible: { 'user-p': ['out-s-mail'] } } })
+    const withMail: OpsDeps = {
+      ...deps,
+      placeStore: store,
+      placeIntegrationFor: (agent, platform, scope) =>
+        platform === 'email' ? 'int-email' : deps.placeIntegrationFor!(agent, platform, scope)
+    }
+    const ctx = { ...inOwnDm, integrations: [...integrations, { id: 'int-email', platform: 'email' }] }
+    expect(await excerptsOf(ctx, place, withMail)).toEqual(['Thursday works for me'])
+    // A group conversation is read by its place, never listed.
+    expect(await listedPlaces(ctx, withMail)).not.toContain(place)
+    asks(from('U_Q'))
+    expect(await executeTool(ctx, 'recall', { place }, withMail)).toEqual(opaque(place))
+  })
+
   it('refuses a Telegram asker a Slack public channel and a Discord group, with no link hint', async () => {
     const { deps, asks } = perAsker({ console: { visible: { 'user-p': ['out-s-deploys', 'out-s-dc'] } } })
     asks(fromTelegram, { integrationId: 'int-tg' })
