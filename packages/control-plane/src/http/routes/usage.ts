@@ -9,6 +9,7 @@ import {
   ComputerScreenshotUsageQuery,
   ComputerUsageDto,
   ErrorDto,
+  SessionMonthUsageDto,
   UsageQueryDto,
   UsageDto
 } from '../dto/index.js'
@@ -114,6 +115,36 @@ export function usageRoutes(deps: HttpDeps) {
         return { from: req.query.from, to: req.query.to, ...totals }
       }
     )
+
+    // Sessions started this UTC month (org-session-policy.md); a count, so every member and the reader workload see it alike.
+    const policies = deps.repos.orgSessionPolicy
+    if (policies) {
+      r.get(
+        '/usage/sessions',
+        {
+          schema: {
+            tags: [Tag.Usage],
+            summary: 'Get monthly session usage',
+            description:
+              'Counts the sessions the organization started in the current UTC month, by the database clock: a session counts once, when the Control Plane first records it, and sessions recorded before counting began are not counted. `limit` and `policyRevision` come from the organization session policy and are null without one. `resetsAt` is the start of the next UTC month and `asOf` the instant every field was read at.',
+            operationId: 'getSessionMonthUsage',
+            response: { 200: SessionMonthUsageDto, 404: ErrorDto }
+          }
+        },
+        async (req, reply) => {
+          const usage = await policies.monthUsage(req.usageServiceOrgId ?? orgOf(req))
+          if (!usage) {
+            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
+          }
+          return {
+            ...usage,
+            monthStart: usage.monthStart.toISOString(),
+            resetsAt: usage.resetsAt.toISOString(),
+            asOf: usage.asOf.toISOString()
+          }
+        }
+      )
+    }
 
     // Managed computer metering (computer-use.md §15.5): desktop time, kept volumes, viewer media and screenshot storage.
     r.get(

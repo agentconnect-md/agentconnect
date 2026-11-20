@@ -149,6 +149,7 @@ model Org {
   computerRegistrations     ComputerRegistration[]
   computerSettings          ComputerOrgSettings?
   sessionPolicy             OrgSessionPolicy?
+  sessionMonths             OrgSessionMonth[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -5300,4 +5301,17 @@ model OrgSessionPolicy {
   org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("org_session_policy")
+}
+
+// Sessions an organization started per UTC month, counted when the CP first records each one (org-session-policy.md).
+model OrgSessionMonth {
+  orgId      String
+  // The first instant of the UTC month, by the database clock.
+  monthStart DateTime @db.Timestamptz(6)
+  used       Int      @default(0)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, monthStart])
+  @@map("org_session_month")
 }
