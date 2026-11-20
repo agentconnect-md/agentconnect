@@ -835,7 +835,9 @@ export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
 export const AgentWakeReq = z.object({
   agentId: z.string().min(1),
   // The outward session id whose own pod to resume instead of the agent's (`session-wake-v1`); a claim is never created for it.
-  sessionId: z.string().min(1).optional()
+  sessionId: z.string().min(1).optional(),
+  // CP-stamped, never client-supplied: also start this member's coordinator host (`coordinator-prewarm-v1`, auto-session-mode.md §4.9).
+  prewarmCoordinator: z.object({ userId: z.string().min(1) }).optional()
 })
 export type AgentWakeReq = z.infer<typeof AgentWakeReq>
 

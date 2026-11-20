@@ -335,7 +335,8 @@ Three properties make that safe to hand a browser:
   stops refreshing is a page that stops holding. A clean tree with nothing armed
   RELEASES rather than lapses, so committing makes the pod suspendable on the
   sweep's own schedule.
-- **A suspended pod is held, never woken.** Keep-alive reads nothing from a pod
+- **A suspended pod is held, never woken.** (The console's coordinator prewarm is the one
+  deliberate wake on page open: [auto-session-mode.md](auto-session-mode.md) §4.9.) Keep-alive reads nothing from a pod
   that is down and answers `asleep`. Resurrecting a sandbox from a keep-alive
   poll would invert the rule the sweep exists to serve. The pod judged for the
   tree is THIS page's — the one that owns the worktree it is watching — because

@@ -33,6 +33,8 @@ export interface AgentWakerDeps {
   knowsAgent: (agentId: string) => boolean
   /** Take the agent's duty when it is not held here (the activation rendezvous); undefined ⇒ duty is not enforced. */
   claimDuty?: (agentId: string) => Promise<boolean>
+  /** Start the member's coordinator host beside the agent pod's wake (auto-session-mode.md §4.9); fire and forget. */
+  prewarmCoordinator?: (agentId: string, userId: string) => void
   log: { warn(msg: string): void }
 }
 
@@ -76,6 +78,9 @@ export function createAgentWaker(deps: AgentWakerDeps): AgentWaker {
         }
       }
       const agentPod = agentSandboxSubject(agentId)
+      // The host start waits on the same pod bind, so it overlaps the wake rather than following it.
+      if (sessionId === undefined && req.prewarmCoordinator)
+        deps.prewarmCoordinator?.(agentId, req.prewarmCoordinator.userId)
       const subject = sessionId === undefined ? agentPod : await sandbox.sessionPod(agentId, sessionId)
       if (subject === undefined) {
         throw new AgentWakeViolationError(`agent "${agentId}" has no workspace for that session`, 'unknown-agent')

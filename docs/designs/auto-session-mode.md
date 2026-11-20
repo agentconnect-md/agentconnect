@@ -402,6 +402,39 @@ while the coordinator is still deciding.
   grace. Its outward session id, minted for the issue, ages out with the store's other unused ones. It also keeps the agent pod awake as long as it lives, which the coordinator's own turn
   already does.
 
+### 4.9 Prewarming the coordinator when the console opens
+
+The first message of a quiet agent paid the whole cold start before its coordinator could answer. In
+production that was about 14 s to resume the suspended pod and bind its shim, then 3–8 s for the
+coordinator's host to start and load its session, before the model read a word. A member's console
+conversation with an agent's coordinator is fixed before they type: its id is
+`coordinatorConversationId(org, member, agent)` (§10). So is its coordinator's session key, once
+the member's first message has minted the coordinator. So the console starts both when it opens on
+the agent.
+
+- **When.** The console calls `POST /agents/:id/prewarm` when the home composer selects a single
+  agent whose conversation opens the coordinator, and when the agent page's Playground is pressed.
+  It calls only for an agent on the pool, at most once a minute per agent; a refusal is ignored and
+  the first message simply starts cold.
+- **What.** The Control Plane authorizes it like a conversation: view access and a non-viewer role.
+  It applies the organization's Cloud standing as a wake does, and debounces per agent and caller for
+  30 s. It forwards `agent/wake` with `prewarmCoordinator: { userId }`, stamped from the session and
+  sent only to a daemon advertising `coordinator-prewarm-v1`; an older one gets the plain wake.
+  The daemon wakes the agent's pod as for any wake. Beside it, it starts the model host of that
+  member's coordinator session, which waits on the same pod bind (§4.8's registry,
+  `COORDINATOR_PREWARM_MS`).
+- **What it does not do.** A member with no coordinator yet gets only the pod wake: their first
+  message mints the coordinator, and a prewarm never does. No ACP session is loaded and no turn runs.
+  A coordinator whose model runs on another runtime than the agent's is not started, since its turn
+  moves it there. Neither is a host that is already running, or one whose turn already owns the key.
+- **Release.** The coordinator's next turn claims the host as a task's first turn does (§4.8). A host
+  nobody claims is released five minutes after it started. The pod itself follows the idle sweep, so
+  a page opened and left costs one pod-wake window.
+- **The exception it makes.** Everywhere else a page's read never starts a pod
+  ([k8s-daemon-pool.md](k8s-daemon-pool.md), "A suspended pod is held, never woken"). Opening the console on an agent you are about to
+  talk to is the one place the console starts compute before it is asked for. That was a product
+  decision: the latency of the first answer outweighs the cost of a pod-wake window.
+
 ## 5. Tools
 
 ### 5.1 `sendMessage` task actions

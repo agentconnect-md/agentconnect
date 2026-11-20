@@ -68,7 +68,7 @@ import {
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
-import { opensCoordinator } from '@/components/console/playground/coordinator'
+import { opensCoordinator, prewarmAgentOnOpen, prewarmsOnOpen } from '@/components/console/playground/coordinator'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { CoordinatorFilterEvaluationsLink } from '@/components/console/CoordinatorFilterEvaluations'
 import { useConsoleData } from '@/lib/data-context'
@@ -1266,6 +1266,7 @@ function AgentDetail() {
   const onPlayground = () => {
     // auto-session-mode.md §10: the playground is the member's private coordinator with the agent, on its session once it has one.
     if (activeOrg && !MOCK_MODE && opensCoordinator(da, daemons, memberSets)) {
+      if (prewarmsOnOpen(da, orgSetIds)) prewarmAgentOnOpen(da.id)
       void openCoordinatorConversation(activeOrg.id, da.id)
         .catch(() => undefined)
         .then((entry) => {

@@ -7,6 +7,9 @@ export const TASK_PREWARM_GRACE_MS = 30_000
 /** The most a prewarmed host is kept unclaimed, however long the coordinator's turn runs. */
 export const TASK_PREWARM_MAX_MS = 5 * 60_000
 
+/** How long a coordinator host started when its member opened the console waits for their first message (§4.9). */
+export const COORDINATOR_PREWARM_MS = 5 * 60_000
+
 /** At most this many hosts are prewarmed for one coordinator turn. */
 export const TASK_PREWARMS_PER_TURN = 2
 
@@ -42,19 +45,19 @@ export class TaskPrewarms {
 
   constructor(private readonly host: TaskPrewarmHost) {}
 
-  /** Start a host for the task a coordinator turn may open; it is released unless the task claims it. */
-  begin(coordinatorKey: string, agentId: string, taskKey: string): void {
+  /** Start a host for a session's likely first turn, owned by the coordinator turn or page that guessed it; released unless that turn claims it within `ttlMs`. */
+  begin(coordinatorKey: string, agentId: string, taskKey: string, ttlMs = TASK_PREWARM_MAX_MS): void {
     if (this.stopped) return
     const live = this.warm.get(taskKey)
-    // A later turn deciding on the same message keeps the host from its predecessor's grace.
+    // A later guess at the same session keeps the host from its predecessor's grace.
     if (live && !live.releasing) {
       clearTimeout(live.timer)
       live.coordinatorKey = coordinatorKey
-      live.timer = this.expireIn(taskKey, TASK_PREWARM_MAX_MS)
+      live.timer = this.expireIn(taskKey, ttlMs)
     }
     if (live) return
     const started = this.host.start(agentId, taskKey).catch(() => undefined)
-    this.warm.set(taskKey, { coordinatorKey, started, timer: this.expireIn(taskKey, TASK_PREWARM_MAX_MS) })
+    this.warm.set(taskKey, { coordinatorKey, started, timer: this.expireIn(taskKey, ttlMs) })
   }
 
   /** The coordinator's turn ended: what it did not hand to a task is released after the grace. */

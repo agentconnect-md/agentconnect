@@ -52,6 +52,19 @@ describe('createAgentWaker', () => {
     expect(claimDuty).not.toHaveBeenCalled()
   })
 
+  it('starts the named member’s coordinator host beside an agent wake, never beside a session’s', async () => {
+    const box = sandbox(true)
+    const prewarmCoordinator = vi.fn()
+    const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, prewarmCoordinator, log: silent })
+    await expect(waker.wake({ agentId: 'a1', prewarmCoordinator: { userId: 'u1' } })).resolves.toEqual({
+      agentId: 'a1',
+      state: 'running'
+    })
+    await waker.wake({ agentId: 'a1' })
+    await waker.wake({ agentId: 'a1', sessionId: 's1', prewarmCoordinator: { userId: 'u1' } })
+    expect(prewarmCoordinator.mock.calls).toEqual([['a1', 'u1']])
+  })
+
   it('answers running when the channel is already bound, and starts nothing', async () => {
     const box = sandbox(true)
     const waker = createAgentWaker({ sandbox: box.plane, knowsAgent: () => true, log: silent })

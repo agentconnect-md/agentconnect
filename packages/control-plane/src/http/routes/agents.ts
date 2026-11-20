@@ -75,6 +75,7 @@ import {
   TASK_LIST_FEATURE,
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
+  COORDINATOR_PREWARM_FEATURE,
   WorkspaceErrorReason,
   TaskErrorReason,
   gitRepoLabel,
@@ -4706,6 +4707,60 @@ export function agentRoutes(deps: HttpDeps) {
         const wake = agentWakeRequest(agent.id, sessionId, daemon.capabilities.features)
         try {
           const outcome = await wakes.wake(wake.key, () => deps.control.agentWake(daemonId, wake.req, agent.orgId))
+          return reply.code(outcome.state === 'unsupported' ? 200 : 202).send({ state: outcome.state })
+        } catch (err) {
+          const failure = agentWakeFailure(err)
+          if (failure === null) throw err
+          return reply.code(failure.status).send({
+            error: failure.error,
+            statusCode: failure.status,
+            message: failure.message,
+            ...(failure.code ? { code: failure.code } : {})
+          })
+        }
+      }
+    )
+
+    // Prewarm: the console opened on this agent, so wake its sandbox and start the caller's coordinator host before their first message (auto-session-mode.md §4.9).
+    const prewarms = new AgentWakeCoordinator(deps.clock)
+    r.post(
+      '/agents/:id/prewarm',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Prewarm the agent for the caller',
+          description:
+            'Called when the console opens on an agent the caller is about to talk to. Wakes its cluster sandbox as `POST /agents/:id/wake` does, and where the serving daemon supports it, also starts the model host of the caller’s own coordinator conversation with the agent, so the first message skips the cold start. A host nobody uses is released after five minutes; a caller with no coordinator yet gets only the wake. Nothing is created and no turn runs. Answers like the wake: 202 with running or starting, 200 with unsupported where nothing runs in a cluster sandbox. Debounced per agent and caller for 30 s. Requires view access and a non-viewer role; 402 (`ORG_SUSPENDED`) when the organization may not start Cloud compute; 503 when no daemon can be reached.',
+          operationId: 'prewarmAgent',
+          params: IdParam,
+          response: { 200: AgentWakeDto, 202: AgentWakeDto, 402: ErrorDto, 403: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent || !canView(agent, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        }
+        if (await refuseUnfundedCloudPlacement(deps, orgOf(req), agent, reply)) return
+        const daemonId = await deps.placementResolver.dispatchDaemon(agent)
+        if (!daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        const daemon = await deps.registry.getAvailable(agent.orgId, daemonId)
+        if (!daemon?.capabilities.features.includes(AGENT_WAKE_FEATURE))
+          return reply.code(200).send({ state: 'unsupported' })
+        const userId = req.principal!.userId
+        // Stamped here from the session, never taken from the caller; an older daemon is sent the plain wake.
+        const prewarm = daemon.capabilities.features.includes(COORDINATOR_PREWARM_FEATURE)
+          ? { prewarmCoordinator: { userId } }
+          : {}
+        try {
+          const outcome = await prewarms.wake(`${agent.id}:${userId}`, () =>
+            deps.control.agentWake(daemonId, { agentId: agent.id, ...prewarm }, agent.orgId)
+          )
           return reply.code(outcome.state === 'unsupported' ? 200 : 202).send({ state: outcome.state })
         } catch (err) {
           const failure = agentWakeFailure(err)
