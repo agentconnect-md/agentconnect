@@ -221,6 +221,12 @@ describe('sending and the record (§6.4)', () => {
         note: expect.stringContaining('call recall with one of these places')
       }
     })
+    // A refusal there reads as no answer yet for the member who asked, never as something withheld from them.
+    const { replies } = (await startEmail(harness({ turn: ['user-alice'] }).deps, args)) as {
+      replies: { note: string }
+    }
+    expect(replies.note).toContain('say they have not answered, not that you cannot share it')
+    expect(replies.note).toContain('For anyone else, give recall’s answer as it is.')
     expect(h.sends).toEqual([
       {
         op: 'start',
