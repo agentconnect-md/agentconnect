@@ -13,7 +13,7 @@ ARG OPENCODE_VERSION=2.2.7
 
 # ───────────────────────────── shim builder ─────────────────────────────────
 # The shim build inlines its dependencies so runtime images need no daemon node_modules.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS shim-builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
@@ -61,7 +61,7 @@ FROM scratch AS runtime-payload-digest-export
 COPY --from=runtime-payload-digest /payload-digest /
 
 # Both runtime images share the pinned CLI and its system extension, independent of each session's empty Azure state.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS azure-cli
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS azure-cli
 ARG AZURE_CLI_VERSION=2.92.0
 ARG AZURE_CLI_SHA256_AMD64=ad0285eaf900cd5e91218e9ad6ac28ce2749d3f8d3fe17f397d7fbf4ca5a5457
 ARG AZURE_CLI_SHA256_ARM64=670627cb5338b95dd77d3bfc8f548b11fe125a723ebff647e245a27e241ddcb9
@@ -89,7 +89,7 @@ RUN set -eu; \
   rm -rf /var/lib/apt/lists/* /tmp/azure-cli.deb "/tmp/${wheel}"
 
 # Antigravity is the first, independently cached application layer in the full image.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS antigravity
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS antigravity
 ARG ANTIGRAVITY_VERSION=1.4.5
 ARG ANTIGRAVITY_SHA256_AMD64=923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b
 ARG TARGETARCH
@@ -108,7 +108,7 @@ RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
   && rm /tmp/antigravity.zip
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
-FROM rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS muse-acp
+FROM rust:1.100.0-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS muse-acp
 ARG MUSE_ACP_VERSION=0.21.0
 ARG MUSE_ACP_SOURCE_SHA256=36e984ff3808783cbaacfd76b24fe1b68e8ea6e6bad16c5888a11a10dc5b841c
 RUN apt-get update \
@@ -125,7 +125,7 @@ RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
   && cp LICENSE NOTICE /out/licenses/muse-acp/
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS full-native-runtimes
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS full-native-runtimes
 ARG OMP_VERSION=18.18.6
 ARG OMP_SHA256_AMD64=a8059b95de5eaba0b3fb6f7182842d661feae29cb2931cdbeba2986db4751ecb
 ARG DEVIN_VERSION=3000.12.43
