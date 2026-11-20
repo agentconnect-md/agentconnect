@@ -11,6 +11,7 @@ import {
   type UserRepo
 } from '../../persistence/ports.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
+import { EmailCpEnvSchema } from './deployment.js'
 
 /** The `email` block of `POST /integrations`: the one thing an organization chooses. */
 export const EmailCreateCredentials = z.object({
@@ -91,6 +92,7 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
     installRoutes: (scope) => (scope === 'org' ? (deps.installRoutes ?? []) : []),
     credentialBodySchema: EmailCreateCredentials,
     refineCreateBody: refineEmailCreateBody,
+    envSchema: EmailCpEnvSchema,
 
     // The claim is the fence: an address is recorded before its row exists, so a create that fails afterwards leaves it taken rather than free for someone else.
     async validateConfig(credentials) {

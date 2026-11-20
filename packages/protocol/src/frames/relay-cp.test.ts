@@ -33,6 +33,7 @@ import {
   RELAY_CP_FRAME_TYPES,
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  emailInboundUrl,
   isRelayCpFrameType,
   decodeEnvelope,
   buildEnvelope,
@@ -119,6 +120,44 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(decoded.frame.payload.deploymentConfig?.googleChatAnchor).toEqual(anchor)
     expect(authOk({ ...anchor, projectNumber: 'example-project' }).ok).toBe(false)
     expect(authOk({ ...anchor, claimUrl: 'http://console.example.test/googlechat/claim' }).ok).toBe(false)
+  })
+
+  it('carries the Email configuration whole, with its secrets and the ticket key (email-integration.md §7)', () => {
+    const email = {
+      mailDomain: 'mail.example.test',
+      accountId: '0123456789abcdef0123456789abcdef',
+      apiToken: 'example-api-token',
+      ingressSecret: 's'.repeat(43),
+      authservId: 'mx.cloudflare.net',
+      dailySendLimit: 500,
+      ticketKey: 'k'.repeat(43)
+    }
+    const authOk = (value: unknown) =>
+      decodeRelayCpFrame(
+        envelope('rc/auth/ok', {
+          heartbeatSec: 15,
+          serverTime: '2026-08-05T00:00:00.000Z',
+          deploymentConfig: { revision: 0, email: value }
+        })
+      )
+    const decoded = authOk(email)
+    if (!decoded.ok || decoded.frame.type !== 'rc/auth/ok') throw new Error('expected rc/auth/ok')
+    expect(decoded.frame.payload.deploymentConfig?.email).toEqual(email)
+    // The deployment-wide budget is the operator's to leave unset.
+    const { dailySendLimit: _dailySendLimit, ...unlimited } = email
+    expect(authOk(unlimited).ok).toBe(true)
+    for (const broken of [
+      { ...email, mailDomain: 'Mail.Example.Test' },
+      { ...email, mailDomain: 'localhost' },
+      { ...email, accountId: 'not-an-account' },
+      { ...email, apiToken: '' },
+      { ...email, ingressSecret: 'short' },
+      { ...email, dailySendLimit: 0 },
+      { ...email, ticketKey: 'short' },
+      { ...unlimited, authservId: undefined }
+    ])
+      expect(authOk(broken).ok, JSON.stringify(broken)).toBe(false)
+    expect(emailInboundUrl('https://relay.example.test/')).toBe('https://relay.example.test/email/inbound')
   })
 
   it('carries the relay pool’s public origin as an http(s) URL only', () => {

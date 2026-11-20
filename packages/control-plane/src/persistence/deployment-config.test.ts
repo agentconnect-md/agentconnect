@@ -89,6 +89,27 @@ describe('DeploymentConfigValuesV1Schema', () => {
     ).toBe(false)
   })
 
+  it('accepts a mail domain with its account, lower-cased, and refuses what is neither', () => {
+    const email = { mailDomain: 'mail.example.test', accountId: '0123456789abcdef0123456789abcdef' }
+    expect(
+      DeploymentConfigValuesV1Schema.parse({
+        ...base,
+        email: { mailDomain: ' Mail.Example.Test ', accountId: email.accountId.toUpperCase(), dailySendLimit: 500 }
+      }).email
+    ).toEqual({ ...email, dailySendLimit: 500 })
+    expect(DeploymentConfigValuesV1Schema.parse({ ...base, email }).email).toEqual(email)
+    for (const broken of [
+      { ...email, mailDomain: 'not a domain' },
+      { ...email, mailDomain: 'helper@mail.example.test' },
+      { ...email, accountId: 'example-account' },
+      { ...email, dailySendLimit: 0 },
+      { ...email, apiToken: 'never-in-the-document' }
+    ])
+      expect(DeploymentConfigValuesV1Schema.safeParse({ ...base, email: broken }).success, JSON.stringify(broken)).toBe(
+        false
+      )
+  })
+
   it('accepts a Microsoft login application and refuses an empty client ID', () => {
     const azureadConnector = { clientId: '00000000-0000-4000-8000-0000000000c1' }
     expect(
@@ -271,6 +292,24 @@ describe('deploymentSecretsRequiringRefresh', () => {
       'lark.loginAppSecret',
       'logto.managementAppSecret'
     ])
+  })
+
+  it('asks for a new sending token only when the mail account changes', () => {
+    const email = { mailDomain: 'mail.example.test', accountId: '0123456789abcdef0123456789abcdef' }
+    const withEmail = { ...base, email }
+    expect(deploymentSecretsRequiringRefresh(base, withEmail)).toEqual(['email.apiToken'])
+    expect(
+      deploymentSecretsRequiringRefresh(withEmail, {
+        ...withEmail,
+        email: { ...email, mailDomain: 'agents.example.test', dailySendLimit: 100 }
+      })
+    ).toEqual([])
+    expect(
+      deploymentSecretsRequiringRefresh(withEmail, {
+        ...withEmail,
+        email: { ...email, accountId: 'f'.repeat(32) }
+      })
+    ).toEqual(['email.apiToken'])
   })
 
   it('asks for a new Google Chat key only when the project changes', () => {

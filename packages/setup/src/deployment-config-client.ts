@@ -427,6 +427,46 @@ export function googleChatDeploymentPut(
   })
 }
 
+export interface EmailDeploymentInput {
+  mailDomain: string
+  accountId: string
+  /** The deployment-wide daily send budget; null or omitted leaves it unset. */
+  dailySendLimit?: number | null
+  /** A checked sending token; omitted keeps the sealed one, which only the same account may reuse. */
+  apiToken?: string
+  /** A newly generated ingress secret; omitted keeps the stored one. */
+  ingressSecret?: string
+}
+
+/** Null clears Email and both of its secrets (email-integration.md §7). */
+export function emailDeploymentPut(
+  current: CurrentDeploymentConfig,
+  email: EmailDeploymentInput | null
+): DeploymentConfigPut {
+  if (email && !email.apiToken && current.values.email?.accountId !== email.accountId.trim().toLowerCase()) {
+    throw new Error('a new Cloudflare account requires its API token')
+  }
+  const secrets = email
+    ? {
+        ...(email.apiToken ? { 'email.apiToken': email.apiToken } : {}),
+        ...(email.ingressSecret ? { 'email.ingressSecret': email.ingressSecret } : {})
+      }
+    : { 'email.apiToken': null, 'email.ingressSecret': null }
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      email: email
+        ? {
+            mailDomain: email.mailDomain,
+            accountId: email.accountId,
+            ...(email.dailySendLimit != null ? { dailySendLimit: email.dailySendLimit } : {})
+          }
+        : null
+    },
+    ...(Object.keys(secrets).length > 0 ? { secrets } : {})
+  })
+}
+
 export interface LogtoOAuthClientCredentials {
   clientId: string
   clientSecret?: string

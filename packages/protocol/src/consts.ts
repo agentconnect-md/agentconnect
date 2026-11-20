@@ -69,6 +69,17 @@ export const MSTEAMS_RELAY_EGRESS_V1_FEATURE = 'msteams-relay-egress-v1'
 /** The daemon sends a deployment-owned Google Chat app's Chat API calls through the relay and holds none of its credentials (google-chat-integration.md §10.10). */
 export const GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE = 'googlechat-relay-egress-v1'
 
+/** The relay route the ingress Worker posts each inbound mail to (email-integration.md §7). */
+export const EMAIL_INBOUND_PATH = '/email/inbound'
+
+/** The inbound route under a relay's public origin, which the operator configures the ingress Worker with (§7). */
+export function emailInboundUrl(publicRelayUrl: string): string {
+  return `${publicRelayUrl.replace(/\/+$/, '')}${EMAIL_INBOUND_PATH}`
+}
+
+/** The authserv-id of the receiving provider's `Authentication-Results`, the only one the relay reads a sender's verdict from (email-integration.md §4 step 2). */
+export const EMAIL_AUTHSERV_ID_DEFAULT = 'mx.cloudflare.net'
+
 /** The daemon serves an Email integration, with mail forwarded by the relay and replies sent through it (email-integration.md §8); a spec names it in `requires`. */
 export const EMAIL_V1_FEATURE = 'email-v1'
 

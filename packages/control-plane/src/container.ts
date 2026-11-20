@@ -425,6 +425,7 @@ import { createWeComCpProvider } from './platforms/wecom/provider.js'
 import { weComCredentialRoutes } from './platforms/wecom/routes.js'
 import { createEmailCpProvider } from './platforms/email/provider.js'
 import { emailAddressRoutes } from './platforms/email/routes.js'
+import { emailRelayDeployment, resolveEmailDeployment } from './platforms/email/deployment.js'
 import { weChatLoginRoutes } from './platforms/wechat/routes.js'
 import { WeChatLoginService } from './platforms/wechat/login.js'
 import { createWeChatLoginClient, WECHAT_DEFAULT_API_URL, type WeChatLoginClient } from './platforms/wechat/ilink.js'
@@ -2658,6 +2659,8 @@ export function buildContainer(
     ...botSessionAccessDeps,
     configured: configuredSocialProviders.includes('discord')
   })
+  // The deployment's mail domain and sending account (email-integration.md §7); the token reaches the relay and never a daemon.
+  const emailDeployment = resolveEmailDeployment(config)
   // The deployment's Teams app (teams-integration.md §8): its secret stays on the CP and relay, so its rows' member checks use it from here.
   const msTeamsPlatformApp = resolveMsTeamsPlatformApp(config)
   const msTeamsAgentBots = resolveMsTeamsAgentBots(config, msTeamsPlatformApp)
@@ -3563,9 +3566,15 @@ export function buildContainer(
     }),
     // Registered unconditionally; with no mail domain set up nothing is created or delivered (email-integration.md §7).
     createEmailCpProvider({
+      ...(emailDeployment ? { mailDomain: emailDeployment.mailDomain } : {}),
       addresses: repos.emailAddress,
       memberByVerifiedEmail: (orgId, email) => repos.user.memberByVerifiedEmail(orgId, email),
-      installRoutes: [emailAddressRoutes({ addresses: repos.emailAddress })]
+      installRoutes: [
+        emailAddressRoutes({
+          ...(emailDeployment ? { mailDomain: emailDeployment.mailDomain } : {}),
+          addresses: repos.emailAddress
+        })
+      ]
     })
   ])
 
@@ -3881,7 +3890,9 @@ export function buildContainer(
     // The relay sends the app's rows' Bot Connector calls and mints their Graph tokens (§8.5).
     msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER, msTeamsAgentBots),
     // The relay sends the app's customer rows' Chat API calls (google-chat-integration.md §10.10).
-    googleChatRelayApp(googleChatPlatformApp)
+    googleChatRelayApp(googleChatPlatformApp),
+    // The relay receives and sends every address's mail (email-integration.md §7).
+    emailRelayDeployment(emailDeployment, config.API_KEY_PEPPER)
   )
   const relayWsDeps: RelayWsServerDeps = {
     log: http.log,
