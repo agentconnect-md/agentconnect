@@ -21,7 +21,12 @@ import {
   type McpTransportCapabilities
 } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
-import type { ClaudeAutoModeRules } from './claude-auto-mode.js'
+import {
+  anchorRepositoryRules,
+  claudeAbsolutePathPattern,
+  type ClaudePermissionRules,
+  type ClaudeRepositoryRules
+} from './claude-auto-mode.js'
 import {
   augmentClaudeEfforts,
   claudeInnerSandboxSettings,
@@ -406,7 +411,8 @@ export { ULTRACODE_EFFORT }
  *    effort "ultracode" additionally carries the session-scoped flags the effort
  *    select can't reach. The adapter's CLAUDE_MODEL_CONFIG fallback is preserved in
  *    the protected settings because supplying `options.settings` replaces it. The
- *    repository's `autoMode` rules ride the same tier, the only one the classifier reads.
+ *    repository's `autoMode` and `permissions` lists ride the same tier: the classifier
+ *    reads no other, and Claude ignores a checkout's own permissions until it is trusted.
  *  - `options.sandbox` (only when the ACP runtime already has an outer
  *    AgentConnect sandbox): enables Claude's native Bash sandbox fail-closed and
  *    denies its sandboxed commands the provider credentials the parent can read.
@@ -450,12 +456,12 @@ export interface AcpToolSandbox {
 interface ClaudeSessionSettings {
   env?: ClaudeProtectedSettings['env']
   plansDirectory?: string
-  permissions?: { deny: string[] }
+  permissions?: ClaudePermissionRules
   modelOverrides?: unknown
   availableModels?: unknown
   ultracode?: true
   enableWorkflows?: true
-  autoMode?: ClaudeAutoModeRules
+  autoMode?: ClaudeRepositoryRules['autoMode']
 }
 
 export function claudeSessionMeta(
@@ -470,7 +476,7 @@ export function claudeSessionMeta(
   sharedWriteRoots: readonly string[] = [],
   readOnlyStateRoots: readonly string[] = [],
   model?: string,
-  autoMode?: ClaudeAutoModeRules
+  repository?: ClaudeRepositoryRules
 ):
   | {
       claudeCode: {
@@ -493,19 +499,25 @@ export function claudeSessionMeta(
   // Claude uses gitignore patterns with // for absolute paths; cover the root and its descendants.
   const rules = (roots: readonly string[] | undefined, tools: readonly string[]): string[] =>
     [...new Set(roots)].flatMap((root) => {
-      const pattern = `/${root.replace(/\/+$/, '').replace(/[\\*?[\] ]/g, (char) => `\\${char}`)}`
+      const pattern = claudeAbsolutePathPattern(root)
       return tools.flatMap((tool) => [`${tool}(${pattern})`, `${tool}(${pattern}/**)`])
     })
   // Credentials are neither read nor changed; the runtime's own state is read back (its saved tool results, its
   // synced skills) but never changed, so the model cannot plant settings or hooks the trusted parent would load.
   const deny = [...rules(protectedCredentialRoots, ['Read', 'Edit']), ...rules(readOnlyStateRoots, ['Edit'])]
+  // Claude ignores a checkout's own permission lists until someone trusts the folder, so the repository's ride here too.
+  const permissions: ClaudePermissionRules = {
+    ...repository?.permissions,
+    ...(deny.length > 0 ? { deny: [...deny, ...(repository?.permissions?.deny ?? [])] } : {})
+  }
   const settings: ClaudeSessionSettings = {
     ...(protectedSettings ?? {}),
+    ...(Object.keys(permissions).length > 0 ? { permissions } : {}),
     // Claude requires custom plans inside the workspace; its default HOME/.claude/plans is protected above.
-    ...(deny.length > 0 ? { permissions: { deny }, plansDirectory: './.claude/plans' } : {}),
+    ...(deny.length > 0 ? { plansDirectory: './.claude/plans' } : {}),
     ...(ultracode ? { ultracode: true, enableWorkflows: true } : {}),
     // The classifier reads its rules from this flag tier and never from the workspace's own settings files.
-    ...(autoMode ? { autoMode } : {})
+    ...(repository?.autoMode ? { autoMode: repository.autoMode } : {})
   }
   return {
     claudeCode: {
@@ -525,7 +537,7 @@ export function claudeSessionMeta(
               )
             }
           : {}),
-        ...(protectedSettings || ultracode || deny.length > 0 || autoMode ? { settings } : {})
+        ...(Object.keys(settings).length > 0 ? { settings } : {})
       },
       emitRawSDKMessages: SDK_LIFECYCLE_FILTERS
     },
@@ -729,8 +741,8 @@ export class AcpHost {
       /** Native tool policy applied inside either an SRT wrapper or a VM. */
       toolSandbox?: AcpToolSandbox
       codexSessionPermissionProfiles?: (directories: readonly string[]) => Promise<Record<string, unknown> | undefined>
-      /** The auto mode rules the repository checked out at a session's cwd grants it; Claude runtimes only. */
-      claudeAutoModeRules?: (cwd: string) => Promise<ClaudeAutoModeRules | undefined>
+      /** The rules the repository checked out at a session's cwd grants it; Claude runtimes only. */
+      claudeRepositoryRules?: (cwd: string) => Promise<ClaudeRepositoryRules | undefined>
       /** Called once when the owned adapter process reaches terminal exit. The
        *  delegated host manager uses this to tear down its fenced cell. */
       onTerminal?: () => void
@@ -1012,10 +1024,8 @@ export class AcpHost {
     extraDisallowedTools: readonly string[] = [],
     directories: readonly string[] = []
   ) {
-    const autoMode =
-      this.isClaudeRuntime() && directories[0] !== undefined
-        ? await this.opts.claudeAutoModeRules?.(directories[0])
-        : undefined
+    const cwd = this.isClaudeRuntime() ? directories[0] : undefined
+    const rules = cwd === undefined ? undefined : await this.opts.claudeRepositoryRules?.(cwd)
     const claudeMeta = claudeSessionMeta(
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
       this.isClaudeRuntime(),
@@ -1028,7 +1038,7 @@ export class AcpHost {
       this.opts.toolSandbox?.sharedWriteRoots,
       this.opts.toolSandbox?.readOnlyStateRoots,
       this.opts.configPrefs?.model,
-      autoMode
+      rules && cwd !== undefined ? anchorRepositoryRules(rules, cwd) : undefined
     )
     const meta =
       claudeMeta ?? (this.canUseCustomInstructions ? customInstructionsMeta(systemPrompt, systemAppend) : undefined)
