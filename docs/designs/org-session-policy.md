@@ -1,7 +1,7 @@
 # Organization Session Policy
 
-**Status:** storage, delivery, and monthly session counting implemented. Nothing refuses a session
-yet; see [Not yet](#not-yet).
+**Status:** storage, delivery, monthly session counting, and the Control Plane half of admission
+implemented. Nothing refuses a session yet; see [Not yet](#not-yet).
 
 ## What it is
 
@@ -74,8 +74,8 @@ drops (an unknown agent, or a session id another agent owns) writes nothing and 
   the whole milestone, like any other statement in that transaction.
 - **No backfill.** Rows come only from sessions first recorded after this change shipped, so
   sessions that existed before it are never counted.
-- **Reported sessions only.** The count covers sessions daemons report. An admission step before a
-  session starts is later work.
+- **Reported or admitted sessions only.** The count covers sessions daemons report or admit; a
+  session admitted first counts at [admission](#admission) instead, never twice.
 
 The increment is the transaction's last statement, so concurrent new sessions of one organization
 queue on its month row only until commit. Deleting the organization deletes its rows.
@@ -95,9 +95,46 @@ credentials: a signed-in member of the organization, or the install-level usage 
 | `resetsAt`       | The next UTC month's first instant.                                           |
 | `asOf`           | The database time of the read; every field comes from that one SQL statement. |
 
+## Admission
+
+A daemon may ask the Control Plane to admit a new session before it starts: `session/admit`
+(D→C REQ `{ agentId, sessionId }` → `session/admit/result`), where `sessionId` is the session's
+outward id, the same id `event/session` later carries. The Control Plane advertises
+`session-admit-v1` in `register/ok.serverFeatures`, and a daemon sends the request only to a
+Control Plane that does. The reporting daemon must serve the agent, as for `event/session`; the
+organization is the agent's own, read under the frame's organization fence.
+
+`org_session_admission` keeps one row per admitted session id: its organization, agent, the UTC
+month it was counted in or would have been, and whether it counted. One transaction first takes
+the same session lineage fence a milestone takes on that id, then:
+
+1. **Already admitted.** The stored answer comes back unchanged, so a re-sent admit never counts
+   twice. An admission another agent holds is refused.
+2. **Already recorded.** A `session_meta` row exists, for example a session started before this
+   feature or resumed on another daemon: the session is admitted with `counted: false`. A row
+   another agent owns is refused.
+3. **New.** The session is admitted with `counted: true`, and the organization's current month is
+   incremented by the database clock, with the same statement the milestone count runs.
+
+| Answer                         | When                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `{ admitted: true, counted }`  | Admitted; `counted` says whether this admission counted the session.     |
+| `SCOPE_DENIED` (not retryable) | The daemon does not serve the agent, or the id belongs to another agent. |
+| `INTERNAL` (retryable)         | The agent's placement is moving, or the write failed.                    |
+
+**Coexistence with the milestone count.** When a first milestone inserts the `session_meta` row,
+it increments the month only if no admission row exists for that id. Admission and milestone take
+the same lineage fence on the id before anything else, so whichever runs second sees the other's
+committed row and the session counts exactly once in either order. A daemon that never sends
+`session/admit` is counted at its first milestone exactly as before.
+
+Admission consults no limit and refuses no session on policy: an authorized request is always
+answered `admitted: true`. Deleting the organization deletes its admission rows.
+
 ## Not yet
 
-- Refusing a new session when `enforce` is true and the limit is reached, and an admission request
-  before a session starts, are later work; until then the policy changes no route, frame, or
-  daemon behavior, and the count is only read.
+- No daemon sends `session/admit` yet; wiring it into session start is the next change.
+- Refusing a new session at admission when `enforce` is true and the limit is reached is later
+  work, as an additive refusal variant of `session/admit/result`; until then the policy changes no
+  route, frame, or daemon behavior, and the count is only read.
 - Applying `historyRetentionDays` to hosted session history is later work.

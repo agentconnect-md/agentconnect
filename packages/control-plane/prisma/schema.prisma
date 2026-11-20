@@ -150,6 +150,7 @@ model Org {
   computerSettings          ComputerOrgSettings?
   sessionPolicy             OrgSessionPolicy?
   sessionMonths             OrgSessionMonth[]
+  sessionAdmissions         OrgSessionAdmission[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -5314,4 +5315,23 @@ model OrgSessionMonth {
 
   @@id([orgId, monthStart])
   @@map("org_session_month")
+}
+
+// One row per session a daemon asked the CP to admit, so a re-sent admit answers the same and never counts twice (org-session-policy.md).
+model OrgSessionAdmission {
+  // The session's outward id, the same id `session_meta.id` and `event/session` carry.
+  sessionId  String   @id
+  orgId      String
+  // The agent the session was admitted for; another agent's admit of this id is refused.
+  agentId    String   @db.Uuid
+  // The UTC month it was counted in, or would have been when `counted` is false, by the database clock.
+  monthStart DateTime @db.Timestamptz(6)
+  // False for a session the CP had already recorded before its first admit.
+  counted    Boolean
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("org_session_admission")
 }

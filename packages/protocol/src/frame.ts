@@ -135,6 +135,7 @@ import {
   ProviderCredentialsChanged
 } from './frames/provider-credentials.js'
 import { RepoCandidatesRequest, RepoCandidatesReply } from './frames/repo-candidates.js'
+import { SessionAdmitRequest, SessionAdmitResult } from './frames/session-admit.js'
 import {
   DecisionListRequest,
   DecisionListReply,
@@ -570,6 +571,9 @@ export const FRAME_SCHEMAS = {
   'event/session-activity': SessionActivity,
   // Retention-GC receipt (#485) — D→C REQ, replied with the generic `ack`.
   'event/session-purged': SessionPurged,
+  // Admit a new session for its organization before it starts (org-session-policy.md, Admission) — D→C REQ.
+  'session/admit': SessionAdmitRequest,
+  'session/admit/result': SessionAdmitResult,
   'usage/report': UsageReport,
   'facts/runtime-profile': FactsRuntimeProfile,
   'facts/daemon-runtimes': DaemonRuntimes,
@@ -988,6 +992,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('event/session-sync', FRAME_SCHEMAS['event/session-sync']),
   frame('event/session-activity', FRAME_SCHEMAS['event/session-activity']),
   frame('event/session-purged', FRAME_SCHEMAS['event/session-purged']),
+  frame('session/admit', FRAME_SCHEMAS['session/admit']),
+  frame('session/admit/result', FRAME_SCHEMAS['session/admit/result']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),
   frame('facts/runtime-profile', FRAME_SCHEMAS['facts/runtime-profile']),
   frame('facts/daemon-runtimes', FRAME_SCHEMAS['facts/daemon-runtimes']),
