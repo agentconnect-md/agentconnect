@@ -273,6 +273,11 @@ describe('a spread session’s cwd record', () => {
       primaryClone
     ])
     expect(await workspaces.additionalWorkspaceDirectories(withRepo, cwd, resumed)).toEqual([primaryClone])
+    // The session's two file areas are in its own directory, on the machine it runs on (§2.4).
+    expect(await workspaces.sessionFileAreas(withRepo, resumed)).toEqual({
+      outputs: join(sessionDir, 'files', 'outputs'),
+      uploads: join(sessionDir, 'files', 'uploads')
+    })
     expectNoCrossedPaths()
   })
 

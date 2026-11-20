@@ -144,6 +144,9 @@ export const WORKSPACE_FILE_DOWNLOAD_FEATURE = 'workspace-file-download-v1'
  * and would answer for the PRIMARY workspace, which is the wrong repository's files. */
 export const WORKSPACE_REPO_SCOPE_FEATURE = 'workspace-repo-scope-v1'
 
+/** Daemon resolves workspace list/read/upload frames carrying `root` against that area of the session's files directory (inbound-file-attachments.md §2.4); an older daemon ignores the field and would answer for the checkout. */
+export const SESSION_FILES_FEATURE = 'session-files-v1'
+
 /** Daemon serves the console's git review reads — `workspace/gitdiff`,
  * `workspace/gitlog`, and per-file `additions`/`deletions` on `workspace/gitstatus`.
  * The CP must check this before sending either new frame: an older daemon ignores

@@ -540,8 +540,9 @@ describe('Daemon session lifecycle (#118)', () => {
           'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
           'base64'
         )
+        const outputs = `/agent/sessions/${sessionKeyDirName(KEY)}/files/outputs`
         vi.spyOn(pod, 'readFileBytes').mockImplementation(async (path) =>
-          path === `${clone}/out/chart.png` ? { bytes: png } : undefined
+          path === `${clone}/out/chart.png` || path === `${outputs}/charts/a.png` ? { bytes: png } : undefined
         )
         let bound = true
         const plane = {
@@ -563,14 +564,31 @@ describe('Daemon session lifecycle (#118)', () => {
           transportScope: TRANSPORT_SCOPE
         }
 
+        // Its own pod's session directory holds the files directory, beside the clone (inbound-file-attachments.md §2.4).
+        const uploads = `/agent/sessions/${sessionKeyDirName(KEY)}/files/uploads`
         expect(await d.mcp.deps.saveAttachment(ctx, 'report.pdf', Buffer.from('%PDF-1'))).toEqual({
           ok: true,
-          path: 'uploads/report.pdf'
+          path: `${uploads}/report.pdf`,
+          name: 'files:uploads/report.pdf'
         })
-        expect(String(pod.files.get(`${clone}/uploads/report.pdf`))).toBe('%PDF-1')
+        expect(String(pod.files.get(`${uploads}/report.pdf`))).toBe('%PDF-1')
+        expect(pod.files.has(`${clone}/uploads/report.pdf`)).toBe(false)
         expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toMatchObject({
           ok: true,
           mimeType: 'image/png'
+        })
+        // A session file is read from its own area by files: name or absolute path; nothing else in the session directory is reachable.
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'files:outputs/charts/a.png')).toMatchObject({ ok: true })
+        expect(await d.mcp.deps.normalizeSharePath(ctx, `${outputs}/charts/a.png`)).toBe('files:outputs/charts/a.png')
+        expect(await d.mcp.deps.readWorkspaceFile(ctx, 'files:outputs/../home/.codex/auth.json')).toMatchObject({
+          ok: false,
+          reason: 'escape'
+        })
+        expect(
+          await d.mcp.deps.readWorkspaceFile(ctx, `/agent/sessions/${sessionKeyDirName(KEY)}/home/x`)
+        ).toMatchObject({
+          ok: false,
+          reason: 'escape'
         })
 
         // No pod of the agent bound: both refuse rather than fall back to this member's own disk.
@@ -640,11 +658,13 @@ describe('Daemon session lifecycle (#118)', () => {
           transportScope: TRANSPORT_SCOPE
         }
 
+        const uploads = `${executorRoot}/sessions/${sessionKeyDirName(KEY)}/files/uploads`
         expect(await d.mcp.deps.saveAttachment(ctx, 'report.pdf', Buffer.from('%PDF-1'))).toEqual({
           ok: true,
-          path: 'uploads/report.pdf'
+          path: `${uploads}/report.pdf`,
+          name: 'files:uploads/report.pdf'
         })
-        expect(String(machine.files.get(`${clone}/uploads/report.pdf`))).toBe('%PDF-1')
+        expect(String(machine.files.get(`${uploads}/report.pdf`))).toBe('%PDF-1')
         expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toMatchObject({
           ok: true,
           mimeType: 'image/png'

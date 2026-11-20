@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
+import { SESSION_FILES_FEATURE, WORKSPACE_SESSION_READ_FEATURE } from '@agentconnect.md/protocol'
 import type {
   WorkspaceDeleteOk,
   WorkspaceDeleteReq,
@@ -12,6 +12,8 @@ import type {
   WorkspaceListReq,
   WorkspaceMkdirOk,
   WorkspaceMkdirReq,
+  WorkspaceReadContent,
+  WorkspaceReadReq,
   WorkspaceWriteOk,
   WorkspaceWriteReq
 } from '@agentconnect.md/protocol'
@@ -131,6 +133,62 @@ describe('GET /agents/:id/workspace/files', () => {
     })
     expect(gone.statusCode).toBe(404)
     expect(control.listCalls).toHaveLength(1)
+  })
+
+  it('lists and reads a shared session’s files area while its checkout scope stays refused', async () => {
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { ...CAPABILITIES, features: [...CAPABILITIES.features, SESSION_FILES_FEATURE] }
+    })
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON, gitRepo: 'https://github.com/acme/repo' })
+    const shared = randomUUID()
+    await seedSessionMeta(prisma, shared, AGENT, { daemonId: DAEMON })
+    await prisma.sessionMeta.update({ where: { id: shared }, data: { workspaceIsolation: 'shared' } })
+    const control = new WorkspaceWriteSpy()
+    const reads: WorkspaceReadReq[] = []
+    const reader = control as WorkspaceWriteSpy & { workspaceRead?: (d: string, r: WorkspaceReadReq) => unknown }
+    reader.workspaceRead = async (_daemonId, req): Promise<WorkspaceReadContent> => {
+      reads.push(req)
+      return { agentId: req.agentId, path: req.path, exists: false }
+    }
+    const running = app(control)
+    const files = `${ORG}/agents/${AGENT}/workspace/files`
+
+    const listed = await running.app.inject({ method: 'GET', url: `${files}?sessionId=${shared}&root=outputs` })
+    expect(listed.statusCode).toBe(200)
+    expect(control.listCalls).toEqual([
+      { daemonId: DAEMON, req: { agentId: AGENT, sessionId: shared, root: 'outputs', path: '', limit: 200 } }
+    ])
+    const read = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/file?sessionId=${shared}&root=uploads&path=spec.pdf`
+    })
+    expect(read.statusCode).toBe(200)
+    expect(reads[0]).toMatchObject({ sessionId: shared, root: 'uploads', path: 'spec.pdf' })
+
+    const checkout = await running.app.inject({ method: 'GET', url: `${files}?sessionId=${shared}` })
+    expect(checkout.statusCode).toBe(404)
+    const noSession = await running.app.inject({ method: 'GET', url: `${files}?root=uploads` })
+    expect(noSession.statusCode).toBe(400)
+    const withRepo = await running.app.inject({
+      method: 'GET',
+      url: `${files}?sessionId=${shared}&root=uploads&repo=acme%2Fother`
+    })
+    expect(withRepo.statusCode).toBe(400)
+    expect(control.listCalls).toHaveLength(1)
+  })
+
+  it('refuses a session files listing with 409 before any frame when the daemon predates them', async () => {
+    await seedScratch()
+    const session = randomUUID()
+    await seedSessionMeta(prisma, session, AGENT, { daemonId: DAEMON })
+    const control = new WorkspaceWriteSpy()
+    const res = await app(control).app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/files?sessionId=${session}&root=uploads`
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.listCalls).toHaveLength(0)
   })
 
   it('answers a sandbox the daemon cannot reach with 503 and the code the console offers Start on', async () => {

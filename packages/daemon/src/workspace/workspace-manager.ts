@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -22,7 +23,8 @@ import {
   normalizeGitUrl,
   normalizeRepoSubdir,
   redactGitUrlSecrets,
-  isCodeHostProvider
+  isCodeHostProvider,
+  type SessionFileArea
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import {
@@ -98,7 +100,12 @@ import {
   sessionRootAttestationIn,
   sessionRootCloneIn,
   sessionsDirIn,
-  sessionDirsIn
+  sessionDirsIn,
+  agentSessionFilesSegments,
+  SESSION_FILE_AREAS,
+  SESSION_FILES_DIR,
+  DAEMON_OWNED_DIR,
+  sessionFileLeavesIn
 } from './session-layout.js'
 import { sessionKeyDirName } from '../acp/host-key.js'
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
@@ -245,6 +252,16 @@ export type SessionRootScope = Pick<
  *  worktree. Both are needed — the daemon composes the pod path itself, and an isolation with no key
  *  names no worktree. */
 export type ClusterSessionScope = Pick<PrepareSessionWorkspaceRequest, 'isolation'> & { sessionKey?: string }
+
+/** A session's workspace isolation, as its row records it. */
+export type SessionIsolation = PrepareSessionWorkspaceRequest['isolation']
+
+/** Where a session's files directory is: a trusted daemon-owned anchor, the segments under it, and the scope whose filesystem holds it. */
+export interface SessionFilesLocation {
+  anchor: string
+  segments: string[]
+  scope: { sessionKey?: string }
+}
 
 /** Runs `work` with the agent's own volume reachable; a pool preparation of an isolated session holds only its own pod and reaches the agent's through this, for work due there. */
 export type AgentVolumeReach = <T>(work: () => Promise<T>) => Promise<T>
@@ -1699,6 +1716,8 @@ export class WorkspaceManager {
     if (agent.workspace.mode === 'git-repo') normalizeRepoSubdir(agent.workspace.agentDir)
     const root = agent.workspace.mode === 'git-repo' ? this.primaryRoot(agent) : undefined
     mkdirSync(cwd, { recursive: true })
+    // The parent a sandboxed host is granted before any session's files exist (§2.4).
+    mkdirSync(join(this.agentRootFor(agent), SESSION_FILES_DIR), { recursive: true, mode: 0o700 })
 
     if (root === undefined) {
       // Memory lives at the agent ROOT and is seeded separately, so from-scratch just needs an empty workspace dir.
@@ -1761,7 +1780,9 @@ export class WorkspaceManager {
     return [
       ...(agent.workspace.mode === 'git-repo' ? [this.localWorktreesPathFor(agent)] : []),
       this.secondaryRootsDir(agent),
-      onDemandClonesDirIn(this.agentRootFor(agent))
+      onDemandClonesDirIn(this.agentRootFor(agent)),
+      // Every session this host serves keeps its files under one parent, so the grant is the parent (§2.4).
+      join(this.agentRootFor(agent), SESSION_FILES_DIR)
     ]
   }
 
@@ -1834,6 +1855,107 @@ export class WorkspaceManager {
     // A pool member is always the confined tier (§11): every isolated session has its own pod and directory, so the policy answers where no disk can be asked.
     if (this.offDisk({ agentId: agent.id, sessionKey })) return this.sessionDir(agent, sessionKey)
     return confinedSessionDirIn(this.agentRootFor(agent), sessionKey)
+  }
+
+  /** Where one session's files directory is (inbound-file-attachments.md §2.4): its own directory's `files` when it has one, else `files/<leaf>` beside the agent's roots; no I/O. */
+  sessionFilesLocation(agent: Agent, sessionKey: string, isolation?: SessionIsolation | null): SessionFilesLocation {
+    if (isolation === 'session') {
+      const own = this.confinedSessionDir(agent, sessionKey)
+      if (own !== undefined) return { anchor: own, segments: [SESSION_FILES_DIR], scope: { sessionKey } }
+    }
+    const mount = this.sandboxMountFor(agent.id)
+    // A pool agent without a repository has the mount itself as its checkout, so its leaves stay in the daemon-owned namespace.
+    const checkoutIsRoot = mount !== undefined && agent.workspace.mode !== 'git-repo'
+    return {
+      anchor: mount ?? this.agentRootFor(agent),
+      segments: [...agentSessionFilesSegments(checkoutIsRoot), sessionKeyDirName(sessionKey)],
+      scope: {}
+    }
+  }
+
+  /** A session's two areas, made when missing and proven real directories under their anchor; undefined when the filesystem holding them is not reachable or refuses. */
+  async sessionFileAreas(
+    agent: Agent,
+    request: { sessionKey?: string; isolation?: SessionIsolation | null }
+  ): Promise<Record<SessionFileArea, string> | undefined> {
+    if (request.sessionKey === undefined) return undefined
+    const location = this.sessionFilesLocation(agent, request.sessionKey, request.isolation)
+    const fs = this.offDiskFsFor(agent.id, location.scope)
+    if (fs === 'unbound') return undefined
+    try {
+      const out = {} as Record<SessionFileArea, string>
+      for (const area of SESSION_FILE_AREAS) {
+        const dir = join(location.anchor, ...location.segments, area)
+        if (fs !== undefined) {
+          // The shim's descent from its anchor refuses links, so composing the path is all this side does.
+          await fs.mkdir(dir, 0o700)
+          if ((await fs.stat(dir)) !== 'dir') return undefined
+          out[area] = dir
+        } else {
+          out[area] = realSessionFilesPath(location, area, true)
+        }
+      }
+      return out
+    } catch (err) {
+      workspaceLog.warn(`workspace: session files of agent "${agent.id}" are unavailable (${formatErr(err)})`)
+      return undefined
+    }
+  }
+
+  /** Remove one session's `files/<leaf>` beside the agent's roots; never judged dirty, since nothing in it is Git work. A session's own directory takes its files with it. */
+  async removeSessionFiles(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
+    const location = this.sessionFilesLocation(agent, sessionKey, 'shared')
+    const fs = this.offDiskFsFor(agent.id, location.scope)
+    if (fs === 'unbound') return { outcome: 'failed', error: 'sandbox unreachable' }
+    try {
+      if (fs !== undefined) {
+        const dir = join(location.anchor, ...location.segments)
+        if ((await fs.stat(dir)) === 'missing') return { outcome: 'absent' }
+        await fs.rmTree(dir)
+        return { outcome: 'removed' }
+      }
+      const dir = join(location.anchor, ...location.segments)
+      if (!existsSync(dir) && !isSymlink(dir)) return { outcome: 'absent' }
+      // Removes the link itself, never what a swapped-in link points at.
+      removeTreeSync(isRealDir(dir) ? realSessionFilesPath(location) : dir)
+      return { outcome: 'removed' }
+    } catch (err) {
+      return { outcome: 'failed', error: (err as Error).message }
+    }
+  }
+
+  /** The segments under a checkout root that hold other sessions' files: only a pool agent whose checkout is its mount has any (§2.4). */
+  sessionFilesInCheckout(agentId: string, root: string): string[] | undefined {
+    const mount = this.sandboxMountFor(agentId)
+    return mount !== undefined && root === mount ? [DAEMON_OWNED_DIR, SESSION_FILES_DIR] : undefined
+  }
+
+  /** Whether this disk holds a `files/<leaf>` for the session; a pool's is asked of its volume by {@link hasSessionFilesOnVolume}. */
+  hasLocalSessionFiles(agent: Agent, sessionKey: string): boolean {
+    if (this.offDisk({ agentId: agent.id })) return false
+    const location = this.sessionFilesLocation(agent, sessionKey, 'shared')
+    return isRealDir(join(location.anchor, ...location.segments))
+  }
+
+  /** The same question of the agent's own volume; the caller holds it bound. */
+  async hasSessionFilesOnVolume(agent: Agent, sessionKey: string): Promise<boolean> {
+    const location = this.sessionFilesLocation(agent, sessionKey, 'shared')
+    const fs = this.offDiskFsFor(agent.id, location.scope)
+    if (fs === 'unbound') return false
+    return (await (fs ?? localWorkspaceFs).stat(join(location.anchor, ...location.segments))) === 'dir'
+  }
+
+  /** Leaves of this disk's `files/` with the session-leaf shape, for the orphan pass; a pool's are on its volume. */
+  sessionFileLeaves(agent: Agent): string[] {
+    if (this.offDisk({ agentId: agent.id })) return []
+    return sessionFileLeavesIn(join(this.agentRootFor(agent), SESSION_FILES_DIR))
+  }
+
+  /** Remove `files/<leaf>` that no row names; the leaf shape was checked by {@link sessionFileLeaves}. */
+  removeOrphanSessionFiles(agent: Agent, leaf: string): void {
+    const parent = join(this.agentRootFor(agent), SESSION_FILES_DIR)
+    if (!isRealDir(parent) || sessionLeafId(leaf) === undefined) return
+    removeTreeSync(join(parent, leaf))
   }
 
   /** The `.git` of every clone a session holds off this disk, asked of the filesystem that holds them; undefined, with no round trip, for one on this disk, whose launch reads them itself. */
@@ -3738,6 +3860,32 @@ export class WorkspaceManager {
     })
     this.cloneInFlight.set(key, p)
     return p
+  }
+}
+
+/** A local files directory (or one of its areas) by its canonical path, every component below the anchor a real directory, made first when `create`; throws on a link or anything else in the way. */
+export function realSessionFilesPath(location: SessionFilesLocation, area?: SessionFileArea, create = false): string {
+  let path = realpathSync(location.anchor)
+  for (const segment of area === undefined ? location.segments : [...location.segments, area]) {
+    path = join(path, segment)
+    if (create) {
+      try {
+        mkdirSync(path, { mode: 0o700 })
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      }
+    }
+    if (!isRealDir(path))
+      throw new WorkspaceViolationError(`session files path "${path}" is not a directory`, 'path-escape')
+  }
+  return path
+}
+
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
   }
 }
 

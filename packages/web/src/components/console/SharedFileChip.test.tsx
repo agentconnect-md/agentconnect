@@ -98,6 +98,22 @@ describe('SharedFileChip', () => {
     expect(saved.save).toHaveBeenCalledWith(blob, 'chart.png')
   })
 
+  it('downloads a session files area’s file by its root when no snapshot was kept', async () => {
+    const blob = new Blob(['pdf'])
+    api.download.mockResolvedValue(blob)
+    const report: SharedFile = { ...FILE, path: 'report.pdf', root: 'outputs', name: 'report.pdf' }
+    await render(<SharedFileChip file={report} agentId="agent-1" sessionId="session-1" />)
+    await click()
+
+    expect(api.download).toHaveBeenCalledWith('agent-1', {
+      sessionId: 'session-1',
+      root: 'outputs',
+      path: 'report.pdf',
+      sha256: '1a2b3c4d5e6f7a8b'
+    })
+    expect(saved.save).toHaveBeenCalledWith(blob, 'report.pdf')
+  })
+
   it('says why a download was refused', async () => {
     api.download.mockRejectedValueOnce(new ApiError('changed', 409, 'WORKSPACE_FILE_CHANGED'))
     await render(<SharedFileChip file={FILE} agentId="agent-1" sessionId="session-1" />)

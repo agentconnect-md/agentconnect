@@ -4,18 +4,22 @@ import {
   MAX_WORKSPACE_DOWNLOAD_BYTES as PROTOCOL_MAX_DOWNLOAD,
   WEBCHAT_FILES_MAX as PROTOCOL_FILES_MAX,
   WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES as PROTOCOL_TEXT_THRESHOLD,
-  WORKSPACE_UPLOADS_DIR as PROTOCOL_UPLOADS_DIR
+  SESSION_FILE_PREFIX as PROTOCOL_FILE_PREFIX,
+  SessionFileArea as PROTOCOL_FILE_AREA,
+  parseSessionFileName as protocolParseSessionFileName
 } from '@agentconnect.md/protocol'
 import {
   deploymentFileTransfer,
   FILE_TRANSFER_FEATURE,
   MAX_WORKSPACE_DOWNLOAD_BYTES,
+  parseSessionFileName,
+  SESSION_FILE_AREAS,
+  SESSION_FILE_PREFIX,
   sharedFileMarker,
   transferCapable,
   viaTransfer,
   WEBCHAT_FILES_MAX,
-  WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES,
-  WORKSPACE_UPLOADS_DIR
+  WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES
 } from './shared-file'
 
 const SHA = '1a2b3c4d5e6f7a8b'
@@ -47,6 +51,39 @@ describe('sharedFileMarker', () => {
     expect(pathOf('out\\chart.png')).toBeNull()
   })
 
+  it('names a session files area apart from the checkout', () => {
+    const parsed = sharedFileMarker(
+      `the report\n[shared: files:outputs/q3/report.pdf (application/pdf, 1234 bytes, sha256:${SHA})]`
+    )
+    expect(parsed?.file).toEqual({
+      path: 'q3/report.pdf',
+      root: 'outputs',
+      name: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: 1234,
+      sha256: SHA
+    })
+    const escape = sharedFileMarker(`[shared: files:uploads/../x.pdf (application/pdf, 1 bytes, sha256:${SHA})]`)
+    expect(escape?.file).toMatchObject({ path: null, root: 'uploads' })
+    // An unknown area is an ordinary checkout path, as an older console reads every `files:` name.
+    expect(
+      sharedFileMarker(`[shared: files:other/x.pdf (application/pdf, 1 bytes, sha256:${SHA})]`)?.file
+    ).not.toHaveProperty('root')
+  })
+
+  it('splits a files: name exactly as the protocol does', () => {
+    for (const name of [
+      'files:outputs/a/b.pdf',
+      'files:uploads',
+      'files:outputs/',
+      'files:other/x',
+      'outputs/x',
+      'files:'
+    ]) {
+      expect(parseSessionFileName(name), name).toEqual(protocolParseSessionFileName(name))
+    }
+  })
+
   it('reads only a well-formed marker at the end of the row', () => {
     expect(sharedFileMarker('an ordinary reply')).toBeNull()
     expect(sharedFileMarker(`[shared: a.png (image/png, 1 bytes, sha256:${SHA})]\nand then more`)).toBeNull()
@@ -57,7 +94,8 @@ describe('sharedFileMarker', () => {
 
 describe('shared-file constants', () => {
   it('mirrors the protocol’s download and transfer constants', () => {
-    expect(WORKSPACE_UPLOADS_DIR).toBe(PROTOCOL_UPLOADS_DIR)
+    expect(SESSION_FILE_PREFIX).toBe(PROTOCOL_FILE_PREFIX)
+    expect(SESSION_FILE_AREAS).toEqual(PROTOCOL_FILE_AREA.options)
     expect(MAX_WORKSPACE_DOWNLOAD_BYTES).toBe(PROTOCOL_MAX_DOWNLOAD)
     expect(WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES).toBe(PROTOCOL_TEXT_THRESHOLD)
     expect(FILE_TRANSFER_FEATURE).toBe(PROTOCOL_TRANSFER_FEATURE)

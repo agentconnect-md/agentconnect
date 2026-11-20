@@ -11,7 +11,7 @@ export type MessageAttachment = z.infer<typeof MessageAttachment>
 export const messageAttachmentsField = z.array(MessageAttachment).min(1).max(MESSAGE_ATTACHMENTS_MAX).optional()
 
 export interface MessageAttachmentDeps
-  extends GatewayDeps, Pick<ShareFileDeps, 'readWorkspaceFile' | 'chargeShareBudget'> {
+  extends GatewayDeps, Pick<ShareFileDeps, 'readWorkspaceFile' | 'chargeShareBudget' | 'normalizeSharePath'> {
   maxOutboundFileBytes?: number
   readUploadedFile?: (ctx: SessionContext, uploadId: string) => Promise<MessageFile | undefined>
   authorizeFileRead?: (source: { platform: string; integrationId: string; channels: string[] }) => Promise<void>
@@ -25,7 +25,10 @@ export async function resolveMessageAttachment(
   const cap = deps.maxOutboundFileBytes ?? 8 * 1024 * 1024
   let file: MessageFile | undefined
   if (source.source === 'workspace') {
-    const read = await deps.readWorkspaceFile?.(ctx, source.path)
+    const given = source.path
+    const path = (await deps.normalizeSharePath?.(ctx, given).catch(() => given)) ?? given
+    source = { ...source, path }
+    const read = await deps.readWorkspaceFile?.(ctx, path)
     if (!read?.ok)
       throw new Error(
         `sendMessage: cannot read workspace attachment (${read?.reason ?? 'unavailable'}). Nothing was sent.`

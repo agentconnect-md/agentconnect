@@ -43,8 +43,9 @@ under the same org scope:
 <prefix>/src/<org>/transfer/session/<agentId>/<hash>/<sha256>   one shared file's snapshot
 ```
 
-`identity` is `[agentId, sessionId, repo, path, size, mtime]`, so a rewritten file gets a
-new key. Every transfer PUT signs `x-amz-tagging: ac-cache=pending`, so the bucket's
+`identity` is `[agentId, sessionId, repo, path, size, mtime]`, plus `files:<area>` for a
+session file ([inbound-file-attachments.md](inbound-file-attachments.md) §2.4), so a
+rewritten file gets a new key and an area path never shares one with a checkout path. Every transfer PUT signs `x-amz-tagging: ac-cache=pending`, so the bucket's
 2-day `pending` rule ([source-cache.md](source-cache.md) §10) collects it. No store row
 tracks a transfer: nothing counts toward the org quota and the sweep never sees one. The
 exceptions are a shared file's snapshot and a console image's original, which live as long
@@ -278,10 +279,11 @@ recorded is therefore refused on this path too
 - **`workspace/upload/begin`** runs the same upload under `UploadBegins`, which keys
   running uploads by ticket, and reports the outcome with `transfer/settle`.
 - **Prompt:** a webchat file becomes an `Attachment` with `transfer`.
-  - At prompt build the daemon asks `transfer/get`. `buildAttachmentBlocks` then emits a
-    text block naming the file and a sample `curl -o uploads/<name>` with the presigned
-    GET and its expiry. [inbound-file-attachments.md](inbound-file-attachments.md) §2.4
-    replaces this with a daemon fetch into the session files directory.
+  - At prompt build the daemon asks `transfer/get` and, for a file within
+    `limits.maxAttachmentBytes`, fetches it into the session files directory's `uploads/`
+    ([inbound-file-attachments.md](inbound-file-attachments.md) §2.4). The text block then
+    names the saved file. A larger file, or one the daemon could not save, gets a sample
+    `curl -o <uploads>/<name>` with the presigned GET and its expiry instead.
   - A file the bucket no longer holds is named as unavailable.
   - The transcript keeps the `[attached: …]` marker only, never the URL.
 
@@ -361,9 +363,9 @@ multipart upload are covered by `s3:PutObject`.
 - **Mixed CP versions.** During a CP rollout a daemon may settle to a CP that predates
   `transfer/settle`. That CP refuses the frame. A successful upload is still found in the
   bucket. A failed one is reported only when its ticket expires.
-- **No automatic placement yet.** The agent downloads an upload itself. The daemon
-  fetch into the session files directory's `uploads/` is designed in
-  [inbound-file-attachments.md](inbound-file-attachments.md) §2.4.
+- **Placement within the attachment cap.** The daemon saves an upload of at most
+  `limits.maxAttachmentBytes` into the session's `uploads/`; a larger one is still
+  downloaded by the agent itself.
 - **A closed tab abandons an upload in parts.** Nothing resumes it; its parts wait for
   the abort rule. The CP cannot abort it sooner, since it holds no
   `s3:AbortMultipartUpload` and keeps no record of open uploads.

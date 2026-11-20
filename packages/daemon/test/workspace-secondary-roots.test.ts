@@ -810,11 +810,13 @@ describe('sandbox write roots', () => {
     expect(workspaces.trustedWorkspaceWriteRoots(repo)).toEqual([
       join(workspaces.agentRootFor(repo), 'worktrees'),
       join(workspaces.agentRootFor(repo), 'repos'),
-      join(workspaces.agentRootFor(repo), 'clones')
+      join(workspaces.agentRootFor(repo), 'clones'),
+      join(workspaces.agentRootFor(repo), 'files')
     ])
     expect(workspaces.trustedWorkspaceWriteRoots(scratch)).toEqual([
       join(workspaces.agentRootFor(scratch), 'repos'),
-      join(workspaces.agentRootFor(scratch), 'clones')
+      join(workspaces.agentRootFor(scratch), 'clones'),
+      join(workspaces.agentRootFor(scratch), 'files')
     ])
   })
 })

@@ -13,7 +13,9 @@ export interface FlattenOptions {
 }
 
 /** Rewrite unsafe link targets without reformatting the rest of the Markdown source. */
-export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): string {
+export function flattenUnsafeLinks(source: string, opts: FlattenOptions = {}): string {
+  // A session file's host path never reaches the conversation; its `files:` name does (inbound-file-attachments.md §2.4).
+  const text = opts.resolveFileLink?.rewriteSessionPaths?.(source) ?? source
   if (!text.includes('[') && !text.includes('<')) return text
   const tree = fromMarkdown(text)
   const definitions = new Map<string, Definition>()

@@ -23,7 +23,12 @@ export interface AttachmentDeps {
   maxBytes?: number
   /** A presigned GET for a console upload in the Source Cache bucket; undefined when it is gone or unverifiable. */
   transferUrl?: (att: Attachment) => Promise<{ url: string; expiresAt: number } | undefined>
+  /** Fetch a console upload into the session's uploads area (inbound-file-attachments.md §2.4): where it landed, else the area a fallback download should target. */
+  saveTransfer?: (att: Attachment, link: { url: string; expiresAt: number }) => Promise<TransferSave>
 }
+
+/** A console upload the daemon saved, or the uploads area the agent should download it into itself. */
+export type TransferSave = { ok: true; path: string; name: string } | { ok: false; dir?: string }
 
 /**
  * Turn one Slack attachment into the richest ACP content block the agent can
@@ -73,8 +78,8 @@ export function attachmentToBlock(
     uri: att.sourceUrl,
     mimeType: att.mimeType,
     description: att.readerToolName
-      ? `You cannot fetch this provider URL directly — call the ${att.readerToolName} tool with this uri (mimeType: ${att.mimeType}) to access it; a non-image binary is saved into uploads/ in your workspace.`
-      : `Slack file. You cannot fetch this URL directly — call the readSlackFile tool with this uri (mimeType: ${att.mimeType}) to view its contents (a non-image binary is saved into uploads/ in your workspace).`,
+      ? `You cannot fetch this provider URL directly — call the ${att.readerToolName} tool with this uri (mimeType: ${att.mimeType}) to access it; a non-image binary is saved into your session uploads directory.`
+      : `Slack file. You cannot fetch this URL directly — call the readSlackFile tool with this uri (mimeType: ${att.mimeType}) to view its contents (a non-image binary is saved into your session uploads directory).`,
     ...(typeof att.size === 'number' ? { size: att.size } : {})
   }
 }
@@ -87,7 +92,9 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   const blocks = await Promise.all(
     attachments.map(async (att) => {
       if (att.transfer) {
-        const link = transferBlock(att, await deps.transferUrl?.(att).catch(() => undefined))
+        const url = await deps.transferUrl?.(att).catch(() => undefined)
+        const saved = url ? await deps.saveTransfer?.(att, url).catch(() => undefined) : undefined
+        const link = transferBlock(att, url, saved)
         const preview = att.transcriptThumbnail
         return preview && deps.supports('image')
           ? [link, { type: 'image' as const, data: preview.data.toString('base64'), mimeType: preview.mimeType }]
@@ -119,16 +126,32 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** A console upload reaches the agent as a download link it fetches into its own workspace. */
-export function transferBlock(att: Attachment, link: { url: string; expiresAt: number } | undefined): ContentBlock {
+/** A console upload as the daemon saved it, else as a download link the agent fetches into its uploads area. */
+export function transferBlock(
+  att: Attachment,
+  link: { url: string; expiresAt: number } | undefined,
+  saved?: TransferSave
+): ContentBlock {
   const label = `${att.name} (${att.mimeType}${typeof att.size === 'number' ? `, ${att.size} bytes` : ''})`
   if (!link) return { type: 'text', text: `[uploaded file: ${label} — the upload is no longer available]` }
+  const heading = `[uploaded file: ${label}; uploadId=${att.transfer?.uploadId}]`
+  if (saved?.ok) {
+    return {
+      type: 'text',
+      text: [
+        heading,
+        `The user uploaded this file. It is saved at ${saved.path} (\`${saved.name}\`), outside the repository.`
+      ].join('\n')
+    }
+  }
+  const target = saved?.dir === undefined ? `uploads/${att.name}` : `${saved.dir}/${att.name}`
+  const mkdir = saved?.dir === undefined ? 'mkdir -p uploads && ' : ''
   return {
     type: 'text',
     text: [
-      `[uploaded file: ${label}; uploadId=${att.transfer?.uploadId}]`,
-      `The user uploaded this file. It is not in your workspace yet; download it when you need it, for example:`,
-      `mkdir -p uploads && curl -fsSL -o ${shellQuote(`uploads/${att.name}`)} ${shellQuote(link.url)}`,
+      heading,
+      `The user uploaded this file. It is not saved yet; download it when you need it, for example:`,
+      `${mkdir}curl -fsSL -o ${shellQuote(target)} ${shellQuote(link.url)}`,
       `The link expires at ${new Date(link.expiresAt).toISOString()}; do not repeat it in replies.`
     ].join('\n')
   }

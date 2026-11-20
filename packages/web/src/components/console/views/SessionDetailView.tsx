@@ -123,7 +123,13 @@ import {
   stageComposerFiles,
   useFileDrop
 } from '@/components/console/ComposerFiles'
-import { transferCapable, uploadPreviewsCapable, type SessionFileDownload } from '@/lib/shared-file'
+import {
+  SESSION_FILE_AREAS,
+  transferCapable,
+  uploadPreviewsCapable,
+  type SessionFileArea,
+  type SessionFileDownload
+} from '@/lib/shared-file'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -857,11 +863,20 @@ export default function SessionDetailView() {
   // Which workspace that path was read from. A merged conversation's header focus is component state that defaults to the current REPRESENTATIVE, and the representative changes as another participant becomes newest — so without this a link copied while focused on agent B reopens B's path against A's checkout.
   const viewerAgentParam = searchParams.get('agent')
   const viewerRepo = searchParams.get('repo') || undefined
+  // A session files area (`?root=`) replaces the checkout as the path's root; an unknown value reads as the checkout.
+  const rootParam = searchParams.get('root')
+  const viewerRoot = SESSION_FILE_AREAS.find((area) => area === rootParam)
   // Which read of that path is on screen (§4's M2 addition to the same param set): the file, its unstaged diff, or its staged diff. A value this console does not know degrades to File mode — the one read every workspace can answer — rather than to an error.
   const viewerMode = viewerModeFromParam(searchParams.get('mode'))
   // REPLACE, never push. The viewer is a pane mode inside one route, not a place: pushing would spend a history entry per tree click, so a reader who read six files would need seven Back presses to leave the session, and Back would stop meaning "leave this session". The cost, accepted: Back does not step file-by-file within a visit. Writing through URLSearchParams is also what makes a path with slashes and spaces round-trip — `router.replace` on `.toString()`, `searchParams.get` back.
   const setViewerFile = useCallback(
-    (next: string | null, agentId?: string | null, mode: ViewerMode = 'file', repo?: string) => {
+    (
+      next: string | null,
+      agentId?: string | null,
+      mode: ViewerMode = 'file',
+      repo?: string,
+      root?: SessionFileArea
+    ) => {
       const query = new URLSearchParams(searchParams)
       if (next) query.set('file', next)
       else query.delete('file')
@@ -870,6 +885,8 @@ export default function SessionDetailView() {
       else query.delete('agent')
       if (next && repo) query.set('repo', repo)
       else query.delete('repo')
+      if (next && root) query.set('root', root)
+      else query.delete('root')
       // File mode is the DEFAULT, so it writes no parameter at all: an M1 link stays byte-identical, and closing the viewer takes the mode with the path rather than leaving a mode behind for the next file opened.
       if (next && mode !== 'file') query.set('mode', mode)
       else query.delete('mode')
@@ -1535,9 +1552,9 @@ export default function SessionDetailView() {
     (agentId: string) => {
       setHeaderFocusSelection({ scope: headerFocusScope, agentId })
       // The MODE travels with the path: a reader comparing one agent's diff to another's must not be dropped into File mode by the act of switching.
-      if (viewerPath !== null) setViewerFile(viewerPath, agentId, viewerMode)
+      if (viewerPath !== null) setViewerFile(viewerPath, agentId, viewerMode, undefined, viewerRoot)
     },
-    [headerFocusScope, setViewerFile, viewerMode, viewerPath]
+    [headerFocusScope, setViewerFile, viewerMode, viewerPath, viewerRoot]
   )
   useEffect(() => {
     if (!defaultHeaderFocusAgentId) return
@@ -2089,11 +2106,15 @@ export default function SessionDetailView() {
   const transcriptMatchesSession = !wantTranscript || transcriptSessionId === transcriptSid
   const visibleMsgs = transcriptMatchesSession ? msgs : null
   // The viewer downloads the file it shows, in the focused session's root; a share's digest pins only its chip.
+  // The session whose files directory the Files tab's section and a `?root=` viewer read: shared sessions have one too, so no isolation gate.
+  const sessionFilesId =
+    (headerFocusSessionId === sid ? session?.realSessionId : undefined) ?? tasksSessionId ?? undefined
   const viewerDownload = useMemo((): SessionFileDownload | null => {
     if (!viewerPath) return null
+    if (viewerRoot) return sessionFilesId ? { sessionId: sessionFilesId } : null
     if (!headerFocusSessionId) return {}
     return { sessionId: headerFocusSessionId === sid ? toolSid : headerFocusSessionId }
-  }, [viewerPath, headerFocusSessionId, sid, toolSid])
+  }, [viewerPath, viewerRoot, sessionFilesId, headerFocusSessionId, sid, toolSid])
   // Binary and large text download through the object store when the viewed agent's daemon presigns transfers.
   const viewerAgent = filesAgentId ? agents.find((a) => a.id === filesAgentId) : undefined
   const viewerTransfer =
@@ -2644,7 +2665,12 @@ export default function SessionDetailView() {
       : undefined
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
-  const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
+  const viewerOpen =
+    viewerPath !== null &&
+    filesAgentId !== null &&
+    filesScopeReady &&
+    !linkedFocusStale &&
+    (!viewerRoot || sessionFilesId !== undefined)
   const liveSteps = isWebchat || isContinuable || pgOnRows ? getLiveSteps(session.id) : []
   // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
   const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
@@ -4060,17 +4086,25 @@ export default function SessionDetailView() {
             {viewerOpen && viewerPath && filesAgentId ? (
               // Keyed on the whole WORKSPACE SCOPE, not just the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous read's bytes — and its line count and size — under the new heading. The path alone is not that scope: switching header focus from one agent to another while `?file=` holds still is the same stale paint. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across either axis.
               <SessionViewer
-                key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerRepo ?? 'workspace'}:${viewerPath}`}
+                key={`${filesAgentId}:${viewerRoot ? `${sessionFilesId}:${viewerRoot}` : `${filesSessionId ?? 'primary'}:${viewerRepo ?? 'workspace'}`}:${viewerPath}`}
                 agentId={filesAgentId}
-                {...(filesSessionId ? { sessionId: filesSessionId } : {})}
-                {...(viewerRepo ? { repo: viewerRepo } : {})}
+                {...(viewerRoot
+                  ? {
+                      ...(sessionFilesId ? { sessionId: sessionFilesId } : {}),
+                      root: viewerRoot,
+                      mode: 'file' as const
+                    }
+                  : {
+                      ...(filesSessionId ? { sessionId: filesSessionId } : {}),
+                      ...(viewerRepo ? { repo: viewerRepo } : {}),
+                      // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
+                      mode: viewerMode,
+                      onModeChange: (mode: ViewerMode) => setViewerFile(viewerPath, filesAgentId, mode, viewerRepo),
+                      ...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})
+                    })}
                 path={viewerPath}
-                // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
-                mode={viewerMode}
-                onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode, viewerRepo)}
                 diffRefreshTick={viewerDiffTick}
-                {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
-                onOpenPath={(next) => setViewerFile(next, filesAgentId, 'file', viewerRepo)}
+                onOpenPath={(next) => setViewerFile(next, filesAgentId, 'file', viewerRepo, viewerRoot)}
                 {...(viewerDownload ? { download: viewerDownload } : {})}
                 transfer={viewerTransfer}
                 onClose={() => {
@@ -4842,10 +4876,12 @@ export default function SessionDetailView() {
               turnActive={focusBusy}
               agentId={filesAgentId}
               {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+              {...(sessionFilesId ? { sessionFilesId } : {})}
               {...(filesWorkdir ? { workdir: filesWorkdir } : {})}
               refreshTick={filesRefreshTick}
-              openFilePath={viewerOpen && viewerMode === 'file' ? viewerPath : null}
-              onOpenFile={(path) => setViewerFile(path, filesAgentId)}
+              openFilePath={viewerOpen && (viewerRoot || viewerMode === 'file') ? viewerPath : null}
+              openFileRoot={viewerRoot ?? null}
+              onOpenFile={(path, root) => setViewerFile(path, filesAgentId, 'file', undefined, root)}
               onRootSettledChange={setFilesRootSettled}
             />
           ) : null}

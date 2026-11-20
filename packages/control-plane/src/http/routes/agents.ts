@@ -69,6 +69,8 @@ import {
   FILE_TRANSFER_FEATURE,
   WORKSPACE_UPLOAD_BEGIN_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE,
+  SESSION_FILES_FEATURE,
+  type SessionFileArea,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
@@ -1521,6 +1523,65 @@ export function agentRoutes(deps: HttpDeps) {
         WORKSPACE_REPO_SCOPE_FEATURE,
         'this agent version does not support browsing an additional repository; upgrade its daemon'
       ))
+
+    // A session files area (inbound-file-attachments.md §2.4): visibility alone gates it, since shared sessions have one too.
+    const sessionFilesScope = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      query: { sessionId?: string | undefined; repo?: string | undefined; root: SessionFileArea }
+    ): Promise<{ daemonId: DaemonId; sessionId: string; root: SessionFileArea } | null> => {
+      if (!query.sessionId || query.repo) {
+        const message = query.repo ? 'root cannot be combined with repo' : 'root requires sessionId'
+        reply.code(400).send({ error: 'Bad Request', statusCode: 400, message })
+        return null
+      }
+      if (!(await visibleAgentSession(req, agent.id, query.sessionId))) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        return null
+      }
+      if (!agent.daemonId) {
+        reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      const capable = await requireDaemonFeature(
+        reply,
+        agent.orgId,
+        agent.daemonId,
+        SESSION_FILES_FEATURE,
+        'this agent version does not serve session files; upgrade its daemon'
+      )
+      return capable ? { daemonId: agent.daemonId, sessionId: query.sessionId, root: query.root } : null
+    }
+
+    // The list and text read's scope: a session files area, else an authorized isolated worktree, repo root, or the checkout.
+    const checkoutOrSessionFilesScope = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agent: AgentRecord,
+      query: { sessionId?: string | undefined; repo?: string | undefined; root?: SessionFileArea | undefined }
+    ): Promise<{ daemonId: DaemonId; sessionId?: string; repo?: string; root?: SessionFileArea } | null> => {
+      if (query.root) return sessionFilesScope(req, reply, agent, { ...query, root: query.root })
+      if (
+        !(await canReadWorkspaceScope(req, agent.id, query.sessionId)) ||
+        !(await canReadWorkspaceRepoScope(agent, query.repo))
+      ) {
+        reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        return null
+      }
+      if (!agent.daemonId) {
+        reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      const daemonId = agent.daemonId
+      if (!(await requireSessionWorkspaceRead(reply, agent.orgId, daemonId, query.sessionId))) return null
+      if (!(await requireRepoScope(reply, agent.orgId, daemonId, query.repo))) return null
+      return {
+        daemonId,
+        ...(query.sessionId ? { sessionId: query.sessionId } : {}),
+        ...(query.repo ? { repo: query.repo } : {})
+      }
+    }
 
     const requireGitReview = (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> =>
       requireDaemonFeature(
@@ -4016,7 +4077,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'List workspace files',
           description:
-            'Proxy one directory page live from the owning daemon. Pass sessionId to browse an authorized isolated session worktree; a missing directory is data (exists:false), not an error. 503 when unplaced or the daemon is offline. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409.',
+            'Proxy one directory page live from the owning daemon. Pass sessionId to browse an authorized isolated session worktree; a missing directory is data (exists:false), not an error. 503 when unplaced or the daemon is offline. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409. Pass root (uploads or outputs) with sessionId to address that area of the session’s files directory instead of a checkout: it needs only the session’s visibility, so a session sharing the agent’s checkout qualifies too; root without sessionId, or with repo, is 400, and a daemon too old to serve session files yields 409 DAEMON_FEATURE_MISSING.',
           operationId: 'listAgentWorkspaceFiles',
           params: IdParam,
           querystring: WorkspaceFilesQueryDto,
@@ -4026,25 +4087,14 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
-        }
-        if (!(await canReadWorkspaceRepoScope(agent, req.query.repo))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
-        }
-        if (!agent.daemonId) {
-          return reply
-            .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
-        }
-        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
-        if (!(await requireRepoScope(reply, agent.orgId, agent.daemonId, req.query.repo))) return
+        const scope = await checkoutOrSessionFilesScope(req, reply, agent, req.query)
+        if (!scope) return reply
+        const { daemonId, ...target } = scope
 
         try {
-          const page = await deps.control.workspaceList(agent.daemonId, {
+          const page = await deps.control.workspaceList(daemonId, {
             agentId: agent.id,
-            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
-            ...(req.query.repo ? { repo: req.query.repo } : {}),
+            ...target,
             path: req.query.path ?? '',
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
             limit: req.query.limit ?? 200
@@ -4149,7 +4199,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Read a workspace file',
           description:
-            'Proxy one byte slice of a file live from the owning daemon (64 KiB default; page with offset while truncated). Pass sessionId to read an authorized isolated session worktree. A missing file is data (exists:false); binary files come back encoding:none. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409.',
+            'Proxy one byte slice of a file live from the owning daemon (64 KiB default; page with offset while truncated). Pass sessionId to read an authorized isolated session worktree. A missing file is data (exists:false); binary files come back encoding:none. Pass repo (owner/repo) to address one of the agent’s authorized additional repositories instead of its primary workspace; an unauthorized name reads 404, and a daemon too old to scope by repository yields 409. Pass root (uploads or outputs) with sessionId to address that area of the session’s files directory instead of a checkout: it needs only the session’s visibility, so a session sharing the agent’s checkout qualifies too; root without sessionId, or with repo, is 400, and a daemon too old to serve session files yields 409 DAEMON_FEATURE_MISSING.',
           operationId: 'readAgentWorkspaceFile',
           params: IdParam,
           querystring: WorkspaceFileQueryDto,
@@ -4159,25 +4209,14 @@ export function agentRoutes(deps: HttpDeps) {
       async (req, reply) => {
         const agent = await getServingAgent(req, req.params.id)
         if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
-        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
-        }
-        if (!(await canReadWorkspaceRepoScope(agent, req.query.repo))) {
-          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
-        }
-        if (!agent.daemonId) {
-          return reply
-            .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
-        }
-        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
-        if (!(await requireRepoScope(reply, agent.orgId, agent.daemonId, req.query.repo))) return
+        const scope = await checkoutOrSessionFilesScope(req, reply, agent, req.query)
+        if (!scope) return reply
+        const { daemonId, ...target } = scope
 
         try {
-          const rep = await deps.control.workspaceRead(agent.daemonId, {
+          const rep = await deps.control.workspaceRead(daemonId, {
             agentId: agent.id,
-            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
-            ...(req.query.repo ? { repo: req.query.repo } : {}),
+            ...target,
             path: req.query.path,
             offset: req.query.offset ?? 0,
             limit: req.query.limit ?? 65536
@@ -4190,14 +4229,14 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // A workspace file's scope as a read resolves it: an isolated session's worktree, a repo root, or the checkout.
-    // null ⇒ the route already answered; a shared session addresses the checkout, as the daemon lands its files there.
+    // A download's scope: a session files area, an isolated session's worktree, a repo root, or the checkout (also a shared session's).
     const workspaceFileScope = async (
       req: FastifyRequest,
       reply: FastifyReply,
       agent: AgentRecord,
-      query: { sessionId?: string | undefined; repo?: string | undefined }
-    ): Promise<{ daemonId: DaemonId; sessionId?: string; repo?: string } | null> => {
+      query: { sessionId?: string | undefined; repo?: string | undefined; root?: SessionFileArea | undefined }
+    ): Promise<{ daemonId: DaemonId; sessionId?: string; repo?: string; root?: SessionFileArea } | null> => {
+      if (query.root) return sessionFilesScope(req, reply, agent, { ...query, root: query.root })
       let sessionId: string | undefined
       if (query.sessionId) {
         const session = await visibleAgentSession(req, agent.id, query.sessionId)
@@ -4229,7 +4268,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Download a workspace file',
           description:
-            'Return the original bytes of one workspace file as an attachment. Pass sessionId to read a visible session’s working root — its isolated worktree, or the agent’s checkout when the session shares it — and repo (owner/repo) for one of the agent’s authorized additional repositories; omit both for the agent’s primary workspace. Containment, the .git rule and symlink refusal are the workspace read’s. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). The control plane assembles the file from bounded byte slices it proxies live from the owning daemon and stores none of it; a file over the download ceiling is refused with 413 WORKSPACE_FILE_TOO_LARGE — use the transfer route for those. 409 when the daemon or the agent’s sandbox is too old to serve bytes, 503 when the agent is unplaced or its daemon is offline.',
+            'Return the original bytes of one workspace file as an attachment. Pass sessionId to read a visible session’s working root — its isolated worktree, or the agent’s checkout when the session shares it — and repo (owner/repo) for one of the agent’s authorized additional repositories; omit both for the agent’s primary workspace. Pass root (uploads or outputs) with sessionId to address that area of the session’s files directory instead of a checkout: it needs only the session’s visibility, so a session sharing the agent’s checkout qualifies too; root without sessionId, or with repo, is 400, and a daemon too old to serve session files yields 409 DAEMON_FEATURE_MISSING. Containment, the .git rule and symlink refusal are the workspace read’s. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). The control plane assembles the file from bounded byte slices it proxies live from the owning daemon and stores none of it; a file over the download ceiling is refused with 413 WORKSPACE_FILE_TOO_LARGE — use the transfer route for those. 409 when the daemon or the agent’s sandbox is too old to serve bytes, 503 when the agent is unplaced or its daemon is offline.',
           operationId: 'downloadAgentSessionFile',
           params: IdParam,
           querystring: WorkspaceDownloadQueryDto,
@@ -4299,7 +4338,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Get a download link for a workspace file',
           description:
-            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first on a URL the control plane signs; the control plane sees only URLs. Pass poll: true to get 202 with an operationId while that upload runs, then poll GET /agents/{id}/workspace/file/transfer/{operationId}; without it the call waits for the upload, which may take minutes. A repeated request for a revision already uploading joins that upload. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon predates control-plane-signed transfers, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
+            'Return a short-lived presigned URL that downloads one workspace file as an attachment directly from the deployment’s object store, for files too large or too binary for the proxied download. The scope rules are the download route’s (sessionId, repo, root, containment, .git). When the store does not already hold this revision of the file, the owning daemon uploads it first on a URL the control plane signs; the control plane sees only URLs. Pass poll: true to get 202 with an operationId while that upload runs, then poll GET /agents/{id}/workspace/file/transfer/{operationId}; without it the call waits for the upload, which may take minutes. A repeated request for a revision already uploading joins that upload. Pass sha256, the digest prefix a shared file’s transcript marker records, to require the bytes still match it (409 WORKSPACE_FILE_CHANGED otherwise). 409 WORKSPACE_TRANSFER_UNAVAILABLE when the deployment has no transfer bucket or it cannot take one right now, 409 DAEMON_FEATURE_MISSING when the agent’s daemon predates control-plane-signed transfers, 404 WORKSPACE_NOT_FOUND for a missing file, 400 WORKSPACE_TOO_LARGE over the transfer cap.',
           operationId: 'transferAgentWorkspaceFile',
           params: IdParam,
           body: WorkspaceTransferBody,

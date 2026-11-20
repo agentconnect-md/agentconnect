@@ -17,7 +17,8 @@ import {
   useWorkspaceTree,
   workspaceDirtyMap,
   workspaceEntryIcon,
-  workspaceRootReadState
+  workspaceRootReadState,
+  type WorkspaceTree
 } from '@/components/console/workspace-tree'
 import { useSandboxWake } from '@/components/console/sandbox-wake'
 import {
@@ -26,6 +27,7 @@ import {
   SandboxStartingNotice
 } from '@/components/console/SandboxWakeNotice'
 import { DOCK_POLL_MS, useDockRefresh } from '@/components/console/dock/auto-refresh'
+import type { SessionFileArea } from '@/lib/shared-file'
 import type { DockTabStatus } from './SessionDock'
 
 /** The Files tab's status: `loading` covers the first root listing only, and everything after it is `ready` — an offline daemon, a non-repo workspace and an empty directory are each something this panel has copy for, and copy is content. */
@@ -53,11 +55,13 @@ function rootNoticeText(status: number | null, scoped: boolean, code?: string | 
 export function FilesPanel({
   agentId,
   sessionId,
+  sessionFilesId,
   workdir,
   refreshTick = 0,
   active = true,
   turnActive = false,
   openFilePath,
+  openFileRoot,
   onOpenFile,
   onRootSettledChange
 }: {
@@ -68,14 +72,18 @@ export function FilesPanel({
   turnActive?: boolean
   /** ACP session id selecting that session's isolated worktree; omit for the agent's primary checkout. Pass it only when the session's `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline". */
   sessionId?: string
+  /** The session whose files directory the Session files section lists — any session, shared ones too; omit ⇒ no section. */
+  sessionFilesId?: string
   /** The agent's working directory, shown beside the branch. */
   workdir?: string
   /** Bumped by the tab's `refresh-cw` action: re-reads the tree and the git status. */
   refreshTick?: number
   /** The path the viewer currently holds, so the tree marks its row. */
   openFilePath?: string | null
-  /** A file row was pressed. The viewer is the caller's (§4). */
-  onOpenFile: (path: string) => void
+  /** The session files area the viewer's path is in; absent for a checkout path. */
+  openFileRoot?: SessionFileArea | null
+  /** A file row was pressed, with its area when it is a session file. The viewer is the caller's (§4). */
+  onOpenFile: (path: string, root?: SessionFileArea) => void
   /** Whether the first root listing has answered — the input to {@link filesTabStatus}. The caller owns the tab descriptor, so the verdict is reported rather than applied. */
   onRootSettledChange?: (settled: boolean) => void
 }) {
@@ -145,71 +153,17 @@ export function FilesPanel({
 
   if (!settled) return null
 
-  // One directory level, rendered inline into the flat DOM its indent describes.
-  const renderLevel = (dirPath: string, depth: number): ReactNode => {
-    const dir = dirs[dirPath]
-    if (!dir) return null
-    if (dir.loading && !dir.entries) {
-      return (
-        <div key={`${dirPath}::spin`} className="py-2 pr-3" style={{ paddingLeft: 12 + depth * 14 }}>
-          <Spinner size={15} />
-        </div>
-      )
-    }
-    if (dir.err && !dir.entries) {
-      return (
-        <div
-          key={`${dirPath}::err`}
-          className="py-[7px] pr-3 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
-          style={{ paddingLeft: 12 + depth * 14 }}
-        >
-          {t('loadError')}
-        </div>
-      )
-    }
-    return (
-      <>
-        {dir.entries?.map((entry) => {
-          const full = dirPath ? `${dirPath}/${entry.name}` : entry.name
-          if (entry.type === 'dir') {
-            const open = expanded.has(full)
-            return (
-              <Fragment key={full}>
-                <FileBrowserRow
-                  depth={depth}
-                  chevron={open ? 'chevron-down' : 'chevron-right'}
-                  icon={open ? 'folder-open' : 'folder'}
-                  name={entry.name}
-                  onClick={() => toggleDir(full)}
-                />
-                {open && renderLevel(full, depth + 1)}
-              </Fragment>
-            )
-          }
-          const status = dirtyMap.get(full)
-          return (
-            <FileBrowserRow
-              key={full}
-              depth={depth}
-              icon={workspaceEntryIcon(entry)}
-              name={entry.name}
-              title={[formatFileSize(entry.size), formatFileMtime(entry.mtime)].filter(Boolean).join(' · ')}
-              trailing={status ? <StatusBadge ch={status} /> : undefined}
-              selected={openFilePath === full}
-              onClick={entry.type === 'file' ? () => onOpenFile(full) : undefined}
-            />
-          )
-        })}
-        {dir.nextCursor && (
-          <div className="flex flex-col gap-1 py-[6px] pr-3" style={{ paddingLeft: 12 + depth * 14 }}>
-            <button className="lnk text-[12px]" onClick={() => loadMoreDir(dirPath)}>
-              {dir.loadingMore ? 'Loading…' : dir.moreErr ? 'Retry' : 'Load more'}
-            </button>
-          </div>
-        )}
-      </>
-    )
-  }
+  const checkoutPath = openFileRoot ? null : openFilePath
+  const renderLevel = (dirPath: string, depth: number): ReactNode =>
+    treeLevel({
+      tree: { dirs, expanded, toggleDir, loadMoreDir },
+      dirPath,
+      depth,
+      loadError: t('loadError'),
+      selectedPath: checkoutPath,
+      statusOf: (path) => dirtyMap.get(path),
+      onOpenFile: (path) => onOpenFile(path)
+    })
 
   // Which of the tree's states the body draws. Every branch here is data — none of them may take the panel, the dock or the transcript down (§2).
   const body = (): ReactNode => {
@@ -255,7 +209,7 @@ export function FilesPanel({
                 name={file.path}
                 title={[file.path, file.meta].filter(Boolean).join('\n')}
                 trailing={status ? <StatusBadge ch={status} /> : undefined}
-                selected={openFilePath === file.path}
+                selected={checkoutPath === file.path}
                 onClick={file.clickable ? () => onOpenFile(file.path) : undefined}
               />
             )
@@ -328,7 +282,20 @@ export function FilesPanel({
           ) : null}
         </div>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto py-[6px]">{body()}</div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto py-[6px]">
+        {body()}
+        {sessionFilesId ? (
+          <SessionFilesSection
+            key={`${agentId}:${sessionFilesId}`}
+            agentId={agentId}
+            sessionId={sessionFilesId}
+            tick={tick}
+            selectedPath={openFileRoot ? (openFilePath ?? null) : null}
+            selectedRoot={openFileRoot ?? null}
+            onOpenFile={onOpenFile}
+          />
+        ) : null}
+      </div>
       {/* `lastFetchAt` is `.git/FETCH_HEAD`'s mtime, which a linked worktree has no directory for — so session scope has no footer at all, by construction rather than by omission. The design's file count and total size are dropped: neither exists without a daemon-side walk. */}
       {git?.lastFetchAt || git?.truncated ? (
         <div
@@ -347,6 +314,185 @@ export function FilesPanel({
           ) : null}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+// One directory level, rendered inline into the flat DOM its indent describes; the checkout tree and each session files area share it.
+function treeLevel(args: {
+  tree: Pick<WorkspaceTree, 'dirs' | 'expanded' | 'toggleDir' | 'loadMoreDir'>
+  dirPath: string
+  depth: number
+  loadError: string
+  selectedPath: string | null | undefined
+  statusOf?: (path: string) => string | undefined
+  onOpenFile: (path: string) => void
+}): ReactNode {
+  const { tree, dirPath, depth, loadError, selectedPath, statusOf, onOpenFile } = args
+  const dir = tree.dirs[dirPath]
+  if (!dir) return null
+  if (dir.loading && !dir.entries) {
+    return (
+      <div key={`${dirPath}::spin`} className="py-2 pr-3" style={{ paddingLeft: 12 + depth * 14 }}>
+        <Spinner size={15} />
+      </div>
+    )
+  }
+  if (dir.err && !dir.entries) {
+    return (
+      <div
+        key={`${dirPath}::err`}
+        className="py-[7px] pr-3 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+        style={{ paddingLeft: 12 + depth * 14 }}
+      >
+        {loadError}
+      </div>
+    )
+  }
+  return (
+    <>
+      {dir.entries?.map((entry) => {
+        const full = dirPath ? `${dirPath}/${entry.name}` : entry.name
+        if (entry.type === 'dir') {
+          const open = tree.expanded.has(full)
+          return (
+            <Fragment key={full}>
+              <FileBrowserRow
+                depth={depth}
+                chevron={open ? 'chevron-down' : 'chevron-right'}
+                icon={open ? 'folder-open' : 'folder'}
+                name={entry.name}
+                onClick={() => tree.toggleDir(full)}
+              />
+              {open && treeLevel({ ...args, dirPath: full, depth: depth + 1 })}
+            </Fragment>
+          )
+        }
+        const status = statusOf?.(full)
+        return (
+          <FileBrowserRow
+            key={full}
+            depth={depth}
+            icon={workspaceEntryIcon(entry)}
+            name={entry.name}
+            title={[formatFileSize(entry.size), formatFileMtime(entry.mtime)].filter(Boolean).join(' · ')}
+            trailing={status ? <StatusBadge ch={status} /> : undefined}
+            selected={selectedPath === full}
+            onClick={entry.type === 'file' ? () => onOpenFile(full) : undefined}
+          />
+        )
+      })}
+      {dir.nextCursor && (
+        <div className="flex flex-col gap-1 py-[6px] pr-3" style={{ paddingLeft: 12 + depth * 14 }}>
+          <button className="lnk text-[12px]" onClick={() => tree.loadMoreDir(dirPath)}>
+            {dir.loadingMore ? 'Loading…' : dir.moreErr ? 'Retry' : 'Load more'}
+          </button>
+        </div>
+      )}
+    </>
+  )
+}
+
+// What the agent made comes first; what the reader sent it, second.
+const SECTION_AREAS: readonly SessionFileArea[] = ['outputs', 'uploads']
+
+// The session files directory's two areas below the checkout (inbound-file-attachments.md §2.4): no git status, each listed on first open.
+function SessionFilesSection({
+  agentId,
+  sessionId,
+  tick,
+  selectedPath,
+  selectedRoot,
+  onOpenFile
+}: {
+  agentId: string
+  sessionId: string
+  tick: number
+  selectedPath: string | null
+  selectedRoot: SessionFileArea | null
+  onOpenFile: (path: string, root: SessionFileArea) => void
+}) {
+  const t = useTranslations('Sessions.detail.filesPanel')
+  // The viewer's area opens with the section, so a linked session file shows where it lives; the caller keys it per session.
+  const [open, setOpen] = useState<ReadonlySet<SessionFileArea>>(() => new Set(selectedRoot ? [selectedRoot] : []))
+  const toggle = (area: SessionFileArea) =>
+    setOpen((current) => {
+      const next = new Set(current)
+      if (next.has(area)) next.delete(area)
+      else next.add(area)
+      return next
+    })
+  return (
+    <div data-session-files="" className="mt-[6px] flex flex-col border-t border-(--border-subtle) pt-[6px]">
+      <div
+        className="px-3 py-[5px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
+        title={t('sessionFilesTitle')}
+      >
+        {t('sessionFiles')}
+      </div>
+      {SECTION_AREAS.map((area) => (
+        <Fragment key={area}>
+          <FileBrowserRow
+            chevron={open.has(area) ? 'chevron-down' : 'chevron-right'}
+            icon={open.has(area) ? 'folder-open' : 'folder'}
+            name={`/${area}`}
+            onClick={() => toggle(area)}
+          />
+          {open.has(area) ? (
+            <SessionFilesArea
+              agentId={agentId}
+              sessionId={sessionId}
+              area={area}
+              tick={tick}
+              selectedPath={selectedRoot === area ? selectedPath : null}
+              onOpenFile={(path) => onOpenFile(path, area)}
+            />
+          ) : null}
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+function SessionFilesArea({
+  agentId,
+  sessionId,
+  area,
+  tick,
+  selectedPath,
+  onOpenFile
+}: {
+  agentId: string
+  sessionId: string
+  area: SessionFileArea
+  tick: number
+  selectedPath: string | null
+  onOpenFile: (path: string) => void
+}) {
+  const t = useTranslations('Sessions.detail.filesPanel')
+  const tree = useWorkspaceTree(agentId, sessionId, tick, undefined, area)
+  const root = tree.root
+  if (root?.err && !root.entries) {
+    const text =
+      root.errStatus === 409
+        ? t('sessionFilesUnsupported')
+        : root.errCode === SANDBOX_ASLEEP_CODE
+          ? SANDBOX_ASLEEP_NOTICE
+          : t('sessionFilesOffline')
+    return <AreaNote text={text} />
+  }
+  if (root && !root.loading && (!root.exists || root.entries?.length === 0))
+    return <AreaNote text={t('sessionFilesEmpty')} />
+  return treeLevel({ tree, dirPath: '', depth: 1, loadError: t('loadError'), selectedPath, onOpenFile })
+}
+
+function AreaNote({ text }: { text: string }) {
+  return (
+    <div
+      data-session-files-note=""
+      className="py-[6px] pr-3 pl-[26px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+    >
+      {text}
     </div>
   )
 }

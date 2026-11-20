@@ -2,8 +2,8 @@
 
 **Status:** Draft — not implemented as designed. Platform files reach `uploads/` only when
 the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1). The
-landing place moves out of the Git checkout into the session files directory (§2.4,
-decided 2026-11-20, #4144); until that ships, `uploads/` is still at the working root. The
+landing place is the session files directory beside the checkout (§2.4, #4144), where the
+daemon also saves console uploads at prompt build. The
 web-console upload shipped differently from phases 2–3: on a deployment whose Control
 Plane has a transfer bucket, the browser uploads straight into the bucket and the agent
 receives a download link ([source-cache-file-transfer.md](source-cache-file-transfer.md)). Console

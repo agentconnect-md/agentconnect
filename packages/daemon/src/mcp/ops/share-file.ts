@@ -107,6 +107,8 @@ export interface ShareFileDeps extends GatewayDeps {
   /** Resolve + fence + read + type a workspace-relative path (docs §4): single-shot read; an
    *  image's name and MIME come from its sniffed bytes, a document keeps the path's name. */
   readWorkspaceFile?: (ctx: SessionContext, path: string) => Promise<ShareReadResult>
+  /** The `files:` name of an absolute path inside one of the session's file areas, so markers never carry a host path (inbound-file-attachments.md §2.4). */
+  normalizeSharePath?: (ctx: SessionContext, path: string) => Promise<string>
   /** Synchronous per-turn byte reservation (docs §5) — charge before the upload, release on
    *  failure. Synchronous so concurrent tool calls cannot race past the budget. */
   chargeShareBudget?: (ctx: SessionContext, bytes: number) => { ok: true; release: () => void } | { ok: false }
@@ -131,9 +133,9 @@ export function escapeCaptionMentions(caption: string): string {
 const READ_REFUSALS: Record<Exclude<ShareReadResult, { ok: true }>['reason'], (path: string, d?: string) => string> = {
   sandboxed: () =>
     "shareFile: this agent's sandbox is not reachable right now, so its workspace cannot be read — try again shortly.",
-  'not-found': (path) => `shareFile: no file at "${path}" in this workspace.`,
+  'not-found': (path) => `shareFile: no file at "${path}" in this workspace or session files.`,
   escape: (path) =>
-    `shareFile: "${path}" is not a workspace-relative path — only files inside the workspace can be shared.`,
+    `shareFile: "${path}" is neither a workspace-relative path nor a \`files:\` name — only files in the workspace or this session's files can be shared.`,
   empty: (path) => `shareFile: "${path}" is empty — nothing to share.`,
   'too-large': (path, detail) => `shareFile: "${path}" is over the per-file limit${detail ? ` (${detail})` : ''}.`
 }
@@ -149,14 +151,14 @@ const UPLOAD_REFUSALS: Record<Exclude<UploadFailReason, 'indeterminate'>, (platf
     `shareFile: ${p} can host only images here — nothing was sent. Share a PNG, JPEG, or WEBP, or describe the file in your reply.`
 }
 
-/** The tool handler. SECURITY: every coordinate comes from the trusted session/turn context;
- *  the model supplies only a workspace-relative path and a caption. */
+/** The tool handler. SECURITY: every coordinate comes from the trusted session/turn context; the model supplies only a path (checkout-relative or a session file) and a caption. */
 export async function shareFile(
   ctx: SessionContext,
   args: Record<string, unknown>,
   deps: ShareFileDeps
 ): Promise<unknown> {
-  const path = parseArgs(pathField, args.path)
+  const given = parseArgs(pathField, args.path)
+  const path = (await deps.normalizeSharePath?.(ctx, given).catch(() => given)) ?? given
   const caption = parseArgs(captionField, args.caption)
 
   const target = deps.shareTarget?.(ctx)

@@ -107,19 +107,16 @@ export interface PlatformReadDeps extends GatewayDeps, AskDeps {
   }
   /** Byte cap for `read*File` downloads (defaults to 8 MiB). */
   maxAttachmentBytes?: number
-  /** Land a downloaded attachment in the session's workspace under `uploads/`
-   *  (inbound-file-attachments.md §2): the only filesystem the agent's own tools reach on every
-   *  deployment shape. `name` is already sanitized. Absent outside a live daemon, in which case a
-   *  non-image binary can only be summarized. */
+  /** Land a downloaded attachment in the session files directory's `uploads/` (inbound-file-attachments.md §2.4); `name` is already sanitized, and without this a binary can only be summarized. */
   saveAttachment?: (ctx: SessionContext, name: string, bytes: Buffer) => Promise<SaveAttachmentResult>
 }
 
-/** Where a saved attachment landed (workspace-relative), or why it could not. */
+/** Where a saved attachment landed — its absolute path in the runtime's coordinates and its `files:` name — or why it could not. */
 export type SaveAttachmentResult =
-  | { ok: true; path: string }
+  | { ok: true; path: string; name: string }
   | { ok: false; reason: 'no-workspace' | 'sandboxed' | 'escape' | 'write-failed'; detail?: string }
 
-/** Every attachment saved to the workspace lands under this directory (design §2.1). */
+/** The area every saved attachment lands in (design §2.4). */
 export const ATTACHMENT_UPLOADS_DIR = WORKSPACE_UPLOADS_DIR
 
 /** Best-effort MIME guess from a Slack file URL's extension (used when the caller
@@ -555,10 +552,7 @@ export async function getThreadHistory(
 // the gateway this session is already bound to.
 //
 // Images come back as viewable image content and small text as text, exactly as before. Any
-// OTHER file — a PDF, a spreadsheet, an archive — is materialized into the session workspace
-// under `uploads/` (inbound-file-attachments.md §2) and the result names the path, because a
-// base64 blob in the prompt is not a file the agent's tools can open; the byte-count stub this
-// replaces lost the file entirely.
+// OTHER file is saved into the session files directory's `uploads/` (inbound-file-attachments.md §2.4) and the result names it, since a base64 blob is no file the agent's tools can open.
 export async function readAttachment(
   ctx: SessionContext,
   args: Record<string, unknown>,
@@ -596,7 +590,7 @@ export async function readAttachment(
     const result: McpContentResult = { mcpContent: [{ type: 'text', text: bytes.toString('utf8') }] }
     return result
   }
-  // Non-image binary: land it in the workspace and hand back the path.
+  // Non-image binary: land it in the session's uploads and hand back the path.
   const name = attachmentFileName(url, mimeType, undefined, reportedName)
   const size = `${bytes.byteLength} bytes of ${mimeType}`
   if (!deps.saveAttachment) {
@@ -604,7 +598,7 @@ export async function readAttachment(
       mcpContent: [
         {
           type: 'text',
-          text: `Downloaded ${size} (binary — not shown inline, and this daemon cannot save it to the workspace).`
+          text: `Downloaded ${size} (binary — not shown inline, and this daemon cannot save it to the session files).`
         }
       ]
     }
@@ -614,7 +608,7 @@ export async function readAttachment(
   if (!saved.ok) {
     const why =
       saved.reason === 'no-workspace'
-        ? 'this session has no workspace to save it to'
+        ? 'this session has no files directory to save it to'
         : saved.reason === 'sandboxed'
           ? 'the sandbox workspace is unreachable right now (retry may help)'
           : saved.reason === 'escape'
@@ -630,7 +624,7 @@ export async function readAttachment(
       {
         type: 'text',
         text:
-          `Saved ${size} to \`${saved.path}\` in your workspace (relative to the workspace root). ` +
+          `Saved ${size} to \`${saved.path}\` (\`${saved.name}\`), outside the repository. ` +
           `Open it with your file tools or shell — e.g. a PDF with a text extractor, a spreadsheet with a parser.`
       }
     ]

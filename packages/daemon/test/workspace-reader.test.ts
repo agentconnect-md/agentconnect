@@ -89,6 +89,49 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true })
 })
 
+// inbound-file-attachments.md §2.4: a session's areas are their own scope, and a checkout holding them refuses them.
+describe('session file areas', () => {
+  it('routes a root-scoped read to the area the scope names', async () => {
+    const uploads = join(base, 'files', 'session-a', 'uploads')
+    mkdirSync(uploads, { recursive: true })
+    writeFileSync(join(uploads, 'spec.pdf'), 'spec')
+    writeFileSync(join(ws, 'spec.pdf'), 'checkout')
+    const scoped = createWorkspaceReader(
+      workspaces,
+      async (id, sessionId, repo, root) =>
+        id !== AGENT
+          ? undefined
+          : root
+            ? sessionId && !repo
+              ? { root: uploads, scratch: false }
+              : undefined
+            : { root: ws, scratch: true },
+      directWrite
+    )
+    const read = await scoped.read(readReq('spec.pdf', { sessionId: 'session-a', root: 'uploads' }))
+    expect(read.content).toBe('spec')
+    await expect(scoped.read(readReq('spec.pdf', { root: 'uploads' }))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    expect((await scoped.read(readReq('spec.pdf'))).content).toBe('checkout')
+  })
+
+  it('refuses every session’s files through a checkout that is the pool mount itself', async () => {
+    const mounted = new WorkspaceManager()
+    Object.assign(mounted, { sandboxMountFor: () => ws })
+    mkdirSync(join(ws, '.agentconnect', 'files', 'session-a', 'uploads'), { recursive: true })
+    writeFileSync(join(ws, '.agentconnect', 'files', 'session-a', 'uploads', 'spec.pdf'), 'private')
+    writeFileSync(join(ws, 'notes.md'), 'notes')
+    const scoped = createWorkspaceReader(mounted, async () => ({ root: ws, scratch: true }), directWrite)
+    await expect(scoped.read(readReq('.agentconnect/files/session-a/uploads/spec.pdf'))).rejects.toMatchObject({
+      reason: 'path-escape'
+    })
+    await expect(scoped.list(listReq({ path: '.agentconnect/FILES' }))).rejects.toMatchObject({ reason: 'path-escape' })
+    await expect(scoped.delete(deleteReq('.agentconnect/files/session-a/uploads/spec.pdf', 'x'))).rejects.toMatchObject(
+      { reason: 'path-escape' }
+    )
+    expect((await scoped.read(readReq('notes.md'))).content).toBe('notes')
+  })
+})
+
 describe('workspace list', () => {
   it('selects an isolated session worktree without changing the primary checkout', async () => {
     const worktree = join(base, 'worktree')

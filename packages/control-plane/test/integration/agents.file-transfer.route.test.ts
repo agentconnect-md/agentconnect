@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   FILE_TRANSFER_FEATURE,
+  SESSION_FILES_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   WORKSPACE_UPLOAD_BEGIN_FEATURE
 } from '@agentconnect.md/protocol'
@@ -296,6 +297,50 @@ describe('POST /agents/:id/workspace/file/transfer', () => {
         poll: false
       }
     ])
+  })
+
+  it('hands a shared session’s files area to the transfer with its root, and refuses a malformed or unsupported one', async () => {
+    await seedTransferAgent([FILE_TRANSFER_FEATURE, WORKSPACE_SESSION_READ_FEATURE, SESSION_FILES_FEATURE])
+    const shared = randomUUID()
+    await seedSessionMeta(prisma, shared, AGENT, { daemonId: DAEMON })
+    const transfer = new TransferSpy()
+    const running = app(transfer)
+    const post = (payload: Record<string, unknown>) =>
+      running.app.inject({ method: 'POST', url: `${ORG}/agents/${AGENT}/workspace/file/transfer`, payload })
+
+    const ok = await post({ path: 'report.pdf', sessionId: shared, root: 'outputs' })
+    expect(ok.statusCode).toBe(200)
+    expect(transfer.downloads).toEqual([
+      {
+        orgId: DEFAULT_ORG_ID,
+        daemonId: DAEMON,
+        agentId: AGENT,
+        sessionId: shared,
+        root: 'outputs',
+        path: 'report.pdf',
+        begin: false,
+        poll: false
+      }
+    ])
+    expect((await post({ path: 'report.pdf', root: 'outputs' })).statusCode).toBe(400)
+    const withRepo = await post({ path: 'a', sessionId: shared, root: 'uploads', repo: 'example-org/other' })
+    expect(withRepo.statusCode).toBe(400)
+
+    await prisma.daemon.update({
+      where: { id: DAEMON },
+      data: {
+        capabilities: {
+          platforms: ['slack'],
+          runtimes: ['claude'],
+          acp: true,
+          features: [FILE_TRANSFER_FEATURE, WORKSPACE_SESSION_READ_FEATURE]
+        }
+      }
+    })
+    const outdated = await post({ path: 'report.pdf', sessionId: shared, root: 'outputs' })
+    expect(outdated.statusCode).toBe(409)
+    expect(outdated.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    expect(transfer.downloads).toHaveLength(1)
   })
 
   it('holds a shared file to the digest prefix its marker recorded', async () => {

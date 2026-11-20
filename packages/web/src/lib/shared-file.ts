@@ -2,8 +2,10 @@ export { MESSAGE_ATTACHMENTS_MAX as WEBCHAT_FILES_MAX } from '@agentconnect.md/p
 
 // A file an agent shared into its conversation, as the transcript row's trailing marker records it (agent-authored-attachments.md §4).
 export interface SharedFile {
-  /** Workspace-relative path under the session's working root, normalized; null when no download can name it. */
+  /** Path relative to the session's working root, or to `root`'s area, normalized; null when no download can name it. */
   path: string | null
+  /** The session files area a `files:<area>/<path>` marker names; absent for a checkout path. */
+  root?: SessionFileArea
   name: string
   mimeType: string
   bytes: number
@@ -18,17 +20,32 @@ export function sharedFileMarker(text: string): { caption: string; file: SharedF
   const match = MARKER.exec(text)
   if (!match) return null
   const [whole, raw, mimeType, bytes, sha256] = match as unknown as [string, string, string, string, string]
-  const path = downloadPath(raw)
+  const area = parseSessionFileName(raw)
+  const path = downloadPath(area ? area.path : raw)
   return {
     caption: text.slice(0, text.length - whole.length).trimEnd(),
     file: {
       path,
+      ...(area ? { root: area.area } : {}),
       name: raw.split('/').filter(Boolean).pop() ?? raw,
       mimeType,
       bytes: Number(bytes),
       sha256
     }
   }
+}
+
+/** One area of a session's files directory (inbound-file-attachments.md §2.4). */
+export type SessionFileArea = (typeof SESSION_FILE_AREAS)[number]
+
+/** A `files:<area>/<rest>` name split into its area and area-relative path; protocol's `parseSessionFileName`, mirrored. */
+export function parseSessionFileName(value: string): { area: SessionFileArea; path: string } | undefined {
+  if (!value.startsWith(SESSION_FILE_PREFIX)) return undefined
+  const rest = value.slice(SESSION_FILE_PREFIX.length)
+  const slash = rest.indexOf('/')
+  const area = slash < 0 ? rest : rest.slice(0, slash)
+  if (!(SESSION_FILE_AREAS as readonly string[]).includes(area)) return undefined
+  return { area: area as SessionFileArea, path: slash < 0 ? '' : rest.slice(slash + 1) }
 }
 
 /** The path as the download route accepts it: `./` and empty segments dropped, anything absolute or escaping refused. */
@@ -39,7 +56,8 @@ function downloadPath(raw: string): string | null {
 }
 
 // Mirrors of protocol constants (its root entry is not bundler-safe); shared-file.test.ts pins them.
-export const WORKSPACE_UPLOADS_DIR = 'uploads'
+export const SESSION_FILE_AREAS = ['uploads', 'outputs'] as const
+export const SESSION_FILE_PREFIX = 'files:'
 export const MAX_WORKSPACE_DOWNLOAD_BYTES = 8 * 1024 * 1024
 export const WORKSPACE_TRANSFER_TEXT_THRESHOLD_BYTES = 1024 * 1024
 export const FILE_TRANSFER_FEATURE = 'file-transfer-v2'

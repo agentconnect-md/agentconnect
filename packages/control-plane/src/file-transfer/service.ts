@@ -5,6 +5,7 @@ import type {
   TransferGetReq,
   TransferSettleReq,
   TransferSignOk,
+  SessionFileArea,
   TransferSignReq,
   TransferUploadOutcome,
   WorkspaceReadContent,
@@ -108,6 +109,8 @@ export interface FileTransferService {
     agentId: string
     sessionId?: string
     repo?: string
+    /** One area of the session's files directory instead of a checkout. */
+    root?: SessionFileArea
     path: string
     /** The daemon advertises `WORKSPACE_UPLOAD_BEGIN_FEATURE`: begin the upload and track it on the shared ticket. */
     begin?: boolean
@@ -198,7 +201,8 @@ export function createFileTransferService(deps: {
       const scope = {
         agentId: input.agentId,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-        ...(input.repo ? { repo: input.repo } : {})
+        ...(input.repo ? { repo: input.repo } : {}),
+        ...(input.root ? { root: input.root } : {})
       }
       // A one-byte read is the stat: the same containment, `.git` rule and root as every console read.
       const head = await control.workspaceRead(input.daemonId, { ...scope, path: input.path, offset: 0, limit: 1 })
@@ -208,8 +212,9 @@ export function createFileTransferService(deps: {
       const size = head.size
       if (size < 1) throw new FileTransferRefusal(400, 'WORKSPACE_NOT_A_FILE', 'an empty file is not transferred')
       try {
-        // One object per revision: a rewritten file has a new size or mtime and so a new key.
+        // One object per revision: a rewritten file has a new size or mtime and so a new key; an area path never shares a checkout path's.
         const identity = [input.agentId, input.sessionId ?? null, input.repo ?? null, input.path, size, head.mtime]
+        if (input.root) identity.push(`files:${input.root}`)
         const key = transferDownloadKey(input.orgId, identity)
         const hit = await transfer.cachedDownload({ key, size })
         if (hit !== undefined) return await signed(key, input.path, size, hit, true)

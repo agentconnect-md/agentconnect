@@ -85,6 +85,7 @@ import {
   TransferFileName,
   TransferMimeType,
   TransferSha256,
+  SessionFileArea,
   HOOK_INSTRUCTIONS_MAX,
   AgentApiProtocol
 } from '@agentconnect.md/protocol'
@@ -4208,7 +4209,12 @@ export const WorkspaceScopeQueryDto = WorkspaceRepoScopeQueryDto.extend({
   sessionId: z.string().min(1).optional()
 })
 
-export const WorkspaceFilesQueryDto = WorkspaceScopeQueryDto.extend({
+/** A file read's scope: a checkout, or with `root` one area of the session's files directory (requires sessionId, excludes repo). */
+export const WorkspaceFileScopeQueryDto = WorkspaceScopeQueryDto.extend({
+  root: SessionFileArea.optional()
+})
+
+export const WorkspaceFilesQueryDto = WorkspaceFileScopeQueryDto.extend({
   path: z.string().optional(), // workspace-relative POSIX path; absent/'' ⇒ workspace root
   cursor: z.string().optional(),
   limit: z.coerce.number().int().positive().max(500).optional()
@@ -4228,7 +4234,7 @@ export const WorkspaceFilesDto = z.object({
 })
 
 /** `GET /agents/:id/workspace/file` query — one byte slice of a file. */
-export const WorkspaceFileQueryDto = WorkspaceScopeQueryDto.extend({
+export const WorkspaceFileQueryDto = WorkspaceFileScopeQueryDto.extend({
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.coerce.number().int().nonnegative().optional(), // byte offset
   limit: z.coerce.number().int().positive().max(65536).optional() // byte count per slice
@@ -4248,7 +4254,7 @@ export const WorkspaceFileDto = z.object({
 })
 
 /** `GET /agents/:id/workspace/file/download` query — one session file's bytes. */
-export const WorkspaceDownloadQueryDto = WorkspaceScopeQueryDto.extend({
+export const WorkspaceDownloadQueryDto = WorkspaceFileScopeQueryDto.extend({
   path: z.string().min(1).max(4096), // workspace-relative POSIX path
   sha256: z
     .string()
@@ -4261,6 +4267,7 @@ export const WorkspaceTransferBody = z
   .object({
     sessionId: z.string().min(1).optional(),
     repo: z.string().min(1).optional(),
+    root: SessionFileArea.optional(), // one area of the session's files directory; requires sessionId, excludes repo
     path: z.string().min(1).max(4096),
     sha256: z
       .string()
