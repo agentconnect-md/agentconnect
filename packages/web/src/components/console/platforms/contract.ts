@@ -722,6 +722,8 @@ export interface WebPlatformModule<TApi = unknown> {
   readonly platformId: string
   /** The integration picker's display group; chat is the default for platform modules. */
   readonly integrationGroup?: 'chat' | 'workflow'
+  /** The picker tile this one directly precedes, a core one included; absent ⇒ registry order, ahead of the core tiles. */
+  readonly pickerBefore?: string
   /** This platform's setup page, relative to the docs root (`helpDocsBase`). */
   readonly docsPath?: string
   /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */

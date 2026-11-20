@@ -6,7 +6,7 @@ import type { IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebAgentIntegrationCardFacet, WebBotSettingsFragments } from '../contract'
 import { AddressField, CopyAddressButton } from './fields'
-import { EmailAddressSettings } from './settings'
+import { EmailSettingsButton, EmailSettingsStatus } from './settings'
 
 /** The stored address is the bot's `externalAppId`; the row's name is the same address, for a bot not yet read. */
 export function emailAddressOf(bot: Pick<BotDto, 'externalAppId' | 'name'> | undefined, fallback: string): string {
@@ -16,7 +16,12 @@ export function emailAddressOf(bot: Pick<BotDto, 'externalAppId' | 'name'> | und
 function HeaderActions({ integration }: { integration: IntegrationRow }) {
   const { bots } = useConsoleData()
   const bot = bots.find((candidate) => candidate.id === integration.botId)
-  return <CopyAddressButton address={emailAddressOf(bot, integration.name)} />
+  return (
+    <>
+      <CopyAddressButton address={emailAddressOf(bot, integration.name)} />
+      <EmailSettingsButton integration={integration} />
+    </>
+  )
 }
 
 /** Removing the integration retires its address for good (email-integration.md §3). */
@@ -25,9 +30,9 @@ function RemoveBody({ integration }: { integration: IntegrationRow }) {
   return t.rich('remove', { name: () => <span className="mono text-(--text-primary)">{integration.name}</span> })
 }
 
-/** Mail lists no conversations (each sender is admitted by the member question), so the card holds the address's settings alone. */
+/** Mail lists no conversations (each sender is admitted by the member question), so the card holds the settings' status line alone. */
 function Body({ integration, padX }: { integration: IntegrationRow; padX: number }) {
-  return <EmailAddressSettings integration={integration} padX={padX} />
+  return <EmailSettingsStatus integration={integration} padX={padX} />
 }
 
 export const emailAgentCard: WebAgentIntegrationCardFacet = { HeaderActions, RemoveBody, Body }

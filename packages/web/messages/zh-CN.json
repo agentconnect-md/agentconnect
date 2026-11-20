@@ -7466,13 +7466,25 @@
       "remove": "将移除 <name></name>，它的地址会永久停用，不会再分配给任何人。",
       "retired": "这个地址会永久停用，不会再分配给任何人。",
       "settings": {
-        "whoMayWrite": "谁可以来信",
-        "members": "成员",
+        "title": "邮件设置",
+        "acceptFrom": "接收来信",
+        "members": "组织成员",
         "anyone": "任何人",
-        "outsideSessions": "外部来信的会话",
-        "organization": "组织",
+        "outsideViewers": "组织外来信谁能看到",
+        "specificMember": "指定一位成员",
+        "chooseMember": "选择成员",
+        "organization": "组织里所有人",
+        "member": "成员",
         "nobody": "无人：外部来信会被拒收",
-        "failed": "无法保存设置，请稍后重试。"
+        "saving": "正在保存…",
+        "failed": "无法保存设置，请稍后重试。",
+        "status": {
+          "members": "只接收组织成员的来信",
+          "anyoneMember": "接收任何人的来信 · 组织外来信只有 {name} 能看到",
+          "anyoneSomeMember": "接收任何人的来信 · 组织外来信只有一个成员能看到",
+          "anyoneOrg": "接收任何人的来信 · 组织外来信组织里所有人都能看到",
+          "anyoneNobody": "接收任何人的来信 · 组织外来信没有人能看到，因此会被拒收"
+        }
       }
     }
   },
