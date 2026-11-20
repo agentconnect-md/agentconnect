@@ -270,13 +270,17 @@ An Agent editor sets two things on the address, in its integration panel:
 - **Who may write**: **Members** (the default, step 3 as above) or
   **Anyone**. Anyone admits every sender that is not automatic (step 1),
   authenticated (step 2) and within the rate limit (step 4). The rate limit is
-  the same for every sender. Steps 1 and 2 are never lifted: they are what
+  the same for every sender, and it is per address: a sender who owns a domain
+  can make new addresses at will, so under Anyone it does not bound how much
+  outside mail reaches the agent. What does is the outside budget for replies
+  (§6.4) and the provider's quota. Steps 1 and 2 are never lifted: they are what
   keeps two responders from answering each other and a forged `From` from
   speaking for someone.
 - **Outside senders' sessions**: visible to the **organization**, or private
   to **one member** the editor picks, by default the member who added the
-  address. It applies to every session a non-member's message opens: one
-  admitted under Anyone, and a reply to a mail the agent started (§6.4). While
+  address. It applies to every session a non-member's message opens under
+  Anyone. A started thread's session is owned from the send instead (§5.3),
+  so a reply to it never consults this setting. While
   the picked member is not an active member of the organization, a
   non-member's message is refused with step 3's reason until an editor picks
   another, so a departed member's choice never turns into the organization's.
@@ -390,12 +394,10 @@ authenticated sender.
 A started thread (§6.4) keeps the sender check and drops the opener check. Its
 replies are addressed to the agent, which sent the mail on someone's behalf,
 not to that person, so a recipient's plain Reply never names them and would
-otherwise always split off. The session's reader is the person the sending
-turn ran for, who asked for the mail and reads what came back to it in the
-Console; a turn no person is behind, such as a schedule's run with no asker,
-has none, and its thread's session follows "Outside senders' sessions"
-(§4.1). A message whose sender is not a current member still starts a thread
-of its own.
+otherwise always split off. A message whose sender is not a current member
+still starts a thread of its own. Whose session a started thread is depends on
+its conversation (§5.3): a member's direct conversation stays that member's,
+and only a group or external thread takes the person who asked for the mail.
 
 Mail never runs a coordinator. A new thread opens its session directly, for an
 assistant-mode agent too: the manifest lists no kind in `appendKinds`, so no
@@ -421,9 +423,15 @@ fixed then, as every session's visibility is; changing it later moves no
 existing session. A thread an outside sender opens and a member later joins
 stays where it started.
 
-A started thread's session is `private` to the person its sending turn ran
-for, or follows "Outside senders' sessions" when no person is behind that turn
-(§5.2), whoever replies. A session of a group conversation is `private` to the
+A started thread's session is created when the mail is sent (§6.4) and owned
+from then on, whoever replies. When its one recipient is a member, the thread is
+that member's direct conversation, and the session is the member's own as
+above: their person layer is read there and reads are judged as them, so it is
+never anyone else's. A group thread, or one with a non-member recipient, is
+`private` to the member whose turn sent it, who asked for the mail and reads
+the answers in the Console; when no member is behind that turn (a schedule's
+or hook's run, which can only mail members, §6.4), a group thread is `private`
+to its first member recipient. A session of a group conversation is `private` to the
 member whose message opened it, which is a new default row for mail: the general rule would make a
 group conversation `org`, and a mail thread among three people is not the
 organization's. Every message of the session reached that member (§5.2), and
@@ -625,14 +633,21 @@ it to people and does not look for another way to send.
   which drafts a post to outside people for a member to approve: in mail the
   member whose message started the turn is the one who asked, so a second
   approval would ask the same person again. The tool does not pass through
-  `judgePlaceWrite` for that reason, and applies the rule above itself. The
-  accepted risk is that text the agent reads during a member's turn can talk
+  `judgePlaceWrite` for that reason, and applies the rule above itself. Who is
+  asking comes from that judge's own derivation, and it fails closed: a sender
+  the platform cannot identify (an unlinked chat account, a platform with no
+  identity), a turn that folds several people's messages unless every one of
+  them is a member's own, and a delegated task, whose turn no member's message
+  started, all mail members only. The convention lets a schedule that records
+  a person write as them; mail does not, on purpose, since no one is present
+  to have asked for that particular mail. The accepted risk is that text the agent reads during a member's turn can talk
   it into mailing what it holds to an outside address; an organization that
   will not accept it leaves the agent without an address.
 - **Budget.** Started mail has a budget of its own beside §6.3's, counted in
   recipients, not sends: 100 recipients a day per bot and 500 per
-  organization. A talked-into agent therefore cannot spend its members'
-  replies, and a send to 50 people counts as 50. Like §6.3's counters these are
+  organization. A reply into a non-member's thread under "Anyone" draws on the
+  same budget, so neither a talked-into agent nor strangers' mail can spend
+  the replies members get, and a send to 50 people counts as 50. Like §6.3's counters these are
   per relay instance and lost on a restart, so they bound a burst, not a total;
   the provider's quota remains the hard stop.
 - **Headers**: `From` is the agent's address and name, as for a reply.
@@ -662,9 +677,9 @@ it to people and does not look for another way to send.
 - **A reply** reaches the thread by its tag. Its sender may answer whatever the
   address's "Who may write" says, when it is one of the started mail's
   recipients (§4 step 3); anyone else on the reply is held to that setting. The
-  reply opens the thread's session, which begins with the started mail, so the
-  agent reads what it sent. A non-member's session follows "Outside senders'
-  sessions" (§4.1), and a member's is the member's own (§5.3).
+  reply continues the thread's session, created at send and beginning with the
+  started mail, so the agent reads what it sent; whose session it is was fixed
+  then (§5.3).
 
 ### 6.5 When the Control Plane is unreachable
 
