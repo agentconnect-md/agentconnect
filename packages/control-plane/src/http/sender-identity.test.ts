@@ -26,6 +26,8 @@ function fixture(
     botsFail?: boolean
     /** The identity provider can look a link up from the chat side. */
     reverse?: boolean
+    /** The members each sender is by a platform's own evidence, keyed `platform:sender`. */
+    evidence?: Record<string, string | Error>
   } = {}
 ) {
   const links = options.links ?? {}
@@ -37,6 +39,11 @@ function fixture(
       )
       .map(([sub]) => sub)
   )
+  const senderMember = vi.fn(async (orgId: string, sender: string) => {
+    const found = orgId === ORG ? options.evidence?.[`email:${sender}`] : undefined
+    if (found instanceof Error) throw found
+    return found ?? null
+  })
   const deps: SenderIdentityDeps = {
     clock: new FakeClock(Date.UTC(2026, 0, 1)),
     bots: {
@@ -52,12 +59,14 @@ function fixture(
       memberByOidcSubject: async (_org, sub) =>
         (options.members ?? [member('user-me'), member('user-dana')]).find((m) => `sub-${m.userId}` === sub) ?? null
     },
-    // Slack matches members under the bot's workspace, every other platform here under one global tenant.
-    chatMemberTenant: (platform) => (b) => (platform === 'slack' ? b.teamId : 'global'),
+    // Slack matches members under the bot's workspace, every other platform here under one global tenant; email has no tenant.
+    chatMemberTenant: (platform) =>
+      platform === 'email' ? undefined : (b) => (platform === 'slack' ? b.teamId : 'global'),
+    senderMember: (platform) => (platform === 'email' ? (orgId, sender) => senderMember(orgId, sender) : undefined),
     identity: { chatIdentitiesFor, ...(options.reverse ? { subjectsLinkedTo } : {}) }
   }
   const viewer = { userId: 'user-me', oidcSubject: 'sub-user-me', canSeeAgent: async () => true }
-  return { service: new SenderIdentityService(deps), viewer, chatIdentitiesFor, subjectsLinkedTo }
+  return { service: new SenderIdentityService(deps), viewer, chatIdentitiesFor, subjectsLinkedTo, senderMember }
 }
 
 const slack = (memberId: string, tenant = WORKSPACE): LinkedChatIdentity => ({ platform: 'slack', tenant, memberId })
@@ -164,6 +173,40 @@ describe('SenderIdentityService', () => {
       }
     })
     expect((await service.sendersOf(ORG, 'user-dana')).sort()).toEqual([teams, 'U0DANA'].sort())
+  })
+
+  it('names a mail sender by the platform’s own evidence: the reader, another member, and nobody for an outsider', async () => {
+    const { service, viewer, chatIdentitiesFor, senderMember } = fixture({
+      bots: [bot('bot-mail', 'email', { externalAppId: 'helper@mail.example.test' })],
+      integrations: [integration('bot-mail', 'agent-a', 'email')],
+      evidence: { 'email:me@corp.example.test': 'user-me', 'email:dana@corp.example.test': 'user-dana' }
+    })
+    const who = await service.resolve(
+      ORG,
+      'email',
+      ['me@corp.example.test', 'dana@corp.example.test', 'outsider@other.example.test', 'helper@mail.example.test'],
+      viewer
+    )
+    expect(Object.fromEntries(who)).toEqual({
+      'me@corp.example.test': { userId: 'user-me' },
+      'dana@corp.example.test': { userId: 'user-dana' },
+      'helper@mail.example.test': { agentId: 'agent-a' }
+    })
+    // The agent's own address is its agent, never asked about; no sign-in link is read for a tenantless platform.
+    expect(senderMember).toHaveBeenCalledTimes(3)
+    expect(chatIdentitiesFor).not.toHaveBeenCalled()
+  })
+
+  it('leaves a mail sender unnamed when their lookup fails, and still names the rest', async () => {
+    const { service, viewer } = fixture({
+      bots: [],
+      evidence: {
+        'email:me@corp.example.test': 'user-me',
+        'email:dana@corp.example.test': new Error('database unavailable')
+      }
+    })
+    const who = await service.resolve(ORG, 'email', ['me@corp.example.test', 'dana@corp.example.test'], viewer)
+    expect(Object.fromEntries(who)).toEqual({ 'me@corp.example.test': { userId: 'user-me' } })
   })
 
   it('answers with nobody rather than fail the read it decorates', async () => {

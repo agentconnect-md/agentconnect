@@ -29,6 +29,8 @@ export interface SenderIdentityDeps {
   }
   /** The platform's `chatMemberTenant`: the tenant a bot's chat members are matched to console accounts under. */
   chatMemberTenant(platform: string): ((bot: BotRecord) => string | null) | undefined
+  /** The platform's `senderMember`: the member a sender is by the platform's own evidence. */
+  senderMember(platform: string): ((orgId: OrgId, sender: string) => Promise<string | null>) | undefined
   /** Absent when the deployment has no sign-in configured: then nobody is linked. */
   identity?: { chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> } & LinkedMemberDeps['identity']
   log?: { warn(obj: object, msg: string): void }
@@ -100,6 +102,7 @@ export class SenderIdentityService {
         const agentId = bots.agents.get(sender)
         if (agentId && (await viewer.canSeeAgent(agentId))) out.set(sender, { agentId })
       }
+      await this.ownEvidence(orgId, platform, wanted, out, viewer)
       if (bots.tenants.size === 0 || !this.deps.identity) return out
       const [own, members] = await Promise.all([
         this.linkedIds(viewer.oidcSubject, platform, bots.tenants),
@@ -124,6 +127,30 @@ export class SenderIdentityService {
       ;(viewer.log ?? this.deps.log)?.warn({ err, platform }, 'sender identity: lookup failed, senders left unnamed')
     }
     return out
+  }
+
+  /** Names each sender still unnamed by the platform's own evidence; a sender whose read fails stays unnamed. */
+  private async ownEvidence(
+    orgId: OrgId,
+    platform: string,
+    wanted: ReadonlySet<string>,
+    out: Map<string, SenderIdentity>,
+    viewer: SenderIdentityViewer
+  ): Promise<void> {
+    const senderMember = this.deps.senderMember(platform)
+    if (!senderMember) return
+    const unnamed = [...wanted].filter((sender) => !out.has(sender))
+    const found = await mapLimited(unnamed, AUDIENCE_CONCURRENCY, async (sender) => {
+      try {
+        return await senderMember(orgId, sender)
+      } catch (err) {
+        ;(viewer.log ?? this.deps.log)?.warn({ err, platform }, 'sender identity: platform member lookup failed')
+        return null
+      }
+    })
+    unnamed.forEach((sender, i) => {
+      if (found[i]) out.set(sender, { userId: found[i] })
+    })
   }
 
   /** Every chat account a member linked on a platform the organization has a bot on: the senders their own messages carry. */
@@ -276,6 +303,7 @@ export function makeSenderIdentityResolver(deps: HttpDeps): SenderIdentityResolv
     integrations: deps.repos.integration,
     users: deps.repos.user,
     chatMemberTenant: (platform) => deps.platforms.get(platform)?.chatMemberTenant,
+    senderMember: (platform) => deps.platforms.get(platform)?.senderMember,
     ...(deps.logtoIdentity ? { identity: deps.logtoIdentity } : {})
   })
   const resolve: SenderIdentityResolver['resolve'] = (req, platform, senders) => {
