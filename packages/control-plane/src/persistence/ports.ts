@@ -206,9 +206,8 @@ export interface Shareable {
 export type AssignmentState = 'active' | 'draining' | 'released' | 'frozen'
 export type SessionPhase = 'start' | 'plan' | 'problem' | 'end'
 export type ActivityState = 'thinking' | 'tool_call' | 'awaiting_permission' | 'idle'
-/** Per-session visibility tier (session-visibility.md §1). Distinct from
- *  `ResourceVisibility` — sessions have no `restricted`/`sharedWith` tier. */
-export type SessionVisibility = 'private' | 'org' | 'external'
+/** Per-session visibility tier (session-visibility.md §1); `editors` is whoever can edit the owning agent at read time. */
+export type SessionVisibility = 'private' | 'org' | 'external' | 'editors'
 export type ExternalResolution = 'pending' | 'settled' | 'invalid'
 export type ExternalAccessPolicyState = 'disabled' | 'enabling' | 'enabled' | 'degraded'
 /** How a session's visibility was determined — the §4.5 A2A reconciliation
@@ -2008,6 +2007,8 @@ export interface SessionFilterQuery extends SessionQuery {
    *  provider `external` rows. Absent ⇒ no session predicate — the internal
    *  fail-open, mirroring `visibilityWhere(undefined)`. */
   viewer?: {
+    /** The viewer's console user id, which an `editors` row matches against its agent's edit grants. */
+    userId: string
     role: OrgMemberRole
     identitySet: string[]
     externalAccess?: SessionExternalAccessSnapshot

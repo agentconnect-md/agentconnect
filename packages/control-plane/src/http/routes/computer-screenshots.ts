@@ -53,7 +53,7 @@ export function computerScreenshotRoutes(deps: HttpDeps) {
       const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
       if (!session) return false
       const access = await sessionAccess.forSessions(req, [session])
-      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)
+      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds)
     }
 
     // A Computer the caller cannot see, or one deleted since, hides its screenshots too.

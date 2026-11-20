@@ -315,7 +315,7 @@ import { OrgSsoSessionRule } from './org-sso/session.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
-import { AgentId, BotId, DaemonId, HookId, OrgId } from './domain/ids.js'
+import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
@@ -495,6 +495,7 @@ import { SessionAccessWarmer } from './http/session-access-warmer.js'
 import {
   TENANTLESS_SENTINEL,
   type AgentRecord,
+  type OrgMemberRole,
   type SessionMetaRecord,
   type ExternalScopeRecord
 } from './persistence/ports.js'
@@ -3572,7 +3573,6 @@ export function buildContainer(
       memberByVerifiedEmail: (orgId, email) => repos.user.memberByVerifiedEmail(orgId, email),
       verifiedEmailHolders: (orgId, email) => repos.user.verifiedEmailHolders(orgId, email),
       activeMember: (orgId, userId) => repos.user.activeMember(orgId, userId),
-      integrationsForBot: (botId) => repos.integration.listForBot(BotId(botId)),
       installRoutes: [
         emailAddressRoutes({
           ...(emailDeployment ? { mailDomain: emailDeployment.mailDomain } : {}),
@@ -3631,14 +3631,25 @@ export function buildContainer(
     config,
     now: () => clock.now(),
     sessionAccess: async (claims, session) => {
-      const oidcSubject = await repos.user.getOidcSubject(claims.userId)
+      const [oidcSubject, role] = await Promise.all([
+        repos.user.getOidcSubject(claims.userId),
+        repos.org.roleOf(claims.orgId, claims.userId)
+      ])
       return makeSessionAccessResolver(httpDeps).forPrincipal(
-        { orgId: OrgId(claims.orgId), userId: claims.userId, log: http.log, ...(oidcSubject ? { oidcSubject } : {}) },
+        {
+          orgId: OrgId(claims.orgId),
+          userId: claims.userId,
+          // A departed member edits no agent, so an `editors` session stays closed to them.
+          role: (role as OrgMemberRole | null) ?? 'viewer',
+          log: http.log,
+          ...(oidcSubject ? { oidcSubject } : {})
+        },
         [
           {
             visibility: session.visibility,
             externalProvider: session.externalProvider ?? null,
-            externalScopeId: session.externalScopeId ?? null
+            externalScopeId: session.externalScopeId ?? null,
+            ...(session.agentId ? { agentId: session.agentId } : {})
           }
         ]
       )

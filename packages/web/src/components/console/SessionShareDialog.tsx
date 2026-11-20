@@ -172,6 +172,16 @@ function ShareDialogContent({
         selected: true
       })
     }
+    // The agent's editors hold it, not a choice anyone makes, so it reads as the one audience.
+    if (effective === 'editors') {
+      return card({
+        key: 'editors',
+        mark: <Icon name="lock" size={17} color="var(--text-secondary)" />,
+        label: tv('editors'),
+        description: tv('editorsTitle'),
+        selected: true
+      })
+    }
     const choices: { value: MutableSessionVisibility; icon: string; label: string; description: string }[] = [
       { value: 'org', icon: 'globe', label: tv('everyone'), description: tv('everyoneTitle') },
       { value: 'private', icon: 'lock', label: tv('private'), description: tv('privateTitle') }

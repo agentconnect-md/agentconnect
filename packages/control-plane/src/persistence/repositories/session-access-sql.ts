@@ -26,6 +26,24 @@ import type { SessionFilterQuery } from '../ports.js'
  * decision. Collapsing the arms keeps that read — it just performs it once
  * instead of once per scope.
  */
+/** The `editors` arm: the `resource.edit` predicate on the row's agent, read live, so a viewer role never matches and an owner always does. */
+function editorsArm(viewer: NonNullable<SessionFilterQuery['viewer']>, s: Prisma.Sql): Prisma.Sql {
+  if (viewer.role === 'viewer') return Prisma.empty
+  const editable =
+    viewer.role === 'owner'
+      ? Prisma.empty
+      : Prisma.sql`AND (agent."visibility" = 'org'::"ResourceVisibility" OR ${viewer.userId} = ANY(agent."sharedWith"))`
+  return Prisma.sql`
+    OR (
+      ${s}."externalProvider" IS NULL
+      AND ${s}."visibility" = 'editors'::"SessionVisibility"
+      AND EXISTS (
+        SELECT 1 FROM "agent" agent
+        WHERE agent."id" = ${s}."agentId" AND agent."orgId" = ${s}."orgId" ${editable}
+      )
+    )`
+}
+
 export function sessionViewerSql(
   viewer: SessionFilterQuery['viewer'],
   alias: Prisma.Sql = Prisma.raw('s')
@@ -41,7 +59,7 @@ export function sessionViewerSql(
       ${s}."visibility" = 'private'::"SessionVisibility"
       AND ${s}."ownerIdentity" IS NOT NULL
       AND ${s}."ownerIdentity" = ANY(${viewer.identitySet}::text[])
-    )
+    )${editorsArm(viewer, s)}
   )`
   const snapshot = viewer.externalAccess
   if (!snapshot) return direct

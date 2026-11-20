@@ -492,11 +492,8 @@ export interface SessionUsageDto {
   costCurrency?: string
 }
 
-// Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
-// visible only to the session owner (no role override, org owners included); 'org'
-// to every organization member. It is independent from the owning Agent's Team
-// visibility and deliberately NOT ResourceVisibility ('org' | 'restricted').
-export type SessionVisibility = 'private' | 'org' | 'external'
+// Session-level visibility (docs/designs/session-visibility.md); `editors` is whoever can edit the owning agent, and is never set by hand.
+export type SessionVisibility = 'private' | 'org' | 'external' | 'editors'
 export type MutableSessionVisibility = 'private' | 'org'
 
 export interface SessionDto {
@@ -5812,10 +5809,10 @@ export async function checkEmailAddressName(orgId: string, name?: string): Promi
 /** `GET|PUT /integrations/:id/email/settings`: who may write to an address, and who sees an outside sender's session. */
 export interface EmailSettingsDto {
   whoMayWrite: 'members' | 'anyone'
-  outsideSessions: { kind: 'org' } | { kind: 'member'; userId: string | null; active: boolean }
+  outsideSessions: { kind: 'editors' } | { kind: 'org' } | { kind: 'member'; userId: string; active: boolean }
 }
 export type EmailSettingsInput = Pick<EmailSettingsDto, 'whoMayWrite'> & {
-  outsideSessions: { kind: 'org' } | { kind: 'member'; userId: string }
+  outsideSessions: { kind: 'editors' } | { kind: 'org' } | { kind: 'member'; userId: string }
 }
 export async function fetchEmailSettings(orgId: string, integrationId: string): Promise<EmailSettingsDto> {
   return apiGet<EmailSettingsDto>(`${orgBase(orgId)}/integrations/${encodeURIComponent(integrationId)}/email/settings`)

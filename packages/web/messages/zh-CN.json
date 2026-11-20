@@ -763,6 +763,7 @@
         "tokens": "Tokens"
       },
       "privateSession": "私密会话，仅所有者可见",
+      "editorsSession": "仅能编辑这个 agent 的人可见",
       "purgedPartial": "此对话的部分历史记录已于 {date} 被会话保留策略删除",
       "purged": "转录记录已于 {date} 被会话保留策略删除，仅保留元数据",
       "noMatches": "没有匹配的会话",
@@ -796,6 +797,8 @@
       "everyone": "所有人",
       "privateTitle": "只有你能看到这个会话。",
       "everyoneTitle": "组织内所有人都能看到这个会话。",
+      "editors": "能编辑这个 agent 的人",
+      "editorsTitle": "只有能编辑这个 agent 的人能看到这个会话。",
       "settingUp": "正在设置会话访问权限",
       "loading": "加载中",
       "externalMembers": "{provider} 成员",
@@ -7471,6 +7474,8 @@
         "members": "组织成员",
         "anyone": "任何人",
         "outsideViewers": "组织外来信谁能看到",
+        "editors": "能编辑这个 agent 的人",
+        "default": "默认",
         "specificMember": "指定一位成员",
         "chooseMember": "选择成员",
         "organization": "组织里所有人",
@@ -7480,6 +7485,7 @@
         "failed": "无法保存设置，请稍后重试。",
         "status": {
           "members": "只接收组织成员的来信",
+          "anyoneEditors": "接收任何人的来信 · 组织外来信：能编辑这个 agent 的人",
           "anyoneMember": "接收任何人的来信 · 组织外来信只有 {name} 能看到",
           "anyoneSomeMember": "接收任何人的来信 · 组织外来信只有一个成员能看到",
           "anyoneOrg": "接收任何人的来信 · 组织外来信组织里所有人都能看到",

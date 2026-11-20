@@ -35,6 +35,7 @@ import {
 } from '@agentconnect.md/protocol'
 import type { AgentRepo, SessionMetaRecord, SessionRepo, SessionVisibilityState } from '../persistence/ports.js'
 import { SessionId, type DaemonId } from '../domain/ids.js'
+import { sharedMemoryExcluded, wireVisibility } from '../domain/session-visibility.js'
 import { systemClock, type Clock } from '../domain/clock.js'
 import { ConnectionClosed, type ConnectionRegistry } from '../ws/registry.js'
 import { NoConnection, type ControlSender } from './outbound.js'
@@ -68,12 +69,9 @@ function toPush(s: SessionMetaRecord): SessionVisibilityPush {
     // The gate is keyed by (agent, ACP session id) on the daemon: ACP ids are
     // runtime-local, so the id alone would answer for a colliding neighbour.
     agentId: s.agentId,
-    visibility: s.visibility,
-    // An external-source session (Slack/Feishu channel) is no longer memory-
-    // excluded just for being external — `external` visibility now captures like
-    // `org`. Only an explicitly `private` session excludes memory
-    // (session-visibility.md §5.1).
-    sharedMemoryExcluded: s.visibility === 'private',
+    visibility: wireVisibility(s.visibility),
+    // An `external` session captures like `org`; a `private` or `editors` one excludes memory (session-visibility.md §5.1).
+    sharedMemoryExcluded: sharedMemoryExcluded(s.visibility),
     visibilityRev: s.visibilityRev
   }
 }
@@ -340,7 +338,10 @@ export class SessionVisibilityPushService {
     }
     for (const [orgId, entries] of byOrg) {
       try {
-        const payload = entries.map(({ orgId: _orgId, ...entry }) => entry)
+        const payload = entries.map(({ orgId: _orgId, ...entry }) => ({
+          ...entry,
+          visibility: wireVisibility(entry.visibility)
+        }))
         const ack = await this.deps.control.sessionVisibilitySnapshot(daemonId, orgId, payload)
         if (!ack.ok) {
           this.deps.log?.warn({ daemonId, orgId, reason: ack.reason }, 'session visibility snapshot rejected')

@@ -98,7 +98,12 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       const orgAgents = await deps.repos.agent.list(orgOf(req))
       const agentIds = orgAgents.map((a) => a.id)
       const scoped = await sessionAccess.forQuery(req, { agentIds })
-      const viewer = { role: ctx.role, identitySet: [...scoped.identitySet], externalAccess: scoped.externalAccess }
+      const viewer = {
+        userId: ctx.userId,
+        role: ctx.role,
+        identitySet: [...scoped.identitySet],
+        externalAccess: scoped.externalAccess
+      }
       const key = { platform: s.platform, tenantScope: s.tenantScope, channel: s.channel, thread: s.thread }
       const members = (await deps.repos.session.listConversationMembers({ agentIds, viewer }, key)).filter(
         (m) => m.agentId !== s.agentId
@@ -110,7 +115,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       for (const m of members) {
         // Newest first, so a conversation larger than a verdict can carry keeps its most recently active members.
         if (peers.length >= MAX_CONVERSATION_PEERS) break
-        if (!canContinueSession(m, ctx, access.identitySet, access.externalAccess)) continue
+        if (!canContinueSession(m, ctx, access.identitySet, access.externalAccess, access.editableAgentIds)) continue
         if (m.contentPurgedAt || !continuableOrigin(m.platform ?? '')) continue
         const peerAgent = agentsById.get(m.agentId)
         if (!peerAgent || !canView(peerAgent, ctx)) continue
@@ -181,7 +186,11 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       if (rows.length !== sessions.length) return null
       const access = await sessionAccess.forSessions(req, rows)
       const ctx = ctxOf(req)
-      return rows.every((s) => canContinueSession(s, ctx, access.identitySet, access.externalAccess)) ? resumable : null
+      return rows.every((s) =>
+        canContinueSession(s, ctx, access.identitySet, access.externalAccess, access.editableAgentIds)
+      )
+        ? resumable
+        : null
     }
 
     const contentReach = {
@@ -360,7 +369,10 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           parentId ? await deps.repos.session.get(orgOf(req), SessionId(parentId)) : null
         )
         const access = await sessionAccess.forSessions(req, [audience ?? s])
-        if (!audience || !canContinueSession(audience, ctx, access.identitySet, access.externalAccess)) {
+        if (
+          !audience ||
+          !canContinueSession(audience, ctx, access.identitySet, access.externalAccess, access.editableAgentIds)
+        ) {
           return refuse(403, 'not authorized to continue this session')
         }
         if (s.contentPurgedAt) return refuse(409, 'session content was purged')

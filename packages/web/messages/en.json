@@ -763,6 +763,7 @@
         "tokens": "Tokens"
       },
       "privateSession": "Private session — visible only to its owner",
+      "editorsSession": "Visible only to people who can edit this agent",
       "purgedPartial": "Part of this conversation’s history was deleted from {date} by the session retention policy",
       "purged": "Transcript deleted {date} by the session retention policy — only metadata remains",
       "noMatches": "No sessions match",
@@ -796,6 +797,8 @@
       "everyone": "Everyone",
       "privateTitle": "Only you can see this session.",
       "everyoneTitle": "Everyone in your organization can see this session.",
+      "editors": "People who can edit this agent",
+      "editorsTitle": "Only people who can edit this agent can see this session.",
       "settingUp": "Setting up session access",
       "loading": "loading",
       "externalMembers": "{provider} members",
@@ -7471,6 +7474,8 @@
         "members": "Members of your organization",
         "anyone": "Anyone",
         "outsideViewers": "Who sees mail from outside the organization",
+        "editors": "People who can edit this agent",
+        "default": "Default",
         "specificMember": "A specific member",
         "chooseMember": "Choose a member",
         "organization": "Everyone in the organization",
@@ -7480,6 +7485,7 @@
         "failed": "The settings could not be saved. Try again in a moment.",
         "status": {
           "members": "Takes mail from members of your organization",
+          "anyoneEditors": "Takes mail from anyone · Mail from outside: people who can edit this agent",
           "anyoneMember": "Takes mail from anyone · Mail from outside: only {name} sees it",
           "anyoneSomeMember": "Takes mail from anyone · Mail from outside: only one member sees it",
           "anyoneOrg": "Takes mail from anyone · Mail from outside: everyone in the organization sees it",

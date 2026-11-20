@@ -110,6 +110,7 @@ describe('makeSessionAccessResolver', () => {
       {
         orgId: OrgId('org-1'),
         userId: 'user-1',
+        role: 'collaborator',
         oidcSubject: 'verified-subject',
         log: request().log
       },

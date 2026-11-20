@@ -30,7 +30,7 @@ export async function resolveEmailMembers(
   )
   const bot = install ? await deps.bot.getUnscoped(BotId(install.botId)) : null
   if (!install || !bot) return nobody
-  const settings = emailAddressSettings(bot, install)
+  const settings = emailAddressSettings(bot)
   const anyone = settings.whoMayWrite === 'anyone'
   const members: AgentEmailMembersOk['members'] = []
   const outsiders: string[] = []

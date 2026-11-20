@@ -138,6 +138,16 @@ describe('notifySessions', () => {
     expect(recordVisibilityAck).toHaveBeenCalledWith('acp-1', 2)
   })
 
+  it('tells the daemon an editors session is private, so it stays out of the shared memory layer', async () => {
+    const { push, sessionVisibility } = deps()
+    await push.notifySessions([session({ visibility: 'editors' })])
+    expect(sessionVisibility).toHaveBeenCalledWith(
+      DAEMON,
+      ORG,
+      expect.objectContaining({ visibility: 'private', sharedMemoryExcluded: true })
+    )
+  })
+
   it('records the ack for a `superseded` reply too — the daemon already holds it', async () => {
     const sessionVisibility = vi.fn(async () => ({ sessionId: 'acp-1', visibilityRev: 2, status: 'superseded' }))
     const { push, recordVisibilityAck } = deps({ sessionVisibility })

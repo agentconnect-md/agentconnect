@@ -111,9 +111,19 @@ describe('the member answer for an agent’s mail', () => {
     })
   })
 
-  it('under Anyone admits outsiders while the member who added the address is active, and refuses them after', async () => {
+  it('under Anyone admits outsiders by default, whose sessions go to the agent’s editors', async () => {
     const adder = await member('adder@corp.example.test')
     const agentId = await agentWithEmail({ settings: { whoMayWrite: 'anyone' }, createdByUserId: adder })
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: adder } },
+      data: { suspendedAt: AT }
+    })
+    expect((await ask(agentId, 'stranger@other.example.test')).outsideSenders).toBe('admitted')
+  })
+
+  it('under Anyone admits outsiders while the picked member is active, and refuses them after', async () => {
+    const adder = await member('picked@corp.example.test')
+    const agentId = await agentWithEmail({ settings: { whoMayWrite: 'anyone', outsideSessions: `user:${adder}` } })
     expect(await ask(agentId, 'stranger@other.example.test')).toEqual({
       members: [],
       outsiders: ['stranger@other.example.test'],

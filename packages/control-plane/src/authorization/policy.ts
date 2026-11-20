@@ -24,6 +24,8 @@ export type AuthorizationAction = (typeof AuthorizationAction)[keyof typeof Auth
 export interface SessionViewable {
   visibility: SessionVisibility
   ownerIdentity: string | null
+  /** The owning agent; an `editors` session is visible to whoever can edit it now, and unread denies. */
+  agentId?: string
   externalProvider?: string | null
   externalScopeId?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
@@ -79,6 +81,8 @@ export type AuthorizationRequest =
       resource: SessionViewable
       identitySet: ReadonlySet<string>
       externalAccess?: SessionExternalAccessSnapshot
+      /** The agents the principal can edit now, read for this decision; absent denies every `editors` session. */
+      editableAgentIds?: ReadonlySet<string>
     }
 
 function resourceIsVisible(resource: Shareable, principal: ViewCtx): boolean {
@@ -109,6 +113,13 @@ function isWebchatCoordinatorTask(resource: SessionViewable): boolean {
 
 function identityOwnsSession(resource: SessionViewable, identitySet: ReadonlySet<string>): boolean {
   return resource.ownerIdentity !== null && identitySet.has(resource.ownerIdentity)
+}
+
+function editorsSessionIsVisible(
+  resource: SessionViewable,
+  editableAgentIds: ReadonlySet<string> | undefined
+): boolean {
+  return resource.agentId !== undefined && editableAgentIds !== undefined && editableAgentIds.has(resource.agentId)
 }
 
 function externalSessionIsVisible(
@@ -160,7 +171,9 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
         ? request.resource.visibility === 'private'
           ? identityOwnsSession(request.resource, request.identitySet)
           : externalSessionIsVisible(request.resource, request.externalAccess)
-        : request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
+        : request.resource.visibility === 'editors'
+          ? editorsSessionIsVisible(request.resource, request.editableAgentIds)
+          : request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
     // Re-classification (§4.3) is owner-only: identity match with the recorded
     // owner, roles grant nothing in either direction — an org owner pulling
     // someone's published session back to private is as much an intrusion on
@@ -173,9 +186,11 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     // change (channel-session-mode.md §9). An unread coordinate counts as one.
     // A webchat coordinator is one member's conversation, so it and each of its tasks stay its owner's (auto-session-mode.md §10).
     // The same holds for an agent's own background work (assistant-mode.md §5.6) and for a task while a session owns it (auto-session-mode.md §6.2).
+    // An `editors` session's audience is its agent's editors, set by the platform, so no one reclassifies it.
     case AuthorizationAction.SessionChangeVisibility:
       return (
         !request.resource.externalProvider &&
+        request.resource.visibility !== 'editors' &&
         request.resource.thread !== undefined &&
         (!isAppendCoordinate(request.resource.thread) || isOwnersOnlyAppend(request.resource)) &&
         (isWebchatCoordinatorTask(request.resource) ||
@@ -197,9 +212,18 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
         action: AuthorizationAction.SessionView,
         resource: request.resource,
         identitySet: request.identitySet,
-        ...(request.externalAccess ? { externalAccess: request.externalAccess } : {})
+        ...(request.externalAccess ? { externalAccess: request.externalAccess } : {}),
+        ...(request.editableAgentIds ? { editableAgentIds: request.editableAgentIds } : {})
       })
   }
+}
+
+/** The agents among `agents` that `principal` can edit now: the `resource.edit` predicate, which an `editors` session's audience follows. */
+export function editableAgentIdsOf(
+  agents: readonly ((Shareable & { id: string }) | null)[],
+  principal: ViewCtx
+): Set<string> {
+  return new Set(agents.flatMap((agent) => (agent && canEdit(agent, principal) ? [agent.id] : [])))
 }
 
 /** Readability adapters used by resource-oriented routes. */
@@ -234,13 +258,15 @@ export function canViewSession(
   resource: SessionViewable,
   principal: ViewCtx,
   identitySet: ReadonlySet<string>,
-  externalAccess?: SessionExternalAccessSnapshot
+  externalAccess?: SessionExternalAccessSnapshot,
+  editableAgentIds?: ReadonlySet<string>
 ): boolean {
   return can(principal, {
     action: AuthorizationAction.SessionView,
     resource,
     identitySet,
-    ...(externalAccess ? { externalAccess } : {})
+    ...(externalAccess ? { externalAccess } : {}),
+    ...(editableAgentIds ? { editableAgentIds } : {})
   })
 }
 
@@ -260,13 +286,15 @@ export function canContinueSession(
   resource: SessionViewable,
   principal: ViewCtx,
   identitySet: ReadonlySet<string>,
-  externalAccess?: SessionExternalAccessSnapshot
+  externalAccess?: SessionExternalAccessSnapshot,
+  editableAgentIds?: ReadonlySet<string>
 ): boolean {
   return can(principal, {
     action: AuthorizationAction.SessionContinue,
     resource,
     identitySet,
-    ...(externalAccess ? { externalAccess } : {})
+    ...(externalAccess ? { externalAccess } : {}),
+    ...(editableAgentIds ? { editableAgentIds } : {})
   })
 }
 

@@ -13,7 +13,6 @@ import {
   type BotRecord,
   type BotSecretMaterial,
   type EmailAddressRepo,
-  type IntegrationRecord,
   type UserRepo
 } from '../../persistence/ports.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
@@ -90,8 +89,6 @@ export interface EmailCpProviderDeps {
   verifiedEmailHolders?: UserRepo['verifiedEmailHolders']
   /** Whether a member an address's outside sessions go to is still active (§4.1). */
   activeMember?: UserRepo['activeMember']
-  /** The address's integration, whose creator is the default owner of outside senders' sessions. */
-  integrationsForBot?: (botId: string) => Promise<IntegrationRecord[]>
   /** The name-availability route, pre-bound by the composition root. */
   installRoutes?: FastifyPluginAsync[]
 }
@@ -160,20 +157,19 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
     // Under Anyone, a sender no member holds opens a session the address's setting places, read now and fixed then (§5.3).
     async outsiderSession(bot, sender) {
       const address = canonicalEmailAddress(sender)
-      const { verifiedEmailHolders, activeMember, integrationsForBot } = deps
-      if (!address || !verifiedEmailHolders || !activeMember || !integrationsForBot) return null
+      const { verifiedEmailHolders, activeMember } = deps
+      if (!address || !verifiedEmailHolders || !activeMember) return null
       if ((await verifiedEmailHolders(bot.orgId, address)).length > 0) return null
-      const [integration] = await integrationsForBot(bot.id)
-      const settings = emailAddressSettings(bot, integration)
+      const settings = emailAddressSettings(bot)
       if (settings.whoMayWrite !== 'anyone') return null
       return await emailOutsideSessionOwner(bot.orgId, settings, { activeMember })
     },
 
-    async projectIntegrationConfig(integration, bot): Promise<IntegrationEmailConfig | undefined> {
+    async projectIntegrationConfig(_integration, bot): Promise<IntegrationEmailConfig | undefined> {
       const address = served(bot)
       if (!address) return undefined
       // Who may write rides the spec, so a change reaches the daemon and drops the answers it holds (§4.1).
-      const { whoMayWrite } = emailAddressSettings(bot, integration)
+      const { whoMayWrite } = emailAddressSettings(bot)
       return { address, egress: 'relay', botId: bot.id, whoMayWrite }
     },
 

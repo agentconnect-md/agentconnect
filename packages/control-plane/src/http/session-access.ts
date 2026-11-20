@@ -8,8 +8,9 @@ import type {
   SessionFilterQuery,
   SessionMetaRecord
 } from '../persistence/ports.js'
-import { identitySetOf } from '../authorization/policy.js'
-import type { OrgId } from '../domain/ids.js'
+import { editableAgentIdsOf, identitySetOf } from '../authorization/policy.js'
+import type { ViewCtx } from '../authorization/policy.js'
+import { AgentId, type OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
 import type { SessionAccessIssue, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 import { ctxOf, orgOf } from './rbac.js'
@@ -25,11 +26,20 @@ export interface ResolvedSessionAccess {
   accessIssues: SessionAccessIssue[]
   /** Set when this snapshot's last refresh-behind failed; cleared by the next one that lands. Observability only (#775). */
   refreshFailedAt?: Date
+  /** The `editors` sessions' agents the viewer can edit, read live for this call and never cached; empty for a query, whose SQL decides. */
+  editableAgentIds: ReadonlySet<string>
+}
+
+/** What the resolver reads of a session: its external scope, and its agent for an `editors` row. */
+export type SessionAccessSubject = Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'> & {
+  agentId?: string
 }
 
 export interface SessionAccessPrincipal {
   orgId: OrgId
   userId: string
+  /** The principal's current role, which decides whether they edit an `editors` session's agent. */
+  role: ViewCtx['role']
   oidcSubject?: string
   log: FastifyRequest['log']
 }
@@ -37,12 +47,14 @@ export interface SessionAccessPrincipal {
 export interface SessionAccessResolver {
   forPrincipal(
     principal: SessionAccessPrincipal,
-    sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
+    sessions: readonly SessionAccessSubject[]
   ): Promise<ResolvedSessionAccess>
   forQuery(req: FastifyRequest, query: SessionFilterQuery): Promise<ResolvedSessionAccess>
+  /** `principal` overrides the request's role for a long-lived read that re-reads it, such as SSE. */
   forSessions(
     req: FastifyRequest,
-    sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
+    sessions: readonly SessionAccessSubject[],
+    principal?: ViewCtx
   ): Promise<ResolvedSessionAccess>
 }
 
@@ -121,6 +133,9 @@ function refreshFailureCause(err: unknown): string {
   const code = (err as { code?: unknown }).code
   return typeof code === 'string' || typeof code === 'number' ? String(code) : err.name
 }
+
+/** The scoped half of a decision, cached across reads; the editors half is added per call. */
+type ScopedAccess = Omit<ResolvedSessionAccess, 'editableAgentIds'>
 
 /** Exactly the inputs `forScopes` reads — org, the viewer it decides for, the
  *  identities it decides with, the scope set it decides about, and whether each
@@ -202,7 +217,7 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     scopes: readonly ExternalScopeRecord[],
     viewer: SessionAccessViewer,
     initialPolicies: PolicySnapshot
-  ): Promise<ResolvedSessionAccess> => {
+  ): Promise<ScopedAccess> => {
     const { orgId, identitySet } = viewer
     // A provider whose sync is off has no say in what anyone can see: the SQL
     // scope arm stops admitting its `external` rows, and its `org`-classified
@@ -271,7 +286,7 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
   /** `fetch` hands concurrent callers of one key the SAME promise, which is the
    *  single-flight this exists for, and drops the entry when the sweep rejects —
    *  a failed sweep is never inherited as a verdict. */
-  const snapshots = new LRUCache<string, ResolvedSessionAccess, Sweep>({
+  const snapshots = new LRUCache<string, ScopedAccess, Sweep>({
     ...cacheOptions(deps.clock, MAX_SNAPSHOT_ENTRIES),
     // The entry's lifetime is the CEILING, not the fresh window: an entry has to
     // outlive its own freshness for there to be anything to serve while the
@@ -300,7 +315,7 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     scopes: readonly ExternalScopeRecord[],
     viewer: SessionAccessViewer,
     policies: PolicySnapshot
-  ): Promise<ResolvedSessionAccess> => {
+  ): Promise<ScopedAccess> => {
     const key = snapshotKey(viewer, scopes, policies, providers)
     // The entry's lifetime IS the ceiling, so what remains of it gives the age.
     // A missing or expired key reports 0 and takes the blocking path, which is
@@ -317,9 +332,26 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     return { ...access, identitySet: new Set(access.identitySet) }
   }
 
+  // Live on every call, as the agent's edit grants stand now: an editor added later sees older sessions, a removed one stops.
+  const editableAgents = async (
+    orgId: OrgId,
+    principal: ViewCtx,
+    sessions: readonly SessionAccessSubject[]
+  ): Promise<Set<string>> => {
+    const ids = [
+      ...new Set(
+        sessions.flatMap((session) => (session.visibility === 'editors' && session.agentId ? [session.agentId] : []))
+      )
+    ]
+    if (ids.length === 0) return new Set()
+    const agents = await Promise.all(ids.map((id) => deps.repos.agent.get(orgId, AgentId(id))))
+    return editableAgentIdsOf(agents, principal)
+  }
+
   const forViewerSessions = async (
     viewer: SessionAccessViewer,
-    sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
+    principal: ViewCtx,
+    sessions: readonly SessionAccessSubject[]
   ): Promise<ResolvedSessionAccess> => {
     const ids = [
       ...new Set(sessions.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
@@ -334,14 +366,17 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
         .map((session) => session.externalScopeId)
         .filter((id): id is string => id !== null)
     )
-    const access = await cachedForScopes(
-      scopes.filter((scope) => accessIds.has(scope.id)),
-      viewer,
-      policies
-    )
+    const [access, editableAgentIds] = await Promise.all([
+      cachedForScopes(
+        scopes.filter((scope) => accessIds.has(scope.id)),
+        viewer,
+        policies
+      ),
+      editableAgents(viewer.orgId, principal, sessions)
+    ])
     // Private rows use scope metadata for provider branding only. Their
     // authorization remains exact owner identity and never reaches a plugin.
-    return { ...access, externalScopes: scopes }
+    return { ...access, externalScopes: scopes, editableAgentIds }
   }
 
   return {
@@ -350,14 +385,14 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
       const [scopes, policies] = await Promise.all([
         deps.repos.session.listExternalScopes({
           ...query,
-          viewer: { role: ctxOf(req).role, identitySet: [...viewer.identitySet] }
+          viewer: { userId: ctxOf(req).userId, role: ctxOf(req).role, identitySet: [...viewer.identitySet] }
         }),
         readPolicies(viewer.orgId)
       ])
-      return cachedForScopes(scopes, viewer, policies)
+      return { ...(await cachedForScopes(scopes, viewer, policies)), editableAgentIds: new Set() }
     },
-    async forSessions(req, sessions) {
-      return forViewerSessions(await viewerFor(req), sessions)
+    async forSessions(req, sessions, principal) {
+      return forViewerSessions(await viewerFor(req), principal ?? ctxOf(req), sessions)
     },
     async forPrincipal(principal, sessions) {
       const viewer = await expandViewer({
@@ -366,7 +401,7 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
         userId: principal.userId,
         identitySet: new Set([`user:${principal.userId}`])
       })
-      return forViewerSessions(viewer, sessions)
+      return forViewerSessions(viewer, { userId: principal.userId, role: principal.role }, sessions)
     }
   }
 }

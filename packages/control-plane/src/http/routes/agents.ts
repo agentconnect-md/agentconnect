@@ -1423,7 +1423,9 @@ export function agentRoutes(deps: HttpDeps) {
       const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
       if (!session || session.agentId !== agentId || session.contentPurgedAt) return null
       const access = await sessionAccess.forSessions(req, [session])
-      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess) ? session : null
+      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds)
+        ? session
+        : null
     }
     const canReadWorkspaceScope = async (
       req: FastifyRequest,

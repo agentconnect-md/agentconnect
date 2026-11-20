@@ -1488,9 +1488,8 @@ export interface Session {
   triggeredByUserId?: string
   /** Stable source kind for a `hook:<id>` trigger, enriched by the Control Plane. */
   hookKind?: HookKind
-  /** Session-level visibility (lock badge / detail toggle). Absent on mock and
-   *  pre-feature CP rows — treated as 'org', matching the server-side backfill. */
-  visibility?: 'private' | 'org' | 'external'
+  /** Session-level visibility (lock badge / detail toggle); absent on mock and pre-feature rows, read as 'org'. */
+  visibility?: 'private' | 'org' | 'external' | 'editors'
   duration: string
   tokens: string
   cost: string

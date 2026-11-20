@@ -55,6 +55,7 @@ export interface AhpAuthorizationDeps extends AgentChatKeyVerificationDeps {
   ): Promise<{
     identitySet: ReadonlySet<string>
     externalAccess?: SessionExternalAccessSnapshot
+    editableAgentIds?: ReadonlySet<string>
   }>
 }
 
@@ -229,7 +230,16 @@ export class AhpAuthorization {
     if (!subject) return false
     const audience = await this.deps.sessionAccess(claims, subject as SessionViewable)
     const allowed = ownConversation ? canViewSession : canContinueSession
-    if (!allowed(subject as SessionViewable, access.viewer, audience.identitySet, audience.externalAccess)) return false
+    if (
+      !allowed(
+        subject as SessionViewable,
+        access.viewer,
+        audience.identitySet,
+        audience.externalAccess,
+        audience.editableAgentIds
+      )
+    )
+      return false
     if (!(await this.deps.reachesContent(OrgId(claims.orgId), [SessionId(sessionId)]))) return false
     if (continued) {
       if (session.platform === 'webchat' && !isSubsessionCoordinate(session.thread)) {

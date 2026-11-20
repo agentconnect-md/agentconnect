@@ -92,9 +92,9 @@ beforeEach(() => {
   mocks.saveSettings.mockImplementation(async (_org, _id, input) => ({
     whoMayWrite: input.whoMayWrite,
     outsideSessions:
-      input.outsideSessions.kind === 'org'
-        ? { kind: 'org' }
-        : { kind: 'member', userId: input.outsideSessions.userId, active: true }
+      input.outsideSessions.kind === 'member'
+        ? { kind: 'member', userId: input.outsideSessions.userId, active: true }
+        : { kind: input.outsideSessions.kind }
   }))
   mocks.canEdit = true
   host = document.createElement('div')
@@ -122,6 +122,11 @@ describe('an email address’s status line', () => {
   it('says everyone in the organization sees mail from outside', async () => {
     await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } })
     expect(status()).toBe('Takes mail from anyone · Mail from outside: everyone in the organization sees it')
+  })
+
+  it('says the people who can edit the agent see mail from outside', async () => {
+    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'editors' } })
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: people who can edit this agent')
   })
 
   it('says outside mail is refused while the picked member is gone', async () => {
@@ -185,18 +190,59 @@ describe('an email address’s settings dialog', () => {
     expect(status()).toBe('Takes mail from anyone · Mail from outside: only Me sees it')
   })
 
-  it('lists the organization ahead of a specific member', async () => {
+  it('lists the agent’s editors first, marked as the default, then the organization, then a specific member', async () => {
     await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } })
     await click(gear())
     const outside = [...document.querySelectorAll('[role="radiogroup"]')][1]!
     expect([...outside.querySelectorAll('[role="radio"]')].map((r) => r.textContent)).toEqual([
+      'People who can edit this agentDefault',
       'Everyone in the organization',
       'A specific member'
     ])
   })
 
+  it('keeps the editors default when a fresh address is switched to Anyone and saved', async () => {
+    await render({ whoMayWrite: 'members', outsideSessions: { kind: 'editors' } })
+    await click(gear())
+    await click(radio('Anyone'))
+    expect(radio('People who can edit this agentDefault')?.getAttribute('aria-checked')).toBe('true')
+    expect(radio('A specific member')?.getAttribute('aria-checked')).toBe('false')
+    await click(button('Save'))
+    expect(mocks.saveSettings).toHaveBeenLastCalledWith('org-a', 'int-email', {
+      whoMayWrite: 'anyone',
+      outsideSessions: { kind: 'editors' }
+    })
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: people who can edit this agent')
+
+    await click(gear())
+    await click(radio('Everyone in the organization'))
+    await click(radio('People who can edit this agentDefault'))
+    await click(button('Save'))
+    // Back on what was saved, Save writes nothing.
+    expect(mocks.saveSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a stored outside choice when only "Accept mail from" changes', async () => {
+    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'editors' } })
+    await click(gear())
+    await click(radio('Members of your organization'))
+    await click(button('Save'))
+    expect(mocks.saveSettings).toHaveBeenLastCalledWith('org-a', 'int-email', {
+      whoMayWrite: 'members',
+      outsideSessions: { kind: 'editors' }
+    })
+    await click(gear())
+    await click(radio('Anyone'))
+    await click(button('Save'))
+    expect(mocks.saveSettings).toHaveBeenLastCalledWith('org-a', 'int-email', {
+      whoMayWrite: 'anyone',
+      outsideSessions: { kind: 'editors' }
+    })
+    expect(mocks.saveSettings).toHaveBeenCalledTimes(2)
+  })
+
   it('waits for a member to be picked when none is saved', async () => {
-    await render({ whoMayWrite: 'members', outsideSessions: { kind: 'member', userId: null, active: false } })
+    await render({ whoMayWrite: 'members', outsideSessions: { kind: 'member', userId: 'user-left', active: false } })
     await click(gear())
     await click(radio('Anyone'))
     expect(button('Save').disabled).toBe(true)

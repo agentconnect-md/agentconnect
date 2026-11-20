@@ -707,6 +707,7 @@ export function sessionRoutes(deps: HttpDeps) {
       return {
         access,
         viewer: {
+          userId: ctxOf(req).userId,
           role: ctxOf(req).role,
           identitySet: [...access.identitySet],
           externalAccess: access.externalAccess
@@ -718,7 +719,8 @@ export function sessionRoutes(deps: HttpDeps) {
       const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
       if (!session) return null
       const access = await sessionAccess.forSessions(req, [session])
-      if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) return null
+      if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds))
+        return null
       return { session, access }
     }
 
@@ -827,7 +829,8 @@ export function sessionRoutes(deps: HttpDeps) {
       return new Map(
         rows.map((row) => [
           String(row.id),
-          row.agentId === agentId && canViewSession(row, ctxOf(req), access.identitySet, access.externalAccess)
+          row.agentId === agentId &&
+            canViewSession(row, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds)
         ])
       )
     }
@@ -1249,7 +1252,13 @@ export function sessionRoutes(deps: HttpDeps) {
             !owningAgent ||
             !canView(owningAgent, ctx) ||
             !audience ||
-            !canContinueSession(audience, ctx, audienceAccess.identitySet, audienceAccess.externalAccess)
+            !canContinueSession(
+              audience,
+              ctx,
+              audienceAccess.identitySet,
+              audienceAccess.externalAccess,
+              audienceAccess.editableAgentIds
+            )
           ) {
             return { reason: 'unauthorized', attachments: null }
           }
@@ -1265,17 +1274,35 @@ export function sessionRoutes(deps: HttpDeps) {
         const parentVisible =
           parent !== null &&
           orgAgentIdSet.has(parent.agentId) &&
-          canViewSession(parent, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+          canViewSession(
+            parent,
+            ctx,
+            relatedAccess.identitySet,
+            relatedAccess.externalAccess,
+            relatedAccess.editableAgentIds
+          )
         // A hidden parent is indistinguishable from no parent. Keep its sibling
         // branch hidden too, otherwise the response would still reveal the
         // relationship through the parent's other children.
         const visibleSiblings = parentVisible
           ? siblings.filter((sibling) =>
-              canViewSession(sibling, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+              canViewSession(
+                sibling,
+                ctx,
+                relatedAccess.identitySet,
+                relatedAccess.externalAccess,
+                relatedAccess.editableAgentIds
+              )
             )
           : []
         const visibleChildren = children.filter((child) =>
-          canViewSession(child, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
+          canViewSession(
+            child,
+            ctx,
+            relatedAccess.identitySet,
+            relatedAccess.externalAccess,
+            relatedAccess.editableAgentIds
+          )
         )
         const accessIssues = [
           ...new Map(

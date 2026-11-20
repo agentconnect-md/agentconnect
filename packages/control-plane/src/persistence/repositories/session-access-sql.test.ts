@@ -6,6 +6,7 @@ type Viewer = NonNullable<SessionFilterQuery['viewer']>
 
 function viewer(scopeCount: number, providers: string[] = ['github']): Viewer {
   return {
+    userId: 'u1',
     role: 'collaborator',
     identitySet: ['user:u1'],
     externalAccess: {
@@ -31,11 +32,25 @@ describe('sessionViewerSql', () => {
   })
 
   it('asks nothing of the provider tables without an external-access snapshot', () => {
-    const arm = sessionViewerSql({ role: 'collaborator', identitySet: ['user:u1'] })
+    const arm = sessionViewerSql({ userId: 'u1', role: 'collaborator', identitySet: ['user:u1'] })
     expect(arm).not.toBeNull()
     expect(arm!.sql).not.toContain('session_external_access_policy')
     expect(arm!.sql).not.toContain('external_scope')
-    expect(existsCount(arm!.sql)).toBe(0)
+    // The one correlated subquery is the editors arm's read of the agent's edit grants.
+    expect(existsCount(arm!.sql)).toBe(1)
+  })
+
+  it("decides an editors row by the agent's live edit grants, one EXISTS for any role but viewer", () => {
+    const collaborator = sessionViewerSql({ userId: 'u1', role: 'collaborator', identitySet: ['user:u1'] })!
+    expect(collaborator.sql).toContain(`'editors'::"SessionVisibility"`)
+    expect(collaborator.sql).toContain('agent."sharedWith"')
+    expect(collaborator.values).toContain('u1')
+    const owner = sessionViewerSql({ userId: 'u1', role: 'owner', identitySet: ['user:u1'] })!
+    expect(owner.sql).toContain(`'editors'::"SessionVisibility"`)
+    expect(owner.sql).not.toContain('agent."sharedWith"')
+    const viewerRole = sessionViewerSql({ userId: 'u1', role: 'viewer', identitySet: ['user:u1'] })!
+    expect(viewerRole.sql).not.toContain(`'editors'`)
+    expect(existsCount(viewerRole.sql)).toBe(0)
   })
 
   /**
@@ -50,8 +65,8 @@ describe('sessionViewerSql', () => {
     const many = sessionViewerSql(viewer(50))!.sql
 
     expect(existsCount(many)).toBe(existsCount(one))
-    // policy-with-fence, policy-presence, and the scope lookup — nothing per scope
-    expect(existsCount(many)).toBe(3)
+    // the editors arm's agent read, policy-with-fence, policy-presence, and the scope lookup — nothing per scope
+    expect(existsCount(many)).toBe(4)
   })
 
   it('does not grow a subquery per provider policy', () => {

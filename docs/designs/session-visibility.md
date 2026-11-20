@@ -1,6 +1,7 @@
 # Session Visibility
 
-> **Status:** Implemented for direct `private` / `org` visibility, Slack and
+> **Status:** Implemented for direct `private` / `org` visibility, the Agent
+> `editors` audience, Slack and
 > Feishu/Lark conversation audiences, GitHub repository audiences, and their Console
 > settings/profile-linking surfaces. Share-by-link and additional providers remain
 > future work.
@@ -46,11 +47,22 @@ This design gives every session its own visibility:
   list member `union_id` values and compares them with the viewer's verified
   sign-in identity. This covers both group chats and Bot p2p conversations and
   requires no stored user token.
+- **`editors`** — visible to whoever can edit the owning Agent at the moment
+  someone reads it: the same `resource.edit` decision the Agent's own
+  configuration routes use (an organization owner, or a collaborator who can
+  view the Agent; never the viewer role). It is computed live, never copied
+  onto the row: an editor added later sees the sessions that came before, and
+  one removed, demoted to viewer, or suspended stops seeing them on their next
+  read. Its `ownerIdentity` is provenance only and grants nothing. Default for
+  a session a person outside the organization opens by mail
+  ([email-integration.md §5.3](email-integration.md#53-visibility)); no one
+  sets or clears it through §4.3.
 - **Share-by-link ("public")** — future work; a session with an active share
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
 
-Session visibility is **independent from** Agent Team visibility. Passing the
+Session visibility is **independent from** Agent Team visibility, except that an
+`editors` session reads the Agent's edit grants to name its audience. Passing the
 session-level predicate grants access only to that Session's metadata,
 transcript, and Session-scoped live updates. It does not grant access to the
 owning Agent resource, configuration, workspace, or invocation controls. The
@@ -130,6 +142,7 @@ enum SessionVisibility {
   private
   org
   external
+  editors
 }
 ```
 
@@ -312,23 +325,24 @@ The CP classifies once, in the `event/session` ingest path
 (`ws/handlers/event-session.ts` → `session.recordMilestone`), first-wins like
 the other origin scalars:
 
-| Origin (how detected)                                                                                                                                          | `visibility`        | `ownerIdentity`                                                                                                                                                                                                   |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Webchat or Web API launch owned by a service account ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#service-account-members)); precedes the next two rows | `org`               | `null`                                                                                                                                                                                                            |
-| Webchat / Playground (`platform === 'webchat'`)                                                                                                                | `private`           | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed)                                                                             |
-| Web API session launch (§4.4 correlation)                                                                                                                      | `private`           | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                                                                                                         |
-| IM DM whose bot's install bound its sender to a member (WeChat: the member who scanned the QR code); precedes the next two rows                                | `private`           | `user:<bound member>`; no binding of the agent's bots matches the sender, or the read fails ⇒ `private`, initiator tuple (fail closed)                                                                            |
-| IM DM (`conversationKind` = `dm`) where the platform names people: the org syncs its session access and its provider matches chat members                      | `private`           | `<platform>:<workspace>:<uid>` (initiator)                                                                                                                                                                        |
-| Other IM DM: Telegram, Discord, QQ, Google Chat (no sync), or Slack and Feishu/Lark with sync off                                                              | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                                                                                                        |
-| Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                  | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                                                                                                     |
-| Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                         | `org` or `external` | Initiator as provenance while sync is disabled; current conversation membership while enabled                                                                                                                     |
-| GitHub hook with an accepted delivery snapshot                                                                                                                 | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                                                                                                   |
-| Email thread the agent started (`sendEmail`) to one member: that member's direct conversation; precedes the next two rows                                      | `private`           | `user:<that member>`, read from the recipient's address as for any DM of theirs                                                                                                                                   |
-| Email thread the agent started with several people, or to one non-member                                                                                       | `private`           | `user:<member whose turn sent it>`, named as `user:<id>` while an active member; a schedule's or hook's run (members only) ⇒ `user:<first member recipient>`; no match ⇒ `private`, initiator tuple (fail closed) |
-| Group conversation on a platform that gives one to its opener (Email: a mail thread with several people)                                                       | `private`           | `user:<member whose message opened it>`; no member matches the opener, or the read fails ⇒ `private`, initiator tuple (fail closed)                                                                               |
-| Other IM group DM / channel (or absent kind)                                                                                                                   | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                                                                                                        |
-| Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                          | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                                                                                              |
-| Automation without a trusted external destination                                                                                                              | `org`               | `null`                                                                                                                                                                                                            |
+| Origin (how detected)                                                                                                                                              | `visibility`                  | `ownerIdentity`                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Webchat or Web API launch owned by a service account ([daemon-api-key-auth.md §6](daemon-api-key-auth.md#service-account-members)); precedes the next two rows     | `org`                         | `null`                                                                                                                                                                                                              |
+| Webchat / Playground (`platform === 'webchat'`)                                                                                                                    | `private`                     | `user:<WebchatConversation.userId>` via `channel == conversationId` lookup; lookup miss ⇒ stays `private`, owner `null` (fail closed)                                                                               |
+| Web API session launch (§4.4 correlation)                                                                                                                          | `private`                     | `user:<launch principal userId>`; missing correlation ⇒ `private`, `null`                                                                                                                                           |
+| IM DM whose bot's install bound its sender to a member (WeChat: the member who scanned the QR code); precedes the next two rows                                    | `private`                     | `user:<bound member>`; no binding of the agent's bots matches the sender, or the read fails ⇒ `private`, initiator tuple (fail closed)                                                                              |
+| IM DM (`conversationKind` = `dm`) where the platform names people: the org syncs its session access and its provider matches chat members                          | `private`                     | `<platform>:<workspace>:<uid>` (initiator)                                                                                                                                                                          |
+| Other IM DM: Telegram, Discord, QQ, Google Chat (no sync), or Slack and Feishu/Lark with sync off                                                                  | `org`                         | `<platform>:<workspace>:<uid>` (initiator)                                                                                                                                                                          |
+| Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                      | `org` or `external`           | External source scope; `org` while sync is disabled, `external` while enabled                                                                                                                                       |
+| Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                             | `org` or `external`           | Initiator as provenance while sync is disabled; current conversation membership while enabled                                                                                                                       |
+| GitHub hook with an accepted delivery snapshot                                                                                                                     | `org` or `external`           | Repository source scope; `org` while sync is disabled, `external` while enabled                                                                                                                                     |
+| Email thread the agent started (`sendEmail`) to one member: that member's direct conversation; precedes the next two rows                                          | `private`                     | `user:<that member>`, read from the recipient's address as for any DM of theirs                                                                                                                                     |
+| Email thread the agent started with several people, or to one non-member                                                                                           | `private`                     | `user:<member whose turn sent it>`, named as `user:<id>` while an active member; a schedule's or hook's run (members only) ⇒ `user:<first member recipient>`; no match ⇒ `private`, initiator tuple (fail closed)   |
+| Group conversation on a platform that gives one to its opener (Email: a mail thread with several people)                                                           | `private`                     | `user:<member whose message opened it>`; no member matches the opener, or the read fails ⇒ `private`, initiator tuple (fail closed)                                                                                 |
+| DM or group conversation whose sender the platform answered is outside the organization, where it admits such senders (Email under Anyone); precedes the row above | `editors`, `org` or `private` | Initiator tuple as provenance; the platform's setting picks the tier: the Agent's editors (the default), the organization, or `private` to one member as `user:<id>`; a failed read keeps it `private` to the tuple |
+| Other IM group DM / channel (or absent kind)                                                                                                                       | `org`                         | `<platform>:<workspace>:<uid>` (initiator)                                                                                                                                                                          |
+| Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                              | inherits parent               | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                                                                                                |
+| Automation without a trusted external destination                                                                                                                  | `org`                         | `null`                                                                                                                                                                                                              |
 
 Notes:
 
@@ -436,7 +450,10 @@ tightening an owned non-provider session.
 
 Provider-bound sessions are immutable through this endpoint: no single human
 owns a shared Slack conversation, and changing such a row to `private` or
-`org` would detach it from its source audience.
+`org` would detach it from its source audience. An `editors` session is
+immutable here too, and the endpoint never sets `editors`: its audience is the
+Agent's editors by the platform's setting, and its recorded owner is someone
+outside the organization. Tightening its parent still cascades to it (§4.5).
 
 A task takes the audience of the session that owns it, so it is immutable here
 too ([auto-session-mode.md](auto-session-mode.md) §6.2). A background task is
@@ -546,14 +563,25 @@ orders, including the depth-2 grandchild interleaving.
 The authoritative predicate, mirroring `canView`:
 
 ```ts
-canViewSession(s, ctx, identitySet) =
+canViewSession(s, ctx, identitySet, externalAccess, editableAgentIds) =
   // deliberately NO role-based governance exception — private is owner-only
   s.externalProvider != null
     ? s.visibility === 'private'
       ? identitySet.has(s.ownerIdentity)
       : currentExternalAudienceAllows(s, ctx)
-    : s.visibility === 'org' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
+    : s.visibility === 'editors'
+      ? editableAgentIds.has(s.agentId) // canEdit(agent, ctx), read for this decision
+      : s.visibility === 'org' || (s.ownerIdentity != null && identitySet.has(s.ownerIdentity))
 ```
+
+`editableAgentIds` is resolved by the BFF access resolver on every call, outside
+its provider snapshot cache, from the Agents of the `editors` rows being judged:
+`canEdit(agent, ctx)` with the caller's current role (SSE passes the role it
+re-reads per event). A missing set, a missing `agentId`, or an Agent that is not
+in the caller's organization denies. The list SQL spells the same rule as one
+`EXISTS` on the row's Agent (`visibility = 'org' OR :userId = ANY(sharedWith)`
+for a collaborator, any Agent of the organization for an owner, no arm for a
+viewer), so the list stays one query and agrees with the single read.
 
 `currentExternalAudienceAllows` requires a settled scope and matching durable
 policy/scope revisions. Slack additionally requires a linked identity and
@@ -578,13 +606,13 @@ TTL.
 
 Session read surfaces use the Session predicate as their authorization boundary:
 
-| Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                      |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | enumerate the org's Agent ids only as a storage scope, then apply `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))` to every viewer (no org-owner bypass)                                                                                    |
-| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | require the row's `orgId` plus `canViewSession`; fail as 404 without consulting Agent Team visibility                                                                                                                                                       |
-| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; an invisible parent renders `null`, while a visible child is retained even when its owning Agent is hidden                                                                                                                                  |
-| SSE                           | `http/routes/stream.ts`                                                                   | apply the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations) and recheck live organization membership for each event                                                                        |
-| Usage aggregates              | `http/routes/usage.ts`                                                                    | owners receive complete organization attribution through `usage.attribute.all`; other members' agent/model breakdowns and series intersect Agent and Session access, with withheld spend in `unattributed`; totals and source totals stay organization-wide |
+| Surface                       | Where                                                                                     | Change                                                                                                                                                                                                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | enumerate the org's Agent ids only as a storage scope, then apply `AND (visibility = 'org' OR owner_identity = ANY(:identitySet) OR <editors EXISTS>)` to every viewer (no org-owner bypass of `private`); conversation pages, children, usage and memory place layers share this predicate |
+| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | require the row's `orgId` plus `canViewSession`; fail as 404 without consulting Agent Team visibility (an `editors` row reads only its Agent's edit grants)                                                                                                                                 |
+| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; an invisible parent renders `null`, while a visible child is retained even when its owning Agent is hidden                                                                                                                                                                  |
+| SSE                           | `http/routes/stream.ts`                                                                   | apply the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations) and recheck live organization membership for each event                                                                                                        |
+| Usage aggregates              | `http/routes/usage.ts`                                                                    | owners receive complete organization attribution through `usage.attribute.all`; other members' agent/model breakdowns and series intersect Agent and Session access, with withheld spend in `unattributed`; totals and source totals stay organization-wide                                 |
 
 Invariants preserved:
 
@@ -712,6 +740,11 @@ from `isDm`/webchat/launch-correlation alone. The gate therefore has two layers:
    cannot open capture on the receiving daemon, because opening requires a
    CP confirmation — and by then the CP has classified the child under the
    post-cascade parent state (§4.5 serialization guarantees `private`).
+   An `editors` session is excluded like a `private` one: its audience is
+   narrower than the Agent's viewers, who all read the shared layer. The push
+   and the register snapshot send it as `private` with `sharedMemoryExcluded`,
+   so a daemon needs no new vocabulary for it.
+
 2. **CP-pushed effective state.** The CP is the authority on effective
    visibility (§4.3 changes, §4.5 settlements and cascades). On every change
    it sends a `session/visibility` control frame over the existing daemon WS
@@ -801,7 +834,9 @@ the agent learned from it"); silence is not an option.
 - Session list / homepage correctness comes from the BFF returning fewer rows.
   The session detail page renders a lock badge for `private`, a provider badge
   for `external`, and the §4.3 visibility control only for direct-session
-  owners allowed to use it.
+  owners allowed to use it. An `editors` session shows a lock labelled "People
+  who can edit this agent" in the list, the header and the share dialog, and
+  never offers a change.
 - Settings exposes owner-only provider access-sync switches, disabled by
   default. Slack follows current channel access (workspace access for public
   channels; conversation membership for restricted audiences); Feishu/Lark
@@ -931,6 +966,12 @@ link ends public access without touching the session row.
   tighten never opens capture; duplicate delivery — losing the first ACK
   and retrying with an equal revision yields a fresh ACK without
   reapplying state.
+- **Agent editors audience:** the `canViewSession` truth table against
+  `canEdit` (org and restricted Agents, every role); fail-closed without the
+  Agent or the resolved set; the list SQL arm per role; and, against real
+  Postgres, list and detail agreeing for an editor, an owner, a non-editor and a
+  viewer on the Agent's list, an editor added later and one removed or demoted,
+  A2A inheritance, the memory gate, and refusal of §4.3 changes.
 - **Slack external audience:** disabled baseline and owner-only enablement;
   linked full-workspace access for public channels; current-membership checks
   for restricted audiences; allow/deny/error behavior; Slack
