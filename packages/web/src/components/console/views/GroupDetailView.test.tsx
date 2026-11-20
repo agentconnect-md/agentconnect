@@ -232,7 +232,7 @@ describe('GroupDetailView', () => {
 
     const html = render()
 
-    expect(html).toContain('Only what every serving member offers')
+    expect(html).toContain('Only runtimes available on every serving member')
     expect(html).toContain('v0.54.1')
     // A member that stopped answering can no longer offer a runtime, so it constrains nothing.
     expect(html).not.toContain('v1.0.0')
@@ -374,7 +374,7 @@ describe('GroupDetailView', () => {
 
     const html = render()
 
-    expect(html).toContain('No runtime is on every serving member')
+    expect(html).toContain('No runtime is shared by every serving member')
   })
 
   it('opens a member’s own page, because that is where a machine’s detail lives', () => {
@@ -521,11 +521,11 @@ describe('one runtime tab per strategy a serving member offers', () => {
     expect(tabs.map((tab) => tab.textContent)).toEqual(['Host', 'Sandbox', 'VM'])
     expect(tabs.map((tab) => tab.getAttribute('title'))).toEqual([
       'No isolation boundary: sessions run directly on the machine.',
-      'SRT: process isolation with bubblewrap, on Linux.',
-      'microsandbox: one microVM per session. Needs KVM.'
+      'SRT: process isolation with bubblewrap on Linux.',
+      'microsandbox: one microVM per session (requires KVM).'
     ])
     expect(control()!.querySelector('[aria-pressed="true"]')?.textContent).toBe('Host')
-    expect(host.textContent).toContain('Only what every serving member offers')
+    expect(host.textContent).toContain('Only runtimes available on every serving member')
     unmount()
   })
 

@@ -124,7 +124,7 @@ describe('DreamPanel', () => {
     const host = await render()
     await act(async () => button(host, 'Dream now')?.click())
     expect(document.body.textContent).toContain('uses model tokens')
-    expect(document.body.textContent).toContain('review and adopt the memory result')
+    expect(document.body.textContent).toContain('review and adopt the result')
     expect(document.body.textContent).toContain('Suggested skills still require review')
     expect(api.startDream).not.toHaveBeenCalled()
 
@@ -135,7 +135,7 @@ describe('DreamPanel', () => {
   it('explains memory auto-accept without implying that generated skills are installed', async () => {
     const host = await render({ autoAcceptMemory: true })
     await act(async () => button(host, 'Dream now')?.click())
-    expect(document.body.textContent).toContain('memory result is adopted automatically')
+    expect(document.body.textContent).toContain('Memory updates are adopted automatically')
     expect(document.body.textContent).toContain('Suggested skills still require review')
     expect(document.body.textContent).not.toContain('Nothing changes until you review')
   })
@@ -247,7 +247,7 @@ describe('DreamPanel', () => {
     // Adopt is confirmed first (it replaces live memory) — nothing is called
     // until the user confirms in the dialog.
     await act(async () => button(host, 'Adopt')?.click())
-    expect(document.body.textContent).toContain('replaces the agent’s live memory')
+    expect(document.body.textContent).toContain('Replaces this agent’s live memory')
     expect(api.adoptDream).not.toHaveBeenCalled()
 
     // The dialog's confirm is the LAST 'Adopt' in the document (the review
@@ -446,7 +446,7 @@ describe('DreamPanel', () => {
     await act(async () => confirm.at(-1)?.click())
 
     // Provenance is unknowable, so the copy says "not in the staged version", not "added since".
-    expect(document.body.textContent).toContain('drops 1 live file not in the staged version: new.md')
+    expect(document.body.textContent).toContain('1 live file not in the staged version will be removed: new.md')
   })
 
   it('recommends mined skills and never installs one without an explicit click', async () => {

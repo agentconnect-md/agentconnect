@@ -74,7 +74,7 @@ describe('Google Chat recovery confirmation', () => {
     expect(mocks.confirm).not.toHaveBeenCalled()
     expect(host.textContent).toContain('Connect this Workspace to Example Org?')
     expect(host.textContent).toContain(
-      'Session history stays in the original organization; connection settings are not transferred.'
+      'Session history stays in the original organization, and connection settings won’t be transferred.'
     )
     expect(window.location.search).toBe('')
     expect(sessionStorage.getItem('ac.googleChatRecovery')).toBeNull()

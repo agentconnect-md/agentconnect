@@ -140,7 +140,7 @@ it('completes repository access directly and never loops after a failure', async
   vi.mocked(linkMyGithubRepoAccess).mockRejectedValueOnce(new Error('authorization failed'))
   await render('repo-access')
   expect(linkMyGithubRepoAccess).toHaveBeenCalledWith('code', 'state')
-  expect(container.textContent).toContain('GitHub repository access could not be connected.')
+  expect(container.textContent).toContain('Couldn’t connect GitHub repository access.')
   expect(fetchMySocialAccount).not.toHaveBeenCalled()
   expect(linkMySocialIdentity).not.toHaveBeenCalled()
   expect(createMyGithubRepoAccessAuthorization).not.toHaveBeenCalled()

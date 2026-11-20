@@ -199,18 +199,18 @@ describe('ChannelSettingsPopover', () => {
     act(() => button().click())
 
     expect(described()).toEqual([
-      '@-mentions — Replies when @-mentioned.',
-      'Per thread — Each thread has its own session.'
+      '@-mentions: Replies when @-mentioned.',
+      'Per thread: Each thread has its own session.'
     ])
     act(() => option('Off').focus())
-    expect(described()).toEqual(['Off — Stays but never replies.', 'Per thread — Each thread has its own session.'])
+    expect(described()).toEqual(['Off: Stays but never replies.', 'Per thread: Each thread has its own session.'])
     act(() => option('Off').blur())
-    expect(described()[0]).toBe('@-mentions — Replies when @-mentioned.')
+    expect(described()[0]).toBe('@-mentions: Replies when @-mentioned.')
 
     // Assistive tech reads the same sentence off the option itself.
     const append = option('Single session')
     expect(document.getElementById(append.getAttribute('aria-describedby')!)?.textContent).toBe(
-      'Single session — One session, shared across threads.'
+      'Single session: One session, shared across threads.'
     )
   })
 
@@ -236,7 +236,7 @@ describe('a lone choice and an unchecked group', () => {
     expect(button().getAttribute('title')).toBe('Session mode')
     await act(async () => button().click())
     expect(checked()).toEqual(['Off'])
-    expect(described()).toEqual(['Off — Stays but never replies.'])
+    expect(described()).toEqual(['Off: Stays but never replies.'])
     expect(menu()?.textContent).not.toContain('undefined')
   })
 })

@@ -48,7 +48,7 @@ describe('ComputerScreenshots', () => {
     const img = container.querySelector('img')
     expect(img?.getAttribute('src')).toBe('https://store.example.test/shot.png?sig=1')
     expect(container.querySelector('a')?.getAttribute('target')).toBe('_blank')
-    expect(container.textContent).toContain('Screenshot not available')
+    expect(container.textContent).toContain('Screenshot unavailable')
     vi.useRealTimers()
   })
 

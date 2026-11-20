@@ -835,7 +835,7 @@ describe('GitlabCard', () => {
     await render()
 
     await clickIcon('Remove', projectRow(orphanSection()!, 'bind-1'))
-    expect(modal().textContent).toContain('no longer connected')
+    expect(modal().textContent).toContain('is disconnected')
     expect(() => buttonIn(modal(), 'Remove')).toThrow()
     expect(mocks.deleteProject).not.toHaveBeenCalled()
   })
@@ -928,7 +928,7 @@ describe('GitlabCard', () => {
     })
     await render()
     const row = connectionRow('conn-1')
-    expect(row.textContent).toContain('still administers 2 projects')
+    expect(row.textContent).toContain('still manages 2 projects')
     expect(() => buttonIn(row, 'Remove')).toThrow()
     expect(row.textContent).not.toContain('assignedProjects')
   })
@@ -975,7 +975,7 @@ describe('GitlabCard', () => {
   it('says where projects come from when nothing is set up yet', async () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [CONNECTION] })
     await render()
-    expect(host.textContent).toContain('No projects are set up yet')
+    expect(host.textContent).toContain('No projects set up yet')
     expect(host.textContent).toContain('agent workspace')
   })
 

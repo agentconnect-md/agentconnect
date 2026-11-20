@@ -137,7 +137,7 @@ describe('card return', () => {
       await vi.advanceTimersByTimeAsync(2_500)
     })
     expect(host.innerHTML).toContain('Card saved')
-    expect(host.innerHTML).toContain('This card already claimed the free credit')
+    expect(host.innerHTML).toContain('This card has already claimed the free credit')
     // No credit and none earned: paying for some is the other way forward.
     expect(button('Add credits')).toBeDefined()
   })

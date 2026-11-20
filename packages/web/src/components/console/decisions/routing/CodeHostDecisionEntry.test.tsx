@@ -163,7 +163,7 @@ describe('CodeHostDecisionEntry', () => {
       mocks.saveCodeHostRouting.mockImplementation(async (_scope, config) => dto(scope, { config, status: 'enabled' }))
       await render(scope)
       await pickRules()
-      await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
+      await click(document.body.querySelector('button[aria-label="Continue with a decision"]'))
       await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Needs a response')))
       expect(document.body.querySelector('nav[aria-label="Decision path"]')).toBeTruthy()
       await click(document.body.querySelector('button[aria-label="Target for Yes"]'))
@@ -195,7 +195,7 @@ describe('CodeHostDecisionEntry', () => {
         (node) => node.textContent?.trim() === 'Needs a response'
       )
     const openChild = async () => {
-      await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
+      await click(document.body.querySelector('button[aria-label="Continue with a decision"]'))
       await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Needs a response')))
     }
     await render()
@@ -240,7 +240,7 @@ describe('CodeHostDecisionEntry', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
     expect(all('button').some((node) => node.textContent?.trim() === 'Needs a response')).toBe(true)
     await click(
-      document.body.querySelector('button[aria-label="Stop using By decision — every PR goes to all agents"]')
+      document.body.querySelector('button[aria-label="Stop using By decision (every PR will go to all agents)"]')
     )
     expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')).toBeTruthy()
   })
@@ -250,7 +250,7 @@ describe('CodeHostDecisionEntry', () => {
     expect(
       document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')?.getAttribute('title')
     ).toBe(
-      'Every issue goes to all agents. Add a decision to pick agents on every update; the rows then run on any update.'
+      'Every issue goes to all agents. Add a decision to pick agents on every update. Each row then runs on any update.'
     )
     await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]'))
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
@@ -263,7 +263,7 @@ describe('CodeHostDecisionEntry', () => {
     expect(
       document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')?.getAttribute('title')
     ).toBe(
-      'Every MR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.'
+      'Every MR goes to all agents. Add a decision to pick reviewers on every update. Each row then runs on any update.'
     )
     await click(document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]'))
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
@@ -276,7 +276,7 @@ describe('CodeHostDecisionEntry', () => {
     expect(
       document.body.querySelector<HTMLButtonElement>('button[aria-label="Add decision"]')?.getAttribute('title')
     ).toBe(
-      'Every PR goes to all agents. Add a decision to pick reviewers on every update; the rows then run on any update.'
+      'Every PR goes to all agents. Add a decision to pick reviewers on every update. Each row then runs on any update.'
     )
   })
 
@@ -296,7 +296,7 @@ describe('CodeHostDecisionEntry', () => {
       'org-test'
     )
     expect(
-      document.body.querySelector('button[aria-label="Stop using By decision — every MR goes to all agents"]')
+      document.body.querySelector('button[aria-label="Stop using By decision (every MR will go to all agents)"]')
     ).toBeTruthy()
   })
 
@@ -326,7 +326,7 @@ describe('CodeHostDecisionEntry', () => {
     )
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
     await click(
-      document.body.querySelector('button[aria-label="Stop using By decision — every PR goes to all agents"]')
+      document.body.querySelector('button[aria-label="Stop using By decision (every PR will go to all agents)"]')
     )
     expect(mocks.deleteCodeHostRouting).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'github', repoId: '42', family: 'pull_request' }),
@@ -361,7 +361,7 @@ describe('CodeHostDecisionEntry', () => {
     )
     await click(pill)
     expect(document.body.querySelector('[role="status"]')?.textContent).toContain(
-      'New pull requests on this repository are held until you save the rules again.'
+      'New pull requests on this repository are paused until you fix and save the rules.'
     )
   })
 

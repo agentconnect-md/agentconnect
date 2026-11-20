@@ -42,6 +42,6 @@ describe('DecisionUsageList', () => {
     ])
     expect([...container.querySelectorAll('span')].some((node) => node.textContent === 'Support bot')).toBe(true)
     expect(container.textContent).toContain('channel gate')
-    expect(container.textContent).toContain('2 more you cannot see')
+    expect(container.textContent).toContain("2 more you can't see")
   })
 })

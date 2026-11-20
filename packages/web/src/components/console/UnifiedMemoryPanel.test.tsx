@@ -162,11 +162,11 @@ it('falls back for an old peer and pages lists explicitly', async () => {
   // An older daemon has no entry view; the card says so instead of browsing, and Refresh stays for after the upgrade.
   vi.mocked(api.describeAgentMemoryEntries).mockRejectedValueOnce(new api.ApiError('old', 501, 'UNSUPPORTED'))
   await render('two')
-  expect(host.textContent).toContain('does not serve the memory entry interface')
+  expect(host.textContent).toContain('doesn’t support browsing memory yet')
   expect(host.textContent).not.toContain('Select a memory')
   vi.mocked(api.describeAgentMemoryEntries).mockResolvedValue({ ...caps, operations: ['search'] })
   await click('Refresh')
-  expect(host.textContent).toContain('does not serve the memory entry interface')
+  expect(host.textContent).toContain('doesn’t support browsing memory yet')
 })
 it('requires deletion confirmation and submits the selected revision', async () => {
   vi.mocked(api.deleteAgentMemoryEntry).mockResolvedValue({ operationId: 'op', state: 'completed' })
@@ -411,7 +411,7 @@ it('drops stale capabilities when the list refuses the interface after a describ
   vi.mocked(api.describeAgentMemoryEntries).mockResolvedValue({ ...caps, operations: [...caps.operations, 'search'] })
   vi.mocked(api.listAgentMemoryEntries).mockRejectedValueOnce(new api.ApiError('old', 501, 'UNSUPPORTED'))
   await render()
-  expect(host.textContent).toContain('does not serve the memory entry interface')
+  expect(host.textContent).toContain('doesn’t support browsing memory yet')
   expect(host.textContent).not.toContain('New memory')
   expect(host.querySelector('input[aria-label="Search memory"]')).toBeNull()
   expect([...host.querySelectorAll('button')].find((b) => b.textContent?.includes('Refresh'))?.disabled).toBe(false)

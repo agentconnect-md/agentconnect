@@ -294,20 +294,20 @@ describe('DecisionEditorView', () => {
     )
     await click(byText('Delete'))
     const dialog = document.body.querySelector('[role="dialog"]')!
-    expect(dialog.textContent).toContain('This decision is not used anywhere. This can’t be undone.')
+    expect(dialog.textContent).toContain("This decision isn't used anywhere. This can't be undone.")
     await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
     const link = (label: string) => [...dialog.querySelectorAll('a')].find((node) => node.textContent?.trim() === label)
     expect(link('#general · Support')?.getAttribute('href')).toBe('/agents/agent-1')
     expect(link('Reviewer')?.getAttribute('href')).toBe('/agents/agent-2?tab=tools')
-    expect(dialog.textContent).toContain('2 more you cannot see')
+    expect(dialog.textContent).toContain("2 more you can't see")
     expect(dialog.textContent).toContain('This decision is still used. Remove its bindings before deleting it.')
     expect(push).not.toHaveBeenCalled()
   })
 
   // A refusal whose only references are hidden must never fall back to the unused copy.
   it.each([
-    { hiddenUsageCount: 2, line: '2 more you cannot see' },
-    { hiddenUsageCount: 0, line: 'Used by items you cannot see' }
+    { hiddenUsageCount: 2, line: "2 more you can't see" },
+    { hiddenUsageCount: 0, line: "Used by items you can't see" }
   ])('keeps a 409 with no visible usages in use (hidden $hiddenUsageCount)', async ({ hiddenUsageCount, line }) => {
     params = { id: 'needs-response' }
     await render()
@@ -321,7 +321,7 @@ describe('DecisionEditorView', () => {
     await click(byText('Delete'))
     const dialog = document.body.querySelector('[role="dialog"]')!
     await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Delete'))
-    expect(dialog.textContent).not.toContain('This decision is not used anywhere.')
+    expect(dialog.textContent).not.toContain("This decision isn't used anywhere.")
     expect(dialog.textContent).toContain('This decision is still used. Remove it from these places before deleting it:')
     expect(dialog.textContent).toContain(line)
     expect(document.body.textContent).not.toContain('Not used anywhere yet.')
@@ -399,7 +399,7 @@ describe('DecisionEditorView', () => {
     expect(byText('Review where this decision is used')).toBeTruthy()
     expect(
       byText(
-        'Conversations whose conditions no longer fit the new answers are marked Needs review and stay off until repaired: #general · Support'
+        'Conversations whose conditions no longer match the new answers will be marked Needs review and stay off until repaired: #general · Support'
       )
     ).toBeTruthy()
     expect(update).not.toHaveBeenCalled()

@@ -206,11 +206,8 @@ describe('the usage row', () => {
     // textContent here. Sub-cent amounts keep significant digits rather than rounding to `$0.00`.
     // d2 and d3 share agent and (no) models, so they fold into one record carrying their sum.
     expect(chips.slice(0, 2).map((c) => c.textContent)).toEqual(['reviewer$0.006823', 'reviewer$0.01626'])
-    expect(chips.slice(0, 2).map((c) => c.getAttribute('title'))).toEqual([
-      'reviewer — $0.006823',
-      'reviewer — $0.01626'
-    ])
-    expect(chips[0]!.getAttribute('aria-label')).toBe('reviewer — $0.006823')
+    expect(chips.slice(0, 2).map((c) => c.getAttribute('title'))).toEqual(['reviewer: $0.006823', 'reviewer: $0.01626'])
+    expect(chips[0]!.getAttribute('aria-label')).toBe('reviewer: $0.006823')
     expect(chips.every((c) => c.getAttribute('tabindex') === '0')).toBe(true)
   })
 
@@ -219,7 +216,7 @@ describe('the usage row', () => {
     const rollups = [...host.querySelectorAll('[data-tx-agent-default]')]
     expect(rollups).toHaveLength(1)
     const chip = rollups[0]!.closest('[data-tx-agent]')!
-    expect(chip.getAttribute('title')).toBe('Agents you don’t have access to — $0.50')
+    expect(chip.getAttribute('title')).toBe("Agents you don't have access to: $0.50")
     expect(host.innerHTML).not.toContain(OTHER_ID)
   })
 

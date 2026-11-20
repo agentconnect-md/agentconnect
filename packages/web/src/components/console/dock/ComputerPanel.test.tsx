@@ -187,7 +187,7 @@ describe('ComputerPanel', () => {
   it('says the agent gets its computer on first use before the pool made one', async () => {
     fetchComputers.mockResolvedValue([])
     const el = await render(<ComputerPanel computerIds={[]} managed={{ agentId: 'a1', sessionId: 's1' }} active />)
-    expect(el.textContent).toContain('The agent gets its computer when it first uses one in this session.')
+    expect(el.textContent).toContain('A computer will be assigned the first time the agent uses one in this session.')
   })
 
   it('keeps no other session’s desktop when the list fails after moving to another session', async () => {

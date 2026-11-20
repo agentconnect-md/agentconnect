@@ -96,14 +96,14 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
 
   it('promises the memory boundary on an ordinary (gated) agent', async () => {
     const text = await openTightenDialog(false)
-    expect(text).toContain('stops it from feeding shared agent memory')
+    expect(text).toContain('stops it from updating shared agent memory')
     // …and still states the caveat that past distillation is not retracted.
     expect(text).toContain('already learned')
   })
 
   it('withholds that promise on a native-memory agent and says why', async () => {
     const text = await openTightenDialog(true)
-    expect(text).not.toContain('stops it from feeding shared agent memory')
+    expect(text).not.toContain('stops it from updating shared agent memory')
     expect(text).toContain('hides the transcript')
     expect(text).toContain('no per-session control')
   })

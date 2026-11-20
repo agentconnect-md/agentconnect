@@ -85,7 +85,7 @@ describe('McpAppCard — what renders', () => {
     const { html: _dropped, ...noTemplate } = APP
     render(<McpAppCard step={{ app: noTemplate }} onRpc={async () => ({ ok: true, result: {} })} />)
     expect(host.querySelector('iframe')).toBeNull()
-    expect(host.textContent).toContain('could not be loaded')
+    expect(host.textContent).toContain('couldn’t be loaded')
   })
 
   it('waits for a chunked template to finish before arming a frame', () => {

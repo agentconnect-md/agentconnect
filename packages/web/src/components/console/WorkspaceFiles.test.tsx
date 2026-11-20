@@ -456,7 +456,7 @@ it('explains an authorized repository the agent has not checked out yet', async 
   await renderRepoScoped({ repo: 'acme/infra' })
 
   expect(container?.textContent).toContain('Not checked out yet')
-  expect(container?.textContent).toContain('materialized on the agent’s next session')
+  expect(container?.textContent).toContain('will be cloned on the agent’s next session')
   expect(container?.textContent).not.toContain('The workspace has no files yet')
 })
 
@@ -469,8 +469,8 @@ it('says an on-demand repository is the agent’s to clone, not the next session
     )
   })
 
-  expect(container?.textContent).toContain('the agent clones this repository when a session needs it')
-  expect(container?.textContent).not.toContain('materialized on the agent’s next session')
+  expect(container?.textContent).toContain('The agent clones this repository when a session needs it')
+  expect(container?.textContent).not.toContain('will be cloned on the agent’s next session')
 })
 
 it('scopes file and git reads to the selected session worktree', async () => {

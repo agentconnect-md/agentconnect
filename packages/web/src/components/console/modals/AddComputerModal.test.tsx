@@ -139,7 +139,10 @@ describe('AddComputerModal', () => {
     mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
     const host = await render()
     act(() => button('Docker').click())
-    expect(host.textContent).toContain('On a server with Docker')
+    expect(host.textContent).toContain('Docker')
+    expect(host.textContent).toContain(
+      'Runs an isolated Linux desktop with Chromium and LibreOffice in a Docker container.'
+    )
     const command = commandText(host)
     expect(command).toContain('-e AGENTCONNECT_CP_URL="https://cp.example.com/v1/computers/register"')
     expect(command).toContain('-e AGENTCONNECT_REGISTER_TOKEN="ac_secret" ghcr.io/agentconnect-md/computer:latest')
@@ -202,7 +205,7 @@ describe('AddComputerModal', () => {
     mocks.createComputerRegistration.mockResolvedValue(registration)
     mocks.fetchComputerRegistration.mockResolvedValue({ registrationId: 'r1', computerId: null })
     const host = await render()
-    expect(commandText(host)).toContain('Could not create the command: boom')
+    expect(commandText(host)).toContain("Couldn't create the command: boom")
     await act(async () => button('Create new command').click())
     expect(commandText(host)).toContain('--register "ac_secret"')
   })

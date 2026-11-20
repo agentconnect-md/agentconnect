@@ -92,7 +92,7 @@ describe('GoogleChatBotSettings', () => {
     expect(text).toContain('https://relay.example.test/googlechat/events')
     expect(text).toContain('Rejected by Google (invalid_grant)')
     expect(text).toContain('Answers in a space only when mentioned')
-    expect(text).toContain('Attachments, cards, and group direct messages are not supported.')
+    expect(text).toContain('Attachments, cards, and group direct messages aren’t supported.')
   })
 
   it('replaces the key, then clears it and refreshes the bot', async () => {

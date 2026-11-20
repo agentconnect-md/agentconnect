@@ -300,7 +300,7 @@ it('keeps saved credentials selected after a lookup failure and retries before a
   vi.mocked(fetchProviderKeys).mockRejectedValueOnce(new Error('unavailable'))
   await openEditor({ model: 'model-host' })
   await chooseCredentials(true)
-  await vi.waitFor(() => expect(host!.textContent).toContain('Could not load provider keys.'))
+  await vi.waitFor(() => expect(host!.textContent).toContain("Couldn't load provider keys."))
   expect(host!.textContent).not.toContain('Choose a model with a key configured in Providers.')
   expect(button('Model credentials').textContent).toBe('Provider key (Beta)')
   expect(saveButton().disabled).toBe(true)

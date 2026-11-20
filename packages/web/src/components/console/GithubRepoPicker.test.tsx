@@ -185,7 +185,7 @@ describe('shared GitHub repository picker', () => {
     // A synced row still resolves through its installation.
     await act(async () => buttonsNamed('acme/infra')[0]?.click())
     expect(mocks.fetchGithubBranches).toHaveBeenCalledWith('ins-1', 'acme', 'infra')
-    expect(document.body.textContent).not.toContain('Public repository — read-only clone.')
+    expect(document.body.textContent).not.toContain('Public repository (read-only clone).')
 
     // An exact name on the installation's own account is resolved through it, so a
     // private repo past the roster's pages keeps its App credentials.
@@ -208,7 +208,7 @@ describe('shared GitHub repository picker', () => {
     expect(option?.textContent).toContain('Use public repository')
 
     await act(async () => option?.click())
-    expect(document.body.textContent).toContain('Public repository — read-only clone.')
+    expect(document.body.textContent).toContain('Public repository (read-only clone).')
     expect(document.body.textContent).toContain('Read only')
   })
 
@@ -220,7 +220,7 @@ describe('shared GitHub repository picker', () => {
     await typeRepo('github/docs')
     await act(async () => buttonsNamed('github/docs')[0]?.click())
 
-    expect(document.body.textContent).toContain('Public repository — read-only clone.')
+    expect(document.body.textContent).toContain('Public repository (read-only clone).')
     expect(document.body.textContent).not.toContain('No GitHub App installation covers')
 
     await act(async () => buttonsNamed('Replace workspace')[0]?.click())
@@ -260,7 +260,7 @@ describe('shared GitHub repository picker', () => {
 
     // The install prompt still offers the App; the repository fields render anyway.
     expect(document.body.textContent).toContain('Install')
-    expect(document.body.textContent).toContain('Public repository — read-only clone.')
+    expect(document.body.textContent).toContain('Public repository (read-only clone).')
     await fill(document.querySelector<HTMLInputElement>('input[aria-label="Working subdirectory"]')!, 'content')
     await act(async () => buttonsNamed('Save')[0]?.click())
 

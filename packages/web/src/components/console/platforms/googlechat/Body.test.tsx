@@ -163,7 +163,7 @@ describe('GoogleChatWizardBody', () => {
 
   it('says a relay is required when this deployment has none', async () => {
     await render({ relayCapability: { available: false, publicUrl: null } })
-    expect(text()).toContain('public callback endpoint')
+    expect(text()).toContain('public HTTPS callback endpoint')
     expect(host.querySelector('input')).toBeNull()
     expect(footer?.hidden).toBe(true)
   })
@@ -181,7 +181,7 @@ describe('GoogleChatWizardBody', () => {
     expect(text()).not.toContain('audience')
     expect(text()).toContain('Receive 1:1 messages')
     expect(text()).toContain('Join spaces and group conversations')
-    expect(text()).toContain('A slash command named /help')
+    expect(text()).toContain('A /help slash command')
     expect(field('Service account key').type).toBe('password')
     expect(footer).toMatchObject({ label: 'Connect', enabled: false, hidden: false })
   })
@@ -209,7 +209,7 @@ describe('GoogleChatWizardBody', () => {
       'ConnectedThe callback endpoint is live and the agent is online.'
     ])
     expect(text()).toContain('Send it a direct message or mention it in a space')
-    expect(text()).toContain('after signing in to this console with the same Google account')
+    expect(text()).toContain('after signing in with the same Google account')
     expect(identity?.hidden).toBe(true)
     expect(footer?.hidden).toBe(true)
     await act(async () => buttonWith('Done')?.click())
@@ -258,7 +258,7 @@ describe('GoogleChatWizardBody', () => {
     await act(async () => footer?.onSubmit())
 
     expect(state.setError).toHaveBeenLastCalledWith(
-      'This Chat app belongs to this deployment; connect it by sending the app a message in Google Chat.'
+      'This Chat app belongs to this deployment. Connect it by sending it a message in Google Chat.'
     )
     expect(field('Service account key').value).toBe('')
   })

@@ -45,7 +45,7 @@ describe('SessionRetentionFields', () => {
     expect(html.indexOf('aria-label="Clean up workspaces after"')).toBeLessThan(
       html.indexOf('aria-label="Delete finished sessions after"')
     )
-    expect(html.match(/The workspace and sandbox go first/g)).toHaveLength(1)
+    expect(html.match(/The workspace and sandbox are cleaned up first/g)).toHaveLength(1)
   })
 
   it('says the session window caps a longer workspace window', () => {
@@ -53,12 +53,12 @@ describe('SessionRetentionFields', () => {
     expect(html).toContain('After 7 days') // the stored workspace value stays visible
     expect(html).toContain('A workspace never outlasts its session')
     expect(html).toContain('are all deleted after 3 days.')
-    expect(html).not.toContain('The workspace and sandbox go first')
+    expect(html).not.toContain('The workspace and sandbox are cleaned up first')
     // Equal windows and a workspace left to follow the session go together too.
     expect(render('7d', '7d')).toContain('are all deleted after 7 days.')
     expect(render('30d', 'never')).toContain('are all deleted after 30 days.')
     // A never-deleted session caps nothing.
-    expect(render('never', '7d')).toContain('The workspace and sandbox go first')
+    expect(render('never', '7d')).toContain('The workspace and sandbox are cleaned up first')
   })
 
   it('marks both defaults and offers each preset list', () => {

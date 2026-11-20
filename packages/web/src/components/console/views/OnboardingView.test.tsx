@@ -211,7 +211,7 @@ describe('onboarding — daemon step (no pool: the only path)', () => {
     await render()
     await click('Retry')
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1) // no second mint
-    expect(host.textContent).toContain('Could not refresh the daemon list')
+    expect(host.textContent).toContain('Couldn’t refresh the daemon list')
   })
 
   // Ambiguous success: the failed provision actually landed server-side. Retry must
@@ -472,7 +472,7 @@ describe('onboarding — pool fork', () => {
     ]
     await render()
     await click('Continue')
-    expect(host.textContent).toContain('has not advertised its runtimes yet')
+    expect(host.textContent).toContain('hasn’t reported its available runtimes yet')
     await click('Finish')
     expect(mocks.updateAgent).not.toHaveBeenCalled()
     expect(mocks.moveAgent).not.toHaveBeenCalled()
@@ -506,7 +506,7 @@ describe('onboarding — pool fork', () => {
     mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
     await render()
     await click('Continue')
-    expect(host.textContent).toContain('Waiting for Kubernetes cluster to report the runtimes')
+    expect(host.textContent).toContain('Waiting for Kubernetes cluster to report its available runtimes')
     expect(button('Finish').disabled).toBe(true)
     await click('Finish')
     expect(mocks.updateAgent).not.toHaveBeenCalled()

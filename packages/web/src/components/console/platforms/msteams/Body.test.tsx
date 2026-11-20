@@ -206,7 +206,7 @@ describe('MsTeamsWizardBody with the deployment app', () => {
     expect(buttonWith('Approve as administrator')).toBeUndefined()
     await act(async () => buttonWith('Check again')?.click())
     expect(mocks.checkRequest).toHaveBeenCalledWith('org-a', 'req-1')
-    expect(text()).toContain('turned down or removed')
+    expect(text()).toContain('declined or removed')
     await act(async () => buttonWith('Cancel request')?.click())
     expect(mocks.cancelRequest).toHaveBeenCalledWith('org-a', 'req-1')
     expect(text()).not.toContain('turned down or removed')
@@ -224,7 +224,7 @@ describe('MsTeamsWizardBody', () => {
 
   it('says a relay is required when this deployment has none', async () => {
     await render({ relayCapability: { available: false, publicUrl: null } })
-    expect(text()).toContain('public callback endpoint')
+    expect(text()).toContain('public HTTPS callback endpoint')
     expect(host.querySelector('input')).toBeNull()
     expect(footer?.hidden).toBe(true)
   })
@@ -303,7 +303,7 @@ describe('MsTeamsWizardBody', () => {
     await fillAndConnect()
     await act(async () => buttonWith('Download app package')?.click())
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      'This deployment has no public callback endpoint, so the app package cannot be built.'
+      'This deployment has no public callback endpoint, so the app package can’t be built.'
     )
     expect(mocks.saveBlob).not.toHaveBeenCalled()
   })
