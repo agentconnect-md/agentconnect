@@ -76,6 +76,14 @@ export function platformUnnamedLabel(
   return platform && subject.id ? platformRegistry.get(platform)?.unnamedLabel?.(subject) : undefined
 }
 
+/** The display group a picker choice or Bots tab sits in: a module's own, chat by default; every core trigger kind is workflow. */
+export type IntegrationGroup = NonNullable<WebPlatformModule['integrationGroup']>
+export const INTEGRATION_GROUPS: readonly IntegrationGroup[] = ['chat', 'workflow']
+export function integrationGroupOf(key: string): IntegrationGroup {
+  const module = platformRegistry.get(key)
+  return module ? (module.integrationGroup ?? 'chat') : 'workflow'
+}
+
 /**
  * The channel card's fallback semantics — the arm every non-module platform took
  * before the switch moved: a "channel" with a `#`, and no console-driven leave.
