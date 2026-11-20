@@ -178,7 +178,8 @@ export async function startEmail(
     to: recipients.to.map((address) => ({ address })),
     cc: recipients.cc.map((address) => ({ address })),
     subject: call.subject,
-    started: true
+    started: true,
+    owner: place.owner
   }
   let recorded = true
   try {

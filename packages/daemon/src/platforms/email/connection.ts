@@ -55,13 +55,14 @@ export interface EmailStoredMail extends WireEmailAdapterExt {
   participants: string[]
 }
 
-/** What a sent mail's index row keeps: whom it went to and under which subject, and whether it was a mail the agent started (§6.4). */
+/** What a sent mail's index row keeps: whom it went to and under which subject, and for a mail the agent started (§6.4) whom its session was classified for. */
 export interface EmailStoredSent {
   from: WireEmailMailbox
   to: WireEmailMailbox[]
   cc: WireEmailMailbox[]
   subject: string
   started?: true
+  owner?: string
 }
 
 /** A received row's stored mail, read defensively because the row is persisted; undefined for anything unreadable. */
@@ -242,7 +243,29 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
     const recipients = [...sent.to, ...sent.cc].map((mailbox) => mailbox.address)
     const latest = await this.index.latestReceived(this.address, row.conversation, tag)
     const members = (latest ? storedMailOf(latest)?.participants : undefined) ?? recipients
-    return { thread: tag, conversation: row.conversation, recipients, members }
+    return {
+      thread: tag,
+      conversation: row.conversation,
+      recipients,
+      members,
+      ...(typeof sent.owner === 'string' ? { owner: sent.owner } : {})
+    }
+  }
+
+  /** The mail a started thread opened with, as the agent reads it; undefined when it is not kept. */
+  async startedMail(tag: string): Promise<string | undefined> {
+    const row = await this.index.firstSent(this.address, tag)
+    return row?.ts ? (await this.texts(row.conversation, [row])).get(row.ts) : undefined
+  }
+
+  /** Who has answered a started mail: in its thread, with everyone on it, or alone in a thread of their own (§5.2). */
+  async startedAnswers(tag: string): Promise<{ together: Set<string>; alone: Set<string> }> {
+    const answers = { together: new Set<string>(), alone: new Set<string>() }
+    for (const row of await this.index.receivedForStarted(this.address, tag)) {
+      const from = storedMailOf(row)?.from.address
+      if (from) (row.thread === tag ? answers.together : answers.alone).add(from)
+    }
+    return answers
   }
 
   /** Index one mail the agent sent from this address. */

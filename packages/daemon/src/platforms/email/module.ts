@@ -1,6 +1,7 @@
 // Email's daemon platform module (email-integration.md §4, §5, §8): mail arrives pre-addressed from the relay, is placed by the messages the daemon knows, and is admitted from members, or from anyone where the address says so.
 import {
   EMAIL_PLATFORM,
+  EMAIL_STARTED_OWNER_PREFIX,
   EMAIL_V1_FEATURE,
   WireEmailAdapterExt,
   type PlaceExternalReason,
@@ -69,7 +70,8 @@ export function emailPrompt(
   ext: EmailExt,
   leftOff: readonly string[],
   outsidersCopied = false,
-  started = false
+  started = false,
+  extra: readonly string[] = []
 ): string {
   const copied = started
     ? 'people outside it who have written on this thread themselves or were sent the mail you started'
@@ -86,9 +88,34 @@ export function emailPrompt(
             ? `[Your reply will not be sent to: ${leftOff.join(', ')}. It goes to members of this organization and to ${copied}. Say so in your reply if it matters.]`
             : `[Not members of this organization, so your reply will not be sent to them: ${leftOff.join(', ')}. Say so in your reply if it matters.]`
         ]
-      : [])
+      : []),
+    ...extra
   ]
   return [renderEmailHeaderBlock(ext), body.trim(), ...notes].filter(Boolean).join('\n\n')
+}
+
+/** What a reply to a mail the agent started tells it (§5.2): the started mail, where the reply opens a recipient's own thread, and who of the others has answered. */
+export function emailStartedNotes(p: {
+  sender: string
+  recipients: readonly string[]
+  answers: { together: ReadonlySet<string>; alone: ReadonlySet<string> }
+  /** The started mail as the agent reads it, given only for the first message of a recipient's own thread. */
+  startedMail?: string | undefined
+}): string[] {
+  const notes: string[] = []
+  if (p.startedMail !== undefined)
+    notes.push(
+      `[This answers the mail you started to ${p.recipients.join(', ')}, below, and leaves the others off, so it continues in a thread of its own: your replies here go only to the people on this message, and none of the others sees this thread.]\n\n${p.startedMail}`
+    )
+  const others = p.recipients.filter((address) => address !== p.sender)
+  const alone = others.filter((address) => p.answers.alone.has(address))
+  const waiting = others.filter((address) => !alone.includes(address) && !p.answers.together.has(address))
+  if (alone.length)
+    notes.push(
+      `[${alone.join(', ')} answered your started mail leaving the others off, each in a thread of their own that this one does not show.]`
+    )
+  if (waiting.length) notes.push(`[Not answered your started mail yet: ${waiting.join(', ')}.]`)
+  return notes
 }
 
 /** The relay-ingress strategy: placement and the member question before the record, the index row inside the admission fence. */
@@ -107,8 +134,9 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       const sender = verdicts.get(ext.from.address)
       // Under Anyone the spec and the answer must agree, so a setting turned back to Members closes at once (§4.1).
       const anyone = isAdmittedOutsider(sender) && host.whoMayWrite(msg.integrationId) === 'anyone'
-      // Anyone else outside may answer only a started thread it was sent, which placement says (§4 step 3, §6.4).
-      const answering = !sender?.allowed && !anyone && ext.tag !== undefined && isOutsider(sender)
+      // Anyone else outside may answer only a mail the agent started and sent them, as a reply placement finds (§4 step 3, §6.4).
+      const replying = ext.tag !== undefined || ext.inReplyTo !== undefined || ext.references.length > 0
+      const answering = !sender?.allowed && !anyone && replying && isOutsider(sender)
       if (!sender?.allowed && !anyone && !answering) return 'rejected'
       let placement
       try {
@@ -120,7 +148,8 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       // One the fence splits off is refused with step 3's reason, so no session exists to own (§5.3).
       if (answering && !placement.started?.recipients.includes(ext.from.address)) return 'rejected'
       const outsider = anyone || answering
-      const started = placement.started ? new Set(placement.started.recipients) : undefined
+      // Only the started thread itself copies the started mail's recipients; a recipient's own thread is any thread.
+      const started = placement.started && !placement.started.own ? new Set(placement.started.recipients) : undefined
       const group = placement.conversation.kind === 'group'
       normalized.channel = placement.conversation.channel
       normalized.thread = placement.thread
@@ -130,6 +159,9 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       normalized.mentionedBots = group ? [conn.address] : []
       // The started mail is the thread's own root, so a session that never ran reads it once (§6.4).
       if (started) normalized.threadRootIsOwn = true
+      // An outside recipient's own thread is classified for whom the started thread is, the member who asked for it (§5.3).
+      const owner = placement.started?.own ? placement.started.owner : undefined
+      if (outsider && owner?.startsWith(EMAIL_STARTED_OWNER_PREFIX)) normalized.sessionTriggerId = owner
       // The daemon's own mark of how the sender was admitted, which the reply and the index read; never the relay's.
       const marked: EmailExt = { ...ext }
       if (outsider) marked.outsider = true
@@ -150,7 +182,22 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
           .slice(1)
           .filter((address) => !emailCopyable(verdicts.get(address), address, wrote, started))
       }
-      normalized.text = emailPrompt(normalized.text, marked, leftOff, outsidersCopied, !!started)
+      let extra: string[] = []
+      if (placement.started && (placement.started.own || placement.started.recipients.length > 1)) {
+        const { tag, own, recipients } = placement.started
+        const read = async () => {
+          const first = own && !(await conn.latestReceived(placement.conversation.channel, placement.thread))
+          const [answers, startedMail] = await Promise.all([
+            conn.startedAnswers(tag),
+            first ? conn.startedMail(tag) : undefined
+          ])
+          return emailStartedNotes({ sender: ext.from.address, recipients, answers, startedMail })
+        }
+        const notes = await read().catch(() => undefined)
+        if (!notes) return 'retry'
+        extra = notes
+      }
+      normalized.text = emailPrompt(normalized.text, marked, leftOff, outsidersCopied, !!started, extra)
       return 'admit'
     },
     // Mail has no commands and no acknowledgement, so an admitted message goes straight to dispatch.
