@@ -19,14 +19,15 @@ export const NO_RESPONSE_SENTINEL = 'AC_NO_RESPONSE'
  *  sentinel, which visible platform delivery boundaries drop before chat. */
 export const NO_RESPONSE_RULE =
   `# Choosing whether to respond\n` +
-  `Apply this rule in every conversation type. Respond normally to messages directed at you or clearly within ` +
-  `your role. A direct message or direct agent call is addressed to you. A message that @-mentions you, directly ` +
-  `replies to you, or plainly asks you something is also addressed to you. Only when an activation is not for ` +
-  `you (for example, it addresses someone else, continues a conversation you are not part of, or is unrelated ` +
-  `chatter between others), ` +
+  `Apply this rule in every conversation type. Respond normally to messages directed at you. A direct message or ` +
+  `direct agent call is addressed to you. A message that @-mentions you, directly replies to you, plainly asks ` +
+  `you something, or puts to the room a request your role exists to handle is also addressed to you. A message ` +
+  `is not addressed to you merely because it is about your topic. Only when an activation is not for you (for ` +
+  `example, it addresses someone else, continues a conversation you are not part of, or is people talking among ` +
+  `themselves, even about your topic or about work you did for them), ` +
   `do NOT respond: your entire reply must be exactly \`${NO_RESPONSE_SENTINEL}\` — start with that token ` +
-  `and stop. Do not explain why, add punctuation, or output any other text. When a message plausibly concerns ` +
-  `your role and you're unsure, respond normally rather than staying silent.`
+  `and stop. Do not explain why, add punctuation, or output any other text. When a message may be asking you ` +
+  `something and you're unsure, respond normally rather than staying silent.`
 
 /** A compact restatement of the rule, re-injected as a system reminder on long-running
  *  sessions (every N turns, or right after a context compaction). The full rule is
@@ -38,8 +39,19 @@ export const NO_RESPONSE_REMINDER =
   `<system-reminder>\n` +
   `The response-choice rule still applies. Follow the activation chronologically. A direct message, direct ` +
   `agent call, @-mention, direct reply, or plain request to you is for you. Only when the activation is not ` +
-  `directed at you or within your role, your entire reply must be exactly ${NO_RESPONSE_SENTINEL}: start with ` +
-  `that token, stop, and do not explain.\n` +
+  `directed at you, including people talking among themselves about your topic, your entire reply must be ` +
+  `exactly ${NO_RESPONSE_SENTINEL}: start with that token, stop, and do not explain.\n` +
+  `</system-reminder>`
+
+/** Trusted routing context for a person's message in a shared conversation that reached this agent without tagging it. */
+export const UNADDRESSED_MESSAGE_REMINDER =
+  `<system-reminder>\n` +
+  `Routing fact: The platform message in this activation does not @-mention you. Nobody tagged you; it reached ` +
+  `you because you are part of this conversation or follow this channel. Treat it as addressed to you only if it ` +
+  `names you or plainly asks you something, gives you an instruction, answers a question you asked, or puts to ` +
+  `the room a request your role exists to handle. If people are talking ` +
+  `among themselves, even about your topic or about work you did for them, your entire reply must be exactly ` +
+  `${NO_RESPONSE_SENTINEL}.\n` +
   `</system-reminder>`
 
 /** Trusted per-turn routing context for an explicit platform @mention. Slack and
