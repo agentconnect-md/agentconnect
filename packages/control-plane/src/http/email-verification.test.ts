@@ -4,7 +4,11 @@ import { syncEmailVerification, verifyingConnectorId } from './email-verificatio
 
 type Identity = { connectorId: string; email?: string }
 
-function deps(input: { social?: string[]; sso?: Identity[]; verifyingConnectorId?: string | null }) {
+function deps(input: {
+  social?: { target: string; email: string }[]
+  sso?: Identity[]
+  verifyingConnectorId?: string | null
+}) {
   const recordEmailEvidence = vi.fn(async () => {})
   const ssoIdentitiesFor = vi.fn(async () => input.sso ?? [])
   return {
@@ -24,12 +28,28 @@ const AT = new Date(1_000)
 
 describe('syncEmailVerification', () => {
   it('reports a social address as verified, stamped with the clock', async () => {
-    const h = deps({ social: ['someone@example.test'] })
+    const h = deps({ social: [{ target: 'google', email: 'someone@example.test' }] })
 
     await syncEmailVerification(h.deps, SUBJECT)
     expect(h.recordEmailEvidence).toHaveBeenCalledWith(
       'user-1',
-      { verified: ['someone@example.test'], asserted: [] },
+      { verified: ['someone@example.test'], tenant: [], asserted: [] },
+      AT
+    )
+  })
+
+  it('reports a Microsoft address apart, as one its tenant set, never as verified', async () => {
+    const h = deps({
+      social: [
+        { target: 'azuread', email: 'member@tenant.example.test' },
+        { target: 'github', email: 'member@example.test' }
+      ]
+    })
+
+    await syncEmailVerification(h.deps, SUBJECT)
+    expect(h.recordEmailEvidence).toHaveBeenCalledWith(
+      'user-1',
+      { verified: ['member@example.test'], tenant: ['member@tenant.example.test'], asserted: [] },
       AT
     )
   })
@@ -41,7 +61,7 @@ describe('syncEmailVerification', () => {
     expect(h.ssoIdentitiesFor).toHaveBeenCalledWith('subject-1', true)
     expect(h.recordEmailEvidence).toHaveBeenCalledWith(
       'user-1',
-      { verified: [], asserted: [{ connectorId: 'connector-org', email: 'member@example.test' }] },
+      { verified: [], tenant: [], asserted: [{ connectorId: 'connector-org', email: 'member@example.test' }] },
       AT
     )
   })
@@ -55,17 +75,17 @@ describe('syncEmailVerification', () => {
     await syncEmailVerification(on.deps, SUBJECT)
     expect(off.recordEmailEvidence).toHaveBeenCalledWith(
       'user-1',
-      { verified: ['member@example.test'], asserted: sso },
+      { verified: ['member@example.test'], tenant: [], asserted: sso },
       AT
     )
-    expect(on.recordEmailEvidence).toHaveBeenCalledWith('user-1', { verified: [], asserted: sso }, AT)
+    expect(on.recordEmailEvidence).toHaveBeenCalledWith('user-1', { verified: [], tenant: [], asserted: sso }, AT)
   })
 
   it('reports nothing for an account with no linked method, which drops what was recorded', async () => {
     const h = deps({})
 
     await syncEmailVerification(h.deps, SUBJECT)
-    expect(h.recordEmailEvidence).toHaveBeenCalledWith('user-1', { verified: [], asserted: [] }, AT)
+    expect(h.recordEmailEvidence).toHaveBeenCalledWith('user-1', { verified: [], tenant: [], asserted: [] }, AT)
   })
 
   it('writes nothing when the identity provider cannot be read', async () => {

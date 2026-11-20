@@ -4,11 +4,14 @@ import type { UserRepo } from '../persistence/ports.js'
 
 /** The identity provider's read of a subject's linked sign-in methods; the composition root passes the Logto service. */
 export interface VerifiedEmailIdentity {
-  /** Addresses the linked social sign-in methods report. */
-  socialEmailsFor(sub: string): Promise<string[]>
+  /** Addresses the linked social sign-in methods report, each with the method's identity target. */
+  socialEmailsFor(sub: string): Promise<{ target: string; email: string }[]>
   /** The SSO identities the account holds, each with the address its connector asserted. */
   ssoIdentitiesFor(sub: string, fresh?: boolean): Promise<{ connectorId: string; email?: string }[]>
 }
+
+/** The identity target of the Microsoft sign-in method. */
+const MICROSOFT_TARGET = 'azuread'
 
 /** The deployment's own connector as its configuration describes it. */
 export interface DeploymentSsoConnector {
@@ -41,9 +44,11 @@ export async function syncEmailVerification(
   ])
   const asserted = identities.flatMap(({ connectorId, email }) => (email ? [{ connectorId, email }] : []))
   const verifying = deps.verifyingConnectorId ?? null
+  // A Microsoft identity's address is whatever its tenant set, so it proves the mailbox to no one.
+  const tenant = social.filter(({ target }) => target === MICROSOFT_TARGET).map(({ email }) => email)
   const verified = [
-    ...social,
+    ...social.filter(({ target }) => target !== MICROSOFT_TARGET).map(({ email }) => email),
     ...asserted.filter((identity) => identity.connectorId === verifying).map((identity) => identity.email)
   ]
-  await deps.users.recordEmailEvidence(input.userId, { verified, asserted }, new Date(deps.clock.now()))
+  await deps.users.recordEmailEvidence(input.userId, { verified, tenant, asserted }, new Date(deps.clock.now()))
 }
