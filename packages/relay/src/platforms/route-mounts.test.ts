@@ -38,7 +38,9 @@ const EXPECTED_MOUNTS: Record<string, string[]> = {
   // The HTTPS endpoint the Setup Server tells the operator to enter in the Chat app configuration.
   googlechat: ['POST /googlechat/events'],
   // The messaging endpoint the admin enters in the Teams bot registration.
-  msteams: ['POST /msteams/messages']
+  msteams: ['POST /msteams/messages'],
+  // The inbound URL the Setup Server tells the operator to configure the ingress Worker with.
+  email: ['POST /email/inbound']
 }
 
 const routeDeps = (): RelayIngressRouteDeps => ({

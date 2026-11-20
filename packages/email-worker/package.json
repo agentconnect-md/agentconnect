@@ -1,0 +1,24 @@
+{
+  "private": true,
+  "name": "@agentconnect.md/email-worker",
+  "version": "2.0.0-dev",
+  "description": "AgentConnect ingress Worker for Email — posts each inbound message, signed, to the relay and applies its answer",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build:package": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "devDependencies": {
+    "@agentconnect.md/protocol": "workspace:*",
+    "@types/node": "^26.6.6",
+    "typescript": "^6.0.3",
+    "vitest": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=24.12.0"
+  }
+}

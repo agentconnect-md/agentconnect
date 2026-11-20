@@ -24,6 +24,11 @@ export {
   CODEHOST_REVIEW_V1_FEATURE,
   EMAIL_AUTHSERV_ID_DEFAULT,
   EMAIL_INBOUND_PATH,
+  EMAIL_INGRESS_BODY_MAX_BYTES,
+  EMAIL_INGRESS_DEADLINE_MS,
+  EMAIL_INGRESS_HEADERS,
+  EMAIL_INGRESS_SIGNATURE_VERSION,
+  EMAIL_INGRESS_WINDOW_MS,
   EMAIL_MEMBERS_V1_FEATURE,
   EMAIL_V1_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
@@ -43,6 +48,7 @@ export {
   MSTEAMS_MESSAGES_PATH,
   msTeamsMessagesUrl,
   emailInboundUrl,
+  emailIngressSigningPrefix,
   MSTEAMS_RELAY_EGRESS_V1_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
@@ -120,6 +126,7 @@ export {
   WORKSPACE_REPO_SCOPE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE
 } from './consts.js'
+export type { EmailIngressAnswer } from './consts.js'
 
 // ── normalized platform-message wire contract ──
 export * from './normalized-message.js'
