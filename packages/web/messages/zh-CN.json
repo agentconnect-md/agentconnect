@@ -5313,7 +5313,8 @@
       "purchase": "购买额度",
       "adjustment": "调整",
       "promo": "促销额度",
-      "refund": "退款"
+      "refund": "退款",
+      "subscription": "套餐额度"
     },
     "transactions": {
       "title": "交易记录",
