@@ -25,6 +25,7 @@ import {
 } from './assistant-watch-tasks.js'
 import { PLACE_TIME_ZONE_SCHEMA, PlaceTimeZones } from './place-time-zones.js'
 import { WORK_CANVAS_SCHEMA, WorkCanvases } from './work-canvases.js'
+import { EMAIL_MESSAGE_SCHEMA, EmailMessages } from './email-messages.js'
 import { newSessionMessageId, SESSION_MESSAGE_SCHEMA, SessionMessages } from './session-messages.js'
 import { CAPABILITY_CARD_SCHEMA, CapabilityCardLedger } from './capability-cards.js'
 import {
@@ -1429,7 +1430,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 83
+export const SCHEMA_VERSION = 84
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2230,7 +2231,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
         WHERE mode = 'work' AND closedAt IS NULL AND lookedAt IS NULL`,
       [Date.now()]
     )
-  }
+  },
+  // v84 keeps the mail index: each message an agent's address received or sent, its thread and conversation (email-integration.md §5.6).
+  async () => {}
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -2988,6 +2991,8 @@ export class LocalStore {
   readonly placeTimeZones: PlaceTimeZones
   /** Each channel's Work page and each targeted cron's latest anchor (assistant-mode.md §5.19). */
   readonly workCanvases: WorkCanvases
+  /** The mail each agent's address received and sent, by message ID (email-integration.md §5.6). */
+  readonly emailMessages: EmailMessages
   /** The messages each session received and sent, with their reply obligations (send-message-guide.md §9.3). */
   readonly sessionMessages: SessionMessages
   /** The capability cards this daemon posted, for their rewrite on settlement (capability-requests.md §4.4.6). */
@@ -3037,6 +3042,7 @@ export class LocalStore {
     this.assistantOnboarding = new AssistantOnboardingLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.placeTimeZones = new PlaceTimeZones({ query: (sql, params) => this.db.query(sql, params) })
     this.workCanvases = new WorkCanvases({ query: (sql, params) => this.db.query(sql, params) })
+    this.emailMessages = new EmailMessages({ query: (sql, params) => this.db.query(sql, params) })
     this.sessionMessages = new SessionMessages({ query: (sql, params) => this.db.query(sql, params) })
     this.capabilityCards = new CapabilityCardLedger({ query: (sql, params) => this.db.query(sql, params) })
     this.ahpState = new AhpStateStore({
@@ -3133,6 +3139,7 @@ export class LocalStore {
       ${ASSISTANT_ONBOARDING_SCHEMA}
       ${PLACE_TIME_ZONE_SCHEMA}
       ${WORK_CANVAS_SCHEMA}
+      ${EMAIL_MESSAGE_SCHEMA}
       ${SESSION_MESSAGE_SCHEMA}
       ${CAPABILITY_CARD_SCHEMA}
       ${AHP_STATE_SCHEMA}
@@ -8393,6 +8400,29 @@ export class LocalStore {
       .slice(0, input.limit)
       .map((row) => Number(row.seq))
       .reverse()
+  }
+
+  /** The text rows of one conversation that sessions of this agent took in or wrote, by their `ts`, oldest first. */
+  async admittedTextRowsByTs(
+    agentId: string,
+    channel: string,
+    keys: readonly string[]
+  ): Promise<{ ts: string; sender: string; text: string; eventTimeUs: number }[]> {
+    if (keys.length === 0) return []
+    const rows = (await this.db
+      .prepare(
+        `SELECT ts, sender, text, eventTimeUs FROM transcript
+          WHERE kind = 'text' AND orgId = ? AND channel = ? AND ts IN (${keys.map(() => '?').join(', ')})
+            AND EXISTS (SELECT 1 FROM transcript_recipient tr WHERE tr.seq = transcript.seq AND tr.agentId = ?)
+          ORDER BY seq ASC`
+      )
+      .all(this.orgFor(agentId), channel, ...keys, agentId)) as {
+      ts: string
+      sender: string
+      text: string
+      eventTimeUs: number | string
+    }[]
+    return rows.map((row) => ({ ...row, eventTimeUs: Number(row.eventTimeUs) }))
   }
 
   /** The persisted background of one admission, read back inside its own conversation only. */
