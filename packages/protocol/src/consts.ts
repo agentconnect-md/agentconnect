@@ -77,6 +77,39 @@ export function emailInboundUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${EMAIL_INBOUND_PATH}`
 }
 
+/** The headers the ingress Worker sends beside the raw message (§7); the Worker, which imports nothing, mirrors these names. */
+export const EMAIL_INGRESS_HEADERS = {
+  /** When the Worker signed the post, epoch milliseconds. */
+  timestamp: 'x-ac-email-timestamp',
+  /** The SMTP envelope sender, percent-encoded; empty on a bounce. */
+  from: 'x-ac-email-from',
+  /** The SMTP envelope recipient, percent-encoded. */
+  to: 'x-ac-email-to',
+  /** The message's full size in bytes, which exceeds the body when the Worker cut it. */
+  size: 'x-ac-email-size',
+  /** `v1=<hex HMAC-SHA256>` over the signing prefix and the body, keyed by the ingress secret. */
+  signature: 'x-ac-email-signature'
+} as const
+
+export const EMAIL_INGRESS_SIGNATURE_VERSION = 'v1'
+
+/** The most bytes of a message the Worker posts and the relay's route takes (§7). */
+export const EMAIL_INGRESS_BODY_MAX_BYTES = 1024 * 1024
+
+/** How far the Worker's timestamp may be from the relay's clock (§7). */
+export const EMAIL_INGRESS_WINDOW_MS = 5 * 60_000
+
+/** How long the Worker waits for the relay's answer, and the relay takes to settle one (§5.5). */
+export const EMAIL_INGRESS_DEADLINE_MS = 10_000
+
+/** The text the signature covers ahead of the body's bytes: the version and the four header values exactly as sent, one a line. */
+export function emailIngressSigningPrefix(sent: { timestamp: string; size: string; from: string; to: string }): string {
+  return `${EMAIL_INGRESS_SIGNATURE_VERSION}\n${sent.timestamp}\n${sent.size}\n${sent.from}\n${sent.to}\n`
+}
+
+/** The relay's 200 answer to the Worker (§5.5): the message is accepted, or rejected in the SMTP exchange with `reason`. */
+export type EmailIngressAnswer = { result: 'accepted' } | { result: 'reject'; reason: string }
+
 /** The authserv-id of the receiving provider's `Authentication-Results`, the only one the relay reads a sender's verdict from (email-integration.md §4 step 2). */
 export const EMAIL_AUTHSERV_ID_DEFAULT = 'mx.cloudflare.net'
 

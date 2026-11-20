@@ -1112,6 +1112,8 @@ export const WireEmailCall = z.discriminatedUnion('op', [
       .max(EMAIL_RECIPIENTS_MAX + 1),
     to: z.array(EmailAddress).min(1).max(EMAIL_RECIPIENTS_MAX),
     cc: z.array(EmailAddress).max(EMAIL_RECIPIENTS_MAX - 1),
+    /** The agent's name, shown beside the assignment's address in `From` (§6.1); the address is never the request's. */
+    fromName: emailHeaderText(256).optional(),
     subject: emailHeaderText(998),
     inReplyTo: EmailMessageId,
     /** The answered mail's chain with its own ID appended, oldest first. */

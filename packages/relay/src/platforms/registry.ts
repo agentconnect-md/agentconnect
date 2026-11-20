@@ -23,6 +23,7 @@ import { feishuIngressPlugin } from './feishu/ingress-plugin.js'
 import { linearIngressPlugin } from './linear/ingress-plugin.js'
 import { googleChatIngressPlugin } from './googlechat/ingress-plugin.js'
 import { msTeamsIngressPlugin } from './msteams/ingress-plugin.js'
+import { emailIngressPlugin } from './email/ingress-plugin.js'
 
 /**
  * **The one place a relay platform id is written down.** Adding a platform is
@@ -45,7 +46,8 @@ export const relayIngressPlugins: readonly RelayPlatformIngressPlugin[] = [
   feishuIngressPlugin,
   linearIngressPlugin,
   googleChatIngressPlugin,
-  msTeamsIngressPlugin
+  msTeamsIngressPlugin,
+  emailIngressPlugin
 ]
 
 /** One platform's pool of live per-bot ingests. Purely keyed by botId — the
