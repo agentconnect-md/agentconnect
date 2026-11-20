@@ -538,8 +538,13 @@ the thread.
   agent which ones, so its reply can say who did not receive it. When the
   Control Plane cannot be asked as the turn ends, the reply goes to the sender
   alone and the session records that the others were left off. Under "Anyone"
-  (§4.1), and in the thread of a mail the agent started (§6.4), **Cc** is every
-  other address on that message, with nobody left off and no question asked.
+  (§4.1), and in the thread of a mail the agent started (§6.4), **Cc** may also
+  hold an address outside the organization, but only one that has itself
+  written on the thread, as an admitted message's sender, or that the started
+  mail was sent to. A `Cc` header is the sender's own unauthenticated text, so
+  without this bound a stranger could name any number of people who never wrote
+  and have the agent's reply reach them from the deployment's domain. The
+  prompt tells the agent who was left off, as above.
 - **Subject** is the thread's subject with a single `Re:`.
 - **In-Reply-To** is the answered message's ID, and **References** is its chain
   with that ID appended, cut from the front past 50 entries.
@@ -607,12 +612,23 @@ a webchat, a chat thread, a schedule's run, a mail thread. Every agent with an
 address is also told it, in the instructions of every session, so it can name
 it to people and does not look for another way to send.
 
-- **Recipients** are any addresses, outside the organization too, at most 50
-  in `to` and `cc` together, and never an address on the deployment's own mail
-  domain: mail between agents stays excluded, as §4 step 1 keeps it. Nobody
-  approves a send. The accepted risk is that text the agent reads can talk it
-  into mailing what it holds to an outside address; an organization that will
-  not accept it leaves the agent without an address.
+- **Recipients** are at most 50 addresses in `to` and `cc` together, never one
+  on the deployment's own mail domain: mail between agents stays excluded, as
+  §4 step 1 keeps it.
+- **Who may cause a send.** A turn started by a member's own message may mail
+  any address, outside the organization too, and nobody approves it. Any other
+  turn (a guest's message in a shared conversation, a schedule's run, a hook's
+  run) may mail members of the organization only, asked of the Control Plane
+  as §6.1 asks for a reply's `Cc`; the tool refuses an outside recipient there
+  and says why. This is a named exception to
+  "[Writing to other conversations](../product-conventions.md#writing-to-other-conversations)",
+  which drafts a post to outside people for a member to approve: in mail the
+  member whose message started the turn is the one who asked, so a second
+  approval would ask the same person again. The tool does not pass through
+  `judgePlaceWrite` for that reason, and applies the rule above itself. The
+  accepted risk is that text the agent reads during a member's turn can talk
+  it into mailing what it holds to an outside address; an organization that
+  will not accept it leaves the agent without an address.
 - **Budget.** Started mail has a budget of its own beside §6.3's, counted in
   recipients, not sends: 100 recipients a day per bot and 500 per
   organization. A talked-into agent therefore cannot spend its members'
@@ -740,8 +756,9 @@ runtime dependency.
 The build also owes two records outside this document: entries in
 `.oss-scanner/threat_model.md` for the new public route, the relay-held sending
 token, the address-to-member rule, mail from anyone and the ticketless started
-mail, and the mail rows of product conventions'
-session access and memory layer tables.
+mail, and the mail rows of product conventions' session access and memory layer
+tables, with the started-mail exception of §6.4 under "Writing to other
+conversations".
 
 Accepted: on a shared deployment the name check of §3.1 and the unknown-address
 rejection of §7 both reveal which names other organizations hold. A name is
