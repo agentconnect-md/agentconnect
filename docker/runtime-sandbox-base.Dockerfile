@@ -2,7 +2,7 @@
 
 # Build and publish these dependency images manually; release builds use pinned digests.
 # ───────────────────────────── gh CLI fetch ─────────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS gh-cli
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS gh-cli
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -25,7 +25,7 @@ RUN set -eu; \
   /out/gh --version
 
 # ──────────────────────────── glab CLI fetch ────────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS glab-cli
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS glab-cli
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -49,7 +49,7 @@ RUN set -eu; \
   /out/glab --version
 
 # ───────────────────────────── tea CLI fetch ────────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS tea-cli
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS tea-cli
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl xz-utils \
   && rm -rf /var/lib/apt/lists/*
@@ -72,7 +72,7 @@ RUN set -eu; \
   /out/tea --version
 
 # ─────────────────────────── Chrome for Testing ─────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS chrome
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS chrome
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/*
@@ -91,7 +91,7 @@ RUN set -eu; \
   chmod -R a-w /out
 
 # ─────────────────────────────── runtime ────────────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime-base
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS runtime-base
 
 # Install the baseline Git, Python and native build toolchain.
 RUN apt-get update \
@@ -158,7 +158,7 @@ USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
 # Codex needs --argv0 to re-enter its sandbox while its credential directory stays hidden.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS bubblewrap-builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS bubblewrap-builder
 ARG BUBBLEWRAP_VERSION=0.11.2
 ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
 RUN apt-get update \
