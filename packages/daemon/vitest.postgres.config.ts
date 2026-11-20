@@ -38,6 +38,7 @@ export default defineConfig({
       'test/assistant-widened.test.ts',
       'test/assistant-reminders.test.ts',
       'test/place-time-zones.test.ts',
+      'test/email-messages-store.test.ts',
       'test/postgres-async-database.int.test.ts',
       'test/postgres-pool-store.int.test.ts',
       'test/postgres-transcript-org.int.test.ts',

@@ -284,6 +284,17 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       workspaceMembers: true,
       sharedConversations: true
     }
+  ],
+  // History is served from the daemon's own records of the mail; a conversation's members are its current participants (email-integration.md §5.6).
+  [
+    'email',
+    {
+      platform: 'email',
+      label: 'Email',
+      channelHistory: true,
+      threadHistory: true,
+      authoritativeMembers: true
+    }
   ]
 ])
 

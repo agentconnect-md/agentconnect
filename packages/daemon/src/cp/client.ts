@@ -80,6 +80,8 @@ import type {
   TransferSettleReq,
   AgentApprovalRoute,
   AgentApprovalRouted,
+  AgentEmailMembers,
+  AgentEmailMembersOk,
   AgentReadAccess,
   AgentReadAccessOk,
   GithubReviewResultReport,
@@ -1229,6 +1231,16 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected agent/approval-routed, got ${rep.type}`, false)
     }
     return rep.payload as AgentApprovalRouted
+  }
+
+  /** Which addresses are members who may write to an agent by mail (email-integration.md §4 step 3); callers check `email-members-v1` first. */
+  async emailMembers(payload: AgentEmailMembers, orgId?: string): Promise<AgentEmailMembersOk> {
+    this.requireReady('agent/email-members')
+    const rep = await this.request('agent/email-members', payload, orgId)
+    if (rep.type !== 'agent/email-members/ok') {
+      throw new WireError('INTERNAL', `expected agent/email-members/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as AgentEmailMembersOk
   }
 
   /** The current link's registration count: a follow-up watch set is sent again on a new one (assistant-mode.md §5.14). */

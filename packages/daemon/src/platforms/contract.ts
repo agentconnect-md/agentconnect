@@ -483,6 +483,8 @@ export interface PlatformConnection {
 
 /** §7.4 relay-ingress strategy: how one platform notes a relay-delivered `im` before core's gates and shapes it once they pass. */
 export interface RelayIngressStrategy {
+  /** Runs before the channel record: may place the message anew (channel, thread, kind, text) and refuse it; `retry` has the relay answer for a redelivery, `rejected` refuses it for good. */
+  admit?(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'admit' | 'rejected' | 'retry'>
   /** Note what the delivery says about its conversation before any gate, so a message the gate drops still leaves a reply target for its notice. */
   observe?(msg: RdMsgIm, normalized: NormalizedMessage): void
   /** Shape the delivery: `settled` ⇒ answered by the platform, no turn; `refused` ⇒ unrecorded, so redelivered. */
@@ -573,6 +575,8 @@ export interface DaemonPlatformModule {
   readonly relayIngress?: RelayIngressStrategy
   /** The id a synced organization matches this platform's chat member to a console account by; undefined refuses the action. Absent ⇒ the actor's `userId`. */
   chatMemberKey?(actor: InteractionActor): string | undefined
+  /** The console user a chat member is, where the platform's own identity names one; rejects when it cannot be asked. Absent ⇒ the Control Plane's linked-account mapping. */
+  consoleUserOf?(agentId: string, memberId: string): Promise<string | undefined>
   /** Set `msg.thread` in place before the channel record; absent ⇒ the thread normalize set stands. */
   canonicalizeThread?(host: ThreadingHost, msg: NormalizedMessage, transcriptChannel: string): Promise<void>
   /** Clicks on this platform's approval and question cards that arrive as relayed `platform_action`s; absent ⇒ none do. */

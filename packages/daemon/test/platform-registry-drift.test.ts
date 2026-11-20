@@ -48,7 +48,8 @@ describe('daemon platform registry (audit F16)', () => {
       'dingtalk',
       'msteams',
       'wechat',
-      'wecom'
+      'wecom',
+      'email'
     ])
   })
 
@@ -82,7 +83,8 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.dingTalkPool,
       daemon.connections.msTeamsPool,
       daemon.connections.weChatPool,
-      daemon.connections.weComPool
+      daemon.connections.weComPool,
+      daemon.connections.emailPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
   })
@@ -122,7 +124,8 @@ describe('observed-membership platforms (audit F17)', () => {
       'dingtalk',
       'msteams',
       'wechat',
-      'wecom'
+      'wecom',
+      'email'
     ])
     for (const platform of platformIds()) {
       expect(observedMembershipPlatforms().includes(platform)).toBe(

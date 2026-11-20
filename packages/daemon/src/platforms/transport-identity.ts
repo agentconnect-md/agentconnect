@@ -71,7 +71,9 @@ const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string
   // The bot id names one QR binding; its token changes only with a re-scan.
   ['wechat', (int) => platformIntegrationConfig('wechat', int)?.botId],
   // The BotID survives a Secret reset and names one organization's smart bot.
-  ['wecom', (int) => platformIntegrationConfig('wecom', int)?.botId]
+  ['wecom', (int) => platformIntegrationConfig('wecom', int)?.botId],
+  // An address is never reissued, so it names one agent's mailbox for good (email-integration.md §3).
+  ['email', (int) => platformIntegrationConfig('email', int)?.address]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
@@ -132,6 +134,14 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
     'msteams',
     async (host, int) =>
       platformIntegrationConfig('msteams', int)?.tenantId.toLowerCase() ?? (await host.minted(int.id))
+  ],
+  // A sender's address is unique on its own, and the mail domain is the deployment's one namespace of agent addresses.
+  [
+    'email',
+    async (host, int) => {
+      const address = platformIntegrationConfig('email', int)?.address
+      return address ? address.slice(address.lastIndexOf('@') + 1) : await host.minted(int.id)
+    }
   ]
 ])
 
