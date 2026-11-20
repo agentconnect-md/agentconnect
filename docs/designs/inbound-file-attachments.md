@@ -159,11 +159,12 @@ nothing else, in every tier:
   reading, the console and retirement.
 - **A pool agent without a repository** has `/agent` as both its checkout and its runtime
   HOME, so its leaves go under the mount's daemon-owned `.agentconnect/`, and the
-  checkout read refuses `.agentconnect/files`. Otherwise the agent-gated checkout read
+  checkout read, write and delete routes refuse `.agentconnect/files`. Otherwise the agent-gated checkout read
   would reach every session's uploads without the session gate.
-- **A session keeps its tier for life** (git-workspace-model.md §11), so the function's
-  answer does not change under a live session. A re-placement that starts the session in
-  a new directory starts with empty areas.
+- **A session keeps its tier for life** (git-workspace-model.md §11), with one
+  exception: `forceWorkspaceIsolation` re-pins isolation for a formal review and for the
+  webchat per-conversation choice. That re-pin, or a re-placement that starts the session
+  in a new directory, starts with empty areas; markers for earlier files read as missing.
 
 #### Reach
 
@@ -173,11 +174,10 @@ The agent must read and write both areas on every plane, without a new mount:
   executor): already writable. The sandbox grants the whole `sessions/<leaf>`, a session
   VM mounts it, an executor anchors at it, and a pod owns its volume.
 - **The runtime's own sandbox, every tier:** the daemon adds both areas to the session's
-  ACP `additionalDirectories`. Under the daemon's permission profiles, codex-acp passes
-  those directories to Codex as `runtimeWorkspaceRoots`, which the `:workspace` profile
-  makes writable (verified with codex-acp 2.8.0-agentconnect.1, §9). Claude's grant is
-  verified before the change lands; if `additionalDirectories` does not open its Bash
-  sandbox, `allowWrite` gains the two areas.
+  ACP `additionalDirectories`. That alone makes them writable to both runtimes' sandboxed
+  tools (§9): codex-acp passes the directories to Codex as `runtimeWorkspaceRoots`, which
+  the daemon's `:workspace` profile opens, and Claude's Bash sandbox treats them as
+  working directories.
 - **Local sandboxing strategy, shared checkout:** `trustedWorkspaceWriteRoots` adds
   `<agentDir>/files`. One runtime serves every shared session there, so the grant is the
   parent.
@@ -201,9 +201,11 @@ is what `isolation: 'session'` buys.
   thing in the transcript, the console and replayed context.
 - **The standing context names both areas** with their absolute paths in the runtime's
   coordinates, and says that `files:` refers to them. A pod and an executor mount at the
-  same path the daemon composes, so no translation is needed. Replies that mention a
-  session file use the `files:` form, so chat platforms never see a daemon's home
-  directory.
+  same path the daemon composes, so no translation is needed.
+- **Replies carry the `files:` form, not host paths.** The prompt asks for it, and the
+  reply pass that links checkout paths also rewrites an absolute path inside an area to
+  its `files:` form, so a chat platform never sees a daemon's home directory even when
+  the agent ignores the instruction.
 - **Markers record the `files:` form.** `[attached: …]` (§3) and `[shared: …]`
   (agent-authored-attachments.md §4) store it. An older console treats it as an unknown
   checkout path, so it downloads a shared file only from the share's snapshot.
@@ -282,7 +284,8 @@ FUSE is unavailable on many daemon hosts.
 - **Skill roots.** codex-acp points Codex's skill roots at each additional directory's
   `.agents/skills`. A saved attachment cannot create that (names lose leading dots), but
   an archive the agent extracts into an area can add skills, as one extracted into the
-  checkout can today. Claude's equivalent is checked with its grant.
+  checkout can today. Whether Claude loads skills from an additional directory is checked
+  with the implementation.
 - **Prompt-build fetch.** The daemon fetches only a URL the Control Plane signed for that
   upload in `transfer/get`, never a URL from message text, and writes at most
   `limits.maxAttachmentBytes` through the same exclusive-create path as platform files.
@@ -494,10 +497,10 @@ materialization exists — the link rung only fires on over-cap files and write 
 ## 8. Phasing
 
 The session files directory (§2.4) ships first, in its own phases: (a) the daemon layout,
-grants, retention, absolute paths in the prompt and tool text, and removal of the #4143
-filter; (b) the `root` read scope, the dock section and reply links; (c) daemon
-materialization of console uploads from the bucket. The phases below then land in that
-directory.
+grants, retention, the standing-context block and `files:` names in the prompt and tool
+text, the entry in `.oss-scanner/threat_model.md`, and removal of the #4143 filter; (b)
+the `root` read scope, the dock section and reply links; (c) daemon materialization of
+console uploads from the bucket. The phases below then land in that directory.
 
 1. **Foundation (daemon only, no wire change):** `WorkspaceFs.writeFileBytes` (+ shim
    channel leg), the `uploads/` landing zone with sanitization / exclusive-create /
@@ -527,5 +530,7 @@ console), because every new field is optional and the image path survives untouc
   with an area in `additionalDirectories`, `touch` in it succeeded and in an ungranted
   sibling failed with "Read-only file system"; without it, both failed and the checkout
   stayed writable.
-- Claude's equivalent, before the code lands: whether `additionalDirectories` alone opens
-  its Bash sandbox, or only `allowWrite` does.
+- Claude grant, verified 2026-11-20 with claude-agent-acp 0.109.0 and the daemon's
+  `claudeInnerSandboxSettings`: the same three `touch` commands through the Bash tool
+  gave the same result as Codex. An area in `additionalDirectories` was writable, an
+  ungranted sibling was "Read-only file system", and without the grant both failed.
