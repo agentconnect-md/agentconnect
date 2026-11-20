@@ -783,9 +783,15 @@ export class PgUserRepo implements UserRepo {
   async memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null> {
     const address = email.trim().toLowerCase()
     const domain = address.slice(address.lastIndexOf('@') + 1)
-    // The address is unique per deployment and stored lower-cased, so at most one row answers.
-    const row = await this.db.membership.findFirst({
-      where: { orgId, user: { kind: 'human', email: address }, ...ACTIVE_MEMBERSHIP },
+    const rows = await this.db.membership.findMany({
+      where: {
+        orgId,
+        user: {
+          kind: 'human',
+          OR: [{ email: address }, { linkedEmails: { has: address } }, { tenantEmails: { has: address } }]
+        },
+        ...ACTIVE_MEMBERSHIP
+      },
       include: {
         user: true,
         org: {
@@ -796,15 +802,25 @@ export class PgUserRepo implements UserRepo {
         }
       }
     })
-    if (!row) return null
     // Read live, so deactivating or removing the connection, or releasing the domain, ends the match at once.
-    const connection = row.org.ssoConnection
-    const byOrganization =
-      connection != null &&
-      connection.activatedAt !== null &&
-      row.org.domains.length > 0 &&
-      row.user.emailSsoConnectorIds.includes(connection.logtoConnectorId)
-    return row.user.emailVerifiedAt !== null || byOrganization ? toMemberRecord(row) : null
+    const owns = (row: (typeof rows)[number]): boolean => {
+      const { user } = row
+      const domainVerified = row.org.domains.length > 0
+      const connection = row.org.ssoConnection
+      const byOrganization =
+        connection != null &&
+        connection.activatedAt !== null &&
+        domainVerified &&
+        user.emailSsoConnectorIds.includes(connection.logtoConnectorId)
+      return (
+        (user.email === address && (user.emailVerifiedAt !== null || byOrganization)) ||
+        user.linkedEmails.includes(address) ||
+        (domainVerified && user.tenantEmails.includes(address))
+      )
+    }
+    // Linked addresses are not unique, so an address two members both hold names neither of them.
+    const owners = rows.filter(owns)
+    return owners.length === 1 ? toMemberRecord(owners[0]!) : null
   }
 
   async setMemberRole(
@@ -1054,22 +1070,35 @@ export class PgUserRepo implements UserRepo {
   async recordEmailEvidence(userId: string, evidence: EmailEvidence, at: Date): Promise<void> {
     const user = await this.db.user.findUnique({
       where: { id: userId },
-      select: { email: true, kind: true, emailVerifiedAt: true, emailSsoConnectorIds: true }
+      select: {
+        email: true,
+        kind: true,
+        emailVerifiedAt: true,
+        emailSsoConnectorIds: true,
+        linkedEmails: true,
+        tenantEmails: true
+      }
     })
     if (!user || user.kind !== 'human') return
+    const normal = (emails: readonly string[]) => [...new Set(emails.map((e) => e.trim().toLowerCase()))].sort()
     const stored = (email: string) => email.trim().toLowerCase() === user.email
     const emailVerifiedAt = evidence.verified.some(stored) ? (user.emailVerifiedAt ?? at) : null
     const connectorIds = [
       ...new Set(evidence.asserted.filter((identity) => stored(identity.email)).map((identity) => identity.connectorId))
     ].sort()
+    const linkedEmails = normal(evidence.verified)
+    const tenantEmails = normal(evidence.tenant)
+    const same = (a: readonly string[], b: readonly string[]) => a.join('\n') === [...b].sort().join('\n')
     const unchanged =
       emailVerifiedAt?.getTime() === user.emailVerifiedAt?.getTime() &&
-      connectorIds.join('\n') === [...user.emailSsoConnectorIds].sort().join('\n')
+      same(connectorIds, user.emailSsoConnectorIds) &&
+      same(linkedEmails, user.linkedEmails) &&
+      same(tenantEmails, user.tenantEmails)
     if (unchanged) return
     // Guarded by the address the evidence was compared with, so a placeholder upgraded meanwhile keeps nothing of it.
     await this.db.user.updateMany({
       where: { id: userId, email: user.email },
-      data: { emailVerifiedAt, emailSsoConnectorIds: connectorIds }
+      data: { emailVerifiedAt, emailSsoConnectorIds: connectorIds, linkedEmails, tenantEmails }
     })
   }
 }

@@ -599,7 +599,7 @@ describe('LogtoIdentityService.googleAccountIdFor (google-chat-integration.md §
 })
 
 describe('LogtoIdentityService.socialEmailsFor', () => {
-  it('returns the lower-cased addresses of the linked social identities, once each', async () => {
+  it('returns the lower-cased address of each linked social identity with its target', async () => {
     const users: Record<string, unknown> = {
       'sub-1': {
         primaryEmail: 'Someone@Example.Test',
@@ -612,7 +612,11 @@ describe('LogtoIdentityService.socialEmailsFor', () => {
     }
     const svc = svcOf(fakeLogto(users).fetchImpl, new FakeClock(0))
 
-    await expect(svc.socialEmailsFor('sub-1')).resolves.toEqual(['someone@example.test', 'other@example.test'])
+    await expect(svc.socialEmailsFor('sub-1')).resolves.toEqual([
+      { target: 'google', email: 'someone@example.test' },
+      { target: 'github', email: 'someone@example.test' },
+      { target: 'gitlab', email: 'other@example.test' }
+    ])
   })
 
   it('never takes the account address, an SSO identity, or a raw profile field as a social address', async () => {

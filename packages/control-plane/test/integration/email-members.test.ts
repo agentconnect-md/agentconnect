@@ -16,7 +16,8 @@ const deps = () => ({ agent: new PgAgentRepo(prisma), integration: new PgIntegra
 async function member(email: string, opts: { orgId?: string; verified?: boolean } = {}): Promise<string> {
   const { userId } = await users().provisionOidcUser({ oidcSubject: `sub-${randomUUID()}`, email, emailVerified: true })
   await users().addMember(opts.orgId ?? DEFAULT_ORG_ID, userId, 'collaborator')
-  if (opts.verified !== false) await users().recordEmailEvidence(userId, { verified: [email], asserted: [] }, AT)
+  if (opts.verified !== false)
+    await users().recordEmailEvidence(userId, { verified: [email], tenant: [], asserted: [] }, AT)
   return userId
 }
 

@@ -48,9 +48,10 @@ describe('PgUserRepo Google account id (google-chat-integration.md §10.6)', () 
 
 describe('PgUserRepo verified address', () => {
   const AT = new Date('2026-01-01T00:00:00Z')
-  const NONE = { verified: [], asserted: [] }
-  const social = (...verified: string[]) => ({ verified, asserted: [] })
-  const sso = (connectorId: string, email: string) => ({ verified: [], asserted: [{ connectorId, email }] })
+  const NONE = { verified: [], tenant: [], asserted: [] }
+  const social = (...verified: string[]) => ({ verified, tenant: [], asserted: [] })
+  const microsoft = (...tenant: string[]) => ({ verified: [], tenant, asserted: [] })
+  const sso = (connectorId: string, email: string) => ({ verified: [], tenant: [], asserted: [{ connectorId, email }] })
   const member = async (email: string, role: 'owner' | 'collaborator' | 'viewer' = 'collaborator') => {
     const { userId } = await repo().provisionOidcUser({
       oidcSubject: `sub-${randomUUID()}`,
@@ -63,7 +64,7 @@ describe('PgUserRepo verified address', () => {
   const evidenceOf = (userId: string) =>
     prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { emailVerifiedAt: true, emailSsoConnectorIds: true }
+      select: { emailVerifiedAt: true, emailSsoConnectorIds: true, linkedEmails: true, tenantEmails: true }
     })
   const otherOrg = async () => (await prisma.org.create({ data: { slug: `org-${randomUUID()}` } })).id
   const connect = (orgId: string, logtoConnectorId: string, activatedAt: Date | null = AT) =>
@@ -89,6 +90,7 @@ describe('PgUserRepo verified address', () => {
     // An address the sign-in methods report for another mailbox proves nothing about the stored one.
     await repo().recordEmailEvidence(userId, social('elsewhere@example.test'), AT)
     expect((await evidenceOf(userId)).emailVerifiedAt).toBeNull()
+    expect(await matches(DEFAULT_ORG_ID, 'verified@example.test')).toBe(false)
 
     await repo().recordEmailEvidence(userId, social('elsewhere@example.test', ' Verified@Example.Test '), AT)
     expect((await evidenceOf(userId)).emailVerifiedAt).toEqual(AT)
@@ -98,6 +100,49 @@ describe('PgUserRepo verified address', () => {
       role: 'collaborator'
     })
     expect(await matches(`org-${randomUUID()}`, 'verified@example.test')).toBe(false)
+  })
+
+  it('matches a member by any address a verifying sign-in method reports, in every organization, until it is unlinked', async () => {
+    const userId = await member('primary@example.test')
+    const second = await otherOrg()
+    await repo().addMember(second, userId, 'collaborator')
+    await repo().recordEmailEvidence(userId, social('primary@example.test', ' Work@Corp.Example.Test '), AT)
+    expect((await evidenceOf(userId)).linkedEmails).toEqual(['primary@example.test', 'work@corp.example.test'])
+    expect(await repo().memberByVerifiedEmail(DEFAULT_ORG_ID, 'work@corp.example.test')).toMatchObject({ userId })
+    expect(await matches(second, 'work@corp.example.test')).toBe(true)
+
+    await repo().recordEmailEvidence(userId, social('primary@example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'work@corp.example.test')).toBe(false)
+    expect(await matches(DEFAULT_ORG_ID, 'primary@example.test')).toBe(true)
+  })
+
+  it('counts a Microsoft address only under a domain the organization has verified now', async () => {
+    const userId = await member('primary@example.test')
+    await repo().recordEmailEvidence(userId, microsoft('member@tenant.example.test'), AT)
+    expect(await evidenceOf(userId)).toMatchObject({
+      emailVerifiedAt: null,
+      tenantEmails: ['member@tenant.example.test']
+    })
+    expect(await matches(DEFAULT_ORG_ID, 'member@tenant.example.test')).toBe(false)
+
+    const domain = await claim(DEFAULT_ORG_ID, 'tenant.example.test')
+    expect(await matches(DEFAULT_ORG_ID, 'member@tenant.example.test')).toBe(true)
+    await prisma.orgDomain.delete({ where: { id: domain.id } })
+    expect(await matches(DEFAULT_ORG_ID, 'member@tenant.example.test')).toBe(false)
+
+    // A Microsoft identity reporting the stored address does not verify it either.
+    await repo().recordEmailEvidence(userId, microsoft('primary@example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'primary@example.test')).toBe(false)
+  })
+
+  it('names nobody when two members both hold the address', async () => {
+    const first = await member('first@example.test')
+    const second = await member('second@example.test')
+    await repo().recordEmailEvidence(first, social('shared@example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'shared@example.test')).toBe(true)
+
+    await repo().recordEmailEvidence(second, social('shared@example.test'), AT)
+    expect(await matches(DEFAULT_ORG_ID, 'shared@example.test')).toBe(false)
   })
 
   it('keeps the first mark while the address stays vouched for, and drops it when it no longer is', async () => {
@@ -141,7 +186,7 @@ describe('PgUserRepo verified address', () => {
     await claim(DEFAULT_ORG_ID, 'corp.example.test')
 
     await repo().recordEmailEvidence(userId, sso('connector-corp', 'SSO@corp.example.test'), AT)
-    expect(await evidenceOf(userId)).toEqual({ emailVerifiedAt: null, emailSsoConnectorIds: ['connector-corp'] })
+    expect(await evidenceOf(userId)).toMatchObject({ emailVerifiedAt: null, emailSsoConnectorIds: ['connector-corp'] })
     expect(await matches(DEFAULT_ORG_ID, 'sso@corp.example.test')).toBe(true)
     expect(await matches(second, 'sso@corp.example.test')).toBe(false)
 
@@ -212,15 +257,15 @@ describe('PgUserRepo verified address', () => {
     const asserted = [{ connectorId: 'connector-deployment', email: 'staff@example.test' }]
 
     // Trusting unverified addresses: the address is only asserted, by a connector no organization owns.
-    await repo().recordEmailEvidence(userId, { verified: [], asserted }, AT)
+    await repo().recordEmailEvidence(userId, { verified: [], tenant: [], asserted }, AT)
     expect(await matches(DEFAULT_ORG_ID, 'staff@example.test')).toBe(false)
 
     // Not trusting them: the sync reports the same address as verified.
-    await repo().recordEmailEvidence(userId, { verified: ['staff@example.test'], asserted }, AT)
+    await repo().recordEmailEvidence(userId, { verified: ['staff@example.test'], tenant: [], asserted }, AT)
     expect(await matches(DEFAULT_ORG_ID, 'staff@example.test')).toBe(true)
     expect(await matches(second, 'staff@example.test')).toBe(true)
 
-    await repo().recordEmailEvidence(userId, { verified: [], asserted }, AT)
+    await repo().recordEmailEvidence(userId, { verified: [], tenant: [], asserted }, AT)
     expect(await matches(DEFAULT_ORG_ID, 'staff@example.test')).toBe(false)
   })
 })

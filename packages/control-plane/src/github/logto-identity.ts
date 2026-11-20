@@ -385,15 +385,14 @@ export class LogtoIdentityService {
     return firstString(user?.identities?.google?.details?.email)
   }
 
-  /** Addresses the linked social sign-in methods report as the account's own, lower-cased; an SSO identity's address is never among them. */
-  async socialEmailsFor(sub: string): Promise<string[]> {
+  /** Addresses the linked social sign-in methods report as the account's own, lower-cased, each with its method; an SSO identity's address is never among them. */
+  async socialEmailsFor(sub: string): Promise<{ target: string; email: string }[]> {
     const user = await this.logtoUser(sub, this.identityTtlMs)
     // Only the normalized address counts: a connector's raw profile can carry one the provider never verified.
-    const emails = Object.values(user?.identities ?? {}).flatMap((identity) => {
+    return Object.entries(user?.identities ?? {}).flatMap(([target, identity]) => {
       const email = firstString(identity.details?.email)?.trim().toLowerCase()
-      return email ? [email] : []
+      return email ? [{ target, email }] : []
     })
-    return [...new Set(emails)]
   }
 
   /**

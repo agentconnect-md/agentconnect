@@ -17,16 +17,16 @@ import { emailAgentAddress } from '@agentconnect.md/message'
 import type { RelayIngressRouteDeps } from '../contract.js'
 import { settleWithin } from '../settle-within.js'
 
-/** What the relay tells the sender's mail server when it rejects a message: short, fixed, and the same whatever the cause within one line (§4). */
+/** What the relay tells the sender's mail server when it rejects a message: short, fixed, the same whatever the cause within one line, and with no final period, which the mail server adds (§4). */
 export const EMAIL_REJECT_REASONS = {
-  unknownAddress: 'This address does not exist.',
-  unreadable: 'This message could not be read.',
-  unauthenticated: 'This message could not be verified as coming from its sender.',
-  sender: 'This message does not name a single sender address.',
-  messageId: 'This message has no usable Message-ID.',
-  recipients: 'This message names too many recipients.',
-  notMember: 'This address accepts mail from members of its organization.',
-  rateLimited: 'Too many messages were sent to this address. Try again later.'
+  unknownAddress: 'This address does not exist',
+  unreadable: 'This message could not be read',
+  unauthenticated: 'This message could not be verified as coming from its sender',
+  sender: 'This message does not name a single sender address',
+  messageId: 'This message has no usable Message-ID',
+  recipients: 'This message names too many recipients',
+  notMember: 'This address accepts mail from members of its organization',
+  rateLimited: 'Too many messages were sent to this address. Try again later'
 } as const
 
 /** The route settles a message within this, short of the Worker's own wait so the answer still reaches it (§5.5). */

@@ -181,10 +181,14 @@ model ProviderKeyHeader {
 model User {
   id                      String    @id @default(cuid())
   email                   String    @unique
-  // Set while a sign-in method that verifies addresses reports `email` as the account's own: a social method, or the deployment's connector when it takes only verified ones.
+  // Set while a sign-in method that verifies addresses reports `email` as the account's own: a social method other than Microsoft, or the deployment's connector when it takes only verified ones.
   emailVerifiedAt         DateTime? @db.Timestamptz(6)
   // SSO connectors whose identity on the account asserts `email`; one counts only for the organization that owns it and holds the address's domain.
   emailSsoConnectorIds    String[]  @default([])
+  // Lower-cased addresses a linked sign-in method that verifies addresses reports, the stored one included; each counts in every organization.
+  linkedEmails            String[]  @default([])
+  // Lower-cased addresses a linked Microsoft identity reports; its tenant sets them, so one counts only under a domain the organization has verified.
+  tenantEmails            String[]  @default([])
   displayName             String?
   picture                 String? // OIDC `picture` claim (avatar URL); display-only, refreshed on sign-in
   // Set when the user uploads a profile photo. The image itself lives in the icon

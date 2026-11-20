@@ -179,8 +179,8 @@ message:
    anyone. DMARC proves the domain, not the mailbox: the sender domain's own
    mail system is trusted for the local part, as it is for that domain's
    sign-in.
-3. **The sender is a member who may use the agent.** The `From` address is the
-   verified sign-in email of a member of the agent's organization, and the
+3. **The sender is a member who may use the agent.** The `From` address is a
+   verified address of one member of the agent's organization, and the
    agent's visibility admits that member (everyone in the organization, or its
    list). An address no sign-in method stands behind is never matched, and one
    that an organization's own single sign-on connection asserts counts in that
@@ -207,13 +207,20 @@ identity itself, proven for each message by step 2, and it is matched only
 against an email a sign-in method stands behind.
 
 The Control Plane records what the account's linked sign-in methods say about
-its stored address, and step 3 reads nothing else. Three kinds of evidence
-count, and no other:
+its addresses, and step 3 reads nothing else. A person often signs in with one
+address and mails from another, so every address a linked method reports
+counts, not only the account's stored one. Four kinds of evidence count, and no
+other:
 
 - **A social sign-in method** linked to the account reports the address as the
   account's own, which such a method does only for an address its provider
   verified ([organization-sso.md](organization-sso.md) §4.3). The address then
-  counts in every organization the account belongs to.
+  counts in every organization the account belongs to, until the method is
+  unlinked.
+- **A linked Microsoft identity** reports the address, and its domain is one the
+  organization has verified now. Microsoft's work and school accounts carry the
+  address their own tenant set, and anyone can create a tenant, so the address
+  proves no mailbox by itself; the organization's verified domain does.
 - **The organization's own single sign-on connection** asserts the address,
   the connection is active, and the address's domain is one that organization
   has verified now. It counts in that organization and in no other. The organization proved it controls the
@@ -234,8 +241,9 @@ count, and no other:
   setting on it never counts, and neither does a SAML connector, whose
   assertion carries no such mark.
 
-An invited or directory-provisioned account nobody has signed in to, a service
-account and a suspended membership never match. The evidence is read from the
+An address two members of the organization both hold names neither of them,
+and the mail is refused. An invited or directory-provisioned account nobody has
+signed in to, a service account and a suspended membership never match. The evidence is read from the
 identity service each time a Control Plane process first resolves the account's
 sign-in, and again at a sign-in through a connector new to that process;
 evidence that is gone is dropped then. Where the Control Plane cannot read the

@@ -7498,8 +7498,10 @@ export interface OrgDeleteResult {
 
 /** What the identity provider's linked sign-in methods say about an account's addresses. */
 export interface EmailEvidence {
-  /** Addresses reported by a method that verifies them: a social method, or the deployment's connector when it takes only verified ones. */
+  /** Addresses reported by a method that verifies them: a social method other than Microsoft, or the deployment's connector when it takes only verified ones. */
   verified: readonly string[]
+  /** Addresses a linked Microsoft identity reports, which its tenant sets. */
+  tenant: readonly string[]
   /** The address each SSO connector's identity on the account asserts. */
   asserted: readonly { connectorId: string; email: string }[]
 }
@@ -7547,7 +7549,7 @@ export interface UserRepo {
   listMembers(orgId: string): Promise<OrgMemberRecord[]>
   /** The active member of the organization who signs in as this subject, or null. */
   memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null>
-  /** The active human member whose stored address is verified for this organization (`recordEmailEvidence`), or null; verified for another organization never matches. */
+  /** The one active human member whose own address this is for this organization (`recordEmailEvidence`), or null when none or several are; verified for another organization never matches. */
   memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null>
 
   /**

@@ -210,7 +210,7 @@ describe('email inbound route and relay plugin', () => {
       h.verdict = async () => ({ disposition: 'rejected', reason })
       expect((await post(h, rawMail({ messageId: `${reason}@corp.example.test` }))).json()).toEqual({
         result: 'reject',
-        reason: 'This address accepts mail from members of its organization.'
+        reason: 'This address accepts mail from members of its organization'
       })
     }
     h.verdict = async () => ({ disposition: 'rejected', reason: 'no_agent' })
