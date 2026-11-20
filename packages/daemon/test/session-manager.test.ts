@@ -92,8 +92,8 @@ const msg = (over: Partial<NormalizedMessage> & { ts?: string; channel?: string 
 
 // Every session is handed its two file areas beside the repository roots (inbound-file-attachments.md §2.4).
 const SESSION_AREAS = [
-  expect.stringMatching(/\/files\/session-[0-9a-f]{24}\/outputs$/),
-  expect.stringMatching(/\/files\/session-[0-9a-f]{24}\/uploads$/)
+  expect.stringMatching(/[\\/]files[\\/]session-[0-9a-f]{24}[\\/]outputs$/),
+  expect.stringMatching(/[\\/]files[\\/]session-[0-9a-f]{24}[\\/]uploads$/)
 ]
 
 describe('SessionManager', () => {

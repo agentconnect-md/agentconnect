@@ -187,7 +187,7 @@ describe('QQ images through the daemon', () => {
       })
       // Saved in the session files directory beside the checkout, never inside it (inbound-file-attachments.md §2.4).
       const saved = /to `([^`]+)`/.exec((fileReads[0] as { mcpContent: { text: string }[] }).mcpContent[0]!.text)![1]!
-      expect(saved).toMatch(/\/files\/session-[0-9a-f]{24}\/uploads\/invoice\.pdf$/)
+      expect(saved).toMatch(/[\\/]files[\\/]session-[0-9a-f]{24}[\\/]uploads[\\/]invoice\.pdf$/)
       expect(readFileSync(saved)).toEqual(pdf)
       expect(existsSync(join(sessionCwd, 'uploads'))).toBe(false)
       expect(download).toHaveBeenCalled()
