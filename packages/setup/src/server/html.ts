@@ -553,6 +553,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         <div id="email-ingress-once" class="notice" hidden>
           <p>Ingress secret, shown once. Set it as the Worker's secret now:</p>
           <pre id="email-ingress-secret"></pre>
+          <div class="row"><button id="copy-email-ingress">Copy</button><button id="dismiss-email-ingress">Dismiss</button></div>
         </div>
         <p>Inbound URL for the ingress Worker:</p><ul id="email-inbound" class="uris"></ul>
         <ol class="muted">
@@ -569,7 +570,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <label class="field">API token<input id="email-token" type="password" autocomplete="new-password" placeholder="Required when the account ID changes"></label>
           <label class="field">Daily send limit (optional)<input id="email-send-limit-input" inputmode="numeric" autocomplete="off"></label>
         </div>
-        <div class="row"><button id="save-email">Save Email</button><button id="cancel-email-configuration" hidden>Cancel</button><button id="rotate-email-ingress" hidden>Replace ingress secret</button><button id="clear-email" class="danger" hidden>Clear configuration</button></div>
+        <div class="row"><button id="save-email">Save Email</button><button id="cancel-email-configuration" hidden>Cancel</button><button id="rotate-email-ingress" hidden>Replace ingress secret</button><span id="email-rotate-confirm" hidden>Replace? Mail is refused until the Worker has the new one. <button id="confirm-rotate-email-ingress" class="danger">Replace</button><button id="cancel-rotate-email-ingress">Cancel</button></span><button id="clear-email" class="danger" hidden>Clear configuration</button></div>
       </section>
 
 
@@ -1029,8 +1030,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('gitlab-admin-applications').href = expectedGitlab.adminApplicationsUrl;
       }
       el('gitlab-base-url').value = (gitlab && gitlab.baseUrl) || '';
-      // A probe verdict belongs to the save that produced it, never to a reload.
-      el('gitlab-probe').hidden = true;
       el('gitlab-status').textContent = gitlab
         ? gitlab.clientId + ' is configured.'
         : expectedGitlab
@@ -1057,8 +1056,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
       text('gitea-instance', (gitea && gitea.baseUrl) || 'https://gitea.com');
       el('gitea-base-url').value = (gitea && gitea.baseUrl) || '';
       showIdentityEditors('gitea', Boolean(gitea));
-      // A probe verdict belongs to the save that produced it, never to a reload.
-      el('gitea-probe').hidden = true;
       el('gitea-status').textContent = gitea
         ? ((gitea.baseUrl || 'https://gitea.com') + ' is configured.')
         : 'Organizations can connect gitea.com without saving anything. Save an address only for a self-hosted instance.';
@@ -1153,13 +1150,13 @@ export const SETUP_HTML = String.raw`<!doctype html>
         : []);
       const emailReady = email && emailToken && emailIngress;
       match('email-match', emailReady ? 'pass' : email ? 'warn' : '', !email ? 'Not configured' : !emailReady ? 'Missing secret' : 'Checked on save');
-      el('email-ingress-once').hidden = true;
-      el('email-ingress-secret').textContent = '';
       el('email-edit-heading').hidden = true;
       el('email-config-controls').hidden = Boolean(email);
       el('save-email').hidden = Boolean(email);
       el('cancel-email-configuration').hidden = true;
-      el('rotate-email-ingress').hidden = !email;
+      // A status render never touches the secret box or a pending Replace: they belong to the operator's own clicks.
+      if (!email) el('email-rotate-confirm').hidden = true;
+      el('rotate-email-ingress').hidden = !email || !el('email-rotate-confirm').hidden;
       el('clear-email').hidden = !email;
 
 
@@ -1380,6 +1377,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('save-email').hidden = false;
         el('cancel-email-configuration').hidden = false;
         el('rotate-email-ingress').hidden = true;
+        el('email-rotate-confirm').hidden = true;
         el('clear-email').hidden = true;
         el('email-mail-domain-input').focus();
       } else if (provider === 'linear') {
@@ -1576,6 +1574,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
           method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
           body: JSON.stringify({ application: null })
         }));
+        showGitlabProbe(null);
         await load();
         message('GitLab configuration cleared. Its setup controls are available again.');
         return;
@@ -1618,6 +1617,8 @@ export const SETUP_HTML = String.raw`<!doctype html>
         secrets = { [provider + '.loginAppSecret']: null };
       }
       await replaceConfiguration(next, secrets, label + ' configuration cleared. Its setup controls are available again.');
+      if (provider === 'gitea') el('gitea-probe').hidden = true;
+      if (provider === 'email') showEmailIngressSecret('');
     }
 
     async function startGithub(prefix) {
@@ -1939,7 +1940,6 @@ export const SETUP_HTML = String.raw`<!doctype html>
         ? (stored && stored.dailySendLimit ? String(stored.dailySendLimit) : '')
         : el('email-send-limit-input').value.trim();
       if (limit && !/^[1-9][0-9]*$/.test(limit)) throw new Error('Enter the daily send limit as a whole number, or leave it empty.');
-      if (rotateIngressSecret && !window.confirm('Replace the ingress secret? Mail is refused until the Worker has the new one.')) return;
       const apiToken = rotateIngressSecret ? '' : el('email-token').value.trim();
       let saved;
       try {
@@ -1959,12 +1959,26 @@ export const SETUP_HTML = String.raw`<!doctype html>
         // The token never stays in the page once it has been submitted, whatever the outcome.
         el('email-token').value = '';
       }
-      await load();
-      if (saved.ingressSecret) {
-        el('email-ingress-secret').textContent = saved.ingressSecret;
-        el('email-ingress-once').hidden = false;
-      }
+      // The response alone fills the secret box, so no render that follows can take it away.
+      showEmailIngressSecret(saved.ingressSecret);
       message('Email saved. ' + saved.probe.message + '. Restart AgentConnect to apply it.');
+      await refreshDeploymentConfig();
+    }
+
+    function showEmailIngressSecret(secret) {
+      el('email-ingress-secret').textContent = secret || '';
+      el('email-ingress-once').hidden = !secret;
+    }
+
+    async function copyEmailIngressSecret() {
+      await navigator.clipboard.writeText(el('email-ingress-secret').textContent);
+      message('Ingress secret copied.');
+    }
+
+    function confirmEmailIngressRotation(open) {
+      el('email-rotate-confirm').hidden = !open;
+      el('rotate-email-ingress').hidden = open;
+      if (open) el('cancel-rotate-email-ingress').focus();
     }
 
     async function saveLinear() {
@@ -2371,7 +2385,14 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-googlechat-configuration').onclick = cancelConfigurationEdit;
     el('clear-googlechat').onclick = () => clearProvider('googlechat').catch((error) => message(error.message, true));
     el('save-email').onclick = () => saveEmail(false).catch((error) => message(error.message, true));
-    el('rotate-email-ingress').onclick = () => saveEmail(true).catch((error) => message(error.message, true));
+    el('rotate-email-ingress').onclick = () => confirmEmailIngressRotation(true);
+    el('cancel-rotate-email-ingress').onclick = () => confirmEmailIngressRotation(false);
+    el('confirm-rotate-email-ingress').onclick = () => {
+      confirmEmailIngressRotation(false);
+      saveEmail(true).catch((error) => message(error.message, true));
+    };
+    el('copy-email-ingress').onclick = () => copyEmailIngressSecret().catch(() => message('Copy failed. Select the secret and copy it.', true));
+    el('dismiss-email-ingress').onclick = () => showEmailIngressSecret('');
     el('cancel-email-configuration').onclick = cancelConfigurationEdit;
     el('clear-email').onclick = () => clearProvider('email').catch((error) => message(error.message, true));
     el('save-linear').onclick = () => saveLinear().catch((error) => message(error.message, true));

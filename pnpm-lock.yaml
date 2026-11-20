@@ -771,6 +771,9 @@ importers:
       '@types/node':
         specifier: ^26.6.6
         version: 26.6.6
+      happy-dom:
+        specifier: ^21.0.4
+        version: 21.0.4
       json:
         specifier: ^11.0.0
         version: 11.0.0
