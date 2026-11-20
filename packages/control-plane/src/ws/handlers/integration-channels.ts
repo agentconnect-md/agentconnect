@@ -18,7 +18,7 @@
  * ships under, so a duty holder may write for what it was given and nothing else.
  * A daemon can never write channel rows for another daemon's integration.
  */
-import { isFrame } from '@agentconnect.md/protocol'
+import { isFrame, manifestFor } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { autoConversationKinds } from '../../domain/conversation-defaults.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
@@ -44,6 +44,8 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   const owned = await activeForServedAgents(DaemonId(conn.daemonId), deps)
   const integration = owned.find((i) => i.id === p.integrationId)
   if (!integration) return // unknown / just deleted / not this daemon's — drop silently
+  // A platform that lists no conversations keeps no row for one, whatever an older daemon still reports.
+  if (!manifestFor(integration.platform).listsConversations) return
   // §4.2(4) session-access cross-check (session-access-cold-visit.md): a channel observed
   // private drops its cached `public` audience verdict. Invalidation only — never a written
   // verdict, absent/false `isPrivate` changes nothing — so it can run ahead of the mutation

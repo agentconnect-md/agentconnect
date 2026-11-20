@@ -96,6 +96,13 @@ describe('handleIntegrationChannels — isPrivate cross-check', () => {
     expect(dropPublicAudiences).not.toHaveBeenCalled()
   })
 
+  it('writes nothing for a platform that lists no conversations, whatever an older daemon reports', async () => {
+    const { deps, replaceSnapshot, integrationConverge } = fakeDeps('email')
+    await handleIntegrationChannels(frame([{ id: 'dm:alice@example.test', kind: 'im' }]), conn, deps)
+    expect(replaceSnapshot).not.toHaveBeenCalled()
+    expect(integrationConverge).not.toHaveBeenCalled()
+  })
+
   it('stays silent for an integration this daemon does not own', async () => {
     const { deps, dropPublicAudiences } = fakeDeps('slack', false)
     await handleIntegrationChannels(frame([{ id: 'C_PRIVATE', isPrivate: true }]), conn, deps)
