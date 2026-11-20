@@ -22,6 +22,7 @@ const wire = vi.hoisted(() => ({
   threadReads: [] as string[],
   threadReplies: [] as unknown[],
   live: [] as unknown[],
+  pg: null as null | ({ id: string; realSessionId?: string } & Record<string, unknown>),
   owns: true,
   role: 'collaborator'
 }))
@@ -169,7 +170,8 @@ vi.mock('@/components/console/Shell', () => ({
 vi.mock('@/components/console/PlaygroundProvider', () => {
   const playground = {
     getPgSuggestion: () => undefined,
-    getPgSession: () => undefined,
+    getPgSession: (id: string) =>
+      wire.pg && (wire.pg.id === id || wire.pg.realSessionId === id) ? wire.pg : undefined,
     getLiveSteps: () => wire.live,
     getBusyLaneAgentIds: () => [],
     reconcileLiveSteps: () => {},
@@ -352,6 +354,7 @@ beforeEach(() => {
   wire.threadReads = []
   wire.threadReplies = []
   wire.live = []
+  wire.pg = null
   wire.owns = true
   wire.role = 'collaborator'
   daemonFeatures.length = 0
@@ -529,6 +532,53 @@ describe('a webchat coordinator’s main timeline (webchat-threads.md §6.1)', (
     // The coordinator answering a thread message answers in the main timeline, labelled.
     expect(text()).toContain('LIVE COORDINATOR ANSWER')
     expect([...(container?.querySelectorAll('[data-turn-in-thread]') ?? [])]).toHaveLength(2)
+  })
+})
+
+describe('a playground conversation the daemon made a session of (webchat-transcript-refresh.md §1)', () => {
+  it('reads that session’s roots, drawing its threads’ footers, and leaves the stream’s work to its rows', async () => {
+    conversation()
+    const steps: SessionStep[] = [
+      { kind: 'msg', who: '@you', turnId: 't1', text: 'Why is the deploy slow?', observedAtMs: 1 },
+      {
+        kind: 'tool',
+        agentId: 'agent-1',
+        turnId: 't1',
+        text: 'LIVE DELEGATE CALL',
+        toolCallId: 'call-live',
+        observedAtMs: 2
+      }
+    ]
+    wire.pg = {
+      ...listRow,
+      id: 'pg_agent-1_1',
+      platform: 'playground',
+      realSessionId: 'session-1',
+      coordinator: true,
+      steps
+    }
+    wire.live = steps
+    await open()
+    expect(wire.historyCalls[0]).toMatchObject({ view: 'roots' })
+    expect(q(`[data-thread-footer="${ROOT}"]`)?.textContent).toContain('2 replies')
+    expect(text()).not.toContain('LIVE DELEGATE CALL')
+  })
+
+  it('stays on its stream until the Control Plane knows the session', async () => {
+    const steps: SessionStep[] = [
+      { kind: 'done', agentId: 'agent-1', turnId: 't1', text: 'LIVE ANSWER', observedAtMs: 2 }
+    ]
+    wire.pg = {
+      ...listRow,
+      id: 'pg_agent-1_1',
+      platform: 'playground',
+      realSessionId: 'session-1',
+      coordinator: true,
+      steps
+    }
+    await open(listRow, { ...detail, id: 'session-not-yet-registered' } as SessionDetailDto)
+    expect(wire.historyCalls).toHaveLength(0)
+    expect(text()).toContain('LIVE ANSWER')
   })
 })
 

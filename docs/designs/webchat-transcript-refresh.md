@@ -23,8 +23,13 @@ a task was one such miss: its live work stayed on the main timeline, while the s
 the task's thread.
 
 This applies to pages backed by rows: an adopted webchat session, a coordinator page and its
-thread panel. A fresh playground conversation, which has no rows to read yet, still draws its live
-stream alone. An AHP conversation rebuilds its live steps from its own snapshot and retires them
+thread panel. A fresh playground conversation draws its live stream alone only until it has rows to
+read: once the daemon has made a session of it and the Control Plane knows that session, its page
+reads that session's rows like an adopted one, and the steps the stream gave it retire by the same
+rules, so a task card appears without a reload. The console keeps the conversation's socket, busy
+state and composer on the playground session; only what is drawn changes. A playground conversation
+with several agents keeps drawing its stream alone, since the page reads only the primary agent's
+session. An AHP conversation rebuilds its live steps from its own snapshot and retires them
 with its own merge, but its page reads and draws them the same way.
 
 ## 2. What each source draws
