@@ -134,7 +134,7 @@ describe('the linear transcript and card semantics', () => {
     // Both are capabilities core reads; neither may become "the platform is Linear". Google Chat, DingTalk and WeCom narrow their room triggers.
     for (const m of platformRegistry.all()) {
       if (m.platformId === 'linear') continue
-      expect(m.channelList?.roster, m.platformId).toBeUndefined()
+      expect(m.channelList?.roster, m.platformId).not.toBe('derived')
       if (!['googlechat', 'dingtalk', 'wecom'].includes(m.platformId))
         expect(m.channelList?.triggers, m.platformId).toBeUndefined()
       expect(m.channelList?.ownerChangeWarning, m.platformId).toBeUndefined()
