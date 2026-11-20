@@ -63,7 +63,7 @@ describe('ComputerEgressCard', () => {
   it('states the data-centre limitation, and the deployment’s note', () => {
     mocks.egress = egress({ description: 'Egress from us-west-2', canEdit: false })
     const el = render(<ComputerEgressCard />)
-    expect(el.querySelector('[data-egress-limitation]')?.textContent).toContain('data-centre addresses')
+    expect(el.querySelector('[data-egress-limitation]')?.textContent).toContain('data-center IPs')
     expect(el.textContent).toContain('Egress from us-west-2')
     expect(el.querySelector('[data-egress-mode]')?.getAttribute('data-egress-mode')).toBe('deployment')
     expect(el.textContent).not.toContain('Edit')
@@ -87,7 +87,7 @@ describe('ComputerEgressCard', () => {
   it('offers no editing where the deployment allows no organization proxy', () => {
     mocks.egress = egress({ orgProxyAllowed: false })
     const el = render(<ComputerEgressCard />)
-    expect(el.textContent).toContain('does not let organizations use their own proxy')
+    expect(el.textContent).toContain('doesn’t allow organizations to configure a custom proxy')
     expect(el.textContent).not.toContain('Edit')
   })
 })

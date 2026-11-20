@@ -230,7 +230,7 @@ describe('AddIntegrationModal, Azure DevOps trigger', () => {
     mocks.fetchAgentRepos.mockResolvedValue([])
     await renderAgent({ id: 'agent-unauthorized' })
     await pickRepository()
-    expect(document.body.textContent).toContain('build-agent is not authorized for')
+    expect(document.body.textContent).toContain('build-agent isn’t authorized for')
     await act(async () => clickText('Connect')?.click())
     expect(mocks.createAzureDevOpsHook).not.toHaveBeenCalled()
   })

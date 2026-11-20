@@ -125,7 +125,7 @@ afterEach(async () => {
 describe('WeChatWizardBody', () => {
   it('states the one-person binding before any code, with no reuse choice and no footer', async () => {
     await render()
-    expect(text()).toContain('Whoever scans this code becomes the bot')
+    expect(text()).toContain('Whoever scans this QR code becomes the bot')
     expect(text()).toContain('experimental')
     expect(text()).toContain('deploy-bot')
     expect(identity).toEqual({ hidden: true })
@@ -149,7 +149,7 @@ describe('WeChatWizardBody', () => {
     expect(mocks.polls).toHaveLength(1)
 
     await answerAndFollow(dto({ status: 'scanned' }))
-    expect(text()).toContain('confirm on your phone')
+    expect(text()).toContain('Confirm on your phone')
     expect(mocks.polls).toHaveLength(1)
 
     await answer(dto({ status: 'completed', integrationId: 'int-1', botId: 'bot-1', wechatUserTail: 'a1b2c3' }))
@@ -226,7 +226,7 @@ describe('WeChatWizardBody', () => {
       expect(mocks.startLogin).toHaveBeenCalledTimes(1)
       // A scan that landed at the deadline still shows.
       await answer(dto({ status: 'scanned' }))
-      expect(text()).toContain('confirm on your phone')
+      expect(text()).toContain('Confirm on your phone')
     } finally {
       vi.useRealTimers()
     }

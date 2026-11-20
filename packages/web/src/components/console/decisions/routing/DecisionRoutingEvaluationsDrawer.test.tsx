@@ -264,12 +264,12 @@ describe('DecisionRoutingEvaluationsDrawer', () => {
 
   it('reads a 503 as an offline host or an upgrade prompt', async () => {
     const offline = await render(decisionMock.createDecisionMockApi({ scenario: 'daemon_offline' }))
-    expect(offline.textContent).toContain('The evaluation host is offline')
+    expect(offline.textContent).toContain('The evaluation daemon is offline')
     if (root) await act(async () => root?.unmount())
     container?.remove()
     const api = decisionMock.createDecisionMockApi()
     vi.spyOn(api, 'listRoutingEvaluations').mockRejectedValue(new ApiError('upgrade', 503, 'DAEMON_UPGRADE_REQUIRED'))
     const upgrade = await render(api)
-    expect(upgrade.textContent).toContain('Upgrade the evaluation host daemon')
+    expect(upgrade.textContent).toContain('Upgrade the evaluation daemon')
   })
 })

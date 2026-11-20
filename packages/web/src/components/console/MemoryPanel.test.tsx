@@ -353,7 +353,7 @@ describe('MemoryPanel settings draft', () => {
 
     await openSettings(container)
     expect(container.querySelector('[data-memory-scope]')).toBeNull()
-    expect(container.textContent).toContain("a person's DMs stay theirs")
+    expect(container.textContent).toContain("each person's DMs and private conversations stay separate")
     expect(container.textContent).toContain('Enable dreaming')
 
     const autoDistill = [...container.querySelectorAll<HTMLLabelElement>('label')].find((label) =>
@@ -697,8 +697,8 @@ describe('MemoryPanel memory home', () => {
     await act(async () => homePill(host, 'control-plane')?.click())
     await clickButton(host, 'Save memory settings')
     expect(mocks.updateAgent).not.toHaveBeenCalled()
-    expect(dialog(host)?.textContent).toContain('Move memory to the Control Plane?')
-    expect(dialog(host)?.textContent).toContain('Memory is unavailable until the copy completes')
+    expect(dialog(host)?.textContent).toContain('Move memory to AgentConnect?')
+    expect(dialog(host)?.textContent).toContain('Memory is unavailable until the copy finishes')
 
     await act(async () => dialogButton(host, 'Move')?.click())
     expect(mocks.updateAgent).toHaveBeenCalledWith(AGENT_ID, {
@@ -709,9 +709,7 @@ describe('MemoryPanel memory home', () => {
 
   it('shows the quiet status and locks the control while the copy is pending', async () => {
     const host = await mount({ memoryHome: 'control-plane', memoryHomeMigration: 'pending' })
-    expect(host.querySelector('[data-memory-home-status]')?.textContent).toContain(
-      'Moving memory to the Control Plane…'
-    )
+    expect(host.querySelector('[data-memory-home-status]')?.textContent).toContain('Moving memory to AgentConnect…')
     await openSettings(host)
     expect(homePill(host, 'daemon')).toBeNull()
     expect(homePill(host, 'control-plane')?.disabled).toBe(true)

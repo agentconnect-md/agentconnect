@@ -120,6 +120,6 @@ describe('DaemonLifecycleModal auto-upgrade switch', () => {
     await act(async () => toggle().click())
     await upgrade()
     expect(mocks.upgradeDaemon).toHaveBeenCalled()
-    expect(host.textContent).toContain('The upgrade started, but auto-upgrade could not be changed: boom')
+    expect(host.textContent).toContain("The upgrade started, but auto-upgrade couldn't be updated: boom")
   })
 })

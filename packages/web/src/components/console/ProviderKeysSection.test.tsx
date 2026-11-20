@@ -235,7 +235,7 @@ describe('Provider keys configuration', () => {
     await click('Add key')
     await enterKey('example-secret')
     await click('Save')
-    expect(element.textContent).toContain('Could not save the key')
+    expect(element.textContent).toContain('Couldn’t save the key')
     expect(element.textContent).toContain('Not configured')
     expect(element.textContent).not.toContain('example-secret')
     await click('Cancel')

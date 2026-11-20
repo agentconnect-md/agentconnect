@@ -323,13 +323,13 @@ describe('SubsessionsPanel', () => {
     wire.stopAnswer = { result: 'not_running' }
     await click(actions('Stop')[0])
     expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe(
-      'No turn is running. A background process it started may still be running; it can’t be stopped from here, and it reports back when that process ends.'
+      'No turn is running. A background process it started may still be active and can’t be stopped from here. It will report back when that process finishes.'
     )
     expect(stateOf(rows()[0])).toBe('Running')
 
     wire.stopFailure = { status: 503, code: 'DAEMON_OFFLINE' }
     await click(actions('Stop')[0])
-    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Couldn’t stop it. Try again.')
+    expect(container?.querySelector('[data-subsession-stop]')?.textContent).toBe('Couldn’t stop this task. Try again.')
   })
 
   it('says nothing was running when the task reported before the stop reached it', async () => {
@@ -535,7 +535,7 @@ describe('SubsessionsPanel', () => {
     await click(actions('End')[0])
     expect(wire.stops).toEqual([])
     const confirm = container?.querySelector('[role="group"]')
-    expect(confirm?.textContent).toContain('End this follow-up? The agent stops checking.')
+    expect(confirm?.textContent).toContain('End this follow-up? The agent will stop checking.')
     await click(Array.from(confirm?.querySelectorAll('button') ?? []).find((b) => b.textContent === 'Keep'))
     expect(container?.querySelector('[role="group"]')).toBeNull()
     expect(wire.stops).toEqual([])
@@ -552,8 +552,8 @@ describe('SubsessionsPanel', () => {
   })
 
   it.each([
-    [{ result: 'not_running' }, null, 'It had already ended.'],
-    [null, { status: 503, code: 'DAEMON_OFFLINE' }, 'Couldn’t end it. Try again.']
+    [{ result: 'not_running' }, null, 'This follow-up has already ended.'],
+    [null, { status: 503, code: 'DAEMON_OFFLINE' }, 'Couldn’t end this follow-up. Try again.']
   ])('says when a follow-up had already ended or could not be ended', async (answer, failure, notice) => {
     wire.pages = [page([followUp('paused')])]
     if (answer) wire.stopAnswer = answer

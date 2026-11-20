@@ -288,7 +288,7 @@ describe('PullRequestPanel verdicts', () => {
     await render({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: () => true })
     // The upstream is the FIRST obstacle, so it is the headline rather than the absent pull request.
     expect(text()).toContain('No upstream configured')
-    expect(text()).toContain('Publish this branch to set its upstream before creating a pull request.')
+    expect(text()).toContain('Push it first to set an upstream before creating a pull request.')
     expect(text()).toContain('dev/jane-doe/candid-lynx')
 
     const posted: string[] = []
@@ -319,7 +319,7 @@ describe('PullRequestPanel verdicts', () => {
 
     await rerender({ branch: 'dev/jane-doe/candid-lynx', tracking: null, onPostTurn: accept(posted) })
     expect(container?.querySelector('[data-pr-create-requested]')?.textContent).toContain(
-      'links it once the branch is pushed and the pull request exists'
+      'link it once the branch is pushed and the PR is created'
     )
     expect(container?.querySelector('[data-pr-create]')?.textContent).toContain('Ask again')
   })
@@ -452,7 +452,7 @@ describe('PullRequestPanel body', () => {
     wire.data = pr({ linkedBy: 'head-branch', linkBranch: 'main', linkScope: 'shared' })
     await rerender({ sessionId: 'session-2' })
     expect(container?.querySelector('[data-pr-link-shared]')?.textContent).toContain(
-      'may carry work from other sessions'
+      'may include changes from other sessions'
     )
   })
 
@@ -515,7 +515,7 @@ describe('PullRequestPanel body', () => {
     wire.data = pr({ threadsTruncated: true, unresolvedCount: 2 })
     await render()
     expect(container?.querySelector('[data-pr-section="threads"]')?.textContent).toContain('2+')
-    expect(text()).toContain('More unresolved threads than one read carries')
+    expect(text()).toContain('Showing the first 2 unresolved threads.')
   })
 
   it('says which kind of nothing each empty section has', async () => {

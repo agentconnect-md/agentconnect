@@ -174,8 +174,8 @@ describe('disconnecting a workspace', () => {
     await openDialog()
 
     expect(text()).toContain('Disconnect workspace')
-    expect(text()).toContain('Example Workspace is removed for all 2 agents that use it')
-    expect(text()).toContain('forgets its Linear grant')
+    expect(text()).toContain('Removes Example Workspace for all 2 agents that use it')
+    expect(text()).toContain('revokes its Linear authorization')
     expect(text()).toContain('Disconnects the workspace for the whole organization')
     expect(mocks.disconnectLinearWorkspace).not.toHaveBeenCalled()
   })

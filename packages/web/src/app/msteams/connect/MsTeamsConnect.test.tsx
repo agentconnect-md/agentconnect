@@ -146,7 +146,7 @@ describe('MsTeamsConnect', () => {
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('Teams is connected')
     expect(host.textContent).toContain('Updated the app in 1 team that already had it.')
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microsoft did not update the app in 1 team.')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Microsoft didn’t update the app in 1 team.')
   })
 
   // teams-integration.md §8.4: a Teams Store install already has the app, so connecting the tenant finishes.
@@ -154,7 +154,7 @@ describe('MsTeamsConnect', () => {
     mocks.finish.mockResolvedValue({ integrationId: 'int-1', agentId: 'agent-a', teams: [], store: true })
     await land(`code=c&state=${STATE}`)
     expect(host.textContent).toContain('Teams is connected')
-    expect(host.textContent).toContain('Message the agent in Teams')
+    expect(host.textContent).toContain('Message the agent directly in Teams')
     await act(async () => root.unmount())
     root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('mismatch', 400, 'MSTEAMS_TENANT_MISMATCH'))
@@ -287,7 +287,7 @@ describe('MsTeamsConnect', () => {
     root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_TENANT_NOT_CONNECTED'))
     await land(`code=c&state=${STATE}`)
-    expect(host.textContent).toContain('is not connected here yet')
+    expect(host.textContent).toContain('isn’t connected yet')
   })
 
   it('starts again through the consent page when the tenant signed in to has not recorded it', async () => {
@@ -307,7 +307,7 @@ describe('MsTeamsConnect', () => {
     mocks.finish.mockResolvedValue({ agentId: 'agent-a', agentBot: true, teams: [], ticket: 'provision', store: false })
     mocks.agentBot.mockRejectedValue(new mocks.FakeApiError('no', 409, 'MSTEAMS_AGENT_BOTS_UNAVAILABLE'))
     await land(`code=c&state=${STATE}`)
-    expect(host.textContent).toContain('did not let this deployment create a bot')
+    expect(host.textContent).toContain('Microsoft didn’t allow creating a bot')
     await act(async () => root.unmount())
     root = createRoot(host)
     mocks.finish.mockRejectedValue(new mocks.FakeApiError('taken', 409, 'MSTEAMS_AGENT_NAME_TAKEN'))

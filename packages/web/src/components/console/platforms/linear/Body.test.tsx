@@ -173,14 +173,14 @@ describe('the pane’s deployment conditions', () => {
     mocks.probeConfig = answered
     await render({ relayCapability: { available: false, publicUrl: null } })
 
-    expect(text()).toContain('HTTP callbacks only')
+    expect(text()).toContain('public HTTP callback endpoint')
     expect(buttonWith('Connect Linear')).toBeUndefined()
   })
 
   it('reads a failed probe as no relay rather than as an answer it never got', async () => {
     mocks.probeFailed = true
     await render()
-    expect(text()).toContain('HTTP callbacks only')
+    expect(text()).toContain('public HTTP callback endpoint')
   })
 
   it('self-disables when the deployment registered no Linear app', async () => {
@@ -272,8 +272,8 @@ describe('the connect hand-off', () => {
     mocks.probeConfig = answered
     await render()
 
-    expect(text()).toContain('You approve the workspace in a Linear popup')
-    expect(text()).toContain('becomes the workspace’s default agent')
+    expect(text()).toContain('Approve access in the Linear popup')
+    expect(text()).toContain('will become this workspace’s default agent')
     expect(mocks.startLinearConnect).not.toHaveBeenCalled()
     expect(window.open).not.toHaveBeenCalled()
   })
@@ -312,7 +312,7 @@ describe('the connect hand-off', () => {
 
     await act(async () => buttonWith('Connect another workspace')!.click())
     await settle()
-    expect(text()).toContain('You approve the workspace in a Linear popup')
+    expect(text()).toContain('Approve access in the Linear popup')
     expect(mocks.startLinearConnect).not.toHaveBeenCalled()
 
     await act(async () => buttonWith('Connect Linear')!.click())
@@ -397,7 +397,7 @@ describe('the connect hand-off', () => {
     await settle()
 
     expect(state.invalidate).toHaveBeenCalled()
-    expect(text()).toContain(`Workspace connected — ${agent.name} is its default agent.`)
+    expect(text()).toContain(`Workspace connected. ${agent.name} is now its default agent.`)
     expect(text()).not.toContain('bare delegation')
     await act(async () => buttonWith('Done')!.click())
     expect(state.close).toHaveBeenCalled()

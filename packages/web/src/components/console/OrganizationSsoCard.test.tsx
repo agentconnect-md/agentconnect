@@ -375,7 +375,7 @@ describe('organization single sign-on card', () => {
     )
     await click('Activate', dialog())
     expect(dialog().textContent).toContain(
-      'The DNS record could not be confirmed for acme.example, beta.example. Check the record, then try again.'
+      "Couldn't verify the DNS record for acme.example, beta.example. Check the record and try again."
     )
   })
 
@@ -417,7 +417,7 @@ describe('organization single sign-on card', () => {
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Enforce', 'Deactivate'])
     await click('Enforce', host)
     expect(dialog().textContent).toContain(
-      'Every member, owners included, will open this organization only after signing in with SSO. Members whose address is not on these domains cannot sign in with SSO and lose access.'
+      'Every member, including owners, must sign in with SSO to access this organization. Members outside these domains will lose access.'
     )
     mocks.enforceOrgSsoConnection.mockResolvedValue({ ...active, enforcedAt: '2026-01-03T00:00:00Z' })
     await click('Enforce', dialog())
@@ -449,7 +449,7 @@ describe('organization single sign-on card', () => {
     expect(host.textContent).toContain('Enforced')
     expect(buttons(host)).toEqual(['Add domain', 'Remove domain', 'Edit', 'Stop enforcing', 'Deactivate'])
     await click('Stop enforcing', host)
-    expect(dialog().textContent).toContain('Single sign-on stays active')
+    expect(dialog().textContent).toContain('Single sign-on remains active')
     mocks.stopEnforcingOrgSsoConnection.mockResolvedValue({ ...enforced, enforcedAt: null })
     await click('Stop enforcing', dialog())
     expect(mocks.stopEnforcingOrgSsoConnection).toHaveBeenCalledWith('org-test')

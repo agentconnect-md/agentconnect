@@ -125,7 +125,7 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
 
     await act(async () => buttonsNamed('GitLab')[0]?.click())
     expect(document.body.textContent).toContain(
-      'GitLab is not enabled on this deployment — no GitLab application is configured.'
+      "GitLab isn't enabled on this deployment. No GitLab application is configured."
     )
     expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
     expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()

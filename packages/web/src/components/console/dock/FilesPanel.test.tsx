@@ -477,7 +477,7 @@ describe('FilesPanel tree', () => {
 
     await click(row('src'), 'src folder row')
 
-    expect(text()).toContain("Couldn't load — the daemon may be offline.")
+    expect(text()).toContain('Couldn’t load files. The daemon may be offline.')
     expect(rowNames()).toEqual(['src', 'README.md'])
   })
 })
@@ -1052,7 +1052,7 @@ describe('FilesPanel session files', () => {
     const notes = Array.from(container?.querySelectorAll('[data-session-files-note]') ?? []).map((n) => n.textContent)
     expect(notes).toEqual([
       'Update this agent’s daemon to browse session files.',
-      'Couldn’t read session files — the daemon may be offline.'
+      'Couldn’t read session files. The daemon may be offline.'
     ])
   })
 

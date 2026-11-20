@@ -63,8 +63,8 @@ describe('DaemonAutoUpgradeSetting', () => {
     daemon.autoUpgradeSupported = false
     await render()
     expect(toggle().disabled).toBe(true)
-    expect(tooltip()).toContain('not available for pool members')
-    expect(await details()).toContain('not available for pool members')
+    expect(tooltip()).toContain('Not available for cluster pool members')
+    expect(await details()).toContain('Not available for cluster pool members')
   })
 
   it('is read-only for a caller who cannot manage the daemon lifecycle', async () => {

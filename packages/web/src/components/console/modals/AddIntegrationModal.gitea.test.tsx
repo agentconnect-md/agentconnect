@@ -199,7 +199,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
 
     await act(async () => tileNamed('Gitea')?.click())
     expect(document.body.textContent).toContain(
-      'Gitea is not enabled on this deployment — its control plane predates Gitea support.'
+      "Gitea isn't enabled on this deployment. This version doesn't support Gitea yet."
     )
     expect(document.body.textContent).not.toContain('Couldn’t load your Gitea repositories')
     expect(mocks.fetchGiteaConnectionRepositories).not.toHaveBeenCalled()
@@ -341,7 +341,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
     await renderAgent({ id: 'agent-unauthorized' })
     await pickRepository()
 
-    expect(document.body.textContent).toContain('is not authorized for')
+    expect(document.body.textContent).toContain('isn’t authorized for')
     expect(document.body.textContent).toContain('Workspace tab')
 
     await act(async () => clickText('Connect')?.click())
@@ -357,7 +357,7 @@ describe('AddIntegrationModal, Gitea trigger', () => {
     })
     await pickRepository()
 
-    expect(document.body.textContent).not.toContain('is not authorized for')
+    expect(document.body.textContent).not.toContain('isn’t authorized for')
     await act(async () => clickText('Connect')?.click())
     expect(mocks.createGiteaHook).toHaveBeenCalledWith(expect.objectContaining({ repoId: '7711' }))
   })

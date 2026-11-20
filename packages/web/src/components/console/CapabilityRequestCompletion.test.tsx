@@ -268,7 +268,7 @@ describe('completing a capability request', () => {
         current: { authorized: 'read', repoId: '7', installationId: null }
       })
     )
-    await act(async () => button(scope, 'Raise acme/widgets to read & write')!.click())
+    await act(async () => button(scope, 'Grant read & write for acme/widgets')!.click())
     expect(mocks.updateRepo).toHaveBeenCalledWith('agent-1', 'grant-1', { access: 'write' })
     expect(mocks.settle).toHaveBeenCalledTimes(1)
   })
@@ -338,7 +338,7 @@ describe('completing a capability request', () => {
         current: { providerId: 'prov-2', present: false }
       })
     )
-    expect(scope.textContent).toContain('The agent never sees it')
+    expect(scope.textContent).toContain('The agent never sees this value.')
     await act(async () => button(scope, 'Set X-Api-Key')!.click())
     expect(mocks.mcpEditProps).toMatchObject({ requestedHeader: 'X-Api-Key' })
     await act(async () => (mocks.mcpEditProps!.onSaved as () => void)())
@@ -382,7 +382,7 @@ describe('completing a capability request', () => {
       const { ApiError } = await import('@/lib/api')
       mocks.saveLiveSecret.mockRejectedValue(new ApiError('GRAFANA_TOKEN is already an environment variable', 409))
       const scope = await render(live(true))
-      expect(scope.textContent).toContain('already set; saving replaces it')
+      expect(scope.textContent).toContain('already set. Saving replaces the existing value.')
       await act(async () => type(field(scope), 'v'))
       await act(async () => button(scope, 'Save GRAFANA_TOKEN')!.click())
       expect(scope.querySelector('[role="alert"]')?.textContent).toBe(

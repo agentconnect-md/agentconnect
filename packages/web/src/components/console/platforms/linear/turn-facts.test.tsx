@@ -50,7 +50,7 @@ describe('LinearTurnFacts', () => {
       'Read the <README>.',
       'earlier note',
       'Be terse.',
-      'Context truncated'
+      'Context was truncated.'
     ])
       expect(text).toContain(expected)
     expect(text).not.toContain('<description>')
@@ -103,7 +103,7 @@ describe('LinearTurnFacts', () => {
     )
     const text = el.textContent ?? ''
     expect(text).toContain('The first half of a long')
-    expect(text).toContain('Context truncated')
+    expect(text).toContain('Context was truncated.')
     expect(text).not.toContain('<issue')
   })
 

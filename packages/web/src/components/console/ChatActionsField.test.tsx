@@ -53,7 +53,7 @@ it('names the levels in Chinese', async () => {
   expect(host!.querySelector('.fldlbl')?.textContent).toBe('聊天中可以做什么')
   await act(async () => host!.querySelector<HTMLButtonElement>('button[aria-label="聊天中可以做什么"]')!.click())
   expect([...document.querySelectorAll('[role="menuitemradio"]')].map((option) => option.textContent)).toEqual([
-    '和 agent 对话',
+    '和 Agent 对话',
     '对话并批准工具调用',
     '对话、批准并修改设置'
   ])
