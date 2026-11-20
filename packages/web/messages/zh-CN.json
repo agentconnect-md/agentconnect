@@ -5229,6 +5229,8 @@
       "lowBalanceText": "该余额已低于 {threshold} 的预警阈值。余额归零之前，agent 仍会继续提供服务。",
       "unconfirmedTitle": "正在确认访问状态",
       "unconfirmedText": "此组织的访问权限变更尚未在网关得到确认，我们暂不对此下结论。此状态会自行解决。",
+      "settlingTitle": "{month}的用量仍在结算",
+      "settlingText": "{month}最后时刻产生的用量，可能在月份结束后一小时内才入账。{month}的合计在 UTC 01:00 之后才是最终值。",
       "addCredits": "充值"
     },
     "checkout": {

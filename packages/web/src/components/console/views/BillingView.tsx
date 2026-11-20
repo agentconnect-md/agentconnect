@@ -9,7 +9,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import useSWR, { useSWRConfig } from 'swr'
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
@@ -40,7 +40,7 @@ import {
   type ActivityMode,
   type ActivityRange
 } from '@/lib/billing-activity'
-import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
+import { balanceBanner, ledgerHistory, settlingMonth } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { fetchAgents } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
@@ -545,6 +545,31 @@ function BalanceBannerCard({
             {t(banner.ctaKey)}
           </Button>
         )}
+      </div>
+    </div>
+  )
+}
+
+/** For the hour after a UTC month ends its usage is still being posted, so last month's numbers can still move. */
+function MonthSettlingNote() {
+  const t = useTranslations('Billing.banners')
+  const locale = useLocale()
+  // Read after mount, never during render: the server's clock is not the visitor's, and a mismatch fails hydration.
+  const [month, setMonth] = useState<Date | null>(null)
+  useEffect(() => setMonth(settlingMonth(new Date())), [])
+  if (!month) return null
+  const tone = BALANCE_TONE.blue
+  const name = new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' }).format(month)
+  return (
+    <div className={`mb-[18px] flex items-start gap-3 rounded-[10px] border px-4 py-3.5 ${tone.card}`}>
+      <span className={`flex h-7 w-7 flex-none items-center justify-center rounded-lg ${tone.chip}`}>
+        <Icon name="clock" size={16} color={tone.glyph} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="font-sans text-[13px] font-semibold leading-normal">{t('settlingTitle', { month: name })}</div>
+        <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          {t('settlingText', { month: name })}
+        </div>
       </div>
     </div>
   )
@@ -1363,6 +1388,7 @@ export default function BillingView() {
 
       {acct && (
         <>
+          <MonthSettlingNote />
           <BalanceBannerCard
             acct={acct}
             // The UNFILTERED read, like "last deduction" below: whether this account has ever
