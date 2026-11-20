@@ -530,8 +530,11 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** A group conversation's session is private to the member whose message opened it, resolved as {@link dmOwnerMember} resolves a DM's sender, where a conversation among a few people is not the organization's (session-visibility.md §4.2). Absent ⇒ a group conversation is the organization's. */
   groupOwnedByOpener?: boolean
 
-  /** Where a session goes whose sender {@link dmOwnerMember} matched to no member, when the platform admits people outside the organization: the organization's, or private to a member; null when no member is known not to hold the sender or no outsider is admitted now. A rejection is a failed read. Absent ⇒ such a session stays private to its sender's chat identity. */
-  outsiderSession?(bot: BotRecord, sender: string): Promise<{ org: true } | { ownerUserId: string } | null>
+  /** Where a session goes whose sender {@link dmOwnerMember} matched to no member, when the platform admits people outside the organization: the agent's editors', the organization's, or private to a member; null when no member is known not to hold the sender or no outsider is admitted now. A rejection is a failed read. Absent ⇒ such a session stays private to its sender's chat identity. */
+  outsiderSession?(
+    bot: BotRecord,
+    sender: string
+  ): Promise<{ editors: true } | { org: true } | { ownerUserId: string } | null>
 
   /** Why a bot of this platform with no install is never installed again through `botId`, sent as the create route's 409; null when it may be. Pure. Absent ⇒ a free bot may be reused. */
   reuseRefusal?(bot: BotRecord): string | null

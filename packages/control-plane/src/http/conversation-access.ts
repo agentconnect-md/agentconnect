@@ -107,7 +107,7 @@ export async function conversationAudienceAllows(
   )
   if (session) {
     const access = await makeSessionAccessResolver(deps).forSessions(req, [session])
-    return canViewSession(session, viewer, access.identitySet, access.externalAccess)
+    return canViewSession(session, viewer, access.identitySet, access.externalAccess, access.editableAgentIds)
   }
   // No session names an audience yet: an active external-access policy fails closed; otherwise the org baseline holds for summaries.
   const providers = (deps.sessionAccessPlugins ?? []).filter((plugin) => plugin.available)

@@ -107,10 +107,17 @@ describe('resolveEmailMembers (email-integration.md §4 step 3)', () => {
 
   it('refuses outsiders while the member their sessions go to is not active, never falling back on the organization', async () => {
     const question = ask(['stranger@other.example.test'])
-    const departed = deps({}, {}, { settings: ANYONE, active: [] })
+    const departed = deps({}, {}, { settings: { ...ANYONE, outsideSessions: 'user:user-carol' }, active: [] })
     expect((await resolveEmailMembers(question, departed, ORG)).outsideSenders).toBe('refused')
     const gone = deps({}, {}, { settings: { ...ANYONE, outsideSessions: 'user:user-left' } })
     expect((await resolveEmailMembers(question, gone, ORG)).outsideSenders).toBe('refused')
+  })
+
+  it('admits outsiders by default, whose sessions go to the agent’s editors with no member to check', async () => {
+    const question = ask(['stranger@other.example.test'])
+    const d = deps({}, {}, { settings: ANYONE, active: [] })
+    expect((await resolveEmailMembers(question, d, ORG)).outsideSenders).toBe('admitted')
+    expect(d.users.activeMember).not.toHaveBeenCalled()
   })
 
   it('admits nobody for an agent of another organization, an unknown agent, or one with no address', async () => {
@@ -125,7 +132,7 @@ describe('resolveEmailMembers (email-integration.md §4 step 3)', () => {
   })
 
   it('lets a failed read fail the whole answer, so nothing is admitted on a guess', async () => {
-    const d = deps({}, {}, { settings: ANYONE })
+    const d = deps({}, {}, { settings: { ...ANYONE, outsideSessions: 'user:user-carol' }, active: ['user-carol'] })
     d.users.verifiedEmailHolders.mockRejectedValueOnce(new Error('db unavailable'))
     await expect(resolveEmailMembers(ask(['stranger@other.example.test']), d, ORG)).rejects.toThrow('db unavailable')
     d.users.activeMember.mockRejectedValueOnce(new Error('db unavailable'))

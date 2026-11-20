@@ -787,7 +787,10 @@ export default function SessionsView() {
                   {s.title}
                 </span>
                 <CoordinatorTag show={s.coordinator} />
-                <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
+                <RestrictedLock
+                  show={s.visibility === 'private' || s.visibility === 'editors'}
+                  title={s.visibility === 'editors' ? t('editorsSession') : t('privateSession')}
+                />
                 <PurgedMark session={s} />
                 <SessionStatus label={s.statusLabel || ss.label} />
               </span>
@@ -825,7 +828,10 @@ export default function SessionsView() {
                     {s.title}
                   </span>
                   <CoordinatorTag show={s.coordinator} />
-                  <RestrictedLock show={s.visibility === 'private'} title={t('privateSession')} />
+                  <RestrictedLock
+                    show={s.visibility === 'private' || s.visibility === 'editors'}
+                    title={s.visibility === 'editors' ? t('editorsSession') : t('privateSession')}
+                  />
                   <PurgedMark session={s} />
                 </div>
                 <div className="mono text-[11px] text-(--text-tertiary)">

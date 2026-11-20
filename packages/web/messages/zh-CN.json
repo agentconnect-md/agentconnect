@@ -763,6 +763,7 @@
         "tokens": "Tokens"
       },
       "privateSession": "私密会话，仅所有者可见",
+      "editorsSession": "仅能编辑这个 agent 的人可见",
       "purgedPartial": "此对话的部分历史记录已于 {date} 被会话保留策略删除",
       "purged": "转录记录已于 {date} 被会话保留策略删除，仅保留元数据",
       "noMatches": "没有匹配的会话",
@@ -796,6 +797,8 @@
       "everyone": "所有人",
       "privateTitle": "只有你能看到这个会话。",
       "everyoneTitle": "组织内所有人都能看到这个会话。",
+      "editors": "能编辑这个 agent 的人",
+      "editorsTitle": "只有能编辑这个 agent 的人能看到这个会话。",
       "settingUp": "正在设置会话访问权限",
       "loading": "加载中",
       "externalMembers": "{provider} 成员",

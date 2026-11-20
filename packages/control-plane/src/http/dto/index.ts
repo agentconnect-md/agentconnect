@@ -100,8 +100,8 @@ export const ResourceVisibilityEnum = z.enum(['org', 'restricted'])
 /** Per-SESSION visibility (docs/designs/session-visibility.md §1) — a different
  *  tier vocabulary from `ResourceVisibilityEnum`: sessions have no share set,
  *  their owner is a namespaced identity string (§2). */
-export const SessionVisibilityEnum = z.enum(['private', 'org', 'external'])
-/** Only identity-owned direct sessions can be reclassified manually. */
+export const SessionVisibilityEnum = z.enum(['private', 'org', 'external', 'editors'])
+/** Only identity-owned direct sessions can be reclassified manually; an `editors` session follows its agent's editors. */
 export const MutableSessionVisibilityEnum = z.enum(['private', 'org'])
 /** Whether a visibility change has reached the daemons that enforce it (§5.1). */
 export const SessionVisibilityStateEnum = z.enum(['pending', 'applied'])

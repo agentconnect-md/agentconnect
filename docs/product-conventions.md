@@ -1150,11 +1150,14 @@ refused. Authentication and the automatic-mail filter are never lifted. A sender
 Control Plane could not be asked about is never admitted as an outside sender: the
 message is retried, as under Members.
 
-Under Anyone the editor also sets **Outside senders' sessions**: the organization, or one
-member, by default the member who added the address. While that member is not an active
-member of the organization, mail from outside is refused until an editor picks again, so
-a departed member's choice never turns into the organization's. A member's own mail is
-unaffected by either setting.
+Under Anyone the editor also sets **Outside senders' sessions**: the people who can edit
+this agent (the default), the organization, or one member. The first follows the agent as
+it stands when someone opens the session: whoever can edit the agent then sees it, an
+editor added later sees earlier mail, and one removed stops seeing it. While a picked
+member is not an active member of the organization, mail from outside is refused until an
+editor picks again, so a departed member's choice never turns into the organization's. A
+member's own mail is unaffected by either setting, and a session the agent's editors see
+stays out of the agent's shared memory, as a private one does.
 
 A conversation with someone outside the organization on it is external, as on every other
 platform: it keeps a place layer of its own, never writes the shared layer, and a post
@@ -2273,6 +2276,12 @@ tier, and re-classification belongs to that recorded initiator alone: the person
 started a channel conversation may later pull it private, and only a private session's
 owner may publish it back. Roles grant no re-classification rights — an org owner cannot
 flip someone else's session in either direction.
+
+A third audience, **people who can edit this agent**, belongs to the agent rather than to a
+person: a session someone outside the organization opens by mail goes there by default
+([Mail from anyone](#mail-from-anyone)). Whoever can edit the agent when the session is
+opened sees it, organization owners included and the viewer role never, so the audience
+grows and shrinks with the agent's editors. No one re-classifies such a session.
 
 Usage summaries have a separate governance permission: organization Owners can
 attribute the organization's complete persisted usage by Agent, model, source,

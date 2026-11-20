@@ -86,7 +86,15 @@ export function agentModelEvaluationRoutes(deps: HttpDeps) {
       const audience = await access.forSessions(req, sessions)
       return new Map<string, string | null>(
         sessions
-          .filter((session) => canViewSession(session, ctxOf(req), audience.identitySet, audience.externalAccess))
+          .filter((session) =>
+            canViewSession(
+              session,
+              ctxOf(req),
+              audience.identitySet,
+              audience.externalAccess,
+              audience.editableAgentIds
+            )
+          )
           .map((session) => [session.id, session.title ? [...session.title].slice(0, 256).join('') : null])
       )
     }

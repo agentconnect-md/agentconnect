@@ -8,6 +8,7 @@ import {
   canChangeSessionVisibility,
   canContinueSession,
   canViewSession,
+  editableAgentIdsOf,
   identitySetOf,
   visibilityWhere,
   type SessionViewable,
@@ -521,5 +522,47 @@ describe('canChangeSessionVisibility on an agent’s own task', () => {
     expect(allowed(session('1700000000.000100', facts()))).toBe(true)
     expect(allowed(session(null, facts()))).toBe(true)
     expect(allowed(session('append:1700000000000', facts()))).toBe(false)
+  })
+})
+
+describe('an editors session (session-visibility.md §1)', () => {
+  const AGENT = 'agent-1'
+  const s: SessionViewable = { visibility: 'editors', ownerIdentity: 'email:mail.example.test:x@other.example.test' }
+  const onAgent: SessionViewable = { ...s, agentId: AGENT }
+  const editable = (agent: Shareable, c: ViewCtx) => editableAgentIdsOf([{ ...agent, id: AGENT }], c)
+
+  it('is seen by whoever can edit its agent, by the resource.edit predicate, and by no one else', () => {
+    const cases: Array<[Shareable, ViewCtx, boolean]> = [
+      [orgVisible, ctx(OTHER, 'collaborator'), true],
+      [orgVisible, ctx(OTHER, 'owner'), true],
+      [orgVisible, ctx(OTHER, 'viewer'), false],
+      [restricted, ctx(GRANTEE, 'collaborator'), true],
+      [restricted, ctx(OTHER, 'collaborator'), false],
+      [restricted, ctx(OTHER, 'owner'), true],
+      [restricted, ctx(GRANTEE, 'viewer'), false]
+    ]
+    for (const [agent, principal, expected] of cases) {
+      expect(canEdit(agent, principal)).toBe(expected)
+      const ids = editable(agent, principal)
+      expect(canViewSession(onAgent, principal, identitySetOf(principal), undefined, ids)).toBe(expected)
+    }
+  })
+
+  it('fails closed without the agent or the editable set, and owning its identity grants nothing', () => {
+    const principal = ctx(OTHER, 'owner')
+    const owner = new Set([s.ownerIdentity!])
+    expect(canViewSession(onAgent, principal, owner)).toBe(false)
+    expect(canViewSession(s, principal, owner, undefined, new Set([AGENT]))).toBe(false)
+    expect(canViewSession(onAgent, principal, owner, undefined, new Set(['agent-2']))).toBe(false)
+  })
+
+  it('is continued by an editor with a writing role, and reclassified by no one', () => {
+    const editor = ctx(GRANTEE, 'collaborator')
+    const ids = editable(restricted, editor)
+    expect(canContinueSession(onAgent, editor, identitySetOf(editor), undefined, ids)).toBe(true)
+    const other = ctx(OTHER, 'collaborator')
+    expect(canContinueSession(onAgent, other, identitySetOf(other), undefined, new Set())).toBe(false)
+    const owner = new Set([s.ownerIdentity!])
+    expect(canChangeSessionVisibility({ ...onAgent, thread: null }, editor, owner)).toBe(false)
   })
 })

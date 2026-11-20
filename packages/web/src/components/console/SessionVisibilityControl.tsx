@@ -3,21 +3,7 @@
 // directive off avoids Next's "props must be serializable" entry-file check on
 // the onChanged callback.
 
-/**
- * Session-level visibility badge + toggle (docs/designs/session-visibility.md
- * §4.3/§5.1/§6). Sessions use their own visibility enum (`org`, `private`, or
- * provider-managed `external`) — this deliberately mirrors VisibilityField's
- * look without reusing its ResourceVisibility (`org` | `restricted`) types or
- * share-set machinery.
- *
- * - Read-only viewers see the same inline audience indicator for private, org,
- *   and provider-managed sessions.
- * - `canChange` (server-computed: the identity-matched session owner only)
- *   renders a two-option dropdown instead. Tightening (org → private)
- *   confirms through a dialog carrying the memory caveat; widening is immediate.
- * - `state === 'pending'` replaces the chevron with a spinner until every
- *   affected daemon acks the change.
- */
+// Session visibility badge, and for its owner a private/org toggle whose tightening confirms the memory caveat (session-visibility.md §4.3, §6).
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
@@ -82,15 +68,16 @@ export function SessionVisibilityControl({
   }
 
   if (loading) {
-    const privateSession = effective === 'private'
+    const privateSession = effective === 'private' || effective === 'editors'
+    const label = effective === 'editors' ? t('editors') : privateSession ? t('private') : t('everyone')
     return (
       <span
         title={t('settingUp')}
-        aria-label={`${t('sessionVisibility')}: ${privateSession ? t('private') : t('everyone')} (${t('loading')})`}
+        aria-label={`${t('sessionVisibility')}: ${label} (${t('loading')})`}
         className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name={privateSession ? 'lock' : 'globe'} size={13} color="var(--text-tertiary)" />
-        {privateSession ? t('private') : t('everyone')}
+        {label}
         <Spinner size={10} />
       </span>
     )
@@ -125,6 +112,20 @@ export function SessionVisibilityControl({
       >
         <Icon name="users" size={13} color="var(--text-tertiary)" />
         {t('externalMembers', { provider })}
+        {state === 'pending' && <Spinner size={10} />}
+      </span>
+    )
+  }
+
+  // The agent's editors, as they stand when someone reads it; no one picks it, so it is never a choice here.
+  if (effective === 'editors') {
+    return (
+      <span
+        title={t('editorsTitle')}
+        className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+      >
+        <Icon name="lock" size={13} color="var(--text-tertiary)" />
+        {t('editors')}
         {state === 'pending' && <Spinner size={10} />}
       </span>
     )

@@ -570,8 +570,7 @@ describe('handleEventSession', () => {
                 return member ? [member] : []
               })) as never,
             activeMember: (async (_orgId: string, userId: string) =>
-              (outside.active ?? ['member-adder']).includes(userId) ? { userId } : null) as never,
-            integrationsForBot: async () => [{ ...integration, createdByUserId: 'member-adder' }] as never
+              (outside.active ?? ['member-adder']).includes(userId) ? { userId } : null) as never
           })
         ]),
         session: { recordMilestone, getExternalAccessPolicy: vi.fn(async () => null) },
@@ -632,8 +631,18 @@ describe('handleEventSession', () => {
       const stranger = async () => null
       const picked = { visibility: 'private', ownerIdentity: 'user:member-adder', source: 'default' }
 
-      it('is private to the member who added the address by default, direct or group', async () => {
+      it('is seen by the agent’s editors by default, direct or group, and that stays so with no member to pick', async () => {
         const settings = { whoMayWrite: 'anyone' }
+        const editors = { visibility: 'editors', ownerIdentity: tuple, source: 'default' }
+        expect(await classifyMail('dm', stranger, { settings })).toEqual(editors)
+        expect(await classifyMail('group_dm', stranger, { settings })).toEqual(editors)
+        expect(await classifyMail('dm', stranger, { settings, active: [] })).toEqual(editors)
+        const stored = { whoMayWrite: 'anyone', outsideSessions: 'editors' }
+        expect(await classifyMail('dm', stranger, { settings: stored })).toEqual(editors)
+      })
+
+      it('is private to the picked member when the setting names one', async () => {
+        const settings = { whoMayWrite: 'anyone', outsideSessions: 'user:member-adder' }
         expect(await classifyMail('dm', stranger, { settings })).toEqual(picked)
         expect(await classifyMail('group_dm', stranger, { settings })).toEqual(picked)
       })
@@ -648,7 +657,8 @@ describe('handleEventSession', () => {
       it('stays private to the address under Members, for a departed pick, or when no answer says it is outside', async () => {
         const unowned = { visibility: 'private', ownerIdentity: tuple, source: 'default' }
         expect(await classifyMail('dm', stranger, { settings: { whoMayWrite: 'members' } })).toEqual(unowned)
-        expect(await classifyMail('dm', stranger, { settings: { whoMayWrite: 'anyone' }, active: [] })).toEqual(unowned)
+        const departed = { whoMayWrite: 'anyone', outsideSessions: 'user:member-adder' }
+        expect(await classifyMail('dm', stranger, { settings: departed, active: [] })).toEqual(unowned)
         const failing = async () => {
           throw new Error('db unavailable')
         }

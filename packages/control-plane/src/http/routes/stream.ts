@@ -34,9 +34,12 @@ export function canStreamSession(
   orgId: OrgId,
   ctx: ViewCtx,
   identitySet: ReadonlySet<string>,
-  externalAccess?: SessionExternalAccessSnapshot
+  externalAccess?: SessionExternalAccessSnapshot,
+  editableAgentIds?: ReadonlySet<string>
 ): boolean {
-  return !!session && session.orgId === orgId && canViewSession(session, ctx, identitySet, externalAccess)
+  return (
+    !!session && session.orgId === orgId && canViewSession(session, ctx, identitySet, externalAccess, editableAgentIds)
+  )
 }
 
 function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
@@ -114,8 +117,11 @@ export function streamRoutes(deps: HttpDeps) {
         const canSeeSession = async (agentId: string, sessionId: string, ctx: ViewCtx): Promise<boolean> => {
           const session = await deps.repos.session.get(orgId, SessionId(sessionId)).catch(() => null)
           if (!session || session.agentId !== agentId) return false
-          const access = await sessionAccess.forSessions(req, [session]).catch(() => null)
-          return !!access && canStreamSession(session, orgId, ctx, access.identitySet, access.externalAccess)
+          const access = await sessionAccess.forSessions(req, [session], ctx).catch(() => null)
+          return (
+            !!access &&
+            canStreamSession(session, orgId, ctx, access.identitySet, access.externalAccess, access.editableAgentIds)
+          )
         }
 
         const unsubscribe = deps.events.subscribe((envelope) => {

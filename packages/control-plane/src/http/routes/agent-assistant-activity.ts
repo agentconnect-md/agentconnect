@@ -333,7 +333,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       const audience = await access.forSessions(req, rows)
       const viewable = new Map(
         rows
-          .filter((row) => canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess))
+          .filter((row) =>
+            canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess, audience.editableAgentIds)
+          )
           .map((row) => [String(row.id), row])
       )
       return { rows, audience, viewable }
@@ -367,12 +369,15 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       }
       const ctx = ctxOf(req)
       const audience = await access.forSessions(req, [row])
-      if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess)) {
+      if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds)) {
         await send(reply, notFound('conversation not found'))
         return null
       }
       // The same authority the composer and stopping background work need, or the agent's editors'.
-      if (!canEdit(agent, ctx) && !canContinueSession(row, ctx, audience.identitySet, audience.externalAccess)) {
+      if (
+        !canEdit(agent, ctx) &&
+        !canContinueSession(row, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds)
+      ) {
         await reply.code(403).send({
           error: 'Forbidden',
           statusCode: 403,
@@ -504,7 +509,7 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
       const followUp = s.followUp
       // The same authority the console composer's own stop needs on that session.
       const mayContinue = (row: SessionMetaRecord) =>
-        canContinueSession(row, ctxOf(req), audience.identitySet, audience.externalAccess)
+        canContinueSession(row, ctxOf(req), audience.identitySet, audience.externalAccess, audience.editableAgentIds)
       // A follow-up with no session yet is ended by its id, under its conversation's rule.
       const byId = endsById && !ownRow && !!followUp?.id && parent !== undefined
       return {
@@ -713,7 +718,13 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
             !parentRow ||
             parentRow.agentId !== admitted.agent.id ||
             !audience ||
-            !canViewSession(parentRow, ctxOf(req), audience.identitySet, audience.externalAccess)
+            !canViewSession(
+              parentRow,
+              ctxOf(req),
+              audience.identitySet,
+              audience.externalAccess,
+              audience.editableAgentIds
+            )
           ) {
             return send(reply, notFound('conversation not found'))
           }
@@ -771,10 +782,10 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         }
         const ctx = ctxOf(req)
         const audience = await access.forSessions(req, [row])
-        if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess)) {
+        if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds)) {
           return send(reply, notFound('task not found'))
         }
-        if (!canContinueSession(row, ctx, audience.identitySet, audience.externalAccess)) {
+        if (!canContinueSession(row, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds)) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not authorized to stop this task' })
@@ -813,7 +824,9 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
           return send(reply, notFound('task not found'))
         }
         const audience = await access.forSessions(req, [row])
-        if (!canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess)) {
+        if (
+          !canViewSession(row, ctxOf(req), audience.identitySet, audience.externalAccess, audience.editableAgentIds)
+        ) {
           return send(reply, notFound('task not found'))
         }
         const reader = await storeReader(req, reply, admitted, row, TASK_HANDLE)
@@ -857,10 +870,12 @@ export function agentAssistantActivityRoutes(deps: HttpDeps) {
         }
         const ctx = ctxOf(req)
         const audience = await access.forSessions(req, [parent])
-        if (!canViewSession(parent, ctx, audience.identitySet, audience.externalAccess)) {
+        if (!canViewSession(parent, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds)) {
           return send(reply, notFound('follow-up not found'))
         }
-        if (!canContinueSession(parent, ctx, audience.identitySet, audience.externalAccess)) {
+        if (
+          !canContinueSession(parent, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds)
+        ) {
           return reply
             .code(403)
             .send({ error: 'Forbidden', statusCode: 403, message: 'not authorized to end this follow-up' })

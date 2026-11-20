@@ -292,14 +292,19 @@ An Agent editor sets two things on the address, in its integration panel:
   than them. An address that several members hold names nobody (§4) and stays
   refused, never read as an outsider's, and a member whose address no sign-in
   method stands behind reads as an outsider.
-- **Outside senders' sessions**: visible to the **organization**, or private
-  to **one member** the editor picks, by default the member who added the
-  address. It applies to every session a non-member's message opens under
-  Anyone. A started thread's session is owned from the send instead (§5.3),
-  so a reply to it never consults this setting. While
-  the picked member is not an active member of the organization, a
-  non-member's message is refused with step 3's reason until an editor picks
-  another, so a departed member's choice never turns into the organization's.
+- **Outside senders' sessions**: visible to the **people who can edit this
+  agent** (the default), to the **organization**, or private to **one member**
+  the editor picks. It applies to every session a non-member's message opens
+  under Anyone. A started thread's session is owned from the send instead
+  (§5.3), so a reply to it never consults this setting. The editors choice is
+  live: whoever can edit the agent when someone reads the session sees it, so
+  an editor added later sees earlier mail and one removed stops seeing it, and
+  it never runs out of somewhere to go. While a picked member is not an active
+  member of the organization, a non-member's message is refused with step 3's
+  reason until an editor picks another, so a departed member's choice never
+  turns into the organization's. An address that kept the earlier default,
+  private to the member who added it, was moved to the editors choice; an
+  explicit pick of the organization or of another member was kept.
 
 A member's own mail is unaffected by either setting: it opens the member's
 own sessions (§5.3).
@@ -436,13 +441,16 @@ Under Members a non-member's message is admitted only into the started thread
 it answers; one that the fence of §5.2 would split off into a thread of its own
 is refused with step 3's reason, so no such session exists to own. Under
 Anyone, a session a non-member's message opens, direct or group, follows the
-address's "Outside senders' sessions" setting (§4.1): `org`, or `private` and owned as
-`user:<picked member>`. It applies only when the Control Plane answered that
+address's "Outside senders' sessions" setting (§4.1): `editors`, seen by
+whoever can edit the agent when it is read
+([session-visibility.md §1](session-visibility.md#1-background-and-goals)) and
+the default; `org`; or `private` and owned as `user:<picked member>`. Each
+records the sender's address as provenance only. It applies only when the Control Plane answered that
 the sender is not a member; a failed read admits nothing (§6.5), and a session
 classified without an answer stays private to the address as above, never
 `org`. The setting is read when the session is classified and
 fixed then, as every session's visibility is; changing it later moves no
-existing session. A thread an outside sender opens and a member later joins
+existing session. Only who counts as an editor stays live, never the tier. A thread an outside sender opens and a member later joins
 stays where it started.
 
 A started thread's session is created when the mail is sent (§6.4) and owned
@@ -725,7 +733,7 @@ served from the data plane alone:
 - **A new sender, or one whose answer is older than two minutes**: not
   admitted, and the relay answers for a retry (§5.5). Under "Anyone" (§4.1)
   this still holds: admission needs the Control Plane's answer for the
-  address's settings and whether the picked member is active, so a stranger's
+  address's settings and, when one is picked, whether that member is active, so a stranger's
   mail is retried too, never admitted unanswered. A thread already running
   therefore stops taking new mail two minutes into an outage and resumes when
   it ends; no message is refused for good.

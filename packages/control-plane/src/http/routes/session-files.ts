@@ -38,7 +38,7 @@ export function sessionFileRoutes(deps: HttpDeps) {
         // Purged content is gone at once, whatever the reaper has deleted from the bucket so far.
         if (!session || session.contentPurgedAt) return reply.code(404).send(notFound)
         const access = await sessionAccess.forSessions(req, [session])
-        if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) {
+        if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds)) {
           return reply.code(404).send(notFound)
         }
         const found = await files.download({

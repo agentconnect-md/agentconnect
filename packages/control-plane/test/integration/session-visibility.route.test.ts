@@ -264,6 +264,7 @@ describe('session visibility — external conversation audiences', () => {
     const [scope] = await repo.getExternalScopes([recorded.session!.externalScopeId!])
 
     const baseline = {
+      userId: 'viewer-1',
       role: 'collaborator' as const,
       identitySet: [ownerIdentity],
       externalAccess: {
@@ -866,6 +867,7 @@ describe('session visibility — external conversation audiences', () => {
     })
 
     const baselineViewer = {
+      userId: 'viewer-1',
       role: 'owner' as const,
       identitySet: [],
       externalAccess: {
@@ -984,6 +986,7 @@ describe('session visibility — external conversation audiences', () => {
           }
         })
       const viewerWith = (readFenceRev: bigint | null, allowedScopes: { id: string; aclRevision: bigint }[]) => ({
+        userId: 'viewer-1',
         role: 'owner' as const,
         identitySet: [],
         externalAccess: { policies: [{ provider, readFenceRev }], allowedScopes, decisionAt: new Date() }
@@ -1226,6 +1229,7 @@ describe('session visibility — membership across an agent filter', () => {
     expect(scopes).toHaveLength(1)
 
     const viewer = {
+      userId: 'viewer-1',
       role: 'owner' as const,
       identitySet: [],
       externalAccess: {

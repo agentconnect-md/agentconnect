@@ -161,7 +161,7 @@ export async function seedSessionMeta(
   id: string,
   agentId: string,
   opts: {
-    visibility?: 'org' | 'private'
+    visibility?: 'org' | 'private' | 'editors'
     ownerIdentity?: string
     daemonId?: string
     /** The shared-store set the rows went to (a pool-recorded session); absent ⇒ private store. */

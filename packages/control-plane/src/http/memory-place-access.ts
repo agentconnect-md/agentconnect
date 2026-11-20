@@ -42,6 +42,7 @@ export function makeMemoryPlaceAccess(deps: HttpDeps): MemoryPlaceAccess {
       if (channels.length > 0) {
         const access = await sessionAccess.forQuery(req, query)
         const viewer = {
+          userId: ctxOf(req).userId,
           role: ctxOf(req).role,
           identitySet: [...access.identitySet],
           externalAccess: access.externalAccess

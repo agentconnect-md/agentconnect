@@ -52,6 +52,7 @@ it.each(['telegram', 'discord', 'googlechat', 'msteams'] as const)(
       limit: 10,
       includeTotal: false,
       viewer: {
+        userId: 'viewer-1',
         role: 'owner',
         identitySet: [],
         externalAccess: {

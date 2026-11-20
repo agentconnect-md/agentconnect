@@ -80,6 +80,20 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
     expect(container.querySelector('button')).toBeNull()
   })
 
+  it('shows the agent’s editors as a fixed audience, never a choice', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(<SessionVisibilityControl sessionId="mail-1" visibility="editors" canChange onChanged={() => {}} />)
+    })
+    expect(container.textContent).toContain('People who can edit this agent')
+    expect(container.querySelector<HTMLElement>('[title]')?.title).toBe(
+      'Only people who can edit this agent can see this session.'
+    )
+    expect(container.querySelector('button')).toBeNull()
+  })
+
   it('promises the memory boundary on an ordinary (gated) agent', async () => {
     const text = await openTightenDialog(false)
     expect(text).toContain('stops it from feeding shared agent memory')

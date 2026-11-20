@@ -492,11 +492,8 @@ export interface SessionUsageDto {
   costCurrency?: string
 }
 
-// Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
-// visible only to the session owner (no role override, org owners included); 'org'
-// to every organization member. It is independent from the owning Agent's Team
-// visibility and deliberately NOT ResourceVisibility ('org' | 'restricted').
-export type SessionVisibility = 'private' | 'org' | 'external'
+// Session-level visibility (docs/designs/session-visibility.md); `editors` is whoever can edit the owning agent, and is never set by hand.
+export type SessionVisibility = 'private' | 'org' | 'external' | 'editors'
 export type MutableSessionVisibility = 'private' | 'org'
 
 export interface SessionDto {

@@ -67,6 +67,14 @@ it('names a Slack-managed audience by its channel without offering a visibility 
   expect(dialog().querySelector('[aria-haspopup="menu"]')).toBeNull()
 })
 
+it('names the agent’s editors as the one audience, with no choice even for a session owner', () => {
+  draw({ ...base, canChange: true, visibility: 'editors' })
+  expect(dialog().textContent).toContain('People who can edit this agent')
+  expect(dialog().textContent).toContain('Only people who can edit this agent can see this session.')
+  expect(dialog().querySelector('[role="radio"]')).toBeNull()
+  expect(copy()).toBeDefined()
+})
+
 it('closes only after copying succeeds, then shows a transient confirmation outside the dialog', async () => {
   vi.useFakeTimers()
   let complete!: () => void

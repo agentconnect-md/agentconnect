@@ -1473,15 +1473,12 @@ enum ActivityState {
   idle
 }
 
-// Per-session visibility tier (docs/designs/session-visibility.md §1): 'org'
-// (default) = visible to every organization member; 'private' = session owner
-// (identity match) ONLY — no role override, org owners included; 'external' =
-// current provider audience. Session reads are independent from owning-Agent
-// Team visibility. Share-by-link is deliberately NOT a member of this enum (§8).
+// Per-session visibility tier (docs/designs/session-visibility.md §1); share-by-link is deliberately NOT a member (§8).
 enum SessionVisibility {
-  private
-  org
-  external
+  private // the recorded owner only, no role override
+  org // every organization member
+  external // the current provider audience
+  editors // whoever can edit the owning Agent, decided at read time
 }
 
 enum ExternalResolution {

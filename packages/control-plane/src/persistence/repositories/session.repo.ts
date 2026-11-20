@@ -58,6 +58,7 @@ import type {
 import { AgentId, BotId, DaemonId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../../domain/sessionKey.js'
 import { takesCurrentSession } from '../../domain/webchat-current-session.js'
+import { sharedMemoryExcluded } from '../../domain/session-visibility.js'
 import { sessionViewerSql } from './session-access-sql.js'
 
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
@@ -1907,9 +1908,13 @@ export class PgSessionRepo implements SessionRepo {
       // ancestor cascade committing in between can re-own this session, and the
       // former owner's in-flight request must not still widen it.
       if (authorize && !authorize(current)) return { affected: [], forbidden: true }
-      // Shared inputs have no owner and their audience is immutable. Keep this
-      // repository guard even for internal callers that omit `authorize`.
-      if (current.externalProvider !== null || visibility === 'external') {
+      // Shared inputs and an agent's editors have no owner to change them; keep this guard even for callers that omit `authorize`.
+      if (
+        current.externalProvider !== null ||
+        visibility === 'external' ||
+        current.visibility === 'editors' ||
+        visibility === 'editors'
+      ) {
         return { affected: [], forbidden: true }
       }
       if (current.visibility === visibility) return { affected: [] } // no-op: no rev bump, no push
@@ -2112,10 +2117,8 @@ export class PgSessionRepo implements SessionRepo {
       agentId: AgentId(r.agentId),
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
-      // External-source sessions are no longer memory-excluded just for being
-      // external; only an explicitly `private` session excludes memory
-      // (session-visibility.md §5.1). Keep this in step with `toPush`.
-      sharedMemoryExcluded: r.visibility === 'private',
+      // Only a `private` or `editors` session excludes memory (session-visibility.md §5.1); keep in step with `toPush`.
+      sharedMemoryExcluded: sharedMemoryExcluded(r.visibility as SessionVisibility),
       visibilityRev: r.visibilityRev
     }))
   }
@@ -2127,8 +2130,8 @@ export class PgSessionRepo implements SessionRepo {
     afterId?: string
   ): Promise<SessionVisibilityState[]> {
     if (agentIds.length === 0) return []
-    // The rows a member must not be wrong about: `sharedMemoryExcluded` is `visibility ===
-    // 'private'`, and a member that never heard of a session already fails closed. So the ONLY way
+    // The rows a member must not be wrong about: `sharedMemoryExcluded` is `visibility IN
+    // ('private', 'editors')`, and a member that never heard of a session already fails closed. So the ONLY way
     // to leak is a stale non-private gate left from an earlier hold — which is what this page
     // overwrites. Cursored on `id` and blind to `visibilityAckedRev` on purpose: that watermark is
     // per SESSION, not per daemon, so an ack from the previous holder says nothing about this one.
@@ -2145,7 +2148,7 @@ export class PgSessionRepo implements SessionRepo {
       SELECT "id", "orgId", "agentId", "visibility", "externalProvider", "visibilityRev"
       FROM "session_meta"
       WHERE "agentId" = ANY(${[...agentIds]}::uuid[])
-        AND "visibility" = 'private'::"SessionVisibility"
+        AND "visibility" IN ('private'::"SessionVisibility", 'editors'::"SessionVisibility")
         AND (${includeExternal} OR "externalProvider" IS NULL)
         ${afterId ? Prisma.sql`AND "id" > ${afterId}` : Prisma.empty}
       ORDER BY "id"

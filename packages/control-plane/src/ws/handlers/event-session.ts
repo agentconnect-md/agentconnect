@@ -53,7 +53,8 @@ async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId
   const ownerIsServiceAccount = ownerUserId ? ((await deps.user?.isServiceAccount(ownerUserId)) ?? false) : false
   const platformNamesPeople = await dmPlatformNamesPeople(p, orgId, deps)
   const bound = await boundOwner(p, orgId, agentId, deps)
-  const boundOwnerUserId = typeof bound === 'object' && bound !== null ? null : bound
+  const outsiderAudience = typeof bound === 'object' && bound !== null ? bound.outsider : undefined
+  const boundOwnerUserId = outsiderAudience ? null : (bound as string | null | undefined)
   return classifySession({
     ...(p.platform !== undefined ? { platform: p.platform } : {}),
     ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
@@ -70,17 +71,17 @@ async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId
     ...(boundOwnerUserId !== undefined && p.conversationKind === 'group_dm'
       ? { groupOwnerUserId: boundOwnerUserId }
       : {}),
-    ...(typeof bound === 'object' && bound !== null ? { outsiderToOrg: true } : {})
+    ...(outsiderAudience ? { outsiderAudience } : {})
   })
 }
 
-/** The member the agent's own bot binds the sender of a root IM DM to, or of a group conversation where the platform gives that to its opener, or the organization for a sender the platform answered is outside it; undefined where the platform binds no one, null when nothing matched or the read failed. */
+/** The member the agent's own bot binds the sender of a root IM DM to, or of a group conversation where the platform gives that to its opener, or the audience for a sender the platform answered is outside the organization; undefined where the platform binds no one, null when nothing matched or the read failed. */
 async function boundOwner(
   p: EventSession,
   orgId: OrgId,
   agentId: AgentId,
   deps: DaemonWsDeps
-): Promise<string | { org: true } | null | undefined> {
+): Promise<string | { outsider: 'org' | 'editors' } | null | undefined> {
   if (p.parentSessionId || !p.platform || !p.triggeredBy) return undefined
   const provider = deps.platforms?.get(p.platform)
   if (!provider?.dmOwnerMember) return undefined
@@ -94,7 +95,8 @@ async function boundOwner(
       if (member) return member
       // Only an answer that the sender is outside the organization places the session by the platform's setting; a failed read stays private.
       const outsider = bot ? await provider.outsiderSession?.(bot, p.triggeredBy) : null
-      if (outsider) return 'org' in outsider ? outsider : outsider.ownerUserId
+      if (outsider)
+        return 'ownerUserId' in outsider ? outsider.ownerUserId : { outsider: 'org' in outsider ? 'org' : 'editors' }
     }
   } catch (err) {
     deps.log.warn?.({ err, orgId, sessionId: p.sessionId }, 'event/session: reading the bot binding of a sender failed')

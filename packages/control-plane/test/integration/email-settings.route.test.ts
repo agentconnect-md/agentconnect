@@ -1,5 +1,6 @@
 /** An email address's two settings against real Postgres (email-integration.md §4.1): read with the agent, changed by its editor, and projected to the daemon. */
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, afterEach } from 'vitest'
 import { EMAIL_V1_FEATURE } from '@agentconnect.md/protocol'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
@@ -54,9 +55,10 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
 
 /** An agent with an Email integration the default owner added. */
 async function withAddress(app: HttpApp): Promise<{ integrationId: string; botId: string }> {
-  await seedDaemon(prisma, DAEMON, {
-    capabilities: { platforms: ['email'], runtimes: ['claude'], acp: true, features: [EMAIL_V1_FEATURE] }
-  })
+  if (!(await prisma.daemon.findUnique({ where: { id: DAEMON } })))
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: ['email'], runtimes: ['claude'], acp: true, features: [EMAIL_V1_FEATURE] }
+    })
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId: DAEMON })
   const res = await app.app.inject({
@@ -72,14 +74,54 @@ async function withAddress(app: HttpApp): Promise<{ integrationId: string; botId
 const url = (integrationId: string) => `${ORG}/integrations/${integrationId}/email/settings`
 
 describe('an email address’s settings', () => {
-  it('reads Members, and outside sessions private to the member who added the address, by default', async () => {
+  it('reads Members, and outside sessions seen by the agent’s editors, by default', async () => {
     const { app } = harness()
     const { integrationId } = await withAddress(app)
     const res = await app.app.inject({ method: 'GET', url: url(integrationId) })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual({
-      whoMayWrite: 'members',
-      outsideSessions: { kind: 'member', userId: DEFAULT_OWNER_ID, active: true }
+    expect(res.json()).toEqual({ whoMayWrite: 'members', outsideSessions: { kind: 'editors' } })
+  })
+
+  it('stores the editors choice by name', async () => {
+    const { app } = harness()
+    const { integrationId, botId } = await withAddress(app)
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: url(integrationId),
+      payload: { whoMayWrite: 'anyone', outsideSessions: { kind: 'editors' } }
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ whoMayWrite: 'anyone', outsideSessions: { kind: 'editors' } })
+    expect((await prisma.bot.findUnique({ where: { id: botId } }))?.platformConfig).toMatchObject({
+      outsideSessions: 'editors'
+    })
+  })
+
+  it('migrates an address that kept the old default to editors, and leaves other choices alone', async () => {
+    const { app } = harness()
+    const kept = await withAddress(app)
+    const picked = await withAddress(app)
+    const toOrg = await withAddress(app)
+    const other = await makeUser('migration-pick', 'collaborator')
+    const store = (botId: string, outsideSessions: string) =>
+      prisma.bot.update({ where: { id: botId }, data: { platformConfig: { whoMayWrite: 'anyone', outsideSessions } } })
+    await store(kept.botId, `user:${DEFAULT_OWNER_ID}`)
+    await store(picked.botId, `user:${other}`)
+    await store(toOrg.botId, 'org')
+    const migration = readFileSync(
+      new URL('../../prisma/migrations/20270125000000_email_outside_sessions_editors/migration.sql', import.meta.url),
+      'utf8'
+    )
+    await prisma.$executeRawUnsafe(migration)
+    const stored = async (botId: string) =>
+      ((await prisma.bot.findUnique({ where: { id: botId } }))?.platformConfig as Record<string, string>)
+        .outsideSessions
+    expect(await stored(kept.botId)).toBe('editors')
+    expect(await stored(picked.botId)).toBe(`user:${other}`)
+    expect(await stored(toOrg.botId)).toBe('org')
+    expect((await app.app.inject({ method: 'GET', url: url(kept.integrationId) })).json()).toEqual({
+      whoMayWrite: 'anyone',
+      outsideSessions: { kind: 'editors' }
     })
   })
 

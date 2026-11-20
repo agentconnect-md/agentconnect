@@ -71,7 +71,11 @@ export function sessionPermissionRequestRoutes(deps: HttpDeps) {
       const ctx = ctxOf(req)
       const audience = await access.forSessions(req, [row])
       const agent = await deps.repos.agent.get(orgOf(req), row.agentId)
-      if (!canViewSession(row, ctx, audience.identitySet, audience.externalAccess) || !agent || !canView(agent, ctx)) {
+      if (
+        !canViewSession(row, ctx, audience.identitySet, audience.externalAccess, audience.editableAgentIds) ||
+        !agent ||
+        !canView(agent, ctx)
+      ) {
         await send(reply, notFound('conversation not found'))
         return null
       }

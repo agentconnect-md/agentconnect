@@ -1078,7 +1078,6 @@ export function buildHttpApp(
       memberByVerifiedEmail: (orgId, email) => deps.repos.user.memberByVerifiedEmail(orgId, email),
       verifiedEmailHolders: (orgId, email) => deps.repos.user.verifiedEmailHolders(orgId, email),
       activeMember: (orgId, userId) => deps.repos.user.activeMember(orgId, userId),
-      integrationsForBot: (botId) => deps.repos.integration.listForBot(botId as never),
       installRoutes: [
         emailAddressRoutes({
           ...(platformStubs.emailMailDomain ? { mailDomain: platformStubs.emailMailDomain } : {}),

@@ -68,6 +68,7 @@ export function usageRoutes(deps: HttpDeps) {
           ctx,
           req.query.tz,
           {
+            userId: ctx.userId,
             role: ctx.role,
             identitySet: [...access.identitySet],
             externalAccess: access.externalAccess

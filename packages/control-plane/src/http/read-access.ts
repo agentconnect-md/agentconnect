@@ -31,7 +31,9 @@ export function sessionsVisibleTo(deps: HttpDeps, log: () => FastifyBaseLogger) 
     const principal = { userId: viewer.userId, role: viewer.role }
     // Stricter than the console: an org-visible DM is shown to every member, but read only for its recorded owner.
     return rows
-      .filter((row) => canViewSession(row, principal, access.identitySet, access.externalAccess))
+      .filter((row) =>
+        canViewSession(row, principal, access.identitySet, access.externalAccess, access.editableAgentIds)
+      )
       .filter((row) => !(ownerOnly || row.platform === 'webchat') || ownsSession(row, access.identitySet))
       .map((row) => String(row.id))
   }
