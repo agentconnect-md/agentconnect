@@ -271,9 +271,10 @@ An Agent editor sets two things on the address, in its integration panel:
   **Anyone**. Anyone admits every sender that is not automatic (step 1),
   authenticated (step 2) and within the rate limit (step 4). The rate limit is
   the same for every sender, and it is per address: a sender who owns a domain
-  can make new addresses at will, so under Anyone it does not bound how much
-  outside mail reaches the agent. What does is the outside budget for replies
-  (§6.4) and the provider's quota. Steps 1 and 2 are never lifted: they are what
+  can make new addresses at will, so under Anyone nothing in the product
+  bounds how much outside mail reaches the agent or how many turns it starts.
+  The outside budget of §6.4 bounds only the replies the agent sends to it,
+  and the provider's quota only the sending. Steps 1 and 2 are never lifted: they are what
   keeps two responders from answering each other and a forged `From` from
   speaking for someone.
 - **Outside senders' sessions**: visible to the **organization**, or private
@@ -413,8 +414,11 @@ Control Plane provider's `dmOwnerMember` resolves the member from the address
 at ingest. No match, or a failed read, leaves the row private to the address,
 visible to no one, never `org`.
 
-A session a non-member's message opens, direct or group, follows the address's
-"Outside senders' sessions" setting (§4.1): `org`, or `private` and owned as
+Under Members a non-member's message is admitted only into the started thread
+it answers; one that the fence of §5.2 would split off into a thread of its own
+is refused with step 3's reason, so no such session exists to own. Under
+Anyone, a session a non-member's message opens, direct or group, follows the
+address's "Outside senders' sessions" setting (§4.1): `org`, or `private` and owned as
 `user:<picked member>`. It applies only when the Control Plane answered that
 the sender is not a member; a failed read admits nothing (§6.5), and a session
 classified without an answer stays private to the address as above, never
@@ -773,7 +777,10 @@ The build also owes two records outside this document: entries in
 token, the address-to-member rule, mail from anyone and the ticketless started
 mail, and the mail rows of product conventions' session access and memory layer
 tables, with the started-mail exception of §6.4 under "Writing to other
-conversations".
+conversations" stating the same fail-closed cases as the tool, and the default
+rows of §5.3 for started threads (a group thread sent by a schedule or hook
+owned by its first member recipient) in
+[session-visibility.md §4.2](session-visibility.md#42-default-rules).
 
 Accepted: on a shared deployment the name check of §3.1 and the unknown-address
 rejection of §7 both reveal which names other organizations hold. A name is
