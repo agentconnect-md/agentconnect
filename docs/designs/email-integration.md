@@ -286,7 +286,12 @@ An Agent editor sets two things on the address, in its integration panel:
   The outside budget of §6.4 bounds only the replies the agent sends to it,
   and the provider's quota only the sending. Steps 1 and 2 are never lifted: they are what
   keeps two responders from answering each other and a forged `From` from
-  speaking for someone.
+  speaking for someone. Under Anyone a member is still a member: one a
+  restricted agent's list leaves off is admitted like any sender, into their
+  own session, since the address takes mail from people with less standing
+  than them. An address that several members hold names nobody (§4) and stays
+  refused, never read as an outsider's, and a member whose address no sign-in
+  method stands behind reads as an outsider.
 - **Outside senders' sessions**: visible to the **organization**, or private
   to **one member** the editor picks, by default the member who added the
   address. It applies to every session a non-member's message opens under
@@ -361,7 +366,9 @@ layer of its own and never writes the shared layer, and a post into it from
 another conversation is a draft an internal member approves
 ([product conventions](../product-conventions.md#memory-layers)). A
 non-member's direct conversation has no person layer to read, so it takes a
-place layer too.
+place layer too. The daemon keeps a conversation's external mark in memory, since mail reports
+no conversation to the Control Plane, and sets it again from the next admitted
+message after a restart.
 
 The existing rules then apply with nothing else written for mail:
 
@@ -661,7 +668,8 @@ it to people and does not look for another way to send.
   recipients, not sends: 100 recipients a day per bot and 500 per
   organization. A reply into a non-member's thread under "Anyone" draws on the
   same budget, so neither a talked-into agent nor strangers' mail can spend
-  the replies members get, and a send to 50 people counts as 50. Like §6.3's counters these are
+  the replies members get, and a send to 50 people counts as 50. Every send
+  still counts toward the deployment's own figure of §6.3. Like §6.3's counters these are
   per relay instance and lost on a restart, so they bound a burst, not a total;
   the provider's quota remains the hard stop.
 - **Headers**: `From` is the agent's address and name, as for a reply.
@@ -770,8 +778,8 @@ line per host:
   table, the record of a verified sign-in email, `dmOwnerMember`, the group
   conversation's visibility row, the member answer for one address or a batch,
   and a spec that names `email-v1` in `requires` so an older daemon never
-  receives one; the address's two settings, stored on the integration and
-  projected into the spec, with the picked member's state in the member
+  receives one; the address's two settings, stored in the address's `Bot`
+  row's platform configuration and projected into the spec, with the picked member's state in the member
   answer.
 - **Console**: the one-field add flow, the address display, the mark, and the
   two settings of §4.1 in the integration panel.
