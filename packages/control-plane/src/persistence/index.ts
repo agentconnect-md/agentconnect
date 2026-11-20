@@ -55,6 +55,7 @@ export { PgSessionPullRequestFeedbackRepo } from './repositories/session-pull-re
 export { PgFollowUpWatchRepo } from './repositories/follow-up-watch.repo.js'
 export { PgCapabilityRequestRepo } from './repositories/capability-request.repo.js'
 export { PgSessionUsageRepo } from './repositories/session-usage.repo.js'
+export { PgOrgSessionPolicyRepo } from './repositories/org-session-policy.repo.js'
 export { PgAgentApiEntryRepo } from './repositories/agent-api-entry.repo.js'
 export { PgAhpSessionBindingRepo } from './repositories/ahp-session-binding.repo.js'
 export { PgWebchatConversationRepo } from './repositories/webchat-conversation.repo.js'

@@ -89,6 +89,7 @@ the picture it draws.
 ### Sessions and messaging
 
 - [session-concept.md](designs/session-concept.md) — What a session is.
+- [org-session-policy.md](designs/org-session-policy.md) — A per-organization session policy a deployment-level service delivers by revision; stored now, enforced later.
 - [send-message-routing-rework.md](designs/send-message-routing-rework.md) — The `sendMessage` routing ladder.
 - [send-message-guide.md](designs/send-message-guide.md) — Require an explicit `sendMessage` action, with `getToolGuide`, a source-backed parity audit, delegated tasks (`delegateTask`, `messageTask`, `stopTask`, `listTasks`), existing peer sessions, and `replyToSession` replies addressed to session messages by id.
 - [activation-parity.md](designs/activation-parity.md) — Consistent activation semantics across surfaces.

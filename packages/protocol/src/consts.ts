@@ -422,6 +422,9 @@ export const USAGE_COLLECTOR_SA_NAME = 'ac-usage-collector'
  */
 export const USAGE_READER_SA_NAME = 'ac-usage-reader'
 
+/** DEFAULT ServiceAccount of the service that delivers per-organization session policies; its own principal, never a usage one. */
+export const SESSION_POLICY_WRITER_SA_NAME = 'ac-session-policy-writer'
+
 /** Where the deployment projects that token into the daemon pod, and where the daemon reads it
  *  from. Not part of the verification, but the same two-sided agreement: the mounter and the
  *  reader are both in this repo, so one definition beats a comment asking them to match. */

@@ -76,4 +76,9 @@ describe('compose.yaml service environment', () => {
     expect(serviceEnv('control-plane')).toContain('USAGE_INGEST_TOKEN')
     expect(compose).not.toMatch(/USAGE_INGEST_TOKEN\s*=/)
   })
+
+  it('passes the session-policy delivery credential through without inventing a default', () => {
+    expect(serviceEnv('control-plane')).toContain('SESSION_POLICY_TOKEN')
+    expect(compose).not.toMatch(/SESSION_POLICY_TOKEN\s*=/)
+  })
 })

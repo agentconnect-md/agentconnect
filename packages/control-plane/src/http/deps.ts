@@ -214,6 +214,10 @@ export interface HttpServerConfig extends HumanAuthConfig {
   /** ServiceAccount the usage collector presents on that ingress — the deployment names its
    *  collector workload and says so here. Unset ⇒ the protocol default. */
   USAGE_COLLECTOR_SERVICE_ACCOUNT?: string
+  /** Shared secret for the session-policy delivery route; unset with no cluster identity ⇒ not registered. */
+  SESSION_POLICY_TOKEN?: string
+  /** ServiceAccount the session-policy writer presents on that route; unset ⇒ the protocol default. */
+  SESSION_POLICY_WRITER_SERVICE_ACCOUNT?: string
 }
 
 export interface HttpDeps {
@@ -245,6 +249,8 @@ export interface HttpDeps {
     session: SessionRepo
     /** Per-session token usage → the `/usage` dashboard aggregates. */
     sessionUsage: SessionUsageRepo
+    /** Per-organization session policies a deployment-level service delivers (org-session-policy.md). */
+    orgSessionPolicy?: import('../persistence/ports.js').OrgSessionPolicyRepo
     /** Ownership-only metadata that authorizes browser conversation resumes. */
     webchatConversation: WebchatConversationRepo
     ahpSessionBinding?: Pick<AhpSessionBindingRepo, 'forConversation'>

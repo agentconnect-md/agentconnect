@@ -135,6 +135,7 @@ import {
   PgFollowUpWatchRepo,
   PgCapabilityRequestRepo,
   PgSessionUsageRepo,
+  PgOrgSessionPolicyRepo,
   PgAgentApiEntryRepo,
   PgWebchatConversationRepo,
   PgAhpSessionBindingRepo,
@@ -646,6 +647,7 @@ export function buildContainer(
     followUpWatch: new PgFollowUpWatchRepo(prisma),
     capabilityRequest: new PgCapabilityRequestRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
+    orgSessionPolicy: new PgOrgSessionPolicyRepo(prisma),
     agentApiEntry: new PgAgentApiEntryRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     ahpSessionBinding: new PgAhpSessionBindingRepo(prisma),
@@ -2769,6 +2771,7 @@ export function buildContainer(
       relay: repos.relay,
       session: repos.session,
       sessionUsage: repos.sessionUsage,
+      orgSessionPolicy: repos.orgSessionPolicy,
       agentApiEntry: repos.agentApiEntry,
       webchatConversation: repos.webchatConversation,
       ahpSessionBinding: repos.ahpSessionBinding,
@@ -4527,6 +4530,8 @@ export function httpServerConfigFrom(
     WEBCHAT_PROTOCOL: config.WEBCHAT_PROTOCOL,
     ...(config.USAGE_INGEST_TOKEN ? { USAGE_INGEST_TOKEN: config.USAGE_INGEST_TOKEN } : {}),
     USAGE_COLLECTOR_SERVICE_ACCOUNT: config.USAGE_COLLECTOR_SERVICE_ACCOUNT,
+    ...(config.SESSION_POLICY_TOKEN ? { SESSION_POLICY_TOKEN: config.SESSION_POLICY_TOKEN } : {}),
+    SESSION_POLICY_WRITER_SERVICE_ACCOUNT: config.SESSION_POLICY_WRITER_SERVICE_ACCOUNT,
     ...(config.S3_PUBLIC_BASE_URL ? { S3_PUBLIC_BASE_URL: config.S3_PUBLIC_BASE_URL } : {}),
     RELAY_STALE_MS: relayStaleMs
   }

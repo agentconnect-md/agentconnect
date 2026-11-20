@@ -3061,6 +3061,19 @@ export interface UsageAggregate {
   series: { bucket: 'hour' | 'day'; points: SpendBucket[] }
 }
 
+/** One delivered session policy (org-session-policy.md); null limits are unbounded. */
+export interface OrgSessionPolicyInput {
+  revision: number
+  monthlySessionLimit: number | null
+  historyRetentionDays: number | null
+  enforce: boolean
+}
+
+export interface OrgSessionPolicyRepo {
+  /** Store the policy if its revision is above the stored one; returns the revision now held, or null when the org does not exist. */
+  apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null>
+}
+
 export interface SessionUsageRepo {
   /** Upsert a session's cumulative usage (idempotent on `(agentId, sessionId)`).
    *  A LATE report still writes its own timeline checkpoint idempotently, but never

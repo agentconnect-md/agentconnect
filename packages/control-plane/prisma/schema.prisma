@@ -148,6 +148,7 @@ model Org {
   computers                 Computer[]
   computerRegistrations     ComputerRegistration[]
   computerSettings          ComputerOrgSettings?
+  sessionPolicy             OrgSessionPolicy?
 
   @@index([createdByUserId])
   @@map("org")
@@ -5281,4 +5282,22 @@ model ComputerOrgSettings {
   org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("computer_org_settings")
+}
+
+// Per-organization session policy a deployment-level service delivers by revision (org-session-policy.md).
+model OrgSessionPolicy {
+  orgId                String   @id
+  // The writer's monotonically increasing revision; a delivery applies only above the stored one.
+  revision             Int
+  // Sessions an organization may start per UTC month; null is no limit.
+  monthlySessionLimit  Int?
+  // Days hosted session history is kept; null leaves retention unbounded by this policy.
+  historyRetentionDays Int?
+  // False counts only and never refuses.
+  enforce              Boolean  @default(false)
+  updatedAt            DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("org_session_policy")
 }
