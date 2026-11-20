@@ -31,11 +31,13 @@ original unavailable, but the retained preview remains useful. Durable upload jo
 and restart recovery are outside this feature's scope.
 
 For example, a user asks for a product illustration. The agent invokes its available
-image-generation tool, saves the result as `outputs/images/<unique-name>.png`, and calls:
+image-generation tool, saves the result as `<files dir>/outputs/images/<unique-name>.png`
+in the session files directory
+([inbound-file-attachments.md](inbound-file-attachments.md) §2.4), and calls:
 
 ```json
 {
-  "path": "outputs/images/product-illustration.png",
+  "path": "/home/agent/files/session-example/outputs/images/product-illustration.png",
   "caption": "Product illustration"
 }
 ```
@@ -98,13 +100,14 @@ The skill is a workflow, not an image engine. Its instructions are:
 2. For charts and technical diagrams, use available plotting/rendering tools when
    appropriate. Produce a supported raster image or SVG; retain editable sources separately.
    Do not silently substitute a plotted diagram for a requested generated illustration.
-3. Save the completed original inside the active session's workspace, preferably
-   `outputs/images/`, with a unique name. A native tool may return bytes, a temporary
-   path, or a downloadable result; use the runtime's permitted file/network tools to
-   materialize it. A result outside the workspace must be copied into it first.
+3. Save the completed original in the session files directory's `outputs/images/`,
+   with a unique name. A native tool may return bytes, a temporary path, or a
+   downloadable result; use the runtime's permitted file/network tools to materialize
+   it. A result elsewhere must be copied there first.
 4. Inspect the result if the runtime offers image inspection, then call `shareFile`
-   with a workspace-root-relative path and optional short caption. Runtime cwd may
-   be a subdirectory; resolve the path against the trusted session workspace root.
+   with the absolute path the tool description names and an optional short caption. A
+   path relative to the checkout still works for a file the user wants in the
+   repository.
 5. Do not repeat the image as Markdown after a successful share. A generation failure
    and a publication failure are different: if publication fails, retain the image and
    report that it was created but could not be displayed.

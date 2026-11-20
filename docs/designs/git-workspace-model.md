@@ -484,7 +484,7 @@ grants stay for it and simply do not apply to a clone.
 ### On the pool
 
 The same layout in the session pod's coordinates:
-`<mount>/sessions/<leaf>/{workspace,repos,home}` on the volume of a pod claimed
+`<mount>/sessions/<leaf>/{workspace,repos,home,uploads,outputs}` on the volume of a pod claimed
 for the session alone (`agent-<id>-<16 hex of the leaf>`, labelled by agent and
 session; [k8s-daemon-pool.md](k8s-daemon-pool.md) §4). The agent pod stays —
 primary checkout, secondary roots, the console's workspace views,

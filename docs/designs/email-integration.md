@@ -652,7 +652,9 @@ organization.
   raw message and an envelope from any front end, so only the Worker and the
   send call are provider-specific.
 - **Attachments.** Inbound over the chunked path the Console upload uses, into
-  the session's `uploads/` directory; outbound from agent-authored files.
+  the session files directory's `uploads/`
+  ([inbound-file-attachments.md](inbound-file-attachments.md) §2.4); outbound from
+  agent-authored files.
 - **Mail between agents.** Excluded today by §4 step 1, which is also what
   prevents a loop.
 - **Delivery events.** Reading the provider's bounce and complaint Queue to

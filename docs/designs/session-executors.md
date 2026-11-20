@@ -892,7 +892,7 @@ nothing about TLS, and the unmodified WebSocket client on the far end cannot tel
 spreads (§6's controls), pulls candidates, picks one and sends `prepare`.
 
 - _The executor_ reserves a slot, creates
-  `<executorRoot>/sessions/<leaf>/{workspace,repos,home}`, seeds `home` from its own
+  `<executorRoot>/sessions/<leaf>/{workspace,repos,home,uploads,outputs}`, seeds `home` from its own
   host sign-in (D9), starts the environment with its own driver — a plain process
   for `host`, the existing microsandbox manager for a VM — starts the shim, mints
   the key and replies.
@@ -912,7 +912,7 @@ its own disk; provider credentials and agent secrets are the holder's, and arriv
 over the link (§8).
 
 **Where the state lives.** The environment's durable state — clone, secondary roots,
-HOME — is an executor-local directory, `<executorRoot>/sessions/<leaf>/{workspace,repos,home}`,
+HOME — is an executor-local directory, `<executorRoot>/sessions/<leaf>/{workspace,repos,home,uploads,outputs}`,
 the layout the local confined tier already uses, mounted into the environment.
 This is what makes it survive the backend's own lifecycle: the microsandbox
 driver's `replace()` retires and destroys a VM whenever its spec or image identity

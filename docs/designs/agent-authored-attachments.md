@@ -163,7 +163,11 @@ transcript detail here, never a seed.
 
 ## 4. The resolver and the fence
 
-One resolver serves the tool; every restriction lives in it once.
+One resolver serves the tool; every restriction lives in it once. It takes a path relative
+to the session's checkout, or an absolute path inside the session files directory, where
+`outputs/` holds the agent's generated files
+([inbound-file-attachments.md](inbound-file-attachments.md) §2.4). Each root keeps the
+containment below.
 
 **Containment is reused — and it is two fences, one per phase, not one.** On a host
 agent's local tree the resolver runs `canonicalWorkspacePath()`: the lexical check
