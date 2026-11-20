@@ -933,28 +933,35 @@ describe('FilesPanel auto refresh', () => {
   })
 })
 
-// The session files directory's two areas below the checkout (inbound-file-attachments.md §2.4).
+// The session files directory's two areas, in an accordion above the checkout (inbound-file-attachments.md §2.4).
 describe('FilesPanel session files', () => {
   const areaReads = (area: string) =>
     vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => (call[1] as { root?: string }).root === area)
+  const header = (section: 'session' | 'workspace') =>
+    container?.querySelector<HTMLElement>(`[data-files-section="${section}"]`) ?? undefined
 
   it('draws no section without the session it belongs to', async () => {
     await render()
     expect(container?.querySelector('[data-session-files]')).toBeNull()
+    expect(container?.querySelector('[data-files-section]')).toBeNull()
+    expect(rowNames()).toEqual(['src', 'README.md'])
   })
 
-  it('lists an area on first open, scoped to the outward session, and opens its files with their root', async () => {
+  it('opens on session files, both areas listed, with the workspace collapsed below', async () => {
     wire.listings['files:outputs/'] = { entries: [dir('images'), textFile('report.pdf')] }
     wire.listings['files:outputs/images'] = { entries: [textFile('chart.png')] }
+    wire.listings['files:uploads/'] = { entries: [textFile('spec.csv')] }
     await render({ sessionId: undefined, sessionFilesId: 'session-shared' })
 
-    expect(text()).toContain('Session files')
-    expect(rowNames()).toEqual(['src', 'README.md', '/outputs', '/uploads'])
-    expect(areaReads('outputs')).toHaveLength(0)
-
-    await click(row('/outputs'), '/outputs row')
+    const headers = Array.from(container?.querySelectorAll('[data-files-section]') ?? [])
+    expect(headers.map((h) => h.getAttribute('data-files-section'))).toEqual(['session', 'workspace'])
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
+    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('false')
+    expect(header('workspace')?.textContent).toBe('Workspace files')
     expect(areaReads('outputs')[0]?.[1]).toEqual({ path: '', sessionId: 'session-shared', root: 'outputs' })
-    expect(rowNames()).toEqual(['src', 'README.md', '/outputs', 'images', 'report.pdf', '/uploads'])
+    expect(rowNames()).toEqual(['/outputs', 'images', 'report.pdf', '/uploads', 'spec.csv'])
+    // The checkout's tree and its filter wait behind their own header.
+    expect(container?.querySelector('input')).toBeNull()
     // No git status reaches an area's rows.
     expect(badges()).toEqual([])
 
@@ -964,19 +971,39 @@ describe('FilesPanel session files', () => {
     expect(opened).toEqual(['files:outputs/report.pdf', 'files:outputs/images/chart.png'])
   })
 
+  it('keeps one section open at a time, and lets both collapse', async () => {
+    await render({ sessionFilesId: 'session-1' })
+    await click(header('workspace'), 'workspace header')
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('false')
+    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
+    expect(rowNames()).toEqual(['src', 'README.md'])
+    expect(container?.querySelector('input')).not.toBeNull()
+
+    await click(header('workspace'), 'workspace header')
+    expect(rowNames()).toEqual([])
+    await click(header('session'), 'session header')
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container?.querySelector('[data-session-files]')).not.toBeNull()
+    expect(container?.querySelector('input')).toBeNull()
+  })
+
+  it('opens on the workspace when the viewer already holds a checkout file', async () => {
+    await render({ sessionFilesId: 'session-1', openFilePath: 'README.md' })
+    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
+    expect(rowNames()).toEqual(['src', 'README.md'])
+  })
+
   it('says an empty or absent area has nothing yet', async () => {
     wire.listings['files:uploads/'] = { entries: [], exists: false }
     await render({ sessionFilesId: 'session-1' })
-    await click(row('/uploads'), '/uploads row')
-    expect(container?.querySelector('[data-session-files-note]')?.textContent).toBe('Nothing here yet')
+    const notes = Array.from(container?.querySelectorAll('[data-session-files-note]') ?? []).map((n) => n.textContent)
+    expect(notes).toContain('Nothing here yet')
   })
 
   it('asks for a daemon update when the daemon predates session files, and calls anything else offline', async () => {
     wire.failures['files:outputs/'] = 409
     wire.failures['files:uploads/'] = 503
     await render({ sessionFilesId: 'session-1' })
-    await click(row('/outputs'), '/outputs row')
-    await click(row('/uploads'), '/uploads row')
     const notes = Array.from(container?.querySelectorAll('[data-session-files-note]') ?? []).map((n) => n.textContent)
     expect(notes).toEqual([
       'Update this agent’s daemon to browse session files.',
@@ -984,22 +1011,22 @@ describe('FilesPanel session files', () => {
     ])
   })
 
-  it('marks the viewer’s session file, opening its area, and not the checkout path of the same name', async () => {
+  it('marks the viewer’s session file and not the checkout path of the same name', async () => {
     wire.listings[''] = { entries: [textFile('report.pdf')] }
     wire.listings['files:outputs/'] = { entries: [textFile('report.pdf')] }
     await render({ sessionFilesId: 'session-1', openFilePath: 'report.pdf', openFileRoot: 'outputs' })
     const marked = rows().filter((candidate) => candidate.getAttribute('aria-current') === 'page')
     expect(marked).toHaveLength(1)
-    expect(rows().indexOf(marked[0]!)).toBe(rowNames().lastIndexOf('report.pdf'))
+    expect(rowNames()).toEqual(['/outputs', 'report.pdf', '/uploads'])
   })
 
-  it('re-reads an open area on the turn’s falling edge, with the tree', async () => {
+  it('re-reads the open areas on the turn’s falling edge, with the tree', async () => {
     await render({ active: true, sessionFilesId: 'session-1' })
-    await click(row('/outputs'), '/outputs row')
     expect(areaReads('outputs')).toHaveLength(1)
+    expect(areaReads('uploads')).toHaveLength(1)
     await rerender({ active: true, sessionFilesId: 'session-1', turnActive: true })
     await rerender({ active: true, sessionFilesId: 'session-1', turnActive: false })
     expect(areaReads('outputs')).toHaveLength(2)
-    expect(areaReads('uploads')).toHaveLength(0)
+    expect(areaReads('uploads')).toHaveLength(2)
   })
 })

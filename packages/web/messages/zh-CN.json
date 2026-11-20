@@ -973,7 +973,9 @@
         "sessionFilesTitle": "此会话保存在检出目录旁的文件：Agent 生成的文件，以及它保存的附件",
         "sessionFilesEmpty": "暂无文件",
         "sessionFilesUnsupported": "请更新此 Agent 的 Daemon 以浏览会话文件。",
-        "sessionFilesOffline": "无法读取会话文件，Daemon 可能已离线。"
+        "sessionFilesOffline": "无法读取会话文件，Daemon 可能已离线。",
+        "workspaceFiles": "工作区文件",
+        "workspaceFilesTitle": "此会话所用的 Agent 检出目录"
       },
       "sessionDock": {
         "resizePanel": "调整面板大小",

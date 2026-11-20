@@ -973,7 +973,9 @@
         "sessionFilesTitle": "Files this session keeps beside its checkout: what the agent generated, and the attachments it saved",
         "sessionFilesEmpty": "Nothing here yet",
         "sessionFilesUnsupported": "Update this agent’s daemon to browse session files.",
-        "sessionFilesOffline": "Couldn’t read session files — the daemon may be offline."
+        "sessionFilesOffline": "Couldn’t read session files — the daemon may be offline.",
+        "workspaceFiles": "Workspace files",
+        "workspaceFilesTitle": "The agent’s checkout this session works in"
       },
       "sessionDock": {
         "resizePanel": "Resize panel",
