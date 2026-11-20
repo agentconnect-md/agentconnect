@@ -1,8 +1,8 @@
 // The `agentconnect-secrets` wrapper the daemon writes for its runtimes; secret-free (paths only).
+// No relative imports: scripts/emit-shim-secrets-wrapper.mjs loads this file with plain Node, which cannot resolve them.
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { nodeExecutable } from '../runtimes/node-executable.js'
 
 /** Single-quote a value for sh, escaping any quote it carries. */
 export const shQuote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`
@@ -36,7 +36,7 @@ function makeShimDir(dir: string): void {
 /** The daemon CLI a wrapper runs, through tsx for a dev daemon's `.ts` entry (plain `node entry.ts` dies on `.js` imports). */
 function daemonCliArgv(cliEntry: string): string {
   const executableEntry = existsSync(cliEntry) ? realpathSync(cliEntry) : cliEntry
-  const argv = [shQuote(nodeExecutable())]
+  const argv = [shQuote(realpathSync(process.execPath))]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
     argv.push(shQuote(req.resolve('tsx/cli')))
