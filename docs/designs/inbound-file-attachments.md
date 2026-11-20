@@ -2,6 +2,8 @@
 
 **Status:** Draft — not implemented as designed. Platform files reach `uploads/` only when
 the agent saves one through a read tool (#2104), not at prompt build (§8 phase 1). The
+landing place moves out of the Git checkout into the session files directory (§2.4,
+decided 2026-11-20, #4144); until that ships, `uploads/` is still at the working root. The
 web-console upload shipped differently from phases 2–3: on a deployment whose Control
 Plane has a transfer bucket, the browser uploads straight into the bucket and the agent
 receives a download link ([source-cache-file-transfer.md](source-cache-file-transfer.md)). Console
@@ -48,35 +50,33 @@ WebP ≤ 160 KB, and the wire schema (`WebchatImageAttachment`) is a png/jpeg/we
 generic file cannot enter at all — and even an _image_ reaches the agent only as the lossy
 160 KB projection, where the same image sent on Slack arrives at full resolution.
 
-## 2. The landing zone: every attachment becomes a workspace file
+## 2. The landing zone: every attachment becomes a session file
 
 The unifying move: **the daemon materializes inbound attachment bytes into the session's
-workspace**, and the prompt names the path. Both entry points converge on it:
+files directory** (§2.4), a sibling of its checkout, and the prompt names the path. Both
+entry points converge on it:
 
 ```
 web console:  browser ──(chunked frames; relay forwards, stores nothing)──▶ daemon ─┐
 platforms:    provider ──(metadata)──▶ daemon ──(credentialed download, ≤ cap)──────┤
                                                                                     ▼
-                                                       <session working root>/uploads/spec.pdf
+                                                   <session files dir>/uploads/spec.pdf
                                                                                     │
-              prompt: [attached: spec.pdf (application/pdf, 1.2 MB, saved to uploads/spec.pdf)]
+              prompt: [attached: spec.pdf (application/pdf, 1.2 MB, saved to files:uploads/spec.pdf)]
 ```
 
-The workspace — not a daemon-side attachment store with a read tool — because the
-workspace is the only filesystem the agent's tools and shell are guaranteed to reach, on
-both deployment shapes: a sandbox pod cannot see the daemon's local disk, but the
-`WorkspaceFs` seam already reaches the pod's volume over the fd-anchored shim channel. No
-new tool surface, no new mount, no reach problem.
+A directory on the session's own filesystem — not a daemon-side attachment store with a
+read tool — because that filesystem is the only one the agent's tools and shell are
+guaranteed to reach, on every execution plane: a sandbox pod cannot see the daemon's local
+disk, but the `WorkspaceFs` seam already reaches the pod's volume over the fd-anchored
+shim channel. No new tool surface, no new mount. It is not the checkout itself, for the
+reasons in §2.4.
 
 ### 2.1 Placement rules
 
-- **Directory:** `uploads/` at the session's **working root** — the per-session worktree
-  when one exists, the agent's primary checkout otherwise. The file lands where the agent
-  is already working, so relative paths in the prompt resolve without ceremony. Retention
-  splits by arm: a reclaimed worktree takes its uploads with it, while the primary
-  checkout has no reclamation event, so `uploads/` there grows with use — accepted for
-  phase 1, in plain sight (the Workspace browser lists it; the user or the agent deletes),
-  with a cleanup knob deferred alongside §7's other follow-ups.
+- **Directory:** `uploads/` in the session files directory (§2.4), never in the checkout.
+  The agent's cwd may be a subdirectory of the checkout or a secondary root, so the
+  standing context names the area's absolute path.
 - **Names are hostile input.** The stored name is derived from the platform-supplied one
   by sanitization: path separators, `..`, control characters, leading dots, and
   parentheses (the marker's entry delimiters, §3) are stripped or replaced; an empty
@@ -97,14 +97,9 @@ new tool surface, no new mount, no reach problem.
   The seam gains **`writeFileBytes`** as the binary sibling of `readFileBytes`; the shim
   channel already stages chunked appends on the pod, and only its publish step changes
   shape to the same link-then-unlink.
-- **Git workspaces are allowed, plainly.** The upload is an ordinary untracked file —
-  visible in the git status panel, no hidden directory, no automatic exclude. If the point
-  of the upload is "commit this", the agent moves it and commits it; if not, it stays
-  untracked and dies with the worktree. Magic exclusions would hide exactly the file the
-  user just asked the agent to handle. The one reader that leaves `uploads/` out is the
-  task diff published to a chat thread: it skips untracked files there, because a saved
-  attachment is a copy of a chat file rather than a change the task made. Tracked files
-  under `uploads/` still appear in it.
+- **Nothing lands in the checkout.** If the point of the upload is "commit this", the
+  agent copies it into the repository and commits it, exactly as it would any file the
+  user points at.
 
 ### 2.2 Timing and scope
 
@@ -125,6 +120,176 @@ model reads the message, the file is on disk and the marker names it, so followi
 instruction is one `mv`, indistinguishable from any other file operation the user asks
 for.
 
+### 2.4 The session files directory (decided 2026-11-20, #4144)
+
+Saved attachments used to land in `uploads/` at the working root, as ordinary untracked
+files. In a Git checkout that treated inputs as task work:
+
+- **They collided with the repository.** Many repositories have an `uploads/` of their
+  own, and the task diff's `uploads/` filter (#4143) hid that directory's real untracked
+  files along with the attachments.
+- **They entered commits.** `git add -A` picked them up into commits and pull requests.
+- **They pinned worktrees.** Retention keeps a worktree or clone with untracked files
+  (`judgeSessionClone`, `removeRootSessionWorktree`), so a worktree holding only saved
+  attachments was never reclaimed, although this section used to say the opposite.
+- **They cluttered the Git panel** beside the task's real changes.
+- **The primary checkout only grew,** since it has no reclamation event.
+
+The agent's generated files had the same problem under `outputs/`. Both now live in a
+**session files directory** beside the session's checkout. It holds the two **areas** and
+nothing else, in every tier:
+
+```
+<files dir>/uploads/   inbound attachments the daemon saved (this document)
+<files dir>/outputs/   files the agent generated for the user (agent-authored-attachments.md)
+```
+
+| Session                                                               | Checkout                         | Files directory                     |
+| --------------------------------------------------------------------- | -------------------------------- | ----------------------------------- |
+| Own directory: a sandboxing strategy, a pool session pod, an executor | `sessions/<leaf>/workspace`      | `sessions/<leaf>/files`             |
+| Host worktree, or a shared checkout                                   | `worktrees/<id>` or the checkout | `<agentDir>/files/<leaf>`           |
+| Shared checkout on a pool agent without a repository                  | `/agent`                         | `/agent/.agentconnect/files/<leaf>` |
+
+- **One per session, in every tier.** `<leaf>` is the session key's directory name, the
+  one `sessions/<leaf>` uses. Shared sessions get their own too.
+- **Not `sessions/<leaf>` for the other tiers.** A real `sessions/<leaf>` is the record
+  that a session has its own directory (`confinedSessionDirIn`); creating one for a
+  worktree or shared session would move it to that tier. One function in
+  `session-layout.ts` answers the files directory for preparation, launch grants, saving,
+  reading, the console and retirement.
+- **A pool agent without a repository** has `/agent` as both its checkout and its runtime
+  HOME, so its leaves go under the mount's daemon-owned `.agentconnect/`, and the
+  checkout read, write and delete routes refuse `.agentconnect/files`. Otherwise the agent-gated checkout read
+  would reach every session's uploads without the session gate.
+- **A session keeps its tier for life** (git-workspace-model.md §11), with one
+  exception: `forceWorkspaceIsolation` re-pins isolation for a formal review and for the
+  webchat per-conversation choice. That re-pin, or a re-placement that starts the session
+  in a new directory, starts with empty areas; markers for earlier files read as missing.
+
+#### Reach
+
+The agent must read and write both areas on every plane, without a new mount:
+
+- **Own session directory** (local sandboxing strategy, session VM, pool session pod,
+  executor): already writable. The sandbox grants the whole `sessions/<leaf>`, a session
+  VM mounts it, an executor anchors at it, and a pod owns its volume.
+- **The runtime's own sandbox, every tier:** the daemon adds both areas to the session's
+  ACP `additionalDirectories`. That alone makes them writable to both runtimes' sandboxed
+  tools (§9): codex-acp passes the directories to Codex as `runtimeWorkspaceRoots`, which
+  the daemon's `:workspace` profile opens, and Claude's Bash sandbox treats them as
+  working directories.
+- **Local sandboxing strategy, shared checkout:** `trustedWorkspaceWriteRoots` adds
+  `<agentDir>/files`. One runtime serves every shared session there, so the grant is the
+  parent.
+- **Agent VM** (microsandbox, shared checkout): mounts `<agentDir>/files` writable beside
+  the checkout.
+- **Pool agent pod:** the leaves are on the same volume, inside the shim's anchor.
+
+**Privacy holds for console readers, not between sessions of one runtime.** The console
+reads a leaf only through its own session's gate. A runtime that serves several shared
+sessions holds the parent grant, so its agent can read a sibling session's leaf, as it can
+read every file in the checkout those sessions share. For an assistant-mode agent, an
+upload in a direct message therefore stays reachable from a shared-channel session on the
+same checkout. That is no regression from a shared `uploads/`; isolation between sessions
+is what `isolation: 'session'` buys.
+
+#### How files are named
+
+- **`files:<area>/<rest>`** names a file in the session's files directory:
+  `files:outputs/report.pdf`, `files:uploads/spec.pdf`. It cannot be mistaken for an
+  absolute path or for a path in the checkout, carries no host path, and means the same
+  thing in the transcript, the console and replayed context.
+- **The standing context names both areas** with their absolute paths in the runtime's
+  coordinates, and says that `files:` refers to them. A pod and an executor mount at the
+  same path the daemon composes, so no translation is needed.
+- **Replies carry the `files:` form, not host paths.** The prompt asks for it, and the
+  reply pass that links checkout paths also rewrites an absolute path inside an area to
+  its `files:` form, so a chat platform never sees a daemon's home directory even when
+  the agent ignores the instruction.
+- **Markers record the `files:` form.** `[attached: …]` (§3) and `[shared: …]`
+  (agent-authored-attachments.md §4) store it. An older console treats it as an unknown
+  checkout path, so it downloads a shared file only from the share's snapshot.
+- **`shareFile` and `sendMessage`** (`{source: 'workspace', path}`) accept a path relative
+  to the checkout, as today, a `files:` path, or an absolute path inside one of the two
+  areas. Each area is its own fence root, with the checkout's containment: realpath
+  locally, the fd-anchored descent on a pod. Nothing else in the session directory is
+  reachable.
+- **`outputs/` is the default destination for generated files**: reports, exports,
+  images under `outputs/images/`. A place the user names, such as a path in the
+  repository, wins.
+
+#### Console
+
+- **One more read scope.** The workspace list, read, download and transfer gain a root
+  selector, `root: 'uploads' | 'outputs'`, beside `sessionId` and `repo`. It is an enum,
+  never a path; it requires `sessionId` and excludes `repo`. Its gate is the visibility
+  half of the session gate alone (`visibleAgentSession`): `canReadWorkspaceScope` admits a
+  `sessionId` only for an isolated session, and the areas exist for shared sessions too.
+  Daemon feature `session-files-v1` gates it; an older daemon is refused with 409 before
+  any frame is sent.
+- **The dock's Files tab gains a section.** Below the checkout tree, a "Session files"
+  section lists `/outputs` and `/uploads` through that scope. It shows no Git status,
+  opens a file in the left viewer like any tree row, and refreshes on the turn's falling
+  edge with the tree.
+- **Links in replies.** `workspace-file-links.ts` links a `files:` path as it links one in
+  the checkout.
+
+#### The bucket holds copies, never the files
+
+With a transfer bucket ([source-cache-file-transfer.md](source-cache-file-transfer.md)),
+the files directory stays a local directory, and nothing mounts the bucket. A mount would
+need bucket credentials where the agent runs, while the Control Plane is the only signer
+and pods hold no credentials (that document's §3). The object-store mounts on offer also
+lack the rename and append semantics agents use (`mv`, `sed -i`, write-then-rename), and
+FUSE is unavailable on many daemon hosts.
+
+- **Outputs reach the bucket only on demand.** That happens when one is shared (the
+  session snapshot, agent-authored-attachments.md §4.1) or when a user downloads it (the
+  transfer, source-cache-file-transfer.md §1). There is no turn-end sync. The section
+  therefore reads the daemon live and is unavailable while the daemon is offline or after
+  the directory is reclaimed. Shared files stay downloadable from their snapshots.
+- **Console uploads are saved by the daemon.** At prompt build the daemon asks
+  `transfer/get` and fetches the presigned GET into `uploads/` itself (on a pod or
+  executor, the bytes are written over the `WorkspaceFs` channel). The prompt then names
+  the saved file instead of a `curl` recipe. The recipe, with its absolute target, stays
+  as the fallback when the write fails and for a file above `limits.maxAttachmentBytes`.
+
+#### Retention
+
+- **The areas never count toward a dirty judgement.** In an own session directory, they
+  go with `sessions/<leaf>`; the clones beside them keep their existing safeguards, so a
+  directory with unpushed work is still kept.
+- **`files/<leaf>`** is removed when its session's workspace is reclaimed
+  (`sessions.workspaceRetention`) or its row is purged. A pass beside
+  `retireOrphanSessionDirs` removes leaves that no session row maps to, and only names
+  with the session-leaf shape (`session-<24 hex>`). On the pool, the same sweep removes
+  the agent pod's leaves through its `WorkspaceFs`, since the local orphan pass skips the
+  pool.
+- **The lifetime is the workspace window**, 7 days by default, while the row and
+  transcript stay for `sessions.retention`. A shared checkout used to keep uploads
+  indefinitely. A resumed session gets empty areas; a `files:` marker whose file is gone
+  reads as missing, and the console section says the directory was cleaned up.
+- **Removing an agent** removes its directory, `files/` included.
+- **The primary checkout stops growing,** since nothing lands in it any more.
+
+#### Migration
+
+- **Existing `uploads/` directories in checkouts are left alone.** The daemon cannot tell
+  a repository's own `uploads/` from old attachments.
+- **The #4143 task-diff filter is removed in the same change.** It only made sense while
+  attachments landed in the checkout, and it hides a repository's own untracked files.
+
+#### Threat model
+
+- **Skill roots.** codex-acp points Codex's skill roots at each additional directory's
+  `.agents/skills`. A saved attachment cannot create that (names lose leading dots), but
+  an archive the agent extracts into an area can add skills, as one extracted into the
+  checkout can today. Whether Claude loads skills from an additional directory is checked
+  with the implementation.
+- **Prompt-build fetch.** The daemon fetches only a URL the Control Plane signed for that
+  upload in `transfer/get`, never a URL from message text, and writes at most
+  `limits.maxAttachmentBytes` through the same exclusive-create path as platform files.
+
 ## 3. Prompt representation
 
 The `[attached: …]` marker (the string `sendMessage`'s forwarding contract already keys
@@ -132,8 +297,11 @@ on) gains the saved path — **inside the parentheses**, because the marker has 
 an entry's shape is `name (details)`:
 
 ```
-[attached: spec.pdf (application/pdf, 1.2 MB, saved to uploads/spec.pdf)]
+[attached: spec.pdf (application/pdf, 1.2 MB, saved to files:uploads/spec.pdf)]
 ```
+
+The marker is stored in the transcript, so it carries the `files:` form (§2.4), not a host
+path; the standing context tells the agent where that is.
 
 The consumers that move with the format, checked rather than assumed: `attachmentMention`
 itself (the builder); `withoutAttachmentMention` in the daemon's session reader, whose
@@ -274,6 +442,9 @@ mode of the same bounded workspace read the file viewer already uses:
   with a content type (anything a browser could execute stays `application/octet-stream`),
   an attachment `Content-Disposition`, `nosniff` and a sandboxing CSP. It holds one file
   in memory for the length of the request and stores nothing.
+- **Session files.** With `root: 'uploads'` or `root: 'outputs'` (§2.4) the same read
+  serves that area of the session files directory instead of a checkout, gated by the
+  session's visibility.
 - **Bound.** `MAX_WORKSPACE_DOWNLOAD_BYTES` (8 MiB, the default `maxAttachmentBytes`). A
   larger file is refused with 413 after its first slice; above the cap, a deployment with a
   transfer bucket serves the file through a presigned transfer instead.
@@ -325,6 +496,12 @@ materialization exists — the link rung only fires on over-cap files and write 
 
 ## 8. Phasing
 
+The session files directory (§2.4) ships first, in its own phases: (a) the daemon layout,
+grants, retention, the standing-context block and `files:` names in the prompt and tool
+text, the entry in `.oss-scanner/threat_model.md`, and removal of the #4143 filter; (b)
+the `root` read scope, the dock section and reply links; (c) daemon materialization of
+console uploads from the bucket. The phases below then land in that directory.
+
 1. **Foundation (daemon only, no wire change):** `WorkspaceFs.writeFileBytes` (+ shim
    channel leg), the `uploads/` landing zone with sanitization / exclusive-create /
    digest-reuse, materialization at prompt build, marker gains the path, blob-embedding
@@ -348,3 +525,12 @@ console), because every new field is optional and the image path survives untouc
 - Whether prompt-build materialization needs the console write path's quiesce, or whether
   exclusive-create into `uploads/` is safely concurrent with a running turn (expected:
   the latter — nothing existing is mutated).
+- Codex grant, verified 2026-11-20 with codex-acp 2.8.0-agentconnect.1 and the daemon's
+  `codexPermissionProfileConfig` (lab outside `/tmp`, which `:workspace` always opens):
+  with an area in `additionalDirectories`, `touch` in it succeeded and in an ungranted
+  sibling failed with "Read-only file system"; without it, both failed and the checkout
+  stayed writable.
+- Claude grant, verified 2026-11-20 with claude-agent-acp 0.109.0 and the daemon's
+  `claudeInnerSandboxSettings`: the same three `touch` commands through the Bash tool
+  gave the same result as Codex. An area in `additionalDirectories` was writable, an
+  ungranted sibling was "Read-only file system", and without the grant both failed.
