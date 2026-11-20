@@ -147,6 +147,10 @@ export interface PlatformAgentToolEnv {
   memberTurn(): Promise<readonly string[] | undefined>
   /** Record the seed as the agent's own first message of a new conversation and open its idle session, with no model turn. */
   startConversation(seed: PlatformConversationSeed): Promise<void>
+  /** The calling session's footer identity, as a reply's footer carries it; undefined while the agent's footer is off. */
+  attribution(): Promise<ReplyAttributionInfo | undefined>
+  /** The console link of the session the call runs in; undefined when it has none yet. */
+  callingSessionUrl(): Promise<string | undefined>
 }
 
 /** One platform's read-port declaration — the pre-connection half of the ask. */

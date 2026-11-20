@@ -1,4 +1,5 @@
 // A reply's subject, threading headers and bodies (email-integration.md §6.1): the agent's Markdown as plain text and as simple HTML.
+import { renderAttributionMessage, type ReplyAttributionInfo } from '../../messages/attribution.js'
 import type { Definition, Nodes, Parents, RootContent } from 'mdast'
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import {
@@ -148,6 +149,22 @@ export function emailHtml(markdown: string): string {
 function cutAt(text: string, limit: number): string {
   const unit = text.charCodeAt(limit - 1)
   return text.slice(0, limit > 1 && unit >= 0xd800 && unit <= 0xdbff ? limit - 1 : limit)
+}
+
+/** The footer the agent's setting adds under a mail to members, its name and session linked; a mail that reaches anyone outside the organization carries none. */
+export function emailAttributionFooter(attribution: ReplyAttributionInfo): string {
+  return renderAttributionMessage({
+    agent: attribution.botUrl ? `[${attribution.botName}](${attribution.botUrl})` : attribution.botName,
+    runtime: attribution.runtime,
+    model: attribution.model,
+    renderSession: attribution.sessionUrl ? (label) => `[${label}](${attribution.sessionUrl})` : undefined,
+    notice: attribution.notice
+  })
+}
+
+/** The Markdown a mail is sent as: the body, and the footer under a rule when there is one. */
+export function emailWithFooter(body: string, attribution: ReplyAttributionInfo | undefined, outside: boolean): string {
+  return attribution && !outside ? `${body}\n\n---\n\n${emailAttributionFooter(attribution)}` : body
 }
 
 /** One reply's two bodies within the wire's limits: the Markdown as written for a plain-text reader, and its HTML. */
