@@ -2708,6 +2708,11 @@ export function sessionChannelDisplay(
   return { platform, label: placeholder ?? s.channel }
 }
 
+/** The raw conversation id as a hover hint for an unnamed place, only when it says more than its label does; an id that is just a prefix on the label adds nothing. */
+export function unnamedPlaceHint(s: { channel: string; channelUnnamed?: boolean }, label: string): string | undefined {
+  return s.channelUnnamed && label !== s.channel && !s.channel.endsWith(label) ? s.channel : undefined
+}
+
 /** Who started a session as printed: a `user` that is still its raw sender id takes its platform's placeholder, if it has one. */
 export function sessionUserDisplay(
   s: { platform: string; user: string; triggeredBy?: string; hookKind?: HookKind },

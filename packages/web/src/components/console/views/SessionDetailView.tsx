@@ -43,6 +43,7 @@ import {
   runtimeDefaultModel,
   runtimeLabel,
   sessionChannelDisplay,
+  unnamedPlaceHint,
   sessionUserDisplay,
   sessionPlatform,
   status,
@@ -2528,10 +2529,7 @@ export default function SessionDetailView() {
       <span className="imark h-[14px] w-[14px] flex-none rounded-xs">
         <PlatformMark platform={channelDisplay.platform} />
       </span>
-      <span
-        className="truncate"
-        title={session.channelUnnamed && channelDisplay.label !== session.channel ? session.channel : undefined}
-      >
+      <span className="truncate" title={unnamedPlaceHint(session, channelDisplay.label)}>
         {channelDisplay.label}
       </span>
     </>

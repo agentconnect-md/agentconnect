@@ -24,7 +24,7 @@ describe('turn chrome facet', () => {
   it('declares the on-demand status platforms EXPLICITLY', () => {
     // 'on-demand' (record the dedup key, post nothing) is a declaration, not an
     // absence — the absent case takes each site's legacy default arm instead.
-    for (const p of ['telegram', 'discord', 'feishu', 'googlechat']) {
+    for (const p of ['telegram', 'discord', 'feishu', 'googlechat', 'msteams', 'email']) {
       expect(turnChromeFor(p).statusSurface).toBe('on-demand')
       expect(turnChromeFor(p).attributionFooter).toBeUndefined()
     }

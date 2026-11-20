@@ -17,6 +17,7 @@ import {
   mergeCanonicalSessions,
   platName,
   sessionChannelDisplay,
+  unnamedPlaceHint,
   sessionUserDisplay,
   sessionChannelFilterValue,
   sessionPlatform,
@@ -770,7 +771,7 @@ export default function SessionsView() {
         {filtered.map((s, i) => {
           const ss = status(s.status)
           const ch = sessionChannelDisplay(s, (id) => cronById.get(id)?.name, unnamedLabel)
-          const placeTitle = s.channelUnnamed && ch.label !== s.channel ? s.channel : undefined
+          const placeTitle = unnamedPlaceHint(s, ch.label)
           return (
             <Link
               key={s.id}

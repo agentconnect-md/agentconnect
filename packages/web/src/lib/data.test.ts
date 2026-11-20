@@ -29,6 +29,7 @@ import {
   presentedDaemonStatus,
   resolveEffortForModel,
   sessionChannelDisplay,
+  unnamedPlaceHint,
   sessionChannelFilterValue,
   status,
   workspaceSourceOf,
@@ -838,5 +839,17 @@ describe('workspaceSourceOf', () => {
     expect(git({ gitRepo: 'https://git.example.test/team/repo.git' })).toBe('giturl')
     expect(git({ gitRepo: 'ssh://git@git.example.test/team/repo.git' })).toBe('giturl')
     expect(workspaceSourceOf({ mode: 'scratch' })).toBe('scratch')
+  })
+})
+
+describe('unnamedPlaceHint', () => {
+  it('shows the raw id only when it says more than the label', () => {
+    expect(unnamedPlaceHint({ channel: 'C0123ABC', channelUnnamed: true }, 'Private channel')).toBe('C0123ABC')
+    // A key that is just a prefix on the label (a mail conversation's `dm:` and address) adds nothing.
+    expect(
+      unnamedPlaceHint({ channel: 'dm:alice@example.test', channelUnnamed: true }, 'alice@example.test')
+    ).toBeUndefined()
+    expect(unnamedPlaceHint({ channel: 'general', channelUnnamed: true }, 'general')).toBeUndefined()
+    expect(unnamedPlaceHint({ channel: 'C0123ABC' }, 'general')).toBeUndefined()
   })
 })

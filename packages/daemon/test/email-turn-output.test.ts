@@ -67,6 +67,15 @@ describe('the converger', () => {
     silent.onUpdate(update('AC_NO_RESPONSE'))
     expect(silent.onFinal()).toEqual([])
   })
+
+  it('carries the footer attribution core hands it, which it gets only while the agent shows a footer', () => {
+    const attribution = { botName: 'Helper', botUrl: '', runtime: 'Claude Code', model: 'opus', sessionUrl: '' }
+    const conv = new EmailConverger('medium')
+    conv.onUpdate(update('The total is 42.'))
+    expect(conv.onFinal(attribution)).toEqual([
+      { kind: 'post', text: 'The total is 42.', attributed: false, attribution }
+    ])
+  })
 })
 
 describe('rendering', () => {
@@ -378,6 +387,42 @@ describe('delivering the reply', () => {
     await applyEmailAction(quiet.host, quiet.turn, quiet.state, { kind: 'notice', text: 'waiting' })
     expect(quiet.requests).toHaveLength(0)
     expect(quiet.recorded).toEqual(['x', 'waiting'])
+  })
+
+  it('mails the footer the agent’s setting asks for under the answer, but keeps the session text without it', async () => {
+    const attribution = {
+      botName: 'Helper',
+      botUrl: 'https://console.example.test/agents/a1',
+      runtime: 'Claude Code',
+      model: 'opus',
+      sessionUrl: 'https://console.example.test/sessions/s1'
+    }
+    const h = harness({ ext: mail() })
+    await applyEmailAction(h.host, h.turn, h.state, { kind: 'post', text: 'The total is 42.', attribution })
+    const call = h.requests[0]!.payload as ReplyCall
+    expect(call.text).toBe(
+      'The total is 42.\n\n---\n\nsent by Helper (Claude Code · opus) · [open in session](https://console.example.test/sessions/s1)'
+    )
+    expect(h.transcript[0]!.text).toBe('The total is 42.')
+    // A reply that reaches someone outside the organization leaves off the link they could not open.
+    const outside = harness({
+      ext: { ...mail(), outsider: true },
+      ask: async () => ({ members: [] })
+    })
+    await applyEmailAction(outside.host, outside.turn, outside.state, { kind: 'post', text: 'Hi.', attribution })
+    expect((outside.requests[0]!.payload as ReplyCall).text).toBe('Hi.\n\n---\n\nsent by Helper (Claude Code · opus)')
+    // With the footer turned off the converger hands over no attribution, and the mail is the answer alone.
+    const plain = harness({ ext: mail() })
+    await send(plain, 'Only this.')
+    expect((plain.requests[0]!.payload as ReplyCall).text).toBe('Only this.')
+  })
+
+  it('keeps core chrome such as a status bar out of the session and out of the mail', async () => {
+    const h = harness({ ext: mail() })
+    await applyEmailAction(h.host, h.turn, h.state, { kind: 'status-bar', text: ':bar_chart: _default_ · ctx 24k' })
+    await applyEmailAction(h.host, h.turn, h.state, { kind: 'clear-status-bar', text: ':bar_chart: —' })
+    expect(h.requests).toHaveLength(0)
+    expect(h.recorded).toEqual([])
   })
 
   it('marks a reply undelivered when the mail it answers has no ticket', async () => {
