@@ -591,7 +591,13 @@ the thread.
 - **In-Reply-To** is the answered message's ID, and **References** is its chain
   with that ID appended, cut from the front past 50 entries.
 - **Auto-Submitted** is `auto-replied`, so automatic responders stay silent.
-- The body is the agent's Markdown as plain text and as simple HTML.
+- The body is the agent's Markdown as plain text and as simple HTML. When the
+  agent's output settings show a footer, the body ends with it under a rule:
+  who sent it, its runtime and model, and a link to the session, which is left
+  off when the reply reaches anyone outside the organization, who could not
+  open it. The session keeps the answer without the footer. Mail has no status
+  bar: the platform declares its status surface on demand, so a turn's model
+  and usage updates are neither mailed nor kept in the session.
 
 A send the provider refuses (a suppressed recipient, quota, a malformed
 address) fails the delivery, not the turn: the answer stays in the Console's

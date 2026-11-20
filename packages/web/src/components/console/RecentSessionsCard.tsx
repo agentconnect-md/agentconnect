@@ -17,6 +17,7 @@ import {
   isMergedConversationRow,
   rosterParticipantName,
   sessionChannelDisplay,
+  unnamedPlaceHint,
   type Agent,
   type Session
 } from '@/lib/data'
@@ -175,10 +176,7 @@ export function RecentSessionsCard({
                         <span className="imark h-4 w-4 flex-none rounded-xs">
                           <PlatformMark platform={ch.platform} fillPct={90} />
                         </span>
-                        <span
-                          className="mono truncate text-[11px]"
-                          title={s.channelUnnamed && ch.label !== s.channel ? s.channel : undefined}
-                        >
+                        <span className="mono truncate text-[11px]" title={unnamedPlaceHint(s, ch.label)}>
                           {ch.label}
                         </span>
                       </span>

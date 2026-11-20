@@ -3,6 +3,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { emailParticipants } from '@agentconnect.md/message'
 import { EMAIL_PLATFORM, type WireEmailAdapterExt, type WireEmailCall } from '@agentconnect.md/protocol'
 import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/turn-types.js'
+import { renderAttributionMessage, type ReplyAttributionInfo } from '../../messages/attribution.js'
 import { GithubReplyCollector } from '../../github/poster.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
@@ -17,8 +18,8 @@ import { emailFromName, emailReplyBodies, emailReplyReferences, emailReplySubjec
 export { emailFromName } from './render.js'
 
 export type EmailAction =
-  // The turn's one answer, or its failure; `recordOnly` keeps it in the session without sending (mode `none`).
-  | { kind: 'post'; text: string; recordOnly?: boolean; attributed?: boolean }
+  // The turn's one answer, or its failure; `recordOnly` keeps it in the session without sending (mode `none`); `attribution` is the agent's footer setting, mailed under the answer only.
+  | { kind: 'post'; text: string; recordOnly?: boolean; attributed?: boolean; attribution?: ReplyAttributionInfo }
   // A core notice (an approval waiting in the Console): kept in the session, never mailed.
   | { kind: 'notice'; text: string }
 
@@ -50,7 +51,7 @@ export class EmailConverger {
     return []
   }
 
-  onFinal(_attribution?: unknown): EmailAction[] {
+  onFinal(attribution?: ReplyAttributionInfo): EmailAction[] {
     if (this.finalized) return []
     this.finalized = true
     // The no-response marker and an empty turn select nothing, so no mail goes out.
@@ -58,7 +59,15 @@ export class EmailConverger {
       .finalText(true, { ...(this.resolveFileLink ? { resolveFileLink: this.resolveFileLink } : {}) })
       ?.trim()
     if (!text) return []
-    return [{ kind: 'post', text, attributed: false, ...(this.mode === 'none' ? { recordOnly: true } : {}) }]
+    return [
+      {
+        kind: 'post',
+        text,
+        attributed: false,
+        ...(this.mode === 'none' ? { recordOnly: true } : {}),
+        ...(attribution ? { attribution } : {})
+      }
+    ]
   }
 }
 
@@ -151,12 +160,24 @@ export function emailDeliveryNote(
   return lines.length ? lines.join('\n') : undefined
 }
 
+/** The footer the agent's setting adds under a mailed answer; the session link is left off for anyone outside the organization, who cannot open it. */
+export function emailAttributionFooter(attribution: ReplyAttributionInfo, outside: boolean): string {
+  return renderAttributionMessage({
+    agent: attribution.botName,
+    runtime: attribution.runtime,
+    model: attribution.model,
+    renderSession: !outside && attribution.sessionUrl ? (label) => `[${label}](${attribution.sessionUrl})` : undefined,
+    notice: attribution.notice
+  })
+}
+
 /** Send the turn's one mail, then keep the answer, its index row and any delivery note in the session. */
 export async function deliverEmailReply<TTurn extends EmailTurn>(
   host: EmailTurnHost<TTurn>,
   turn: TTurn,
   state: EmailTurnState,
-  text: string
+  text: string,
+  attribution?: ReplyAttributionInfo
 ): Promise<void> {
   const conn = state.conn!
   const { agentId } = turn.plan
@@ -181,7 +202,8 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
     )
     audience = resolved
     unchecked = resolved.unchecked
-    const bodies = emailReplyBodies(text)
+    const footer = attribution ? emailAttributionFooter(attribution, resolved.outside) : undefined
+    const bodies = emailReplyBodies(footer ? `${text}\n\n---\n\n${footer}` : text)
     const fromName = emailFromName(host.agentName(agentId))
     const call: WireEmailCall = {
       op: 'send',
@@ -251,16 +273,17 @@ export async function applyEmailAction<TTurn extends EmailTurn>(
   host: EmailTurnHost<TTurn>,
   turn: TTurn,
   state: EmailTurnState,
-  action: { kind: string; text?: string; recordOnly?: boolean }
+  action: { kind: string; text?: string; recordOnly?: boolean; attribution?: ReplyAttributionInfo }
 ): Promise<void> {
-  if (!action.text) return
+  // Only an answer or a notice is the session's text; core chrome such as a status bar never is.
+  if (!action.text || (action.kind !== 'post' && action.kind !== 'notice')) return
   // Only the turn's one answer is mailed: a notice, a mode that posts nothing, or a second post is kept in the session.
   if (action.kind !== 'post' || action.recordOnly || !state.conn || state.sent) {
     await host.recordReplySegment(turn, action.text)
     return
   }
   state.sent = true
-  await deliverEmailReply(host, turn, state, action.text)
+  await deliverEmailReply(host, turn, state, action.text, action.attribution)
 }
 
 /** Email's turn-output surface; no acknowledgement, cards or files, since a mail is one message sent at the end. */
