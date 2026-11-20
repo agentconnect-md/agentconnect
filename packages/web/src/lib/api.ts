@@ -5809,10 +5809,10 @@ export async function checkEmailAddressName(orgId: string, name?: string): Promi
 /** `GET|PUT /integrations/:id/email/settings`: who may write to an address, and who sees an outside sender's session. */
 export interface EmailSettingsDto {
   whoMayWrite: 'members' | 'anyone'
-  outsideSessions: { kind: 'org' } | { kind: 'member'; userId: string | null; active: boolean }
+  outsideSessions: { kind: 'editors' } | { kind: 'org' } | { kind: 'member'; userId: string; active: boolean }
 }
 export type EmailSettingsInput = Pick<EmailSettingsDto, 'whoMayWrite'> & {
-  outsideSessions: { kind: 'org' } | { kind: 'member'; userId: string }
+  outsideSessions: { kind: 'editors' } | { kind: 'org' } | { kind: 'member'; userId: string }
 }
 export async function fetchEmailSettings(orgId: string, integrationId: string): Promise<EmailSettingsDto> {
   return apiGet<EmailSettingsDto>(`${orgBase(orgId)}/integrations/${encodeURIComponent(integrationId)}/email/settings`)

@@ -52,13 +52,15 @@ export function EmailSettingsStatus({ integration, padX }: { integration: Integr
   const line =
     data.whoMayWrite === 'members'
       ? t('members')
-      : data.outsideSessions.kind === 'org'
-        ? t('anyoneOrg')
-        : pickedMember(data) === NOBODY
-          ? t('anyoneNobody')
-          : member
-            ? t('anyoneMember', { name: memberDisplayName(member) })
-            : t('anyoneSomeMember')
+      : data.outsideSessions.kind === 'editors'
+        ? t('anyoneEditors')
+        : data.outsideSessions.kind === 'org'
+          ? t('anyoneOrg')
+          : pickedMember(data) === NOBODY
+            ? t('anyoneNobody')
+            : member
+              ? t('anyoneMember', { name: memberDisplayName(member) })
+              : t('anyoneSomeMember')
   return (
     <p
       className="m-0 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)"
@@ -95,8 +97,8 @@ export function EmailSettingsButton({ integration }: { integration: IntegrationR
   )
 }
 
-/** A radio row: the dot and its label. */
-function Radio({ on, label, onPick }: { on: boolean; label: string; onPick: () => void }) {
+/** A radio row: the dot, its label, and an optional quiet note after it. */
+function Radio({ on, label, note, onPick }: { on: boolean; label: string; note?: string; onPick: () => void }) {
   return (
     <button
       type="button"
@@ -113,6 +115,7 @@ function Radio({ on, label, onPick }: { on: boolean; label: string; onPick: () =
         }
       />
       {label}
+      {note && <span className="text-(--text-tertiary)">{note}</span>}
     </button>
   )
 }
@@ -144,10 +147,16 @@ function EmailSettingsDialog({
   const [saving, setSaving] = useState(false)
   const [failed, setFailed] = useState(false)
 
-  // Members-only still stores an outside pick, so a missing one falls back to the editor as before.
+  // Members-only still stores an outside pick, so a missing member falls back to the editor as before.
   const member = memberId || (whoMayWrite === 'members' ? (editor?.userId ?? '') : '')
   const outsideSessions: EmailSettingsInput['outsideSessions'] | undefined =
-    outsideKind === 'org' ? { kind: 'org' } : member ? { kind: 'member', userId: member } : undefined
+    outsideKind === 'editors'
+      ? { kind: 'editors' }
+      : outsideKind === 'org'
+        ? { kind: 'org' }
+        : member
+          ? { kind: 'member', userId: member }
+          : undefined
   const unchanged =
     whoMayWrite === settings.whoMayWrite && outsideKind === settings.outsideSessions.kind && memberId === initialMember
 
@@ -168,7 +177,8 @@ function EmailSettingsDialog({
     </div>
   )
   // One row per choice of who sees outside mail; a choice may carry a control beside its radio.
-  const outsideChoices: readonly { kind: OutsideKind; label: string; control?: ReactNode }[] = [
+  const outsideChoices: readonly { kind: OutsideKind; label: string; note?: string; control?: ReactNode }[] = [
+    { kind: 'editors', label: t('editors'), note: t('default') },
     { kind: 'org', label: t('organization') },
     { kind: 'member', label: t('specificMember'), control: memberPicker }
   ]
@@ -223,6 +233,7 @@ function EmailSettingsDialog({
                     <Radio
                       on={outsideKind === choice.kind}
                       label={choice.label}
+                      {...(choice.note ? { note: choice.note } : {})}
                       onPick={() => setOutsideKind(choice.kind)}
                     />
                     {choice.control}

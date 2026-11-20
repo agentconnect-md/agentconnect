@@ -7474,6 +7474,8 @@
         "members": "组织成员",
         "anyone": "任何人",
         "outsideViewers": "组织外来信谁能看到",
+        "editors": "能编辑这个 agent 的人",
+        "default": "默认",
         "specificMember": "指定一位成员",
         "chooseMember": "选择成员",
         "organization": "组织里所有人",
@@ -7483,6 +7485,7 @@
         "failed": "无法保存设置，请稍后重试。",
         "status": {
           "members": "只接收组织成员的来信",
+          "anyoneEditors": "接收任何人的来信 · 组织外来信：能编辑这个 agent 的人",
           "anyoneMember": "接收任何人的来信 · 组织外来信只有 {name} 能看到",
           "anyoneSomeMember": "接收任何人的来信 · 组织外来信只有一个成员能看到",
           "anyoneOrg": "接收任何人的来信 · 组织外来信组织里所有人都能看到",
