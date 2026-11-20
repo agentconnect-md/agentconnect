@@ -115,4 +115,47 @@ describe('workspace file links', () => {
     expect(rendered).toContain('outside (`private.md`)')
     expect(rendered).not.toContain('/tmp/')
   })
+
+  // inbound-file-attachments.md §2.4: session files link to their area and never reach a conversation as host paths.
+  describe('session files', () => {
+    const areas = [
+      { area: 'uploads' as const, paths: ['/srv/agent/files/session-one/uploads'] },
+      {
+        area: 'outputs' as const,
+        paths: ['/srv/agent/files/session-one/outputs', '/real/agent/files/session-one/outputs']
+      }
+    ]
+    const resolve = createWorkspaceFileLinkResolver({
+      sessionUrl: 'https://console.example.test/acme/sessions/session-1',
+      agentId: 'agent-1',
+      cwd: '/srv/agent/workspace',
+      roots: [{ path: '/srv/agent/workspace' }],
+      areas
+    })
+
+    it.each([
+      ['files:outputs/report.pdf', 'outputs', 'report.pdf'],
+      ['/real/agent/files/session-one/outputs/charts/a.png', 'outputs', 'charts/a.png'],
+      ['/srv/agent/files/session-one/uploads/spec.pdf', 'uploads', 'spec.pdf']
+    ])('opens %s in its area', (target, root, file) => {
+      const url = new URL(resolve(target)!)
+      expect(Object.fromEntries(url.searchParams)).toEqual({ view: 'flat', agent: 'agent-1', file, root })
+    })
+
+    it('refuses a files: name that climbs out of its area', () => {
+      expect(resolve('files:outputs/../secret')).toBeUndefined()
+      expect(resolve('files:home/.codex/auth.json')).toBeUndefined()
+    })
+
+    it('rewrites an area path in plain reply text to its files: name', () => {
+      const text =
+        'Saved to /real/agent/files/session-one/outputs/report.pdf and `/srv/agent/files/session-one/uploads/a b`.'
+      expect(flattenUnsafeLinks(text, { resolveFileLink: resolve })).toBe(
+        'Saved to files:outputs/report.pdf and `files:uploads/a b`.'
+      )
+      expect(flattenUnsafeLinks('/srv/agent/workspace/x.md stays', { resolveFileLink: resolve })).toBe(
+        '/srv/agent/workspace/x.md stays'
+      )
+    })
+  })
 })

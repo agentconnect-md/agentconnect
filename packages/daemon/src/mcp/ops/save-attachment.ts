@@ -1,37 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as nodeFs } from 'node:fs'
 import { join } from 'node:path'
+import { sessionFileName } from '@agentconnect.md/protocol'
 import { DirHandle, MissingPathError, UnsafePathError, withDescent } from '../../shim/safe-descent.js'
 import { containedWorkspacePath, WorkspaceViolationError } from '../../workspace/workspace-files.js'
 import { WorkspaceFileExistsError, type WorkspaceFs, type WorkspaceFsKind } from '../../workspace/workspace-fs.js'
 import { ATTACHMENT_UPLOADS_DIR, type SaveAttachmentResult } from './platform-reads.js'
 
-/**
- * Where an inbound attachment lands (inbound-file-attachments.md §2): the session's `uploads/`,
- * reached in one of two ways that differ ONLY in who supplies the containment.
- *
- * - `workspace-fs`: a {@link WorkspaceFs} plus the working root. The pod arm — the shim's
- *   fd-anchored descent is the containment, so the daemon composes paths and nothing more. Also
- *   the local arm on a platform without a local sandbox (macOS, Windows: microsandbox is
- *   Linux-only), where `canonicalDir` re-verifies `uploads/` by realpath; a name check is all
- *   Node offers there, and an unsandboxed agent already holds the daemon's own authority.
- * - `pinned`: the local arm on Linux. The agent may be sandboxed to its workspace while the
- *   daemon is not, so a name validated now can be swapped for a symlink before the write
- *   (PR review P1). The directory is therefore OPENED once (`O_DIRECTORY|O_NOFOLLOW`) and every
- *   leaf operation — stat, compare, stage, exclusive publish — resolves from that descriptor
- *   via `/proc/self/fd`, exactly as the shim does on the pod. A later rename of `uploads` moves
- *   the inode we hold; it cannot redirect us to one we never validated.
- */
+// The session files directory's `uploads/` (inbound-file-attachments.md §2.4) from a trusted root: the pod's descent or a realpath check (`workspace-fs`), or an O_NOFOLLOW descriptor descent on Linux (`pinned`).
 export type SaveAttachmentTarget =
   | {
       kind: 'workspace-fs'
       fs: WorkspaceFs
       root: string
-      /** Realpath re-verification of `uploads/` (local fallback arm only). Answers the canonical
-       *  path, or null when the directory is absent. */
+      segments: readonly string[]
+      /** Realpath of `root/rel` (local fallback arm only); null when absent. */
       canonicalDir?: (root: string, rel: string) => Promise<string | null>
     }
-  | { kind: 'pinned'; root: string }
+  | { kind: 'pinned'; root: string; segments: readonly string[] }
 
 /** One `uploads/` directory, however it is reached; every method takes a single leaf NAME. */
 export interface AttachmentDir {
@@ -42,33 +28,26 @@ export interface AttachmentDir {
   writeExclusive(name: string, bytes: Buffer): Promise<void>
 }
 
-/**
- * Land `bytes` as `uploads/<name>` (or a digest-suffixed sibling), never clobbering.
- *
- * Publication is an EXCLUSIVE create, so two concurrent saves that both saw the name free cannot
- * both "succeed" at one path with one of them lost (PR review P2): the kernel decides, the loser
- * re-reads what won — same bytes ⇒ reuse, different bytes ⇒ next candidate.
- *
- * Throws whatever the filesystem seam throws for anything other than containment or a taken
- * name: on the pod arm that is the channel, and the caller maps it to "sandbox unreachable".
- */
+/** Land `bytes` as `uploads/<name>` or a digest-suffixed sibling by exclusive create, never clobbering; throws what the seam throws for anything but containment or a taken name. */
 export async function saveAttachmentTo(
   target: SaveAttachmentTarget,
   name: string,
   bytes: Buffer
 ): Promise<SaveAttachmentResult> {
+  const segments = [...target.segments, ATTACHMENT_UPLOADS_DIR]
+  const saved = (leaf: string | undefined): SaveAttachmentResult =>
+    leaf === undefined
+      ? { ok: false, reason: 'write-failed', detail: 'both candidate names are taken' }
+      : { ok: true, path: join(target.root, ...segments, leaf), name: sessionFileName(ATTACHMENT_UPLOADS_DIR, leaf) }
   if (target.kind === 'pinned') {
     try {
-      return await withDescent(
-        target.root,
-        [ATTACHMENT_UPLOADS_DIR],
-        (dir) => saveInto(new PinnedDir(dir), name, bytes),
-        {
+      return saved(
+        await withDescent(target.root, segments, (dir) => saveInto(new PinnedDir(dir), name, bytes), {
           createMissing: true
-        }
+        })
       )
     } catch (err) {
-      // A symlinked or otherwise unopenable `uploads` is the boundary refusing, not the disk failing.
+      // A symlinked or otherwise unopenable segment is the boundary refusing, not the disk failing.
       if (err instanceof UnsafePathError) return { ok: false, reason: 'escape' }
       throw err
     }
@@ -77,44 +56,56 @@ export async function saveAttachmentTo(
   const { fs, root } = target
   let dir: string
   try {
-    dir = containedWorkspacePath(root, ATTACHMENT_UPLOADS_DIR)
+    dir = containedWorkspacePath(root, segments.join('/'))
   } catch (err) {
     return escapeOr(err)
   }
+  if (target.canonicalDir) {
+    // Before mkdir -p, which would follow a link: every existing prefix must already be where it is named.
+    for (let depth = 1; depth < segments.length; depth++) {
+      const prefix = segments.slice(0, depth).join('/')
+      let canon: string | null
+      try {
+        canon = await target.canonicalDir(root, prefix)
+      } catch (err) {
+        return escapeOr(err)
+      }
+      if (canon === null) break
+      if (canon !== join(root, prefix)) return { ok: false, reason: 'escape' }
+    }
+  }
   await fs.mkdir(dir)
   if (target.canonicalDir) {
-    // Refuse `uploads` that is not a plain directory (a symlink lstat's as `other`), THEN prove the
-    // realpath is still under the root: mkdir -p on an existing symlink-to-dir succeeds silently.
+    // Refuse a directory that is not plain (a symlink lstat's as `other`), THEN prove no link sits anywhere below `root`.
     if ((await fs.stat(dir)) !== 'dir') return { ok: false, reason: 'escape' }
     let canon: string | null
     try {
-      canon = await target.canonicalDir(root, ATTACHMENT_UPLOADS_DIR)
+      canon = await target.canonicalDir(root, segments.join('/'))
     } catch (err) {
       return escapeOr(err)
     }
     if (!canon) return { ok: false, reason: 'write-failed', detail: 'uploads/ vanished after creation' }
-    dir = canon
+    if (canon !== dir) return { ok: false, reason: 'escape' }
   }
-  return await saveInto(new WorkspaceFsDir(fs, dir), name, bytes)
+  return saved(await saveInto(new WorkspaceFsDir(fs, dir), name, bytes))
 }
 
-/** The candidate loop, over an already-anchored directory. Exported for the adversarial tests. */
-export async function saveInto(dir: AttachmentDir, name: string, bytes: Buffer): Promise<SaveAttachmentResult> {
+/** The candidate loop over an already-anchored directory: the leaf the bytes landed at, or undefined when both are taken. Exported for the adversarial tests. */
+export async function saveInto(dir: AttachmentDir, name: string, bytes: Buffer): Promise<string | undefined> {
   const sha8 = createHash('sha256').update(bytes).digest('hex').slice(0, 8)
   const candidates = [name, name.replace(/(\.[A-Za-z0-9]{1,10})?$/, (ext) => `-${sha8}${ext}`)]
   for (const candidate of candidates) {
-    const rel = `${ATTACHMENT_UPLOADS_DIR}/${candidate}`
-    if (await sameBytesAt(dir, candidate, bytes)) return { ok: true, path: rel }
+    if (await sameBytesAt(dir, candidate, bytes)) return candidate
     try {
       await dir.writeExclusive(candidate, bytes)
-      return { ok: true, path: rel }
+      return candidate
     } catch (err) {
       if (!(err instanceof WorkspaceFileExistsError)) throw err
       // Lost the race (or the stat above saw a non-file): does the winner hold our bytes?
-      if (await sameBytesAt(dir, candidate, bytes)) return { ok: true, path: rel }
+      if (await sameBytesAt(dir, candidate, bytes)) return candidate
     }
   }
-  return { ok: false, reason: 'write-failed', detail: 'both candidate names are taken' }
+  return undefined
 }
 
 /** True when a regular file at `name` holds exactly `bytes` — the digest-reuse rule (§2.1). */

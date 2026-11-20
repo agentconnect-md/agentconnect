@@ -8,6 +8,7 @@ import {
   secondarySubtreesIn,
   WORKTREES_DIR
 } from './secondary-layout.js'
+import type { SessionFileArea } from '@agentconnect.md/protocol'
 import type { WorkspaceFs } from './workspace-fs.js'
 
 // The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<a>/<b>,home}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
@@ -72,6 +73,38 @@ export function sessionRootCloneIn(sessionDir: string, subtreeName?: string): st
 /** `<sessionDir>/home` — the session's own runtime HOME (state, temp, XDG, package caches), gone with the leaf. */
 export function sessionHomeIn(sessionDir: string): string {
   return join(sessionDir, 'home')
+}
+
+/** The session files directory's name: `<sessionDir>/files` for a session with its own directory, `<agentRoot>/files/<leaf>` otherwise (inbound-file-attachments.md §2.4). */
+export const SESSION_FILES_DIR = 'files'
+
+/** The daemon-owned namespace a pool agent without a repository keeps its session files under, since its checkout is the mount itself. */
+export const DAEMON_OWNED_DIR = '.agentconnect'
+
+/** The two areas, in the order the console lists them. */
+export const SESSION_FILE_AREAS = ['outputs', 'uploads'] as const satisfies readonly SessionFileArea[]
+
+/** `<sessionDir>/files` — the files directory of a session with its own directory. */
+export function sessionFilesIn(sessionDir: string): string {
+  return join(sessionDir, SESSION_FILES_DIR)
+}
+
+/** The parent of every other session's files directory, as segments under the agent's root (or a pool mount). */
+export function agentSessionFilesSegments(checkoutIsRoot: boolean): string[] {
+  return checkoutIsRoot ? [DAEMON_OWNED_DIR, SESSION_FILES_DIR] : [SESSION_FILES_DIR]
+}
+
+/** Leaves of `<parent>` that carry the session-leaf shape, sorted; anything else there is not ours to judge. */
+export function sessionFileLeavesIn(parent: string): string[] {
+  if (!isRealDir(parent)) return []
+  try {
+    return readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && sessionLeafId(entry.name) !== undefined)
+      .map((entry) => entry.name)
+      .sort()
+  } catch {
+    return []
+  }
 }
 
 /** `<sessionDir>/.session-cwd.json` — which secondary root's clone is the session's cwd, kept with the session wherever it runs and gone with the leaf. */

@@ -992,7 +992,9 @@ describe('executeTool: sendMessage (channel post)', () => {
           webchatImagePublisherFor: () => publish,
           readWorkspaceSharedFile: async () => ({ ok: false, reason: 'escape' })
         })
-        await expect(executeTool(ctx, 'shareFile', { path: '../x.png' }, d)).rejects.toThrow(/not a workspace-relative/)
+        await expect(executeTool(ctx, 'shareFile', { path: '../x.png' }, d)).rejects.toThrow(
+          /neither a workspace-relative path nor a `files:` name/
+        )
         expect(publish).not.toHaveBeenCalled()
       })
 
@@ -2541,12 +2543,13 @@ describe('executeTool: readSlackFile', () => {
     expect(res.mcpContent[0]!.text).toMatch(/4 bytes of application\/zip/)
   })
 
-  it('saves a non-image binary into the workspace uploads/ and names the path', async () => {
+  it('saves a non-image binary into the session uploads area and names the path', async () => {
     const pdf = Buffer.from('%PDF-1.4 fake')
     const gw = fakeGateway({ downloadFile: vi.fn(async () => pdf) })
     const saveAttachment = vi.fn(async (_c: SessionContext, name: string) => ({
       ok: true as const,
-      path: `uploads/${name}`
+      path: `/home/agent/files/session-example/uploads/${name}`,
+      name: `files:uploads/${name}`
     }))
     const d = makeDeps({ gatewayFor: () => gw, saveAttachment, now: () => 1000 })
     const res = (await executeTool(
@@ -2556,7 +2559,9 @@ describe('executeTool: readSlackFile', () => {
       d
     )) as { mcpContent: { type: string; text?: string }[] }
     expect(saveAttachment).toHaveBeenCalledWith(ctx, 'Q3 report.pdf', pdf)
-    expect(res.mcpContent[0]!.text).toMatch(/Saved 13 bytes of application\/pdf to `uploads\/Q3 report.pdf`/)
+    expect(res.mcpContent[0]!.text).toContain(
+      'Saved 13 bytes of application/pdf to `/home/agent/files/session-example/uploads/Q3 report.pdf` (`files:uploads/Q3 report.pdf`)'
+    )
   })
 
   it('resolves a Slack file ID to its download URL and saves the file', async () => {
@@ -2572,7 +2577,8 @@ describe('executeTool: readSlackFile', () => {
     })
     const saveAttachment = vi.fn(async (_c: SessionContext, name: string) => ({
       ok: true as const,
-      path: `uploads/${name}`
+      path: `/home/agent/files/session-example/uploads/${name}`,
+      name: `files:uploads/${name}`
     }))
     const d = makeDeps({ gatewayFor: () => gw, saveAttachment, now: () => 1000 })
     const res = (await executeTool(ctx, 'readSlackFile', { url: 'F0CK2QMKE20' }, d)) as {
@@ -2584,7 +2590,7 @@ describe('executeTool: readSlackFile', () => {
       expect.any(Number)
     )
     expect(saveAttachment).toHaveBeenCalledWith(ctx, 'Skill 技能.zip', zip)
-    expect(res.mcpContent[0]!.text).toMatch(/of application\/zip to `uploads\/Skill 技能.zip`/)
+    expect(res.mcpContent[0]!.text).toContain('(`files:uploads/Skill 技能.zip`)')
   })
 
   it('refuses a Slack file ID shared only where this conversation cannot read, before downloading', async () => {

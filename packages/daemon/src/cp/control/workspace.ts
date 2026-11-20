@@ -118,6 +118,7 @@ function runUpload(
       agentId: req.agentId,
       ...(req.sessionId ? { sessionId: req.sessionId } : {}),
       ...(req.repo ? { repo: req.repo } : {}),
+      ...(req.root ? { root: req.root } : {}),
       path: req.path,
       maxBytes: req.maxBytes,
       timeoutMs: WORKSPACE_UPLOAD_TIMEOUT_MS,

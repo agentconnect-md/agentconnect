@@ -20,7 +20,8 @@ import type {
   WorkspaceDeleteReq,
   WorkspaceDeleteOk,
   WorkspaceMkdirReq,
-  WorkspaceMkdirOk
+  WorkspaceMkdirOk,
+  SessionFileArea
 } from '@agentconnect.md/protocol'
 import {
   localWorkspaceFiles,
@@ -55,7 +56,7 @@ export interface WorkspaceReader {
   mkdir(req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk>
   /** Snapshot one file where its root lives and PUT it to the URL `sign` presigns for the snapshot. */
   upload(
-    req: WorkspaceUploadReq & { agentId: string; sessionId?: string; repo?: string },
+    req: WorkspaceUploadReq & { agentId: string; sessionId?: string; repo?: string; root?: SessionFileArea },
     sign: WorkspaceUploadSigner,
     abort?: AbortSignal
   ): Promise<WorkspaceUploaded>
@@ -71,14 +72,34 @@ export type WorkspaceFilesResolver = (
 
 export function createWorkspaceReader(
   workspaces: WorkspaceManager,
-  workspaceByAgent: (agentId: string, sessionId?: string, repo?: string) => Promise<WorkspaceLocation | undefined>,
+  workspaceByAgent: (
+    agentId: string,
+    sessionId?: string,
+    repo?: string,
+    root?: SessionFileArea
+  ) => Promise<WorkspaceLocation | undefined>,
   coordinateWrite: WorkspaceWriteCoordinator,
   filesFor: WorkspaceFilesResolver = () => undefined
 ): WorkspaceReader {
-  async function locationFor(agentId: string, sessionId?: string, repo?: string): Promise<WorkspaceLocation> {
-    const location = await workspaceByAgent(agentId, sessionId, repo)
+  async function locationFor(
+    agentId: string,
+    sessionId?: string,
+    repo?: string,
+    root?: SessionFileArea
+  ): Promise<WorkspaceLocation> {
+    const location = await workspaceByAgent(agentId, sessionId, repo, root)
     if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
     return location
+  }
+
+  // A pool agent without a repository keeps every session's files under its checkout's `.agentconnect/files`, which only the session scope may read (§2.4).
+  function refuseSessionFilesIn(agentId: string, location: WorkspaceLocation, relPath: string): void {
+    const prefix = workspaces.sessionFilesInCheckout(agentId, location.root)
+    if (prefix === undefined) return
+    const parts = relPath.split(/[\\/]+/).filter((part) => part !== '' && part !== '.')
+    if (prefix.every((segment, index) => parts[index]?.toLowerCase() === segment)) {
+      throw new WorkspaceViolationError('session files are read through their session', 'path-escape')
+    }
   }
 
   /** The filesystem this request runs on, resolved ONCE and held by the caller: the shim re-dials at half its credential TTL, so probing for a channel and resolving again to use it can answer `localWorkspaceFiles` against a root in the POD's coordinates — an off-disk root therefore has no fallback, and the one resolution's absence is the refusal. */
@@ -98,17 +119,20 @@ export function createWorkspaceReader(
 
   return {
     async list(req) {
-      const location = await locationFor(req.agentId, req.sessionId, req.repo)
+      const location = await locationFor(req.agentId, req.sessionId, req.repo, req.root)
+      if (req.root === undefined) refuseSessionFilesIn(req.agentId, location, req.path)
       return filesOf(req.agentId, location).list(location.root, req)
     },
 
     async read(req) {
-      const location = await locationFor(req.agentId, req.sessionId, req.repo)
+      const location = await locationFor(req.agentId, req.sessionId, req.repo, req.root)
+      if (req.root === undefined) refuseSessionFilesIn(req.agentId, location, req.path)
       return filesOf(req.agentId, location).read(location.root, req)
     },
 
     async upload(req, sign, abort) {
-      const location = await locationFor(req.agentId, req.sessionId, req.repo)
+      const location = await locationFor(req.agentId, req.sessionId, req.repo, req.root)
+      if (req.root === undefined) refuseSessionFilesIn(req.agentId, location, req.path)
       const files = filesOf(req.agentId, location)
       if (!files.upload) throw outdatedForTransfer()
       return files.upload(location.root, req, sign, abort)
@@ -129,6 +153,7 @@ export function createWorkspaceReader(
       return coordinateWrite(req.agentId, async () => {
         // Re-read inside the coordinator: the configuration can change while a write waits, and the mode at mutation time governs.
         const location = await locationFor(req.agentId)
+        refuseSessionFilesIn(req.agentId, location, req.path)
         return filesOf(req.agentId, location).write(location.root, location.scratch, req)
       })
     },
@@ -143,6 +168,7 @@ export function createWorkspaceReader(
 
       return coordinateWrite(req.agentId, async () => {
         const location = await locationFor(req.agentId)
+        refuseSessionFilesIn(req.agentId, location, req.path)
         return filesOf(req.agentId, location).delete(location.root, location.scratch, req)
       })
     },
@@ -157,6 +183,7 @@ export function createWorkspaceReader(
 
       return coordinateWrite(req.agentId, async () => {
         const location = await locationFor(req.agentId)
+        refuseSessionFilesIn(req.agentId, location, req.path)
         return filesOf(req.agentId, location).mkdir(location.root, location.scratch, req)
       })
     }

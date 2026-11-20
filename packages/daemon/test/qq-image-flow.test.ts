@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApiClient, TokenManager } from '@tencent-connect/qqbot-nodejs/protocol'
@@ -183,9 +183,13 @@ describe('QQ images through the daemon', () => {
         })
       )
       expect(fileReads[0]).toMatchObject({
-        mcpContent: [{ type: 'text', text: expect.stringContaining('uploads/invoice.pdf') }]
+        mcpContent: [{ type: 'text', text: expect.stringContaining('(`files:uploads/invoice.pdf`)') }]
       })
-      expect(readFileSync(join(sessionCwd, 'uploads', 'invoice.pdf'))).toEqual(pdf)
+      // Saved in the session files directory beside the checkout, never inside it (inbound-file-attachments.md §2.4).
+      const saved = /to `([^`]+)`/.exec((fileReads[0] as { mcpContent: { text: string }[] }).mcpContent[0]!.text)![1]!
+      expect(saved).toMatch(/[\\/]files[\\/]session-[0-9a-f]{24}[\\/]uploads[\\/]invoice\.pdf$/)
+      expect(readFileSync(saved)).toEqual(pdf)
+      expect(existsSync(join(sessionCwd, 'uploads'))).toBe(false)
       expect(download).toHaveBeenCalled()
       expect(wrongDownload).not.toHaveBeenCalled()
       expect(outcomes[0]).toMatchObject({ ok: true, post: { platform: 'qq', channel, ts: 'posted-image' } })

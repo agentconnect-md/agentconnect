@@ -20,8 +20,6 @@ export interface TaskDiffRoot {
   branch?: string
   /** A clone the agent made itself: its remote's default branch is the base, and it has no saved start to fall back on. */
   baseFromOriginHead?: true
-  /** A directory whose untracked files are not task work, such as the landing zone for saved chat attachments. */
-  skipUntracked?: string
 }
 
 export class TaskDiffUnavailable extends Error {}
@@ -38,7 +36,6 @@ interface TaskDiffSource {
   base?: string
   name: string
   title: string
-  skipUntracked?: string
 }
 
 // A repository with its base branch diffs from where the task's branch left it, so commits, rebases and merges never widen the diff.
@@ -64,7 +61,7 @@ export async function openTaskDiff(
       (await git.readBounded(['rev-parse', '--verify', '--quiet', name], 256).catch(() => undefined))?.out
         .toString()
         .trim() || undefined
-    const source = { git, name: root.name, title: root.title ?? root.name, skipUntracked: root.skipUntracked }
+    const source = { git, name: root.name, title: root.title ?? root.name }
     const branch = root.branch ?? (root.baseFromOriginHead ? await originHead(git) : undefined)
     const upstream = branch ? `${ORIGIN}${branch}` : undefined
     if (upstream && (await verify(upstream)))
@@ -123,7 +120,7 @@ export async function openTaskDiff(
             'The task diff is too large to display completely in Slack; use the repository or PR to review it.'
           )
       }
-      for (const { git, from, base, name, skipUntracked } of sources) {
+      for (const { git, from, base, name } of sources) {
         signal?.throwIfAborted()
         const prefix = prefixed ? `${name}/` : ''
         const prefixes = [`--src-prefix=a/${prefix}`, `--dst-prefix=b/${prefix}`]
@@ -141,11 +138,7 @@ export async function openTaskDiff(
         const paths = await git.readBounded(['ls-files', '--others', '--exclude-standard', '-z'], PATHS_LIMIT)
         if (paths.overflow)
           throw new TaskDiffUnavailable('The task has too many new files to display completely in Slack.')
-        // Filtered here rather than by pathspec, so the Git arguments every execution plane admits stay the same.
-        const files = paths.out
-          .toString('utf8')
-          .split('\0')
-          .filter((file) => file && !(skipUntracked && file.startsWith(`${skipUntracked}/`)))
+        const files = paths.out.toString('utf8').split('\0').filter(Boolean)
         if (files.length > 100)
           throw new TaskDiffUnavailable('The task has too many new files to display completely in Slack.')
         for (const file of files) {

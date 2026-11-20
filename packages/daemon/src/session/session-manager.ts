@@ -45,7 +45,7 @@ import {
   sessionThreadOf
 } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
-import { attachmentMention, buildAttachmentBlocks } from './attachment-block.js'
+import { attachmentMention, buildAttachmentBlocks, type TransferSave } from './attachment-block.js'
 import {
   DIRECT_AGENT_CALL_REMINDER,
   EXPLICIT_MENTION_REMINDER,
@@ -362,6 +362,13 @@ export class SessionManager {
       attachmentMaxBytes?: number
       /** Presign the agent's GET for a console upload held in the Source Cache bucket. */
       transferUrl?: (agentId: string, att: Attachment) => Promise<{ url: string; expiresAt: number } | undefined>
+      /** Save a console upload into the session's uploads area at prompt build (inbound-file-attachments.md §2.4). */
+      saveTransfer?: (
+        agentId: string,
+        scope: { sessionKey: string; isolation: 'shared' | 'session' },
+        att: Attachment,
+        link: { url: string; expiresAt: number }
+      ) => Promise<TransferSave>
       /**
        * Pull the real Slack thread history for a mid-thread @ (§8.4/§9.2). Used to
        * backfill the transcript on first activation in a thread the daemon never
@@ -794,6 +801,7 @@ export class SessionManager {
           // accessor, so the prompt names exactly the directories the session got.
           workspaceRoots: bare ? [] : await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
           onDemandClones: bare ? undefined : await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
+          sessionFiles: bare ? undefined : await this.workspaces.sessionFileAreas(agent, workspaceRequest),
           memoryIndex,
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
@@ -850,7 +858,9 @@ export class SessionManager {
         const directories = await this.workspaces.additionalWorkspaceDirectories(agent, cwd, scope)
         const onDemand = await this.workspaces.sessionOnDemandClones(agent, scope)
         if (onDemand !== undefined && directories.includes(onDemand.path)) onDemandClonesHanded = true
-        return directories
+        // Both session file areas, which is what opens them to either runtime's own sandbox (inbound-file-attachments.md §2.4).
+        const files = await this.workspaces.sessionFileAreas(agent, scope)
+        return files ? [...directories, files.outputs, files.uploads] : directories
       },
       toolContext,
       sessionQuiescent: (id) => this.deps.sessionSdkQuiescent?.(agentId, key, id) ?? true,
@@ -1089,6 +1099,12 @@ export class SessionManager {
           buildAttachmentBlocks(ingested.attachments!, {
             download: (att) => this.deps.downloadAttachment?.(agentId, att, integrationId) ?? Promise.resolve(null),
             transferUrl: (att) => this.deps.transferUrl?.(agentId, att) ?? Promise.resolve(undefined),
+            ...(this.deps.saveTransfer
+              ? {
+                  saveTransfer: (att, link) =>
+                    this.deps.saveTransfer!(agentId, { sessionKey: key, isolation: workspaceIsolation }, att, link)
+                }
+              : {}),
             supports: (kind) => host.promptSupports?.(kind) ?? false,
             ...(this.deps.attachmentMaxBytes !== undefined ? { maxBytes: this.deps.attachmentMaxBytes } : {})
           }),

@@ -90,6 +90,7 @@ import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
 import { cpBase } from '@/lib/endpoints'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
+import type { SessionFileArea } from '@/lib/shared-file'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
  *  `code` carries the CP's machine-readable denial reason when the endpoint
@@ -3336,11 +3337,12 @@ export const MAX_WORKSPACE_EDIT_BYTES = 180_000
 // secondary root instead of the primary workspace; 404 when it authorizes no such repo.
 export async function fetchWorkspaceFiles(
   agentId: string,
-  opts: { path: string; cursor?: string; limit?: number; sessionId?: string; repo?: string }
+  opts: { path: string; cursor?: string; limit?: number; sessionId?: string; repo?: string; root?: SessionFileArea }
 ): Promise<WorkspaceListingDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
   if (opts.repo) q.set('repo', opts.repo)
+  if (opts.root) q.set('root', opts.root)
   if (opts.cursor) q.set('cursor', opts.cursor)
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceListingDto>(
@@ -3404,11 +3406,12 @@ export async function fetchAgentRuntimeCommands(agentId: string): Promise<Runtim
 // 503 when the daemon is offline / the agent is unplaced.
 export async function fetchWorkspaceFile(
   agentId: string,
-  opts: { path: string; offset?: number; limit?: number; sessionId?: string; repo?: string }
+  opts: { path: string; offset?: number; limit?: number; sessionId?: string; repo?: string; root?: SessionFileArea }
 ): Promise<WorkspaceFileDto> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
   if (opts.repo) q.set('repo', opts.repo)
+  if (opts.root) q.set('root', opts.root)
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
   return apiGet<WorkspaceFileDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file?${q.toString()}`)
@@ -3417,11 +3420,12 @@ export async function fetchWorkspaceFile(
 /** A workspace file's original bytes (≤ 8 MiB); `sha256` pins a share's digest. The CP proxies and stores nothing. */
 export async function downloadSessionFile(
   agentId: string,
-  opts: { path: string; sessionId?: string; repo?: string; sha256?: string }
+  opts: { path: string; sessionId?: string; repo?: string; root?: SessionFileArea; sha256?: string }
 ): Promise<Blob> {
   const q = new URLSearchParams({ path: opts.path })
   if (opts.sessionId) q.set('sessionId', opts.sessionId)
   if (opts.repo) q.set('repo', opts.repo)
+  if (opts.root) q.set('root', opts.root)
   if (opts.sha256) q.set('sha256', opts.sha256)
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/download?${q.toString()}`
   const res = await authenticatedFetch(path, { cache: 'no-store' })
@@ -3478,7 +3482,7 @@ const TRANSFER_POLL_FAILURES = 5
 
 export async function transferWorkspaceFile(
   agentId: string,
-  opts: { path: string; sessionId?: string; repo?: string; sha256?: string },
+  opts: { path: string; sessionId?: string; repo?: string; root?: SessionFileArea; sha256?: string },
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 ): Promise<WorkspaceTransferDto> {
   const base = `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/file/transfer`
@@ -3486,6 +3490,7 @@ export async function transferWorkspaceFile(
     path: opts.path,
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     ...(opts.repo ? { repo: opts.repo } : {}),
+    ...(opts.root ? { root: opts.root } : {}),
     ...(opts.sha256 ? { sha256: opts.sha256 } : {}),
     poll: true
   })

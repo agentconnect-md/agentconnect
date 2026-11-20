@@ -27,6 +27,8 @@ export interface FleetUpgradeHost {
   root: () => string | undefined
   configPath: () => string | undefined
   upgradeInstaller: () => typeof runCliUpgrade | undefined
+  /** Whether an agent of this daemon runs in microsandbox; undefined leaves the image pre-pull to the target's own rule. */
+  microsandboxInUse: () => boolean | undefined
   reportProgress: (progress: DaemonLifecycleProgress) => Promise<void>
   stop: () => Promise<void>
   /** Gate new turns now, before any await, so an idle-only exit cannot admit work it would then cut short. */
@@ -68,14 +70,7 @@ export class FleetUpgradeCoordinator {
       release: () => {
         if (!this.fleetExitStarted) this.lifecycleInFlight = false
       },
-      install: (cliEntry, targetVersion, root) =>
-        (this.host.upgradeInstaller() ?? runCliUpgrade)(
-          cliEntry,
-          targetVersion,
-          root,
-          this.host.log(),
-          this.host.configPath()
-        ),
+      install: (cliEntry, targetVersion, root) => this.install(cliEntry, targetVersion, root),
       exit: (operationId, stillIdle) => {
         if (this.fleetExitStarted) return true
         if (!stillIdle()) return false
@@ -84,6 +79,18 @@ export class FleetUpgradeCoordinator {
         return true
       }
     }
+  }
+
+  private install(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
+    const microsandboxInUse = this.host.microsandboxInUse()
+    return (this.host.upgradeInstaller() ?? runCliUpgrade)(
+      cliEntry,
+      targetVersion,
+      root,
+      this.host.log(),
+      this.host.configPath(),
+      microsandboxInUse === undefined ? {} : { microsandboxInUse }
+    )
   }
 
   private admitFleetExit(kind: FleetExitKind, targetVersion?: string): FleetAdmission {
@@ -151,13 +158,7 @@ export class FleetUpgradeCoordinator {
     const installation = Promise.resolve()
       .then(async () => {
         await this.reportProgress(operationId, 'preparing')
-        return (this.host.upgradeInstaller() ?? runCliUpgrade)(
-          cliEntry,
-          targetVersion,
-          root,
-          log,
-          this.host.configPath()
-        )
+        return this.install(cliEntry, targetVersion, root)
       })
       .catch((err) => {
         log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)

@@ -193,6 +193,13 @@ running version is not `current`. Any prune that runs supersedes the record, so
 an automatic upgrade, which never restarts the daemon from the CLI, still bounds
 the store.
 
+The CLI is installed separately and no daemon upgrade replaces it, so a host can
+pair a current daemon with a CLI that predates the record. After a daemon-initiated
+upgrade succeeds without a record, the daemon writes one with the default
+retention. When that CLI rejects `--deferred`, a daemon running `current` falls
+back to `version prune --keep <n>`, which protects only the active and previous
+versions.
+
 Mutating version commands hold a root-scoped inter-process lock. Install and
 use fail fast when another live writer owns the lock; prune and upgrade wait.
 A lock is reclaimable only when its recorded process is gone or the PID has
@@ -211,8 +218,7 @@ microsandbox it installs its pinned SDK and prepares the target image's layered
 artifacts without creating, stopping, or resuming VMs. A preparation failure
 leaves `current`, rollback metadata, and the running daemon unchanged. Older
 bundles without the entry keep their existing upgrade behavior. This preparation
-step requires an updated CLI; an older CLI still prepares the image on daemon
-startup.
+step requires an updated CLI; an older CLI leaves the image to the new daemon, which prepares it once an agent uses microsandbox. The target prepares no image when the daemon running the upgrade reports that none of its agents uses microsandbox.
 
 For tracked upgrades, the daemon reports `preparing` before installation and
 `restarting` before shutdown through the acknowledged `daemon/lifecycle/progress`

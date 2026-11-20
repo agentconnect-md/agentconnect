@@ -167,9 +167,10 @@ function buildShareFileTool(): ToolDescriptor {
     description:
       'Post a FILE from your workspace into THIS conversation — the thread you are answering right now. ' +
       'Your ordinary reply is text-only. To publish files to another destination, use sendMessage with ' +
-      'action postMessage and attachments. `path` is relative to your workspace root; put files there ' +
-      'first (generated files: save under `outputs/` — images under `outputs/images/` — with a unique name, copying ' +
-      'any result that lives outside the workspace). Any file type: PNG, JPEG, WEBP and GIF post as images (decided ' +
+      'action postMessage and attachments. `path` is a session file — `files:outputs/report.pdf` names your session ' +
+      'outputs directory, `files:uploads/<name>` a file people attached — or a path relative to your workspace root. ' +
+      'Save generated files in your session outputs directory (images under `images/`) with a unique name, copying ' +
+      'any result that lives elsewhere. Any file type: PNG, JPEG, WEBP and GIF post as images (decided ' +
       'from the file bytes, not the name; the console also shows a self-contained static SVG inline, and offers a ' +
       'GIF as a download); everything else (PDF, CSV, XLSX, DOCX, ZIP, text, …) posts as a downloadable file named ' +
       'after the path. Some platforms host only images and say so. The optional ' +
@@ -184,8 +185,8 @@ function buildShareFileTool(): ToolDescriptor {
           type: 'string',
           minLength: 1,
           description:
-            'Workspace-relative path to the file (e.g. `out/chart.png`, `outputs/report.pdf`). Absolute paths and ' +
-            '`..` are rejected.'
+            'A session file (`files:outputs/report.pdf`, or its absolute path in the session files directory) or a ' +
+            'workspace-relative path (e.g. `out/chart.png`). Any other absolute path and `..` are rejected.'
         },
         caption: {
           type: 'string',

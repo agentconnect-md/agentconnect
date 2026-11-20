@@ -31,6 +31,7 @@ import {
   openDownloadUrl,
   saveBlob,
   viaTransfer,
+  type SessionFileArea,
   type SessionFileDownload
 } from '@/lib/shared-file'
 
@@ -94,7 +95,10 @@ interface DiffRead {
 const DIFF_PENDING: DiffRead = { loading: true, err: null, errStatus: null, errCode: null, diff: null }
 
 // A workspace read failed outright. The CP's status and `code` are what make the distinguishable cases distinguishable; everything else — 503 for an offline daemon and for an unplaced agent alike, plus network failures — is the offline story.
-function readNoticeText(status: number | null, code: string | null, scoped: boolean): string {
+function readNoticeText(status: number | null, code: string | null, scoped: boolean, root?: SessionFileArea): string {
+  if (root && status === 409)
+    return 'This agent runs a daemon version that cannot read session files. Update the agent to open them here.'
+  if (root && status === 404) return "This session's files are not available to read."
   if (status === 409) {
     return code === 'DAEMON_FEATURE_MISSING'
       ? 'This agent runs a daemon version that cannot read diffs. Update the agent to review its changes here; the file itself still opens.'
@@ -153,6 +157,7 @@ export function SessionViewer({
   agentId,
   sessionId,
   repo,
+  root,
   path,
   mode = 'file',
   diffRefreshTick = 0,
@@ -168,6 +173,8 @@ export function SessionViewer({
   sessionId?: string
   /** An authorized secondary repository; omit for the primary workspace. */
   repo?: string
+  /** A session files area read in place of a checkout; then `sessionId` may name any session, shared ones too, and there is no diff. */
+  root?: SessionFileArea
   /** Workspace-relative path of the file to read. Changing it starts a fresh read; an older slice can never land in the newer one. */
   path: string
   /** Which read is on screen. It lives in the URL beside `file` (§4), so the caller owns it and this pane reports the pill instead of holding a second copy. */
@@ -209,7 +216,12 @@ export function SessionViewer({
     if (!fileWanted) return
     const requestId = ++requestRef.current
     setRead(PENDING)
-    fetchWorkspaceFile(agentId, { path, ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
+    fetchWorkspaceFile(agentId, {
+      path,
+      ...(sessionId ? { sessionId } : {}),
+      ...(repo ? { repo } : {}),
+      ...(root ? { root } : {})
+    }).then(
       (f) =>
         setRead((r) =>
           requestId === requestRef.current ? { ...r, loading: false, file: f, content: f.content ?? '' } : r
@@ -224,7 +236,7 @@ export function SessionViewer({
     return () => {
       requestRef.current += 1
     }
-  }, [agentId, sessionId, repo, path, reloadTick, fileWanted])
+  }, [agentId, sessionId, repo, root, path, reloadTick, fileWanted])
 
   // One entry per read, so switching Diff → File → Diff redraws instead of re-reading. Keyed by the WHOLE read — checkout, worktree, path, scope, retry — not by the scope alone: the caller remounts this pane on a path change today, and a cache that relied on that would paint one path's diff under another's heading the day it stops.
   const [diffs, setDiffs] = useState<Record<string, DiffRead>>({})
@@ -298,7 +310,8 @@ export function SessionViewer({
       path,
       offset: at,
       ...(sessionId ? { sessionId } : {}),
-      ...(repo ? { repo } : {})
+      ...(repo ? { repo } : {}),
+      ...(root ? { root } : {})
     }).then(
       (f) =>
         setRead((r) => {
@@ -324,7 +337,9 @@ export function SessionViewer({
   }
 
   const name = path.split('/').at(-1) ?? path
-  const dir = path.slice(0, Math.max(0, path.length - name.length - 1))
+  const checkoutDir = path.slice(0, Math.max(0, path.length - name.length - 1))
+  // A session file's heading names its area, as the Files tab lists it.
+  const dir = root ? `/${root}${checkoutDir ? `/${checkoutDir}` : ''}` : checkoutDir
   const imageType = imageTypeOf(name)
   const isImage = mode === 'file' && file?.exists === true && file.type === 'file' && imageType !== null
   const isText = file?.exists === true && file.encoding === 'utf8' && imageType === null
@@ -334,12 +349,14 @@ export function SessionViewer({
     if (code === 'WORKSPACE_FILE_TOO_LARGE' || code === 'WORKSPACE_TOO_LARGE') return td('fileTooLarge')
     if (code === 'WORKSPACE_FILE_NOT_FOUND') return td('fileGone')
     if (code === 'DAEMON_FEATURE_MISSING' || code === 'WORKSPACE_SANDBOX_OUTDATED') return td('downloadUnsupported')
-    return e instanceof ApiError ? readNoticeText(statusOf(e), code, Boolean(sessionId)) : td('downloadFailed')
+    return e instanceof ApiError ? readNoticeText(statusOf(e), code, Boolean(sessionId), root) : td('downloadFailed')
   }
 
   // An image's bytes are read raw once the text read has said what the path is; the key fences an answer to the revision it was asked for.
   const imageKey =
-    isImage && download ? [agentId, download.sessionId ?? '', repo ?? '', path, file?.mtime ?? ''].join('\n') : null
+    isImage && download
+      ? [agentId, download.sessionId ?? '', repo ?? '', root ?? '', path, file?.mtime ?? ''].join('\n')
+      : null
   const previewable = imageKey !== null && (file?.size ?? 0) <= MAX_WORKSPACE_DOWNLOAD_BYTES
   const [image, setImage] = useState<ImageRead | null>(null)
   useEffect(() => {
@@ -347,7 +364,7 @@ export function SessionViewer({
     let active = true
     let url: string | null = null
     setImage({ key: imageKey, blob: null, url: null, err: null })
-    downloadSessionFile(agentId, { ...download, path, ...(repo ? { repo } : {}) }).then(
+    downloadSessionFile(agentId, { ...download, path, ...(repo ? { repo } : {}), ...(root ? { root } : {}) }).then(
       (bytes) => {
         if (!active) return
         // Retyped from the extension: the route answers octet-stream for formats it does not name, which an <img> may refuse.
@@ -373,7 +390,12 @@ export function SessionViewer({
   const saveFile = async () => {
     if (downloading || !download) return
     setDownloadErr(null)
-    const scope = { path, ...(download.sessionId ? { sessionId: download.sessionId } : {}), ...(repo ? { repo } : {}) }
+    const scope = {
+      path,
+      ...(download.sessionId ? { sessionId: download.sessionId } : {}),
+      ...(repo ? { repo } : {}),
+      ...(root ? { root } : {})
+    }
     // Binary and large text skip the CP proxy: the browser fetches a presigned object-store URL.
     if (file && viaTransfer(file, transfer)) {
       setDownloading(true)
@@ -566,7 +588,7 @@ export function SessionViewer({
       return (
         <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           <Icon name="triangle-exclamation-point" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
-          <span>{readNoticeText(read.errStatus, read.errCode, Boolean(sessionId))}</span>
+          <span>{readNoticeText(read.errStatus, read.errCode, Boolean(sessionId), root)}</span>
         </div>
       )
     }
@@ -702,7 +724,10 @@ export function SessionViewer({
           color="var(--text-tertiary)"
           className="flex-none"
         />
-        <span className="mono flex min-w-0 flex-1 items-baseline text-[12px] leading-normal" title={path}>
+        <span
+          className="mono flex min-w-0 flex-1 items-baseline text-[12px] leading-normal"
+          title={root ? `/${root}/${path}` : path}
+        >
           {dir ? <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{`${dir}/`}</span> : null}
           <span className="flex-none font-medium text-(--text-primary)">{name}</span>
         </span>

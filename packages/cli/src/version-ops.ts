@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { DeferredVersionPrune, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
+import { DEFAULT_KEEP_VERSIONS, DeferredVersionPrune, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
 import { liveDaemonPid } from './daemon-live.js'
 import { currentLink, versionDir } from './paths.js'
 import { cliCommand } from './invocation.js'
@@ -63,8 +63,7 @@ function replaceWindowsCurrentJunction(root: string, version: string, link: stri
 
 const collate = (a: string, b: string): number => a.localeCompare(b, 'en', { numeric: true })
 
-/** Default retention for automatic and manual pruning: how many installed versions to keep in total. */
-export const DEFAULT_KEEP_VERSIONS = 3
+export { DEFAULT_KEEP_VERSIONS }
 
 /** Keep the newest `keep` installed versions by mtime; `current`/`previous` plus `protect` are never removed and count against `keep`. §5.4 */
 export function pruneVersions(root: string, keep = DEFAULT_KEEP_VERSIONS, protect: string[] = []): string[] {

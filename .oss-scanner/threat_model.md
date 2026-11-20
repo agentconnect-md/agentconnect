@@ -208,6 +208,20 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   and state. While a platform's session access sync is off, every member sees a Slack conversation's
   sessions, and with them a private channel's observations: an accepted consequence, not a finding.
 
+- **Session files** (`inbound-file-attachments.md` §2.4): a session's `uploads/` and `outputs/` sit
+  beside its checkout. `shareFile`, `sendMessage` attachments and the console's `root: 'uploads' |
+'outputs'` scope must reach only those two areas (each its own fence root: a link-free canonical
+  path locally, the shim's descent on a pod), never the session's `home/` or clones beside them. A
+  pool agent without a repository keeps every session's files under its checkout's
+  `.agentconnect/files`, which the checkout's read, write and delete routes must refuse. The
+  console scope is gated by session visibility alone, since shared sessions have areas too. Two
+  accepted consequences: a runtime serving several shared sessions holds the parent grant, so its
+  agent can read a sibling session's area as it reads their shared checkout; and Codex loads skills
+  from each additional directory's `.agents/skills`, so an archive the agent extracts into an area
+  can add skills, as one extracted into the checkout can. At prompt build the daemon fetches a
+  console upload only from the URL the Control Plane signed for it in `transfer/get`, capped at
+  `limits.maxAttachmentBytes`.
+
 ## AHP boundaries to audit before public rollout
 
 - **Independent admission gates:** CP and relay `AHP_MODE` must be `on`, the

@@ -106,10 +106,11 @@ keeps bwrap's own text; the daemon never changes the host setting.
 `microsandbox` opens `/dev/kvm`, resolves the image reference, and, when the
 daemon's runtime store already holds the pinned msb, checks that msb and its
 libkrunfw are there. It installs nothing, pulls no image and boots no VM, and a
-machine without KVM stops there. Once it passes, the daemon installs msb when needed,
-prepares the image, reads its runtime table and probes the image's models in the
-background, after it is ready; a session that needs the image first prepares it
-itself. A mount layout a strategy cannot honor, such as a
+machine without KVM stops there. Once it passes and an agent of this daemon names
+`microsandbox`, the daemon installs msb when needed, prepares the image, reads its
+runtime table and probes the image's models in the background, after it is ready or
+when a reconcile brings in such an agent; a session that needs the image first
+prepares it itself. A mount layout a strategy cannot honor, such as a
 renamed target for SRT, makes that strategy unavailable with the validation error
 rather than refusing startup. An `overlay` mount is not one of them: SRT mounts its
 base read-only. A table with no available
@@ -310,7 +311,8 @@ it opens `/dev/kvm` and, when the runtime store already holds the pinned
 `microsandbox@0.7.14` package, checks its msb and libkrunfw, then recovers the
 state an earlier run left and collects the cached images no binding needs. It boots
 no VM; that rule is the availability probe's alone. Once it passes, a background task
-of the ready daemon, or a session that needs the image first, installs the package
+of the ready daemon, started only while one of its agents names `microsandbox`, or a
+session that needs the image first, installs the package
 through the daemon's RuntimeStore when needed, preserving its native platform
 package, prepares the image, boots a temporary VM, validates the runtime table, and
 checks stop/start.
@@ -332,7 +334,7 @@ waiting on it. No install, pull or preparation VM resumes once shutdown has begu
 whoever asked for the image. A preparation VM already being created runs nothing in
 it, and the manager's shutdown waits until that VM is gone. The next probe removes a
 probe VM an earlier run left behind. The task
-runs once a run, only where the strategy is available. A session in the strategy while it
+runs once a run, only where the strategy is available and an agent uses it. A session in the strategy while it
 is unavailable is refused, with no fallback to SRT or a host process. The
 standalone `chat` command refuses an agent that runs in microsandbox; use daemon
 sessions.
@@ -421,7 +423,10 @@ session used it. A daemon on which it is withdrawn or unavailable keeps its
 microsandbox state, including stopped VMs and their disks, in case it becomes
 available again, and logs a startup warning with the number of retained
 environments, why the strategy is out, and how to reclaim the space. An upgrade
-pre-pulls the next release's image only on a machine that has pulled one before. The
+pre-pulls the next release's image only when an agent of the running daemon names
+`microsandbox`: a daemon-run upgrade passes that answer to the target's preparation
+in `AGENTCONNECT_MICROSANDBOX_IN_USE`, and an upgrade run without it, such as a
+manual one, pre-pulls only on a machine that has pulled an image before. The
 pre-pull probes no models: it is a separate short-lived process with no runtime
 catalog or VM of its own, and the carried-over lists cover the new daemon until its
 own probe replaces them.

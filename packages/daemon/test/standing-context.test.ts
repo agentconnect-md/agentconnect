@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { membersOwnEntryGuidance } from '../src/memory/members-directory.js'
 import { describe, expect, it } from 'vitest'
 import {
+  buildSessionFilesAppend,
   buildStandingContext,
   buildWorkspaceRootsAppend,
   MAX_ON_DEMAND_NAMES
@@ -197,6 +198,25 @@ describe('buildWorkspaceRootsAppend with installation grants (agent-multi-repo-a
     expect(line).toMatch(/: example-org-000, example-org-001, /)
     expect(line).toContain('example-org-099 and 2 more.')
     expect(line).not.toContain('example-org-100')
+  })
+})
+
+describe('buildStandingContext with session files', () => {
+  const sessionFiles = {
+    uploads: '/home/agent/files/session-example/uploads',
+    outputs: '/home/agent/files/session-example/outputs'
+  }
+
+  it('names both areas and their files: form, re-asserted on resume', () => {
+    const context = buildStandingContext({ ...BASE, sessionFiles })
+    expect(context.resumeSystemContext).toContain(buildSessionFilesAppend(sessionFiles))
+    expect(context.resumeSystemContext).toContain('# Session files')
+    expect(context.resumeSystemContext).toContain(`- ${sessionFiles.outputs} — save files you generate`)
+    expect(context.resumeSystemContext).toContain('`files:outputs/report.pdf`')
+  })
+
+  it('leaves a session without areas byte-identical', () => {
+    expect(buildStandingContext({ ...BASE, sessionFiles: undefined })).toEqual(buildStandingContext(BASE))
   })
 })
 

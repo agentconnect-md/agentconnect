@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { TaskInitiator } from '@agentconnect.md/protocol'
+import type { SessionFileArea, TaskInitiator } from '@agentconnect.md/protocol'
 import { join } from 'node:path'
 import { MEMORY_FORMAT_GUIDANCE } from '../../memory/frontmatter.js'
 import { MAX_INDEX_INJECT_BYTES } from '../../memory/store.js'
@@ -99,6 +99,8 @@ export type StandingContextInput = {
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
   /** The directory it clones the authorized repositories it was not handed into, and which those are (decision 20). */
   onDemandClones?: OnDemandCloneContext
+  /** The session files directory's two areas in the runtime's coordinates (inbound-file-attachments.md §2.4). */
+  sessionFiles?: Readonly<Record<SessionFileArea, string>>
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
   /** What this conversation may do with memory beyond the common rules, such as a person's own directory entry; '' for none. */
@@ -260,6 +262,19 @@ export function buildWorkspaceRootsAppend(
   return ['# Additional repositories', ...listed, ...(listed.length && clonable.length ? [''] : []), ...clonable].join(
     '\n'
   )
+}
+
+/** Where this session's inbound attachments are and where its generated files go, and how both are named (§2.4). */
+export function buildSessionFilesAppend(areas: Readonly<Record<SessionFileArea, string>>): string {
+  return [
+    '# Session files',
+    `- ${areas.uploads} — files people attached, saved here when you read them (named \`files:uploads/<name>\`).`,
+    `- ${areas.outputs} — save files you generate for people here unless they name another place (named ` +
+      '`files:outputs/<path>`; images under `images/`).',
+    'Both directories belong to this session and are outside the repository, so nothing in them is committed. ' +
+      'When you mention one of these files in a reply or pass it to shareFile or sendMessage, use its `files:` ' +
+      'name, e.g. `files:outputs/report.pdf`, never the absolute path.'
+  ].join('\n')
 }
 
 function onDemandLines({ path, repositories, installations = [] }: OnDemandCloneContext): string[] {
@@ -485,6 +500,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const memoryGuidance = input.memoryGuidance?.trim() ?? ''
   const agentMeta = buildAgentMeta(input)
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots, input.onDemandClones)
+  const sessionFilesAppend = input.sessionFiles ? buildSessionFilesAppend(input.sessionFiles) : ''
   const commitAttribution = input.initiator?.commitAuthors.length
     ? [
         '# Commit attribution',
@@ -520,6 +536,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
         : [
             meta,
             workspaceRootsAppend,
+            sessionFilesAppend,
             commitAttribution,
             platformAppend,
             collabAppend,

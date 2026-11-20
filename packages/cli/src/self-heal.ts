@@ -6,7 +6,7 @@
  * Lives outside `index.ts` because that module executes `main()` on import; keeping
  * it here makes the root's permission handling directly testable.
  */
-import { chmodSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { cliEntryPath } from './paths.js'
 
@@ -42,8 +42,25 @@ export function selfHealCliEntry(root: string, entryPath: string): void {
     const dir = dirname(p)
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     protectRootDir(dir)
-    writeFileSync(p, entryPath + '\n')
+    const line = entryPath + '\n'
+    if (readExisting(p) === line) return
+    // Rename, never truncate in place: a full disk otherwise leaves the daemon an empty pointer and no way to upgrade.
+    const tmp = `${p}.${process.pid}.tmp`
+    try {
+      writeFileSync(tmp, line)
+      renameSync(tmp, p)
+    } finally {
+      rmSync(tmp, { force: true })
+    }
   } catch {
     // non-fatal: the pointer is a convenience for daemon→CLI handoff
+  }
+}
+
+function readExisting(p: string): string | undefined {
+  try {
+    return readFileSync(p, 'utf8')
+  } catch {
+    return undefined
   }
 }

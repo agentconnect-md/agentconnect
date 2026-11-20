@@ -12,9 +12,12 @@
  * and the one it commits must be the same directory, and describing them two different ways is what
  * broke both panels. Extracted from the CP client's wiring so the routing is testable on its own.
  */
+import { existsSync, lstatSync } from 'node:fs'
+import { join } from 'node:path'
+import type { SessionFileArea } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
 import type { WorkspaceLocation } from '../workspace/workspace-files.js'
-import type { WorkspaceManager } from '../workspace/workspace-manager.js'
+import { realSessionFilesPath, type WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { WorkspaceGitTarget } from './workspace-git.js'
 
 /** What the scope needs of a session row: the key naming its worktrees, and whether it has any. */
@@ -36,8 +39,13 @@ export interface WorkspaceScopeDeps {
 type LocalLocation = WorkspaceLocation & { sessionKey?: string }
 
 export interface WorkspaceScope {
-  /** The root in EXECUTION coordinates — under `--k8s`, the sandbox pod's volume — and the isolated session it belongs to. */
-  location(agentId: string, sessionId?: string, repo?: string): Promise<WorkspaceLocation | undefined>
+  /** The root in EXECUTION coordinates — under `--k8s`, the sandbox pod's volume — and the isolated session it belongs to; `root` names one area of the session's files directory instead (§2.4). */
+  location(
+    agentId: string,
+    sessionId?: string,
+    repo?: string,
+    root?: SessionFileArea
+  ): Promise<WorkspaceLocation | undefined>
   /** The origin and branch a network git operation on this scope may reach; a session names its own clone's. */
   target(agentId: string, repo?: string, sessionId?: string): Promise<WorkspaceGitTarget | undefined>
   /** Whether git on this scope rides the daemon credential helper; answered without touching any volume. */
@@ -93,11 +101,37 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
       : await deps.workspaces.consoleSecondaryRoot(agent, repo)
   }
 
+  // One area of a session's files directory, shared sessions included: it requires the session and never names a repository.
+  const filesLocation = async (
+    agentId: string,
+    sessionId: string | undefined,
+    repo: string | undefined,
+    area: SessionFileArea
+  ): Promise<WorkspaceLocation | undefined> => {
+    const agent = deps.agentOf(agentId)
+    if (!agent || sessionId === undefined || repo !== undefined) return undefined
+    const session = await deps.sessionOf(agentId, sessionId)
+    if (!session) return undefined
+    const files = deps.workspaces.sessionFilesLocation(agent, session.key, session.workspaceIsolation)
+    const composed = join(files.anchor, ...files.segments, area)
+    const sessionKey = files.scope.sessionKey === undefined ? {} : { sessionKey: files.scope.sessionKey }
+    if (deps.workspaces.offDisk({ agentId, ...files.scope })) return { root: composed, scratch: false, ...sessionKey }
+    // Locally, every component must be a real directory; a link anywhere below the anchor is refused, absence reads as empty.
+    try {
+      return { root: realSessionFilesPath(files, area), scratch: false, ...sessionKey }
+    } catch (err) {
+      if (existsSync(composed) || isSymlinkPath(composed)) throw err
+      return { root: composed, scratch: false, ...sessionKey }
+    }
+  }
+
   const location = async (
     agentId: string,
     sessionId?: string,
-    repo?: string
+    repo?: string,
+    area?: SessionFileArea
   ): Promise<WorkspaceLocation | undefined> => {
+    if (area !== undefined) return await filesLocation(agentId, sessionId, repo, area)
     const agent = deps.agentOf(agentId)
     const local = await daemonLocation(agentId, sessionId, repo)
     if (!agent || !local) return undefined
@@ -160,5 +194,13 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
       if (session.workspaceIsolation !== 'session') return null
       return deps.workspaces.confinedSessionDir(agent, session.key) ?? null
     }
+  }
+}
+
+function isSymlinkPath(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
   }
 }

@@ -5,7 +5,17 @@
  * transcript store and daemon logs beneath it traversable by other local users.
  */
 import { describe, it, expect } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cliEntryPath } from '../src/paths.js'
@@ -35,6 +45,21 @@ describe.skipIf(process.platform === 'win32')('selfHealCliEntry', () => {
 
     selfHealCliEntry(root, '/opt/agentconnect/cli.js')
     expect(mode(root)).toBe(0o700)
+  })
+
+  it('replaces the pointer without truncating it, and leaves an unchanged one alone', () => {
+    const root = newRoot()
+    selfHealCliEntry(root, '/opt/old/cli.js')
+    // A write that fails (as on a full disk) must keep the old pointer intact.
+    const blocker = `${cliEntryPath(root)}.${process.pid}.tmp`
+    mkdirSync(join(blocker, 'x'), { recursive: true })
+    selfHealCliEntry(root, '/opt/new/cli.js')
+    expect(readFileSync(cliEntryPath(root), 'utf8')).toBe('/opt/old/cli.js\n')
+    rmSync(blocker, { recursive: true })
+
+    selfHealCliEntry(root, '/opt/new/cli.js')
+    expect(readFileSync(cliEntryPath(root), 'utf8')).toBe('/opt/new/cli.js\n')
+    expect(readdirSync(root)).toEqual(['cli-entry'])
   })
 
   it('stays best-effort when the root cannot be created', () => {
