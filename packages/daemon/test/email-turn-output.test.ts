@@ -138,6 +138,7 @@ function harness(opts: {
   replies?: (RdPlatformReply | Error)[]
   ask?: EmailMembersDeps['ask']
   latest?: EmailStoredMail
+  wrote?: string[]
 }): Harness {
   const requests: RdPlatformRequest[] = []
   const replies = [
@@ -164,13 +165,17 @@ function harness(opts: {
     sleep: async () => {}
   })
   vi.spyOn(conn, 'latestReceived').mockResolvedValue(opts.latest)
+  vi.spyOn(conn, 'threadSenders').mockResolvedValue(new Set(opts.wrote ?? []))
   const transcript: { text: string; ts: string }[] = []
   const index: Record<string, unknown>[] = []
   const recorded: string[] = []
   let ts = 0
   const members = new EmailMembers({
     ask:
-      opts.ask ?? (async (_a, addresses) => addresses.map((address) => ({ address, consoleUserId: `u-${address}` }))),
+      opts.ask ??
+      (async (_a, addresses) => ({
+        members: addresses.map((address) => ({ address, consoleUserId: `u-${address}` }))
+      })),
     now: () => 0
   })
   const host: EmailTurnHost<EmailTurn> = {
@@ -237,9 +242,9 @@ describe('delivering the reply', () => {
   })
 
   it('copies the group’s other members and leaves everyone else off, in one question', async () => {
-    const ask = vi.fn<EmailMembersDeps['ask']>(async (_a, addresses) =>
-      addresses.filter((a) => a !== OUTSIDER).map((address) => ({ address, consoleUserId: `u-${address}` }))
-    )
+    const ask = vi.fn<EmailMembersDeps['ask']>(async (_a, addresses) => ({
+      members: addresses.filter((a) => a !== OUTSIDER).map((address) => ({ address, consoleUserId: `u-${address}` }))
+    }))
     const h = harness({
       ext: mail({ cc: [{ address: BOB }, { address: OUTSIDER }] }),
       channel: 'group:m1@corp.example.test',
@@ -250,8 +255,70 @@ describe('delivering the reply', () => {
     expect(call.audience).toEqual([ALICE, BOB, OUTSIDER])
     expect(call.to).toEqual([ALICE])
     expect(call.cc).toEqual([BOB])
+    expect(call.outside).toBeUndefined()
     expect(ask).toHaveBeenCalledTimes(1)
     expect(h.transcript).toHaveLength(1)
+  })
+
+  describe('under Anyone (§6.1, §6.4)', () => {
+    // Alice and Bob are members; everyone else is outside and may write now.
+    const anyone: EmailMembersDeps['ask'] = async (_a, addresses) => ({
+      members: addresses
+        .filter((a) => a === ALICE || a === BOB)
+        .map((address) => ({ address, consoleUserId: `u-${address}` })),
+      outsiders: addresses.filter((a) => a !== ALICE && a !== BOB),
+      outsideSenders: 'admitted'
+    })
+    const NAMED = 'named@other.example.test'
+
+    it('answers an outside sender’s direct thread on the outside budget, without asking', async () => {
+      const ask = vi.fn(anyone)
+      const h = harness({ ext: mail({ from: { address: OUTSIDER }, outsider: true }), channel: `dm:${OUTSIDER}`, ask })
+      await send(h)
+      const call = h.requests[0]!.payload as WireEmailCall
+      expect(call.to).toEqual([OUTSIDER])
+      expect(call.outside).toBe(true)
+      expect(ask).not.toHaveBeenCalled()
+    })
+
+    it('copies an outsider only once they have written on the thread themselves', async () => {
+      const ext = mail({ cc: [{ address: BOB }, { address: OUTSIDER }, { address: NAMED }] })
+      const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: anyone, wrote: [ALICE, OUTSIDER] })
+      await send(h)
+      const call = h.requests[0]!.payload as WireEmailCall
+      // A name in a Cc header is the sender's own text: someone who never wrote is left off.
+      expect(call.cc).toEqual([BOB, OUTSIDER])
+      expect(call.outside).toBe(true)
+    })
+
+    it('keeps a members-only reply on the member budget even with an outsider left off', async () => {
+      const ext = mail({ cc: [{ address: BOB }, { address: NAMED }] })
+      const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: anyone })
+      await send(h)
+      const call = h.requests[0]!.payload as WireEmailCall
+      expect(call.cc).toEqual([BOB])
+      expect(call.outside).toBeUndefined()
+    })
+
+    it('copies no outsider while outside mail is refused, whoever wrote', async () => {
+      const closed: EmailMembersDeps['ask'] = async (agent, addresses) => ({
+        ...(await anyone(agent, addresses))!,
+        outsideSenders: 'refused'
+      })
+      const ext = mail({ cc: [{ address: OUTSIDER }] })
+      const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: closed, wrote: [OUTSIDER] })
+      await send(h)
+      expect((h.requests[0]!.payload as WireEmailCall).cc).toEqual([])
+    })
+
+    it('marks an outside sender’s group reply outside when the Control Plane cannot be asked', async () => {
+      const ext = mail({ from: { address: OUTSIDER }, outsider: true, cc: [{ address: BOB }] })
+      const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: async () => undefined })
+      await send(h)
+      const call = h.requests[0]!.payload as WireEmailCall
+      expect(call.cc).toEqual([])
+      expect(call.outside).toBe(true)
+    })
   })
 
   it('sends to the sender alone when the Control Plane cannot be asked, and the session says so', async () => {

@@ -6,11 +6,17 @@ export const EMAIL_MEMBERS_MAX = EMAIL_RECIPIENTS_MAX + 1
 
 const EmailMemberAddress = z.string().max(320).regex(EMAIL_ADDRESS_PATTERN)
 
+/** Who may write to an address (email-integration.md §4.1): members who may use the agent, or any authenticated sender. */
+export const EmailWhoMayWrite = z.enum(['members', 'anyone'])
+export type EmailWhoMayWrite = z.infer<typeof EmailWhoMayWrite>
+
 // The Email payload (email-integration.md §2): the agent's own address; the sending credential stays on the relay, so every send goes through it.
 export const IntegrationEmailConfig = z.object({
   address: EmailMemberAddress,
   egress: z.literal('relay'),
-  botId: z.string().uuid() // the bot row the relay authorizes a send against
+  botId: z.string().uuid(), // the bot row the relay authorizes a send against
+  // Absent reads as `members`, so a Control Plane that predates the setting never opens an address.
+  whoMayWrite: EmailWhoMayWrite.optional()
 })
 export type IntegrationEmailConfig = z.infer<typeof IntegrationEmailConfig>
 
@@ -28,8 +34,12 @@ export const EmailMember = z.object({
 })
 export type EmailMember = z.infer<typeof EmailMember>
 
-// `agent/email-members/ok` (C→D REP): the admitted addresses only; one left out is refused, and the reply never says why.
+// `agent/email-members/ok` (C→D REP): the members, the addresses no member holds, and whether those may open a session now; anything else is refused without a reason.
 export const AgentEmailMembersOk = z.object({
-  members: z.array(EmailMember).max(EMAIL_MEMBERS_MAX)
+  members: z.array(EmailMember).max(EMAIL_MEMBERS_MAX),
+  // Asked addresses no member of the organization holds, as the Control Plane read them (§4 step 3); absent from an older Control Plane.
+  outsiders: z.array(EmailMemberAddress).max(EMAIL_MEMBERS_MAX).optional(),
+  // Whether a message from one of `outsiders` may open a session now: Anyone, with somewhere for its session to go (§4.1); absent reads as refused.
+  outsideSenders: z.enum(['admitted', 'refused']).optional()
 })
 export type AgentEmailMembersOk = z.infer<typeof AgentEmailMembersOk>

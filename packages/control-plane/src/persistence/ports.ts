@@ -6655,6 +6655,8 @@ export interface IntegrationRecord {
   /** Feishu/Lark gateway region; undefined for non-feishu integrations (and for
    *  feishu rows created before the region column — treated as 'feishu'). */
   feishuRegion?: FeishuRegion
+  /** The console user who added it; absent once that user is deleted, or for a row no console user added. */
+  createdByUserId?: string
   createdAt: Date
 }
 
@@ -7551,6 +7553,10 @@ export interface UserRepo {
   memberByOidcSubject(orgId: string, oidcSubject: string): Promise<OrgMemberRecord | null>
   /** The one active human member whose own address this is for this organization (`recordEmailEvidence`), or null when none or several are; verified for another organization never matches. */
   memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null>
+  /** Every active human member whose own address this is for this organization, as `memberByVerifiedEmail` reads it; empty when nobody holds it. */
+  verifiedEmailHolders(orgId: string, email: string): Promise<OrgMemberRecord[]>
+  /** The user's active human membership of the organization, or null for anyone else. */
+  activeMember(orgId: string, userId: string): Promise<OrgMemberRecord | null>
 
   /**
    * Change one member's role under the organization owner-transition lock.

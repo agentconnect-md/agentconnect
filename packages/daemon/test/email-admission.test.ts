@@ -22,6 +22,17 @@ const AGENT_ID = '00000000-0000-4000-8000-0000000000a1'
 const ALICE = 'alice@corp.example.test'
 const BOB = 'bob@corp.example.test'
 const MALLORY = 'mallory@corp.example.test'
+const STRANGER = 'stranger@other.example.test'
+
+// The Control Plane's answer: these members, and every other asked address read as one no member holds when `outside` says so.
+const answer =
+  (members: (address: string) => boolean, outside?: 'admitted' | 'refused'): EmailMembersDeps['ask'] =>
+  async (_agent, addresses) => ({
+    members: addresses.filter(members).map((address) => ({ address, consoleUserId: `user-${address}` })),
+    ...(outside
+      ? { outsiders: addresses.filter((address) => !members(address)), outsideSenders: outside }
+      : { outsiders: [] })
+  })
 
 function mail(over: Partial<WireEmailAdapterExt> = {}): WireEmailAdapterExt {
   return {
@@ -190,15 +201,9 @@ describe('the member question (§4 step 3)', () => {
   }
 
   it('reuses an allowed answer for two minutes and a refusal for thirty seconds', async () => {
-    const {
-      members: m,
-      ask,
-      tick
-    } = members(async (_agent, addresses) =>
-      addresses.filter((a) => a === ALICE).map((address) => ({ address, consoleUserId: 'user-alice' }))
-    )
+    const { members: m, ask, tick } = members(answer((a) => a === ALICE))
     const first = await m.judge(AGENT_ID, [ALICE, BOB])
-    expect(first?.get(ALICE)).toEqual({ allowed: true, consoleUserId: 'user-alice' })
+    expect(first?.get(ALICE)).toEqual({ allowed: true, consoleUserId: `user-${ALICE}` })
     expect(first?.get(BOB)).toEqual({ allowed: false })
     expect(ask).toHaveBeenCalledTimes(1)
     tick(EMAIL_MEMBER_DENY_TTL_MS)
@@ -207,7 +212,28 @@ describe('the member question (§4 step 3)', () => {
     tick(EMAIL_MEMBER_ALLOW_TTL_MS)
     await m.judge(AGENT_ID, [ALICE])
     expect(ask).toHaveBeenLastCalledWith(AGENT_ID, [ALICE])
-    expect(await m.consoleUser(AGENT_ID, ALICE)).toBe('user-alice')
+    expect(await m.consoleUser(AGENT_ID, ALICE)).toBe(`user-${ALICE}`)
+  })
+
+  it('tells an address no member holds from a refused one, and reuses an admitted outsider like a member', async () => {
+    const {
+      members: m,
+      ask,
+      tick
+    } = members(async (_agent, addresses) => ({
+      members: [],
+      outsiders: addresses.filter((a) => a === STRANGER),
+      outsideSenders: 'admitted'
+    }))
+    const first = await m.judge(AGENT_ID, [STRANGER, BOB])
+    expect(first?.get(STRANGER)).toEqual({ allowed: false, outsider: { admitted: true } })
+    expect(first?.get(BOB)).toEqual({ allowed: false })
+    tick(EMAIL_MEMBER_DENY_TTL_MS)
+    await m.judge(AGENT_ID, [STRANGER, BOB])
+    expect(ask).toHaveBeenLastCalledWith(AGENT_ID, [BOB])
+    // An older Control Plane names no outsider: everyone it leaves out is refused.
+    const older = members(async () => ({ members: [] }))
+    expect((await older.members.judge(AGENT_ID, [STRANGER]))?.get(STRANGER)).toEqual({ allowed: false })
   })
 
   it('admits nobody when it cannot be asked, and caches nothing then', async () => {
@@ -222,7 +248,7 @@ describe('the member question (§4 step 3)', () => {
   })
 
   it('asks in batches no larger than the frame allows', async () => {
-    const { members: m, ask } = members(async () => [])
+    const { members: m, ask } = members(answer(() => false))
     const many = Array.from({ length: EMAIL_MEMBERS_MAX + 3 }, (_, i) => `p${i}@corp.example.test`)
     await m.judge(AGENT_ID, many)
     expect(ask.mock.calls.map(([, addresses]) => addresses.length)).toEqual([EMAIL_MEMBERS_MAX, 3])
@@ -230,18 +256,28 @@ describe('the member question (§4 step 3)', () => {
 })
 
 describe('admission on the relay path', () => {
-  function admitWith(answer: EmailMembersDeps['ask'], known: EmailPlacementIndex = index({})) {
-    const conn = { address: AGENT, ...known } as unknown as EmailConnection
-    const members = new EmailMembers({ ask: answer, now: () => 0 })
+  function admitWith(
+    ask: EmailMembersDeps['ask'],
+    opts: { known?: EmailPlacementIndex; whoMayWrite?: 'members' | 'anyone'; wrote?: string[] } = {}
+  ) {
+    const conn = {
+      address: AGENT,
+      ...(opts.known ?? index({})),
+      threadSenders: async () => new Set(opts.wrote ?? [])
+    } as unknown as EmailConnection
+    const members = new EmailMembers({ ask, now: () => 0 })
     const record = vi.fn(async () => true)
+    const placeExternal = vi.fn()
     const strategy = emailRelayIngress({
       connection: (id) => (id === 'int-email' ? conn : undefined),
       members,
+      placeExternal,
+      whoMayWrite: () => opts.whoMayWrite ?? 'members',
       store: () => ({ emailMessages: { record } as never }),
       now: () => 5,
       warn: () => {}
     })
-    return { strategy, record }
+    return { strategy, record, placeExternal }
   }
 
   function delivery(ext: WireEmailAdapterExt): { msg: RdMsgIm; normalized: NormalizedMessage } {
@@ -261,19 +297,17 @@ describe('admission on the relay path', () => {
   }
 
   it('refuses a sender who is not a member, and retries when the question could not be asked', async () => {
-    const refused = admitWith(async () => [])
+    const refused = admitWith(answer(() => false))
     const one = delivery(mail())
     expect(await refused.strategy.admit!(one.msg, one.normalized)).toBe('rejected')
     const offline = admitWith(async () => undefined)
     expect(await offline.strategy.admit!(one.msg, one.normalized)).toBe('retry')
-    const unbound = admitWith(async () => [])
+    const unbound = admitWith(answer(() => false))
     expect(await unbound.strategy.admit!({ ...one.msg, integrationId: 'other' }, one.normalized)).toBe('retry')
   })
 
   it('places a member’s group mail, names who the reply will not reach, and indexes it on admission', async () => {
-    const { strategy, record } = admitWith(async (_agent, addresses) =>
-      addresses.filter((a) => a !== MALLORY).map((address) => ({ address, consoleUserId: `user-${address}` }))
-    )
+    const { strategy, record, placeExternal } = admitWith(answer((a) => a !== MALLORY))
     const ext = mail({ cc: [{ address: BOB }, { address: MALLORY }], date: 'Thu, 19 Nov 2026 10:00:00 +0000' })
     const { msg, normalized } = delivery(ext)
     expect(await strategy.admit!(msg, normalized)).toBe('admit')
@@ -301,6 +335,84 @@ describe('admission on the relay path', () => {
     )
     const stored = JSON.parse((record.mock.calls[0] as unknown as [{ mail: string }])[0].mail)
     expect(stored.participants).toEqual([ALICE, BOB, MALLORY])
+    // Nobody answered that Mallory is outside, so the place is not reported external.
+    expect(placeExternal).not.toHaveBeenCalled()
+  })
+
+  describe('under Anyone (§4.1, §5.2)', () => {
+    it('admits an authenticated sender no member holds into their own direct conversation, an external place', async () => {
+      const { strategy, record, placeExternal } = admitWith(
+        answer(() => false, 'admitted'),
+        { whoMayWrite: 'anyone' }
+      )
+      const { msg, normalized } = delivery(mail({ from: { address: STRANGER } }))
+      expect(await strategy.admit!(msg, normalized)).toBe('admit')
+      expect(normalized.channel).toBe(`dm:${STRANGER}`)
+      expect(normalized.isDm).toBe(true)
+      expect(placeExternal).toHaveBeenCalledWith(['int-email'], `dm:${STRANGER}`, 'externalMember')
+      expect((normalized.adapterExt as { email: WireEmailAdapterExt }).email.outsider).toBe(true)
+      await strategy.onAdmitted!(msg, normalized, false, false)
+      const stored = JSON.parse((record.mock.calls[0] as unknown as [{ mail: string }])[0].mail)
+      expect(stored.outsider).toBe(true)
+    })
+
+    it('still recognizes a member as one, and drops an outsider mark the relay set', async () => {
+      const { strategy, placeExternal } = admitWith(
+        answer((a) => a === ALICE, 'admitted'),
+        { whoMayWrite: 'anyone' }
+      )
+      const { msg, normalized } = delivery(mail({ outsider: true }))
+      expect(await strategy.admit!(msg, normalized)).toBe('admit')
+      expect((normalized.adapterExt as { email: WireEmailAdapterExt }).email.outsider).toBeUndefined()
+      expect(placeExternal).not.toHaveBeenCalled()
+    })
+
+    it('refuses an outsider while the spec still says Members, or while their sessions have nowhere to go', async () => {
+      const stranger = delivery(mail({ from: { address: STRANGER } }))
+      const specClosed = admitWith(
+        answer(() => false, 'admitted'),
+        { whoMayWrite: 'members' }
+      )
+      expect(await specClosed.strategy.admit!(stranger.msg, stranger.normalized)).toBe('rejected')
+      const nowhere = admitWith(
+        answer(() => false, 'refused'),
+        { whoMayWrite: 'anyone' }
+      )
+      expect(await nowhere.strategy.admit!(stranger.msg, stranger.normalized)).toBe('rejected')
+    })
+
+    it('retries an unanswered question rather than reading the sender as outside', async () => {
+      const offline = admitWith(async () => undefined, { whoMayWrite: 'anyone' })
+      const { msg, normalized } = delivery(mail({ from: { address: STRANGER } }))
+      expect(await offline.strategy.admit!(msg, normalized)).toBe('retry')
+      expect(offline.placeExternal).not.toHaveBeenCalled()
+    })
+
+    it('makes a member’s thread with an outsider on it external, and tells the agent who the reply will not reach', async () => {
+      const { strategy, placeExternal } = admitWith(
+        answer((a) => a === ALICE || a === BOB, 'admitted'),
+        {
+          whoMayWrite: 'anyone',
+          wrote: ['someone@other.example.test']
+        }
+      )
+      const { msg, normalized } = delivery(mail({ cc: [{ address: BOB }, { address: STRANGER }] }))
+      expect(await strategy.admit!(msg, normalized)).toBe('admit')
+      expect(placeExternal).toHaveBeenCalledWith(['int-email'], 'group:new@corp.example.test', 'externalMember')
+      expect(normalized.text).toContain(
+        `[Your reply will not be sent to: ${STRANGER}. It goes to members of this organization and to people outside it who have written on this thread themselves. Say so in your reply if it matters.]`
+      )
+    })
+
+    it('leaves nobody off once the outsider on the thread has written on it', async () => {
+      const { strategy } = admitWith(
+        answer((a) => a === ALICE, 'admitted'),
+        { whoMayWrite: 'anyone', wrote: [STRANGER] }
+      )
+      const { msg, normalized } = delivery(mail({ cc: [{ address: STRANGER }] }))
+      expect(await strategy.admit!(msg, normalized)).toBe('admit')
+      expect(normalized.text).not.toContain('will not be sent')
+    })
   })
 
   it('notes recipients that could not be read', () => {

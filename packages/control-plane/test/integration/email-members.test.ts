@@ -4,13 +4,18 @@ import { describe, it, expect } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { seedAgent } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { PgAgentRepo, PgIntegrationRepo } from '../../src/persistence/index.js'
+import { PgAgentRepo, PgBotRepo, PgIntegrationRepo } from '../../src/persistence/index.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { resolveEmailMembers } from '../../src/orchestrator/emailMembers.js'
 
 const AT = new Date('2026-01-01T00:00:00Z')
 const users = () => new PgUserRepo(prisma)
-const deps = () => ({ agent: new PgAgentRepo(prisma), integration: new PgIntegrationRepo(prisma), users: users() })
+const deps = () => ({
+  agent: new PgAgentRepo(prisma),
+  integration: new PgIntegrationRepo(prisma),
+  bot: new PgBotRepo(prisma),
+  users: users()
+})
 
 /** A signed-in member of `orgId`, whose address a sign-in method verified unless `verified` is false. */
 async function member(email: string, opts: { orgId?: string; verified?: boolean } = {}): Promise<string> {
@@ -23,7 +28,13 @@ async function member(email: string, opts: { orgId?: string; verified?: boolean 
 
 /** An agent with an Email integration, or with none. */
 async function agentWithEmail(
-  opts: { visibility?: 'org' | 'restricted'; sharedWith?: string[]; email?: boolean } = {}
+  opts: {
+    visibility?: 'org' | 'restricted'
+    sharedWith?: string[]
+    email?: boolean
+    settings?: Record<string, string>
+    createdByUserId?: string
+  } = {}
 ): Promise<string> {
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, {
@@ -41,11 +52,20 @@ async function agentWithEmail(
       name: address,
       transport: 'http',
       externalAppId: address,
-      externalTenantId: '-'
+      externalTenantId: '-',
+      ...(opts.settings ? { platformConfig: opts.settings } : {})
     }
   })
   await prisma.integration.create({
-    data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, agentId, botId, platform: 'email', name: address }
+    data: {
+      id: randomUUID(),
+      orgId: DEFAULT_ORG_ID,
+      agentId,
+      botId,
+      platform: 'email',
+      name: address,
+      ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {})
+    }
   })
   return agentId
 }
@@ -59,7 +79,9 @@ describe('the member answer for an agent’s mail', () => {
     const agentId = await agentWithEmail()
 
     expect(await ask(agentId, 'alice@corp.example.test')).toEqual({
-      members: [{ address: 'alice@corp.example.test', consoleUserId: alice }]
+      members: [{ address: 'alice@corp.example.test', consoleUserId: alice }],
+      outsiders: [],
+      outsideSenders: 'refused'
     })
   })
 
@@ -68,9 +90,9 @@ describe('the member answer for an agent’s mail', () => {
     await member('bob@corp.example.test')
     const agentId = await agentWithEmail({ visibility: 'restricted', sharedWith: [alice] })
 
-    expect(await ask(agentId, 'bob@corp.example.test', 'alice@corp.example.test')).toEqual({
-      members: [{ address: 'alice@corp.example.test', consoleUserId: alice }]
-    })
+    expect((await ask(agentId, 'bob@corp.example.test', 'alice@corp.example.test')).members).toEqual([
+      { address: 'alice@corp.example.test', consoleUserId: alice }
+    ])
   })
 
   it('refuses another organization’s member, an unverified sign-in email, and an unknown address alike', async () => {
@@ -79,19 +101,56 @@ describe('the member answer for an agent’s mail', () => {
     await member('dave@corp.example.test', { verified: false })
     const agentId = await agentWithEmail()
 
+    // None of them is a member here, so each is an outsider; under Members that admits nobody.
     expect(
       await ask(agentId, 'carol@elsewhere.example.test', 'dave@corp.example.test', 'nobody@corp.example.test')
-    ).toEqual({ members: [] })
+    ).toEqual({
+      members: [],
+      outsiders: ['carol@elsewhere.example.test', 'dave@corp.example.test', 'nobody@corp.example.test'],
+      outsideSenders: 'refused'
+    })
+  })
+
+  it('under Anyone admits outsiders while the member who added the address is active, and refuses them after', async () => {
+    const adder = await member('adder@corp.example.test')
+    const agentId = await agentWithEmail({ settings: { whoMayWrite: 'anyone' }, createdByUserId: adder })
+    expect(await ask(agentId, 'stranger@other.example.test')).toEqual({
+      members: [],
+      outsiders: ['stranger@other.example.test'],
+      outsideSenders: 'admitted'
+    })
+
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: adder } },
+      data: { suspendedAt: AT }
+    })
+    expect((await ask(agentId, 'stranger@other.example.test')).outsideSenders).toBe('refused')
+  })
+
+  it('under Anyone recognizes a member the restricted agent’s list leaves out as a member', async () => {
+    const alice = await member('alice@corp.example.test')
+    const bob = await member('bob@corp.example.test')
+    const agentId = await agentWithEmail({
+      visibility: 'restricted',
+      sharedWith: [alice],
+      settings: { whoMayWrite: 'anyone', outsideSessions: 'org' }
+    })
+    expect(await ask(agentId, 'bob@corp.example.test')).toEqual({
+      members: [{ address: 'bob@corp.example.test', consoleUserId: bob }],
+      outsiders: [],
+      outsideSenders: 'admitted'
+    })
   })
 
   it('answers nobody for an agent that has no address, or that another organization asks about', async () => {
     await member('alice@corp.example.test')
     const bare = await agentWithEmail({ email: false })
-    expect(await ask(bare, 'alice@corp.example.test')).toEqual({ members: [] })
+    const nobody = { members: [], outsiders: [], outsideSenders: 'refused' }
+    expect(await ask(bare, 'alice@corp.example.test')).toEqual(nobody)
 
     const agentId = await agentWithEmail()
     expect(
       await resolveEmailMembers({ agentId, addresses: ['alice@corp.example.test'] }, deps(), `org-${randomUUID()}`)
-    ).toEqual({ members: [] })
+    ).toEqual(nobody)
   })
 })

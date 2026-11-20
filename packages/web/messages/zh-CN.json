@@ -7455,7 +7455,16 @@
       "copied": "已复制",
       "copyAddress": "复制地址",
       "remove": "将移除 <name></name>，它的地址会永久停用，不会再分配给任何人。",
-      "retired": "这个地址会永久停用，不会再分配给任何人。"
+      "retired": "这个地址会永久停用，不会再分配给任何人。",
+      "settings": {
+        "whoMayWrite": "谁可以来信",
+        "members": "成员",
+        "anyone": "任何人",
+        "outsideSessions": "外部来信的会话",
+        "organization": "组织",
+        "nobody": "无人：外部来信会被拒收",
+        "failed": "无法保存设置，请稍后重试。"
+      }
     }
   },
   "Computers": {

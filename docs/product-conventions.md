@@ -1139,6 +1139,31 @@ choice. The resolved classification is durable — it lives on the conversation 
 in daemon memory, so a daemon restart that re-reports the conversation provisionally as
 a channel cannot reset a later operator choice.
 
+## Mail from anyone
+
+An agent's email address takes mail from members by default: a sender whose address is
+a verified sign-in email of a member who may use the agent. An Agent editor may set the
+address's **Who may write** to **Anyone** in its integration panel. Then every sender
+whose mail is authenticated, is not automatic and is within the rate limit may write; a
+member is still recognized as one, and an address two members both hold is still
+refused. Authentication and the automatic-mail filter are never lifted. A sender the
+Control Plane could not be asked about is never admitted as an outside sender: the
+message is retried, as under Members.
+
+Under Anyone the editor also sets **Outside senders' sessions**: the organization, or one
+member, by default the member who added the address. While that member is not an active
+member of the organization, mail from outside is refused until an editor picks again, so
+a departed member's choice never turns into the organization's. A member's own mail is
+unaffected by either setting.
+
+A conversation with someone outside the organization on it is external, as on every other
+platform: it keeps a place layer of its own, never writes the shared layer, and a post
+into it from another conversation is a draft an internal member approves. A reply copies
+someone outside only when they have written on the thread themselves; a `Cc` naming
+anyone else is the sender's own text and reaches nobody, and the agent is told who was
+left off. Replies that reach someone outside draw on an outside budget, counted in
+recipients, apart from the replies members get.
+
 ## Assistant-mode places
 
 Assistant mode uses the same conversation defaults as any agent with the same visibility: an
@@ -2323,6 +2348,16 @@ administrator's configuration, rather than tell the user to change their Bot App
 A reconnect that proves a different provider account must not replace the linked identity;
 the console tells the user to reconnect with the linked account or unlink before switching.
 
+A mail session follows the same rules by its sender. A member's direct mail conversation
+is private to that member, and a thread with several people is private to the member
+whose message opened it. A session a sender outside the organization opens, under
+**Anyone** (see [Mail from anyone](#mail-from-anyone)), follows the address's **Outside
+senders' sessions** setting: visible to the organization, or private to the member it
+names. It applies only when the Control Plane answered that the sender is not a member;
+a session classified without that answer stays private to the sender's address, visible
+to no one, never the organization's. The setting is read when the session is classified,
+so changing it later moves no existing session.
+
 Making a session private hides its transcript immediately, but the agent's shared memory
 layer is read in every conversation, so the guarantee about memory is narrower and must be
 stated plainly wherever the change is offered: capture into that layer stops once the owning
@@ -2343,6 +2378,10 @@ the most specific one. Which one depends on who can see the conversation:
 | A public channel the product can confirm holds only the organization's members: today a Slack public channel not shared with another organization and with no known guest                                                             | the shared layer                         | the shared layer   |
 | A 1:1 DM, or a webchat or console conversation                                                                                                                                                                                        | the shared layer and that person's layer | the person's layer |
 | Anything else: a private channel, a group DM, a conversation with people from outside (shared with another organization, or with a known guest), and any group the platform cannot confirm (Telegram, Discord and Lark/Feishu groups) | the shared layer and that place's layer  | the place's layer  |
+
+A mail address's direct conversation with a sender outside the organization has no person
+layer to read, so it keeps a place layer of its own, like any conversation with people
+from outside; a member's direct mail conversation uses that member's layer.
 
 A person's layer is keyed by their console account when they linked one, so their DMs on
 every linked platform and their console conversations share one layer; otherwise it is

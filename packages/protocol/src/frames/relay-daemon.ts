@@ -1096,7 +1096,9 @@ export const WireEmailAdapterExt = z.object({
     .array(z.object({ name: emailHeaderText(256), type: emailHeaderText(128), size: z.number().int().nonnegative() }))
     .max(EMAIL_ATTACHMENTS_MAX),
   /** The relay's ticket for the thread, which a reply is sent with; never set by the normalizer. */
-  ticket: WireEmailTicket.optional()
+  ticket: WireEmailTicket.optional(),
+  /** Set by the daemon when it admits the sender as someone outside the organization (§4.1); never by the relay. */
+  outsider: z.literal(true).optional()
 })
 export type WireEmailAdapterExt = z.infer<typeof WireEmailAdapterExt>
 
@@ -1119,7 +1121,9 @@ export const WireEmailCall = z.discriminatedUnion('op', [
     /** The answered mail's chain with its own ID appended, oldest first. */
     references: z.array(EmailMessageId).max(EMAIL_REFERENCES_MAX),
     text: z.string().min(1).max(EMAIL_SEND_TEXT_MAX),
-    html: z.string().min(1).max(EMAIL_SEND_HTML_MAX)
+    html: z.string().min(1).max(EMAIL_SEND_HTML_MAX),
+    /** The reply reaches someone outside the organization, so it draws on the outside budget, not the member reply budgets (§6.4). */
+    outside: z.boolean().optional()
   })
 ])
 export type WireEmailCall = z.infer<typeof WireEmailCall>

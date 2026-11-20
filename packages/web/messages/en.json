@@ -7455,7 +7455,16 @@
       "copied": "Copied",
       "copyAddress": "Copy address",
       "remove": "<name></name> will be removed, and its address is retired for good: it is never issued again.",
-      "retired": "The address is retired for good: it is never issued again."
+      "retired": "The address is retired for good: it is never issued again.",
+      "settings": {
+        "whoMayWrite": "Who may write",
+        "members": "Members",
+        "anyone": "Anyone",
+        "outsideSessions": "Outside senders' sessions",
+        "organization": "Organization",
+        "nobody": "Nobody: outside mail is refused",
+        "failed": "The settings could not be saved. Try again in a moment."
+      }
     }
   },
   "Computers": {

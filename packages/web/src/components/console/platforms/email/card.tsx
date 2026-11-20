@@ -6,6 +6,7 @@ import type { IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebAgentIntegrationCardFacet, WebBotSettingsFragments } from '../contract'
 import { AddressField, CopyAddressButton } from './fields'
+import { EmailAddressSettings } from './settings'
 
 /** The stored address is the bot's `externalAppId`; the row's name is the same address, for a bot not yet read. */
 export function emailAddressOf(bot: Pick<BotDto, 'externalAppId' | 'name'> | undefined, fallback: string): string {
@@ -24,9 +25,9 @@ function RemoveBody({ integration }: { integration: IntegrationRow }) {
   return t.rich('remove', { name: () => <span className="mono text-(--text-primary)">{integration.name}</span> })
 }
 
-/** Mail lists no conversations (each sender is admitted by the member question), so the card is its header alone. */
-function Body() {
-  return null
+/** Mail lists no conversations (each sender is admitted by the member question), so the card holds the address's settings alone. */
+function Body({ integration, padX }: { integration: IntegrationRow; padX: number }) {
+  return <EmailAddressSettings integration={integration} padX={padX} />
 }
 
 export const emailAgentCard: WebAgentIntegrationCardFacet = { HeaderActions, RemoveBody, Body }

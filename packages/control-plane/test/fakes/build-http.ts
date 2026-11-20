@@ -155,6 +155,7 @@ import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
 import { createWeComCpProvider, type WeComDial } from '../../src/platforms/wecom/provider.js'
 import { weComCredentialRoutes } from '../../src/platforms/wecom/routes.js'
 import { createEmailCpProvider } from '../../src/platforms/email/provider.js'
+import { emailSettingsRoutes } from '../../src/platforms/email/settings-routes.js'
 import { emailAddressRoutes } from '../../src/platforms/email/routes.js'
 import { TENANTLESS_SENTINEL } from '../../src/persistence/ports.js'
 import { weChatLoginRoutes } from '../../src/platforms/wechat/routes.js'
@@ -1075,11 +1076,15 @@ export function buildHttpApp(
       ...(platformStubs.emailMailDomain ? { mailDomain: platformStubs.emailMailDomain } : {}),
       addresses: emailAddresses,
       memberByVerifiedEmail: (orgId, email) => deps.repos.user.memberByVerifiedEmail(orgId, email),
+      verifiedEmailHolders: (orgId, email) => deps.repos.user.verifiedEmailHolders(orgId, email),
+      activeMember: (orgId, userId) => deps.repos.user.activeMember(orgId, userId),
+      integrationsForBot: (botId) => deps.repos.integration.listForBot(botId as never),
       installRoutes: [
         emailAddressRoutes({
           ...(platformStubs.emailMailDomain ? { mailDomain: platformStubs.emailMailDomain } : {}),
           addresses: emailAddresses
-        })
+        }),
+        emailSettingsRoutes(deps)
       ]
     })
   ])

@@ -56,6 +56,8 @@ export interface SessionClassificationInput {
   dmOwnerUserId?: string | null
   /** Present ⇒ the platform gives a group conversation to the member whose message opened it: that member, or null when the sender matched no one. */
   groupOwnerUserId?: string | null
+  /** The platform answered that a DM's or group conversation's sender is outside the organization, and gives such sessions to the organization. */
+  outsiderToOrg?: boolean
 }
 
 /** A settled classification, or the marker that the row must inherit (§4.5). */
@@ -89,6 +91,7 @@ function imOwnerIdentity(input: SessionClassificationInput): string | null {
  * | IM DM, sender bound at install| `private`       | `user:<bound member>`            |
  * | IM DM, platform names people  | `private`       | `<platform>:<scope>:<uid>`       |
  * | IM DM, platform cannot        | `org`           | `<platform>:<scope>:<uid>`       |
+ * | IM DM / group DM, outsider to org| `org`         | `<platform>:<scope>:<uid>`       |
  * | IM group DM owned by its opener| `private`      | `user:<opening member>`          |
  * | IM group DM / channel / absent| `org`           | `<platform>:<scope>:<uid>`       |
  */
@@ -137,6 +140,9 @@ export function classifySession(input: SessionClassificationInput): SessionClass
 
   // IM: a group DM is `org` like a channel, since one owner cannot cover its participants; the owner stays for §4.3.
   const ownerIdentity = imOwnerIdentity(input)
+  // A sender the platform answered is outside the organization, where its setting gives such conversations to the organization.
+  if (input.outsiderToOrg && (input.conversationKind === 'dm' || input.conversationKind === 'group_dm'))
+    return { visibility: 'org', ownerIdentity, source: 'default' }
   // A group conversation its platform gives to its opener is that member's; an unmatched opener keeps it private to their chat identity, never the organization's.
   if (input.conversationKind === 'group_dm' && input.groupOwnerUserId !== undefined) {
     const owner = input.groupOwnerUserId ? `user:${input.groupOwnerUserId}` : ownerIdentity

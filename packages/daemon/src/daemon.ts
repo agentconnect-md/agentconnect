@@ -2261,7 +2261,7 @@ export class Daemon {
       const cp = this.cpClient
       if (cp?.supportsServerFeature?.(EMAIL_MEMBERS_V1_FEATURE) !== true) return undefined
       const orgId = this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
-      return (await cp.emailMembers({ agentId, addresses }, orgId)).members
+      return await cp.emailMembers({ agentId, addresses }, orgId)
     },
     now: () => this.clock.now()
   })
@@ -17800,6 +17800,11 @@ export class Daemon {
     emailPlatformModule({
       connection: (integrationId) => this.emailConnByIntegration.get(integrationId),
       members: this.emailMembers,
+      placeExternal: (integrationIds, channel, reason) => this.placeTrust.detected(integrationIds, channel, reason),
+      whoMayWrite: (integrationId) => {
+        const int = this.integrationConfigById(integrationId)
+        return (int && platformIntegrationConfig('email', int)?.whoMayWrite) ?? 'members'
+      },
       store: () => this.store,
       now: () => this.clock.now(),
       warn: (message) => this.log.warn(message)

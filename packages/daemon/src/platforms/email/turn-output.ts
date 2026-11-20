@@ -9,8 +9,8 @@ import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-li
 import type { EmailMessages } from '../../store/email-messages.js'
 import type { TurnOutputContext, TurnOutputSurface } from '../turn-output.js'
 import type { EmailConnection, EmailSendResult, EmailStoredSent } from './connection.js'
-import type { EmailMembers } from './members.js'
-import { emailExtOf } from './module.js'
+import { isAdmittedOutsider, isOutsider, type EmailMembers } from './members.js'
+import { emailCopyable, emailExtOf } from './module.js'
 import { emailReplyBodies, emailReplyReferences, emailReplySubject } from './render.js'
 
 export type EmailAction =
@@ -91,23 +91,44 @@ export interface EmailTurnState {
   sent?: boolean
 }
 
-/** Who a reply goes to (§6.1): the sender, and in a group every other address the member question allows, asked in one batch. */
+/** Who a reply goes to (§6.1): the sender, and in a group every other address the member question allows, asked in one batch; `outside` when it reaches someone outside the organization. */
 export async function emailReplyAudience(
   members: EmailMembers,
   agentId: string,
   answered: WireEmailAdapterExt,
   agentAddress: string,
-  group: boolean
-): Promise<{ participants: string[]; to: string[]; cc: string[]; leftOff: string[]; unchecked: boolean }> {
+  group: boolean,
+  wrote: () => Promise<ReadonlySet<string>>
+): Promise<{
+  participants: string[]
+  to: string[]
+  cc: string[]
+  leftOff: string[]
+  unchecked: boolean
+  outside: boolean
+}> {
   const participants = emailParticipants(answered, agentAddress)
+  const sender = answered.from.address
   const others = participants.slice(1)
-  const base = { participants, to: [answered.from.address] }
-  if (!group || others.length === 0) return { ...base, cc: [], leftOff: [], unchecked: false }
-  const verdicts = await members.judge(agentId, others)
+  const base = { participants, to: [sender] }
+  // A reply to the sender alone never asks: how the sender was admitted says whether they are outside.
+  const admittedOutside = answered.outsider === true
+  if (!group || others.length === 0) return { ...base, cc: [], leftOff: [], unchecked: false, outside: admittedOutside }
+  const verdicts = await members.judge(agentId, participants)
+  const senderOutside = admittedOutside || (verdicts ? isOutsider(verdicts.get(sender)) : false)
   // The Control Plane could not be asked: the reply goes to the sender alone, and the session says so.
-  if (!verdicts) return { ...base, cc: [], leftOff: others, unchecked: true }
-  const cc = others.filter((address) => verdicts.get(address)?.allowed)
-  return { ...base, cc, leftOff: others.filter((address) => !cc.includes(address)), unchecked: false }
+  if (!verdicts) return { ...base, cc: [], leftOff: others, unchecked: true, outside: senderOutside }
+  const senders = others.some((address) => isAdmittedOutsider(verdicts.get(address)))
+    ? await wrote()
+    : new Set<string>()
+  const cc = others.filter((address) => emailCopyable(verdicts.get(address), address, senders))
+  return {
+    ...base,
+    cc,
+    leftOff: others.filter((address) => !cc.includes(address)),
+    unchecked: false,
+    outside: senderOutside || cc.some((address) => isOutsider(verdicts.get(address)))
+  }
 }
 
 /** The session's note on a reply that was not delivered, or went to fewer people than the thread holds; undefined when there is nothing to say. */
@@ -158,7 +179,8 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
       agentId,
       answered,
       conn.address,
-      channel.startsWith('group:')
+      channel.startsWith('group:'),
+      () => conn.threadSenders(channel, thread)
     )
     audience = resolved
     unchecked = resolved.unchecked
@@ -175,7 +197,9 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
       inReplyTo: answered.messageId,
       references: emailReplyReferences(answered),
       text: bodies.text,
-      html: bodies.html
+      html: bodies.html,
+      // A reply into an outside sender's thread spends the outside budget, not members' replies (§6.4).
+      ...(resolved.outside ? { outside: true } : {})
     }
     result = await conn.send(call)
   }

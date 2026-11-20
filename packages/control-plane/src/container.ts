@@ -315,7 +315,7 @@ import { OrgSsoSessionRule } from './org-sso/session.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
-import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
+import { AgentId, BotId, DaemonId, HookId, OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
@@ -425,6 +425,7 @@ import { createWeComCpProvider } from './platforms/wecom/provider.js'
 import { weComCredentialRoutes } from './platforms/wecom/routes.js'
 import { createEmailCpProvider } from './platforms/email/provider.js'
 import { emailAddressRoutes } from './platforms/email/routes.js'
+import { emailSettingsRoutes } from './platforms/email/settings-routes.js'
 import { emailRelayDeployment, resolveEmailDeployment } from './platforms/email/deployment.js'
 import { weChatLoginRoutes } from './platforms/wechat/routes.js'
 import { WeChatLoginService } from './platforms/wechat/login.js'
@@ -3569,11 +3570,15 @@ export function buildContainer(
       ...(emailDeployment ? { mailDomain: emailDeployment.mailDomain } : {}),
       addresses: repos.emailAddress,
       memberByVerifiedEmail: (orgId, email) => repos.user.memberByVerifiedEmail(orgId, email),
+      verifiedEmailHolders: (orgId, email) => repos.user.verifiedEmailHolders(orgId, email),
+      activeMember: (orgId, userId) => repos.user.activeMember(orgId, userId),
+      integrationsForBot: (botId) => repos.integration.listForBot(BotId(botId)),
       installRoutes: [
         emailAddressRoutes({
           ...(emailDeployment ? { mailDomain: emailDeployment.mailDomain } : {}),
           addresses: repos.emailAddress
-        })
+        }),
+        emailSettingsRoutes(httpDeps)
       ]
     })
   ])
@@ -3714,7 +3719,7 @@ export function buildContainer(
     emailMembers: (req, expectedOrgId) =>
       resolveEmailMembers(
         req,
-        { agent: repos.agent, integration: repos.integration, users: repos.user },
+        { agent: repos.agent, integration: repos.integration, bot: repos.bot, users: repos.user },
         expectedOrgId
       ),
     // The console's own session visibility for whoever asks a cross-platform read; lazy over the HTTP deps built above.

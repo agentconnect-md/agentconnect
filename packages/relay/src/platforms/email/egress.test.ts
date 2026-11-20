@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { WireEmailCall } from '@agentconnect.md/protocol'
-import { EMAIL_SENDS_PER_BOT_PER_DAY } from './counters.js'
+import { EMAIL_OUTSIDE_RECIPIENTS_PER_BOT_PER_DAY, EMAIL_SENDS_PER_BOT_PER_DAY } from './counters.js'
 import { EmailRelayEgress, emailSendRequest, type EmailSender } from './egress.js'
 import { mintEmailTicket } from './ticket.js'
 import { AGENT_ADDRESS, COLLEAGUE, EMAIL_CONFIG, MEMBER, NOW } from '../../../test/fixtures/email-messages.js'
@@ -160,6 +160,20 @@ describe('email relay egress', () => {
     expect(received).toHaveLength(EMAIL_SENDS_PER_BOT_PER_DAY)
     expect(await e.send(EMAIL_CONFIG, SENDER, call())).toEqual({ outcome: 'refused', reason: 'budget_bot' })
     expect(received).toHaveLength(EMAIL_SENDS_PER_BOT_PER_DAY)
+  })
+
+  it('counts a reply that reaches outside the organization against the outside budget, by recipient', async () => {
+    const e = egress()
+    // Two recipients a send, so the outside budget is spent halfway through it in sends.
+    for (let i = 0; i < EMAIL_OUTSIDE_RECIPIENTS_PER_BOT_PER_DAY / 2; i += 1)
+      expect((await e.send(EMAIL_CONFIG, SENDER, call({ outside: true }))).outcome).toBe('ok')
+    expect(await e.send(EMAIL_CONFIG, SENDER, call({ outside: true }))).toEqual({
+      outcome: 'refused',
+      reason: 'budget_outside_bot'
+    })
+    // Members' replies were never drawn on.
+    expect((await e.send(EMAIL_CONFIG, SENDER, call())).outcome).toBe('ok')
+    expect(received).toHaveLength(EMAIL_OUTSIDE_RECIPIENTS_PER_BOT_PER_DAY / 2 + 1)
   })
 
   it("refuses past the operator's deployment figure, and gives the place back when the provider refused the send", async () => {

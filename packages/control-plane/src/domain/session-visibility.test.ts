@@ -161,6 +161,24 @@ describe('classifySession — the §4.2 default rules', () => {
     })
   })
 
+  it('gives an outside sender’s DM or group conversation to the organization only where the platform says so', () => {
+    const mail = {
+      platform: 'email',
+      transportScope: 'mail.example.test',
+      triggeredBy: 'stranger@other.example.test',
+      outsiderToOrg: true
+    }
+    const org = { visibility: 'org', ownerIdentity: 'email:mail.example.test:stranger@other.example.test' }
+    expect(classifySession({ ...mail, conversationKind: 'dm' })).toMatchObject(org)
+    expect(classifySession({ ...mail, conversationKind: 'group_dm' })).toMatchObject(org)
+    // An A2A child still inherits, and automation keeps its own rule.
+    expect(classifySession({ ...mail, conversationKind: 'dm', parentSessionId: 'p' })).toEqual({ inherit: true })
+    expect(classifySession({ ...mail, conversationKind: 'dm', triggeredBy: 'cron:1' })).toMatchObject({
+      visibility: 'org',
+      ownerIdentity: null
+    })
+  })
+
   it('classifies an IM DM org, still recording its sender, where the platform cannot name people', () => {
     const dm = {
       conversationKind: 'dm' as const,

@@ -234,6 +234,12 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
     return row ? storedMailOf(row) : undefined
   }
 
+  /** The addresses that have written on a thread of a conversation as admitted senders, which an outside Cc is bounded by (§6.1). */
+  async threadSenders(channel: string, thread: string): Promise<Set<string>> {
+    const rows = await this.index.receivedInThread(this.address, channel, thread)
+    return new Set(rows.flatMap((row) => storedMailOf(row)?.from.address ?? []))
+  }
+
   // ── Layer-1 reads ──
 
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {

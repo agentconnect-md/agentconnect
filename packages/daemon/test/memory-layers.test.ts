@@ -114,6 +114,17 @@ describe('which layer a place uses', () => {
     })
   })
 
+  it('gives a DM reported held by someone from outside a place layer of its own, never a person layer', async () => {
+    const { layers: l } = layers({ external: ['dm:stranger@other.example.test'] })
+    const outside = place({ channel: 'dm:stranger@other.example.test', kinds: ['dm'], speaker: 'stranger' })
+    expect(await l.audienceOf(outside)).toEqual({ layer: 'place', external: true, confirmed: true })
+    const resolved = await l.resolve(outside)
+    expect(resolved.layer).toBe('place')
+    expect(resolved.scope.personKey).toBeUndefined()
+    // Every other DM stays its person's.
+    expect((await l.resolve(place({ channel: 'D1', kinds: ['dm'], speaker: 'U1' }))).layer).toBe('person')
+  })
+
   it('gives two Telegram groups a place layer each, so they never read each other', async () => {
     const { layers: l } = layers({ described: { '-1001': PUBLIC, '-1002': PUBLIC } })
     const a = await l.resolve(place({ platform: 'telegram', channel: '-1001' }))
