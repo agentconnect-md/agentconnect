@@ -3183,7 +3183,8 @@ export default function SessionDetailView() {
     : speakers.size === 0 && soleAuthor === session.user
       ? asCron(session.user)
       : null
-  const pgEmpty = isPg && session.steps.length === 0 && !pgBusy
+  // A playground read through its session's rows has retired its steps, not started empty.
+  const pgEmpty = isPg && !pgOnRows && session.steps.length === 0 && !pgBusy
   // "No messages" only when nothing is rendered — a resumed webchat turn folds into
   // `turns`, so once you've sent one the empty card gives way to the transcript.
   const transcriptEmpty =
