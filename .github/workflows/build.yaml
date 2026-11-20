@@ -644,7 +644,8 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.build_target }}
-          platforms: ${{ matrix.platforms }}
+          # The runner's image store cannot load a multi-platform result, so the daemon verifies its amd64 half; Push publishes both.
+          platforms: ${{ matrix.verify == 'daemon' && 'linux/amd64' || matrix.platforms }}
           push: ${{ matrix.verify != 'daemon' }}
           load: ${{ matrix.verify == 'daemon' }}
           tags: ${{ matrix.tags }}
