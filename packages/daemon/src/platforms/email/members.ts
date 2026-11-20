@@ -1,5 +1,5 @@
-// The member question (email-integration.md §4 step 3): which addresses are members who may write to an agent, asked of the Control Plane in one batch and cached briefly; fails closed.
-import { EMAIL_MEMBERS_MAX, type EmailMember } from '@agentconnect.md/protocol'
+// The member question (email-integration.md §4 step 3, §4.1): which addresses are members, which no member holds, asked of the Control Plane in one batch and cached briefly; fails closed.
+import { EMAIL_MEMBERS_MAX, type AgentEmailMembersOk } from '@agentconnect.md/protocol'
 
 /** How long an admitted address is reused before the Control Plane is asked again. */
 export const EMAIL_MEMBER_ALLOW_TTL_MS = 120_000
@@ -10,13 +10,24 @@ export const EMAIL_MEMBER_DENY_TTL_MS = 30_000
 /** Expired answers are dropped once this many are held. */
 const SWEEP_AT = 1024
 
-/** One address's answer: the console user it is the verified sign-in email of, or a refusal that never says why. */
-export type EmailMemberVerdict = { allowed: true; consoleUserId: string } | { allowed: false }
+/** One address's answer: a member with their console user, or a refusal; `outsider` says the Control Plane answered that no member holds the address, and whether such a sender may open a session now. */
+export type EmailMemberVerdict =
+  { allowed: true; consoleUserId: string } | { allowed: false; outsider?: { admitted: boolean } }
 
 export interface EmailMembersDeps {
   /** Ask the Control Plane about these addresses of one agent; undefined when it cannot be asked. */
-  ask(agentId: string, addresses: string[]): Promise<readonly EmailMember[] | undefined>
+  ask(agentId: string, addresses: string[]): Promise<AgentEmailMembersOk | undefined>
   now(): number
+}
+
+/** Whether the Control Plane answered that no member of the organization holds the address. */
+export function isOutsider(verdict: EmailMemberVerdict | undefined): boolean {
+  return verdict?.allowed === false && verdict.outsider !== undefined
+}
+
+/** Whether the address is outside the organization and may write to it now, under Anyone (§4.1). */
+export function isAdmittedOutsider(verdict: EmailMemberVerdict | undefined): boolean {
+  return verdict?.allowed === false && verdict.outsider?.admitted === true
 }
 
 export class EmailMembers {
@@ -36,20 +47,27 @@ export class EmailMembers {
     }
     for (let at = 0; at < unknown.length; at += EMAIL_MEMBERS_MAX) {
       const batch = unknown.slice(at, at + EMAIL_MEMBERS_MAX)
-      let members: readonly EmailMember[] | undefined
+      let answer: AgentEmailMembersOk | undefined
       try {
-        members = await this.deps.ask(agentId, batch)
+        answer = await this.deps.ask(agentId, batch)
       } catch {
-        members = undefined
+        answer = undefined
       }
-      if (!members) return undefined
-      const admitted = new Map(members.map((member) => [member.address, member.consoleUserId]))
+      if (!answer) return undefined
+      const admitted = new Map(answer.members.map((member) => [member.address, member.consoleUserId]))
+      const outsiders = new Set(answer.outsiders ?? [])
+      const outsidersAdmitted = answer.outsideSenders === 'admitted'
       if (this.verdicts.size >= SWEEP_AT) this.sweep()
       for (const address of batch) {
         // An address the answer leaves out is refused; one it names that was never asked about is ignored.
         const consoleUserId = admitted.get(address)
-        const verdict: EmailMemberVerdict = consoleUserId ? { allowed: true, consoleUserId } : { allowed: false }
-        const ttl = verdict.allowed ? EMAIL_MEMBER_ALLOW_TTL_MS : EMAIL_MEMBER_DENY_TTL_MS
+        const verdict: EmailMemberVerdict = consoleUserId
+          ? { allowed: true, consoleUserId }
+          : outsiders.has(address)
+            ? { allowed: false, outsider: { admitted: outsidersAdmitted } }
+            : { allowed: false }
+        const reused = verdict.allowed || (verdict.outsider?.admitted ?? false)
+        const ttl = reused ? EMAIL_MEMBER_ALLOW_TTL_MS : EMAIL_MEMBER_DENY_TTL_MS
         this.verdicts.set(`${agentId}\x00${address}`, { verdict, expiresAt: this.deps.now() + ttl })
         out.set(address, verdict)
       }

@@ -131,8 +131,12 @@ describe('the Email provider (email-integration.md §3)', () => {
     expect(IntegrationEmailConfig.parse(config)).toEqual({
       address: `helper@${DOMAIN}`,
       egress: 'relay',
-      botId: BOT_ID
+      botId: BOT_ID,
+      whoMayWrite: 'members'
     })
+    const open = { ...bot(`helper@${DOMAIN}`), platformConfig: { whoMayWrite: 'anyone' } }
+    const opened = await provider.projectIntegrationConfig(integration, open, core, emailSecrets())
+    expect(IntegrationEmailConfig.parse(opened).whoMayWrite).toBe('anyone')
     expect(JSON.stringify(config)).not.toContain(EMAIL_SECRET_MARKER)
     expect(provider.requiredDaemonFeatures!(config)).toEqual([EMAIL_V1_FEATURE])
     expect(await provider.projectBotAssign!(bot(`helper@${DOMAIN}`), emailSecrets())).toEqual({

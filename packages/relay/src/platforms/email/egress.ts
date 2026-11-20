@@ -86,7 +86,9 @@ export class EmailRelayEgress {
       {
         botId: sender.botId,
         organization: sender.organization,
-        ...(config.dailySendLimit !== undefined ? { deploymentLimit: config.dailySendLimit } : {})
+        ...(config.dailySendLimit !== undefined ? { deploymentLimit: config.dailySendLimit } : {}),
+        // A reply that reaches someone outside the organization spends the outside budget, never members' replies (§6.4).
+        ...(call.outside ? { outside: { recipients: new Set([...call.to, ...call.cc]).size } } : {})
       },
       this.now()
     )

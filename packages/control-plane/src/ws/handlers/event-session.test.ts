@@ -550,19 +550,32 @@ describe('handleEventSession', () => {
     const integration = { id: INTEGRATION_ID, agentId: AGENT_ID, botId: BOT_ID, orgId: ORG_ID, platform: 'email' }
     async function classifyMail(
       kind: 'dm' | 'group_dm',
-      memberByVerifiedEmail: (orgId: string, email: string) => Promise<{ userId: string } | null>
+      memberByVerifiedEmail: (orgId: string, email: string) => Promise<{ userId: string } | null>,
+      outside: {
+        settings?: Record<string, string>
+        holders?: (orgId: string, email: string) => Promise<unknown[]>
+        active?: string[]
+      } = {}
     ) {
       const recordMilestone = vi.fn().mockResolvedValue(recorded())
       const deps = scopedDeps({
         platforms: buildCpPlatformRegistry([
           createEmailCpProvider({
             mailDomain: 'mail.example.test',
-            memberByVerifiedEmail: memberByVerifiedEmail as never
+            memberByVerifiedEmail: memberByVerifiedEmail as never,
+            verifiedEmailHolders: (outside.holders ??
+              (async (orgId: string, email: string) => {
+                const member = await memberByVerifiedEmail(orgId, email)
+                return member ? [member] : []
+              })) as never,
+            activeMember: (async (_orgId: string, userId: string) =>
+              (outside.active ?? ['member-adder']).includes(userId) ? { userId } : null) as never,
+            integrationsForBot: async () => [{ ...integration, createdByUserId: 'member-adder' }] as never
           })
         ]),
         session: { recordMilestone, getExternalAccessPolicy: vi.fn(async () => null) },
         integration: { listForAgent: vi.fn(async () => [integration]) },
-        bot: { get: vi.fn().mockResolvedValue(bot) },
+        bot: { get: vi.fn().mockResolvedValue({ ...bot, platformConfig: outside.settings ?? null }) },
         events: { publish: vi.fn() }
       })
       const frame = eventSessionFrame()
@@ -599,6 +612,38 @@ describe('handleEventSession', () => {
       }
       expect(await classifyMail('dm', failing)).toMatchObject({ visibility: 'private', ownerIdentity: tuple })
       expect(await classifyMail('group_dm', failing)).toMatchObject({ visibility: 'private', ownerIdentity: tuple })
+    })
+
+    describe('under Anyone, an outside sender’s session follows the address’s setting (email-integration.md §5.3)', () => {
+      const stranger = async () => null
+      const picked = { visibility: 'private', ownerIdentity: 'user:member-adder', source: 'default' }
+
+      it('is private to the member who added the address by default, direct or group', async () => {
+        const settings = { whoMayWrite: 'anyone' }
+        expect(await classifyMail('dm', stranger, { settings })).toEqual(picked)
+        expect(await classifyMail('group_dm', stranger, { settings })).toEqual(picked)
+      })
+
+      it('is the organization’s when the setting says so', async () => {
+        const settings = { whoMayWrite: 'anyone', outsideSessions: 'org' }
+        const org = { visibility: 'org', ownerIdentity: tuple, source: 'default' }
+        expect(await classifyMail('dm', stranger, { settings })).toEqual(org)
+        expect(await classifyMail('group_dm', stranger, { settings })).toEqual(org)
+      })
+
+      it('stays private to the address under Members, for a departed pick, or when no answer says it is outside', async () => {
+        const unowned = { visibility: 'private', ownerIdentity: tuple, source: 'default' }
+        expect(await classifyMail('dm', stranger, { settings: { whoMayWrite: 'members' } })).toEqual(unowned)
+        expect(await classifyMail('dm', stranger, { settings: { whoMayWrite: 'anyone' }, active: [] })).toEqual(unowned)
+        const failing = async () => {
+          throw new Error('db unavailable')
+        }
+        const org = { whoMayWrite: 'anyone', outsideSessions: 'org' }
+        expect(await classifyMail('dm', stranger, { settings: org, holders: failing })).toEqual(unowned)
+        // Two members hold the address: it is nobody's, and not outside either.
+        const two = async () => [{ userId: 'a' }, { userId: 'b' }]
+        expect(await classifyMail('group_dm', stranger, { settings: org, holders: two })).toEqual(unowned)
+      })
     })
   })
 

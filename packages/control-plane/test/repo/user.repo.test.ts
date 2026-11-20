@@ -143,6 +143,21 @@ describe('PgUserRepo verified address', () => {
 
     await repo().recordEmailEvidence(second, social('shared@example.test'), AT)
     expect(await matches(DEFAULT_ORG_ID, 'shared@example.test')).toBe(false)
+    // Both still hold it, which tells an address nobody holds from one several do.
+    const holders = await repo().verifiedEmailHolders(DEFAULT_ORG_ID, 'shared@example.test')
+    expect(holders.map((holder) => holder.userId).sort()).toEqual([first, second].sort())
+    expect(await repo().verifiedEmailHolders(DEFAULT_ORG_ID, 'nobody@example.test')).toEqual([])
+  })
+
+  it('reads a user’s membership as active only while it is not suspended, and only in its organization', async () => {
+    const userId = await member('active@example.test')
+    expect(await repo().activeMember(DEFAULT_ORG_ID, userId)).toMatchObject({ userId })
+    expect(await repo().activeMember(await otherOrg(), userId)).toBeNull()
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId } },
+      data: { suspendedAt: AT }
+    })
+    expect(await repo().activeMember(DEFAULT_ORG_ID, userId)).toBeNull()
   })
 
   it('keeps the first mark while the address stays vouched for, and drops it when it no longer is', async () => {

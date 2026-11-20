@@ -65,6 +65,9 @@ export const consoleKeys = {
   platformOffers: (orgId: string | null | undefined) => consoleKey(orgId, 'platform-offers'),
   /** One email address name's availability (`GET /integrations/email/address`); the empty name reads the mail domain alone. */
   emailAddress: (orgId: string | null | undefined, name: string) => consoleKey(orgId, 'email-address', name),
+  /** One address's two settings (`GET /integrations/:id/email/settings`). */
+  emailSettings: (orgId: string | null | undefined, integrationId: string) =>
+    consoleKey(orgId, 'email-settings', integrationId),
   /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
   githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
   /** The built-in App's slug (`GET /github/app`). */

@@ -129,6 +129,16 @@ export class EmailMessages {
     return rows[0] ? rowOf(rows[0] as Row) : undefined
   }
 
+  /** Every received row of one thread within one conversation: the admitted mail its senders wrote. */
+  async receivedInThread(address: string, conversation: string, thread: string): Promise<EmailMessageRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT * FROM email_message WHERE address = ? AND conversation = ? AND thread = ? AND direction = 'received'
+        ORDER BY seq ASC`,
+      [address, conversation, thread]
+    )
+    return (rows as Row[]).map(rowOf)
+  }
+
   /** One thread's messages within one conversation, oldest first, and whether more exist past `limit`. */
   async threadMessages(
     address: string,

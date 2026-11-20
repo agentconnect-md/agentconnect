@@ -112,12 +112,20 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 - **Resource visibility** (`resource-visibility.md`, `session-visibility.md`): `org` vs `restricted`
   audiences on agents, daemons, crons, MCP providers, skill sources and decisions; an independent
   audience boundary on sessions and transcripts; owners see everything in their org; viewers never write.
+- **Mail admission** (`email-integration.md` §4, §4.1, §5.3): a sender is matched to a member only by an
+  address a linked sign-in method verified, and only after the receiving provider's
+  `Authentication-Results` passed. An address set to take mail from anyone admits a sender no member
+  holds only on the Control Plane's answer that none does, while its outside sessions have a live
+  owner; a failed read admits nobody and a session classified without that answer stays private,
+  never `org`. A conversation with someone outside is external, and a reply copies an outsider only
+  if they have written on the thread themselves, never on a `Cc` header alone.
 - **Credentials never enter logs, telemetry, span names, error responses or transcripts**
   (`high-availability.md`, `observability` package). Plaintext keys are shown exactly once when minted.
 - **Credential confinement**: the Slack signing secret never reaches a daemon; the Feishu app secret
   never reaches a relay; the mail sending token stays on the relay, which sends a reply only as the
   assignment's own address, only to people a relay-minted ticket for the thread names, and within
-  per-address, per-organization and deployment budgets (`email-integration.md` §6.2, §6.3); a daemon receives credentials only for what is placed on it. Code-host
+  per-address, per-organization and deployment budgets, with replies that reach someone outside the
+  organization counted apart, by recipient (`email-integration.md` §6.2, §6.3, §6.4); a daemon receives credentials only for what is placed on it. Code-host
   runtime requests use the daemon's credential proxy, reached through the environment's existing
   route; provider-key substitution has its own proxy contract. A placeholder is agent-bound, and
   the proxy checks the requested repository and access tier before presenting an upstream token.

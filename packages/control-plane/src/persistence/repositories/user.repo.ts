@@ -781,6 +781,20 @@ export class PgUserRepo implements UserRepo {
   }
 
   async memberByVerifiedEmail(orgId: string, email: string): Promise<OrgMemberRecord | null> {
+    // Linked addresses are not unique, so an address two members both hold names neither of them.
+    const owners = await this.verifiedEmailHolders(orgId, email)
+    return owners.length === 1 ? owners[0]! : null
+  }
+
+  async activeMember(orgId: string, userId: string): Promise<OrgMemberRecord | null> {
+    const row = await this.db.membership.findFirst({
+      where: { orgId, userId, user: { kind: 'human' }, ...ACTIVE_MEMBERSHIP },
+      include: { user: true }
+    })
+    return row ? toMemberRecord(row) : null
+  }
+
+  async verifiedEmailHolders(orgId: string, email: string): Promise<OrgMemberRecord[]> {
     const address = email.trim().toLowerCase()
     const domain = address.slice(address.lastIndexOf('@') + 1)
     const rows = await this.db.membership.findMany({
@@ -818,9 +832,7 @@ export class PgUserRepo implements UserRepo {
         (domainVerified && user.tenantEmails.includes(address))
       )
     }
-    // Linked addresses are not unique, so an address two members both hold names neither of them.
-    const owners = rows.filter(owns)
-    return owners.length === 1 ? toMemberRecord(owners[0]!) : null
+    return rows.filter(owns).map(toMemberRecord)
   }
 
   async setMemberRole(

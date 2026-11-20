@@ -555,6 +555,7 @@ function toRecord(i: Integration): IntegrationRecord {
     name: i.name,
     status: i.status as IntegrationStatus,
     ...(i.feishuRegion ? { feishuRegion: i.feishuRegion as FeishuRegion } : {}),
+    ...(i.createdByUserId ? { createdByUserId: i.createdByUserId } : {}),
     createdAt: i.createdAt
   }
 }

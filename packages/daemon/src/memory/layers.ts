@@ -133,8 +133,8 @@ export class MemoryLayers {
     const integrationId = this.deps.integrationFor(place.agentId, place.platform, place.transportScope)
     const known = this.deps.external(place.agentId, integrationId, place.channel)
     const rowKind = kindFromRows(place.platform, place.kinds)
-    // A DM never turns external (assistant-mode.md §5.3); a group DM's members are not described, so only a known guest settles it.
-    if (rowKind === 'dm') return { layer: 'person', external: known, confirmed: true }
+    // A DM is its person's; one a platform reported held by someone outside has no person layer to read, so it keeps its own.
+    if (rowKind === 'dm') return { layer: known ? 'place' : 'person', external: known, confirmed: true }
     if (rowKind === 'group_dm') return { layer: 'place', external: known, confirmed: known }
     const described = await this.deps
       .describe({ platform: place.platform, channel: place.channel }, rowKind, integrationId)
