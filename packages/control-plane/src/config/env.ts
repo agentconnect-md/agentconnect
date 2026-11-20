@@ -6,7 +6,7 @@
  * (`API_KEY_PEPPER`, `HEARTBEAT_SEC`).
  */
 import { z } from 'zod'
-import { USAGE_COLLECTOR_SA_NAME } from '@agentconnect.md/protocol'
+import { SESSION_POLICY_WRITER_SA_NAME, USAGE_COLLECTOR_SA_NAME } from '@agentconnect.md/protocol'
 import { composeCpPlatformEnv } from '../platforms/env.js'
 import { effectiveOrgKeyPrefix, orgKeyPrefixConflict } from '../secrets/scope.js'
 
@@ -176,6 +176,8 @@ const CoreConfigShape = {
   // Unset ⇒ that endpoint is NOT MOUNTED at all (the daemon EVT is the only ingress).
   // ≥32 chars, and .optional() so a deployment without one never fail-fasts.
   USAGE_INGEST_TOKEN: z.string().min(32).optional(),
+  // Secret for the session-policy delivery route (org-session-policy.md); unset with no cluster identity ⇒ the route is not mounted.
+  SESSION_POLICY_TOKEN: z.string().min(32).optional(),
   // Key server asked for an org's standing before Cloud compute starts (key-server.md §2.3); unset ⇒ no standing gate.
   KEY_SERVER_URL: KeyServerUrlSchema.optional(),
   // Bearer file re-read per standing request; unset ⇒ requests carry no Authorization header.
@@ -372,7 +374,9 @@ const CoreConfigShape = {
   // load-bearing either way, since collector and pool-member tokens share an audience and the
   // ServiceAccount is what keeps a daemon's token from writing usage. Read only where the
   // cluster surface is on (DAEMON_POOL_ENABLED); the shared-secret ingest path needs no identity.
-  USAGE_COLLECTOR_SERVICE_ACCOUNT: z.string().min(1).default(USAGE_COLLECTOR_SA_NAME)
+  USAGE_COLLECTOR_SERVICE_ACCOUNT: z.string().min(1).default(USAGE_COLLECTOR_SA_NAME),
+  // ServiceAccount the session-policy writer presents on its route, named by the deployment that runs it.
+  SESSION_POLICY_WRITER_SERVICE_ACCOUNT: z.string().min(1).default(SESSION_POLICY_WRITER_SA_NAME)
 } as const
 
 /**

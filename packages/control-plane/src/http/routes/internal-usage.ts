@@ -43,7 +43,7 @@ import { UsageReportBatchBody } from '../dto/index.js'
 import { normalizeUsageReport } from '../../usage/writer.js'
 
 /** The bearer credential, or null when the header is absent or not a bearer. */
-function bearerOf(req: FastifyRequest): string | null {
+export function bearerOf(req: FastifyRequest): string | null {
   const header = req.headers.authorization
   if (typeof header !== 'string') return null
   const [scheme, ...rest] = header.split(' ')
@@ -52,9 +52,8 @@ function bearerOf(req: FastifyRequest): string | null {
   return credential.length > 0 ? credential : null
 }
 
-/** Constant-time compare. The length check comes first because `timingSafeEqual`
- *  requires equal lengths, and a token's length is not the secret. */
-function matchesSecret(presented: string, expected: string): boolean {
+/** Constant-time compare; lengths are checked first because a token's length is not the secret. */
+export function matchesSecret(presented: string, expected: string): boolean {
   const a = Buffer.from(presented)
   const b = Buffer.from(expected)
   return a.length === b.length && timingSafeEqual(a, b)

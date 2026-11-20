@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { SESSION_POLICY_WRITER_SA_NAME } from '@agentconnect.md/protocol'
 import { corsWebOrigin, loadBootstrapConfig, loadConfig, resolveWebAppUrl } from './env.js'
 
 describe('loadBootstrapConfig', () => {
@@ -188,5 +189,29 @@ describe('AHP rollout switches', () => {
   })
   it.each(['off', 'shadow'])('rejects AHP Webchat while the host is %s', (AHP_MODE) => {
     expect(() => loadConfig({ ...base, AHP_MODE, WEBCHAT_PROTOCOL: 'ahp' })).toThrow('AHP_MODE=on')
+  })
+})
+
+describe('session policy delivery credentials', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+    API_KEY_PEPPER: 'a'.repeat(32)
+  }
+
+  it('leaves the secret unset and defaults the writer ServiceAccount', () => {
+    const config = loadConfig(base)
+    expect(config.SESSION_POLICY_TOKEN).toBeUndefined()
+    expect(config.SESSION_POLICY_WRITER_SERVICE_ACCOUNT).toBe(SESSION_POLICY_WRITER_SA_NAME)
+  })
+
+  it('refuses a secret shorter than 32 characters and keeps a named ServiceAccount', () => {
+    expect(() => loadConfig({ ...base, SESSION_POLICY_TOKEN: 'x'.repeat(31) })).toThrow()
+    const config = loadConfig({
+      ...base,
+      SESSION_POLICY_TOKEN: 'x'.repeat(32),
+      SESSION_POLICY_WRITER_SERVICE_ACCOUNT: 'example-policy-writer'
+    })
+    expect(config.SESSION_POLICY_TOKEN).toBe('x'.repeat(32))
+    expect(config.SESSION_POLICY_WRITER_SERVICE_ACCOUNT).toBe('example-policy-writer')
   })
 })

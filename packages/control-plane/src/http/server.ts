@@ -89,6 +89,7 @@ import { sessionRoutes } from './routes/sessions.js'
 import { usageRoutes } from './routes/usage.js'
 import { usageServiceAuth, unlessUsageService } from './usage-service-auth.js'
 import { internalUsageRoutes } from './routes/internal-usage.js'
+import { internalSessionPolicyRoutes } from './routes/internal-session-policy.js'
 import { streamRoutes } from './routes/stream.js'
 import { mcpRoutes } from './mcp/routes.js'
 import { oauthConsentRoutes } from './oauth/consent.js'
@@ -344,6 +345,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // and outside `humanAuth`: it carries its own deployment secret and its org
       // comes from each report's agent, not the URL. Self-disables when unconfigured.
       await api.register(internalUsageRoutes(deps))
+      // Service-authenticated session-policy delivery — same root and same reason; its own credential (org-session-policy.md).
+      await api.register(internalSessionPolicyRoutes(deps))
       await api.register(orgInviteAcceptRoutes(deps))
       // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, guarded
       // inside its plugin by interactive human auth for the console session.
