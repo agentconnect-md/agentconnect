@@ -105,6 +105,8 @@ export interface PlatformManifest {
   readonly appendKinds: readonly AppendConversationKind[]
   /** Where a room (not a DM) of this platform has no threads: the fixed thread key its every message carries, which names the room's root, never a thread (auto-session-mode.md §6.10). Absent ⇒ its rooms have threads. */
   readonly threadlessRoomRoot?: string
+  /** Whether each conversation gets a row with its own trigger, listed in the console and gating a restricted agent; a pre-dispatch read by relay and daemon discovery and by the Control Plane's gating compile. */
+  readonly listsConversations: boolean
 }
 
 /** A conversation row's kind, as far as session modes go: a room, a 1:1 DM, or a group DM. */
@@ -147,7 +149,9 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   // A mention is an explicit address, judged even inside a thread the agent is in.
   addressedByConstruction: false,
   // No row of an unknown platform is ever forced onto one long session.
-  appendKinds: []
+  appendKinds: [],
+  // Every chat platform lists its conversations, so an unknown one keeps the per-conversation gate.
+  listsConversations: true
 }
 
 /**
@@ -183,7 +187,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A Slack DM opens a session per top-level message unless it appends, and a group DM is a small room (channel-session-mode.md §8).
-      appendKinds: ['channel', 'im', 'mpim']
+      appendKinds: ['channel', 'im', 'mpim'],
+      listsConversations: true
     }
   ],
   [
@@ -197,7 +202,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      listsConversations: true
     }
   ],
   // A Discord bot is added to a GUILD, not to a channel — there is no
@@ -213,7 +219,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      listsConversations: true
     }
   ],
   [
@@ -227,7 +234,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ownerAsDefault: false,
       addressedByConstruction: false,
       // A DM here is one continuous session already (thread-keys.ts), so only rooms take `append`.
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      listsConversations: true
     }
   ],
   // A connected Linear workspace IS a shared bot: the deployment's one OAuth app
@@ -245,7 +253,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       // A follow-up prompt in a session the agent already holds continues it rather than addressing anew.
       addressedByConstruction: true,
       // A team row holds every issue of the team, each its own thread; appending would pool them all.
-      appendKinds: []
+      appendKinds: [],
+      listsConversations: true
     }
   ],
   // Conservative on every axis; no `dmChannelPattern` because a DM Space name looks like any other `spaces/…` name.
@@ -260,7 +269,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       ownerAsDefault: false,
       // Google delivers only mentions and adds in a Space, so a mention in a thread the agent holds continues it (google-chat-integration.md §4).
       addressedByConstruction: true,
-      appendKinds: ['channel']
+      appendKinds: ['channel'],
+      listsConversations: true
     }
   ],
   [
@@ -312,7 +322,9 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
     {
       ...DEFAULT_MANIFEST,
       // A member's own threads are keyed `dm:<sender address>` and a thread with several people `group:<thread key>`; no kind appends, so mail never runs a coordinator (email-integration.md §5.2).
-      dmChannelPattern: /^dm:/
+      dmChannelPattern: /^dm:/,
+      // The module admits each sender by the member question, which applies the agent's visibility, so no conversation is listed or gated (email-integration.md §3.1).
+      listsConversations: false
     }
   ]
 ])

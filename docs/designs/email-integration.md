@@ -154,10 +154,20 @@ outlives its `Bot` row, which is the one schema addition.
 
 ### 3.1 Console
 
-Email appears among an agent's integrations when the operator has configured it
-(§7). Adding it asks for one thing, the name, shown beside the mail domain with
-a live check that the name is free. The address is then shown with a copy
-button. There is no credential to paste and nothing to install.
+Email appears among an agent's integrations, in the Workflow group beside the
+code hosts and the issue tracker, when the operator has configured it (§7). It
+is grouped with them because mail arrives as work from another system, not as
+a chat with the agent. Adding it asks for one thing, the name, shown beside the
+mail domain with a live check that the name is free. The address is then shown
+with a copy button. There is no credential to paste and nothing to install.
+
+Mail lists no conversations. A chat platform keeps a row for each conversation
+with its own trigger, which lists who wrote and gates a restricted agent; here
+every sender is admitted by §4 step 3, which already applies the agent's
+visibility, so a row would gate nothing and only list addresses. The platform
+manifest says so (`listsConversations: false`), and on that one read the relay
+and the daemon report no conversation, the Control Plane keeps none and gates no
+email install, and the agent's card is its address alone.
 
 ## 4. Who may write to an agent
 

@@ -930,6 +930,8 @@ export class HttpBotOrchestrator {
       this.log.warn({ botId }, 'http-bot: conversation report for a non-http/unknown IM bot — ignored')
       return
     }
+    // A platform that lists no conversations keeps no row for one, whoever reports it.
+    if (!manifestFor(bot.platform).listsConversations) return
     const installs = await this.integrations.listForBot(bot.id)
     for (const install of installs) {
       const agent = await this.agents.getUnscoped(install.agentId)

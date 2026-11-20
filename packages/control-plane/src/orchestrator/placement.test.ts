@@ -7,7 +7,14 @@
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { cronToUpsert, httpIntegrationToSpec, integrationToSpec, isGatedAgent, type SpecOwner } from './placement.js'
+import {
+  cronToUpsert,
+  httpIntegrationToSpec,
+  integrationToSpec,
+  isConversationGated,
+  isGatedAgent,
+  type SpecOwner
+} from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
 import type {
   AgentRecord,
@@ -505,6 +512,15 @@ describe('integrationToSpec conversation gating (§14)', () => {
     // covered by the unscoped dm default.
     expect(spec.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
     expect(spec.core.mutedChannels).toEqual(['C1'])
+  })
+})
+
+describe('isConversationGated', () => {
+  it('gates a restricted agent only on a platform that lists its conversations', () => {
+    expect(isConversationGated(RESTRICTED, 'slack')).toBe(true)
+    expect(isConversationGated({ visibility: 'org' }, 'slack')).toBe(false)
+    // Mail admits each sender by the member question, which already applies the agent's visibility.
+    expect(isConversationGated(RESTRICTED, 'email')).toBe(false)
   })
 })
 

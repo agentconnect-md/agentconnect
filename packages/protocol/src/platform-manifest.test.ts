@@ -43,6 +43,13 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.membershipEnumeration).toBe('observed')
   })
 
+  it('lists conversations on every platform but Email, and on an unknown id', () => {
+    expect(DEFAULT_MANIFEST.listsConversations).toBe(true)
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'linear', 'some-future-platform'])
+      expect(manifestFor(p).listsConversations, p).toBe(true)
+    expect(manifestFor(EMAIL_PLATFORM).listsConversations).toBe(false)
+  })
+
   it('keeps Slack the only authoritative-enumeration platform', () => {
     // This is what made the retired branches readable as `=== 'slack'`; pin it so
     // a later manifest edit cannot silently widen a Slack-only path.
@@ -245,11 +252,11 @@ describe('platform manifest', () => {
     expect(continuableOrigin(WECOM_PLATFORM)).toBe(false)
   })
 
-  it('keeps Email on the conservative arm of every axis, with a member’s own threads recognizable by key', () => {
+  it('keeps Email on the conservative arm of every axis, with a member’s own threads recognizable by key and no conversation listed', () => {
     // No kind appends, so no row is put on one long session and mail never runs a coordinator (email-integration.md §5.2).
     const { platform, ...axes } = manifestFor(EMAIL_PLATFORM)
     expect(platform).toBe('email')
-    expect(axes).toEqual({ ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/ })
+    expect(axes).toEqual({ ...DEFAULT_MANIFEST, dmChannelPattern: /^dm:/, listsConversations: false })
     expect(axes.appendKinds).toEqual([])
     expect(axes.dmChannelPattern?.test('dm:alice@corp.example.test')).toBe(true)
     expect(axes.dmChannelPattern?.test('group:m1@corp.example.test')).toBe(false)

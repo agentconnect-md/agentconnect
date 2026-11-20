@@ -29324,7 +29324,7 @@ export class Daemon {
    *  whether its `G…` conversation is a group DM. This runs before commands/routing,
    *  independent of which sibling ultimately handles it. */
   private async discoverConversations(msg: NormalizedMessage, srcIntegrationIds: string[]): Promise<void> {
-    if (msg.sender.isBot || msg.source !== 'user') return
+    if (msg.sender.isBot || msg.source !== 'user' || !manifestFor(msg.platform).listsConversations) return
     const isDm = msg.isDm || manifestFor(msg.platform).dmChannelPattern?.test(msg.channel) === true
     const isDirect = isDm || msg.isGroupDm === true
     for (const integrationId of srcIntegrationIds) {
@@ -32830,6 +32830,7 @@ export class Daemon {
    *  promise it returns. */
   private cpClientDepsHost(root: string, url: string, resolveInitialRegistry: () => void): CpClientDepsHost {
     return {
+      integrationPlatform: (integrationId) => this.integrationConfigById(integrationId)?.platform,
       cpUrl: () => url,
       cpApiKey: () => this.cfg.controlPlane.key,
       usageReporting: () => this.cfg.usageReporting.enabled,
