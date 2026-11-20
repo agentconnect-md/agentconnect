@@ -70,6 +70,7 @@ import { consolidateWeChat, WeChatConnection, weChatConnKey, weChatEndpointOverr
 import { weChatStateStore } from './wechat/state.js'
 import { consolidateWeCom, WeComConnection, weComConnKey } from './wecom/connection.js'
 import { consolidateEmail, EmailConnection } from './email/connection.js'
+import type { EmailMembers } from './email/members.js'
 import { transcriptChannelKey } from '../store/local-store.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
 import { msTeamsRelayPort } from './msteams/api.js'
@@ -235,6 +236,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindWeCom?(integrationId: string, conn: WeComConnection, botId: string): void
   /** The agent's own address, which a group mail names it by. */
   bindEmail?(integrationId: string, conn: EmailConnection, address: string): void
+  /** The member question an address's started mail asks of its recipients. */
+  emailMembers?(): EmailMembers
   /** The transport scope an integration's conversations are recorded under. */
   transportScopeOf?(integrationId: string): string | undefined
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
@@ -1372,9 +1375,11 @@ export class ConnectionReconciler {
       if (!conn) {
         const relay = this.host.platformRelay?.()
         const scopeOf = group.integrations[0]!.integrationId
+        const members = this.host.emailMembers?.()
         conn = new EmailConnection({
           group,
           ...(relay ? { relay } : {}),
+          ...(members ? { members } : {}),
           store: () => this.host.store(),
           transcriptChannel: (channel) => transcriptChannelKey(channel, this.host.transportScopeOf?.(scopeOf))
         })

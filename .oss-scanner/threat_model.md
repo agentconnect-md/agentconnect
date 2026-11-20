@@ -119,11 +119,22 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   owner; a failed read admits nobody and a session classified without that answer stays private,
   never `org`. A conversation with someone outside is external, and a reply copies an outsider only
   if they have written on the thread themselves, never on a `Cc` header alone.
+- **Mail the agent starts** (`email-integration.md` §5.1–§5.3, §6.4): a started mail carries no
+  ticket, so the relay alone bounds it: the daemon must serve the bot's assignment, at most 50
+  recipients and none on the deployment's mail domain, a tag of the minted shape, and the outside
+  budget counted in recipients; `From` and the tagged `Reply-To` are built from the assignment's
+  address, never the request's. Only a turn every message of which a member typed themselves may
+  mail outside the organization; any other turn, or one whose askers cannot be resolved, mails
+  members only. A reply reaches the started thread by its tag only while its sender is one of the
+  thread's current members, and a non-member under Members is admitted only as a recipient of that
+  mail. The started thread's owner is fixed at the send and named to the Control Plane, which
+  accepts a named console user only while they are an active member of the bot's organization.
 - **Credentials never enter logs, telemetry, span names, error responses or transcripts**
   (`high-availability.md`, `observability` package). Plaintext keys are shown exactly once when minted.
 - **Credential confinement**: the Slack signing secret never reaches a daemon; the Feishu app secret
   never reaches a relay; the mail sending token stays on the relay, which sends a reply only as the
-  assignment's own address, only to people a relay-minted ticket for the thread names, and within
+  assignment's own address, only to people a relay-minted ticket for the thread names (a started
+  mail by the recipient rules above instead), and within
   per-address, per-organization and deployment budgets, with replies that reach someone outside the
   organization counted apart, by recipient (`email-integration.md` §6.2, §6.3, §6.4); a daemon receives credentials only for what is placed on it. Code-host
   runtime requests use the daemon's credential proxy, reached through the environment's existing

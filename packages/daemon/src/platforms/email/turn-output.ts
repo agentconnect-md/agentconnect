@@ -9,9 +9,12 @@ import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-li
 import type { EmailMessages } from '../../store/email-messages.js'
 import type { TurnOutputContext, TurnOutputSurface } from '../turn-output.js'
 import type { EmailConnection, EmailSendResult, EmailStoredSent } from './connection.js'
-import { isAdmittedOutsider, isOutsider, type EmailMembers } from './members.js'
-import { emailCopyable, emailExtOf } from './module.js'
-import { emailReplyBodies, emailReplyReferences, emailReplySubject } from './render.js'
+import { isOutsider, type EmailMembers } from './members.js'
+import { emailCopyable, emailExtOf, emailMayCopyOutsider } from './module.js'
+import { isEmailStartedThread } from './threading.js'
+import { emailFromName, emailReplyBodies, emailReplyReferences, emailReplySubject } from './render.js'
+
+export { emailFromName } from './render.js'
 
 export type EmailAction =
   // The turn's one answer, or its failure; `recordOnly` keeps it in the session without sending (mode `none`).
@@ -98,7 +101,9 @@ export async function emailReplyAudience(
   answered: WireEmailAdapterExt,
   agentAddress: string,
   group: boolean,
-  wrote: () => Promise<ReadonlySet<string>>
+  wrote: () => Promise<ReadonlySet<string>>,
+  /** In a thread the agent started, whom the started mail went to (§6.1). */
+  started?: ReadonlySet<string>
 ): Promise<{
   participants: string[]
   to: string[]
@@ -118,10 +123,10 @@ export async function emailReplyAudience(
   const senderOutside = admittedOutside || (verdicts ? isOutsider(verdicts.get(sender)) : false)
   // The Control Plane could not be asked: the reply goes to the sender alone, and the session says so.
   if (!verdicts) return { ...base, cc: [], leftOff: others, unchecked: true, outside: senderOutside }
-  const senders = others.some((address) => isAdmittedOutsider(verdicts.get(address)))
+  const senders = others.some((address) => emailMayCopyOutsider(verdicts.get(address), started !== undefined))
     ? await wrote()
     : new Set<string>()
-  const cc = others.filter((address) => emailCopyable(verdicts.get(address), address, senders))
+  const cc = others.filter((address) => emailCopyable(verdicts.get(address), address, senders, started))
   return {
     ...base,
     cc,
@@ -146,16 +151,6 @@ export function emailDeliveryNote(
   return lines.length ? lines.join('\n') : undefined
 }
 
-/** The agent's name as one header line within the wire's limit; undefined when nothing is left of it. */
-export function emailFromName(name: string | undefined): string | undefined {
-  const line = name
-    ?.replace(/[\s\x00-\x1f\x7f]+/g, ' ')
-    .trim()
-    .slice(0, 256)
-    .trim()
-  return line || undefined
-}
-
 /** Send the turn's one mail, then keep the answer, its index row and any delivery note in the session. */
 export async function deliverEmailReply<TTurn extends EmailTurn>(
   host: EmailTurnHost<TTurn>,
@@ -174,13 +169,15 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
   if (!answered) result = { outcome: 'unsent', reason: 'there is no received mail in this thread to reply to' }
   else if (!answered.ticket) result = { outcome: 'unsent', reason: 'the mail it answers carries no reply ticket' }
   else {
+    const started = isEmailStartedThread(thread) ? await conn.startedThread(thread) : undefined
     const resolved = await emailReplyAudience(
       host.members(),
       agentId,
       answered,
       conn.address,
       channel.startsWith('group:'),
-      () => conn.threadSenders(channel, thread)
+      () => conn.threadSenders(channel, thread),
+      started ? new Set(started.recipients) : undefined
     )
     audience = resolved
     unchecked = resolved.unchecked

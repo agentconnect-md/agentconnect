@@ -28,9 +28,11 @@ import { z, type ZodType } from 'zod'
 import type { AskDeps } from './ask.js'
 import type { InterceptedPost } from '../assistant/drafts.js'
 import {
+  agentToolOwner,
   allAttachmentReadTools,
   isAttachmentReadTool,
   sessionToolOwner,
+  type PlatformConversationSeed,
   type PlatformSessionToolEnv
 } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
@@ -143,6 +145,7 @@ import {
   type PlatformReadDeps
 } from './ops/platform-reads.js'
 import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
+import { knownIntegrations } from './ops/gateway.js'
 import {
   assertPlaceRead,
   assertFileRead,
@@ -245,6 +248,10 @@ export interface OpsDeps
    *  through — ANY platform's, unlike `gatewayFor`, whose reply-surface registry deliberately
    *  omits a platform with no free-text surface (Linear). Absent ⇒ those tools cannot run. */
   sessionToolConnectionFor?: (integrationId: string) => unknown
+  /** The console users whose own messages alone started the session's live turn, its own sender first; undefined for any other turn (email-integration.md §6.4). */
+  memberTurnFor?: (ctx: SessionContext) => Promise<readonly string[] | undefined>
+  /** Open the session of a conversation a platform's agent tool started, its first message the agent's own (read-ports.ts `agentTools`). */
+  startAgentConversation?: (ctx: SessionContext, integrationId: string, seed: PlatformConversationSeed) => Promise<void>
   /** Start a schedule's task in a room its own turn just made: posted there and run as that schedule's turn; rejects when nothing was posted. */
   startInRoom?: (ctx: SessionContext, channel: string, task: string) => Promise<void>
   /** Make a room for the session's work, which a task holds as one more thread (auto-session-mode.md §6.8). */
@@ -645,6 +652,25 @@ async function executeRegisteredTool(
       }),
       recordPost: (text, ts) => deps.recordOutbound(ctx, deliveryChannel, deliveryThread, text, ts, ctx.integrationId!),
       ...(attribution ? { attribution: () => attribution(ctx) } : {})
+    })
+  }
+
+  // A platform's agent tools (read-ports.ts `agentTools`): in every session of an agent holding that platform's integration, acting through its own connection.
+  const agentOwner = agentToolOwner(name)
+  if (agentOwner?.agentTools) {
+    const held = knownIntegrations(ctx).find((integration) => integration.platform === agentOwner.platform)
+    if (!held) throw new Error(`${name}: this agent has no ${agentOwner.label} integration`)
+    const conn = deps.sessionToolConnectionFor?.(held.id)
+    if (!conn) throw new Error(`no live ${agentOwner.label} connection for integration ${held.id}`)
+    const start = deps.startAgentConversation
+    return await agentOwner.agentTools.execute(name, ctx, args, {
+      integrationId: held.id,
+      connection: conn,
+      memberTurn: async () => (deps.memberTurnFor ? await deps.memberTurnFor(ctx) : undefined),
+      startConversation: async (seed) => {
+        if (!start) throw new Error(`${name} cannot open a conversation on this daemon`)
+        await start(ctx, held.id, seed)
+      }
     })
   }
 

@@ -555,6 +555,7 @@ describe('handleEventSession', () => {
         settings?: Record<string, string>
         holders?: (orgId: string, email: string) => Promise<unknown[]>
         active?: string[]
+        triggeredBy?: string
       } = {}
     ) {
       const recordMilestone = vi.fn().mockResolvedValue(recorded())
@@ -584,7 +585,7 @@ describe('handleEventSession', () => {
         channel: kind === 'dm' ? `dm:${ALICE}` : 'group:m1@corp.example.test',
         conversationKind: kind,
         transportScope: 'mail.example.test',
-        triggeredBy: ALICE
+        triggeredBy: outside.triggeredBy ?? ALICE
       })
       await handleEventSession(frame, { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
       const [call] = recordMilestone.mock.calls[0] as [{ classification: unknown }]
@@ -612,6 +613,19 @@ describe('handleEventSession', () => {
       }
       expect(await classifyMail('dm', failing)).toMatchObject({ visibility: 'private', ownerIdentity: tuple })
       expect(await classifyMail('group_dm', failing)).toMatchObject({ visibility: 'private', ownerIdentity: tuple })
+    })
+
+    it('keeps a started thread private to the member its session names, whatever the address’s setting (§5.3)', async () => {
+      const stranger = async () => null
+      const settings = { whoMayWrite: 'anyone', outsideSessions: 'org' }
+      const owned = { visibility: 'private', ownerIdentity: 'user:member-2', source: 'default' }
+      const named = { settings, active: ['member-2'], triggeredBy: 'user:member-2' }
+      expect(await classifyMail('dm', stranger, named)).toEqual(owned)
+      expect(await classifyMail('group_dm', stranger, named)).toEqual(owned)
+      // A member no longer active owns nothing, and the row stays private, never the organization's.
+      const gone = await classifyMail('group_dm', stranger, { ...named, active: [] })
+      expect(gone).toMatchObject({ visibility: 'private' })
+      expect(gone).not.toMatchObject({ ownerIdentity: 'user:member-2' })
     })
 
     describe('under Anyone, an outside sender’s session follows the address’s setting (email-integration.md §5.3)', () => {

@@ -6,7 +6,8 @@ import {
   EMAIL_MEMBERS_V1_FEATURE,
   AgentEmailMembersOk,
   IntegrationEmailConfig,
-  WireEmailCall
+  WireEmailCall,
+  WireEmailStartedTag
 } from '../index.js'
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -84,7 +85,42 @@ describe('a mail send (email-integration.md §6.2, §6.4)', () => {
   }
 
   it('may mark a reply that reaches someone outside the organization', () => {
-    expect(WireEmailCall.parse({ ...send, outside: true }).outside).toBe(true)
-    expect(WireEmailCall.parse(send).outside).toBeUndefined()
+    const parsed = WireEmailCall.parse({ ...send, outside: true })
+    expect(parsed.op === 'send' && parsed.outside).toBe(true)
+    expect(WireEmailCall.parse(send)).not.toHaveProperty('outside')
+  })
+})
+
+describe('a started mail (email-integration.md §6.4)', () => {
+  const start = {
+    op: 'start',
+    tag: 'abcdefghijklmnopqrst',
+    to: ['stranger@other.example.test'],
+    cc: ['alice@corp.example.test'],
+    subject: 'Plan',
+    text: 'Hello',
+    html: '<p>Hello</p>'
+  }
+
+  it('carries a tag and the recipients, and no ticket, threading header or sender', () => {
+    expect(
+      WireEmailCall.parse({ ...start, from: 'someone@corp.example.test', inReplyTo: 'm1@x.example.test' })
+    ).toEqual(start)
+    expect(WireEmailStartedTag.parse('234567abcdefghijklmn')).toBe('234567abcdefghijklmn')
+  })
+
+  it('refuses a tag of another shape, no recipient, or a subject that could add a header', () => {
+    const refused = [
+      { tag: 'ABCDEFGHIJKLMNOPQRST' },
+      { tag: 'abcdefghijklmnopqrs' },
+      { tag: 'abcdefghijklmnopqrst1' },
+      { tag: 'abcdefghijklmnopqrs1' },
+      { to: [] },
+      { subject: '' },
+      { subject: 'Plan\r\nBcc: eve@other.example.test' },
+      { cc: ['Eve <eve@other.example.test>'] }
+    ]
+    for (const change of refused)
+      expect(WireEmailCall.safeParse({ ...start, ...change }).success, JSON.stringify(change)).toBe(false)
   })
 })

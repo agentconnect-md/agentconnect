@@ -42,6 +42,8 @@ function mail(over: Partial<WireEmailAdapterExt> = {}): WireEmailAdapterExt {
   }
 }
 
+type ReplyCall = Extract<WireEmailCall, { op: 'send' }>
+
 const update = (text: string, extra: Record<string, unknown> = {}) =>
   ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, ...extra }) as never
 
@@ -210,7 +212,7 @@ describe('delivering the reply', () => {
   it('answers the sender of a direct thread with the threading headers and both bodies', async () => {
     const h = harness({ ext: mail() })
     await send(h)
-    const call = h.requests[0]!.payload as WireEmailCall
+    const call = h.requests[0]!.payload as ReplyCall
     expect(h.requests[0]).toMatchObject({ platformId: 'email', botId: BOT })
     expect(call).toEqual({
       op: 'send',
@@ -251,7 +253,7 @@ describe('delivering the reply', () => {
       ask
     })
     await send(h)
-    const call = h.requests[0]!.payload as WireEmailCall
+    const call = h.requests[0]!.payload as ReplyCall
     expect(call.audience).toEqual([ALICE, BOB, OUTSIDER])
     expect(call.to).toEqual([ALICE])
     expect(call.cc).toEqual([BOB])
@@ -275,7 +277,7 @@ describe('delivering the reply', () => {
       const ask = vi.fn(anyone)
       const h = harness({ ext: mail({ from: { address: OUTSIDER }, outsider: true }), channel: `dm:${OUTSIDER}`, ask })
       await send(h)
-      const call = h.requests[0]!.payload as WireEmailCall
+      const call = h.requests[0]!.payload as ReplyCall
       expect(call.to).toEqual([OUTSIDER])
       expect(call.outside).toBe(true)
       expect(ask).not.toHaveBeenCalled()
@@ -285,7 +287,7 @@ describe('delivering the reply', () => {
       const ext = mail({ cc: [{ address: BOB }, { address: OUTSIDER }, { address: NAMED }] })
       const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: anyone, wrote: [ALICE, OUTSIDER] })
       await send(h)
-      const call = h.requests[0]!.payload as WireEmailCall
+      const call = h.requests[0]!.payload as ReplyCall
       // A name in a Cc header is the sender's own text: someone who never wrote is left off.
       expect(call.cc).toEqual([BOB, OUTSIDER])
       expect(call.outside).toBe(true)
@@ -295,7 +297,7 @@ describe('delivering the reply', () => {
       const ext = mail({ cc: [{ address: BOB }, { address: NAMED }] })
       const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: anyone })
       await send(h)
-      const call = h.requests[0]!.payload as WireEmailCall
+      const call = h.requests[0]!.payload as ReplyCall
       expect(call.cc).toEqual([BOB])
       expect(call.outside).toBeUndefined()
     })
@@ -308,14 +310,14 @@ describe('delivering the reply', () => {
       const ext = mail({ cc: [{ address: OUTSIDER }] })
       const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: closed, wrote: [OUTSIDER] })
       await send(h)
-      expect((h.requests[0]!.payload as WireEmailCall).cc).toEqual([])
+      expect((h.requests[0]!.payload as ReplyCall).cc).toEqual([])
     })
 
     it('marks an outside sender’s group reply outside when the Control Plane cannot be asked', async () => {
       const ext = mail({ from: { address: OUTSIDER }, outsider: true, cc: [{ address: BOB }] })
       const h = harness({ ext, channel: 'group:m1@corp.example.test', ask: async () => undefined })
       await send(h)
-      const call = h.requests[0]!.payload as WireEmailCall
+      const call = h.requests[0]!.payload as ReplyCall
       expect(call.cc).toEqual([])
       expect(call.outside).toBe(true)
     })
@@ -328,7 +330,7 @@ describe('delivering the reply', () => {
       ask: async () => undefined
     })
     await send(h)
-    expect((h.requests[0]!.payload as WireEmailCall).cc).toEqual([])
+    expect((h.requests[0]!.payload as ReplyCall).cc).toEqual([])
     expect(h.transcript[1]!.text).toContain(`This reply went to ${ALICE} only`)
     expect(h.transcript[1]!.text).toContain(BOB)
   })
@@ -370,7 +372,7 @@ describe('delivering the reply', () => {
   it('answers a thread’s latest mail when the turn’s own message carries none, and records only for mode none', async () => {
     const h = harness({ latest: { ...mail({ messageId: 'm9@corp.example.test' }), participants: [ALICE] } })
     await send(h)
-    expect((h.requests[0]!.payload as WireEmailCall).inReplyTo).toBe('m9@corp.example.test')
+    expect((h.requests[0]!.payload as ReplyCall).inReplyTo).toBe('m9@corp.example.test')
     const quiet = harness({ ext: mail() })
     await applyEmailAction(quiet.host, quiet.turn, quiet.state, { kind: 'post', text: 'x', recordOnly: true })
     await applyEmailAction(quiet.host, quiet.turn, quiet.state, { kind: 'notice', text: 'waiting' })

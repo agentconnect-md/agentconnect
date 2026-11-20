@@ -164,3 +164,13 @@ export function emailReplyBodies(markdown: string): { text: string; html: string
   }
   return { text, html, cut: text !== whole }
 }
+
+/** The agent's name as one header line within the wire's limit; undefined when nothing is left of it. */
+export function emailFromName(name: string | undefined): string | undefined {
+  const line = name
+    ?.replace(/[\s\x00-\x1f\x7f]+/g, ' ')
+    .trim()
+    .slice(0, 256)
+    .trim()
+  return line || undefined
+}

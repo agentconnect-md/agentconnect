@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { WireEmailCall } from '@agentconnect.md/protocol'
 import { EMAIL_OUTSIDE_RECIPIENTS_PER_BOT_PER_DAY, EMAIL_SENDS_PER_BOT_PER_DAY } from './counters.js'
-import { EmailRelayEgress, emailSendRequest, type EmailSender } from './egress.js'
+import { EmailRelayEgress, emailSendRequest, emailStartRecipients, type EmailSender } from './egress.js'
 import { mintEmailTicket } from './ticket.js'
 import { AGENT_ADDRESS, COLLEAGUE, EMAIL_CONFIG, MEMBER, NOW } from '../../../test/fixtures/email-messages.js'
 
@@ -14,7 +14,10 @@ const AUDIENCE = [MEMBER, COLLEAGUE]
 const ticketFor = (botId = BOT, audience = AUDIENCE) =>
   mintEmailTicket(KEY, botId, { threadKey: 'm1@corp.example.test', issuedAtMs: NOW }, audience)!
 
-const call = (over: Partial<WireEmailCall> = {}): WireEmailCall => ({
+type ReplyCall = Extract<WireEmailCall, { op: 'send' }>
+type StartCall = Extract<WireEmailCall, { op: 'start' }>
+
+const call = (over: Partial<ReplyCall> = {}): ReplyCall => ({
   op: 'send',
   ticket: ticketFor(),
   audience: AUDIENCE,
@@ -26,6 +29,20 @@ const call = (over: Partial<WireEmailCall> = {}): WireEmailCall => ({
   references: ['m0@corp.example.test', 'm1@corp.example.test'],
   text: 'Here is the summary.',
   html: '<p>Here is the summary.</p>',
+  ...over
+})
+
+const TAG = 'abcdefghijklmnopqrst'
+const STRANGER = 'stranger@other.example.test'
+const startCall = (over: Partial<StartCall> = {}): StartCall => ({
+  op: 'start',
+  tag: TAG,
+  to: [STRANGER],
+  cc: [MEMBER],
+  fromName: 'Helper',
+  subject: 'Quarterly numbers',
+  text: 'Here are the numbers.',
+  html: '<p>Here are the numbers.</p>',
   ...over
 })
 
@@ -229,5 +246,63 @@ describe('email relay egress', () => {
     expect(await slow.send(limited, SENDER, call())).toEqual({ outcome: 'ok', payload: { status: 504 } })
     expect(received).toHaveLength(2)
     expect(await slow.send(limited, SENDER, call())).toEqual({ outcome: 'refused', reason: 'budget_deployment' })
+  })
+  it('starts a mail with no ticket: From and a tagged Reply-To from the assignment, marked automatic, with no threading header (§6.4)', async () => {
+    const reply = await egress().start(EMAIL_CONFIG, SENDER, startCall())
+    expect(reply).toMatchObject({ outcome: 'ok', payload: { status: 200 } })
+    expect(received).toHaveLength(1)
+    expect(received[0]!.body).toEqual({
+      from: { address: AGENT_ADDRESS, name: 'Helper' },
+      to: [STRANGER],
+      cc: [MEMBER],
+      subject: 'Quarterly numbers',
+      text: 'Here are the numbers.',
+      html: '<p>Here are the numbers.</p>',
+      headers: { 'Reply-To': `helper+${TAG}@${EMAIL_CONFIG.mailDomain}`, 'Auto-Submitted': 'auto-generated' }
+    })
+  })
+
+  it('refuses a started mail to more than a send carries, or to the deployment’s own mail domain, calling nobody', async () => {
+    const e = egress()
+    const many = Array.from({ length: 30 }, (_, index) => `p${index}@corp.example.test`)
+    const more = Array.from({ length: 21 }, (_, index) => `q${index}@corp.example.test`)
+    expect(await e.start(EMAIL_CONFIG, SENDER, startCall({ to: many, cc: more }))).toEqual({
+      outcome: 'refused',
+      reason: 'recipients'
+    })
+    for (const address of [`other@${EMAIL_CONFIG.mailDomain}`, `x@sub.${EMAIL_CONFIG.mailDomain}`])
+      expect(await e.start(EMAIL_CONFIG, SENDER, startCall({ cc: [address] }))).toEqual({
+        outcome: 'refused',
+        reason: 'own_domain'
+      })
+    expect(received).toHaveLength(0)
+    // An address named twice counts once.
+    expect(emailStartRecipients({ to: [MEMBER, MEMBER], cc: [MEMBER, STRANGER] }, EMAIL_CONFIG.mailDomain)).toEqual({
+      to: [MEMBER],
+      cc: [STRANGER]
+    })
+  })
+
+  it('counts every recipient of a started mail on the outside budget it shares with outside replies', async () => {
+    const e = egress()
+    // Fifty recipients twice spend the bot's outside budget; the next started mail and the next outside reply are refused.
+    const fifty = Array.from({ length: 50 }, (_, index) => `r${index}@corp.example.test`)
+    expect((await e.start(EMAIL_CONFIG, SENDER, startCall({ to: fifty, cc: [] }))).outcome).toBe('ok')
+    expect((await e.start(EMAIL_CONFIG, SENDER, startCall({ to: fifty, cc: [] }))).outcome).toBe('ok')
+    expect(await e.start(EMAIL_CONFIG, SENDER, startCall())).toEqual({
+      outcome: 'refused',
+      reason: 'budget_outside_bot'
+    })
+    expect(await e.send(EMAIL_CONFIG, SENDER, call({ outside: true }))).toEqual({
+      outcome: 'refused',
+      reason: 'budget_outside_bot'
+    })
+    // A member reply is still sent, and every send counted toward the deployment's figure.
+    expect((await e.send(EMAIL_CONFIG, SENDER, call())).outcome).toBe('ok')
+    const limited = { ...EMAIL_CONFIG, dailySendLimit: 3 }
+    expect(await e.start(limited, { ...SENDER, botId: 'b2', organization: 'org-b' }, startCall())).toEqual({
+      outcome: 'refused',
+      reason: 'budget_deployment'
+    })
   })
 })

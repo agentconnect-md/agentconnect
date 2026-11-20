@@ -1,5 +1,5 @@
-// Where a mail belongs (email-integration.md §5.1, §5.2): its thread from the messages the daemon knows, its conversation from the message itself, and the participant fence between the two.
-import type { WireEmailAdapterExt } from '@agentconnect.md/protocol'
+// Where a mail belongs (email-integration.md §5.1, §5.2): a started thread its tag names, else its thread from the messages the daemon knows, its conversation from the message itself, and the participant fence between the two.
+import { EMAIL_STARTED_TAG_PATTERN, type WireEmailAdapterExt } from '@agentconnect.md/protocol'
 import {
   emailConversation,
   emailFallbackThreadKey,
@@ -20,11 +20,21 @@ export interface EmailConversationState {
   members: readonly string[]
 }
 
+/** A thread the agent started (§6.4): its conversation, whom the started mail went to, and its current members, those recipients until a reply is admitted. */
+export interface EmailStartedThread {
+  thread: string
+  conversation: string
+  recipients: readonly string[]
+  members: readonly string[]
+}
+
 /** The reads placement makes of the mail index, all within one agent's address. */
 export interface EmailPlacementIndex {
   message(messageId: string): Promise<EmailKnownMessage | undefined>
   /** Undefined for a conversation no admitted message has opened. */
   conversation(channel: string): Promise<EmailConversationState | undefined>
+  /** The started thread a tag names; undefined for a tag the daemon never minted. */
+  startedThread?(tag: string): Promise<EmailStartedThread | undefined>
 }
 
 export interface EmailPlacement {
@@ -32,6 +42,13 @@ export interface EmailPlacement {
   conversation: EmailConversation
   /** The message was admitted before, so this is a redelivery placed where it already is. */
   redelivered: boolean
+  /** The message continues a thread the agent started, sent to these recipients. */
+  started?: { recipients: readonly string[] }
+}
+
+/** Whether a thread key is a started thread's tag, which no `Message-ID` can be. */
+export function isEmailStartedThread(thread: string): boolean {
+  return EMAIL_STARTED_TAG_PATTERN.test(thread)
 }
 
 /** A conversation read back from its channel: `dm:<address>` is a member's own, anything else a group. */
@@ -49,6 +66,28 @@ export async function placeEmail(
   if (own) return { thread: own.thread, conversation: emailConversationOf(own.conversation), redelivered: true }
   const sender = mail.from.address
   const participants = emailParticipants(mail, agentAddress)
+  // A started thread keeps the sender check and drops the opener check; a sender not on it starts a thread of its own (§5.2).
+  const ownThread = (): EmailPlacement => ({
+    thread: mail.messageId,
+    conversation: emailConversation(mail, agentAddress, mail.messageId),
+    redelivered: false
+  })
+  const intoStarted = async (tag: string): Promise<EmailPlacement | undefined> => {
+    const started = await index.startedThread?.(tag)
+    if (!started) return undefined
+    if (!started.members.includes(sender)) return ownThread()
+    return {
+      thread: started.thread,
+      conversation: emailConversationOf(started.conversation),
+      redelivered: false,
+      started: { recipients: started.recipients }
+    }
+  }
+  // A tag the daemon minted names its thread first, whatever the headers say (§5.1).
+  if (mail.tag) {
+    const tagged = await intoStarted(mail.tag)
+    if (tagged) return tagged
+  }
   // A direct conversation needs no fence: its key is the authenticated sender.
   const continues = async (conversation: EmailConversation, from?: EmailKnownMessage): Promise<boolean> => {
     if (conversation.kind === 'dm') return true
@@ -62,6 +101,11 @@ export async function placeEmail(
     const hit = await index.message(id)
     if (!hit) continue
     known = true
+    // A reply that names the started mail itself is placed as its tag would place it.
+    if (isEmailStartedThread(hit.thread)) {
+      const started = await intoStarted(hit.thread)
+      if (started) return started
+    }
     const conversation = emailConversation(mail, agentAddress, hit.thread)
     if (await continues(conversation, hit)) return { thread: hit.thread, conversation, redelivered: false }
   }
@@ -71,6 +115,5 @@ export async function placeEmail(
     if (await continues(conversation)) return { thread, conversation, redelivered: false }
   }
   // Fenced off every thread it names: it starts one of its own, which its replies then reach first.
-  const thread = mail.messageId
-  return { thread, conversation: emailConversation(mail, agentAddress, thread), redelivered: false }
+  return ownThread()
 }

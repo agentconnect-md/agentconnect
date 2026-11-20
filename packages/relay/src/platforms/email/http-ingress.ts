@@ -13,7 +13,7 @@ import {
   type EmailIngressAnswer,
   type RcEmailDeployment
 } from '@agentconnect.md/protocol'
-import { emailAgentAddress } from '@agentconnect.md/message'
+import { emailAgentAddress, emailStartedTag } from '@agentconnect.md/message'
 import type { RelayIngressRouteDeps } from '../contract.js'
 import { settleWithin } from '../settle-within.js'
 
@@ -45,7 +45,9 @@ export class VerifiedEmailPost {
     /** The canonical agent address the envelope recipient names, its `+tag` dropped. */
     readonly agentAddress: string | undefined,
     /** The Worker posted less than the whole message. */
-    readonly truncated: boolean
+    readonly truncated: boolean,
+    /** The envelope recipient's `+tag` when it has a started thread's shape (§5.1); any other tag is ignored. */
+    readonly agentTag?: string
   ) {}
 
   /** Check one post against the deployment's ingress secret; undefined for a missing, stale or wrong signature, and for a header the signed text could not have carried. */
@@ -87,7 +89,8 @@ export class VerifiedEmailPost {
       envelopeFrom,
       envelopeTo,
       emailAgentAddress(envelopeTo, config.mailDomain),
-      Number(size) > raw.length
+      Number(size) > raw.length,
+      emailStartedTag(envelopeTo, config.mailDomain)
     )
   }
 }

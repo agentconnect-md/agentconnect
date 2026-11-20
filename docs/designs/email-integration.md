@@ -310,7 +310,8 @@ own sessions (§5.3).
 
 One mail thread is one session. A message whose envelope recipient carries a
 subaddress tag the daemon minted for a mail the agent started (§6.4) belongs to
-that mail's thread, whatever its headers say. Otherwise the daemon resolves a
+that mail's thread, whatever its headers say, and so does one whose headers name
+the started mail itself. Otherwise the daemon resolves a
 message's thread key from the messages it already knows: it walks `References` from the newest ID
 to the oldest, then `In-Reply-To`, and takes the thread of the first ID it has
 received or sent whose conversation this message may continue (§5.2). When it
@@ -445,7 +446,10 @@ existing session. A thread an outside sender opens and a member later joins
 stays where it started.
 
 A started thread's session is created when the mail is sent (§6.4) and owned
-from then on, whoever replies. When its one recipient is a member, the thread is
+from then on, whoever replies. It reports the person it is for as its trigger:
+the one member recipient's address, or `user:<console id>` of the member whose
+turn sent it, which the provider's `dmOwnerMember` accepts only while that user
+is an active member of the bot's organization. When its one recipient is a member, the thread is
 that member's direct conversation, and the session is the member's own as
 above: their person layer is read there and reads are judged as them, so it is
 never anyone else's. A group thread, or one with a non-member recipient, is
@@ -638,8 +642,9 @@ turn.
 An agent with an address has a `sendEmail` tool: `to`, optional `cc`, a
 subject and a Markdown body. It can be called from any session the agent runs:
 a webchat, a chat thread, a schedule's run, a mail thread. Every agent with an
-address is also told it, in the instructions of every session, so it can name
-it to people and does not look for another way to send.
+address is also told it, in the instructions of every session that offers the
+tool (a coordinator, a follow-up's check and research offer none), so it can
+name it to people and does not look for another way to send.
 
 - **Recipients** are at most 50 addresses in `to` and `cc` together, never one
   on the deployment's own mail domain: mail between agents stays excluded, as
@@ -674,7 +679,8 @@ it to people and does not look for another way to send.
   the provider's quota remains the hard stop.
 - **Headers**: `From` is the agent's address and name, as for a reply.
   `Reply-To` is the same address with a subaddress tag the daemon mints for the
-  new thread (`<name>+<tag>@<domain>`); §2.2 measured that the tag survives to
+  new thread (`<name>+<tag>@<domain>`, 20 lower-case base32 characters, which
+  also key the thread); §2.2 measured that the tag survives to
   the envelope recipient, so a reply finds its thread without relying on the
   provider's `Message-ID` (§5.1). `Auto-Submitted` is `auto-generated`. There
   is no `In-Reply-To`.
@@ -688,17 +694,24 @@ it to people and does not look for another way to send.
   same session records every other mail is kept in, and indexes it as `sent`
   under the conversation its recipients make (`dm:<address>` for one
   recipient, `group:<tag>` for several). There is no second store: retention
-  and deletion are the session's. The session the tool was called in records
-  the call and its result, as it does any tool's. The address's history reads
+  and deletion are the session's. The mail is the session's root, so the first
+  reply's turn reads it once before the reply. A send the relay answers as
+  perhaps delivered (§6.2) is recorded the same way, so a reply that does
+  arrive finds its thread; one the relay never sent records nothing. The
+  session the tool was called in records the call and its result, as it does
+  any tool's. The address's history reads
   (§5.6) serve the started mail like any sent message.
 - **Where it lives.** The tool and the instruction line belong to the mail
-  module, through a member of the daemon platform contract that contributes an
-  agent's tools and instruction lines for each integration it holds; core
-  never names the platform. Started mail ships only once §9's `Reply-To` item is
-  measured.
+  module, through `agentTools`, the member of a platform's read-port
+  declaration (`platforms/read-ports.ts`) that contributes an agent's tools and
+  instruction lines for each integration it holds, beside the `sessionTools` a
+  platform offers only in its own sessions; core never names the platform. §9's
+  `Reply-To` item is measured on the test environment, with no flag, before a
+  release.
 - **A reply** reaches the thread by its tag. Its sender may answer whatever the
   address's "Who may write" says, when it is one of the started mail's
-  recipients (§4 step 3); anyone else on the reply is held to that setting. The
+  recipients and the reply carries the tag (§4 step 3); anyone else on the reply
+  is held to that setting. The
   reply continues the thread's session, created at send and beginning with the
   started mail, so the agent reads what it sent; whose session it is was fixed
   then (§5.3).

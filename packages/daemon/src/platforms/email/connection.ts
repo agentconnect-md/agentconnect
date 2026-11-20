@@ -4,6 +4,7 @@ import {
   EMAIL_MESSAGE_ID_MAX,
   EMAIL_MESSAGE_ID_PATTERN,
   EMAIL_PLATFORM,
+  EMAIL_STARTED_TAG_PATTERN,
   WireEmailAdapterExt,
   type IntegrationEmailConfig,
   type RdPlatformReply,
@@ -24,7 +25,8 @@ import type {
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformRelayUnsent, type PlatformRelay } from '../platform-relay.js'
-import type { EmailConversationState, EmailKnownMessage, EmailPlacementIndex } from './threading.js'
+import type { EmailMembers } from './members.js'
+import type { EmailConversationState, EmailKnownMessage, EmailPlacementIndex, EmailStartedThread } from './threading.js'
 
 /** One agent address and the integrations that serve it; an address is never shared, so a group holds one. */
 export interface EmailConnectionGroup {
@@ -53,12 +55,13 @@ export interface EmailStoredMail extends WireEmailAdapterExt {
   participants: string[]
 }
 
-/** What a sent mail's index row keeps: whom it went to and under which subject. */
+/** What a sent mail's index row keeps: whom it went to and under which subject, and whether it was a mail the agent started (§6.4). */
 export interface EmailStoredSent {
   from: WireEmailMailbox
   to: WireEmailMailbox[]
   cc: WireEmailMailbox[]
   subject: string
+  started?: true
 }
 
 /** A received row's stored mail, read defensively because the row is persisted; undefined for anything unreadable. */
@@ -76,7 +79,8 @@ export function storedMailOf(row: Pick<EmailMessageRow, 'mail' | 'direction'>): 
   }
 }
 
-function storedSentOf(row: Pick<EmailMessageRow, 'mail' | 'direction'>): EmailStoredSent | undefined {
+/** A sent row's stored mail, read defensively because the row is persisted; undefined for anything unreadable. */
+export function storedSentOf(row: Pick<EmailMessageRow, 'mail' | 'direction'>): EmailStoredSent | undefined {
   if (row.direction !== 'sent' || !row.mail) return undefined
   try {
     const value = JSON.parse(row.mail) as Partial<EmailStoredSent>
@@ -169,6 +173,8 @@ export interface EmailConnectionDeps {
   }
   /** The transcript channel a conversation's rows are kept under on this connection. */
   transcriptChannel(channel: string): string
+  /** The member question, which a started mail asks of its recipients (§6.4). */
+  members?: EmailMembers
   sleep?(ms: number): Promise<void>
 }
 
@@ -191,6 +197,11 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
 
   get group(): EmailConnectionGroup {
     return this.deps.group
+  }
+
+  /** The member question this address asks; undefined where the daemon wired none. */
+  get members(): EmailMembers | undefined {
+    return this.deps.members
   }
 
   /** The agent the address serves. */
@@ -220,6 +231,23 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
     const opener = first ? storedMailOf(first)?.from.address : undefined
     const members = latest ? storedMailOf(latest)?.participants : undefined
     return opener && members ? { opener, members } : undefined
+  }
+
+  /** The thread a minted tag names (§5.1), with the started mail's recipients as its members until a reply is admitted (§5.2). */
+  async startedThread(tag: string): Promise<EmailStartedThread | undefined> {
+    if (!EMAIL_STARTED_TAG_PATTERN.test(tag)) return undefined
+    const row = await this.index.firstSent(this.address, tag)
+    const sent = row ? storedSentOf(row) : undefined
+    if (!row || !sent?.started) return undefined
+    const recipients = [...sent.to, ...sent.cc].map((mailbox) => mailbox.address)
+    const latest = await this.index.latestReceived(this.address, row.conversation, tag)
+    const members = (latest ? storedMailOf(latest)?.participants : undefined) ?? recipients
+    return { thread: tag, conversation: row.conversation, recipients, members }
+  }
+
+  /** Index one mail the agent sent from this address. */
+  async recordSent(row: Omit<EmailMessageRow, 'seq' | 'address' | 'direction'>): Promise<boolean> {
+    return await this.index.record({ ...row, address: this.address, direction: 'sent' })
   }
 
   /** A conversation's current members: a direct conversation's member, or the participants of a group's latest admitted mail. */
@@ -269,9 +297,9 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
     return null
   }
 
-  /** Mail goes out only as a turn's reply (§6.1), so nothing is posted outside one. */
+  /** Mail goes out as a turn's reply (§6.1) or a mail `sendEmail` starts (§6.4), so nothing is posted here. */
   async postMessage(): Promise<string | undefined> {
-    throw new Error('email: a mail is sent only as the reply to a message the agent received')
+    throw new Error('email: a new mail is started with sendEmail, and anything else is sent as the reply to a mail')
   }
 
   // The text of each row as the agent reads it: a received mail's own header block is already in its transcript row; a sent one's is rendered here.
@@ -366,7 +394,7 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
 
   // ── §6.2 sending ──
 
-  /** Send one reply through the relay; a send nothing reached the provider with is tried again, one that may have landed never is. */
+  /** Send one reply or started mail through the relay; a send nothing reached the provider with is tried again, one that may have landed never is. */
   async send(call: WireEmailCall): Promise<EmailSendResult> {
     const relay = this.deps.relay
     if (!relay) return { outcome: 'unsent', reason: 'no relay is configured to send mail' }

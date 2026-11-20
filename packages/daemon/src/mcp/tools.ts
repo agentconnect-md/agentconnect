@@ -2,6 +2,8 @@ import { MESSAGE_ATTACHMENTS_MAX } from '@agentconnect.md/protocol'
 import type { Integration } from '../agents/agent-schema.js'
 import { obj, type JsonValue, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import {
+  agentToolsFor,
+  allAgentToolDescriptors,
   allAttachmentReadTools,
   allPortPlatforms,
   allSessionToolDescriptors,
@@ -1014,6 +1016,8 @@ export const ALL_TOOL_NAMES = [
       ...allAttachmentReadTools(),
       // Every platform's session-scoped tool family, for the same reason.
       ...allSessionToolDescriptors(),
+      // Every platform's agent tools, which ride with an integration into every session.
+      ...allAgentToolDescriptors(),
       ...MEMORY_TOOLS,
       ...KNOWLEDGE_TOOLS,
       ...DECISION_TOOLS,
@@ -1102,5 +1106,7 @@ export function toolsForIntegrations(
   // only where the session is, so a Linear-connected agent's Slack sessions carry none of them.
   const sessionPlatform = options.currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
   add([...(sessionToolsFor(sessionPlatform)?.descriptors ?? [])])
+  // The agent tools of each integration the agent holds (`agentTools`), in every session whatever its platform.
+  add(agentToolsFor(platforms))
   return tools
 }
