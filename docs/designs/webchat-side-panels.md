@@ -215,7 +215,11 @@ list. It is deliberately NOT gated on the tab being active, because a held 404
 REMOVES the tab, leaving no tab to reveal and no way back. And a turn's edge reaches a HIDDEN panel only where
 that tab shows a badge whose numbers are on screen anyway (Git's changed count,
 PR's unresolved threads); a panel without one defers the read to the reveal edge
-rather than re-reading a worktree nobody is looking at. The Git panel also skips
+rather than re-reading a worktree nobody is looking at. The Files tab's session files
+areas (inbound-file-attachments.md §2.4) are stricter than its checkout tree: they are
+listed only while their accordion section is on screen, so a hidden tab or a closed
+section reads nothing for them and catches up in one read when shown. An open section
+costs two more `workspace/list` reads per 15s poll, one per area. The Git panel also skips
 an automatic read while one of its OWN writes is in flight — that write answers
 with the fresh status, and a read racing it would land the pre-write tree over
 the reply.

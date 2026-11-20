@@ -126,11 +126,20 @@ export function FilesPanel({
   }, [onRootSettledChange, settled])
   // A filter is over one tree; another session's is a different set of paths.
   useEffect(() => setQuery(''), [scope])
-  // One section open at a time: session files first, unless the viewer already holds a checkout file to show in its tree.
+  // One section open at a time: session files first, unless the viewer holds a checkout file to show in its tree.
   const [openSection, setOpenSection] = useState<FilesSection | null>(() =>
     openFilePath && !openFileRoot ? 'workspace' : 'session'
   )
   const toggleSection = (section: FilesSection) => setOpenSection((current) => (current === section ? null : section))
+  // A file the viewer opens later reveals the section that holds it, since this panel stays mounted with the page.
+  useEffect(() => {
+    if (openFileRoot) setOpenSection('session')
+    else if (openFilePath) setOpenSection('workspace')
+  }, [openFilePath, openFileRoot])
+  // The areas refresh only while shown: a hidden tab or a closed section holds its tick, and catches up in one read when shown again.
+  const sessionVisible = active && openSection === 'session'
+  const sessionTick = useRef(tick)
+  if (sessionVisible) sessionTick.current = tick
 
   const dirtyMap = useMemo(() => workspaceDirtyMap(git), [git])
   // Every FILE the tree has actually loaded — the only corpus a client-side filter can honestly search, since `workspace/list` is per-directory and no path-search frame exists.
@@ -332,20 +341,22 @@ export function FilesPanel({
         open={openSection === 'session'}
         onToggle={toggleSection}
       />
-      {openSection === 'session' ? (
-        <div id="files-section-session" className="flex min-h-0 flex-1 flex-col overflow-auto py-[6px]">
-          <SessionFilesSection
-            key={`${agentId}:${sessionFilesId}`}
-            agentId={agentId}
-            sessionId={sessionFilesId}
-            tick={tick}
-            active={active}
-            selectedPath={openFileRoot ? (openFilePath ?? null) : null}
-            selectedRoot={openFileRoot ?? null}
-            onOpenFile={onOpenFile}
-          />
-        </div>
-      ) : null}
+      {/* Kept mounted while closed, so its folds and expanded folders survive switching sections and tabs. */}
+      <div
+        id="files-section-session"
+        className={`min-h-0 flex-1 flex-col overflow-auto py-[6px] ${openSection === 'session' ? 'flex' : 'hidden'}`}
+      >
+        <SessionFilesSection
+          key={`${agentId}:${sessionFilesId}`}
+          agentId={agentId}
+          sessionId={sessionFilesId}
+          tick={sessionTick.current}
+          visible={sessionVisible}
+          selectedPath={openFileRoot ? (openFilePath ?? null) : null}
+          selectedRoot={openFileRoot ?? null}
+          onOpenFile={onOpenFile}
+        />
+      </div>
       <SectionHeader
         section="workspace"
         label={t('workspaceFiles')}
@@ -477,7 +488,7 @@ function SessionFilesSection({
   agentId,
   sessionId,
   tick,
-  active,
+  visible,
   selectedPath,
   selectedRoot,
   onOpenFile
@@ -485,14 +496,18 @@ function SessionFilesSection({
   agentId: string
   sessionId: string
   tick: number
-  /** Whether the Files tab is showing: a hidden one lists nothing, as every dock panel stays mounted. */
-  active: boolean
+  /** Whether the section is on screen: nothing is listed before it first is, as every dock panel stays mounted with the page. */
+  visible: boolean
   selectedPath: string | null
   selectedRoot: SessionFileArea | null
   onOpenFile: (path: string, root: SessionFileArea) => void
 }) {
   // Both areas open with the section, so what the agent made and what was sent to it show at once; the caller keys it per session.
   const [open, setOpen] = useState<ReadonlySet<SessionFileArea>>(() => new Set(SECTION_AREAS))
+  const [seen, setSeen] = useState(visible)
+  useEffect(() => {
+    if (visible) setSeen(true)
+  }, [visible])
   const toggle = (area: SessionFileArea) =>
     setOpen((current) => {
       const next = new Set(current)
@@ -510,7 +525,7 @@ function SessionFilesSection({
             name={`/${area}`}
             onClick={() => toggle(area)}
           />
-          {open.has(area) && active ? (
+          {open.has(area) && seen ? (
             <SessionFilesArea
               agentId={agentId}
               sessionId={sessionId}

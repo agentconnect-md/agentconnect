@@ -153,7 +153,9 @@ const text = () => container?.textContent ?? ''
 
 // A row is the one element carrying FileBrowserRow's selected-edge border, which nothing else in the panel has — matching on 'the first mono span inside any div' picks up the scroller.
 const ROW = '[class*="border-r-2"]'
-const rows = () => Array.from(container?.querySelectorAll<HTMLElement>(ROW) ?? [])
+// A closed accordion section stays mounted but hidden, so its rows are not on screen.
+const rows = () =>
+  Array.from(container?.querySelectorAll<HTMLElement>(ROW) ?? []).filter((el) => !el.closest('.hidden'))
 const rowName = (element: Element) => element.querySelector('span.mono')?.textContent ?? ''
 
 /** Every row the tree drew, by the name in its mono cell — the reader's own index into the panel. */
@@ -933,7 +935,7 @@ describe('FilesPanel auto refresh', () => {
   })
 })
 
-// The session files directory's two areas, in an accordion above the checkout (inbound-file-attachments.md §2.4).
+// The session files directory's two areas, in an accordion above the checkout (inbound-file-attachments.md §2.4, Console).
 describe('FilesPanel session files', () => {
   const areaReads = (area: string) =>
     vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => (call[1] as { root?: string }).root === area)
@@ -985,6 +987,40 @@ describe('FilesPanel session files', () => {
     expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
     expect(container?.querySelector('[data-session-files]')).not.toBeNull()
     expect(container?.querySelector('input')).toBeNull()
+  })
+
+  it('lists no area while the Files tab is hidden, and both once it is shown', async () => {
+    await render({ active: false, sessionFilesId: 'session-1' })
+    expect(areaReads('outputs')).toHaveLength(0)
+    expect(areaReads('uploads')).toHaveLength(0)
+    await rerender({ active: false, sessionFilesId: 'session-1', refreshTick: 1 })
+    expect(areaReads('outputs')).toHaveLength(0)
+    await rerender({ active: true, sessionFilesId: 'session-1', refreshTick: 1 })
+    expect(areaReads('outputs')).toHaveLength(1)
+    expect(areaReads('uploads')).toHaveLength(1)
+  })
+
+  it('keeps an expanded folder under an area across a switch to the workspace and back, re-reading once', async () => {
+    wire.listings['files:outputs/'] = { entries: [dir('images')] }
+    wire.listings['files:outputs/images'] = { entries: [textFile('chart.png')] }
+    await render({ active: true, sessionFilesId: 'session-1' })
+    await click(row('images'), 'images folder row')
+    expect(rowNames()).toContain('chart.png')
+    await click(header('workspace'), 'workspace header')
+    const readsWhileClosed = areaReads('outputs').length
+    await rerender({ active: true, sessionFilesId: 'session-1', refreshTick: 1 })
+    expect(areaReads('outputs')).toHaveLength(readsWhileClosed)
+    await click(header('session'), 'session header')
+    expect(rowNames()).toEqual(['/outputs', 'images', 'chart.png', '/uploads'])
+    expect(areaReads('outputs').length).toBeGreaterThan(readsWhileClosed)
+  })
+
+  it('reveals the section holding a file the viewer opens later', async () => {
+    await render({ sessionFilesId: 'session-1' })
+    await rerender({ sessionFilesId: 'session-1', openFilePath: 'README.md' })
+    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
+    await rerender({ sessionFilesId: 'session-1', openFilePath: 'report.pdf', openFileRoot: 'outputs' })
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('opens on the workspace when the viewer already holds a checkout file', async () => {
