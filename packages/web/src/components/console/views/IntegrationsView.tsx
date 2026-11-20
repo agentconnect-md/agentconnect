@@ -1,13 +1,7 @@
 'use client'
 
-// Integrations page: the org's installed messaging bots and code hosts, and the
-// agents bound to them. Both halves are org-level infrastructure — every member
-// can see them, writes are gated on the role (viewers get no controls, and
-// uninstalling the GitHub App from an account is owner-only).
-//
-// The Add-integration dialog is the SAME one the agent page opens; reached from
-// here it carries no agent, so the modal grows an Agent field (ModalProvider's
-// `integration` kind with no target).
+// Integrations page: the org's integrations and their agents, grouped as the Add-integration picker groups them; writes are role-gated.
+// Add integration opens the agent page's dialog with no agent, so the modal grows an Agent field.
 
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
@@ -50,6 +44,7 @@ import {
   botCardCopy,
   botSharingEditable,
   channelListSemantics,
+  integrationGroupOf,
   platformRegistry,
   platformSharingChoosable,
   withCredentialCode
@@ -57,7 +52,8 @@ import {
 import {
   BOT_PLATFORM_TABS,
   botMatchesPlatformTab,
-  visibleBotPlatformTabs
+  visibleBotPlatformTabs,
+  type BotPlatformTab
 } from '@/components/console/platforms/host-projections'
 import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
@@ -213,6 +209,14 @@ export default function IntegrationsView() {
   const { myRole } = useOrgs()
   const { openModal } = useModal()
   const { bots } = useConsoleData()
+  // Each section's Bots tabs: chat platforms under Messaging apps, the rest beside the code hosts, as the picker splits them.
+  const [chatTabs, workflowTabs] = useMemo(() => {
+    const tabs = visibleBotPlatformTabs(bots)
+    return [
+      tabs.filter((tab) => integrationGroupOf(tab.platform) === 'chat'),
+      tabs.filter((tab) => integrationGroupOf(tab.platform) === 'workflow')
+    ]
+  }, [bots])
   const reconnectOpened = useRef<string | null>(null)
   const isOwner = myRole === 'owner'
   const canWrite = myRole !== 'viewer' // the CP denies viewer writes; hide the controls too
@@ -238,19 +242,34 @@ export default function IntegrationsView() {
         )}
       </div>
 
-      <Section label={t('messagingApps')}>
-        <BotsCard
-          canWrite={canWrite}
-          me={me}
-          targetBotId={targetBotId}
-          targetPlatform={targetPlatform}
-          onDelete={setDeletingBot}
-        />
-      </Section>
+      {chatTabs.length > 0 && (
+        <Section label={t('messagingApps')}>
+          <BotsCard
+            tabs={chatTabs}
+            canWrite={canWrite}
+            me={me}
+            targetBotId={targetBotId}
+            targetPlatform={targetPlatform}
+            onDelete={setDeletingBot}
+          />
+        </Section>
+      )}
 
-      <Section label={t('codeHosts')}>
-        <GithubCard canWrite={canWrite} isOwner={isOwner} />
+      <Section label={t('workflow')}>
         {/* Cards own no margin here (see Section) — every card after the first supplies its own gap. */}
+        {workflowTabs.length > 0 && (
+          <div className="mb-4">
+            <BotsCard
+              tabs={workflowTabs}
+              canWrite={canWrite}
+              me={me}
+              targetBotId={targetBotId}
+              targetPlatform={targetPlatform}
+              onDelete={setDeletingBot}
+            />
+          </div>
+        )}
+        <GithubCard canWrite={canWrite} isOwner={isOwner} />
         <div className="mt-4">
           <GitlabCard canWrite={canWrite} />
         </div>
@@ -273,19 +292,17 @@ export default function IntegrationsView() {
   )
 }
 
-// ── Tabbed IM bots card ───────────────────────────────────────────────────────
-// The platform tabs select one complete roster at a time — in-use and free bots
-// are shown together, and "Show in use" narrows to the ones an agent actually
-// answers on. Each row carries the Sharable toggle (PATCH /bots/:id; the CP's
-// 409 reason renders inline) + installed-agent stack and expands to the bot's
-// channel roster.
+// One section's tabbed Bots card: a tab is one platform's whole roster, and a row expands to the bot's conversations.
 function BotsCard({
+  tabs,
   canWrite,
   me,
   targetBotId,
   targetPlatform,
   onDelete
 }: {
+  /** This section's platform tabs; never empty. */
+  tabs: readonly BotPlatformTab[]
   canWrite: boolean
   me: MeDto | null
   targetBotId: string | null
@@ -323,13 +340,15 @@ function BotsCard({
     const row = bot
       ? botChannels(bot, integrations, unnamedLabel).find((c) => c.channelId === resumed.channelId)
       : undefined
-    if (!bot || !row) return
+    // Only the card holding the bot's tab resumes it, on that tab.
+    const tab = bot ? tabs.find((candidate) => botMatchesPlatformTab(bot, candidate)) : undefined
+    if (!bot || !row || !tab) return
     clearRoutingResume()
+    setPlatformTabKey(tab.key)
     setOpenBotId(bot.id)
     setRoutingRow({ botId: bot.id, channelId: row.channelId, name: row.name, resume: true })
-  }, [bots, integrations, unnamedLabel])
+  }, [bots, integrations, unnamedLabel, tabs])
   const [routingErr, setRoutingErr] = useState<{ botId: string; msg: string } | null>(null)
-  const tabs = visibleBotPlatformTabs(bots)
   const [platformTabKey, setPlatformTabKey] = useState<string>(tabs[0]?.key ?? '')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
@@ -345,7 +364,7 @@ function BotsCard({
 
   const targetBot = bots.find((bot) => bot.id === targetBotId)
   const targetBotPlatformTabKey = targetBot ? tabs.find((tab) => botMatchesPlatformTab(targetBot, tab))?.key : undefined
-  // Ungated modules keep the strip non-empty, so falling back to the first tab keeps this lookup total.
+  // The page renders a card only with tabs, so falling back to the first tab keeps this lookup total.
   const platformTab = (tabs.find((tab) => tab.key === platformTabKey) ?? tabs[0])!
   const { label } = platformTab
   const platformBots = bots.filter((bot) => botMatchesPlatformTab(bot, platformTab))

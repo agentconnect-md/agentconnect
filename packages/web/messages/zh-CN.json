@@ -1962,7 +1962,7 @@
     "repositoryAccess": "仓库访问权限",
     "repository": "仓库",
     "messagingApps": "消息应用",
-    "codeHosts": "代码托管平台",
+    "workflow": "工作流",
     "workspaceUnavailable": "工作区不可用",
     "botPlatform": "机器人平台",
     "showInUse": "仅显示使用中",

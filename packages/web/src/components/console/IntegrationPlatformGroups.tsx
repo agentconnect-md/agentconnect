@@ -2,7 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { PLATFORMS, type PlatformTile } from './platforms/host-projections'
 import { useOfferedPlatform } from './platforms/offered'
-import { platformRegistry } from './platforms/registry'
+import { INTEGRATION_GROUPS, integrationGroupOf } from './platforms/registry'
 
 // One column width for every group: the fullest row fills, shorter rows keep that width left-aligned.
 export const PLATFORM_TILE_WIDTH = 'w-[calc((100%_-_(var(--tile-cols)_-_1)_*_--spacing(2))_/_var(--tile-cols))]'
@@ -21,12 +21,9 @@ export function IntegrationPlatformGroups({
   const t = useTranslations('Integrations.dialog')
   const offered = useOfferedPlatform()
   const tiles = PLATFORMS.filter((tile) => offered(tile.key))
-  const groups = (['chat', 'workflow'] as const).map((group) => ({
+  const groups = INTEGRATION_GROUPS.map((group) => ({
     group,
-    tiles: tiles.filter((tile) => {
-      const module = platformRegistry.get(tile.key)
-      return (module ? (module.integrationGroup ?? 'chat') : 'workflow') === group
-    })
+    tiles: tiles.filter((tile) => integrationGroupOf(tile.key) === group)
   }))
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   const cols = Math.min(MAX_COLS, Math.max(1, ...groups.map((entry) => entry.tiles.length)))

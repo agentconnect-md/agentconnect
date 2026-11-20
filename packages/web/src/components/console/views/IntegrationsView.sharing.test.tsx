@@ -101,8 +101,9 @@ describe('the retired join-public-channels switch', () => {
   })
 })
 
-/** The Bots card's column headings, as rendered. */
-const headings = () => [...host.querySelectorAll('.row.h > span')].map((s) => s.textContent)
+/** The column headings of the Bots card holding `row`, as rendered. */
+const headings = (row: HTMLElement) =>
+  [...row.closest('.card')!.querySelectorAll('.row.h > span')].map((s) => s.textContent)
 
 describe('the Sharable column', () => {
   it('is absent for a Linear workspace, whose sharing is not a choice', async () => {
@@ -112,7 +113,7 @@ describe('the Sharable column', () => {
     const row = await botRow('Linear', 'ws-1')
 
     expect(row.querySelector('[role="switch"]')).toBeNull()
-    expect(headings()).not.toContain('Sharable')
+    expect(headings(row)).not.toContain('Sharable')
   })
 
   it('is absent on a platform that cannot share a bot', async () => {
@@ -120,7 +121,7 @@ describe('the Sharable column', () => {
     const row = await botRow('Telegram', 'tg-1')
 
     expect(row.querySelector('[role="switch"]')).toBeNull()
-    expect(headings()).not.toContain('Sharable')
+    expect(headings(row)).not.toContain('Sharable')
   })
 
   it('stays where a row still carries a flag that can be turned off', async () => {
@@ -128,7 +129,7 @@ describe('the Sharable column', () => {
     const row = await botRow('Telegram', 'tg-2')
 
     expect(row.querySelector('[role="switch"]')).not.toBeNull()
-    expect(headings()).toContain('Sharable')
+    expect(headings(row)).toContain('Sharable')
   })
 
   it('keeps Slack’s toggle exactly as it was', async () => {
@@ -137,7 +138,7 @@ describe('the Sharable column', () => {
 
     const toggle = row.querySelector('[role="switch"]')
     expect(toggle).not.toBeNull()
-    expect(headings()).toContain('Sharable')
+    expect(headings(row)).toContain('Sharable')
     expect(toggle?.getAttribute('aria-checked')).toBe('true')
     expect((toggle as HTMLButtonElement).disabled).toBe(false)
   })
