@@ -126,6 +126,20 @@ export function FilesPanel({
   }, [onRootSettledChange, settled])
   // A filter is over one tree; another session's is a different set of paths.
   useEffect(() => setQuery(''), [scope])
+  // One section open at a time: session files first, unless the viewer holds a checkout file to show in its tree.
+  const [openSection, setOpenSection] = useState<FilesSection | null>(() =>
+    openFilePath && !openFileRoot ? 'workspace' : 'session'
+  )
+  const toggleSection = (section: FilesSection) => setOpenSection((current) => (current === section ? null : section))
+  // A file the viewer opens later reveals the section that holds it, since this panel stays mounted with the page.
+  useEffect(() => {
+    if (openFileRoot) setOpenSection('session')
+    else if (openFilePath) setOpenSection('workspace')
+  }, [openFilePath, openFileRoot])
+  // The areas refresh only while shown: a hidden tab or a closed section holds its tick, and catches up in one read when shown again.
+  const sessionVisible = active && openSection === 'session'
+  const sessionTick = useRef(tick)
+  if (sessionVisible) sessionTick.current = tick
 
   const dirtyMap = useMemo(() => workspaceDirtyMap(git), [git])
   // Every FILE the tree has actually loaded — the only corpus a client-side filter can honestly search, since `workspace/list` is per-directory and no path-search frame exists.
@@ -237,84 +251,157 @@ export function FilesPanel({
             ? 'Git status unavailable — the daemon may be offline'
             : null
 
-  return (
-    <div data-files-panel="" className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-none flex-col gap-[7px] border-b border-(--border-subtle) px-3 py-[10px]">
-        <div className="relative flex items-center">
-          <Icon
-            name="search"
-            size={13}
-            color="var(--text-tertiary)"
-            className="pointer-events-none absolute left-[9px]"
-          />
-          <input
-            className="inp mn h-8 min-h-8 w-full py-1 pr-2 pl-[27px] text-[12px]"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('findPlaceholder')}
-            aria-label={t('findLabel')}
-            spellCheck={false}
-          />
-        </div>
-        <div className="flex min-w-0 items-center gap-2">
-          {/* The note outranks the branch: the SCOPED status is where the row tags come from, so a reader looking at an untagged tree is owed the reason, not a branch label borrowed from the primary checkout. */}
-          {outcome === 'repo' && branch ? (
-            <span
-              className="mono flex min-w-0 max-w-[55%] flex-none items-center gap-[4px] text-[11px] font-medium text-(--text-secondary)"
-              title={branchTitle}
-            >
-              <Icon name="git-branch" size={11} color="var(--text-tertiary)" className="flex-none" />
-              <span className="truncate">{branch}</span>
-            </span>
-          ) : gitNote ? (
-            <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-              {gitNote}
-            </span>
-          ) : null}
-          {workdir ? (
-            // The agent's configured directory either way, so in session scope it names the primary checkout rather than the worktree listed below — same disclaimer the branch beside it carries.
-            <span
-              className="mono min-w-0 flex-1 truncate text-right text-[11px] font-normal text-(--text-tertiary)"
-              title={sessionId ? `${workdir} — the agent's workspace; this session runs in its own worktree` : workdir}
-            >
-              {workdir}
-            </span>
-          ) : null}
-        </div>
+  const workspaceHeader = (
+    <div className="flex flex-none flex-col gap-[7px] border-b border-(--border-subtle) px-3 py-[10px]">
+      <div className="relative flex items-center">
+        <Icon
+          name="search"
+          size={13}
+          color="var(--text-tertiary)"
+          className="pointer-events-none absolute left-[9px]"
+        />
+        <input
+          className="inp mn h-8 min-h-8 w-full py-1 pr-2 pl-[27px] text-[12px]"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={t('findPlaceholder')}
+          aria-label={t('findLabel')}
+          spellCheck={false}
+        />
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto py-[6px]">
-        {body()}
-        {sessionFilesId ? (
-          <SessionFilesSection
-            key={`${agentId}:${sessionFilesId}`}
-            agentId={agentId}
-            sessionId={sessionFilesId}
-            tick={tick}
-            selectedPath={openFileRoot ? (openFilePath ?? null) : null}
-            selectedRoot={openFileRoot ?? null}
-            onOpenFile={onOpenFile}
-          />
+      <div className="flex min-w-0 items-center gap-2">
+        {/* The note outranks the branch: the SCOPED status is where the row tags come from, so a reader looking at an untagged tree is owed the reason, not a branch label borrowed from the primary checkout. */}
+        {outcome === 'repo' && branch ? (
+          <span
+            className="mono flex min-w-0 max-w-[55%] flex-none items-center gap-[4px] text-[11px] font-medium text-(--text-secondary)"
+            title={branchTitle}
+          >
+            <Icon name="git-branch" size={11} color="var(--text-tertiary)" className="flex-none" />
+            <span className="truncate">{branch}</span>
+          </span>
+        ) : gitNote ? (
+          <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            {gitNote}
+          </span>
+        ) : null}
+        {workdir ? (
+          // The agent's configured directory either way, so in session scope it names the primary checkout rather than the worktree listed below — same disclaimer the branch beside it carries.
+          <span
+            className="mono min-w-0 flex-1 truncate text-right text-[11px] font-normal text-(--text-tertiary)"
+            title={sessionId ? `${workdir} — the agent's workspace; this session runs in its own worktree` : workdir}
+          >
+            {workdir}
+          </span>
         ) : null}
       </div>
-      {/* `lastFetchAt` is `.git/FETCH_HEAD`'s mtime, which a linked worktree has no directory for — so session scope has no footer at all, by construction rather than by omission. The design's file count and total size are dropped: neither exists without a daemon-side walk. */}
-      {git?.lastFetchAt || git?.truncated ? (
-        <div
-          data-files-footer=""
-          className="flex flex-none items-center gap-2 border-t border-(--border-subtle) px-3 py-[7px]"
-        >
-          {git.lastFetchAt ? (
-            <span className="mono flex-none text-[11px] font-normal text-(--text-tertiary)" title={t('lastFetched')}>
-              {`synced ${formatFileMtime(git.lastFetchAt)}`}
-            </span>
-          ) : null}
-          {git.truncated ? (
-            <span className="min-w-0 flex-1 truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-              {`status tags cover the first ${git.files.length} changed files`}
-            </span>
-          ) : null}
+    </div>
+  )
+  // `lastFetchAt` is `.git/FETCH_HEAD`'s mtime, which a linked worktree has no directory for, so session scope has no footer by construction.
+  const workspaceFooter =
+    git?.lastFetchAt || git?.truncated ? (
+      <div
+        data-files-footer=""
+        className="flex flex-none items-center gap-2 border-t border-(--border-subtle) px-3 py-[7px]"
+      >
+        {git.lastFetchAt ? (
+          <span className="mono flex-none text-[11px] font-normal text-(--text-tertiary)" title={t('lastFetched')}>
+            {`synced ${formatFileMtime(git.lastFetchAt)}`}
+          </span>
+        ) : null}
+        {git.truncated ? (
+          <span className="min-w-0 flex-1 truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            {`status tags cover the first ${git.files.length} changed files`}
+          </span>
+        ) : null}
+      </div>
+    ) : null
+  const workspace = (
+    <>
+      {workspaceHeader}
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto py-[6px]">{body()}</div>
+      {workspaceFooter}
+    </>
+  )
+
+  // Without a session there is no files directory, so the checkout is the whole panel.
+  if (!sessionFilesId) {
+    return (
+      <div data-files-panel="" className="flex min-h-0 flex-1 flex-col">
+        {workspace}
+      </div>
+    )
+  }
+
+  return (
+    <div data-files-panel="" className="flex min-h-0 flex-1 flex-col">
+      <SectionHeader
+        section="session"
+        label={t('sessionFiles')}
+        title={t('sessionFilesTitle')}
+        open={openSection === 'session'}
+        onToggle={toggleSection}
+      />
+      {/* Kept mounted while closed, so its folds and expanded folders survive switching sections and tabs. */}
+      <div
+        id="files-section-session"
+        className={`min-h-0 flex-1 flex-col overflow-auto py-[6px] ${openSection === 'session' ? 'flex' : 'hidden'}`}
+      >
+        <SessionFilesSection
+          key={`${agentId}:${sessionFilesId}`}
+          agentId={agentId}
+          sessionId={sessionFilesId}
+          tick={sessionTick.current}
+          visible={sessionVisible}
+          selectedPath={openFileRoot ? (openFilePath ?? null) : null}
+          selectedRoot={openFileRoot ?? null}
+          onOpenFile={onOpenFile}
+        />
+      </div>
+      <SectionHeader
+        section="workspace"
+        label={t('workspaceFiles')}
+        title={t('workspaceFilesTitle')}
+        open={openSection === 'workspace'}
+        onToggle={toggleSection}
+      />
+      {openSection === 'workspace' ? (
+        <div id="files-section-workspace" className="flex min-h-0 flex-1 flex-col">
+          {workspace}
         </div>
       ) : null}
     </div>
+  )
+}
+
+type FilesSection = 'session' | 'workspace'
+
+// An accordion header: the open section takes the panel's height, the closed one keeps only this row.
+function SectionHeader({
+  section,
+  label,
+  title,
+  open,
+  onToggle
+}: {
+  section: FilesSection
+  label: string
+  title: string
+  open: boolean
+  onToggle: (section: FilesSection) => void
+}) {
+  return (
+    <button
+      type="button"
+      data-files-section={section}
+      aria-expanded={open}
+      aria-controls={`files-section-${section}`}
+      title={title}
+      onClick={() => onToggle(section)}
+      className="flex w-full flex-none cursor-pointer items-center gap-[6px] border-b border-(--border-subtle) bg-transparent px-3 py-[7px] text-left font-sans text-[11.5px] font-semibold leading-normal text-(--text-secondary) hover:bg-(--surface-hover)"
+    >
+      <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} color="var(--text-tertiary)" />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
   )
 }
 
@@ -396,11 +483,12 @@ function treeLevel(args: {
 // What the agent made comes first; what the reader sent it, second.
 const SECTION_AREAS: readonly SessionFileArea[] = ['outputs', 'uploads']
 
-// The session files directory's two areas below the checkout (inbound-file-attachments.md §2.4): no git status, each listed on first open.
+// The session files directory's two areas (inbound-file-attachments.md §2.4): no git status, each listed while open.
 function SessionFilesSection({
   agentId,
   sessionId,
   tick,
+  visible,
   selectedPath,
   selectedRoot,
   onOpenFile
@@ -408,13 +496,18 @@ function SessionFilesSection({
   agentId: string
   sessionId: string
   tick: number
+  /** Whether the section is on screen: nothing is listed before it first is, as every dock panel stays mounted with the page. */
+  visible: boolean
   selectedPath: string | null
   selectedRoot: SessionFileArea | null
   onOpenFile: (path: string, root: SessionFileArea) => void
 }) {
-  const t = useTranslations('Sessions.detail.filesPanel')
-  // The viewer's area opens with the section, so a linked session file shows where it lives; the caller keys it per session.
-  const [open, setOpen] = useState<ReadonlySet<SessionFileArea>>(() => new Set(selectedRoot ? [selectedRoot] : []))
+  // Both areas open with the section, so what the agent made and what was sent to it show at once; the caller keys it per session.
+  const [open, setOpen] = useState<ReadonlySet<SessionFileArea>>(() => new Set(SECTION_AREAS))
+  const [seen, setSeen] = useState(visible)
+  useEffect(() => {
+    if (visible) setSeen(true)
+  }, [visible])
   const toggle = (area: SessionFileArea) =>
     setOpen((current) => {
       const next = new Set(current)
@@ -423,13 +516,7 @@ function SessionFilesSection({
       return next
     })
   return (
-    <div data-session-files="" className="mt-[6px] flex flex-col border-t border-(--border-subtle) pt-[6px]">
-      <div
-        className="px-3 py-[5px] font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)"
-        title={t('sessionFilesTitle')}
-      >
-        {t('sessionFiles')}
-      </div>
+    <div data-session-files="" className="flex flex-col">
       {SECTION_AREAS.map((area) => (
         <Fragment key={area}>
           <FileBrowserRow
@@ -438,7 +525,7 @@ function SessionFilesSection({
             name={`/${area}`}
             onClick={() => toggle(area)}
           />
-          {open.has(area) ? (
+          {open.has(area) && seen ? (
             <SessionFilesArea
               agentId={agentId}
               sessionId={sessionId}

@@ -811,8 +811,9 @@ describe('the viewer route', () => {
     }
 
     await render()
-    // Opened from the Files tree, which is what writes the param.
+    // Opened from the Files tree, which is what writes the param; the checkout sits behind its accordion header.
     await clickRow('Files')
+    await clickRow('Workspace files')
     await clickRow(NASTY_DIR)
     await clickRow(NASTY_FILE)
 
@@ -867,12 +868,9 @@ describe('the viewer route', () => {
       Array.from(container?.querySelectorAll<HTMLElement>('[data-session-files] button') ?? []).find(
         (button) => button.textContent?.trim() === name
       )
-    await act(async () => {
-      rowNamed('/outputs')?.click()
-      await Promise.resolve()
-    })
-    await render()
-    expect(wire.listCalls.at(-1)).toEqual({ path: '', sessionId: 'session-1', root: 'outputs' })
+    // Session files open first, both areas listed with the tab.
+    expect(rowNamed('/outputs')).toBeDefined()
+    expect(wire.listCalls).toContainEqual({ path: '', sessionId: 'session-1', root: 'outputs' })
     await act(async () => {
       rowNamed('notes.md')?.click()
       await Promise.resolve()
@@ -1137,7 +1135,8 @@ describe('the Tasks tab', () => {
     wire.isolation = 'shared'
     wire.tasks = { sessionId: 'session-1', tracked: true, tasks: [runningTask('t1')], truncated: false }
     await render()
-    expect(wire.listCalls.every((call) => call.sessionId === undefined)).toBe(true)
+    // Checkout listings carry no sessionId; only a session files area names its session.
+    expect(wire.listCalls.filter((call) => !('root' in call)).every((call) => call.sessionId === undefined)).toBe(true)
     expect(wire.taskCalls).toEqual([{ agentId: 'agent-1', sessionId: 'session-1' }])
     expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('background t1')
   })
@@ -1614,7 +1613,7 @@ describe('a coordinator’s task cards', () => {
     expect(container?.querySelector('[data-dock-tab="tasks"]')?.getAttribute('aria-selected')).toBe('true')
     // The dock's first tab is Tasks, so the one-line header does not repeat it, and a coordinator has no workspace.
     expect(container?.querySelector('[data-header-tasks]')).toBeNull()
-    expect(container?.textContent).not.toContain('Workspace')
+    expect(container?.querySelector('[data-session-header]')?.textContent).not.toContain('Workspace')
     expect(container?.querySelector('[data-session-header] [data-header-coordinator]')).not.toBeNull()
   })
 

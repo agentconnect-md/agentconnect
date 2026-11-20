@@ -227,10 +227,13 @@ is what `isolation: 'session'` buys.
   `sessionId` only for an isolated session, and the areas exist for shared sessions too.
   Daemon feature `session-files-v1` gates it; an older daemon is refused with 409 before
   any frame is sent.
-- **The dock's Files tab gains a section.** Below the checkout tree, a "Session files"
-  section lists `/outputs` and `/uploads` through that scope. It shows no Git status,
-  opens a file in the left viewer like any tree row, and refreshes on the turn's falling
-  edge with the tree.
+- **The dock's Files tab is an accordion.** "Session files" comes first and is open by
+  default, with `/outputs` and `/uploads` both listed through that scope; "Workspace
+  files" follows with the checkout's filter, branch line and tree. One section is open
+  at a time, either can collapse, and a file the viewer opens reveals the section that
+  holds it. The areas show no Git status, open a file in the left viewer like any tree
+  row, and are listed only while their section is on screen (webchat-side-panels.md
+  §3.3).
 - **Links in replies.** `workspace-file-links.ts` links a `files:` path as it links one in
   the checkout.
 
