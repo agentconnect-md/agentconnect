@@ -1,11 +1,12 @@
 // Unattended upgrade onto the CP-announced release (daemon-auto-upgrade.md §4.2, §5, §7): the CP decides what, this decides when.
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   CONFIG_KEY_UPGRADE_AUTO,
   CONFIG_KEY_UPGRADE_LATEST,
   DaemonRelease,
+  DEFAULT_KEEP_VERSIONS,
   LIFECYCLE_DEFERRED_REASON,
   VERSION_PRUNE_DEFERRED_FILE,
   type DaemonLifecycleBegin,
@@ -24,6 +25,7 @@ import {
   writeTrialMarker,
   type AutoUpgradeState
 } from './auto-upgrade-store.js'
+import { readCurrentVersion, readDeferredPrune } from './cli-upgrade.js'
 
 export const AUTO_UPGRADE_EVALUATE_MS = 5 * 60_000
 export const AUTO_UPGRADE_EVALUATE_JITTER_MS = 60_000
@@ -37,6 +39,8 @@ export const TRIAL_REGISTER_REJECTIONS = 2
 
 // The CLI's `installTarget` wording for a version whose `engines.node` this host cannot run.
 const ENGINE_MISMATCH_RE = /requires Node .* but this CLI runs on/
+// Commander's rejection from a CLI that predates `version prune --deferred`.
+const LEGACY_PRUNE_RE = /unknown option '--deferred'/
 
 const AUTO_UPGRADE_CONFIG_KEYS: ReadonlySet<string> = new Set([CONFIG_KEY_UPGRADE_AUTO, CONFIG_KEY_UPGRADE_LATEST])
 
@@ -284,9 +288,27 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
 
   /** The prune an install deferred while the old daemon ran; READY on `current` is the first moment no older bundle is in use. */
   private async runDeferredPrune(): Promise<void> {
-    if (!this.host.eligible() || !existsSync(join(this.host.root(), VERSION_PRUNE_DEFERRED_FILE))) return
-    const result = await this.host.runCli(['version', 'prune', '--deferred', this.host.version()])
-    if (!result.ok) this.host.log().warn(`auto-upgrade: deferred version prune failed: ${result.stderr.trim()}`)
+    const root = this.host.root()
+    const file = join(root, VERSION_PRUNE_DEFERRED_FILE)
+    if (!this.host.eligible() || !existsSync(file)) return
+    const log = this.host.log()
+    const running = this.host.version()
+    const result = await this.host.runCli(['version', 'prune', '--deferred', running])
+    if (result.ok) return
+    if (!LEGACY_PRUNE_RE.test(result.stderr)) {
+      log.warn(`auto-upgrade: deferred version prune failed: ${result.stderr.trim()}`)
+      return
+    }
+    // An older CLI only has the plain prune, which keeps current and previous; it is safe once this daemon runs `current`.
+    const active = readCurrentVersion(root)
+    if (active !== running) {
+      log.info(`auto-upgrade: deferred version prune skipped: running ${running}, current is ${active ?? '(none)'}`)
+      return
+    }
+    const keep = readDeferredPrune(root)?.keep ?? DEFAULT_KEEP_VERSIONS
+    const legacy = await this.host.runCli(['version', 'prune', '--keep', String(keep)])
+    if (legacy.ok) rmSync(file, { force: true })
+    else log.warn(`auto-upgrade: version prune failed: ${legacy.stderr.trim()}`)
   }
 
   /** §7.2: a trial version the CP authenticates but refuses to register, twice, restores `from`. Unreachable is never a reason. */
