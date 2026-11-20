@@ -73,6 +73,7 @@ import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.j
 import type { GatedDmSeedResolver } from '../orchestrator/linkedDm.js'
 import type { ApprovalRouteResolver } from '../orchestrator/approvalRoute.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
+import type { EmailMembersResolver } from '../orchestrator/emailMembers.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { ComputerLeaseService } from '../registry/computerLeaseService.js'
 import type { ComputerPool } from '../registry/computerPool.js'
@@ -195,6 +196,8 @@ export interface DaemonWsDeps {
   approvalRoute?: ApprovalRouteResolver
   /** The console's session visibility for whoever asks a cross-platform read; absent ⇒ every asker is unidentifiable. */
   readAccess?: ReadAccessResolver
+  /** Which addresses are members who may write to an agent by mail (email-integration.md §4); absent ⇒ nobody is admitted and `register/ok` does not advertise it. */
+  emailMembers?: EmailMembersResolver
   /** Republish the agent's integrations. Needed because §14.8 is the one path where a
    *  daemon REPORT creates an ENABLED row: the reporter is still holding bindRules that
    *  predate it, and it has already cached the conversation, so nothing re-reports and

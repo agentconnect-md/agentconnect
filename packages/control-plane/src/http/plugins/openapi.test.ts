@@ -25,6 +25,8 @@ import { createMsTeamsCpProvider } from '../../platforms/msteams/provider.js'
 import { msTeamsRecoveryRoutes } from '../../platforms/msteams/recovery-routes.js'
 import type { MsTeamsConnectSeams } from '../../platforms/msteams/connect-routes.js'
 import { weComCredentialRoutes } from '../../platforms/wecom/routes.js'
+import { createEmailCpProvider } from '../../platforms/email/provider.js'
+import { emailAddressRoutes } from '../../platforms/email/routes.js'
 
 /** Minimal stub deps: `config` plus the platform registry, which the create
  *  route folds into its documented request body at registration time. Repos
@@ -55,7 +57,8 @@ function stubDeps(): HttpDeps {
       createFeishuCpProvider({}),
       createMsTeamsCpProvider({ installRoutes: [msTeamsRecoveryRoutes({} as HttpDeps, {} as MsTeamsConnectSeams)] }),
       createWeChatCpProvider({ routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] }),
-      createWeComCpProvider({ installRoutes: [weComCredentialRoutes({} as HttpDeps)] })
+      createWeComCpProvider({ installRoutes: [weComCredentialRoutes({} as HttpDeps)] }),
+      createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] })
     ])
   } as unknown as HttpDeps
 }

@@ -52,7 +52,7 @@ async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId
   const ownerUserId = webchatOwnerUserId ?? launchOwnerUserId
   const ownerIsServiceAccount = ownerUserId ? ((await deps.user?.isServiceAccount(ownerUserId)) ?? false) : false
   const platformNamesPeople = await dmPlatformNamesPeople(p, orgId, deps)
-  const dmOwnerUserId = await dmBoundOwner(p, orgId, agentId, deps)
+  const boundOwnerUserId = await boundOwner(p, orgId, agentId, deps)
   return classifySession({
     ...(p.platform !== undefined ? { platform: p.platform } : {}),
     ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
@@ -65,29 +65,34 @@ async function classifyMilestone(p: EventSession, orgId: OrgId, agentId: AgentId
     launchOwnerUserId,
     ownerIsServiceAccount,
     ...(platformNamesPeople !== undefined ? { platformNamesPeople } : {}),
-    ...(dmOwnerUserId !== undefined ? { dmOwnerUserId } : {})
+    ...(boundOwnerUserId !== undefined && p.conversationKind === 'dm' ? { dmOwnerUserId: boundOwnerUserId } : {}),
+    ...(boundOwnerUserId !== undefined && p.conversationKind === 'group_dm'
+      ? { groupOwnerUserId: boundOwnerUserId }
+      : {})
   })
 }
 
-/** The member the agent's own bot bound a root IM DM's sender to at install; undefined where the platform binds no one, null when nothing matched or the read failed. */
-async function dmBoundOwner(
+/** The member the agent's own bot binds the sender of a root IM DM to, or of a group conversation where the platform gives that to its opener; undefined where the platform binds no one, null when nothing matched or the read failed. */
+async function boundOwner(
   p: EventSession,
   orgId: OrgId,
   agentId: AgentId,
   deps: DaemonWsDeps
 ): Promise<string | null | undefined> {
-  if (p.conversationKind !== 'dm' || p.parentSessionId || !p.platform || !p.triggeredBy) return undefined
+  if (p.parentSessionId || !p.platform || !p.triggeredBy) return undefined
   const provider = deps.platforms?.get(p.platform)
   if (!provider?.dmOwnerMember) return undefined
+  if (p.conversationKind !== 'dm' && !(p.conversationKind === 'group_dm' && provider.groupOwnedByOpener))
+    return undefined
   try {
     for (const integration of await deps.integration.listForAgent(agentId)) {
       if (integration.platform !== p.platform || integration.orgId !== orgId) continue
       const bot = await deps.bot?.get(orgId, BotId(integration.botId))
-      const member = bot ? provider.dmOwnerMember(bot, p.triggeredBy) : null
+      const member = bot ? await provider.dmOwnerMember(bot, p.triggeredBy) : null
       if (member) return member
     }
   } catch (err) {
-    deps.log.warn?.({ err, orgId, sessionId: p.sessionId }, 'event/session: reading the DM bot binding failed')
+    deps.log.warn?.({ err, orgId, sessionId: p.sessionId }, 'event/session: reading the bot binding of a sender failed')
   }
   return null
 }

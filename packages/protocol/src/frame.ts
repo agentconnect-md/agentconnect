@@ -87,6 +87,7 @@ import {
 } from './frames/executor.js'
 import { CodeHostNoteDesired, CodeHostNoteResult, CodeHostNoteResultOk } from './frames/codehost-note.js'
 import { AgentApprovalRoute, AgentApprovalRouted } from './frames/approval-route.js'
+import { AgentEmailMembers, AgentEmailMembersOk } from './frames/email.js'
 import { AgentReadAccess, AgentReadAccessOk } from './frames/read-access.js'
 import {
   GithubReviewAuthorize,
@@ -441,6 +442,9 @@ export const FRAME_SCHEMAS = {
   // ── the console's session visibility for whoever asks a cross-platform read (read-access.ts).
   'agent/read-access': AgentReadAccess,
   'agent/read-access/ok': AgentReadAccessOk,
+  // ── which addresses are members who may write to an agent by mail (email.ts).
+  'agent/email-members': AgentEmailMembers,
+  'agent/email-members/ok': AgentEmailMembersOk,
   // ── sandbox wake: a console-initiated resume with no turn (agent.ts `AgentWakeReq`).
   'agent/wake': AgentWakeReq,
   'agent/wake/ok': AgentWakeOk,
@@ -887,6 +891,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('agent/approval-routed', FRAME_SCHEMAS['agent/approval-routed']),
   frame('agent/read-access', FRAME_SCHEMAS['agent/read-access']),
   frame('agent/read-access/ok', FRAME_SCHEMAS['agent/read-access/ok']),
+  frame('agent/email-members', FRAME_SCHEMAS['agent/email-members']),
+  frame('agent/email-members/ok', FRAME_SCHEMAS['agent/email-members/ok']),
   frame('agent/wake', FRAME_SCHEMAS['agent/wake']),
   frame('agent/wake/ok', FRAME_SCHEMAS['agent/wake/ok']),
   // ── routing and daemon control ──

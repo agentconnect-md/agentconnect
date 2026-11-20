@@ -82,6 +82,7 @@ import { createDingTalkCpProvider } from '../../src/platforms/dingtalk/provider.
 import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js'
 import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
 import { createWeComCpProvider } from '../../src/platforms/wecom/provider.js'
+import { createEmailCpProvider } from '../../src/platforms/email/provider.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.repo.js'
@@ -141,6 +142,8 @@ export interface HarnessOpts {
   gitlabBaseUrl?: string
   /** The deployment's Teams app; absent ⇒ none configured. */
   msTeamsApp?: { appId: string; tenantId: string; clientSecret: string }
+  /** The deployment's mail domain; absent ⇒ Email is not set up. */
+  emailMailDomain?: string
   /** The handshake gate every connection shares, as the gateway passes one; absent ⇒ ungated. */
   handshakes?: HandshakeGate
 }
@@ -184,7 +187,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createDingTalkCpProvider(),
     createMsTeamsCpProvider(opts.msTeamsApp ? { app: opts.msTeamsApp } : {}),
     createWeChatCpProvider({}),
-    createWeComCpProvider()
+    createWeComCpProvider(),
+    createEmailCpProvider(opts.emailMailDomain ? { mailDomain: opts.emailMailDomain } : {})
   ])
   const repos = {
     daemonAdmission: new PgDaemonAdmissionRepo(prisma),

@@ -233,6 +233,9 @@ importers:
       '@agentconnect.md/k8s-client':
         specifier: workspace:*
         version: link:../k8s-client
+      '@agentconnect.md/message':
+        specifier: workspace:*
+        version: link:../message
       '@agentconnect.md/object-store':
         specifier: workspace:*
         version: link:../object-store

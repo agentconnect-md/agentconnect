@@ -323,6 +323,7 @@ the other origin scalars:
 | Slack or Feishu/Lark group chat with trusted `externalOrigin`                                                                                                  | `org` or `external` | External source scope; `org` while sync is disabled, `external` while enabled                                                          |
 | Feishu/Lark Bot p2p chat with trusted `externalOrigin`                                                                                                         | `org` or `external` | Initiator as provenance while sync is disabled; current conversation membership while enabled                                          |
 | GitHub hook with an accepted delivery snapshot                                                                                                                 | `org` or `external` | Repository source scope; `org` while sync is disabled, `external` while enabled                                                        |
+| Group conversation on a platform that gives one to its opener (Email: a mail thread with several people)                                                       | `private`           | `user:<member whose message opened it>`; no member matches the opener, or the read fails ⇒ `private`, initiator tuple (fail closed)    |
 | Other IM group DM / channel (or absent kind)                                                                                                                   | `org`               | `<platform>:<workspace>:<uid>` (initiator)                                                                                             |
 | Agent-to-agent child (`triggeredBy` is an agent UUID)                                                                                                          | inherits parent     | inherits direct owner or external source scope; unresolved parent ⇒ private/unreadable (fail closed)                                   |
 | Automation without a trusted external destination                                                                                                              | `org`               | `null`                                                                                                                                 |
@@ -350,6 +351,16 @@ Notes:
   the owner is fixed at ingest: deleting or re-binding the bot later does not
   hand the history to anyone else. No match or a failed read keeps the row
   `private` to the sender's chat tuple, never `org`.
+- **A group conversation can belong to its opener.** A provider whose group
+  conversation is a few people's correspondence, not a room of the
+  organization, declares `groupOwnedByOpener`, and ingest resolves the opener
+  with the same `dmOwnerMember` read a DM uses. Email is the one such platform
+  ([email-integration.md §5.3](email-integration.md#53-visibility)): the
+  sender's address is matched against a verified sign-in email of the bot's
+  organization. The other participants do not gain the session, which sets
+  aside for this platform the rule below that a shared conversation never
+  takes one initiator as its access owner. No match or a failed read keeps the
+  row `private` to the opener's chat tuple, never `org`.
 - Webchat `triggeredBy` is the console user's **email** (set in
   `routes/webchat-token.ts`), which degrades under devAuth and is not a stable
   key — hence the `WebchatConversation` lookup rather than trusting the wire
