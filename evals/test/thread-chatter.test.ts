@@ -2,8 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { runThreadChatter } from '../games/engine.js'
-import { TICKETING_THREAD } from '../games/thread-chatter.js'
+import { TICKETING_THREAD, runThreadChatter } from '../response-choice/thread-chatter.js'
 
 const scratchRoots: string[] = []
 

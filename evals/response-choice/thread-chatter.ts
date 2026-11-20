@@ -1,14 +1,19 @@
 // Thread chatter: after one tag in a mention-only channel, does the agent stay out of people's untagged exchange?
-import type {
-  CollaborationGameWorld,
-  DaemonEvaluationEnvironment,
-  GameVerdict,
-  GameWave,
-  GameWaveRecord,
-  RecordedOutboundEffect
+import {
+  CollaborationGameRunner,
+  type CollaborationGameResult,
+  type CollaborationGameWorld,
+  type DaemonEvaluationEnvironment,
+  type GameVerdict,
+  type GameWave,
+  type GameWaveRecord,
+  type RecordedOutboundEffect
 } from '../../packages/daemon/src/evaluation/index.js'
-import type { ArenaWorld } from './world.js'
-import type { CompiledRoom } from './types.js'
+import { NO_RESPONSE_SENTINEL } from '../../packages/daemon/src/session/no-response.js'
+import { prepareGameSubject, preflightRealSubject, type GameSubjectSpec } from '../games/subject.js'
+import { compileTopology } from '../games/topology.js'
+import type { CompiledRoom } from '../games/types.js'
+import { ArenaWorld } from '../games/world.js'
 
 /** One scripted human message; `{bot}` is replaced with the agent's mention token. */
 export interface ChatterLine {
@@ -270,5 +275,89 @@ export class ThreadChatterGame implements CollaborationGameWorld {
 
   topologyArtifact(): unknown {
     return this.world.topology
+  }
+}
+
+/** Scripted hosts: `always` answers every delivery, `tagged` answers only a prompt that carries its mention. */
+export function scriptedChatterHostFactory(
+  policy: 'always' | 'tagged',
+  botUserId: string
+): (agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => unknown {
+  return (agent, onUpdate) => {
+    let sessions = 0
+    return {
+      start: async () => {},
+      newSession: async () => `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`,
+      hasSession: () => true,
+      modelOptions: () => ({ current: 'scripted-chatter', models: ['scripted-chatter'] }),
+      prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+        const text = blocks.map((block) => block.text ?? '').join('\n')
+        const reply = policy === 'always' || text.includes(`<@${botUserId}>`) ? 'Noted.' : NO_RESPONSE_SENTINEL
+        onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: reply } })
+        return { stopReason: 'end_turn' }
+      },
+      cancel: async () => {},
+      stop: async () => {}
+    }
+  }
+}
+
+export interface ThreadChatterRunOptions {
+  seed?: number
+  artifactDir: string
+  lines?: ChatterLine[]
+  timeoutMs?: number
+  /** Scripted host policy when no real subject is given (default `tagged`). */
+  scriptedPolicy?: 'always' | 'tagged'
+  subject?: GameSubjectSpec
+  keepSubject?: boolean
+}
+
+/** Runs one thread through a real daemon; a real subject is preflighted so an unlaunchable runtime fails loudly. */
+export async function runThreadChatter(options: ThreadChatterRunOptions): Promise<CollaborationGameResult> {
+  const seed = options.seed ?? 42
+  const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
+  const topology = compileTopology({
+    game: 'thread-chatter',
+    seed,
+    agents: [{ id: 'ticketing-bot' }],
+    rooms: [{ id: 'team-channel', platform: 'slack', members: ['ticketing-bot'] }]
+  })
+  const world = new ArenaWorld(topology)
+  const game = new ThreadChatterGame({
+    world,
+    roomAlias: 'team-channel',
+    ...(options.lines ? { lines: options.lines } : {})
+  })
+  const subject = prepareGameSubject(topology, subjectSpec)
+  try {
+    if (subjectSpec.kind === 'real') await preflightRealSubject(subject.root)
+    const runner = new CollaborationGameRunner({
+      root: subject.root,
+      world: game,
+      artifactDir: options.artifactDir,
+      game: 'thread-chatter',
+      seed,
+      mode: 'deterministic',
+      subjectKind: subjectSpec.kind,
+      ...(subjectSpec.kind === 'scripted'
+        ? {
+            hostFactory: scriptedChatterHostFactory(
+              options.scriptedPolicy ?? 'tagged',
+              topology.integrations[0]!.botUserId
+            ) as never
+          }
+        : {}),
+      capabilityProfile: { memory: 'off' },
+      limits: {
+        maxSteps: (options.lines ?? TICKETING_THREAD).length + 2,
+        timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 60_000 : 15 * 60_000)
+      },
+      agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias })),
+      secrets: subject.secrets
+    })
+    return await runner.run()
+  } finally {
+    if (!options.keepSubject) subject.cleanup()
   }
 }
