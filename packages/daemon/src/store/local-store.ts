@@ -2225,7 +2225,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
       await addColumn(db, store.postgres, 'assistant_subsession', column, type)
   },
   // v83 starts every task that already exists as one a full run of six looks left, so only work that runs a round from now on is looked back at (§5.20).
-  async (db) => {
+  async (db, store) => {
+    if (!(await tableExists(db, store.postgres, 'assistant_subsession'))) return
     await db.query(
       `UPDATE assistant_subsession SET lookedAt = ?, lookLeft = 6
         WHERE mode = 'work' AND closedAt IS NULL AND lookedAt IS NULL`,
