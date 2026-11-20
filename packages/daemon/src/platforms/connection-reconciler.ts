@@ -69,6 +69,8 @@ import {
 import { consolidateWeChat, WeChatConnection, weChatConnKey, weChatEndpointOverrides } from './wechat/connection.js'
 import { weChatStateStore } from './wechat/state.js'
 import { consolidateWeCom, WeComConnection, weComConnKey } from './wecom/connection.js'
+import { consolidateEmail, EmailConnection } from './email/connection.js'
+import { transcriptChannelKey } from '../store/local-store.js'
 import { MsTeamsWriteBudgets } from './msteams/write-budget.js'
 import { msTeamsRelayPort } from './msteams/api.js'
 import type { PlatformRelay } from './platform-relay.js'
@@ -95,6 +97,7 @@ export type PlatformConnection =
   | MsTeamsConnection
   | WeChatConnection
   | WeComConnection
+  | EmailConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -208,6 +211,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     msteams?: ReadonlyMap<string, MsTeamsConnection>
     wechat?: ReadonlyMap<string, WeChatConnection>
     wecom?: ReadonlyMap<string, WeComConnection>
+    email?: ReadonlyMap<string, EmailConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -229,6 +233,10 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindWeChat?(integrationId: string, conn: WeChatConnection, botId: string): void
   /** The BotID a group mention names, which WeCom sends as `aibotid`. */
   bindWeCom?(integrationId: string, conn: WeComConnection, botId: string): void
+  /** The agent's own address, which a group mail names it by. */
+  bindEmail?(integrationId: string, conn: EmailConnection, address: string): void
+  /** The transport scope an integration's conversations are recorded under. */
+  transportScopeOf?(integrationId: string): string | undefined
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
@@ -471,6 +479,8 @@ export class ConnectionReconciler {
   // Keyed by app, tenant and secret, like Google Chat's; every client of one app in one tenant shares its write budget.
   readonly msTeamsPool = new ConnectionPool<MsTeamsConnection>('msteams', (conn) => conn.key)
   private readonly msTeamsBudgets = new MsTeamsWriteBudgets()
+  // Keyed by address and bot row; nothing to dial, so a client is ready the moment it is made.
+  readonly emailPool = new ConnectionPool<EmailConnection>('email', (conn) => conn.key)
   // Pending background retry timers for Slack connections that failed to open
   // at startup (keyed by appToken). Cleared on daemon stop.
   private readonly slackRetryTimers = new Map<string, TimerHandle>()
@@ -513,7 +523,8 @@ export class ConnectionReconciler {
       this.dingTalkPool,
       this.msTeamsPool,
       this.weChatPool,
-      this.weComPool
+      this.weComPool,
+      this.emailPool
     ]
   }
 
@@ -712,7 +723,12 @@ export class ConnectionReconciler {
     const weComByIntegration = new Map<string, string>()
     for (const [key, group] of weComGroups)
       for (const { integrationId } of group.integrations) weComByIntegration.set(integrationId, key)
+    const emailGroups = consolidateEmail(agents)
+    const emailByIntegration = new Map<string, string>()
+    for (const [key, group] of emailGroups)
+      for (const { integrationId } of group.integrations) emailByIntegration.set(integrationId, key)
     const allDesiredIds = new Set([
+      ...emailByIntegration.keys(),
       ...QQByIntegration.keys(),
       ...dingTalkByIntegration.keys(),
       ...msTeamsByIntegration.keys(),
@@ -742,6 +758,9 @@ export class ConnectionReconciler {
     }
     for (const [id, conn] of bindings.wecom ?? []) {
       if (weComConnKey(conn.group) !== weComByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.email ?? []) {
+      if (conn.key !== emailByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     // Unbinding drops the connection mapping, the bot identity and the channel
     // snapshot together — the three indexes an evicted integration must leave behind.
@@ -820,6 +839,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.msTeamsPool, new Set(msTeams.keys()))
     await this.prunePool(this.weChatPool, new Set(weChatGroups.keys()))
     await this.prunePool(this.weComPool, new Set(weComGroups.keys()))
+    await this.prunePool(this.emailPool, new Set(emailGroups.keys()))
   }
 
   /** Close every connection in `pool` whose opaque identity consolidation no
@@ -1342,6 +1362,27 @@ export class ConnectionReconciler {
       for (const { integrationId } of group.integrations)
         if (this.host.bindings().msteams?.get(integrationId) !== conn)
           this.host.bindMsTeams?.(integrationId, conn, conn.botUserId)
+    }
+  }
+
+  /** Reconcile the agent addresses (email-integration.md §8): no connection to open, so each is bound as soon as it is made. */
+  async reconcileEmailConnections(): Promise<void> {
+    for (const group of consolidateEmail(this.host.transportAgents()).values()) {
+      let conn = this.emailPool.find(group.key)
+      if (!conn) {
+        const relay = this.host.platformRelay?.()
+        const scopeOf = group.integrations[0]!.integrationId
+        conn = new EmailConnection({
+          group,
+          ...(relay ? { relay } : {}),
+          store: () => this.host.store(),
+          transcriptChannel: (channel) => transcriptChannelKey(channel, this.host.transportScopeOf?.(scopeOf))
+        })
+        this.emailPool.add(conn)
+      }
+      for (const { integrationId } of group.integrations)
+        if (this.host.bindings().email?.get(integrationId) !== conn)
+          this.host.bindEmail?.(integrationId, conn, conn.botUserId)
     }
   }
 

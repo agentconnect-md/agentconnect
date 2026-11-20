@@ -26,6 +26,7 @@ import type { z, ZodType } from 'zod'
 import {
   EMPTY_DECISION_BUNDLE,
   IntegrationDingTalkConfig,
+  IntegrationEmailConfig,
   IntegrationMsTeamsConfig,
   IntegrationQQConfig,
   IntegrationWeChatConfig,
@@ -58,7 +59,8 @@ const CONFIG_SCHEMAS = {
   dingtalk: IntegrationDingTalkConfig,
   msteams: IntegrationMsTeamsConfig,
   wechat: IntegrationWeChatConfig,
-  wecom: IntegrationWeComConfig
+  wecom: IntegrationWeComConfig,
+  email: IntegrationEmailConfig
 } as const
 
 /** The union of every platform's validated config, derived from the registry

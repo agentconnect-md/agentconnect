@@ -99,6 +99,7 @@ import {
   APPROVAL_DM_ROUTE_V1_FEATURE,
   ASSISTANT_RESPONSIBLE_ROUTE_V1_FEATURE,
   CHAT_ACTOR_V1_FEATURE,
+  EMAIL_MEMBERS_V1_FEATURE,
   COMPUTER_APPROVERS_V1_FEATURE,
   READ_ACCESS_V1_FEATURE,
   READ_ACCESS_LINKED_V1_FEATURE,
@@ -669,6 +670,11 @@ import type { WeComConnection } from './platforms/wecom/connection.js'
 import { weComCommandChrome } from './platforms/wecom/command-chrome.js'
 import { weComPlatformModule } from './platforms/wecom/module.js'
 import { createWeComTurnOutput } from './platforms/wecom/surface.js'
+import type { EmailConnection } from './platforms/email/connection.js'
+import { emailCommandChrome } from './platforms/email/command-chrome.js'
+import { EmailMembers } from './platforms/email/members.js'
+import { emailPlatformModule } from './platforms/email/module.js'
+import { createEmailTurnOutput, deliverEmailReply, type EmailTurnHost } from './platforms/email/turn-output.js'
 import { TelegramConnection, type TelegramCallback } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
@@ -2005,6 +2011,7 @@ export class Daemon {
     registry.register(msTeamsCommandChrome)
     registry.register(weChatCommandChrome)
     registry.register(weComCommandChrome)
+    registry.register(emailCommandChrome)
     return registry
   })()
 
@@ -2216,6 +2223,7 @@ export class Daemon {
           warn: (message) => this.log.warn(message)
         })
       )
+      registry.register(createEmailTurnOutput(this.emailTurnHost()))
       return registry
     })()
   // Slack id → display-name resolver (created with the store in start()).
@@ -2239,6 +2247,16 @@ export class Daemon {
   // Chat members' editor verdicts on synced integrations, asked of the CP and cached briefly (agents/chat-actor.ts).
   private readonly chatActors = new ChatActors({
     ask: async (agentId, integrationId, userId) => await this.askChatActor(agentId, integrationId, userId),
+    now: () => this.clock.now()
+  })
+  // Which mail senders and recipients are members who may write to an agent, asked of the CP and cached briefly (email-integration.md §4 step 3).
+  private readonly emailMembers = new EmailMembers({
+    ask: async (agentId, addresses) => {
+      const cp = this.cpClient
+      if (cp?.supportsServerFeature?.(EMAIL_MEMBERS_V1_FEATURE) !== true) return undefined
+      const orgId = this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
+      return (await cp.emailMembers({ agentId, addresses }, orgId)).members
+    },
     now: () => this.clock.now()
   })
   // ACP permission + elicitation policy and its pending human-approval state (permissions/coordinator.ts).
@@ -2360,6 +2378,8 @@ export class Daemon {
   private weChatConnByIntegration = new Map<string, WeChatConnection>()
   // integrationId -> the WeComConnection that owns it: the smart bot's daemon-held long connection and its sends.
   private weComConnByIntegration = new Map<string, WeComConnection>()
+  // integrationId -> the EmailConnection of the agent's address: no socket, reads from the mail index, sends through the relay.
+  private emailConnByIntegration = new Map<string, EmailConnection>()
   // One Google Chat write budget per app on this daemon (§10.8), built from the config on first use.
   private googleChatBudgets: GoogleChatWriteBudgets | undefined
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
@@ -3310,7 +3330,8 @@ export class Daemon {
         googlechat: this.gcConnByIntegration,
         msteams: this.msTeamsConnByIntegration,
         wechat: this.weChatConnByIntegration,
-        wecom: this.weComConnByIntegration
+        wecom: this.weComConnByIntegration,
+        email: this.emailConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
@@ -3342,6 +3363,8 @@ export class Daemon {
       bindMsTeams: (id, conn, botUserId) => this.bind(this.msTeamsConnByIntegration, id, conn, botUserId),
       bindWeChat: (id, conn, botId) => this.bind(this.weChatConnByIntegration, id, conn, botId),
       bindWeCom: (id, conn, botId) => this.bind(this.weComConnByIntegration, id, conn, botId),
+      bindEmail: (id, conn, address) => this.bind(this.emailConnByIntegration, id, conn, address),
+      transportScopeOf: (integrationId) => this.transportScopeForIntegrationIds([integrationId]),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -3453,6 +3476,7 @@ export class Daemon {
     this.msTeamsConnByIntegration.delete(integrationId)
     this.weChatConnByIntegration.delete(integrationId)
     this.weComConnByIntegration.delete(integrationId)
+    this.emailConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
     this.placeTrust.forget(integrationId)
@@ -6671,6 +6695,7 @@ export class Daemon {
     void this.connections.reconcileDingTalkConnections().catch(() => this.log.warn('dingtalk: initial connect failed'))
     void this.connections.reconcileWeChatConnections().catch(() => this.log.warn('wechat: initial connect failed'))
     void this.connections.reconcileWeComConnections().catch(() => this.log.warn('wecom: initial connect failed'))
+    void this.connections.reconcileEmailConnections().catch(() => this.log.warn('email: initial bind failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
     // Open send-only Slack clients for HTTP bots (inbound lives on the relay).
@@ -6994,6 +7019,7 @@ export class Daemon {
       await this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
       this.chatActors.forgetAgent(id)
+      this.emailMembers.forgetAgent(id)
       // A stage-out leaves the roster for exactly the reason a later refusal must explain, so the
       // recorded cause survives it. A genuine removal clears it where the tombstone is taken.
       if (!this.moveStagedAgents.has(id)) this.lastStartFailure.delete(id)
@@ -7028,6 +7054,7 @@ export class Daemon {
       const wasPaused = previous?.pause === true
       // Who may act in chat is asked again once the agent or its integrations change.
       this.chatActors.forgetAgent(a.id)
+      this.emailMembers.forgetAgent(a.id)
       // Crossing into or out of 'settings' clears session overrides; dropping below 'approve' retires in-chat approval cards.
       const settingsLeft = chatSettingsAllowed(previous) && !chatSettingsAllowed(a)
       if (chatSettingsAllowed(previous) !== chatSettingsAllowed(a)) await this.store.clearRuntimeConfigOverrides(a.id)
@@ -7173,6 +7200,7 @@ export class Daemon {
       await this.connections.reconcileMsTeamsConnections()
       await this.connections.reconcileWeChatConnections()
       await this.connections.reconcileWeComConnections()
+      await this.connections.reconcileEmailConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -11040,6 +11068,9 @@ export class Daemon {
     integrationId: string,
     memberId: string
   ): Promise<string | undefined> {
+    const platform = this.integrationConfigById(integrationId)?.platform
+    const own = platform ? this.platformModules.get(platform)?.consoleUserOf : undefined
+    if (own) return await own(agentId, memberId)
     const cp = this.cpClient
     if (cp?.supportsServerFeature?.(READ_ACCESS_V1_FEATURE) !== true) throw new Error('read access unavailable')
     const res = await cp.readAccess(
@@ -17439,6 +17470,11 @@ export class Daemon {
     if (feishuConn) this.channelNameResolver?.noteMessage(feishuConn, normalized)
     // As on direct ingress, above the record: a relay-ingress module may place the message by its reply chain.
     await this.canonicalizeThread(normalized)
+    // A module that places or screens its messages itself does so before anything is recorded.
+    trace.stage = 'admit'
+    const admit = await this.platformModules.get(normalized.platform)?.relayIngress?.admit?.(msg, normalized)
+    if (admit === 'retry') return imRejected(msg.msgId, false, 'not_ready', true)
+    if (admit === 'rejected') return imRejected(msg.msgId, false, 'rejected', false)
     this.platformModules.get(normalized.platform)?.relayIngress?.observe?.(msg, normalized)
     // Before the turn this message starts reads the place's trust level (assistant-mode.md §5.3).
     this.placeTrust.observe(normalized, [msg.integrationId])
@@ -17727,7 +17763,14 @@ export class Daemon {
     dingTalkPlatformModule,
     msTeamsPlatformModule(this.relayIngressHost((integrationId) => this.msTeamsConnByIntegration.get(integrationId))),
     weChatPlatformModule,
-    weComPlatformModule
+    weComPlatformModule,
+    emailPlatformModule({
+      connection: (integrationId) => this.emailConnByIntegration.get(integrationId),
+      members: this.emailMembers,
+      store: () => this.store,
+      now: () => this.clock.now(),
+      warn: (message) => this.log.warn(message)
+    })
   ])
 
   /** The one narrow port every relay-ingress strategy reaches the daemon through; only the connection accessor is per platform. */
@@ -20763,7 +20806,8 @@ export class Daemon {
     ['googlechat', (integrationId) => (integrationId ? this.gcConnByIntegration.get(integrationId) : undefined)],
     ['msteams', (id) => (id ? this.msTeamsConnByIntegration.get(id) : undefined)],
     ['wechat', (id) => (id ? this.weChatConnByIntegration.get(id) : undefined)],
-    ['wecom', (id) => (id ? this.weComConnByIntegration.get(id) : undefined)]
+    ['wecom', (id) => (id ? this.weComConnByIntegration.get(id) : undefined)],
+    ['email', (id) => (id ? this.emailConnByIntegration.get(id) : undefined)]
   ])
 
   private readonly platformFailureSinks = new Map<
@@ -20813,6 +20857,28 @@ export class Daemon {
       async (ctx) => {
         const conn = ctx.integrationId ? this.weComConnByIntegration.get(ctx.integrationId) : undefined
         if (conn) await conn.sendText(ctx.channel, `⚠️ Agent failed to respond: ${ctx.reason}`)
+      }
+    ],
+    [
+      'email',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.emailConnByIntegration.get(ctx.integrationId) : undefined
+        if (!conn || !ctx.thread) return
+        // The failure answers the thread's latest admitted mail, as the turn's own reply would have (§6.1).
+        const scope = this.transportScopeForIntegrationIds([ctx.integrationId!])
+        const message = { platform: 'email', channel: ctx.channel, thread: ctx.thread } as NormalizedMessage
+        const plan = {
+          transcriptChannel: transcriptChannelKey(ctx.channel, scope),
+          statusThread: ctx.thread,
+          agentId: conn.agentId,
+          sessionKey: sessionKey('email', ctx.channel, ctx.thread, conn.agentId, scope)
+        }
+        await deliverEmailReply(
+          this.emailTurnHost() as unknown as EmailTurnHost<{ plan: typeof plan }>,
+          { plan },
+          { conn, message },
+          `⚠️ Agent failed to respond: ${ctx.reason}`
+        )
       }
     ]
   ])
@@ -26032,6 +26098,20 @@ export class Daemon {
    * behind one live reply); Feishu uses this for every
    * CardKit-delivered body segment. A distinct monotonic ts per call avoids text-row
    * dedup collisions. Platform-agnostic; runs even headless (no conn). */
+  /** What the Email surface writes and asks through; `members` is read late because the surfaces are built first. */
+  private emailTurnHost(): EmailTurnHost<Pending> {
+    return {
+      recordReplySegment: (p, text) => this.recordReplySegment(p, text),
+      appendTranscript: async (row) => await this.store.appendTranscript(row),
+      monotonicTs: () => monotonicTs(),
+      members: () => this.emailMembers,
+      store: () => this.store,
+      agentName: (agentId) => this.agents.get(agentId)?.displayName ?? this.agents.get(agentId)?.name,
+      now: () => this.clock.now(),
+      warn: (message) => this.log.warn(message)
+    }
+  }
+
   private async recordReplySegment(p: Pending, text: string): Promise<void> {
     await this.store.appendTranscript({
       channel: p.plan.transcriptChannel,
@@ -28681,6 +28761,7 @@ export class Daemon {
     for (const [id, c] of this.msTeamsConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.weChatConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.weComConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.emailConnByIntegration) if (c === conn) out.push(id)
     return out
   }
 
@@ -29438,13 +29519,21 @@ export class Daemon {
   /** The send tool's and assistant mode's gateway: a reply connection, or a Google Chat, Teams, DingTalk or WeCom one, which posts outside a turn but has no reply surface here. */
   private gatewayForIntegration(
     integrationId: string
-  ): ReplyConnection | GoogleChatConnection | MsTeamsConnection | DingTalkConnection | WeComConnection | undefined {
+  ):
+    | ReplyConnection
+    | GoogleChatConnection
+    | MsTeamsConnection
+    | DingTalkConnection
+    | WeComConnection
+    | EmailConnection
+    | undefined {
     return (
       this.connForIntegration(integrationId) ??
       this.gcConnByIntegration.get(integrationId) ??
       this.msTeamsConnByIntegration.get(integrationId) ??
       this.dingTalkConnByIntegration.get(integrationId) ??
-      this.weComConnByIntegration.get(integrationId)
+      this.weComConnByIntegration.get(integrationId) ??
+      this.emailConnByIntegration.get(integrationId)
     )
   }
 
@@ -29481,7 +29570,8 @@ export class Daemon {
       this.gcConnByIntegration.get(integrationId) ??
       this.msTeamsConnByIntegration.get(integrationId) ??
       this.weChatConnByIntegration.get(integrationId) ??
-      this.weComConnByIntegration.get(integrationId)
+      this.weComConnByIntegration.get(integrationId) ??
+      this.emailConnByIntegration.get(integrationId)
     )
   }
 
