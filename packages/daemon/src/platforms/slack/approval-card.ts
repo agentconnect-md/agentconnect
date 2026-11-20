@@ -20,6 +20,7 @@ import {
   buildSubsessionApprovalNotice,
   buildSubsessionApprovalSettledNotice,
   buildTurnApprovalNotice,
+  permToolLabel,
   SLACK_PERMISSION_MAX_OPTIONS,
   type SubsessionNoticeOutcome
 } from '../../slack/render.js'
@@ -46,7 +47,7 @@ export const slackApprovalCards: ApprovalCardFacet = {
     if (!card) return null
     const fallback = ask.subsession
       ? `Permission requested by ${ask.subsession.agentName}`
-      : `Permission requested: ${ask.params.toolCall?.title ?? 'a tool call'}`
+      : `Permission requested: ${permToolLabel(ask.params)}`
     return { blocks: withIntro(ask.subsession, card), fallback } satisfies SlackApprovalDraft
   },
 
