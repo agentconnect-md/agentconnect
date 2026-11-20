@@ -41,6 +41,7 @@ export interface ControllerDeps {
  * (cli-daemon-split.md §6).
  */
 export interface InstallOpts {
+  /** The Node that runs the unit; `installService` records its upgrade-stable alias when one exists (node-path.ts). */
   execPath: string
   includeRootEnv: boolean
   /**

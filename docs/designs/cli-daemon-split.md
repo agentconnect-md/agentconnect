@@ -354,6 +354,20 @@ service definition retains the Node executable and the CLI entry path used
 during installation, so a Node runtime change — or a CLI reinstall that moves
 its entry — requires reinstalling the service.
 
+One Node change is routine enough to be absorbed instead. Homebrew installs Node
+under `<prefix>/Cellar/<formula>/<version>` and deletes that directory on every
+upgrade, while `process.execPath` reports exactly that versioned path. When the
+installing Node sits in a Cellar, `installService` records the
+`<prefix>/opt/<formula>` alias instead, provided the alias resolves to the same
+file. The definition then survives `brew upgrade`, and the next start runs the new
+Node. Version managers that keep each version in its own directory (nvm, fnm,
+Volta, asdf) do not delete the running version on install, so their paths are
+recorded as they are.
+
+A daemon that is already running when its Node is removed cannot launch helpers
+any more. It reports that state by name, with the commands that recover from it,
+instead of the raw `ENOENT`; it does not restart itself.
+
 #### 4.2.1 Several services on one host
 
 The instance identity is `<root>`: config, `daemon.lock`, `state/local.sqlite`,
