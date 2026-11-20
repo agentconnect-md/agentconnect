@@ -17,6 +17,7 @@ import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { writeWithSidecar } from './fixtures/memory-sidecar.js'
 import { localMemoryHome } from '../src/memory/home.js'
 import { planReplay } from '../src/session/turn/replay-plan.js'
+import { NO_RESPONSE_REMINDER, UNADDRESSED_MESSAGE_REMINDER } from '../src/session/no-response.js'
 import { AcpHost, ModelSelectionError } from '../src/acp/acp-host.js'
 import { fileURLToPath } from 'node:url'
 import { toolContextFingerprint } from '../src/session/turn/tool-context.js'
@@ -62,6 +63,8 @@ const agent: Agent & { dir: string; env: Record<string, string> } = {
 const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
 /** A prompt without the local-time line every agent's turn carries (product-conventions.md "Local time"). */
 const withoutNow = (blocks: any[]): any[] => blocks.filter((b) => !b.text?.includes('\nNow: '))
+// The memory tests pin the user's own blocks; an untagged channel message also carries its routing fact.
+const userBlocks = (blocks: any[]): any[] => withoutNow(blocks).filter((b) => b.text !== UNADDRESSED_MESSAGE_REMINDER)
 /** What the daemon does once the runtime answers a prompt: record the standing context it carried inline. */
 async function promptDelivered(sm: SessionManager, key: string, turn: { standingDigest?: string }): Promise<void> {
   if (turn.standingDigest !== undefined) await sm.standingDelivered(key, turn.standingDigest)
@@ -863,7 +866,7 @@ describe('SessionManager', () => {
       maxBytes: 8_192,
       timeoutMs: 1_000
     })
-    expect(withoutNow(first.blocks)[0]).toEqual({ type: 'text', text: '[U1] where should I deploy?' })
+    expect(userBlocks(first.blocks)[0]).toEqual({ type: 'text', text: '[U1] where should I deploy?' })
     const referenceText = (first.blocks.at(-1) as any).text
     expect(referenceText).toContain('# Recalled memory — untrusted reference only')
     expect(referenceText).toContain('deploy in sea')
@@ -966,7 +969,7 @@ describe('SessionManager', () => {
     })
 
     const turn = await sm.handle('bot-a', msg({ ts: '100.1', text: 'answer anyway' }))
-    expect(withoutNow(turn.blocks)).toEqual([{ type: 'text', text: '[U1] answer anyway' }])
+    expect(userBlocks(turn.blocks)).toEqual([{ type: 'text', text: '[U1] answer anyway' }])
     expect(onMemoryRecallError).toHaveBeenCalledWith('bot-a', expect.any(Error))
     expect(onMemoryRecallEvent).toHaveBeenLastCalledWith(
       'bot-a',
@@ -1073,7 +1076,7 @@ describe('SessionManager', () => {
     expect(recallPolicy).not.toHaveBeenCalled()
     expect(disabled.recallForTurn).not.toHaveBeenCalled()
     expect(onMemoryRecallEvent).not.toHaveBeenCalled()
-    expect(withoutNow(turn.blocks)).toEqual([{ type: 'text', text: '[U1] keep the user turn intact' }])
+    expect(userBlocks(turn.blocks)).toEqual([{ type: 'text', text: '[U1] keep the user turn intact' }])
     expect(turn.captureInput).toBe('[U1] keep the user turn intact')
     expect((await (await store).getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.memoryProvider).toBe('none')
     await (await store).close()
@@ -3091,6 +3094,40 @@ describe('SessionManager — collaboration preamble', () => {
     await (await store).close()
   })
 
+  it('tells the agent when a person in a shared conversation reached it without tagging it', async () => {
+    const store = await newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const untagged = await sm.handle('bot-a', msg({ ts: '100.1', text: 'we should compare GPU costs', isDm: false }))
+    expect(untagged.blocks.some((b: any) => b.text === UNADDRESSED_MESSAGE_REMINDER)).toBe(true)
+    const tagged = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.2',
+        text: '<@U1234567890> add that',
+        mentionedBots: ['U1234567890'],
+        trigger: 'mention',
+        isDm: false
+      })
+    )
+    expect(tagged.blocks.some((b: any) => b.text === UNADDRESSED_MESSAGE_REMINDER)).toBe(false)
+    await (await store).close()
+  })
+
+  it('does not add the untagged-message fact to a direct message or a bot-authored message', async () => {
+    const store = await newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const dm = await sm.handle('bot-a', msg({ ts: '100.1', channel: 'D1', thread: '100.1', text: 'hi', isDm: true }))
+    expect(dm.blocks.some((b: any) => b.text === UNADDRESSED_MESSAGE_REMINDER)).toBe(false)
+    const fromBot = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.2', text: 'status: green', isDm: false, sender: { id: 'B1', isBot: true } })
+    )
+    expect(fromBot.blocks.some((b: any) => b.text === UNADDRESSED_MESSAGE_REMINDER)).toBe(false)
+    await (await store).close()
+  })
+
   it('keeps the no-response rule in a 1:1 DM while stating that direct messages are addressed', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
@@ -3121,12 +3158,10 @@ describe('SessionManager — collaboration preamble', () => {
     await sm.handle('bot-a', msg({ ts: '100.1', text: 't1' }))
     await (await store).setUsageSnapshot(key, { contextUsed: 100_000, contextSize: 200_000 })
     const t2 = await sm.handle('bot-a', msg({ ts: '100.2', text: 't2' }))
-    expect(withoutNow(t2.blocks).some((b: any) => b.text?.includes('<system-reminder>'))).toBe(false)
+    expect(t2.blocks.some((b: any) => b.text === NO_RESPONSE_REMINDER)).toBe(false)
     await (await store).setUsageSnapshot(key, { contextUsed: 1_000, contextSize: 200_000 })
     const t3 = await sm.handle('bot-a', msg({ ts: '100.3', text: 't3' }))
-    expect(t3.blocks.some((b: any) => b.text?.includes('<system-reminder>') && b.text.includes('AC_NO_RESPONSE'))).toBe(
-      true
-    )
+    expect(t3.blocks.some((b: any) => b.text === NO_RESPONSE_REMINDER)).toBe(true)
     await (await store).close()
   })
 

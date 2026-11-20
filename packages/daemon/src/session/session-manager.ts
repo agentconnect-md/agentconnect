@@ -50,7 +50,8 @@ import {
   DIRECT_AGENT_CALL_REMINDER,
   EXPLICIT_MENTION_REMINDER,
   NO_RESPONSE_REMINDER,
-  OUTSIDE_HUMAN_SCOPE_REMINDER
+  OUTSIDE_HUMAN_SCOPE_REMINDER,
+  UNADDRESSED_MESSAGE_REMINDER
 } from './no-response.js'
 import { planReplay, renderReplayContext } from './turn/replay-plan.js'
 import {
@@ -76,7 +77,12 @@ import {
 import { boardDigest, boardDue, siblingWorkDue, type RenderedBoard } from '../assistant/work-board.js'
 import { renderLocalNow } from './local-time.js'
 import { knownTimeZone, TIME_ZONE_LOOKUP_WAIT_MS, within } from '../messages/time-zone.js'
-import type { DecisionRuntimeTarget, RuntimeCommand, TaskInitiator } from '@agentconnect.md/protocol'
+import {
+  manifestFor,
+  type DecisionRuntimeTarget,
+  type RuntimeCommand,
+  type TaskInitiator
+} from '@agentconnect.md/protocol'
 import { deriveTitle } from './derive-title.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import { backgroundConversationText, intakeEvidenceText } from '../decisions/evidence.js'
@@ -1249,6 +1255,18 @@ export class SessionManager {
     // Only the router's explicit-mention rung matched this bot's own token, a fact an opaque `<@U…>` id hides from the model.
     if (msg.trigger === 'mention' && !coordinator) {
       promptPrelude.push({ type: 'text', text: EXPLICIT_MENTION_REMINDER })
+    }
+    // A person's untagged message in a shared conversation: its raw text alone does not make plain that nobody addressed this agent.
+    if (
+      msg.trigger === undefined &&
+      !msg.isDm &&
+      !msg.sender.isBot &&
+      !coordinator &&
+      options.directAgentCall !== true &&
+      options.outsideHumanScope !== true &&
+      !manifestFor(msg.platform).addressedByConstruction
+    ) {
+      promptPrelude.push({ type: 'text', text: UNADDRESSED_MESSAGE_REMINDER })
     }
     if (promptPrelude.length > 0) blocks.unshift(...promptPrelude)
 
