@@ -41,7 +41,8 @@ async function browser(
   rtc: RtcSessions,
   principal: ViewerPrincipal,
   options: Parameters<RtcSessions['offer']>[1],
-  iceServers: ComputerIceServer[] = []
+  iceServers: ComputerIceServer[] = [],
+  onData?: (data: string | Buffer) => void
 ): Promise<{ pc: RTCPeerConnection; channel: RTCDataChannel; request: (m: object) => Promise<unknown> }> {
   const offer = await rtc.offer(principal, options)
   const pc = new RTCPeerConnection({
@@ -50,7 +51,12 @@ async function browser(
     iceUseIpv6: false
   })
   opened.push(() => pc.close())
-  const channel = new Promise<RTCDataChannel>((resolve) => pc.onDataChannel.subscribe(resolve))
+  const channel = new Promise<RTCDataChannel>((resolve) =>
+    pc.onDataChannel.subscribe((channel) => {
+      if (onData) channel.onMessage.subscribe(onData)
+      resolve(channel)
+    })
+  )
   await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp })
   await pc.setLocalDescription(await pc.createAnswer())
   if (pc.iceGatheringState !== 'complete') {
@@ -139,6 +145,31 @@ describe('viewer WebRTC', () => {
     expect(await request({ input: { type: 'key', keys: ['escape'] } })).toMatchObject({ ok: true, result: 'applied' })
     expect(messages).toEqual([{ client: 'console:u1', message: expect.objectContaining({ input: expect.anything() }) }])
     expect(rtc.size()).toBe(1)
+  }, 30_000)
+
+  it('delivers the only Browser frame when a static page starts casting', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+    const packets: Buffer[] = []
+    const rtc = new RtcSessions({
+      stream,
+      log: () => undefined,
+      onMessage: async () => undefined,
+      browser: (_width, _height, send) => {
+        void send(jpeg)
+        return () => undefined
+      }
+    })
+    opened.push(() => rtc.stop())
+    await browser(
+      rtc,
+      { client: 'console:u1', control: true },
+      { hostAddress: '127.0.0.1', browser: { maxWidth: 640, maxHeight: 512 } },
+      [],
+      (data) => {
+        if (Buffer.isBuffer(data)) packets.push(data)
+      }
+    )
+    await expect.poll(() => packets).toEqual([Buffer.concat([Buffer.from('414342460000000100000001', 'hex'), jpeg])])
   }, 30_000)
 
   it('renews a session only with a token for the same viewer', async () => {
