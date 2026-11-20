@@ -110,6 +110,7 @@ export {
   SESSION_THREAD_READS_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
+  SESSION_ADMIT_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SESSION_WAKE_FEATURE,
@@ -175,6 +176,7 @@ export * from './frames/gitcred.js'
 export * from './frames/linearcred.js'
 export * from './frames/provider-credentials.js'
 export * from './frames/repo-candidates.js'
+export * from './frames/session-admit.js'
 export * from './frames/decision.js'
 export * from './frames/secrets.js'
 export * from './frames/session.js'

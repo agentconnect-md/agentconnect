@@ -39,7 +39,8 @@ import type {
   AgentMemoryHistoryRepo,
   ProviderKeyStore,
   DecisionRepo,
-  AgentSkillSourceStatusRepo
+  AgentSkillSourceStatusRepo,
+  OrgSessionPolicyRepo
 } from '../persistence/ports.js'
 import type { AgentMemoryStoreService } from '../agent-memory/store.service.js'
 import type { UsageWriter } from '../usage/writer.js'
@@ -134,6 +135,8 @@ export interface DaemonWsDeps {
   usageWriter: UsageWriter
   /** Persists milestones from `event/session` EVT or acknowledged sync request. */
   session: SessionRepo
+  /** Admits a new session for its org (org-session-policy.md, Admission); absent ⇒ `session/admit` is neither advertised nor answered. */
+  sessionAdmission?: Pick<OrgSessionPolicyRepo, 'admit'>
   /** Resolves a webchat conversation's owning user for session-visibility ingest
    *  (session-visibility.md §4.2); absent ⇒ webchat sessions record no owner
    *  (null — visible to no one until a repair/backfill). */

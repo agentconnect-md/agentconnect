@@ -23,6 +23,7 @@ import {
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
+import { countSessionStart, sessionAdmitted } from '../org-session-count.js'
 import { fromDbHookKind, isStoredHookKind } from '../hook-kind.js'
 import type {
   HookKind,
@@ -64,15 +65,6 @@ import { sessionViewerSql } from './session-access-sql.js'
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
  *  never name a `webchat_conversation` row, so the fence path skips it. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** Count one new session against its org's current UTC month by the database clock; never refuses. */
-async function countSessionStart(tx: PrismaLike, orgId: OrgId): Promise<void> {
-  await tx.$executeRaw(Prisma.sql`
-    INSERT INTO "org_session_month" AS m ("orgId", "monthStart", "used")
-    VALUES (${orgId}, date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', 1)
-    ON CONFLICT ("orgId", "monthStart") DO UPDATE SET "used" = m."used" + 1
-  `)
-}
 
 function toRecord(s: SessionMeta): SessionMetaRecord {
   return {
@@ -1200,7 +1192,8 @@ export class PgSessionRepo implements SessionRepo {
       `)
     }
     // Last statement, so the org's month row stays locked only until commit (org-session-policy.md).
-    if (firstRecord) await countSessionStart(tx, session.orgId)
+    // An admitted session counted at admission; admit takes this id's lineage fence first too, so the check cannot race.
+    if (firstRecord && !(await sessionAdmitted(tx, session.id))) await countSessionStart(tx, session.orgId)
     return { recorded: true, session, settled, ...(cls.parentUnsettled ? { parentUnsettled: true } : {}) }
   }
 
