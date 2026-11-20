@@ -38,10 +38,12 @@
  * whole point — core no longer knows that either name exists.
  */
 import type { ZodType } from 'zod'
+import type { Integration } from '../agents/agent-schema.js'
 import type { SendIdentity, SessionContext } from '../mcp/ops/context.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { DINGTALK_ATTACHMENT_TOOL } from './dingtalk/attachments.js'
+import { EMAIL_AGENT_TOOLS } from './email/agent-tools.js'
 import { WECHAT_ATTACHMENT_TOOL } from './wechat/attachments.js'
 import { WECOM_ATTACHMENT_TOOL } from './wecom/attachments.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
@@ -114,6 +116,39 @@ export interface PlatformSessionToolEnv {
   readonly attribution?: () => Promise<ReplyAttributionInfo | undefined>
 }
 
+/** What an agent gets for each integration it holds on a platform, in every session it runs whatever the session's platform: tools that act through that integration's connection, and lines for the session's instructions. */
+export interface PlatformAgentTools {
+  readonly descriptors: readonly ToolDescriptor[]
+  /** The dispatch-boundary validator per tool name; the parity test holds both sides together. */
+  readonly argSchemas: ReadonlyMap<string, ZodType>
+  /** The lines this integration adds to the instructions of every session that offers its tools. */
+  instructions(integration: Integration): readonly string[]
+  execute(name: string, ctx: SessionContext, args: Record<string, unknown>, env: PlatformAgentToolEnv): Promise<unknown>
+}
+
+/** A conversation an agent tool starts on its platform, recorded as the agent's own root post: the thread key is also the post's id. */
+export interface PlatformConversationSeed {
+  channel: string
+  thread: string
+  kind: 'dm' | 'group_dm'
+  /** The agent's own first message, as the session keeps it. */
+  text: string
+  /** Whom the Control Plane classifies the new session for: a platform identity, or the platform's own owner form. */
+  owner: string
+}
+
+/** What an agent tool acts through beyond its own arguments — daemon facts, never model input. */
+export interface PlatformAgentToolEnv {
+  /** The agent's integration the call acts through. */
+  readonly integrationId: string
+  /** That integration's live connection (`sessionToolConnectionFor`). */
+  readonly connection: unknown
+  /** The console users whose own messages alone started the live turn, its own sender first; undefined for any other turn, and when it cannot be told. */
+  memberTurn(): Promise<readonly string[] | undefined>
+  /** Record the seed as the agent's own first message of a new conversation and open its idle session, with no model turn. */
+  startConversation(seed: PlatformConversationSeed): Promise<void>
+}
+
 /** One platform's read-port declaration — the pre-connection half of the ask. */
 export interface PlatformReadPorts {
   /** Platform id this declaration answers for; never parsed. */
@@ -168,6 +203,8 @@ export interface PlatformReadPorts {
   readonly attachmentReadTool?: ToolDescriptor
   /** The platform's own session-scoped tool family, when it has one. */
   readonly sessionTools?: PlatformSessionTools
+  /** The tools and instruction lines an agent holding one of this platform's integrations gets in every session. */
+  readonly agentTools?: PlatformAgentTools
 }
 
 /**
@@ -293,7 +330,8 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       label: 'Email',
       channelHistory: true,
       threadHistory: true,
-      authoritativeMembers: true
+      authoritativeMembers: true,
+      agentTools: EMAIL_AGENT_TOOLS
     }
   ]
 ])
@@ -441,4 +479,35 @@ export function sessionToolOwner(name: string): PlatformReadPorts | undefined {
     if (decl.sessionTools?.descriptors.some((t) => t.name === name)) return decl
   }
   return undefined
+}
+
+/** The agent tools of every platform the agent holds an integration on, in registry order. */
+export function agentToolsFor(platforms: Iterable<string>): ToolDescriptor[] {
+  const held = new Set(platforms)
+  return [...READ_PORTS.values()].flatMap((d) => (held.has(d.platform) ? [...(d.agentTools?.descriptors ?? [])] : []))
+}
+
+/** Every platform's agent tools, in registry order, for the permission auto-allow set. */
+export function allAgentToolDescriptors(): ToolDescriptor[] {
+  return [...READ_PORTS.values()].flatMap((d) => [...(d.agentTools?.descriptors ?? [])])
+}
+
+/** The platform whose agent tools include `name`, for the dispatcher. */
+export function agentToolOwner(name: string): PlatformReadPorts | undefined {
+  for (const decl of READ_PORTS.values()) {
+    if (decl.agentTools?.descriptors.some((t) => t.name === name)) return decl
+  }
+  return undefined
+}
+
+/** The instruction lines of each integration whose platform's agent tools the session offers. */
+export function agentToolInstructions(
+  integrations: readonly Integration[],
+  offered: readonly ToolDescriptor[]
+): string[] {
+  const names = new Set(offered.map((tool) => tool.name))
+  return integrations.flatMap((integration) => {
+    const tools = READ_PORTS.get(integration.platform)?.agentTools
+    return tools && tools.descriptors.some((tool) => names.has(tool.name)) ? [...tools.instructions(integration)] : []
+  })
 }

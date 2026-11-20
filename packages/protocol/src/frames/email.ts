@@ -6,6 +6,9 @@ export const EMAIL_MEMBERS_MAX = EMAIL_RECIPIENTS_MAX + 1
 
 const EmailMemberAddress = z.string().max(320).regex(EMAIL_ADDRESS_PATTERN)
 
+/** How a started thread's session names its owner in `triggeredBy` (email-integration.md §5.3): `user:<console user id>`, which no address can be. */
+export const EMAIL_STARTED_OWNER_PREFIX = 'user:'
+
 /** Who may write to an address (email-integration.md §4.1): members who may use the agent, or any authenticated sender. */
 export const EmailWhoMayWrite = z.enum(['members', 'anyone'])
 export type EmailWhoMayWrite = z.infer<typeof EmailWhoMayWrite>

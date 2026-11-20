@@ -12,7 +12,7 @@ import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
 import { CAPABILITY_REQUEST_TOOLS } from '../src/mcp/ops/capability-requests.js'
 import { AGENT_CRON_TOOLS } from '../src/mcp/ops/agent-crons.js'
-import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
+import { allPortPlatforms, readPortsFor, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
@@ -197,6 +197,19 @@ describe('advertised tool schemas agree with their zod validators', () => {
 describe('platform session tools advertise exactly what their validators take', () => {
   for (const platform of allPortPlatforms()) {
     const family = sessionToolsFor(platform)
+    if (!family) continue
+    it.each(family.descriptors.map((d) => d.name))(`${platform}: %s`, (name) => {
+      const descriptor = family.descriptors.find((d) => d.name === name)!
+      const schema = family.argSchemas.get(name)
+      expect(schema, `${name} has no validator`).toBeDefined()
+      expect(validatorFields(schema!)).toEqual(fields(descriptor.inputSchema as ObjectSchemaView))
+    })
+  }
+})
+
+describe('platform agent tools advertise exactly what their validators take', () => {
+  for (const platform of allPortPlatforms()) {
+    const family = readPortsFor(platform)?.agentTools
     if (!family) continue
     it.each(family.descriptors.map((d) => d.name))(`${platform}: %s`, (name) => {
       const descriptor = family.descriptors.find((d) => d.name === name)!

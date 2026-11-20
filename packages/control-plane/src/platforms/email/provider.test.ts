@@ -170,4 +170,19 @@ describe('the Email provider (email-integration.md §3)', () => {
     expect(memberByVerifiedEmail).toHaveBeenCalledTimes(2)
     expect(await createEmailCpProvider().dmOwnerMember!(row, 'alice@corp.example.test')).toBeNull()
   })
+
+  it('owns a started thread by the member its session names, while they are an active member (§5.3)', async () => {
+    const activeMember = vi.fn(async (orgId: string, userId: string) =>
+      orgId === 'org-1' && userId === 'member-2' ? ({ userId } as OrgMemberRecord) : null
+    )
+    const memberByVerifiedEmail = vi.fn(async () => null)
+    const provider = createEmailCpProvider({ mailDomain: DOMAIN, memberByVerifiedEmail, activeMember })
+    const row = bot(`helper@${DOMAIN}`)
+    expect(await provider.dmOwnerMember!(row, 'user:member-2')).toBe('member-2')
+    // A departed member, an empty id and a provider without the port own nothing, so the row stays private.
+    expect(await provider.dmOwnerMember!(row, 'user:member-9')).toBeNull()
+    expect(await provider.dmOwnerMember!(row, 'user:')).toBeNull()
+    expect(await createEmailCpProvider({ mailDomain: DOMAIN }).dmOwnerMember!(row, 'user:member-2')).toBeNull()
+    expect(memberByVerifiedEmail).not.toHaveBeenCalled()
+  })
 })

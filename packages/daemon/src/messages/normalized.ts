@@ -98,6 +98,8 @@ export interface NormalizedMessage extends Omit<
    *  differs from the message author. GitHub hook messages, for example, are
    *  authored by the event actor while still being triggered by `hook:<id>`. */
   sessionTriggerId?: string
+  /** Daemon-set: the thread's root is the agent's own post, which the first turn of a session that never ran reads once. */
+  threadRootIsOwn?: boolean
   /** Daemon-authored initiator snapshot inherited across task delegation; never a tool argument. */
   initiator?: TaskInitiator
   attachments?: Attachment[]

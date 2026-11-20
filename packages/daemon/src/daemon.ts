@@ -713,12 +713,16 @@ import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { messageOrderingFor } from './platforms/message-ordering.js'
 import { sessionThreadUrlFor } from './platforms/session-links.js'
 import {
+  agentToolInstructions,
   confirmsInternalAudience,
   offersDirectMessages,
   offersReadPort,
   platformLabel,
-  reportsSharedConversations
+  reportsSharedConversations,
+  tellsWorkspaceMembers,
+  type PlatformConversationSeed
 } from './platforms/read-ports.js'
+import { memberTurnConsoleUsers } from './assistant/member-turn.js'
 import { registerObservedChannels } from './platforms/observed-channels.js'
 import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
@@ -3370,6 +3374,7 @@ export class Daemon {
       bindWeChat: (id, conn, botId) => this.bind(this.weChatConnByIntegration, id, conn, botId),
       bindWeCom: (id, conn, botId) => this.bind(this.weComConnByIntegration, id, conn, botId),
       bindEmail: (id, conn, address) => this.bind(this.emailConnByIntegration, id, conn, address),
+      emailMembers: () => this.emailMembers,
       transportScopeOf: (integrationId) => this.transportScopeForIntegrationIds([integrationId]),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
@@ -5404,6 +5409,9 @@ export class Daemon {
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
+      // A platform's agent tools ask who started the turn, and open the conversations they start (read-ports.ts `agentTools`).
+      memberTurnFor: (ctx) => this.memberTurnFor(ctx),
+      startAgentConversation: (ctx, integrationId, seed) => this.startAgentConversation(ctx, integrationId, seed),
       // The footer a session tool appends to text it publishes as the agent (Linear comments):
       // the SAME identity the turn's response carries, resolved from the trusted session context.
       sessionToolAttributionFor: (ctx) => this.sessionToolAttribution(ctx),
@@ -6177,6 +6185,7 @@ export class Daemon {
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
             coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
             codeHostEffectGuidance(tools),
+            agentToolInstructions(agent.integrations, tools).join('\n') || undefined,
             computers && tools.length > 0
               ? [
                   COMPUTER_USE_GUIDANCE,
@@ -13688,6 +13697,68 @@ export class Daemon {
   private async readAskersFor(ctx: SessionContext): Promise<TurnAskers> {
     const key = this.sessionKeyOf(ctx)
     return this.askersOfKey(key, ctx.integrationId, await this.openerOf(ctx.agentId, ctx.thread, key))
+  }
+
+  /** The console users whose own messages alone started a session's live turn, from the same messages its askers are read from (email-integration.md §6.4). */
+  private async memberTurnFor(ctx: SessionContext): Promise<string[] | undefined> {
+    const key = this.sessionKeyOf(ctx)
+    const live = this.activeGateEntries.get(key)
+    // A delegated task's round and an approved proposal's run answer a request no member's message started now.
+    const delegated =
+      isSubsessionCoordinate(ctx.thread) || this.activeTurnCallMeta.get(key)?.approvedProposal !== undefined
+    return await memberTurnConsoleUsers({
+      messages: live ? [this.turnMessageOf(live), ...(live.foldedMessages ?? [])] : undefined,
+      bot: ctx.integrationId ?? live?.integrationId,
+      delegated,
+      memberOf: (asker) => this.memberConsoleUser(ctx.agentId, asker)
+    })
+  }
+
+  /** The console user behind an asker while they are a member of the agent's organization; a guest or an unlinked chat account is none. */
+  private async memberConsoleUser(agentId: string, asker: ReadAsker): Promise<string | undefined> {
+    if (asker.kind === 'console') {
+      const verdict = await this.placeMembers.consoleVerdict(agentId, asker, [])
+      return verdict.asker === 'linked' ? asker.userId : undefined
+    }
+    if (
+      tellsWorkspaceMembers(asker.platform) &&
+      !(await this.placeMembers.isFullMember(asker.integrationId, asker.userId))
+    )
+      return undefined
+    return await this.linkedConsoleUser(agentId, asker.integrationId, asker.userId)
+  }
+
+  /** A conversation an agent tool started: its first message recorded as the agent's own root, and its idle session opened with no model turn. */
+  private async startAgentConversation(
+    ctx: SessionContext,
+    integrationId: string,
+    seed: PlatformConversationSeed
+  ): Promise<void> {
+    const integration = this.integrationConfigById(integrationId)
+    if (!integration) throw new Error('the integration is no longer configured')
+    const transportScope = this.transportScopeForIntegrationIds([integrationId])
+    const key = sessionKey(integration.platform, seed.channel, seed.thread, ctx.agentId, transportScope)
+    await this.store.appendTranscript({
+      channel: transcriptChannelKey(seed.channel, transportScope),
+      thread: seed.thread,
+      ts: seed.thread,
+      sender: ctx.agentId,
+      kind: 'text',
+      text: seed.text,
+      admission: { agentId: ctx.agentId, sessionKey: key }
+    })
+    await this.collab.spawnChannelRootSession({
+      agentId: ctx.agentId,
+      platform: integration.platform,
+      integrationId,
+      channel: seed.channel,
+      thread: seed.thread,
+      postTs: seed.thread,
+      isDm: seed.kind === 'dm',
+      ...(seed.kind === 'group_dm' ? { isGroupDm: true } : {}),
+      text: seed.text,
+      sessionTriggerId: seed.owner
+    })
   }
 
   /** Whom a sub-session's messages no person sent speak for: a follow-up's asker and its check's senders, a task's follow-up asker, else whoever opened it. */

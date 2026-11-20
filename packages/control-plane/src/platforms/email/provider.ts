@@ -1,7 +1,12 @@
 // The Email provider (email-integration.md §3, §5.3, §8): an address on the deployment's mail domain, which the relay receives and sends for; an address has no credential.
 import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
-import { EMAIL_PLATFORM, EMAIL_V1_FEATURE, type IntegrationEmailConfig } from '@agentconnect.md/protocol'
+import {
+  EMAIL_PLATFORM,
+  EMAIL_STARTED_OWNER_PREFIX,
+  EMAIL_V1_FEATURE,
+  type IntegrationEmailConfig
+} from '@agentconnect.md/protocol'
 import { canonicalEmailAddress, validateEmailName, type EmailNameRefusal } from '@agentconnect.md/message'
 import {
   TENANTLESS_SENTINEL,
@@ -140,6 +145,12 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
 
     // The sender's address is the platform identity, matched only against a verified sign-in email of the bot's organization (§4, §5.3).
     async dmOwnerMember(bot, sender) {
+      // A thread the agent started is owned from the send, by the member it names while they are an active member (§5.3).
+      if (sender.startsWith(EMAIL_STARTED_OWNER_PREFIX)) {
+        const userId = sender.slice(EMAIL_STARTED_OWNER_PREFIX.length)
+        if (!userId || !deps.activeMember) return null
+        return (await deps.activeMember(bot.orgId, userId)) ? userId : null
+      }
       const address = canonicalEmailAddress(sender)
       if (!address || !deps.memberByVerifiedEmail) return null
       return (await deps.memberByVerifiedEmail(bot.orgId, address))?.userId ?? null

@@ -111,7 +111,7 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
       return new EmailIngest(a.botId, address)
     },
 
-    // A reply (§6.2); core checked the daemon serves the bot, and everything the payload asks for is checked here.
+    // A reply (§6.2) or a started mail (§6.4); core checked the daemon serves the bot, and everything the payload asks for is checked here.
     async daemonRequest(a: BotAssignment, payload: unknown): Promise<RdPlatformReply> {
       const address = servedAddress(a)
       // No configuration, or an address off the served domain: this relay's snapshot may trail another's, and nothing was called.
@@ -119,11 +119,10 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
       const call = WireEmailCall.safeParse(payload)
       if (!call.success) return { outcome: 'refused', reason: 'invalid' }
       // An assignment from a Control Plane that names no organization is budgeted as an organization of its own.
-      return await egress.send(
-        config,
-        { botId: a.botId, address, organization: a.orgSlug ?? `bot:${a.botId}` },
-        call.data
-      )
+      const sender = { botId: a.botId, address, organization: a.orgSlug ?? `bot:${a.botId}` }
+      return call.data.op === 'start'
+        ? await egress.start(config, sender, call.data)
+        : await egress.send(config, sender, call.data)
     },
 
     extractDemuxHints(_rawBody: Buffer, body: unknown): DemuxHints {
@@ -193,7 +192,11 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
         ...normalized.message,
         // Mail that reached the address is addressed to the agent wherever the address appears (§5.2).
         trigger: normalized.message.isDm ? 'dm' : 'mention',
-        adapterExt: { ...normalized.message.adapterExt, [EMAIL_PLATFORM]: { ...ext, ...(ticket ? { ticket } : {}) } }
+        // The envelope's tag names a started thread to the daemon, which alone knows whether it minted one (§5.1).
+        adapterExt: {
+          ...normalized.message.adapterExt,
+          [EMAIL_PLATFORM]: { ...ext, ...(ticket ? { ticket } : {}), ...(post.agentTag ? { tag: post.agentTag } : {}) }
+        }
       }
       const admission = await host.forwardStrict(botId, message)
       // A retry is neither marked nor counted: the same message comes again, and must be forwarded again.

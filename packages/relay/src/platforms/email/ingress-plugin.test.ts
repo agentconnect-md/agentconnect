@@ -116,6 +116,21 @@ describe('email inbound route and relay plugin', () => {
       issuedAtMs: NOW
     })
     expect(openEmailTicket(key, BOT, ext.ticket!, [MEMBER])).toBeUndefined()
+    expect(ext.tag).toBeUndefined()
+  })
+
+  it('passes the envelope recipient’s tag to the daemon only in a started thread’s shape (§5.1)', async () => {
+    h = await harness()
+    const tag = 'abcdefghijklmnopqrst'
+    const tagged = await post(h, rawMail({ messageId: 'm-tag@corp.example.test' }), {
+      envelopeTo: `helper+${tag}@${MAIL_DOMAIN}`
+    })
+    expect(tagged.json()).toEqual({ result: 'accepted' })
+    expect(WireEmailAdapterExt.parse(h.forwarded[0]!.adapterExt?.email).tag).toBe(tag)
+    // Any other tag still reaches the address, and names no thread.
+    await post(h, rawMail({ messageId: 'm-list@corp.example.test' }), { envelopeTo: `helper+billing@${MAIL_DOMAIN}` })
+    expect(h.forwarded).toHaveLength(2)
+    expect(WireEmailAdapterExt.parse(h.forwarded[1]!.adapterExt?.email).tag).toBeUndefined()
   })
 
   it('answers 401 with an empty body for a missing, wrong or stale signature, and while no mail is configured', async () => {

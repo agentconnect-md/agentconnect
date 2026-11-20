@@ -3252,6 +3252,10 @@ export class CollabCoordinator {
     postTs: string
     /** Whether the DESTINATION is a direct message, as the platform reports it. */
     isDm?: boolean
+    /** Whether the destination is a group conversation of a few people. */
+    isGroupDm?: boolean
+    /** Whom the Control Plane classifies the session for, in place of the agent as its trigger. */
+    sessionTriggerId?: string
     text: string
     originPlatform?: string
     originTransportScope?: string
@@ -3335,6 +3339,8 @@ export class CollabCoordinator {
       // Load-bearing for classification, not cosmetic: the audience strategy asks whether the
       // DESTINATION is a DM, and a Slack DM binds no conversation audience (§7.4).
       isDm: req.isDm === true,
+      ...(req.isGroupDm ? { isGroupDm: true } : {}),
+      ...(req.sessionTriggerId ? { sessionTriggerId: req.sessionTriggerId } : {}),
       // No model turn runs for this seed; headless is retained as a transport backstop.
       headless: true
     }

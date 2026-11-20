@@ -1072,6 +1072,11 @@ export const WireEmailTicket = z
   .regex(/^e1\.[A-Za-z0-9_-]+\.[0-9]{1,15}\.[A-Za-z0-9_-]+$/)
 export type WireEmailTicket = z.infer<typeof WireEmailTicket>
 
+/** The subaddress tag a daemon mints for a mail its agent starts (§6.4): 20 lower-case base32 characters, which fit beside the longest name in a 64-character local part. */
+export const EMAIL_STARTED_TAG_PATTERN = /^[a-z2-7]{20}$/
+export const WireEmailStartedTag = z.string().regex(EMAIL_STARTED_TAG_PATTERN)
+export type WireEmailStartedTag = z.infer<typeof WireEmailStartedTag>
+
 /** One address of a mail's `From`, `To` or `Cc`, with the display name its header carried. Presentation only. */
 export const WireEmailMailbox = z.object({ address: EmailAddress, name: emailHeaderText(256).optional() })
 export type WireEmailMailbox = z.infer<typeof WireEmailMailbox>
@@ -1097,6 +1102,8 @@ export const WireEmailAdapterExt = z.object({
     .max(EMAIL_ATTACHMENTS_MAX),
   /** The relay's ticket for the thread, which a reply is sent with; never set by the normalizer. */
   ticket: WireEmailTicket.optional(),
+  /** The envelope recipient's subaddress tag, when it has the shape of one a daemon mints for a started mail (§5.1); set by the relay. */
+  tag: WireEmailStartedTag.optional(),
   /** Set by the daemon when it admits the sender as someone outside the organization (§4.1); never by the relay. */
   outsider: z.literal(true).optional()
 })
@@ -1124,6 +1131,18 @@ export const WireEmailCall = z.discriminatedUnion('op', [
     html: z.string().min(1).max(EMAIL_SEND_HTML_MAX),
     /** The reply reaches someone outside the organization, so it draws on the outside budget, not the member reply budgets (§6.4). */
     outside: z.boolean().optional()
+  }),
+  // A mail the agent starts (§6.4): no ticket, so the relay bounds it by its recipient rules and the outside budget, and builds `From` and `Reply-To` itself.
+  z.object({
+    op: z.literal('start'),
+    /** The tag of the new thread, which the relay puts in `Reply-To` as `<name>+<tag>@<domain>`. */
+    tag: WireEmailStartedTag,
+    to: z.array(EmailAddress).min(1).max(EMAIL_RECIPIENTS_MAX),
+    cc: z.array(EmailAddress).max(EMAIL_RECIPIENTS_MAX - 1),
+    fromName: emailHeaderText(256).optional(),
+    subject: emailHeaderText(998).min(1),
+    text: z.string().min(1).max(EMAIL_SEND_TEXT_MAX),
+    html: z.string().min(1).max(EMAIL_SEND_HTML_MAX)
   })
 ])
 export type WireEmailCall = z.infer<typeof WireEmailCall>

@@ -16,6 +16,7 @@ import {
   emailConversation,
   emailFallbackThreadKey,
   emailParticipants,
+  emailStartedTag,
   emailThreadCandidates,
   evaluateEmailAuthentication,
   isReservedEmailName,
@@ -105,6 +106,15 @@ describe('email address canonicalization (§3)', () => {
     expect(emailAgentAddress(AGENT, MAIL_DOMAIN)).toBe(AGENT)
     expect(emailAgentAddress('alice+lists@corp.example.test', MAIL_DOMAIN)).toBeUndefined()
     expect(emailAgentAddress(`+tag@${MAIL_DOMAIN}`, MAIL_DOMAIN)).toBeUndefined()
+  })
+
+  it('reads a started thread’s tag only in the shape a daemon mints, and only on the mail domain (§5.1)', () => {
+    const tag = 'abcdefghijklmnopqrst'
+    expect(emailStartedTag(`Helper+${tag.toUpperCase()}@Mail.Example.Test`, MAIL_DOMAIN)).toBe(tag)
+    expect(emailStartedTag('helper+billing@mail.example.test', MAIL_DOMAIN)).toBeUndefined()
+    expect(emailStartedTag(AGENT, MAIL_DOMAIN)).toBeUndefined()
+    expect(emailStartedTag(`alice+${tag}@corp.example.test`, MAIL_DOMAIN)).toBeUndefined()
+    expect(emailStartedTag(`helper+${tag}+x@mail.example.test`, MAIL_DOMAIN)).toBeUndefined()
   })
 })
 

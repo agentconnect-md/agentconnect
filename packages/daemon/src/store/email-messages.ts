@@ -108,6 +108,15 @@ export class EmailMessages {
     return rows[0] ? rowOf(rows[0] as Row) : undefined
   }
 
+  /** The first sent message of a thread, which for a started thread is the mail the agent started (§6.4). */
+  async firstSent(address: string, thread: string): Promise<EmailMessageRow | undefined> {
+    const { rows } = await this.db.query(
+      `SELECT * FROM email_message WHERE address = ? AND thread = ? AND direction = 'sent' ORDER BY seq ASC LIMIT 1`,
+      [address, thread]
+    )
+    return rows[0] ? rowOf(rows[0] as Row) : undefined
+  }
+
   /** The first received message of a conversation, whose sender opened it. */
   async firstReceived(address: string, conversation: string): Promise<EmailMessageRow | undefined> {
     const { rows } = await this.db.query(

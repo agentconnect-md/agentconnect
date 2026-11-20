@@ -46,18 +46,34 @@ export function emailDeliveryReceiptId(normalized: NormalizedMessage): string {
   return ['email-served', normalized.msgId, ext?.messageId ?? ''].join('\u001f')
 }
 
-/** Who a reply's Cc may hold (§6.1): a member, or under Anyone someone outside who has written on the thread themselves. */
+/** Who a reply's Cc may hold (§6.1): a member, or someone outside who has written on the thread themselves, under Anyone or in a started thread, where one the started mail went to may be copied too. */
 export function emailCopyable(
   verdict: EmailMemberVerdict | undefined,
   address: string,
-  wrote: ReadonlySet<string>
+  wrote: ReadonlySet<string>,
+  started?: ReadonlySet<string>
 ): boolean {
   if (verdict?.allowed) return true
+  if (started) return isOutsider(verdict) && (wrote.has(address) || started.has(address))
   return isAdmittedOutsider(verdict) && wrote.has(address)
 }
 
+/** Whether a reply might copy this address as someone outside the organization, so the thread's senders must be read. */
+export function emailMayCopyOutsider(verdict: EmailMemberVerdict | undefined, started: boolean): boolean {
+  return started ? isOutsider(verdict) : isAdmittedOutsider(verdict)
+}
+
 /** What the agent reads (§5.4): the header block, the body as the relay cut it, the attachment notes, and who will not receive the reply. */
-export function emailPrompt(body: string, ext: EmailExt, leftOff: readonly string[], outsidersCopied = false): string {
+export function emailPrompt(
+  body: string,
+  ext: EmailExt,
+  leftOff: readonly string[],
+  outsidersCopied = false,
+  started = false
+): string {
+  const copied = started
+    ? 'people outside it who have written on this thread themselves or were sent the mail you started'
+    : 'people outside it who have written on this thread themselves'
   const notes = [
     ...(ext.unreadableRecipients
       ? [
@@ -67,7 +83,7 @@ export function emailPrompt(body: string, ext: EmailExt, leftOff: readonly strin
     ...(leftOff.length
       ? [
           outsidersCopied
-            ? `[Your reply will not be sent to: ${leftOff.join(', ')}. It goes to members of this organization and to people outside it who have written on this thread themselves. Say so in your reply if it matters.]`
+            ? `[Your reply will not be sent to: ${leftOff.join(', ')}. It goes to members of this organization and to ${copied}. Say so in your reply if it matters.]`
             : `[Not members of this organization, so your reply will not be sent to them: ${leftOff.join(', ')}. Say so in your reply if it matters.]`
         ]
       : [])
@@ -90,8 +106,10 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       if (!verdicts) return 'retry'
       const sender = verdicts.get(ext.from.address)
       // Under Anyone the spec and the answer must agree, so a setting turned back to Members closes at once (§4.1).
-      const outsider = isAdmittedOutsider(sender) && host.whoMayWrite(msg.integrationId) === 'anyone'
-      if (!sender?.allowed && !outsider) return 'rejected'
+      const anyone = isAdmittedOutsider(sender) && host.whoMayWrite(msg.integrationId) === 'anyone'
+      // Anyone else outside may answer only a started thread it was sent, which placement says (§4 step 3, §6.4).
+      const answering = !sender?.allowed && !anyone && ext.tag !== undefined && isOutsider(sender)
+      if (!sender?.allowed && !anyone && !answering) return 'rejected'
       let placement
       try {
         placement = await placeEmail(ext, conn.address, conn)
@@ -99,6 +117,10 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
         host.warn(`email: placing a mail failed (${(err as Error).message}); it is retried`)
         return 'retry'
       }
+      // One the fence splits off is refused with step 3's reason, so no session exists to own (§5.3).
+      if (answering && !placement.started?.recipients.includes(ext.from.address)) return 'rejected'
+      const outsider = anyone || answering
+      const started = placement.started ? new Set(placement.started.recipients) : undefined
       const group = placement.conversation.kind === 'group'
       normalized.channel = placement.conversation.channel
       normalized.thread = placement.thread
@@ -106,6 +128,8 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       if (group) normalized.isGroupDm = true
       else delete normalized.isGroupDm
       normalized.mentionedBots = group ? [conn.address] : []
+      // The started mail is the thread's own root, so a session that never ran reads it once (§6.4).
+      if (started) normalized.threadRootIsOwn = true
       // The daemon's own mark of how the sender was admitted, which the reply and the index read; never the relay's.
       const marked: EmailExt = { ...ext }
       if (outsider) marked.outsider = true
@@ -114,7 +138,7 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
       // A conversation someone outside the organization is on is external, read before the turn it starts (§5.2).
       if (participants.some((address) => isOutsider(verdicts.get(address))))
         host.placeExternal([msg.integrationId], placement.conversation.channel, 'externalMember')
-      const outsidersCopied = participants.some((address) => isAdmittedOutsider(verdicts.get(address)))
+      const outsidersCopied = participants.some((address) => emailMayCopyOutsider(verdicts.get(address), !!started))
       let leftOff: string[] = []
       if (group) {
         // Only an outsider the reply might copy needs the thread's senders read.
@@ -122,9 +146,11 @@ export function emailRelayIngress(host: EmailModuleHost): RelayIngressStrategy {
           ? await conn.threadSenders(placement.conversation.channel, placement.thread).catch(() => undefined)
           : new Set<string>()
         if (!wrote) return 'retry'
-        leftOff = participants.slice(1).filter((address) => !emailCopyable(verdicts.get(address), address, wrote))
+        leftOff = participants
+          .slice(1)
+          .filter((address) => !emailCopyable(verdicts.get(address), address, wrote, started))
       }
-      normalized.text = emailPrompt(normalized.text, marked, leftOff, outsidersCopied)
+      normalized.text = emailPrompt(normalized.text, marked, leftOff, outsidersCopied, !!started)
       return 'admit'
     },
     // Mail has no commands and no acknowledgement, so an admitted message goes straight to dispatch.

@@ -1339,5 +1339,8 @@ describe('email wire shapes (email-integration.md §6.2)', () => {
     expect(WireEmailAdapterExt.safeParse({ ...ext, subject: 'one\ntwo' }).success).toBe(false)
     expect(WireEmailAdapterExt.safeParse({ ...ext, from: { address: 'Alice Example' } }).success).toBe(false)
     expect(WireEmailAdapterExt.safeParse({ ...ext, messageId: '<g1@corp.example.test>' }).success).toBe(false)
+    // The envelope recipient's tag rides only in the shape a daemon mints for a started mail.
+    expect(WireEmailAdapterExt.parse({ ...ext, tag: 'abcdefghijklmnopqrst' }).tag).toBe('abcdefghijklmnopqrst')
+    expect(WireEmailAdapterExt.safeParse({ ...ext, tag: 'newsletter' }).success).toBe(false)
   })
 })

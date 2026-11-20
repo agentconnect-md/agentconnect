@@ -154,6 +154,28 @@ describe('the mail index', () => {
     expect(older.map((t) => t.thread)).toEqual(['t1'])
   })
 
+  it('reads a started thread’s first sent mail by its tag, whatever its conversation (§6.4)', async () => {
+    store = await openTestStore()
+    const agentAddress = address()
+    const tag = 'abcdefghijklmnopqrst'
+    const sent = { address: agentAddress, thread: tag, direction: 'sent' as const, ts: tag, outcome: 'sent' as const }
+    await store.emailMessages.record({
+      ...sent,
+      conversation: 'dm:bob@corp.example.test',
+      mail: '{"first":1}',
+      createdAt: 1
+    })
+    await store.emailMessages.record({
+      ...sent,
+      conversation: 'dm:bob@corp.example.test',
+      mail: '{"reply":1}',
+      createdAt: 2
+    })
+    expect((await store.emailMessages.firstSent(agentAddress, tag))?.mail).toBe('{"first":1}')
+    expect(await store.emailMessages.firstSent(address(), tag)).toBeUndefined()
+    expect(await store.emailMessages.firstSent(agentAddress, 'other')).toBeUndefined()
+  })
+
   it('lists every camelCase column in canonicalColumns', () => {
     const names = new Set([...EMAIL_MESSAGE_SCHEMA.matchAll(/\b[a-z]+[A-Z][A-Za-z]*\b/g)].map((m) => m[0]))
     const canonical = new Set<string>(canonicalColumns)

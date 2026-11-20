@@ -4,7 +4,8 @@ import {
   EMAIL_MESSAGE_ID_MAX,
   EMAIL_PLATFORM,
   EMAIL_RECIPIENTS_MAX,
-  EMAIL_REFERENCES_MAX
+  EMAIL_REFERENCES_MAX,
+  EMAIL_STARTED_TAG_PATTERN
 } from '@agentconnect.md/protocol'
 import type { NormalizedPlatformMessage, WireEmailAdapterExt, WireEmailMailbox } from '@agentconnect.md/protocol'
 import { safeAttachmentName } from './file-name.js'
@@ -81,6 +82,16 @@ export function emailAgentAddress(recipient: string, mailDomain: string): string
   if (!canonical || domainOf(canonical) !== domain) return undefined
   const name = canonical.slice(0, canonical.lastIndexOf('@')).split('+')[0]
   return name ? `${name}@${domain}` : undefined
+}
+
+/** The `+tag` of a recipient on the mail domain when it has the shape a daemon mints for a started mail (§5.1); undefined for any other. */
+export function emailStartedTag(recipient: string, mailDomain: string): string | undefined {
+  const canonical = canonicalEmailAddress(recipient)
+  if (!canonical || !emailAgentAddress(canonical, mailDomain)) return undefined
+  const local = canonical.slice(0, canonical.lastIndexOf('@'))
+  const plus = local.indexOf('+')
+  const tag = plus < 0 ? '' : local.slice(plus + 1)
+  return EMAIL_STARTED_TAG_PATTERN.test(tag) ? tag : undefined
 }
 
 // ── §4 step 1: automatic mail ──

@@ -930,7 +930,8 @@ export class SessionManager {
     // with the newest canonical id below.
     const markerBefore =
       rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
-    const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
+    const firstPromptAfterOwnRootInitialization =
+      markerBefore === null && (rec.triggeredBy === agentId || msg.threadRootIsOwn === true)
     const opening = created || firstPromptAfterOwnRootInitialization
     const inlineOpening = opening && !usesMeta
     // A resumed session's first prompt compares the standing context its runtime kept; an inline opening restates it anyway.
