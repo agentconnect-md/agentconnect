@@ -54,12 +54,8 @@ not by how much code it touches:
 
 When two types fit, use the one that releases less.
 
-Keep fix-related issues open until the fix ships in a stable release. In PR titles,
-descriptions, and commit messages, use `Refs #123` or `Related to #123`. Do not pair
-issue references with GitHub's closing keywords (`close`, `fix`, `resolve`, or
-their variants), or add Development links that close issues on merge. Conventional
-commit types such as `fix(scope): ...` are unchanged. Merging a PR or publishing an
-RC/prerelease does not complete the issue workflow.
+Keep fix-related issues open until the fix ships in a stable release. Merging a
+PR or publishing an RC/prerelease does not complete the issue workflow.
 
 For work split across PRs, each PR states which acceptance items it covers and
 what remains. Keep the issue's acceptance checklist and required PR references

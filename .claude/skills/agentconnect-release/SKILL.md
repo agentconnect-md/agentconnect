@@ -117,17 +117,14 @@ Draft responses should identify and link each release outside its Markdown snipp
 
 ## Close released issues when authorized
 
-Keep fix-related issues open through PR merge and RC/prerelease publication. Use
-`Refs #123` or `Related to #123` in PR descriptions and commit messages; avoid
-closing keywords and Development links that close issues when a PR merges.
+Keep fix-related issues open through PR merge and RC/prerelease publication.
 For work split across PRs, each PR states which acceptance items it covers and
 what remains. Keep the issue's acceptance checklist and required PR references
 current; a partial PR must not claim the complete fix.
 
 1. After the stable release passes the publication checks above, find candidate
-   issues from PRs and commits in the verified release range, including `Refs`
-   references and issue discussions. Do not rely only on GitHub's closing-issue
-   links, and do not treat every referenced issue as fixed.
+   issues from PRs and commits in the verified release range, including linked
+   issues. Do not treat every linked issue as fixed.
 2. Read each candidate issue's acceptance checklist and all required PRs, including
    work from earlier releases. Verify that every required change is present in
    the exact release tag and all acceptance criteria are met, accounting for
