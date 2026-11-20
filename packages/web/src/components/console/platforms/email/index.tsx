@@ -19,6 +19,8 @@ export const EMAIL_CHANNEL_LIST: WebChannelListSemantics = {
 export const emailModule: WebPlatformModule = {
   platformId: 'email',
   integrationGroup: 'workflow',
+  // Mail is a trigger without a product of its own, so it sits beside the generic webhook rather than ahead of the code hosts.
+  pickerBefore: 'webhook',
   docsPath: 'connect-automate/triggers-automation/email',
   requires: 'email',
   offered: emailApi.offered,

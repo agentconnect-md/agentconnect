@@ -126,18 +126,18 @@ export function FilesPanel({
   }, [onRootSettledChange, settled])
   // A filter is over one tree; another session's is a different set of paths.
   useEffect(() => setQuery(''), [scope])
-  // One section open at a time: session files first, unless the viewer holds a checkout file to show in its tree.
-  const [openSection, setOpenSection] = useState<FilesSection | null>(() =>
-    openFilePath && !openFileRoot ? 'workspace' : 'session'
-  )
-  const toggleSection = (section: FilesSection) => setOpenSection((current) => (current === section ? null : section))
+  // Each section folds on its own: session files open, the workspace folded unless the viewer holds a checkout file to show in its tree.
+  const [sessionOpen, setSessionOpen] = useState(true)
+  const [workspaceOpen, setWorkspaceOpen] = useState(() => Boolean(openFilePath && !openFileRoot))
+  const toggleSection = (section: FilesSection) =>
+    (section === 'session' ? setSessionOpen : setWorkspaceOpen)((current) => !current)
   // A file the viewer opens later reveals the section that holds it, since this panel stays mounted with the page.
   useEffect(() => {
-    if (openFileRoot) setOpenSection('session')
-    else if (openFilePath) setOpenSection('workspace')
+    if (openFileRoot) setSessionOpen(true)
+    else if (openFilePath) setWorkspaceOpen(true)
   }, [openFilePath, openFileRoot])
-  // The areas refresh only while shown: a hidden tab or a closed section holds its tick, and catches up in one read when shown again.
-  const sessionVisible = active && openSection === 'session'
+  // The areas refresh only while shown: a hidden tab or a folded section holds its tick, and catches up in one read when shown again.
+  const sessionVisible = active && sessionOpen
   const sessionTick = useRef(tick)
   if (sessionVisible) sessionTick.current = tick
 
@@ -338,13 +338,14 @@ export function FilesPanel({
         section="session"
         label={t('sessionFiles')}
         title={t('sessionFilesTitle')}
-        open={openSection === 'session'}
+        open={sessionOpen}
         onToggle={toggleSection}
       />
-      {/* Kept mounted while closed, so its folds and expanded folders survive switching sections and tabs. */}
+      {/* As tall as its rows, at most half the panel beside an open workspace; kept mounted while folded, so its expanded folders survive. */}
       <div
         id="files-section-session"
-        className={`min-h-0 flex-1 flex-col overflow-auto py-[6px] ${openSection === 'session' ? 'flex' : 'hidden'}`}
+        data-files-section-body="session"
+        className={`min-h-0 shrink flex-col overflow-auto border-b border-(--border-subtle) py-[6px] ${sessionOpen ? 'flex' : 'hidden'} ${workspaceOpen ? 'max-h-[50%]' : ''}`}
       >
         <SessionFilesSection
           key={`${agentId}:${sessionFilesId}`}
@@ -361,10 +362,10 @@ export function FilesPanel({
         section="workspace"
         label={t('workspaceFiles')}
         title={t('workspaceFilesTitle')}
-        open={openSection === 'workspace'}
+        open={workspaceOpen}
         onToggle={toggleSection}
       />
-      {openSection === 'workspace' ? (
+      {workspaceOpen ? (
         <div id="files-section-workspace" className="flex min-h-0 flex-1 flex-col">
           {workspace}
         </div>
@@ -375,7 +376,7 @@ export function FilesPanel({
 
 type FilesSection = 'session' | 'workspace'
 
-// An accordion header: the open section takes the panel's height, the closed one keeps only this row.
+// A section header: the session section is as tall as its rows, the workspace takes what is left, and each folds on its own.
 function SectionHeader({
   section,
   label,

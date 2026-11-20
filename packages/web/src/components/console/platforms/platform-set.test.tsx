@@ -83,7 +83,20 @@ describe('platform set', () => {
     // The tile SET is the registry's, in registry order; the trigger kinds are
     // appended by the chassis because they are not modules.
     expect(BOT_PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids()])
-    expect(PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS])
+    expect([...PLATFORMS.map((tile) => tile.key)].sort()).toEqual(
+      [...platformRegistry.ids(), ...CORE_TRIGGER_KINDS].sort()
+    )
+    const leading = platformRegistry.ids().filter((id) => !platformRegistry.get(id)?.pickerBefore)
+    expect(PLATFORMS.slice(0, leading.length).map((tile) => tile.key)).toEqual(leading)
+  })
+
+  it('puts a module that names a tile to precede right before it', () => {
+    const keys = PLATFORMS.map((tile) => tile.key)
+    for (const module of platformRegistry.all()) {
+      if (!module.pickerBefore) continue
+      expect(keys.indexOf(module.platformId), module.platformId).toBe(keys.indexOf(module.pickerBefore) - 1)
+    }
+    expect(keys.slice(-3)).toEqual(['email', 'webhook', 'api'])
   })
 
   it('labels every picker tile from the display-name table and blurbs every choice', () => {

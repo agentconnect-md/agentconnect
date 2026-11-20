@@ -7469,13 +7469,25 @@
       "remove": "<name></name> will be removed, and its address is retired for good: it is never issued again.",
       "retired": "The address is retired for good: it is never issued again.",
       "settings": {
-        "whoMayWrite": "Who may write",
-        "members": "Members",
+        "title": "Email settings",
+        "acceptFrom": "Accept mail from",
+        "members": "Members of your organization",
         "anyone": "Anyone",
-        "outsideSessions": "Outside senders' sessions",
-        "organization": "Organization",
+        "outsideViewers": "Who sees mail from outside the organization",
+        "specificMember": "A specific member",
+        "chooseMember": "Choose a member",
+        "organization": "Everyone in the organization",
+        "member": "Member",
         "nobody": "Nobody: outside mail is refused",
-        "failed": "The settings could not be saved. Try again in a moment."
+        "saving": "Saving…",
+        "failed": "The settings could not be saved. Try again in a moment.",
+        "status": {
+          "members": "Takes mail from members of your organization",
+          "anyoneMember": "Takes mail from anyone · Mail from outside: only {name} sees it",
+          "anyoneSomeMember": "Takes mail from anyone · Mail from outside: only one member sees it",
+          "anyoneOrg": "Takes mail from anyone · Mail from outside: everyone in the organization sees it",
+          "anyoneNobody": "Takes mail from anyone · Mail from outside: nobody sees it, so it is refused"
+        }
       }
     }
   },

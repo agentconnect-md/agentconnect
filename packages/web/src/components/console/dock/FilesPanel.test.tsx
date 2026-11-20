@@ -973,20 +973,25 @@ describe('FilesPanel session files', () => {
     expect(opened).toEqual(['files:outputs/report.pdf', 'files:outputs/images/chart.png'])
   })
 
-  it('keeps one section open at a time, and lets both collapse', async () => {
+  it('folds each section on its own, the session one as tall as its rows beside an open workspace', async () => {
     await render({ sessionFilesId: 'session-1' })
-    await click(header('workspace'), 'workspace header')
-    expect(header('session')?.getAttribute('aria-expanded')).toBe('false')
-    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
-    expect(rowNames()).toEqual(['src', 'README.md'])
-    expect(container?.querySelector('input')).not.toBeNull()
+    const sessionBody = () => container?.querySelector<HTMLElement>('[data-files-section-body="session"]')
+    // Folded workspace: the session section may grow, and nothing caps it.
+    expect(sessionBody()?.className).not.toContain('max-h-[50%]')
 
     await click(header('workspace'), 'workspace header')
-    expect(rowNames()).toEqual([])
-    await click(header('session'), 'session header')
     expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
-    expect(container?.querySelector('[data-session-files]')).not.toBeNull()
-    expect(container?.querySelector('input')).toBeNull()
+    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
+    expect(sessionBody()?.className).toContain('max-h-[50%]')
+    expect(sessionBody()?.className).not.toContain('flex-1')
+    expect(rowNames()).toEqual(['/outputs', '/uploads', 'src', 'README.md'])
+    expect(container?.querySelector('input')).not.toBeNull()
+
+    await click(header('session'), 'session header')
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('false')
+    expect(rowNames()).toEqual(['src', 'README.md'])
+    await click(header('workspace'), 'workspace header')
+    expect(rowNames()).toEqual([])
   })
 
   it('lists no area while the Files tab is hidden, and both once it is shown', async () => {
@@ -1000,13 +1005,13 @@ describe('FilesPanel session files', () => {
     expect(areaReads('uploads')).toHaveLength(1)
   })
 
-  it('keeps an expanded folder under an area across a switch to the workspace and back, re-reading once', async () => {
+  it('keeps an expanded folder under an area across folding the section and back, re-reading once', async () => {
     wire.listings['files:outputs/'] = { entries: [dir('images')] }
     wire.listings['files:outputs/images'] = { entries: [textFile('chart.png')] }
     await render({ active: true, sessionFilesId: 'session-1' })
     await click(row('images'), 'images folder row')
     expect(rowNames()).toContain('chart.png')
-    await click(header('workspace'), 'workspace header')
+    await click(header('session'), 'session header')
     const readsWhileClosed = areaReads('outputs').length
     await rerender({ active: true, sessionFilesId: 'session-1', refreshTick: 1 })
     expect(areaReads('outputs')).toHaveLength(readsWhileClosed)
@@ -1015,18 +1020,22 @@ describe('FilesPanel session files', () => {
     expect(areaReads('outputs').length).toBeGreaterThan(readsWhileClosed)
   })
 
-  it('reveals the section holding a file the viewer opens later', async () => {
+  it('reveals the section holding a file the viewer opens later, folding nothing', async () => {
     await render({ sessionFilesId: 'session-1' })
+    await click(header('session'), 'session header')
     await rerender({ sessionFilesId: 'session-1', openFilePath: 'README.md' })
     expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('false')
     await rerender({ sessionFilesId: 'session-1', openFilePath: 'report.pdf', openFileRoot: 'outputs' })
     expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
+    expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
   })
 
-  it('opens on the workspace when the viewer already holds a checkout file', async () => {
+  it('also opens the workspace when the viewer already holds a checkout file', async () => {
     await render({ sessionFilesId: 'session-1', openFilePath: 'README.md' })
+    expect(header('session')?.getAttribute('aria-expanded')).toBe('true')
     expect(header('workspace')?.getAttribute('aria-expanded')).toBe('true')
-    expect(rowNames()).toEqual(['src', 'README.md'])
+    expect(rowNames()).toEqual(['/outputs', '/uploads', 'src', 'README.md'])
   })
 
   it('says an empty or absent area has nothing yet', async () => {

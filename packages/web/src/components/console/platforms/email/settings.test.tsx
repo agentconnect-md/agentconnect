@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// An email address's two settings on the agent page (email-integration.md §4.1): who may write, and under Anyone who sees an outside sender's session.
+// An email address's settings on the agent page (email-integration.md §4.1): the card's status line, and the dialog its gear opens.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -30,7 +30,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('./api', () => ({ emailApi: { settings: mocks.settings, saveSettings: mocks.saveSettings } }))
 
-import { EmailAddressSettings } from './settings'
+import { EmailSettingsButton, EmailSettingsStatus } from './settings'
 
 const integration = {
   id: 'int-email',
@@ -42,11 +42,18 @@ const integration = {
 let host: HTMLDivElement
 let root: Root
 
-const buttons = () => [...document.querySelectorAll('button')]
-const select = (label: string) => buttons().find((b) => b.getAttribute('aria-label') === label) as HTMLButtonElement
+const status = () => [...host.children].find((el) => el.tagName === 'P')?.textContent
+const gear = () => document.querySelector<HTMLButtonElement>('button[aria-label="Email settings"]')
+const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]')
+const radio = (label: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find((b) => b.textContent === label)
+const button = (label: string) =>
+  [...dialog()!.querySelectorAll<HTMLButtonElement>('.modalfoot button')].find((b) => b.textContent === label)!
+const memberPicker = () => document.querySelector<HTMLButtonElement>('button[aria-label="Member"]')
 const option = (label: string) =>
-  [...document.querySelectorAll('[role="menuitemradio"]')].find((b) => b.textContent?.includes(label)) as
-    HTMLButtonElement | undefined
+  [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((b) =>
+    b.textContent?.includes(label)
+  )
 
 async function settle(): Promise<void> {
   for (let attempt = 0; attempt < 10; attempt += 1)
@@ -60,16 +67,16 @@ async function render(settings: EmailSettingsDto): Promise<void> {
   await act(async () =>
     root.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <EmailAddressSettings integration={integration} padX={14} />
+        <EmailSettingsButton integration={integration} />
+        <EmailSettingsStatus integration={integration} padX={14} />
       </SWRConfig>
     )
   )
   await settle()
 }
 
-async function pick(field: string, label: string): Promise<void> {
-  await act(async () => select(field).click())
-  await act(async () => option(label)!.click())
+async function click(target: HTMLElement | null | undefined): Promise<void> {
+  await act(async () => target!.click())
   await settle()
 }
 
@@ -101,60 +108,131 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('an email address’s settings', () => {
-  it('shows who may write, and the outside sessions only under Anyone', async () => {
+describe('an email address’s status line', () => {
+  it('says the address takes mail from members', async () => {
     await render(MEMBERS_ONLY)
-    expect(select('Who may write').textContent).toContain('Members')
-    expect(select("Outside senders' sessions")).toBeUndefined()
+    expect(status()).toBe('Takes mail from members of your organization')
+  })
 
-    await pick('Who may write', 'Anyone')
+  it('names the one member who sees mail from outside', async () => {
+    await render({ ...MEMBERS_ONLY, whoMayWrite: 'anyone' })
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: only Ann sees it')
+  })
+
+  it('says everyone in the organization sees mail from outside', async () => {
+    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } })
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: everyone in the organization sees it')
+  })
+
+  it('says outside mail is refused while the picked member is gone', async () => {
+    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'member', userId: 'user-left', active: false } })
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: nobody sees it, so it is refused')
+  })
+})
+
+describe('an email address’s settings dialog', () => {
+  it('offers the gear to an editor of the agent alone', async () => {
+    mocks.canEdit = false
+    await render(MEMBERS_ONLY)
+    expect(status()).toBe('Takes mail from members of your organization')
+    expect(gear()).toBeNull()
+  })
+
+  it('shows who sees outside mail only under Anyone, and saves both at once', async () => {
+    await render(MEMBERS_ONLY)
+    await click(gear())
+    expect(dialog()?.getAttribute('aria-labelledby')).toBeTruthy()
+    expect(dialog()?.textContent).toContain('Email settings')
+    expect(radio('Members of your organization')?.getAttribute('aria-checked')).toBe('true')
+    expect(radio('A specific member')).toBeUndefined()
+
+    await click(radio('Anyone'))
+    expect(radio('A specific member')?.getAttribute('aria-checked')).toBe('true')
+    expect(memberPicker()?.textContent).toContain('Ann')
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
+
+    await click(button('Save'))
+    expect(mocks.saveSettings).toHaveBeenCalledTimes(1)
     expect(mocks.saveSettings).toHaveBeenCalledWith('org-a', 'int-email', {
       whoMayWrite: 'anyone',
       outsideSessions: { kind: 'member', userId: 'user-ann' }
     })
-    expect(select("Outside senders' sessions").textContent).toContain('Ann')
+    expect(dialog()).toBeNull()
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: only Ann sees it')
   })
 
-  it('gives outside sessions to the organization or to another member', async () => {
+  it('gives outside mail to the organization or to another member', async () => {
     await render({ ...MEMBERS_ONLY, whoMayWrite: 'anyone' })
-    await pick("Outside senders' sessions", 'Organization')
+    await click(gear())
+    await click(radio('Everyone in the organization'))
+    await click(button('Save'))
     expect(mocks.saveSettings).toHaveBeenLastCalledWith('org-a', 'int-email', {
       whoMayWrite: 'anyone',
       outsideSessions: { kind: 'org' }
     })
-    await pick("Outside senders' sessions", 'Me')
+
+    await click(gear())
+    expect(radio('A specific member')?.getAttribute('aria-checked')).toBe('false')
+    expect(memberPicker()?.textContent).toContain('Choose a member')
+    await click(memberPicker())
+    await click(option('Me'))
+    expect(radio('A specific member')?.getAttribute('aria-checked')).toBe('true')
+    await click(button('Save'))
     expect(mocks.saveSettings).toHaveBeenLastCalledWith('org-a', 'int-email', {
       whoMayWrite: 'anyone',
       outsideSessions: { kind: 'member', userId: 'user-me' }
     })
+    expect(status()).toBe('Takes mail from anyone · Mail from outside: only Me sees it')
   })
 
-  it('names nobody while the picked member is gone', async () => {
-    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'member', userId: 'user-left', active: false } })
-    expect(select("Outside senders' sessions").textContent).toContain('Nobody')
+  it('lists the organization ahead of a specific member', async () => {
+    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } })
+    await click(gear())
+    const outside = [...document.querySelectorAll('[role="radiogroup"]')][1]!
+    expect([...outside.querySelectorAll('[role="radio"]')].map((r) => r.textContent)).toEqual([
+      'Everyone in the organization',
+      'A specific member'
+    ])
   })
 
-  it('makes the editor the pick when opening to Anyone with nobody picked', async () => {
+  it('waits for a member to be picked when none is saved', async () => {
     await render({ whoMayWrite: 'members', outsideSessions: { kind: 'member', userId: null, active: false } })
-    await pick('Who may write', 'Anyone')
+    await click(gear())
+    await click(radio('Anyone'))
+    expect(button('Save').disabled).toBe(true)
+    await click(memberPicker())
+    await click(option('Me'))
+    await click(button('Save'))
     expect(mocks.saveSettings).toHaveBeenLastCalledWith('org-a', 'int-email', {
       whoMayWrite: 'anyone',
       outsideSessions: { kind: 'member', userId: 'user-me' }
     })
   })
 
-  it('lets only an editor of the agent change them', async () => {
-    mocks.canEdit = false
-    await render({ ...MEMBERS_ONLY, whoMayWrite: 'anyone' })
-    expect(select('Who may write').disabled).toBe(true)
-    expect(select("Outside senders' sessions").disabled).toBe(true)
+  it('names nobody in the picker while the picked member is gone', async () => {
+    await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'member', userId: 'user-left', active: false } })
+    await click(gear())
+    expect(memberPicker()?.textContent).toContain('Nobody')
   })
 
-  it('says so when a change could not be saved', async () => {
+  it('discards the draft on Cancel', async () => {
+    await render(MEMBERS_ONLY)
+    await click(gear())
+    await click(radio('Anyone'))
+    await click(button('Cancel'))
+    expect(dialog()).toBeNull()
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
+    expect(status()).toBe('Takes mail from members of your organization')
+  })
+
+  it('says so inside the dialog when the change could not be saved', async () => {
     mocks.saveSettings.mockRejectedValueOnce(new Error('unavailable'))
     await render(MEMBERS_ONLY)
-    await pick('Who may write', 'Anyone')
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
-    expect(select('Who may write').textContent).toContain('Members')
+    await click(gear())
+    await click(radio('Anyone'))
+    await click(button('Save'))
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
+    expect(radio('Anyone')?.getAttribute('aria-checked')).toBe('true')
+    expect(status()).toBe('Takes mail from members of your organization')
   })
 })

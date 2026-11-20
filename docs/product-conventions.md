@@ -1143,21 +1143,24 @@ a channel cannot reset a later operator choice.
 
 An agent's email address takes mail from members by default: a sender whose address is
 a verified sign-in email of a member who may use the agent. An Agent editor may set the
-address's **Who may write** to **Anyone** in its integration panel. Then every sender
+address's **Accept mail from** to **Anyone** in its **Email settings**, which the gear on
+its integration card opens. Then every sender
 whose mail is authenticated, is not automatic and is within the rate limit may write; a
 member is still recognized as one, and an address two members both hold is still
 refused. Authentication and the automatic-mail filter are never lifted. A sender the
 Control Plane could not be asked about is never admitted as an outside sender: the
 message is retried, as under Members.
 
-Under Anyone the editor also sets **Outside senders' sessions**: the people who can edit
-this agent (the default), the organization, or one member. The first follows the agent as
-it stands when someone opens the session: whoever can edit the agent then sees it, an
-editor added later sees earlier mail, and one removed stops seeing it. While a picked
-member is not an active member of the organization, mail from outside is refused until an
-editor picks again, so a departed member's choice never turns into the organization's. A
-member's own mail is unaffected by either setting, and a session the agent's editors see
-stays out of the agent's shared memory, as a private one does.
+Under Anyone the editor also sets **Who sees mail from outside the organization**:
+**People who can edit this agent** (the default), **Everyone in the organization**, or
+**A specific member**. The first follows the agent as it stands when someone opens the
+session: whoever can edit the agent then sees it, an editor added later sees earlier mail,
+and one removed stops seeing it; such a session stays out of the agent's shared memory, as
+a private one does. While a picked member is not an active member of the organization,
+mail from outside is refused until an editor picks again, so a departed member's choice
+never turns into the organization's. A member's own mail is unaffected by either setting.
+The dialog writes both on Save, and the card states them in one line under the address
+for anyone who can see the agent.
 
 A conversation with someone outside the organization on it is external, as on every other
 platform: it keeps a place layer of its own, never writes the shared layer, and a post
