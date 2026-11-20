@@ -536,7 +536,7 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Multi-arch targets (the computer image) run their arm64 install steps under emulation on this amd64 runner.
+      # Multi-arch targets (the services and the computer image) run their arm64 install steps under emulation on this amd64 runner.
       - name: Set up QEMU
         if: contains(matrix.platforms, 'linux/arm64')
         uses: docker/setup-qemu-action@v4
