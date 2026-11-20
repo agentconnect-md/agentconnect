@@ -96,8 +96,9 @@ export function emailStartRequest(
     subject: call.subject,
     text: call.text,
     html: call.html,
+    // The provider refuses `Reply-To` among the headers and takes it only as this field.
+    reply_to: replyTo,
     headers: {
-      'Reply-To': replyTo,
       // RFC 3834: a mail nobody answered is `auto-generated`, so other automatic responders stay silent too.
       'Auto-Submitted': 'auto-generated'
     }

@@ -258,7 +258,8 @@ describe('email relay egress', () => {
       subject: 'Quarterly numbers',
       text: 'Here are the numbers.',
       html: '<p>Here are the numbers.</p>',
-      headers: { 'Reply-To': `helper+${TAG}@${EMAIL_CONFIG.mailDomain}`, 'Auto-Submitted': 'auto-generated' }
+      reply_to: `helper+${TAG}@${EMAIL_CONFIG.mailDomain}`,
+      headers: { 'Auto-Submitted': 'auto-generated' }
     })
   })
 
