@@ -1,5 +1,5 @@
 // auto-session-mode.md §10: the console home and playground open the member's private coordinator conversation with an agent.
-import { prewarmAgent } from '@/lib/api'
+import { openCoordinatorConversation, prewarmAgent } from '@/lib/api'
 import { agentCapabilitySource, isPoolPlacementKind, type Agent, type DaemonRow, type MemberSetRow } from '@/lib/data'
 import { autoSessionModeSupported } from '@/lib/session-mode'
 import { protocolFor } from './selector'
@@ -39,4 +39,35 @@ export function prewarmAgentOnOpen(
   lastPrewarm.set(agentId, now)
   // Best effort: a refusal (an unfunded org, an offline pool) only means the first message starts cold.
   void send(agentId).catch(() => undefined)
+}
+
+type OpenPlayground = (
+  agent: Agent,
+  members?: Agent[],
+  options?: { conversationId?: string; coordinator?: boolean }
+) => string
+
+/** The session the agent's Playground opens on: the member's coordinator session once it has one, else a fresh playground session. */
+export async function openAgentPlayground(input: {
+  agent: Agent
+  orgId: string | undefined
+  coordinator: boolean
+  prewarm: boolean
+  openPlayground: OpenPlayground
+}): Promise<string> {
+  const { agent, orgId, openPlayground } = input
+  if (!orgId || !input.coordinator) return openPlayground(agent)
+  if (input.prewarm) prewarmAgentOnOpen(agent.id)
+  const entry = await openCoordinatorConversation(orgId, agent.id).catch(() => undefined)
+  return (
+    entry?.sessionId ??
+    openPlayground(agent, undefined, entry ? { conversationId: entry.conversationId, coordinator: true } : undefined)
+  )
+}
+
+/** The agent a playground session id was minted for (`pg_<agentId>_<uuid>`), or undefined for any other id. */
+export function playgroundAgentId(sessionId: string): string | undefined {
+  if (!sessionId.startsWith('pg_')) return undefined
+  const end = sessionId.lastIndexOf('_')
+  return end > 3 ? sessionId.slice(3, end) : undefined
 }

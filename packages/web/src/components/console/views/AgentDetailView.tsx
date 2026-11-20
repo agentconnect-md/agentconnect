@@ -62,13 +62,12 @@ import {
   updateGiteaHook,
   updateGitlabHook,
   uploadAgentIcon,
-  openCoordinatorConversation,
   githubAppPageUrl,
   type GithubInstallationDto,
   type HookDto,
   type HookRunDto
 } from '@/lib/api'
-import { opensCoordinator, prewarmAgentOnOpen, prewarmsOnOpen } from '@/components/console/playground/coordinator'
+import { openAgentPlayground, opensCoordinator, prewarmsOnOpen } from '@/components/console/playground/coordinator'
 import { useOptionalDecisionsPrototype } from '@/lib/decisions/provider'
 import { CoordinatorFilterEvaluationsLink } from '@/components/console/CoordinatorFilterEvaluations'
 import { useConsoleData } from '@/lib/data-context'
@@ -1265,24 +1264,13 @@ function AgentDetail() {
 
   const onPlayground = () => {
     // auto-session-mode.md §10: the playground is the member's private coordinator with the agent, on its session once it has one.
-    if (activeOrg && !MOCK_MODE && opensCoordinator(da, daemons, memberSets)) {
-      if (prewarmsOnOpen(da, orgSetIds)) prewarmAgentOnOpen(da.id)
-      void openCoordinatorConversation(activeOrg.id, da.id)
-        .catch(() => undefined)
-        .then((entry) => {
-          const id =
-            entry?.sessionId ??
-            openPlayground(
-              da,
-              undefined,
-              entry ? { conversationId: entry.conversationId, coordinator: true } : undefined
-            )
-          router.push(orgPath(`/sessions/${id}`))
-        })
-      return
-    }
-    const pid = openPlayground(da)
-    router.push(orgPath(`/sessions/${pid}`))
+    void openAgentPlayground({
+      agent: da,
+      orgId: MOCK_MODE ? undefined : activeOrg?.id,
+      coordinator: opensCoordinator(da, daemons, memberSets),
+      prewarm: prewarmsOnOpen(da, orgSetIds),
+      openPlayground
+    }).then((id) => router.push(orgPath(`/sessions/${id}`)))
   }
   const pauseActionLabel = da.pause ? t('actions.unpause') : t('actions.pause')
   const pauseActionIcon = da.pause ? 'play' : 'pause'
