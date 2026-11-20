@@ -1164,6 +1164,12 @@ anyone else is the sender's own text and reaches nobody, and the agent is told w
 left off. Replies that reach someone outside draw on an outside budget, counted in
 recipients, apart from the replies members get.
 
+A mail the agent starts (see "Writing to other conversations") opens a thread of its own,
+and its recipients may answer it whatever **Who may write** says; anyone else on a reply
+is held to the setting. A reply that would split off the thread, or that comes from
+someone the mail never went to, is refused under Members as any other outside mail is.
+In that thread a reply may also copy someone outside the mail was sent to.
+
 ## Assistant-mode places
 
 Assistant mode uses the same conversation defaults as any agent with the same visibility: an
@@ -1336,6 +1342,20 @@ The conversation the agent is answering in is always writable.
   organization invited, so that no such channel is left without a person. From a private
   channel it invites only that channel's members, and never from one shared with another
   organization.
+
+- **Mail the agent starts** (`sendEmail`, from an agent with an email address) is a named exception
+  to the drafting above. A turn started by a member's own message may mail any address, outside the
+  organization too, with no approval: the member whose message started the turn is the one who
+  asked, so an approval would ask the same person again. Every other turn mails members of the
+  organization only, and the tool refuses an outside recipient there and says why: a guest's
+  message, a schedule's run (even one that records a person, since no one is present to have asked
+  for that mail), a hook's run, a delegated task, a turn that folds several people's messages unless
+  every one of them is a member's own, and a sender the platform cannot identify (an unlinked chat
+  account, a platform with no identity). Who is asking is read as above and fails closed. A mail
+  goes to at most 50 addresses and never to the deployment's own mail domain. It and the replies
+  that reach someone outside share one outside budget, counted in recipients. The accepted risk is
+  that text the agent reads during a member's turn can talk it into mailing what it holds to an
+  outside address; an organization that will not accept it leaves the agent without an address.
 
 The agent-to-agent forms of `sendMessage` and the parent-session reply are not platform writes; the
 `toAgent` channel form keeps its own reach (on Slack, a public channel, or a private conversation
