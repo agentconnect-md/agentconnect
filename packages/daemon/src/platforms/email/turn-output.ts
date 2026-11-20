@@ -125,6 +125,16 @@ export function emailDeliveryNote(
   return lines.length ? lines.join('\n') : undefined
 }
 
+/** The agent's name as one header line within the wire's limit; undefined when nothing is left of it. */
+export function emailFromName(name: string | undefined): string | undefined {
+  const line = name
+    ?.replace(/[\s\x00-\x1f\x7f]+/g, ' ')
+    .trim()
+    .slice(0, 256)
+    .trim()
+  return line || undefined
+}
+
 /** Send the turn's one mail, then keep the answer, its index row and any delivery note in the session. */
 export async function deliverEmailReply<TTurn extends EmailTurn>(
   host: EmailTurnHost<TTurn>,
@@ -153,12 +163,14 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
     audience = resolved
     unchecked = resolved.unchecked
     const bodies = emailReplyBodies(text)
+    const fromName = emailFromName(host.agentName(agentId))
     const call: WireEmailCall = {
       op: 'send',
       ticket: answered.ticket,
       audience: resolved.participants,
       to: resolved.to,
       cc: resolved.cc,
+      ...(fromName ? { fromName } : {}),
       subject: emailReplySubject(answered.subject),
       inReplyTo: answered.messageId,
       references: emailReplyReferences(answered),
@@ -178,7 +190,7 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
     kind: 'text',
     text
   })
-  const name = host.agentName(agentId)
+  const name = emailFromName(host.agentName(agentId))
   const sent: EmailStoredSent = {
     from: { address: conn.address, ...(name ? { name } : {}) },
     to: audience.to.map((address) => ({ address })),

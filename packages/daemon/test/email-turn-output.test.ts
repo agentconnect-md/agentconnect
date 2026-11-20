@@ -12,6 +12,7 @@ import { EmailMembers, type EmailMembersDeps } from '../src/platforms/email/memb
 import { emailHtml, emailReplyBodies, emailReplyReferences, emailReplySubject } from '../src/platforms/email/render.js'
 import {
   applyEmailAction,
+  emailFromName,
   EmailConverger,
   type EmailTurn,
   type EmailTurnHost,
@@ -83,6 +84,15 @@ describe('rendering', () => {
     )
     const bodies = emailReplyBodies('  Hello  ')
     expect(bodies).toEqual({ text: 'Hello', html: '<p>Hello</p>', cut: false })
+  })
+})
+
+describe('the sender’s display name', () => {
+  it('is the agent’s name on one line within the limit, or left out', () => {
+    expect(emailFromName(' Helper\r\nBcc: x ')).toBe('Helper Bcc: x')
+    expect(emailFromName('a'.repeat(300))).toHaveLength(256)
+    expect(emailFromName('  ')).toBeUndefined()
+    expect(emailFromName(undefined)).toBeUndefined()
   })
 })
 
@@ -203,6 +213,7 @@ describe('delivering the reply', () => {
       audience: [ALICE],
       to: [ALICE],
       cc: [],
+      fromName: 'Helper',
       subject: 'Re: Plan',
       inReplyTo: 'm2@corp.example.test',
       references: ['m1@corp.example.test', 'm2@corp.example.test'],

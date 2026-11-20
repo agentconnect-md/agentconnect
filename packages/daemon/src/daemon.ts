@@ -26106,7 +26106,7 @@ export class Daemon {
       monotonicTs: () => monotonicTs(),
       members: () => this.emailMembers,
       store: () => this.store,
-      agentName: (agentId) => this.agents.get(agentId)?.name,
+      agentName: (agentId) => this.agents.get(agentId)?.displayName ?? this.agents.get(agentId)?.name,
       now: () => this.clock.now(),
       warn: (message) => this.log.warn(message)
     }
