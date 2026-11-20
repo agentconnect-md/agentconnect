@@ -3,6 +3,7 @@
 // Integrations page: the org's integrations and their agents, grouped as the Add-integration picker groups them; writes are role-gated.
 // Add integration opens the agent page's dialog with no agent, so the modal grows an Agent field.
 
+import { manifestFor } from '@agentconnect.md/protocol'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
@@ -824,11 +825,11 @@ function BotsCard({
                         })}
                       </div>
                     </>
-                  ) : (
+                  ) : manifestFor(b.platform).listsConversations ? (
                     <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                       {t('noConversations', { room: roomNoun })}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
             </Fragment>
