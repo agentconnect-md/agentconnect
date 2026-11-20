@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { AgentsConversationsSetViewArguments } from '@slack/web-api'
 import { SLACK_CODE_MODEL_KEY, SLACK_CODE_CONTEXT_KEY } from '@agentconnect.md/protocol'
 import { parseArgs } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
@@ -195,6 +196,33 @@ const viewArgs = z
     if (a.content && Buffer.byteLength(a.content) > 1000000)
       ctx.addIssue({ code: 'custom', message: 'content exceeds 1000000 UTF-8 bytes' })
   })
+/** A Block Kit tab linking a PR, keyed by its URL and labelled with its number unless the agent names them. */
+function pullRequestTab(
+  channel: string,
+  url: string,
+  viewKey?: string,
+  name?: string
+): AgentsConversationsSetViewArguments {
+  const { host, pathname } = new URL(url)
+  const number = /\/(\d+)\/?$/.exec(pathname)?.[1]
+  return {
+    channel_id: channel,
+    type: 'block_kit',
+    view_key: viewKey ?? url.slice(0, 255),
+    name: name ?? (number ? `PR #${number}` : 'Pull request'),
+    blocks: [
+      {
+        type: 'rich_text',
+        elements: [
+          {
+            type: 'rich_text_section',
+            elements: [{ type: 'link', url, text: `${host}${pathname}`, style: { bold: true } }]
+          }
+        ]
+      }
+    ]
+  }
+}
 const manageArgs = z
   .object({
     channelId: text.optional(),
@@ -402,7 +430,7 @@ async function execute(
           integrationId: ctx.integrationId,
           documentId: a.canvasId!
         })
-      return conn.codeChannelApi('setView', {
+      const view = conn.codeChannelApi('setView', {
         channel_id: channel,
         type: a.type,
         view_key: a.viewKey,
@@ -412,6 +440,12 @@ async function execute(
         ...(a.type === 'canvas' ? { canvas_id: a.canvasId, access_level: 'comment' as const } : {}),
         base_branch: a.baseBranch,
         head_branch: a.headBranch
+      })
+      if (a.type !== 'pull_request') return view
+      // Slack's public API documents no pull_request view, so a workspace that refuses one gets a tab linking the PR.
+      return view.catch(async (error: unknown) => {
+        if (!(error instanceof Error) || !/ failed: invalid_view_type$/.test(error.message)) throw error
+        return conn.codeChannelApi('setView', pullRequestTab(channel, a.prUrl!, a.viewKey, a.name))
       })
     }
     if (a.action === 'getCanvas')
