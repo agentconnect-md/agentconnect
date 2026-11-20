@@ -41,7 +41,7 @@ group "default" {
 target "_release" {
   context    = "."
   dockerfile = "docker/Dockerfile"
-  platforms  = ["linux/amd64"]
+  platforms  = ["linux/amd64", "linux/arm64"]
 }
 
 target "control-plane" {

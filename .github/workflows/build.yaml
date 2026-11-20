@@ -536,7 +536,7 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Multi-arch targets (the computer image) run their arm64 install steps under emulation on this amd64 runner.
+      # Multi-arch targets (the services and the computer image) run their arm64 install steps under emulation on this amd64 runner.
       - name: Set up QEMU
         if: contains(matrix.platforms, 'linux/arm64')
         uses: docker/setup-qemu-action@v4
@@ -644,7 +644,8 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.build_target }}
-          platforms: ${{ matrix.platforms }}
+          # The runner's image store cannot load a multi-platform result, so the daemon verifies its amd64 half; Push publishes both.
+          platforms: ${{ matrix.verify == 'daemon' && 'linux/amd64' || matrix.platforms }}
           push: ${{ matrix.verify != 'daemon' }}
           load: ${{ matrix.verify == 'daemon' }}
           tags: ${{ matrix.tags }}
