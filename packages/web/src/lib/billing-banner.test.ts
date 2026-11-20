@@ -2,7 +2,7 @@
 // swallowed the one actionable line, and did it exactly when it mattered, since `unknown` is
 // reported DURING a suspension decision so the balance is near its threshold by definition.
 import { describe, expect, it } from 'vitest'
-import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
+import { balanceBanner, ledgerHistory, settlingMonth } from '@/lib/billing-banner'
 import type { BillingAccount } from '@/lib/billing-api'
 
 const acct = (over: Partial<BillingAccount> = {}): BillingAccount => ({
@@ -84,6 +84,24 @@ describe('balanceBanner', () => {
     expect(balanceBanner(nulled, funded)).toBeNull()
     // …and the balance rules still apply, because they owe nothing to the gateway.
     expect(balanceBanner({ ...nulled, balanceMicro: 1 }, funded)?.tone).toBe('amber')
+  })
+})
+
+describe('settlingMonth', () => {
+  it('names the month that just ended, for the first hour of a UTC month only', () => {
+    expect(settlingMonth(new Date('2026-09-01T00:00:00.000Z'))).toEqual(new Date('2026-08-01T00:00:00.000Z'))
+    expect(settlingMonth(new Date('2026-09-01T00:59:59.999Z'))).toEqual(new Date('2026-08-01T00:00:00.000Z'))
+    expect(settlingMonth(new Date('2026-09-01T01:00:00.000Z'))).toBeNull()
+    expect(settlingMonth(new Date('2026-09-15T00:30:00.000Z'))).toBeNull()
+  })
+
+  it('goes back across a year', () => {
+    expect(settlingMonth(new Date('2027-01-01T00:10:00.000Z'))).toEqual(new Date('2026-12-01T00:00:00.000Z'))
+  })
+
+  it('reads the month in UTC, whatever zone the visitor is in', () => {
+    // Local midnight on the 1st in UTC+8 is still the 31st in UTC: nothing is settling yet.
+    expect(settlingMonth(new Date('2026-08-31T16:00:00.000Z'))).toBeNull()
   })
 })
 

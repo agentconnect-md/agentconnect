@@ -90,6 +90,16 @@ export function balanceBanner(
   return null
 }
 
+/** How long after a UTC month ends its usage can still be posted — the billing service's own settle window. */
+export const MONTH_SETTLE_MS = 60 * 60 * 1000
+
+/** The first instant of the UTC month whose usage is still settling at `now`, or null outside that hour. */
+export function settlingMonth(now: Date): Date | null {
+  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+  if (now.getTime() - monthStart >= MONTH_SETTLE_MS) return null
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
+}
+
 /** What the composer of a Cloud agent offers when the org cannot run it, or null when it can.
  *  `add-card` while the org can still earn free credit by saving one; otherwise the fix is paying for some. */
 export type CloudCreditGate = 'add-card' | 'add-credits' | 'ask-owner'

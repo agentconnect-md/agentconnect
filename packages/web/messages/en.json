@@ -5229,6 +5229,8 @@
       "lowBalanceText": "This balance is below the {threshold} alert threshold. Agents keep serving until it reaches zero.",
       "unconfirmedTitle": "Confirming access status",
       "unconfirmedText": "A change to this org's access is still unconfirmed at the gateway, so we are not claiming either way yet. This resolves on its own.",
+      "settlingTitle": "{month} usage is still settling",
+      "settlingText": "Usage from the last moments of {month} can take up to an hour to be posted after the month ends. Totals for {month} are final after 01:00 UTC.",
       "addCredits": "Add credits"
     },
     "checkout": {
