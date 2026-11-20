@@ -564,6 +564,21 @@ describe('a playground conversation the daemon made a session of (webchat-transc
     expect(text()).not.toContain('LIVE DELEGATE CALL')
   })
 
+  it('offers no first prompts once its rows have retired every live step', async () => {
+    conversation()
+    wire.pg = {
+      ...listRow,
+      id: 'pg_agent-1_1',
+      platform: 'playground',
+      realSessionId: 'session-1',
+      coordinator: true,
+      steps: []
+    }
+    await open()
+    expect(q(`[data-thread-footer="${ROOT}"]`)).not.toBeNull()
+    expect(text()).not.toMatch(/start with/i)
+  })
+
   it('stays on its stream until the Control Plane knows the session', async () => {
     const steps: SessionStep[] = [
       { kind: 'done', agentId: 'agent-1', turnId: 't1', text: 'LIVE ANSWER', observedAtMs: 2 }
