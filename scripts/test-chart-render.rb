@@ -145,6 +145,19 @@ _, refused_proxy, refused_proxy_status = Open3.capture3(*command, '--set', 'daem
 abort('daemonPool.extraEnv.AC_GITHUB_GIT_PROXY must be refused') if refused_proxy_status.success?
 abort("refusal for AC_GITHUB_GIT_PROXY must say why:\n#{refused_proxy}") unless refused_proxy.include?('features.githubGitProxy')
 
+# A console flag is one features knob: email is off by default and its knob alone turns it on.
+feature_flags = lambda do |docs|
+  web = docs.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-web' } ||
+        abort('the web Deployment must render')
+  web.dig('spec', 'template', 'spec', 'containers').flat_map { |item| item.fetch('env', []) }
+     .find { |item| item['name'] == 'FEATURE_FLAGS' }&.fetch('value', '').to_s.split(',')
+end
+abort('features.email must be off by default') if feature_flags.call(documents).include?('email')
+rendered_email, error_email, status_email = Open3.capture3(*command, '--set', 'features.email=true')
+abort("helm template with features.email=true failed:\n#{error_email}") unless status_email.success?
+abort('features.email=true must put email in FEATURE_FLAGS') unless
+  feature_flags.call(YAML.load_stream(rendered_email).compact).include?('email')
+
 # One source per install. An entry the Secret omits is a supported shape, so a second source
 # filling that same variable assembles a pair out of two halves — a provider key aimed at a
 # gateway base URL, or a gateway key at a provider's. The chart cannot see inside the Secret, so

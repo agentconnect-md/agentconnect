@@ -2633,6 +2633,7 @@
         "listen": "invite the bot to any {target} in {platform} and it starts listening there.",
         "mention": "invite the bot to any {target} in {platform} and @-mention it to start.",
         "direct": "message the bot directly in {platform} to start; it can't join a {target}.",
+        "mail": "write to the address from your sign-in email to start.",
         "targets": {
           "channel": "channel",
           "group": "group",
@@ -2688,6 +2689,10 @@
         "wecom": {
           "create": "Create a smart bot in WeCom",
           "existing": "An unused WeCom bot"
+        },
+        "email": {
+          "create": "Choose this agent's address",
+          "existing": "An address is never moved to another agent"
         }
       },
       "api": {
@@ -6625,7 +6630,8 @@
   "Platforms": {
     "unnamed": {
       "wecomGroup": "WeCom group · {tag}",
-      "wecomMember": "WeCom member · {tag}"
+      "wecomMember": "WeCom member · {tag}",
+      "emailThread": "Email thread · {tag}"
     },
     "chrome": {
       "delivery": {
@@ -7426,6 +7432,30 @@
         "updated": "Secret saved. The bot reconnects with it."
       },
       "brand": "WeCom"
+    },
+    "email": {
+      "brand": "Email",
+      "address": "Address",
+      "placeholder": "name",
+      "checking": "Checking…",
+      "available": "{address} is free.",
+      "checkFailed": "The name could not be checked. Try again in a moment.",
+      "reason": {
+        "not_configured": "Email is not set up on this deployment.",
+        "length": "An address name is 3 to 40 characters long.",
+        "characters": "Use lower-case letters, digits, dots and hyphens, starting and ending with a letter or a digit.",
+        "reserved": "This name is reserved. Choose another one.",
+        "taken": "This address is in use or was used before, and an address is never issued twice. Choose another name."
+      },
+      "create": "Create",
+      "creating": "Creating…",
+      "done": "Done",
+      "created": "Mail a member sends to this address from their sign-in email reaches the agent.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copyAddress": "Copy address",
+      "remove": "<name></name> will be removed, and its address is retired for good: it is never issued again.",
+      "retired": "The address is retired for good: it is never issued again."
     }
   },
   "Computers": {

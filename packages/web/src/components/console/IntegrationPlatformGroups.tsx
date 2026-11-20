@@ -1,6 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
-import { PLATFORMS, platformOffered, type PlatformTile } from './platforms/host-projections'
+import { PLATFORMS, type PlatformTile } from './platforms/host-projections'
+import { useOfferedPlatform } from './platforms/offered'
 import { platformRegistry } from './platforms/registry'
 
 // One column width for every group: the fullest row fills, shorter rows keep that width left-aligned.
@@ -16,7 +17,8 @@ export function IntegrationPlatformGroups({
   selectedPlatform?: string
 }) {
   const t = useTranslations('Integrations.dialog')
-  const tiles = PLATFORMS.filter((tile) => platformOffered(tile.key))
+  const offered = useOfferedPlatform()
+  const tiles = PLATFORMS.filter((tile) => offered(tile.key))
   const groups = (['chat', 'workflow'] as const).map((group) => ({
     group,
     tiles: tiles.filter((tile) => {

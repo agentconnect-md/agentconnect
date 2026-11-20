@@ -60,6 +60,8 @@ const LABELS = new Map<string, PlatformLabel>([
   ['wechat', { name: 'WeChat', picker: 'WeChat', sigil: '' }],
   // A WeCom group is named without a "#".
   ['wecom', { name: 'WeCom', picker: 'WeCom', sigil: '' }],
+  // An email thread is named by its subject, without a "#".
+  ['email', { name: 'Email', picker: 'Email', sigil: '' }],
   // Nothing routes a bare 'lark' id today (the cloud rides on its own `region`
   // field), but the substring chains this replaces accepted it.
   ['lark', { name: 'Lark', picker: 'Lark/Feishu', sigil: '' }]

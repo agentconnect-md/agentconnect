@@ -964,6 +964,8 @@ export type CreateIntegrationInput =
     })
   // WeChat installs only through the CP's QR login, so the console's one create shape is a reuse by bot id.
   | (CreateIntegrationBase & { platform: 'wechat'; botId: string })
+  // Email takes only the address name; mail arrives through the relay, so its one transport is http.
+  | (CreateIntegrationBase & { platform: 'email'; transport: 'http'; email?: { name: string } })
 
 export interface TelegramBotCheckDto {
   status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'
@@ -5783,6 +5785,19 @@ export interface MsTeamsDeploymentAppDto {
 }
 export async function fetchMsTeamsDeploymentApp(orgId?: string): Promise<MsTeamsDeploymentAppDto> {
   return apiGet<MsTeamsDeploymentAppDto>(`${orgBase(orgId)}/integrations/msteams/app`)
+}
+/** Why an email address name cannot be taken, as `GET /integrations/email/address` answers it. */
+export type EmailAddressNameReason = 'not_configured' | 'length' | 'characters' | 'reserved' | 'taken'
+/** `GET /integrations/email/address`: the deployment's mail domain (null when Email is not set up) and, with a name, whether it is free. */
+export interface EmailAddressCheckDto {
+  mailDomain: string | null
+  address: string | null
+  available: boolean
+  reason: EmailAddressNameReason | null
+}
+export async function checkEmailAddressName(orgId: string, name?: string): Promise<EmailAddressCheckDto> {
+  const query = name === undefined ? '' : `?name=${encodeURIComponent(name)}`
+  return apiGet<EmailAddressCheckDto>(`${orgBase(orgId)}/integrations/email/address${query}`)
 }
 /** Microsoft's sign-in page for connecting the organization's tenant to the deployment Teams app for `agentId`. */
 /** Start connecting a tenant; `tenantId` pins a Teams Store install's tenant, so nothing is published or installed. */

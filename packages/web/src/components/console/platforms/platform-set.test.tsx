@@ -148,6 +148,9 @@ describe('platform set', () => {
       expect(platformOffered('wecom')).toBe(false)
       vi.stubEnv('FEATURE_FLAGS', 'wecom')
       expect(platformOffered('wecom')).toBe(true)
+      expect(platformOffered('email')).toBe(false)
+      vi.stubEnv('FEATURE_FLAGS', 'email')
+      expect(platformOffered('email')).toBe(true)
     })
 
     it('keeps its Bots tab for an org that already has a bot there, flag or not', () => {
@@ -157,7 +160,7 @@ describe('platform set', () => {
       expect(shown([{ platform: 'qq' }])).toContain('qq')
       expect(shown([])).not.toContain('wecom')
       expect(shown([{ platform: 'wecom' }])).toContain('wecom')
-      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat,wecom')
+      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat,wecom,email')
       expect(visibleBotPlatformTabs([])).toEqual(BOT_PLATFORM_TABS)
     })
   })
@@ -186,7 +189,8 @@ describe('platform set', () => {
       'WeCom',
       'WeChat',
       'QQ',
-      'Linear'
+      'Linear',
+      'Email'
     ])
   })
 

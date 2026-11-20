@@ -45,7 +45,8 @@ import {
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSharingChoosable } from '@/components/console/platforms/registry'
-import { BOT_PLATFORMS, isCoreTriggerKind, platformOffered } from '@/components/console/platforms/host-projections'
+import { BOT_PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
+import { useOfferedPlatform } from '@/components/console/platforms/offered'
 import { agentCapabilitySource, agentLabel, MOCK_MODE, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -785,6 +786,7 @@ export default function AddIntegrationModal({
   // Bot platforms need the placement's advertised adapter; with no caps source every offered one stays selectable.
   const daemon = agentCapabilitySource(agent, daemons, memberSets)
   const capsUnknown = !daemon
+  const platformOffered = useOfferedPlatform()
   const offeredBotPlatforms = BOT_PLATFORMS.filter((p) => platformOffered(p.key))
   const supportedBotPlatforms =
     daemonsLoading || capsUnknown

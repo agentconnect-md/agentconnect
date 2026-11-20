@@ -669,7 +669,7 @@ export interface WebUnnamedSubject {
 }
 
 /** Message keys for unnamed labels; the host owns locale resolution. */
-export type WebUnnamedLabelKey = 'wecomGroup' | 'wecomMember'
+export type WebUnnamedLabelKey = 'wecomGroup' | 'wecomMember' | 'emailThread'
 
 /** What the host prints for an unnamed subject: a readable id as it is, or a localized noun with a short tag of the id. */
 export type WebUnnamedLabel = { text: string } | { key: WebUnnamedLabelKey; tag: string }
@@ -698,6 +698,8 @@ export interface WebAgentIntegrationCardFacet {
   CardProvider?: ComponentType<{ integration: IntegrationRow; children: ReactNode }>
   /** Controls for the header's action track, beside the host's unlink. Absent ⇒ the host's actions alone. */
   HeaderActions?: ComponentType<{ integration: IntegrationRow }>
+  /** The remove confirmation's sentence, where the host's does not hold for this platform's identity. Absent ⇒ the host's. */
+  RemoveBody?: ComponentType<{ integration: IntegrationRow }>
   /** A line directly under the header, above the rows — a repair's progress or failure. Absent ⇒ nothing. */
   Notice?: ComponentType<{ integration: IntegrationRow; padX: number }>
   /** Replaces the generic conversation list and the header's first-channel subline; `padX` is the list's. Absent ⇒ both stay. */
@@ -724,6 +726,8 @@ export interface WebPlatformModule<TApi = unknown> {
   readonly docsPath?: string
   /** Feature flag a deployment must turn on before the console offers installing this platform. Absent ⇒ always offered. */
   readonly requires?: FeatureFlagId
+  /** Whether a deployment setting offers installing this platform to the organization, read once per organization; absent ⇒ offered. */
+  offered?(orgId: string): Promise<boolean>
   /** Display-only label for an unresolved human sender; stored identities and known names take precedence. */
   senderFallback?(senderId: string): string | undefined
   /** Display-only label for a conversation or person the platform never names; a known name wins, and absent ⇒ the raw id shows. */
