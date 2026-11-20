@@ -148,6 +148,16 @@ export class EmailMessages {
     return (rows as Row[]).map(rowOf)
   }
 
+  /** Every received row of a started thread and of its recipients' own threads (§5.2), oldest first; a tag is base32, so no pattern character needs escaping. */
+  async receivedForStarted(address: string, tag: string): Promise<EmailMessageRow[]> {
+    const { rows } = await this.db.query(
+      `SELECT * FROM email_message WHERE address = ? AND (thread = ? OR thread LIKE ?) AND direction = 'received'
+        ORDER BY seq ASC`,
+      [address, tag, `${tag}>%`]
+    )
+    return (rows as Row[]).map(rowOf)
+  }
+
   /** One thread's messages within one conversation, oldest first, and whether more exist past `limit`. */
   async threadMessages(
     address: string,

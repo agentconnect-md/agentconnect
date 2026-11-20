@@ -317,7 +317,8 @@ own sessions (§5.3).
 One mail thread is one session. A message whose envelope recipient carries a
 subaddress tag the daemon minted for a mail the agent started (§6.4) belongs to
 that mail's thread, whatever its headers say, and so does one whose headers name
-the started mail itself. Otherwise the daemon resolves a
+the started mail itself; a recipient who leaves the others off answers in a
+thread of their own instead (§5.2). Otherwise the daemon resolves a
 message's thread key from the messages it already knows: it walks `References` from the newest ID
 to the oldest, then `In-Reply-To`, and takes the thread of the first ID it has
 received or sent whose conversation this message may continue (§5.2). When it
@@ -358,12 +359,36 @@ own. The manifest takes the conservative arm of every axis and adds
 the agent wherever the address appears (`To`, `Cc` or `Bcc`), and no place is
 switched on or off, because admission is by person (§4).
 
-A message that names a started thread by its tag (§5.1) belongs to that
-thread's conversation whatever its own participants are, so a plain Reply from
-one of several recipients of a started mail stays in the started thread. The
-started mail stands as the thread's opening message. Its recipients are the
+A message that names a started thread by its tag (§5.1) and has every current
+member of that thread on it, a Reply All, belongs to that thread's conversation.
+The started mail stands as the thread's opening message. Its recipients are the
 thread's first current members for the fence below, and from the first reply on
 the current members follow each admitted message as in any thread.
+
+A recipient's plain Reply names only the agent, so it leaves the other
+recipients off. It answers in a thread of the recipient's own, keyed
+`<tag>><address>` (`>` never occurs in a `Message-ID`, so no mail can claim the
+key as its own), in a group conversation of its own, `group:<tag>><address>`,
+even when they wrote to the agent alone. It is never the recipient's direct
+conversation, so nobody's person layer is read there and the member who asked
+for the mail may read it (§5.3). Their later replies,
+which answer the agent's reply and carry no tag, continue it by their headers as
+any thread does. Keeping it apart is what stops a reply written to the agent
+alone from being read in a session that answers someone else, where a later
+message could ask the agent to pass it on. The first message of a recipient's
+own thread carries the started mail, with its unmailed note of where it was
+asked for and why, so the agent answers knowing what it sent. Every reply to a
+started mail of several recipients also says which of the others have answered
+in a thread of their own, and which have not answered yet, but never what they
+wrote.
+
+The answers are gathered where the mail was asked for, by reading, not by a
+notice: `sendEmail`'s result names the started thread's place and each
+recipient's own thread's place (§6.4), and `recall` reads one of them from the
+conversation that asked, under its existing rule. A group conversation is read
+by its place and never listed, and the person asking may read it because its
+session is theirs (§5.3). So what one recipient wrote reaches the others only
+on that member's turn, as their call.
 
 A conversation with a participant who is not a member of the organization is
 **external**, by the rule every other platform follows: the module reports it
@@ -416,13 +441,16 @@ only Console reader never received it. A current member brings someone back by
 naming them on a message. A direct conversation needs no fence: its key is the
 authenticated sender.
 
-A started thread (§6.4) keeps the sender check and drops the opener check. Its
+A started thread (§6.4) drops the opener check and takes only a message whose
+sender is a current member and which has every current member on it. Its
 replies are addressed to the agent, which sent the mail on someone's behalf,
-not to that person, so a recipient's plain Reply never names them and would
-otherwise always split off. A message whose sender is not a current member
-still starts a thread of its own. Whose session a started thread is depends on
-its conversation (§5.3): a member's direct conversation stays that member's,
-and only a group or external thread takes the person who asked for the mail.
+not to that person, so a recipient's reply never names them. Every message in
+it therefore reached everyone the thread holds. A recipient's message that
+leaves someone off goes to their own thread as above, and one from anyone else
+starts a thread of its own. Whose session a started thread is depends on its
+conversation (§5.3): a member's direct conversation stays that member's, and
+only a group or external thread takes the person who asked for the mail. A
+recipient's own thread always takes that person.
 
 Mail never runs a coordinator. A new thread opens its session directly, for an
 assistant-mode agent too: the manifest lists no kind in `appendKinds`, so no
@@ -438,9 +466,10 @@ Control Plane provider's `dmOwnerMember` resolves the member from the address
 at ingest. No match, or a failed read, leaves the row private to the address,
 visible to no one, never `org`.
 
-Under Members a non-member's message is admitted only into the started thread
-it answers; one that the fence of §5.2 would split off into a thread of its own
-is refused with step 3's reason, so no such session exists to own. Under
+Under Members a non-member's message is admitted only when it answers a mail
+the agent started and sent them: into the started thread, or into their own
+thread of it (§5.2). One that the fence would place anywhere else is refused
+with step 3's reason, so no such session exists to own. Under
 Anyone, a session a non-member's message opens, direct or group, follows the
 address's "Outside senders' sessions" setting (§4.1): `editors`, seen by
 whoever can edit the agent when it is read
@@ -465,7 +494,14 @@ never anyone else's. A group thread, or one with a non-member recipient, is
 `private` to the member whose turn sent it, who asked for the mail and reads
 the answers in the Console; when no member is behind that turn (a schedule's
 or hook's run, which can only mail members, §6.4), a group thread is `private`
-to its first member recipient. A session of a group conversation is `private` to the
+to its first member recipient. A recipient's own thread of a started mail,
+member or not, reports the started thread's owner as its trigger when that is
+the member who asked for the mail, so it is `private` to them as the started
+thread is and they may read the answers from where they asked (§5.2). A member
+recipient answering alone wrote to an agent acting for that person, so the
+person seeing it is expected. With nobody who asked, a recipient's own thread
+is owned by its first sender, as any group is. The started mail's index row
+keeps that owner for this. A session of a group conversation is `private` to the
 member whose message opened it, which is a new default row for mail: the general rule would make a
 group conversation `org`, and a mail thread among three people is not the
 organization's. Every message of the session reached that member (§5.2), and
@@ -727,7 +763,10 @@ name it to people and does not look for another way to send.
   knows why it wrote. A mail to members carries the agent's footer as a reply
   does (§6.1), its session link pointing at the calling session. The
   session the tool was called in records the call and its result, as it does
-  any tool's. The address's history reads
+  any tool's. When a member asked for the mail, that result names where its
+  answers land as `recall` places: the started thread, and each recipient's
+  own thread when there are several, which exists once they answer. The
+  address's history reads
   (§5.6) serve the started mail like any sent message.
 - **Where it lives.** The tool and the instruction line belong to the mail
   module, through `agentTools`, the member of a platform's read-port
@@ -736,13 +775,15 @@ name it to people and does not look for another way to send.
   platform offers only in its own sessions; core never names the platform. §9's
   `Reply-To` item is measured on the test environment, with no flag, before a
   release.
-- **A reply** reaches the thread by its tag. Its sender may answer whatever the
+- **A reply** reaches the thread by its tag, or by its headers once it answers
+  the agent's reply, which carries none. Its sender may answer whatever the
   address's "Who may write" says, when it is one of the started mail's
-  recipients and the reply carries the tag (§4 step 3); anyone else on the reply
-  is held to that setting. The
-  reply continues the thread's session, created at send and beginning with the
-  started mail, so the agent reads what it sent; whose session it is was fixed
-  then (§5.3).
+  recipients and placement puts it in the started thread or their own thread of
+  it (§4 step 3, §5.2); anyone else on the reply is held to that setting. A
+  Reply All continues the thread's session, created at send and beginning with
+  the started mail, so the agent reads what it sent; a plain Reply opens the
+  recipient's own thread, whose first message carries the started mail. Whose
+  session each is was fixed by the send (§5.3).
 
 ### 6.5 When the Control Plane is unreachable
 
@@ -911,7 +952,9 @@ organization.
   the counters of §6.3; under Anyone, a stranger admitted, an external place
   reported and its session classified by the setting, a failed read admitting
   nothing; a started mail's recipient rules, tag, budget and record, and a
-  plain Reply from one of several recipients landing in the started thread.
+  Reply All from one of several recipients landing in the started thread and a
+  plain Reply in that recipient's own thread, which carries the started mail
+  and is the asking member's, who recalls it by the place `sendEmail` named.
 - Relay: the inbound route's HMAC window, an unknown recipient, each row of the
   §5.5 table, and dedup of a redelivered `Message-ID`.
 - Control Plane: an address is never reissued; the member answer for a member,

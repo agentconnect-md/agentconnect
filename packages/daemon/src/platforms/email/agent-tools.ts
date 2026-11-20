@@ -2,7 +2,12 @@
 import { randomBytes } from 'node:crypto'
 import { z, type ZodType } from 'zod'
 import { canonicalEmailAddress } from '@agentconnect.md/message'
-import { EMAIL_RECIPIENTS_MAX, EMAIL_STARTED_OWNER_PREFIX, type WireEmailCall } from '@agentconnect.md/protocol'
+import {
+  EMAIL_PLATFORM,
+  EMAIL_RECIPIENTS_MAX,
+  EMAIL_STARTED_OWNER_PREFIX,
+  type WireEmailCall
+} from '@agentconnect.md/protocol'
 import type { Integration } from '../../agents/agent-schema.js'
 import { parseArgs, requiredString } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
@@ -12,6 +17,7 @@ import type { PlatformAgentToolEnv, PlatformAgentTools, PlatformConversationSeed
 import type { EmailConnection, EmailStoredSent } from './connection.js'
 import type { EmailMemberVerdict } from './members.js'
 import { emailFromName, emailReplyBodies, emailWithFooter } from './render.js'
+import { emailStartedReplyConversation, emailStartedReplyThread } from './threading.js'
 
 const TAG_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
 
@@ -43,7 +49,8 @@ export const SEND_EMAIL_ARGS = z.object({
 export const SEND_EMAIL_TOOL: ToolDescriptor = {
   name: 'sendEmail',
   description:
-    'Start a new mail from your own email address. A reply to it comes back to you as a thread of its own; to ' +
+    'Start a new mail from your own email address. Replies come back to you in threads of their own, which the ' +
+    'result names so you can recall them from here; to ' +
     'answer a mail you received, write your ordinary reply instead. At most 50 addresses in to and cc together, ' +
     'none on your own mail domain. Only a turn started by a member’s own message may mail people outside your ' +
     'organization.',
@@ -114,6 +121,32 @@ export function startedThreadPlace(
   return { ...place, owner: recipients[0]! }
 }
 
+/** Where the answers to a mail a member asked for land, as `recall` place ids: the started thread, and each recipient's own thread (§5.2). */
+export function startedReplyPlaces(
+  tag: string,
+  channel: string,
+  recipients: readonly string[]
+): { toEveryone: string; toYouAlone?: Record<string, string>; note: string } {
+  const placeOf = (conversation: string) => `${EMAIL_PLATFORM}:${conversation}`
+  const alone =
+    recipients.length > 1
+      ? Object.fromEntries(
+          recipients.map((address) => [
+            address,
+            placeOf(emailStartedReplyConversation(emailStartedReplyThread(tag, address)).channel)
+          ])
+        )
+      : undefined
+  return {
+    toEveryone: placeOf(channel),
+    ...(alone ? { toYouAlone: alone } : {}),
+    note:
+      'Answers come back in these conversations, not here: a reply to everyone in toEveryone, and a reply to you ' +
+      'alone in that recipient’s own. To see them, call recall with one of these places. A place nobody has ' +
+      'answered in yet does not exist, so recall refuses it.'
+  }
+}
+
 const refused = (why: string): Error => new Error(`sendEmail: ${why}. Nothing was sent.`)
 
 const MEMBERS_ONLY =
@@ -178,7 +211,8 @@ export async function startEmail(
     to: recipients.to.map((address) => ({ address })),
     cc: recipients.cc.map((address) => ({ address })),
     subject: call.subject,
-    started: true
+    started: true,
+    owner: place.owner
   }
   let recorded = true
   try {
@@ -208,7 +242,11 @@ export async function startEmail(
       : {}),
     ...(recorded
       ? {}
-      : { warning: 'The mail went out, but its thread was not recorded, so replies start new threads.' })
+      : { warning: 'The mail went out, but its thread was not recorded, so replies start new threads.' }),
+    // Only the member who asked owns the answers' threads, so only their turn is told where to recall them.
+    ...(recorded && place.owner.startsWith(EMAIL_STARTED_OWNER_PREFIX)
+      ? { replies: startedReplyPlaces(tag, place.channel, all) }
+      : {})
   }
 }
 
@@ -224,7 +262,7 @@ export const EMAIL_AGENT_TOOLS: PlatformAgentTools = {
     return address
       ? [
           `Your email address is ${address}. People can write to you there, and sendEmail starts a new mail from it; ` +
-            'a reply to that mail comes back to you as a thread of its own.'
+            'replies to that mail come back to you in threads of their own, which recall reads from where you sent it.'
         ]
       : []
   },
