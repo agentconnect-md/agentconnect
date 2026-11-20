@@ -77,6 +77,16 @@ describe('email MIME reader', () => {
     })
   })
 
+  it('keeps malformed entries as entries, so each counts as a recipient nobody can be sent a reply', async () => {
+    const mail = await readEmailMime(rawMail({ to: `${AGENT_ADDRESS}, @@@, bob@, "Bob" <>` }))
+    expect(mail.to).toEqual([{ address: AGENT_ADDRESS }, { address: '@@@' }, { address: 'bob@' }, { name: 'Bob' }])
+    const normalized = normalizeEmailMessage(mail, { agentAddress: AGENT_ADDRESS, traceId: 't' })
+    expect(normalized.kind === 'message' && normalized.message.adapterExt?.email).toMatchObject({
+      to: [{ address: AGENT_ADDRESS }],
+      unreadableRecipients: 3
+    })
+  })
+
   it('reads two addresses in From, and two From fields, as more than one sender', async () => {
     const two = await readEmailMime(rawMail({ from: `${MEMBER}, eve@other.example.test` }))
     expect(two.from).toHaveLength(2)

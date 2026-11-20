@@ -203,9 +203,11 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
         host.dedupMark(dedupKey)
         return { syncResponse: emailAccepted, admission }
       }
-      // §4 step 3 is the daemon's, and its refusal reads the same whatever the cause.
       host.log.info(`relay-ingress(${botId}): mail rejected (not admitted: ${admission.reason ?? 'rejected'})`)
-      return { syncResponse: emailReject(EMAIL_REJECT_REASONS.notMember), admission }
+      // No agent behind the address reads as an unknown address (§5.5); every other refusal is §4 step 3's, worded alike whatever the cause.
+      const reason =
+        admission.reason === 'no_agent' ? EMAIL_REJECT_REASONS.unknownAddress : EMAIL_REJECT_REASONS.notMember
+      return { syncResponse: emailReject(reason), admission }
     }
   }
 }

@@ -59,7 +59,11 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    (`hooks/standard-webhooks.ts`); Gitea a hex HMAC header; Azure DevOps verifies subscription-bound
    Basic credentials before decoding the delivery; the generic webhook an unguessable capability
    URL plus `X-AC-Signature` (`hooks/signature.ts`); `hooks/rate-limit.ts` throttles. A verified event is
-   demuxed to the owning bot and forwarded as `rd/*` frames to the owning daemon.
+   demuxed to the owning bot and forwarded as `rd/*` frames to the owning daemon. Inbound mail
+   (`platforms/email/`, `email-integration.md` §4, §7) arrives from the ingress Worker at
+   `POST /email/inbound`, signed over the envelope, the size, a timestamp and the raw bytes with the
+   ingress secret; the signature is checked in constant time before anything else is read, and the
+   sender is believed only from the topmost `Authentication-Results` the receiving provider prepended.
 2. **Webchat, the agent chat API and AHP** (`relay/src/relay-browser-server.ts`, `agent-chat-route.ts`, `ahp-server.ts`):
    a browser holds a short-lived token minted by the CP only after its visibility check; the chat API
    is authenticated by personal/OAuth keys whose agent selection the CP enforces.
@@ -111,7 +115,9 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
 - **Credentials never enter logs, telemetry, span names, error responses or transcripts**
   (`high-availability.md`, `observability` package). Plaintext keys are shown exactly once when minted.
 - **Credential confinement**: the Slack signing secret never reaches a daemon; the Feishu app secret
-  never reaches a relay; a daemon receives credentials only for what is placed on it. Code-host
+  never reaches a relay; the mail sending token stays on the relay, which sends a reply only as the
+  assignment's own address, only to people a relay-minted ticket for the thread names, and within
+  per-address, per-organization and deployment budgets (`email-integration.md` §6.2, §6.3); a daemon receives credentials only for what is placed on it. Code-host
   runtime requests use the daemon's credential proxy, reached through the environment's existing
   route; provider-key substitution has its own proxy contract. A placeholder is agent-bound, and
   the proxy checks the requested repository and access tier before presenting an upstream token.

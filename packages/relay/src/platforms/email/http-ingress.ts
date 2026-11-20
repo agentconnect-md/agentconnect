@@ -29,6 +29,9 @@ export const EMAIL_REJECT_REASONS = {
   rateLimited: 'Too many messages were sent to this address. Try again later.'
 } as const
 
+/** The route settles a message within this, short of the Worker's own wait so the answer still reaches it (§5.5). */
+export const EMAIL_INGRESS_SETTLE_MS = EMAIL_INGRESS_DEADLINE_MS - 2_000
+
 export const emailAccepted: EmailIngressAnswer = { result: 'accepted' }
 export const emailReject = (reason: string): EmailIngressAnswer => ({ result: 'reject', reason })
 
@@ -104,7 +107,7 @@ export function registerEmailHttpIngress(
   deps: RelayIngressRouteDeps,
   options: EmailHttpIngressOptions
 ): void {
-  const deadlineMs = options.deadlineMs ?? EMAIL_INGRESS_DEADLINE_MS
+  const deadlineMs = options.deadlineMs ?? EMAIL_INGRESS_SETTLE_MS
   void app.register(async (scope) => {
     // Whatever the content type says, the body is the raw message's bytes: the signature covers exactly these.
     scope.removeAllContentTypeParsers()

@@ -530,6 +530,21 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0(@opentelemetry/api@1.10.0)(@types/node@26.6.6)(happy-dom@21.0.4)(vite@8.1.7(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  packages/email-worker:
+    devDependencies:
+      '@agentconnect.md/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.1.0
+        version: 5.1.0(@opentelemetry/api@1.10.0)(@types/node@26.6.6)(happy-dom@21.0.4)(vite@8.1.7(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   packages/k8s-client:
     dependencies:
       '@agentconnect.md/connection':

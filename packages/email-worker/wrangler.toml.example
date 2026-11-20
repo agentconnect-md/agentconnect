@@ -1,0 +1,8 @@
+# Copy to wrangler.toml and replace the placeholders; the ingress secret is set with `wrangler secret put INGRESS_SECRET`.
+name = "agentconnect-email-ingress"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+[vars]
+# The relay's public origin; the Worker posts to <RELAY_URL>/email/inbound.
+RELAY_URL = "https://relay.example.test"
