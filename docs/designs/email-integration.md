@@ -24,7 +24,7 @@ on Cloud and on a self-hosted deployment alike (§7).
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Address    | One address per agent on the deployment's mail domain, named by an Agent editor, never reissued (§3).                                                                                             |
 | Receiving  | Anyone can send to the address. By default only authenticated mail from a member who may use the agent starts or continues work; an address can take authenticated mail from anyone instead (§4). |
-| Starting   | The agent starts a mail to any address with a tool, from any session, and a reply continues it as a thread of its own (§6.5).                                                                     |
+| Starting   | The agent starts a mail to any address with a tool, from any session, and a reply continues it as a thread of its own (§6.4).                                                                     |
 | Sessions   | One mail thread is one session: a member's own thread in that member's direct conversation, a thread with several people in a group conversation of its own (§5).                                 |
 | Replies    | One reply per turn, sent when the turn ends, to the sender and the thread's other eligible members (§6).                                                                                          |
 | Content    | Text and HTML bodies as text, up to a size cap. Attachments are named but not delivered (§5.4).                                                                                                   |
@@ -32,9 +32,9 @@ on Cloud and on a self-hosted deployment alike (§7).
 | Approvals  | In the Console, as on a platform with no approval card.                                                                                                                                           |
 | Setup      | Operator: one mail domain, one Worker, one API token (§7). Organization: pick the address in the agent's Integrations (§3.1).                                                                     |
 
-Outside the first step, each with what it needs in §10: mail the agent starts on
-its own, mail through the coordinator, senders outside the organization, an
-organization's own domain, attachments, and mail between agents. Drafts,
+Outside the first step, each with what it needs in §10: mail through the
+coordinator, an organization's own domain, attachments, and mail between
+agents. Drafts,
 labels, read state and a mailbox view in the Console are not planned: the
 Console shows mail as sessions.
 
@@ -62,9 +62,11 @@ Three properties decide this shape:
   any address on the mail domain, and a daemon can be enrolled by any member of
   an organization. The token stays on the relay, and a daemon sends through
   `rd/platform/request`, as a Teams row of the deployment's app does.
-- **The relay keeps nothing durable.** What a daemon may send is carried by a
-  signed ticket the relay issued with the inbound message (§6.2), so any relay
-  can serve any call. Its only state is the in-memory counters of §6.3.
+- **The relay keeps nothing durable.** Whom a daemon may reply to is carried by
+  a signed ticket the relay issued with the inbound message (§6.2), so any
+  relay can serve any call. A mail the agent starts carries no ticket and is
+  bounded by its own budget instead (§6.4). The relay's only state is the
+  in-memory counters of §6.3.
 
 ### 2.1 Provider facts
 
@@ -135,8 +137,9 @@ rejected`, naming an address of the sender's own provider. It is a permanent
 
 An address is `<name>@<mail domain>`. The name is 3 to 40 characters of
 lower-case letters, digits, `.` and `-`, starting and ending with a letter or a
-digit; matching ignores case. `<name>+<tag>` reaches the same agent, and the tag
-is ignored.
+digit; matching ignores case. `<name>+<tag>` reaches the same agent; a tag the
+daemon minted for a mail the agent started names that mail's thread (§5.1), and
+any other tag is ignored.
 
 - **Unique in the deployment.** On a shared deployment every organization draws
   from one namespace, so a name is first come, first served.
@@ -188,7 +191,7 @@ message:
    asserts counts in that organization alone
    ([organization-sso.md](organization-sso.md)). Under "Anyone" (§4.1) every
    sender that passed step 2 may write; a member is still recognized as one.
-   Whatever the setting, a recipient of a mail the agent started (§6.5) may
+   Whatever the setting, a recipient of a mail the agent started (§6.4) may
    answer it.
 4. **The sender is within the rate limit.** Each address may start work on one
    agent 30 times an hour.
@@ -273,7 +276,7 @@ An Agent editor sets two things on the address, in its integration panel:
 - **Outside senders' sessions**: visible to the **organization**, or private
   to **one member** the editor picks, by default the member who added the
   address. It applies to every session a non-member's message opens: one
-  admitted under Anyone, and a reply to a mail the agent started (§6.5). While
+  admitted under Anyone, and a reply to a mail the agent started (§6.4). While
   the picked member is not an active member of the organization, a
   non-member's message is refused with step 3's reason until an editor picks
   another, so a departed member's choice never turns into the organization's.
@@ -286,7 +289,7 @@ own sessions (§5.3).
 ### 5.1 Threads
 
 One mail thread is one session. A message whose envelope recipient carries a
-subaddress tag the daemon minted for a mail the agent started (§6.5) belongs to
+subaddress tag the daemon minted for a mail the agent started (§6.4) belongs to
 that mail's thread, whatever its headers say. Otherwise the daemon resolves a
 message's thread key from the messages it already knows: it walks `References` from the newest ID
 to the oldest, then `In-Reply-To`, and takes the thread of the first ID it has
@@ -328,11 +331,28 @@ own. The manifest takes the conservative arm of every axis and adds
 the agent wherever the address appears (`To`, `Cc` or `Bcc`), and no place is
 switched on or off, because admission is by person (§4).
 
-The existing rules then apply with nothing written for mail:
+A message that names a started thread by its tag (§5.1) belongs to that
+thread's conversation whatever its own participants are, so a plain Reply from
+one of several recipients of a started mail stays in the started thread. The
+started mail stands as the thread's opening message: its recipients are the
+thread's first members for the fence below, and the person whose turn sent it
+is its opener.
 
-- **Memory.** A direct conversation reads and writes its member's person
-  layer, keyed by the console account the member answer of §4 names. A group
-  conversation has a place layer of its own, and nobody's person layer is
+A conversation with a participant who is not a member of the organization is
+**external**, by the rule every other platform follows: the module reports it
+through `onPlaceExternal`, as Slack and DingTalk do, when the member answer
+(or the address's settings, §4.1) shows a non-member on it. It then has a place
+layer of its own and never writes the shared layer, and a post into it from
+another conversation is a draft an internal member approves
+([product conventions](../product-conventions.md#memory-layers)). A
+non-member's direct conversation has no person layer to read, so it takes a
+place layer too.
+
+The existing rules then apply with nothing else written for mail:
+
+- **Memory.** A member's direct conversation reads and writes its member's
+  person layer, keyed by the console account the member answer of §4 names. A
+  group conversation has a place layer of its own, and nobody's person layer is
   injected there
   ([product conventions](../product-conventions.md#memory-layers)).
 - **A turn nobody typed.** The person of `dm:<address>` is that address's
@@ -383,7 +403,10 @@ visible to no one, never `org`.
 
 A session a non-member's message opens, direct or group, follows the address's
 "Outside senders' sessions" setting (§4.1): `org`, or `private` and owned as
-`user:<picked member>`. The setting is read when the session is classified and
+`user:<picked member>`. It applies only when the Control Plane answered that
+the sender is not a member; a failed read admits nothing (§6.5), and a session
+classified without an answer stays private to the address as above, never
+`org`. The setting is read when the session is classified and
 fixed then, as every session's visibility is; changing it later moves no
 existing session. A thread an outside sender opens and a member later joins
 stays where it started.
@@ -503,7 +526,7 @@ the thread.
   agent which ones, so its reply can say who did not receive it. When the
   Control Plane cannot be asked as the turn ends, the reply goes to the sender
   alone and the session records that the others were left off. Under "Anyone"
-  (§4.1), and in the thread of a mail the agent started (§6.5), **Cc** is every
+  (§4.1), and in the thread of a mail the agent started (§6.4), **Cc** is every
   other address on that message, with nobody left off and no question asked.
 - **Subject** is the thread's subject with a single `Re:`.
 - **In-Reply-To** is the answered message's ID, and **References** is its chain
@@ -535,8 +558,9 @@ the two threading headers and the body. The relay checks:
 
 It then builds the provider call itself: the `From` address is the
 assignment's, never the request's. A compromised daemon can therefore write
-only as its own agents, and only to people already on a thread that reached
-them.
+only as its own agents, and a reply only to people already on a thread that
+reached them. A started mail (§6.4) has no ticket: it is bounded by the
+relay's recipient rules and its own budget, not by a thread.
 
 One budget of 12 seconds covers the call and a single retry; the daemon waits 15. `refused` and `unavailable` mean the provider was never called and are
 retried as unsent; a send cut off by the budget may have landed and is never
@@ -563,7 +587,7 @@ hard stop behind all three. The daemon's durable receipt, not the relay's
 table, is what finally keeps a redelivered message from starting a second
 turn.
 
-### 6.5 Mail the agent starts
+### 6.4 Mail the agent starts
 
 An agent with an address has a `sendEmail` tool: `to`, optional `cc`, a
 subject and a Markdown body. It can be called from any session the agent runs:
@@ -574,11 +598,15 @@ it to people and does not look for another way to send.
 - **Recipients** are any addresses, outside the organization too, at most 50
   in `to` and `cc` together, and never an address on the deployment's own mail
   domain: mail between agents stays excluded, as §4 step 1 keeps it. Nobody
-  approves a send. What bounds the tool is the sending budgets of §6.3, which
-  count a started mail like a reply, and the record below. The accepted risk is
-  that text the agent reads can talk it into mailing what it holds to an
-  outside address; an organization that will not accept it leaves the agent
-  without an address.
+  approves a send. The accepted risk is that text the agent reads can talk it
+  into mailing what it holds to an outside address; an organization that will
+  not accept it leaves the agent without an address.
+- **Budget.** Started mail has a budget of its own beside §6.3's, counted in
+  recipients, not sends: 100 recipients a day per bot and 500 per
+  organization. A talked-into agent therefore cannot spend its members'
+  replies, and a send to 50 people counts as 50. Like §6.3's counters these are
+  per relay instance and lost on a restart, so they bound a burst, not a total;
+  the provider's quota remains the hard stop.
 - **Headers**: `From` is the agent's address and name, as for a reply.
   `Reply-To` is the same address with a subaddress tag the daemon mints for the
   new thread (`<name>+<tag>@<domain>`); §2.2 measured that the tag survives to
@@ -590,12 +618,19 @@ it to people and does not look for another way to send.
   member of the bot's assignment, the recipient rules above and the tag's
   shape, and the budgets; it builds `From` and `Reply-To` from the assignment's
   address itself, so a daemon can start mail only as its own agents.
-- **The record**: the daemon indexes the started mail as `sent` in a thread of
-  its own, under the conversation its recipients make (`dm:<address>` for one
-  recipient, `group:<tag>` for several), and keeps its text whole beside the
-  index, since no mail session recorded it. The session the tool was called in
-  records the call and its result, as it does any tool's. The address's
-  history reads (§5.6) serve the started mail like any sent message.
+- **The record**: once the relay answers, the daemon creates the started
+  thread's session and records the started mail as its first message, in the
+  same session records every other mail is kept in, and indexes it as `sent`
+  under the conversation its recipients make (`dm:<address>` for one
+  recipient, `group:<tag>` for several). There is no second store: retention
+  and deletion are the session's. The session the tool was called in records
+  the call and its result, as it does any tool's. The address's history reads
+  (§5.6) serve the started mail like any sent message.
+- **Where it lives.** The tool and the instruction line belong to the mail
+  module, through a member of the daemon platform contract that contributes an
+  agent's tools and instruction lines for each integration it holds; core
+  never names the platform. Started mail ships only once §9's `Reply-To` item is
+  measured.
 - **A reply** reaches the thread by its tag. Its sender may answer whatever the
   address's "Who may write" says, when it is one of the started mail's
   recipients (§4 step 3); anyone else on the reply is held to that setting. The
@@ -603,14 +638,17 @@ it to people and does not look for another way to send.
   agent reads what it sent. A non-member's session follows "Outside senders'
   sessions" (§4.1), and a member's is the member's own (§5.3).
 
-### 6.6 When the Control Plane is unreachable
+### 6.5 When the Control Plane is unreachable
 
 In [high-availability.md](high-availability.md)'s terms, mail admission and a
 group reply's recipients each need a Control Plane answer, and neither is
 served from the data plane alone:
 
 - **A new sender, or one whose answer is older than two minutes**: not
-  admitted, and the relay answers for a retry (§5.5). A thread already running
+  admitted, and the relay answers for a retry (§5.5). Under "Anyone" (§4.1)
+  this still holds: admission needs the Control Plane's answer for the
+  address's settings and whether the picked member is active, so a stranger's
+  mail is retried too, never admitted unanswered. A thread already running
   therefore stops taking new mail two minutes into an outage and resumes when
   it ends; no message is refused for good.
 - **A turn that ends during an outage**: its reply is sent to the sender alone
@@ -661,17 +699,25 @@ line per host:
 - **Relay**: the inbound route with its own raw-buffer parser and a 1 MiB
   limit, HMAC verification, MIME parsing, the checks of §4 steps 1, 2 and 4,
   `forwardStrict`, ticket minting, the counters of §6.3,
-  `deploymentAssignments` from the snapshot, and `daemonRequest` for the send.
+  `deploymentAssignments` from the snapshot, and `daemonRequest` for the send
+  and for a started mail (`op: start`, its recipient rules, tag and budget,
+  §6.4), and the envelope recipient's tag passed to the daemon.
 - **Daemon**: no connection of its own; the conversation and thread keys and
   the participant fence (§5.2), the member question (§4), final-only turn
   output through the relay transport, the two history reads over session
-  records, and the message index (§5.6).
+  records, and the message index (§5.6); the address's settings (§4.1),
+  external places (§5.2), the tagged thread, and `sendEmail` with its
+  instruction line through the platform contract's member for an integration's
+  tools (§6.4).
 - **Control Plane**: the provider with name validation, the retired-address
   table, the record of a verified sign-in email, `dmOwnerMember`, the group
   conversation's visibility row, the member answer for one address or a batch,
   and a spec that names `email-v1` in `requires` so an older daemon never
-  receives one.
-- **Console**: the one-field add flow, the address display, and the mark.
+  receives one; the address's two settings, stored on the integration and
+  projected into the spec, with the picked member's state in the member
+  answer.
+- **Console**: the one-field add flow, the address display, the mark, and the
+  two settings of §4.1 in the integration panel.
 
 Normalization lives in the message package with sanitized fixtures. The new
 platform id follows the tolerant-reader rule: readers accept it a release
@@ -681,7 +727,8 @@ runtime dependency.
 
 The build also owes two records outside this document: entries in
 `.oss-scanner/threat_model.md` for the new public route, the relay-held sending
-token and the address-to-member rule, and the mail rows of product conventions'
+token, the address-to-member rule, mail from anyone and the ticketless started
+mail, and the mail rows of product conventions'
 session access and memory layer tables.
 
 Accepted: on a shared deployment the name check of §3.1 and the unknown-address
@@ -705,7 +752,7 @@ organization.
   clients thread a reply whose `Message-ID` domain differs from its `From`
   domain.
 - That the send call accepts a `Reply-To` header, and that common mail clients
-  reply to it with the subaddress intact (§6.5). Without it a reply to a
+  reply to it with the subaddress intact (§6.4). Without it a reply to a
   started mail reaches the address without its tag and falls back on its
   headers.
 - The exact `Authentication-Results` text for a domain with no DMARC record.
@@ -749,7 +796,10 @@ organization.
   conversation a message falls in by its participants, a member's thread that
   gains a recipient opening a group session with nothing carried over, the
   memory layer of each kind, the two history reads and who may make them, and
-  the counters of §6.3.
+  the counters of §6.3; under Anyone, a stranger admitted, an external place
+  reported and its session classified by the setting, a failed read admitting
+  nothing; a started mail's recipient rules, tag, budget and record, and a
+  plain Reply from one of several recipients landing in the started thread.
 - Relay: the inbound route's HMAC window, an unknown recipient, each row of the
   §5.5 table, and dedup of a redelivered `Message-ID`.
 - Control Plane: an address is never reissued; the member answer for a member,
@@ -758,7 +808,8 @@ organization.
   ownership at ingest for both kinds.
 - Live, before release: a round trip from two common mail services, a reply
   that threads in each, a spoofed sender refused, an out-of-office answer that
-  starts nothing, and each item of §9.
+  starts nothing, a started mail answered from two mail services, and each
+  item of §9.
 
 ## 12. References
 
