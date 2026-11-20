@@ -180,6 +180,7 @@ import {
   AGENT_SKILL_STATUS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
+  SESSION_ADMIT_FEATURE,
   CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_FILE_SNAPSHOT_FEATURE,
@@ -230,6 +231,8 @@ const ACK_TIMEOUT_MS = 5000
 const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
 /** One deadline for a `memory/store` op, the shim carrier's per-op timeout; a safe re-send fits inside it. */
 const MEMORY_STORE_TIMEOUT_MS = 30_000
+/** One `session/admit` attempt: one short CP transaction, and a new session never waits longer for it. */
+const SESSION_ADMIT_TIMEOUT_MS = 2_000
 /** A capability request reads the agent's rows and may join an open one; one attempt, a generous window. */
 const CAPABILITY_CALL_BUDGET_MS = 15_000
 /** The `memory/store` ops that change nothing, so a re-send needs no operation id. */
@@ -997,6 +1000,28 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected event/session-sync ack, got ${rep.type}`, false)
     }
     return 'acknowledged'
+  }
+
+  /** Whether this CP admits a new session now ({@link SESSION_ADMIT_FEATURE}, over a live link). */
+  admitsSessions(): boolean {
+    return this.connected() && this.supportsServerFeature(SESSION_ADMIT_FEATURE)
+  }
+
+  /** D→C `session/admit` (org-session-policy.md, Admission): one attempt over the live link only, never thrown, so a new session is never held on it. */
+  async admitSession(agentId: string, sessionId: string): Promise<'admitted' | 'unsupported' | 'failed'> {
+    if (!this.admitsSessions()) return 'unsupported'
+    try {
+      const frame = this.scopedFrame('session/admit', { agentId, sessionId })
+      const rep = await this.correlator.request(frame, (encoded) => this.transport!.send(encoded), {
+        maxTries: 1,
+        ackTimeoutMs: SESSION_ADMIT_TIMEOUT_MS
+      })
+      if (rep.type === 'session/admit/result' && rep.payload.admitted) return 'admitted'
+      this.deps.log.debug(`cp: session/admit for ${sessionId} got ${rep.type}`)
+    } catch (err) {
+      this.deps.log.debug(`cp: session/admit for ${sessionId} failed (${(err as Error).message})`)
+    }
+    return 'failed'
   }
 
   /**
