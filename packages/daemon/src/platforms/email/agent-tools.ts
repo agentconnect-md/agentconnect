@@ -143,7 +143,9 @@ export function startedReplyPlaces(
     note:
       'Answers come back in these conversations, not here: a reply to everyone in toEveryone, and a reply to you ' +
       'alone in that recipient’s own. To see them, call recall with one of these places. A place nobody has ' +
-      'answered in yet does not exist, so recall refuses it.'
+      'answered in yet does not exist, so recall refuses it. When the member who asked for this mail is the one ' +
+      'asking, a refusal of one of these places means no answer has arrived there yet: say they have not answered, ' +
+      'not that you cannot share it. For anyone else, give recall’s answer as it is.'
   }
 }
 
