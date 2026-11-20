@@ -289,6 +289,36 @@ describe('session routes × viewer identity', () => {
     }
   })
 
+  it('names the console member behind a mail session’s trigger by the platform’s own evidence', async () => {
+    const mail = {
+      ...slackDmSession(),
+      platform: 'email',
+      channel: 'dm:helper@mail.example.test',
+      triggeredBy: 'morgan@corp.example.test',
+      ownerIdentity: 'user:u-1'
+    }
+    const { deps } = fakeDeps({ session: mail })
+    Object.assign(deps.repos, {
+      bot: { listForOrg: async () => [] },
+      integration: { listForOrg: async () => [] }
+    })
+    const senderMember = vi.fn(async (orgId: string, sender: string) =>
+      orgId === ORG_ID && sender === 'morgan@corp.example.test' ? 'u-1' : null
+    )
+    Object.assign(deps, { platforms: { get: (id: string) => (id === 'email' ? { senderMember } : undefined) } })
+    const app = await appAs(deps, { userId: 'u-1' })
+    try {
+      const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as { triggeredBy: string; triggeredByUserId?: string }
+      expect(body.triggeredBy).toBe('morgan@corp.example.test')
+      expect(body.triggeredByUserId).toBe('u-1')
+      expect(senderMember).toHaveBeenCalledWith(ORG_ID, 'morgan@corp.example.test')
+    } finally {
+      await app.close()
+    }
+  })
+
   it('still 404s that session for a caller whose Slack identity differs', async () => {
     const { deps } = fakeDeps({
       slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U9OTHER' })

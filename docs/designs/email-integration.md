@@ -481,6 +481,12 @@ group thread receives replies written with the thread's earlier context, as a
 person added to a group chat reads on from what was said; adding them was a
 participant's call.
 
+In the Console a message reads as from the member whose verified sign-in email
+sent it, as "You" for that member and by name and photo for anyone else, as a
+linked chat account reads on other platforms. The provider's `senderMember`
+answers by the rule `dmOwnerMember` reads, so an address several members hold,
+or none, reads as the address.
+
 ### 5.4 What the agent reads
 
 The agent receives a header block (`From`, `To`, `Cc`, `Subject`, `Date`) and
@@ -810,7 +816,8 @@ line per host:
   instruction line through the platform contract's member for an integration's
   tools (§6.4).
 - **Control Plane**: the provider with name validation, the retired-address
-  table, the record of a verified sign-in email, `dmOwnerMember`, the group
+  table, the record of a verified sign-in email, `dmOwnerMember`,
+  `senderMember` for the Console's sender names (§5.3), the group
   conversation's visibility row, the member answer for one address or a batch,
   and a spec that names `email-v1` in `requires` so an older daemon never
   receives one; the address's two settings, stored in the address's `Bot`

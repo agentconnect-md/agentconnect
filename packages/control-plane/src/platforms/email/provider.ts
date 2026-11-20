@@ -97,6 +97,12 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
   // A row whose address is on another domain than the one the deployment serves now receives and sends nothing.
   const served = (bot: Pick<BotRecord, 'externalAppId'>): string | undefined =>
     deps.mailDomain && bot.externalAppId?.endsWith(`@${deps.mailDomain}`) ? bot.externalAppId : undefined
+  // The one member an address is a verified sign-in email of; an address several members hold names none.
+  const memberByAddress = async (orgId: string, sender: string): Promise<string | null> => {
+    const address = canonicalEmailAddress(sender)
+    if (!address || !deps.memberByVerifiedEmail) return null
+    return (await deps.memberByVerifiedEmail(orgId, address))?.userId ?? null
+  }
   return {
     platformId: EMAIL_PLATFORM,
     installRoutes: (scope) => (scope === 'org' ? (deps.installRoutes ?? []) : []),
@@ -148,11 +154,12 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
         if (!userId || !deps.activeMember) return null
         return (await deps.activeMember(bot.orgId, userId)) ? userId : null
       }
-      const address = canonicalEmailAddress(sender)
-      if (!address || !deps.memberByVerifiedEmail) return null
-      return (await deps.memberByVerifiedEmail(bot.orgId, address))?.userId ?? null
+      return await memberByAddress(bot.orgId, sender)
     },
     groupOwnedByOpener: true,
+
+    // A transcript's sender is the member whose verified address wrote it, by the rule a direct conversation's owner is read (§5.3).
+    senderMember: (orgId, sender) => memberByAddress(orgId, sender),
 
     // Under Anyone, a sender no member holds opens a session the address's setting places, read now and fixed then (§5.3).
     async outsiderSession(bot, sender) {

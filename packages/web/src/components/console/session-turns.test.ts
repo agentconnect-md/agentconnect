@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import type { SessionMessageDto } from '@/lib/api'
+import type { MeDto, MemberDto, SessionMessageDto } from '@/lib/api'
 import type { Agent, SessionStep } from '@/lib/data'
 import { WEBCHAT_THREAD_SHAPE } from './coordinator-threads'
+import { senderPeople } from './sender-people'
 import { buildTurns, type BuildTurnsInput } from './session-turns'
 
 const AGENT = 'agent_1'
+const MEMBER: MemberDto = {
+  userId: '',
+  email: null,
+  name: null,
+  picture: null,
+  role: 'collaborator',
+  isCurrentUser: false,
+  joinedAt: '2026-01-01T00:00:00Z'
+}
+const ME_PICTURE = 'https://avatars.example.test/me.png'
+const DANA_PICTURE = 'https://avatars.example.test/dana.png'
 
 const row = (seq: number, sender: string, text: string, extra: Partial<SessionMessageDto> = {}): SessionMessageDto => ({
   seq,
@@ -101,6 +113,35 @@ describe('buildTurns', () => {
     // One participant per person: the reader is not listed once per account.
     expect([...speakers.keys()]).toEqual(['me', 'user_dana', 'agent_2', 'U0STRANGER'])
     expect(speakers.get('me')?.sp.name).toBe('You')
+  })
+
+  it('reads a mail sender the Control Plane matched as the reader or a member, and an outsider by their address', () => {
+    const members: MemberDto[] = [
+      { ...MEMBER, userId: 'user_me', email: 'morgan@corp.example.test', name: 'Morgan', isCurrentUser: true },
+      { ...MEMBER, userId: 'user_dana', email: 'dana@corp.example.test', name: 'Dana Reyes', picture: DANA_PICTURE }
+    ]
+    const me = { userId: 'user_me', email: 'morgan@corp.example.test', name: 'Morgan' } as MeDto
+    const people = senderPeople(members, me, { initials: 'MO', picture: ME_PICTURE }, new Map())
+    const { turns } = buildTurns(
+      input({
+        session: { ...input().session, platform: 'email' },
+        isSelf: people.isSelf,
+        senderLabel: people.label,
+        pictureOf: people.pictureOf,
+        viewer: people.viewer,
+        rows: [
+          // A verified address other than the sign-in one, which only the Control Plane's match names.
+          row(1, 'morgan.alt@corp.example.test', 'from my other inbox', { senderUserId: 'user_me' }),
+          row(2, 'dana.r@corp.example.test', 'me too', { senderName: 'D. Reyes', senderUserId: 'user_dana' }),
+          row(3, 'outsider@other.example.test', 'hello')
+        ]
+      })
+    )
+    expect(turns[0]).toMatchObject({ self: true, sp: { name: 'You (Email)' }, avatarUrl: ME_PICTURE })
+    expect(turns[1]).toMatchObject({ sp: { name: 'Dana Reyes' }, avatarUrl: DANA_PICTURE })
+    expect(turns[1]).not.toHaveProperty('self')
+    expect(turns[2]).toMatchObject({ sp: { name: 'outsider@other.example.test' } })
+    expect(turns[2]).not.toHaveProperty('self')
   })
 
   it('binds the run after a background-task wake to the wake’s block and keeps its key', () => {

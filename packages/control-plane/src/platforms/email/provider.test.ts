@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { EMAIL_V1_FEATURE, IntegrationEmailConfig } from '@agentconnect.md/protocol'
+import { OrgId } from '../../domain/ids.js'
 import type { BotRecord, IntegrationRecord, OrgMemberRecord } from '../../persistence/ports.js'
 import {
   EMAIL_REUSE_MESSAGE,
@@ -169,6 +170,20 @@ describe('the Email provider (email-integration.md §3)', () => {
     expect(await provider.dmOwnerMember!(row, 'Alice Example')).toBeNull()
     expect(memberByVerifiedEmail).toHaveBeenCalledTimes(2)
     expect(await createEmailCpProvider().dmOwnerMember!(row, 'alice@corp.example.test')).toBeNull()
+  })
+
+  it('names a sender the member whose verified sign-in email they write from, in the organization asked about', async () => {
+    const memberByVerifiedEmail = vi.fn(async (orgId: string, email: string) =>
+      orgId === 'org-1' && email === 'alice@corp.example.test' ? ({ userId: 'member-1' } as OrgMemberRecord) : null
+    )
+    const provider = createEmailCpProvider({ mailDomain: DOMAIN, memberByVerifiedEmail })
+    expect(await provider.senderMember!(OrgId('org-1'), 'Alice@Corp.Example.Test')).toBe('member-1')
+    expect(await provider.senderMember!(OrgId('org-2'), 'alice@corp.example.test')).toBeNull()
+    expect(await provider.senderMember!(OrgId('org-1'), 'mallory@other.example.test')).toBeNull()
+    // Not an address, a started thread's owner included: nothing is asked.
+    expect(await provider.senderMember!(OrgId('org-1'), 'user:member-1')).toBeNull()
+    expect(memberByVerifiedEmail).toHaveBeenCalledTimes(3)
+    expect(await createEmailCpProvider().senderMember!(OrgId('org-1'), 'alice@corp.example.test')).toBeNull()
   })
 
   it('owns a started thread by the member its session names, while they are an active member (§5.3)', async () => {

@@ -524,6 +524,9 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** The tenant this bot's chat members are matched to console accounts under (Slack's workspace, Feishu/Lark's region), against the identities a user linked at sign-in; null when the bot asserts none. Pure. Absent ⇒ this platform's chat members cannot be matched, so anyone in a conversation takes chat actions there even while its session access is synced. */
   chatMemberTenant?(bot: BotRecord): string | null
 
+  /** The one console member a sender of this platform is by evidence the platform reads itself rather than a sign-in link (Email: a verified address); null when none or several are. A rejection is a failed read. Absent ⇒ a sender is matched only through the accounts members linked under {@link chatMemberTenant}. */
+  senderMember?(orgId: OrgId, sender: string): Promise<string | null>
+
   /** The console member a DM from `sender` belongs to because this bot binds them, at install or by a proven identity of the platform's own; null when it binds no member to that sender. Per sender, unlike {@link boundMemberUserId}: a bot may belong to one member yet take DMs from others. A rejection is a failed read. Absent ⇒ a DM's owner is only its sender's chat identity (session-visibility.md §4.2). */
   dmOwnerMember?(bot: BotRecord, sender: string): string | null | Promise<string | null>
 
