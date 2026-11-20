@@ -5424,6 +5424,7 @@ export class Daemon {
       // The footer a session tool appends to text it publishes as the agent (Linear comments):
       // the SAME identity the turn's response carries, resolved from the trusted session context.
       sessionToolAttributionFor: (ctx) => this.sessionToolAttribution(ctx),
+      sessionToolLinkFor: (ctx) => this.sessionToolLink(ctx),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users (Telegram): one physical bot's scoped history, the one the read named (#1965) or the agent's only bot on the platform.
       observedChannels: async (agentId, platform, integrationId) => {
         const scope = this.observedHistoryScope(agentId, platform, integrationId)
@@ -14941,6 +14942,15 @@ export class Daemon {
   /** The footer identity for a platform session tool that publishes agent-authored text
    *  (Linear's `createIssueComment`): the same facts the turn's response footer carries, read
    *  from the trusted session context. Undefined when the agent's footer chrome is off. */
+  /** The console link of the session a tool call runs in, whatever the footer setting; undefined before it has a session id. */
+  private async sessionToolLink(ctx: SessionContext): Promise<string | undefined> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const rec = await this.store?.getSession(key)
+    return rec?.sessionId
+      ? this.sessionLink(rec.sessionId, this.sessionLinkSource(ctx.platform, ctx.integrationId))
+      : undefined
+  }
+
   private async sessionToolAttribution(ctx: SessionContext): Promise<ReplyAttributionInfo | undefined> {
     const agent = this.agents.get(ctx.agentId)
     if (!agent?.output.showFooter) return undefined

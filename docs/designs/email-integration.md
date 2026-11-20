@@ -592,10 +592,12 @@ the thread.
   with that ID appended, cut from the front past 50 entries.
 - **Auto-Submitted** is `auto-replied`, so automatic responders stay silent.
 - The body is the agent's Markdown as plain text and as simple HTML. When the
-  agent's output settings show a footer, the body ends with it under a rule:
-  who sent it, its runtime and model, and a link to the session, which is left
-  off when the reply reaches anyone outside the organization, who could not
-  open it. The session keeps the answer without the footer. Mail has no status
+  agent's output settings show a footer and every recipient is a member, the
+  body ends with it under a rule: the agent's name linked to its page, its
+  runtime and model, and a link to the session. A mail that reaches anyone
+  outside the organization carries no footer at all: the console links would
+  open nothing for them, and the footer names the deployment's internals. The
+  session keeps the answer without the footer. Mail has no status
   bar: the platform declares its status surface on demand, so a turn's model
   and usage updates are neither mailed nor kept in the session.
 
@@ -712,7 +714,12 @@ name it to people and does not look for another way to send.
   and deletion are the session's. The mail is the session's root, so the first
   reply's turn reads it once before the reply. A send the relay answers as
   perhaps delivered (§6.2) is recorded the same way, so a reply that does
-  arrive finds its thread; one the relay never sent records nothing. The
+  arrive finds its thread; one the relay never sent records nothing. Under the
+  started mail, and never mailed, the first record keeps a note of where the
+  mail was asked for, a link to the calling session, and the purpose the agent
+  gave (`sendEmail`'s optional `purpose`), so the agent answering a reply
+  knows why it wrote. A mail to members carries the agent's footer as a reply
+  does (§6.1), its session link pointing at the calling session. The
   session the tool was called in records the call and its result, as it does
   any tool's. The address's history reads
   (§5.6) serve the started mail like any sent message.

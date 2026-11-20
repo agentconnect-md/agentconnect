@@ -670,7 +670,9 @@ async function executeRegisteredTool(
       startConversation: async (seed) => {
         if (!start) throw new Error(`${name} cannot open a conversation on this daemon`)
         await start(ctx, held.id, seed)
-      }
+      },
+      attribution: async () => await deps.sessionToolAttributionFor?.(ctx),
+      callingSessionUrl: async () => await deps.sessionToolLinkFor?.(ctx)
     })
   }
 

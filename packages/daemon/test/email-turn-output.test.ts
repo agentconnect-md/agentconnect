@@ -401,16 +401,17 @@ describe('delivering the reply', () => {
     await applyEmailAction(h.host, h.turn, h.state, { kind: 'post', text: 'The total is 42.', attribution })
     const call = h.requests[0]!.payload as ReplyCall
     expect(call.text).toBe(
-      'The total is 42.\n\n---\n\nsent by Helper (Claude Code · opus) · [open in session](https://console.example.test/sessions/s1)'
+      'The total is 42.\n\n---\n\nsent by [Helper](https://console.example.test/agents/a1) (Claude Code · opus) · ' +
+        '[open in session](https://console.example.test/sessions/s1)'
     )
     expect(h.transcript[0]!.text).toBe('The total is 42.')
-    // A reply that reaches someone outside the organization leaves off the link they could not open.
+    // A reply that reaches anyone outside the organization carries no footer at all.
     const outside = harness({
       ext: { ...mail(), outsider: true },
       ask: async () => ({ members: [] })
     })
     await applyEmailAction(outside.host, outside.turn, outside.state, { kind: 'post', text: 'Hi.', attribution })
-    expect((outside.requests[0]!.payload as ReplyCall).text).toBe('Hi.\n\n---\n\nsent by Helper (Claude Code · opus)')
+    expect((outside.requests[0]!.payload as ReplyCall).text).toBe('Hi.')
     // With the footer turned off the converger hands over no attribution, and the mail is the answer alone.
     const plain = harness({ ext: mail() })
     await send(plain, 'Only this.')

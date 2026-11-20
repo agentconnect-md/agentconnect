@@ -11,7 +11,7 @@ import { platformIntegrationConfig } from '../integration-config.js'
 import type { PlatformAgentToolEnv, PlatformAgentTools, PlatformConversationSeed } from '../read-ports.js'
 import type { EmailConnection, EmailStoredSent } from './connection.js'
 import type { EmailMemberVerdict } from './members.js'
-import { emailFromName, emailReplyBodies } from './render.js'
+import { emailFromName, emailReplyBodies, emailWithFooter } from './render.js'
 
 const TAG_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
 
@@ -23,13 +23,21 @@ export function mintEmailStartedTag(): string {
 const addresses = (key: string) =>
   z.array(requiredString(key), `argument ${key} must be an array of email addresses`).min(1, `${key} names nobody`)
 
+/** The longest note on why a mail was started. */
+const EMAIL_PURPOSE_MAX = 1000
+
 export const SEND_EMAIL_ARGS = z.object({
   to: addresses('to'),
   cc: addresses('cc')
     .nullish()
     .transform((value) => value ?? undefined),
   subject: requiredString('subject'),
-  body: requiredString('body')
+  body: requiredString('body'),
+  purpose: z
+    .string()
+    .max(EMAIL_PURPOSE_MAX, `purpose is at most ${EMAIL_PURPOSE_MAX} characters`)
+    .nullish()
+    .transform((value) => value?.trim() || undefined)
 })
 
 export const SEND_EMAIL_TOOL: ToolDescriptor = {
@@ -44,7 +52,12 @@ export const SEND_EMAIL_TOOL: ToolDescriptor = {
       to: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Email addresses to send to.' },
       cc: { type: 'array', items: { type: 'string' }, description: 'Email addresses to copy.' },
       subject: { type: 'string', minLength: 1, description: 'The subject line.' },
-      body: { type: 'string', minLength: 1, description: 'The mail body in Markdown.' }
+      body: { type: 'string', minLength: 1, description: 'The mail body in Markdown.' },
+      purpose: {
+        type: 'string',
+        description:
+          'Why you are sending this and what to do when someone answers. Kept with the thread for you, never mailed.'
+      }
     },
     ['to', 'subject', 'body']
   )
@@ -71,6 +84,15 @@ export function startedRecipients(
   })
   if (own.length) return { refused: `mail is never sent to your own mail domain (${own.join(', ')})` }
   return { to, cc }
+}
+
+/** The unmailed note kept under a started mail: the conversation that asked for it and the agent's own purpose; undefined when there is neither. */
+export function emailOriginNote(purpose: string | undefined, sessionUrl: string | undefined): string | undefined {
+  if (!purpose && !sessionUrl) return undefined
+  const where = sessionUrl ? `Sent from [this conversation](${sessionUrl}).` : undefined
+  return ['---', ['Not mailed.', where, purpose ? `Purpose: ${purpose}` : undefined].filter(Boolean).join(' ')].join(
+    '\n\n'
+  )
 }
 
 /** Where a started thread lives and whose its session is, fixed at the send (§5.2, §5.3). */
@@ -101,7 +123,7 @@ const MEMBERS_ONLY =
 /** What the tool acts through: the address's connection, and the daemon facts of the call. */
 export interface EmailStartDeps {
   conn: Pick<EmailConnection, 'address' | 'agentId' | 'members' | 'send' | 'recordSent'>
-  env: Pick<PlatformAgentToolEnv, 'memberTurn' | 'startConversation'>
+  env: Pick<PlatformAgentToolEnv, 'memberTurn' | 'startConversation' | 'attribution' | 'callingSessionUrl'>
   agentName?: string
   mintTag?: () => string
   now(): number
@@ -110,7 +132,13 @@ export interface EmailStartDeps {
 /** Start one mail (§6.4): check its recipients and who may cause it, send it through the relay, then open its thread with the mail as its first message. */
 export async function startEmail(
   deps: EmailStartDeps,
-  args: { to: readonly string[]; cc?: readonly string[] | undefined; subject: string; body: string }
+  args: {
+    to: readonly string[]
+    cc?: readonly string[] | undefined
+    subject: string
+    body: string
+    purpose?: string | undefined
+  }
 ): Promise<unknown> {
   const { conn } = deps
   const recipients = startedRecipients(args, conn.address)
@@ -126,7 +154,9 @@ export async function startEmail(
   if (!turnMembers && outside.length) throw refused(`${MEMBERS_ONLY}: ${outside.join(', ')}`)
   const tag = (deps.mintTag ?? mintEmailStartedTag)()
   const place = startedThreadPlace(all, tag, verdicts, turnMembers)
-  const bodies = emailReplyBodies(args.body)
+  // The agent's footer goes under a mail to members only; the session keeps the body alone.
+  const attribution = await deps.env.attribution().catch(() => undefined)
+  const bodies = emailReplyBodies(emailWithFooter(args.body, attribution, outside.length > 0))
   const fromName = emailFromName(deps.agentName)
   const subject = args.subject.replace(/[\r\n]+/g, ' ').trim()
   if (!subject) throw refused('the subject is empty')
@@ -163,7 +193,9 @@ export async function startEmail(
       ...(result.outcome !== 'sent' ? { reason: result.reason } : {}),
       createdAt: deps.now()
     })
-    await deps.env.startConversation({ ...place, thread: tag, text: args.body })
+    // The thread's first record is the mail and, unmailed, where and why it was sent, so a reply finds the agent knowing.
+    const origin = emailOriginNote(args.purpose, await deps.env.callingSessionUrl().catch(() => undefined))
+    await deps.env.startConversation({ ...place, thread: tag, text: origin ? `${args.body}\n\n${origin}` : args.body })
   } catch {
     recorded = false
   }

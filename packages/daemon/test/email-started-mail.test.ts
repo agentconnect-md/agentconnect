@@ -13,10 +13,12 @@ import {
 import { Daemon } from '../src/daemon.js'
 import { memberTurnConsoleUsers } from '../src/assistant/member-turn.js'
 import type { TurnMessage } from '../src/assistant/place-members.js'
+import type { ReplyAttributionInfo } from '../src/messages/attribution.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import {
   EMAIL_AGENT_TOOLS,
   mintEmailStartedTag,
+  emailOriginNote,
   startEmail,
   startedRecipients,
   startedThreadPlace,
@@ -164,7 +166,15 @@ describe('whose the started thread is (§5.3)', () => {
 })
 
 describe('sending and the record (§6.4)', () => {
-  function harness(opts: { turn?: readonly string[]; result?: EmailSendResult; ask?: EmailMembersDeps['ask'] } = {}) {
+  function harness(
+    opts: {
+      turn?: readonly string[]
+      result?: EmailSendResult
+      ask?: EmailMembersDeps['ask']
+      attribution?: ReplyAttributionInfo
+      sessionUrl?: string
+    } = {}
+  ) {
     const sends: WireEmailCall[] = []
     const rows: Record<string, unknown>[] = []
     const seeds: PlatformConversationSeed[] = []
@@ -177,7 +187,12 @@ describe('sending and the record (§6.4)', () => {
     }
     const deps: EmailStartDeps = {
       conn,
-      env: { memberTurn: async () => opts.turn, startConversation: async (seed) => void seeds.push(seed) },
+      env: {
+        memberTurn: async () => opts.turn,
+        startConversation: async (seed) => void seeds.push(seed),
+        attribution: async () => opts.attribution,
+        callingSessionUrl: async () => opts.sessionUrl
+      },
       agentName: 'Helper',
       mintTag: () => TAG,
       now: () => 7
@@ -221,6 +236,43 @@ describe('sending and the record (§6.4)', () => {
     expect(h.seeds).toEqual([
       { channel: `group:${TAG}`, kind: 'group_dm', owner: 'user:user-alice', thread: TAG, text: 'Hello **there**.' }
     ])
+  })
+
+  it('puts the agent’s footer under a mail to members only, and keeps the thread’s first record without it', async () => {
+    const attribution = {
+      botName: 'Helper',
+      botUrl: 'https://console.example.test/agents/a1',
+      runtime: 'Claude Code',
+      model: 'opus',
+      sessionUrl: 'https://console.example.test/sessions/s1'
+    }
+    const members = harness({ turn: ['user-alice'], attribution })
+    await startEmail(members.deps, { to: [BOB], subject: 'Plan', body: 'Hello.' })
+    expect(members.sends[0]!.text).toBe(
+      'Hello.\n\n---\n\nsent by [Helper](https://console.example.test/agents/a1) (Claude Code · opus) · ' +
+        '[open in session](https://console.example.test/sessions/s1)'
+    )
+    expect(members.seeds[0]!.text).toBe('Hello.')
+    // A mail that reaches anyone outside the organization carries no footer at all.
+    const outside = harness({ turn: ['user-alice'], attribution })
+    await startEmail(outside.deps, args)
+    expect(outside.sends[0]!.text).toBe('Hello **there**.')
+  })
+
+  it('keeps, unmailed under the thread’s first record, the conversation that asked and the agent’s purpose', async () => {
+    const h = harness({ turn: ['user-alice'], sessionUrl: 'https://console.example.test/sessions/s9' })
+    await startEmail(h.deps, {
+      to: [BOB],
+      subject: 'Colour',
+      body: 'Your favourite colour?',
+      purpose: 'Dana asked me to find out.'
+    })
+    expect(h.sends[0]!.text).toBe('Your favourite colour?')
+    expect(h.seeds[0]!.text).toBe(
+      'Your favourite colour?\n\n---\n\nNot mailed. Sent from [this conversation](https://console.example.test/sessions/s9). ' +
+        'Purpose: Dana asked me to find out.'
+    )
+    expect(emailOriginNote(undefined, undefined)).toBeUndefined()
   })
 
   it('mails members only from any other turn, and refuses an outside recipient there saying why', async () => {

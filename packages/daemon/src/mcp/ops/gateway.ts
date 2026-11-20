@@ -7,6 +7,8 @@ import type { MessageGateway, SessionContext } from './context.js'
 export interface GatewayDeps extends AskDeps {
   // Trusted footer identity for tool-authored posts; absent when footer display is disabled.
   sessionToolAttributionFor?: (ctx: SessionContext) => Promise<ReplyAttributionInfo | undefined>
+  /** The console link of the session a tool call runs in; undefined when it has none yet. */
+  sessionToolLinkFor?: (ctx: SessionContext) => Promise<string | undefined>
   /** Resolve the live platform connection that owns this integration (may rotate). */
   gatewayFor: (integrationId: string) => MessageGateway | undefined
   /**

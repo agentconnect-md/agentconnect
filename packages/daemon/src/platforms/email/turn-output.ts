@@ -3,7 +3,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import { emailParticipants } from '@agentconnect.md/message'
 import { EMAIL_PLATFORM, type WireEmailAdapterExt, type WireEmailCall } from '@agentconnect.md/protocol'
 import { turnState, type DaemonRenderAction, type Pending } from '../../daemon/turn-types.js'
-import { renderAttributionMessage, type ReplyAttributionInfo } from '../../messages/attribution.js'
+import type { ReplyAttributionInfo } from '../../messages/attribution.js'
 import { GithubReplyCollector } from '../../github/poster.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { WorkspaceFileLinkResolver } from '../../messages/workspace-file-links.js'
@@ -13,7 +13,7 @@ import type { EmailConnection, EmailSendResult, EmailStoredSent } from './connec
 import { isOutsider, type EmailMembers } from './members.js'
 import { emailCopyable, emailExtOf, emailMayCopyOutsider } from './module.js'
 import { isEmailStartedThread } from './threading.js'
-import { emailFromName, emailReplyBodies, emailReplyReferences, emailReplySubject } from './render.js'
+import { emailFromName, emailReplyBodies, emailReplyReferences, emailReplySubject, emailWithFooter } from './render.js'
 
 export { emailFromName } from './render.js'
 
@@ -160,17 +160,6 @@ export function emailDeliveryNote(
   return lines.length ? lines.join('\n') : undefined
 }
 
-/** The footer the agent's setting adds under a mailed answer; the session link is left off for anyone outside the organization, who cannot open it. */
-export function emailAttributionFooter(attribution: ReplyAttributionInfo, outside: boolean): string {
-  return renderAttributionMessage({
-    agent: attribution.botName,
-    runtime: attribution.runtime,
-    model: attribution.model,
-    renderSession: !outside && attribution.sessionUrl ? (label) => `[${label}](${attribution.sessionUrl})` : undefined,
-    notice: attribution.notice
-  })
-}
-
 /** Send the turn's one mail, then keep the answer, its index row and any delivery note in the session. */
 export async function deliverEmailReply<TTurn extends EmailTurn>(
   host: EmailTurnHost<TTurn>,
@@ -202,8 +191,7 @@ export async function deliverEmailReply<TTurn extends EmailTurn>(
     )
     audience = resolved
     unchecked = resolved.unchecked
-    const footer = attribution ? emailAttributionFooter(attribution, resolved.outside) : undefined
-    const bodies = emailReplyBodies(footer ? `${text}\n\n---\n\n${footer}` : text)
+    const bodies = emailReplyBodies(emailWithFooter(text, attribution, resolved.outside))
     const fromName = emailFromName(host.agentName(agentId))
     const call: WireEmailCall = {
       op: 'send',
