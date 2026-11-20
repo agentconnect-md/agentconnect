@@ -439,6 +439,28 @@ describe('SessionViewer images and downloads', () => {
     spy.mockRestore()
   })
 
+  it('reads, downloads and transfers a session file in its area, and heads it with that area', async () => {
+    wire.transferCalls = []
+    wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const area = { path: 'q3/report.pdf', sessionId: 'session-shared', root: 'outputs' as const }
+    await render({ ...area, download: { sessionId: 'session-shared' }, onModeChange: undefined })
+    await click('[data-viewer-download]')
+    await settle()
+    expect(wire.calls[0]).toEqual({ path: 'q3/report.pdf', sessionId: 'session-shared', root: 'outputs' })
+    expect(wire.blobCalls).toEqual([{ sessionId: 'session-shared', path: 'q3/report.pdf', root: 'outputs' }])
+    expect(text()).toContain('/outputs/q3/')
+    expect(container?.querySelector('[data-viewer-mode]')).toBeNull()
+    act(() => root?.unmount())
+    container?.remove()
+
+    await render({ ...area, download: { sessionId: 'session-shared' }, transfer: true })
+    await click('[data-viewer-download]')
+    await settle()
+    expect(wire.transferCalls).toEqual([{ path: 'q3/report.pdf', sessionId: 'session-shared', root: 'outputs' }])
+    spy.mockRestore()
+  })
+
   it('offers no download for a path that is not a file', async () => {
     wire.slices[0] = { exists: false, content: null, size: null }
     await render({ path: 'uploads/gone.png', download: { sessionId: 'session-1' } })

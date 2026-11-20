@@ -968,7 +968,12 @@
         "loadError": "无法加载，Daemon 可能已离线。",
         "findPlaceholder": "按路径查找文件…",
         "findLabel": "按路径查找文件",
-        "lastFetched": "此检出目录上次从远程仓库获取的时间"
+        "lastFetched": "此检出目录上次从远程仓库获取的时间",
+        "sessionFiles": "会话文件",
+        "sessionFilesTitle": "此会话保存在检出目录旁的文件：Agent 生成的文件，以及它保存的附件",
+        "sessionFilesEmpty": "暂无文件",
+        "sessionFilesUnsupported": "请更新此 Agent 的 Daemon 以浏览会话文件。",
+        "sessionFilesOffline": "无法读取会话文件，Daemon 可能已离线。"
       },
       "sessionDock": {
         "resizePanel": "调整面板大小",

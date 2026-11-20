@@ -153,6 +153,28 @@ describe('file transfer service', () => {
     )
   })
 
+  it('keys a session files area apart from the checkout path of the same name and forwards its root', async () => {
+    const seen: unknown[] = []
+    const reads: unknown[] = []
+    const daemon = control(file, async () => ({ bytes: 9, sha256: SHA }))
+    const read = daemon.workspaceRead
+    daemon.workspaceRead = async (daemonId, req) => (reads.push(req), read(daemonId, req))
+    const service = createFileTransferService({
+      transfer: signer(undefined, seen),
+      control: daemon,
+      tickets: memoryTickets()
+    })
+    await service.workspaceDownload(target)
+    await service.workspaceDownload({ ...target, root: 'outputs' })
+    await service.workspaceDownload({ ...target, root: 'uploads' })
+    const keys = seen.flatMap((entry) =>
+      'cachedDownload' in (entry as object) ? [(entry as any).cachedDownload.key] : []
+    )
+    expect(new Set(keys).size).toBe(3)
+    expect(reads.at(-1)).toMatchObject({ sessionId: 's1', root: 'uploads', path: 'dist/app.bin' })
+    expect(daemon.uploads.map((req) => req.root)).toEqual([undefined, 'outputs', 'uploads'])
+  })
+
   it('refuses a missing file, a directory, an empty file, a size change and the signer’s own refusals', async () => {
     const upload = async () => ({ bytes: 9, sha256: SHA })
     const download = (stat: Parameters<typeof control>[0], transfer: FileTransfer = signer()) =>

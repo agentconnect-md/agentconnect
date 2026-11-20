@@ -41,18 +41,22 @@ vi.mock('@/lib/api', () => {
   }
   return {
     ApiError,
-    fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string; cursor?: string; sessionId?: string }) => {
-      const key = opts.cursor ? `${opts.path}@${opts.cursor}` : opts.path
-      const failure = wire.failures[key]
-      if (failure !== undefined) return reject(failure)
-      const listing = wire.listings[key] ?? { entries: [] }
-      return Promise.resolve({
-        path: opts.path,
-        exists: listing.exists ?? true,
-        entries: listing.entries,
-        nextCursor: listing.nextCursor ?? null
-      })
-    }),
+    fetchWorkspaceFiles: vi.fn(
+      (_agentId: string, opts: { path: string; cursor?: string; sessionId?: string; root?: string }) => {
+        // A session files area's listings are keyed `files:<area>/<path>`, apart from the checkout's.
+        const path = opts.root ? `files:${opts.root}/${opts.path}` : opts.path
+        const key = opts.cursor ? `${path}@${opts.cursor}` : path
+        const failure = wire.failures[key]
+        if (failure !== undefined) return reject(failure)
+        const listing = wire.listings[key] ?? { entries: [] }
+        return Promise.resolve({
+          path: opts.path,
+          exists: listing.exists ?? true,
+          entries: listing.entries,
+          nextCursor: listing.nextCursor ?? null
+        })
+      }
+    ),
     fetchWorkspaceGitStatus: vi.fn((_agentId: string, sessionId?: string) => {
       if (sessionId) return wire.gitFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.git)
       return wire.primaryFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.primary)
@@ -121,7 +125,7 @@ function panel(props: Partial<PanelProps> = {}) {
       agentId="agent-a"
       sessionId="session-1"
       workdir="/ws/agent-a"
-      onOpenFile={(path) => opened.push(path)}
+      onOpenFile={(path, area) => opened.push(area ? `files:${area}/${path}` : path)}
       onRootSettledChange={(settled) => settledReports.push(settled)}
       {...props}
     />
@@ -926,5 +930,76 @@ describe('FilesPanel auto refresh', () => {
     })
     // The count, not the exact number of ticks: what matters is that a hidden tab keeps reading.
     expect(rootReads()).toBeGreaterThan(2)
+  })
+})
+
+// The session files directory's two areas below the checkout (inbound-file-attachments.md §2.4).
+describe('FilesPanel session files', () => {
+  const areaReads = (area: string) =>
+    vi.mocked(fetchWorkspaceFiles).mock.calls.filter((call) => (call[1] as { root?: string }).root === area)
+
+  it('draws no section without the session it belongs to', async () => {
+    await render()
+    expect(container?.querySelector('[data-session-files]')).toBeNull()
+  })
+
+  it('lists an area on first open, scoped to the outward session, and opens its files with their root', async () => {
+    wire.listings['files:outputs/'] = { entries: [dir('images'), textFile('report.pdf')] }
+    wire.listings['files:outputs/images'] = { entries: [textFile('chart.png')] }
+    await render({ sessionId: undefined, sessionFilesId: 'session-shared' })
+
+    expect(text()).toContain('Session files')
+    expect(rowNames()).toEqual(['src', 'README.md', '/outputs', '/uploads'])
+    expect(areaReads('outputs')).toHaveLength(0)
+
+    await click(row('/outputs'), '/outputs row')
+    expect(areaReads('outputs')[0]?.[1]).toEqual({ path: '', sessionId: 'session-shared', root: 'outputs' })
+    expect(rowNames()).toEqual(['src', 'README.md', '/outputs', 'images', 'report.pdf', '/uploads'])
+    // No git status reaches an area's rows.
+    expect(badges()).toEqual([])
+
+    await click(row('report.pdf'), 'report.pdf row')
+    await click(row('images'), 'images folder row')
+    await click(row('chart.png'), 'chart.png row')
+    expect(opened).toEqual(['files:outputs/report.pdf', 'files:outputs/images/chart.png'])
+  })
+
+  it('says an empty or absent area has nothing yet', async () => {
+    wire.listings['files:uploads/'] = { entries: [], exists: false }
+    await render({ sessionFilesId: 'session-1' })
+    await click(row('/uploads'), '/uploads row')
+    expect(container?.querySelector('[data-session-files-note]')?.textContent).toBe('Nothing here yet')
+  })
+
+  it('asks for a daemon update when the daemon predates session files, and calls anything else offline', async () => {
+    wire.failures['files:outputs/'] = 409
+    wire.failures['files:uploads/'] = 503
+    await render({ sessionFilesId: 'session-1' })
+    await click(row('/outputs'), '/outputs row')
+    await click(row('/uploads'), '/uploads row')
+    const notes = Array.from(container?.querySelectorAll('[data-session-files-note]') ?? []).map((n) => n.textContent)
+    expect(notes).toEqual([
+      'Update this agent’s daemon to browse session files.',
+      'Couldn’t read session files — the daemon may be offline.'
+    ])
+  })
+
+  it('marks the viewer’s session file, opening its area, and not the checkout path of the same name', async () => {
+    wire.listings[''] = { entries: [textFile('report.pdf')] }
+    wire.listings['files:outputs/'] = { entries: [textFile('report.pdf')] }
+    await render({ sessionFilesId: 'session-1', openFilePath: 'report.pdf', openFileRoot: 'outputs' })
+    const marked = rows().filter((candidate) => candidate.getAttribute('aria-current') === 'page')
+    expect(marked).toHaveLength(1)
+    expect(rows().indexOf(marked[0]!)).toBe(rowNames().lastIndexOf('report.pdf'))
+  })
+
+  it('re-reads an open area on the turn’s falling edge, with the tree', async () => {
+    await render({ active: true, sessionFilesId: 'session-1' })
+    await click(row('/outputs'), '/outputs row')
+    expect(areaReads('outputs')).toHaveLength(1)
+    await rerender({ active: true, sessionFilesId: 'session-1', turnActive: true })
+    await rerender({ active: true, sessionFilesId: 'session-1', turnActive: false })
+    expect(areaReads('outputs')).toHaveLength(2)
+    expect(areaReads('uploads')).toHaveLength(0)
   })
 })

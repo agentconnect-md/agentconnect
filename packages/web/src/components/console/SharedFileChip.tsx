@@ -52,6 +52,7 @@ export function SharedFileChip({
       }
       const blob = await downloadSessionFile(target.agentId, {
         sessionId: target.sessionId,
+        ...(file.root ? { root: file.root } : {}),
         path: target.path,
         sha256: file.sha256
       })

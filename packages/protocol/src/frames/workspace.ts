@@ -61,8 +61,30 @@ export const MAX_WORKSPACE_EDIT_BYTES = 180_000
 /** Ceiling on one console file download (assembled from byte slices by the CP): the default attachment cap. */
 export const MAX_WORKSPACE_DOWNLOAD_BYTES = 8 * 1024 * 1024
 
-/** Where inbound attachments land under a session's working root (inbound-file-attachments.md §2.1). */
+/** The session files directory's area inbound attachments land in (inbound-file-attachments.md §2.4). */
 export const WORKSPACE_UPLOADS_DIR = 'uploads'
+
+/** The two areas of a session's files directory, beside its checkout (inbound-file-attachments.md §2.4). */
+export const SessionFileArea = z.enum(['uploads', 'outputs'])
+export type SessionFileArea = z.infer<typeof SessionFileArea>
+
+/** The prefix naming a file in a session files area: `files:outputs/report.pdf`. */
+export const SESSION_FILE_PREFIX = 'files:'
+
+/** A `files:<area>/<rest>` name split into its area and area-relative path; undefined for anything else. */
+export function parseSessionFileName(value: string): { area: SessionFileArea; path: string } | undefined {
+  if (!value.startsWith(SESSION_FILE_PREFIX)) return undefined
+  const rest = value.slice(SESSION_FILE_PREFIX.length)
+  const slash = rest.indexOf('/')
+  const area = SessionFileArea.safeParse(slash < 0 ? rest : rest.slice(0, slash))
+  if (!area.success) return undefined
+  return { area: area.data, path: slash < 0 ? '' : rest.slice(slash + 1) }
+}
+
+/** The `files:` name of an area-relative path. */
+export function sessionFileName(area: SessionFileArea, path: string): string {
+  return `${SESSION_FILE_PREFIX}${area}${path === '' ? '' : `/${path}`}`
+}
 
 /** One directory entry in a workspace listing (name-only; not a full path). */
 export const WorkspaceEntry = z.object({
@@ -81,6 +103,8 @@ export const WorkspaceListReq = z.object({
   sessionId: z.string().min(1).optional(),
   /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
   repo: z.string().min(1).optional(),
+  /** One area of the session's files directory instead of a checkout; requires `sessionId`, excludes `repo` (`session-files-v1`). */
+  root: SessionFileArea.optional(),
   path: z.string().default(''), // workspace-relative POSIX path; '' ⇒ workspace root
   cursor: z.string().optional(), // opaque; omit ⇒ first page
   limit: z.number().int().positive().max(500).default(200)
@@ -104,6 +128,8 @@ export const WorkspaceReadReq = z.object({
   sessionId: z.string().min(1).optional(),
   /** `owner/repo` of one authorized additional repository, selecting that secondary workspace root. Omit for the primary. */
   repo: z.string().min(1).optional(),
+  /** One area of the session's files directory instead of a checkout; requires `sessionId`, excludes `repo` (`session-files-v1`). */
+  root: SessionFileArea.optional(),
   path: z.string().min(1), // workspace-relative POSIX path to a file
   offset: z.number().int().nonnegative().default(0), // byte offset
   limit: z.number().int().positive().max(65536).default(65536), // byte count per slice (64 KiB, see docblock)

@@ -689,7 +689,8 @@ describe('TurnOutputWorkflow', () => {
       expect.any(Array),
       undefined,
       undefined,
-      [],
+      // The session's two file areas beside its checkout (inbound-file-attachments.md §2.4).
+      [expect.stringMatching(/\/files\/session-[0-9a-f]{24}\/outputs$/), expect.stringMatching(/\/uploads$/)],
       undefined
     )
     expect(prompts).toHaveLength(1)

@@ -90,6 +90,12 @@ const msg = (over: Partial<NormalizedMessage> & { ts?: string; channel?: string 
   }
 }
 
+// Every session is handed its two file areas beside the repository roots (inbound-file-attachments.md §2.4).
+const SESSION_AREAS = [
+  expect.stringMatching(/\/files\/session-[0-9a-f]{24}\/outputs$/),
+  expect.stringMatching(/\/files\/session-[0-9a-f]{24}\/uploads$/)
+]
+
 describe('SessionManager', () => {
   it('pins task commit attribution across runtime recreation and another sender', async () => {
     const store = await newStore()
@@ -605,7 +611,7 @@ describe('SessionManager', () => {
       [],
       undefined,
       undefined,
-      [realpathSync(repoRoot)],
+      [realpathSync(repoRoot), ...SESSION_AREAS],
       undefined
     )
     await (await store).close()
@@ -644,7 +650,7 @@ describe('SessionManager', () => {
     await sm.handle('bot-a', msg({ ts: '100.4', thread: '100.4', text: 'read the shared library' }))
 
     const [, , , systemAppend, additionalDirectories] = host.newSession.mock.calls[0]
-    expect(additionalDirectories).toEqual([recovered.path])
+    expect(additionalDirectories).toEqual([recovered.path, ...SESSION_AREAS])
     expect(systemAppend).toContain(`- ${recovered.path} — acme/infra (trunk)`)
     await (await store).close()
   })
@@ -1933,7 +1939,15 @@ describe('SessionManager', () => {
 
     expect(sessionId).toBe('acp-1') // resumed the SAME session, not recreated
     expect(created).toBe(false) // same id, CP already knows it → no start emit
-    expect(host2.loadSession).toHaveBeenCalledWith('acp-1', expect.any(String), [], undefined, undefined, [], undefined)
+    expect(host2.loadSession).toHaveBeenCalledWith(
+      'acp-1',
+      expect.any(String),
+      [],
+      undefined,
+      undefined,
+      SESSION_AREAS,
+      undefined
+    )
     expect(toolContextFor).toHaveBeenCalledWith(
       expect.objectContaining({ integrationId: 'int-b', isDm: true, thread: '100.1' })
     )
@@ -2251,7 +2265,14 @@ describe('SessionManager', () => {
     expect(host2.loadSession).toHaveBeenCalledTimes(1)
     expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
     expect(host2.discardSession).toHaveBeenCalledWith('acp-1')
-    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [], undefined)
+    expect(host2.newSession).toHaveBeenCalledWith(
+      expect.any(String),
+      [],
+      undefined,
+      undefined,
+      SESSION_AREAS,
+      undefined
+    )
     await (await store).close()
   })
 
@@ -3533,12 +3554,12 @@ describe('SessionManager — records that a runtime was handed an on-demand clon
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory, workspaces })
 
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
-    expect(host.newSession.mock.calls[0][4]).toEqual([clones])
+    expect(host.newSession.mock.calls[0][4]).toEqual([clones, ...SESSION_AREAS])
     expect((await store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a')))?.onDemandClones).toBe(1)
 
     workspaces.handed = false
     await sm.handle('bot-a', msg({ ts: '200.1', thread: '200.1', text: 'other' }))
-    expect(host.newSession.mock.calls[1][4]).toEqual([])
+    expect(host.newSession.mock.calls[1][4]).toEqual(SESSION_AREAS)
     expect((await store.getSession(sessionKey('slack', 'C1', '200.1', 'bot-a')))?.onDemandClones ?? null).toBeNull()
     await store.close()
   })
@@ -3572,7 +3593,7 @@ describe('SessionManager — an installation grant alone hands out the clone dir
 
     const key = sessionKey('slack', 'C1', '100.1', 'bot-a')
     const clones = realpathSync(join(workspaces.agentRootFor(granted), 'clones', workspaces.sessionWorktreeId(key)))
-    expect(host.newSession.mock.calls[0][4]).toEqual([clones])
+    expect(host.newSession.mock.calls[0][4]).toEqual([clones, ...SESSION_AREAS])
     expect((await store.getSession(key))?.onDemandClones).toBe(1)
     const prompted = turn.blocks.map((b) => ('text' in b ? (b.text ?? '') : '')).join('\n')
     expect(prompted).toContain('Any repository of the GitHub account example-co is authorized.')

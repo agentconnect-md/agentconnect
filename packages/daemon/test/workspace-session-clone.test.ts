@@ -1031,7 +1031,7 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     const agent = agentFixture()
     serveAll(agent)
     const home = workspaces.agentRootFor(agent)
-    const unconfined = [join(home, 'worktrees'), join(home, 'repos'), join(home, 'clones')]
+    const unconfined = [join(home, 'worktrees'), join(home, 'repos'), join(home, 'clones'), join(home, 'files')]
     expect(workspaces.trustedWorkspaceWriteRoots(agent, KEY)).toEqual(unconfined)
 
     await workspaces.prepareSessionWorkspace(agent, confined())
@@ -1040,6 +1040,59 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     // The agent's shared host, and a session without a directory of its own, keep the worktree tier's parents.
     expect(workspaces.trustedWorkspaceWriteRoots(agent)).toEqual(unconfined)
     expect(workspaces.trustedWorkspaceWriteRoots(agent, 'slack:C1:other')).toEqual(unconfined)
+  })
+
+  // inbound-file-attachments.md §2.4: a session's uploads and outputs sit beside its checkout, never in it.
+  it('puts a confined session’s file areas in its own directory and every other session’s under files/<leaf>', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const home = workspaces.agentRootFor(agent)
+    const leaf = basename(workspaces.sessionDir(agent, KEY))
+    // A shared session's areas hang off the agent root.
+    const shared = await workspaces.sessionFileAreas(agent, { sessionKey: KEY, isolation: 'shared' })
+    expect(shared).toEqual({
+      outputs: join(realpathSync(home), 'files', leaf, 'outputs'),
+      uploads: join(realpathSync(home), 'files', leaf, 'uploads')
+    })
+    expect(workspaces.hasLocalSessionFiles(agent, KEY)).toBe(true)
+    expect(workspaces.sessionFileLeaves(agent)).toEqual([leaf])
+
+    await workspaces.prepareSessionWorkspace(agent, confined())
+    const own = await workspaces.sessionFileAreas(agent, { sessionKey: KEY, isolation: 'session' })
+    expect(own).toEqual({
+      outputs: join(realpathSync(leafOf(agent)), 'files', 'outputs'),
+      uploads: join(realpathSync(leafOf(agent)), 'files', 'uploads')
+    })
+    // Nothing lands in the checkout, and a confined session's areas leave the clones' dirty judgement alone.
+    expect(existsSync(join(leafOf(agent), 'workspace', 'uploads'))).toBe(false)
+    writeFileSync(join(own!.uploads, 'spec.pdf'), '%PDF-1')
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toMatchObject({ outcome: 'removed' })
+    expect(existsSync(leafOf(agent))).toBe(false)
+
+    // A files/<leaf> is removed whatever it holds, and only session-shaped leaves are ever judged orphans.
+    writeFileSync(join(shared!.outputs, 'report.pdf'), 'report')
+    mkdirSync(join(home, 'files', 'notes'))
+    expect(workspaces.sessionFileLeaves(agent)).toEqual([leaf])
+    expect(await workspaces.removeSessionFiles(agent, KEY)).toEqual({ outcome: 'removed' })
+    expect(existsSync(join(home, 'files', leaf))).toBe(false)
+    expect(workspaces.sessionFileLeaves(agent)).toEqual([])
+    expect(existsSync(join(home, 'files', 'notes'))).toBe(true)
+  })
+
+  it('refuses a session files directory swapped for a link, leaving the link’s target untouched', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const home = workspaces.agentRootFor(agent)
+    const leaf = basename(workspaces.sessionDir(agent, KEY))
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'ac-session-files-outside-')))
+    roots.push(outside)
+    mkdirSync(join(home, 'files'), { recursive: true })
+    symlinkSync(outside, join(home, 'files', leaf))
+    expect(await workspaces.sessionFileAreas(agent, { sessionKey: KEY, isolation: 'shared' })).toBeUndefined()
+    expect(readdirSync(outside)).toEqual([])
+    // Removal takes the link itself, never what it points at.
+    expect(await workspaces.removeSessionFiles(agent, KEY)).toEqual({ outcome: 'removed' })
+    expect(existsSync(outside)).toBe(true)
   })
 
   it('clones only the `always` rows into a confined session, whose repos/ is where it clones the rest', async () => {

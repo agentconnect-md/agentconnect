@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   MAX_WORKSPACE_DOWNLOAD_BYTES,
+  SESSION_FILES_FEATURE,
   WORKSPACE_FILE_DOWNLOAD_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE
 } from '@agentconnect.md/protocol'
@@ -285,5 +286,53 @@ describe('GET /agents/:id/workspace/file/download', () => {
     const oldSandbox = await app(control).app.inject({ method: 'GET', url: url(session, 'uploads/a.txt') })
     expect(oldSandbox.statusCode).toBe(409)
     expect(oldSandbox.json()).toMatchObject({ code: 'WORKSPACE_SANDBOX_OUTDATED' })
+  })
+
+  it('reads a session files area for a shared session, gated by visibility and the daemon feature alone', async () => {
+    await seedDownloadAgent([...FEATURES, SESSION_FILES_FEATURE])
+    const session = await seedSession()
+    const control = new ByteReadSpy()
+    control.files.set('report.pdf', Buffer.from('%PDF-1.7'))
+    const running = app(control)
+    const rooted = (query: string) => `${ORG}/agents/${AGENT}/workspace/file/download?path=report.pdf&${query}`
+
+    const res = await running.app.inject({ method: 'GET', url: rooted(`sessionId=${session}&root=outputs`) })
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toBe('%PDF-1.7')
+    expect(control.calls[0]).toEqual({
+      agentId: AGENT,
+      sessionId: session,
+      root: 'outputs',
+      path: 'report.pdf',
+      offset: 0,
+      limit: 65_536,
+      encoding: 'base64'
+    })
+
+    const noSession = await running.app.inject({ method: 'GET', url: rooted('root=outputs') })
+    expect(noSession.statusCode).toBe(400)
+    const withRepo = await running.app.inject({
+      method: 'GET',
+      url: rooted(`sessionId=${session}&root=uploads&repo=example-org%2Fother`)
+    })
+    expect(withRepo.statusCode).toBe(400)
+    const badArea = await running.app.inject({ method: 'GET', url: rooted(`sessionId=${session}&root=checkout`) })
+    expect(badArea.statusCode).toBe(400)
+    const unknown = await running.app.inject({ method: 'GET', url: rooted(`sessionId=${randomUUID()}&root=uploads`) })
+    expect(unknown.statusCode).toBe(404)
+    expect(control.calls).toHaveLength(1)
+  })
+
+  it('refuses a session files read with 409 before any frame when the daemon predates them', async () => {
+    await seedDownloadAgent()
+    const session = await seedSession()
+    const control = new ByteReadSpy()
+    const res = await app(control).app.inject({
+      method: 'GET',
+      url: `${ORG}/agents/${AGENT}/workspace/file/download?path=a.txt&sessionId=${session}&root=uploads`
+    })
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ code: 'DAEMON_FEATURE_MISSING' })
+    expect(control.calls).toHaveLength(0)
   })
 })

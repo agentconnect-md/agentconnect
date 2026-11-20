@@ -7,7 +7,7 @@ export const QQ_ATTACHMENT_TOOL: ToolDescriptor = {
     'Fetch a file shared in QQ through the current bot connection. Pass the attachment resource link `url`; do not ' +
     'try to access it directly; use this tool instead of curl/fetch. Images are returned as viewable image content ' +
     'and text files as text. Any other file (PDF, ' +
-    'spreadsheet, archive, audio, video, …) is saved into `uploads/` in your workspace and the result names the path. ' +
+    'spreadsheet, archive, audio, video, …) is saved into your session uploads directory, outside the repository, and the result names the path. ' +
     'Supply `mimeType` when known for correct handling.',
   inputSchema: {
     type: 'object',

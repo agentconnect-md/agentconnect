@@ -968,7 +968,12 @@
         "loadError": "Couldn't load — the daemon may be offline.",
         "findPlaceholder": "Find file by path…",
         "findLabel": "Find file by path",
-        "lastFetched": "When this checkout last fetched from its remote"
+        "lastFetched": "When this checkout last fetched from its remote",
+        "sessionFiles": "Session files",
+        "sessionFilesTitle": "Files this session keeps beside its checkout: what the agent generated, and the attachments it saved",
+        "sessionFilesEmpty": "Nothing here yet",
+        "sessionFilesUnsupported": "Update this agent’s daemon to browse session files.",
+        "sessionFilesOffline": "Couldn’t read session files — the daemon may be offline."
       },
       "sessionDock": {
         "resizePanel": "Resize panel",

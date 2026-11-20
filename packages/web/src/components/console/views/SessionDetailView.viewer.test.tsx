@@ -785,6 +785,17 @@ describe('the viewer route', () => {
     expect(new URLSearchParams(nav.search).get('repo')).toBeNull()
   })
 
+  it('reads a session file from its area for a shared session too, then drops the root when the viewer closes', async () => {
+    wire.isolation = 'shared'
+    nav.search = 'view=flat&file=report.pdf&agent=agent-1&root=outputs'
+    await render()
+    expect(wire.fileCalls.at(-1)).toEqual({ path: 'report.pdf', sessionId: 'session-1', root: 'outputs' })
+    // A session file has no diff to toggle to.
+    expect(container?.querySelector('[data-viewer-mode]')).toBeNull()
+    await press('[data-viewer-close]')
+    expect(new URLSearchParams(nav.search).get('root')).toBeNull()
+  })
+
   it('round-trips a nested path whose every segment has to be encoded', async () => {
     // A slash separator, a space, a `+` (which decodes back to a space if the param was written as a query value), parens and non-ASCII — the encoder has to survive all of them in both directions.
     const clickRow = async (text: string) => {
@@ -842,6 +853,34 @@ describe('the viewer route', () => {
     const written = new URLSearchParams((nav.replaced.at(-1) ?? '').split('?')[1] ?? '')
     expect(written.get('file')).toBe('notes.md')
     expect(written.get('agent')).toBe('agent-1')
+  })
+
+  it('lists a shared session’s files area in the Files tab and opens its file with that root', async () => {
+    wire.isolation = 'shared'
+    await render()
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-dock-tab="files"]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    const rowNamed = (name: string) =>
+      Array.from(container?.querySelectorAll<HTMLElement>('[data-session-files] button') ?? []).find(
+        (button) => button.textContent?.trim() === name
+      )
+    await act(async () => {
+      rowNamed('/outputs')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(wire.listCalls.at(-1)).toEqual({ path: '', sessionId: 'session-1', root: 'outputs' })
+    await act(async () => {
+      rowNamed('notes.md')?.click()
+      await Promise.resolve()
+    })
+    const written = new URLSearchParams((nav.replaced.at(-1) ?? '').split('?')[1] ?? '')
+    expect(written.get('file')).toBe('notes.md')
+    expect(written.get('root')).toBe('outputs')
+    expect(written.get('repo')).toBeNull()
   })
 
   it('fails CLOSED when the link names a workspace this conversation does not have', async () => {

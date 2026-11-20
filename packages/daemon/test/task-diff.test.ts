@@ -102,28 +102,12 @@ describe('task diff against a fixed baseline', () => {
     await expect(openTaskDiff(sources, 'new-task', true)).rejects.toThrow('already has changes')
   })
 
-  it('leaves untracked files in a skipped directory out, at the repository root only, and keeps tracked ones', async () => {
+  it("shows a repository's own untracked uploads/ files, since saved attachments no longer land in the checkout", async () => {
     const root = repository()
+    const snapshot = await openTaskDiff([{ git: hostGitRunner(root), name: 'project' }], 'task-uploads', true)
     mkdirSync(join(root, 'uploads'))
-    mkdirSync(join(root, 'agent', 'uploads'), { recursive: true })
-    writeFileSync(join(root, 'uploads', 'tracked.txt'), 'before\n')
-    git(root, ['add', '.'])
-    git(root, ['commit', '-qm', 'a tracked file in uploads'])
-    const source = { git: hostGitRunner(root), name: 'project', skipUntracked: 'uploads' }
-    const snapshot = await openTaskDiff([source], 'task-uploads', true)
-    for (let index = 0; index < 101; index++) writeFileSync(join(root, 'uploads', `clip-${index}.mp4`), 'saved bytes')
-    expect(await snapshot.read()).toBe('')
-    writeFileSync(join(root, 'uploads', 'tracked.txt'), 'after\n')
-    writeFileSync(join(root, 'agent', 'uploads', 'nested.txt'), 'nested work\n')
-    writeFileSync(join(root, 'uploads.txt'), 'sibling work\n')
-    const patch = await snapshot.read()
-    expect(patch).toContain('+after')
-    expect(patch).toContain('+nested work')
-    expect(patch).toContain('+sibling work')
-    expect(patch).not.toContain('saved bytes')
-    // A root that names no such directory still reports the same files, so secondary repositories are unaffected.
-    const plain = await openTaskDiff([{ git: hostGitRunner(root), name: 'project' }], 'task-uploads', false)
-    await expect(plain.read()).rejects.toThrow('too many new files')
+    writeFileSync(join(root, 'uploads', 'avatar.svg'), 'new upload handler fixture\n')
+    expect(await snapshot.read()).toContain('+new upload handler fixture')
   })
 
   it('adds a repository cloned during the task, against its remote default branch, under its own name', async () => {

@@ -20,8 +20,8 @@ export const SLACK_ATTACHMENT_TOOL: ToolDescriptor = {
     "to Slack's private file URLs (they require the bot token) — use this tool instead of curl/fetch. Pass the file's " +
     '`url` (the `url_private` / `uri` from a shared attachment or resource link), or its file ID (the `fileId` an ' +
     'attached-file note names, e.g. F0123ABCD). Images are returned as viewable image ' +
-    'content; text files as text. Any other file (PDF, spreadsheet, archive, …) is saved into `uploads/` in your ' +
-    'workspace and the result names the path — open it with your file tools. Supply `mimeType` when known for ' +
+    'content; text files as text. Any other file (PDF, spreadsheet, archive, …) is saved into your session ' +
+    'uploads directory, outside the repository, and the result names the path — open it with your file tools. Supply `mimeType` when known for ' +
     'correct handling.',
   inputSchema: {
     type: 'object',

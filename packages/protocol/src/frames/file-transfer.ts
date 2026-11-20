@@ -6,6 +6,7 @@ import {
   webchatImagesWithinBudget
 } from './webchat.js'
 import { MESSAGE_ATTACHMENTS_MAX, UploadedFileReference } from '../user-turn-body.js'
+import { SessionFileArea } from './workspace.js'
 
 export {
   MESSAGE_ATTACHMENTS_MAX,
@@ -38,6 +39,8 @@ export const WorkspaceUploadReq = z.object({
   agentId: z.string().min(1),
   sessionId: z.string().min(1).optional(),
   repo: z.string().min(1).optional(),
+  /** One area of the session's files directory instead of a checkout (`session-files-v1`). */
+  root: SessionFileArea.optional(),
   path: z.string().min(1).max(4096),
   /** The size and mtime the CP keyed the object by; a file that no longer matches is refused as `stale`. */
   revision: z.object({ size: z.number().int().positive(), mtime: z.string().min(1).max(64) }),

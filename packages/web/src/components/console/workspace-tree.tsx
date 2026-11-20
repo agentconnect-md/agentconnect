@@ -3,7 +3,7 @@
 // The live workspace read model, shared by the agent-detail file browser and the dock's Files panel: the per-directory listing cache with its cursor paging and expand set, the git status a tree's badges join against, and that badge.
 // Listings and status are proxied through the CP straight from the owning daemon (body-locality), so a rejected read means that daemon is offline or the agent is unplaced — an expected state every consumer renders as data.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   fetchWorkspaceFiles,
@@ -13,6 +13,7 @@ import {
 } from '@/lib/api'
 import { fileBrowserGlyph } from '@/components/console/FileBrowser'
 import { SANDBOX_REMOVED_CODE, type SandboxReadState } from '@/components/console/sandbox-wake'
+import type { SessionFileArea } from '@/lib/shared-file'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 // The CP's status separates an offline daemon (503) from one too old for session worktrees (409) and a session whose worktree the viewer cannot read (404); a consumer that wants those apart needs the number, not the flattened message.
@@ -64,12 +65,23 @@ export interface WorkspaceTree {
 /** The tree half of the read model for one daemon-local checkout. `refreshTick` re-reads the root AND every open folder, keeping the expand set; a SCOPE change is the one thing that wipes both. */
 // `sessionId` selects that session's isolated worktree; omit it for the primary checkout, and pass it only for a session whose `workspaceIsolation` is `'session'` — the daemon answers a shared-workspace sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
 // `repo` selects one of the agent's authorized additional repositories, browsing that secondary root; the two scopes compose, so a `repo` with a `sessionId` is that root's own worktree for the session.
-export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTick = 0, repo?: string): WorkspaceTree {
+// `root` lists one area of the session's files directory instead of a checkout; it needs `sessionId` (any session, shared too) and no `repo`.
+export function useWorkspaceTree(
+  agentId: string,
+  sessionId?: string,
+  refreshTick = 0,
+  repo?: string,
+  root?: SessionFileArea
+): WorkspaceTree {
   const [dirs, setDirs] = useState<Record<string, WorkspaceDirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   // Which checkout this is, as one value: what tells a refresh (re-read what is open) from a scope
   // change (a different tree entirely, where the previous expand set names paths that may not exist).
-  const scope = `${agentId}\u0000${sessionId ?? ''}\u0000${repo ?? ''}`
+  const scope = `${agentId}\u0000${sessionId ?? ''}\u0000${repo ?? ''}\u0000${root ?? ''}`
+  const scopeOpts = useMemo(
+    () => ({ ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}), ...(root ? { root } : {}) }),
+    [repo, root, sessionId]
+  )
   const lastScope = useRef<string | null>(null)
   // The expand set as the refresh effect reads it. A REF because the effect must not re-run when a
   // folder opens — that would re-read the whole tree on every expand.
@@ -90,7 +102,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
     (path: string) => {
       const gen = generation.current
       patchDir(path, { loading: true, err: null, errStatus: null, errCode: null })
-      fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
+      fetchWorkspaceFiles(agentId, { path, ...scopeOpts }).then(
         (page) => {
           if (gen !== generation.current) return
           setDirs((prev) => ({
@@ -114,7 +126,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
         }
       )
     },
-    [agentId, patchDir, repo, sessionId]
+    [agentId, patchDir, scopeOpts]
   )
 
   const loadMoreDir = useCallback(
@@ -126,8 +138,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
       fetchWorkspaceFiles(agentId, {
         path,
         cursor: d.nextCursor,
-        ...(sessionId ? { sessionId } : {}),
-        ...(repo ? { repo } : {})
+        ...scopeOpts
       }).then(
         (page) => {
           if (gen !== generation.current) return
@@ -151,7 +162,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
         }
       )
     },
-    [agentId, dirs, patchDir, repo, sessionId]
+    [agentId, dirs, patchDir, scopeOpts]
   )
 
   const toggleDir = useCallback(
@@ -199,7 +210,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
       // Marked loading in place: the rows stay on screen behind their spinners rather than vanishing.
       patchDir('', { loading: true, err: null, errStatus: null, errCode: null })
     }
-    fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}), ...(repo ? { repo } : {}) }).then(
+    fetchWorkspaceFiles(agentId, { path: '', ...scopeOpts }).then(
       (page) => {
         if (!active()) return
         const root = {
@@ -230,7 +241,7 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
       // A teardown is its own generation change: the next mount's reads must not be answered by this one's.
       generation.current += 1
     }
-  }, [agentId, loadDir, patchDir, refreshTick, repo, scope, sessionId])
+  }, [agentId, loadDir, patchDir, refreshTick, scope, scopeOpts])
 
   return { dirs, root: dirs[''], expanded, toggleDir, loadMoreDir, openPath }
 }

@@ -165,6 +165,39 @@ describe('uploaded-file attachments', () => {
     expect(text).toContain('2026-10-09T00:00:00.000Z')
   })
 
+  it('names the saved file when the daemon fetched the upload into the session uploads area', async () => {
+    const link = { url: 'https://store.example.test/k?X-Amz-Signature=s', expiresAt: Date.UTC(2026, 9, 9) }
+    const saveTransfer = vi.fn(async () => ({
+      ok: true as const,
+      path: '/home/agent/files/session-example/uploads/its.pdf',
+      name: 'files:uploads/its.pdf'
+    }))
+    const [block] = await buildAttachmentBlocks([upload], {
+      download: async () => null,
+      supports: () => true,
+      transferUrl: async () => link,
+      saveTransfer
+    })
+    expect(saveTransfer).toHaveBeenCalledWith(upload, link)
+    const text = (block as { text: string }).text
+    expect(text).toContain('It is saved at /home/agent/files/session-example/uploads/its.pdf (`files:uploads/its.pdf`)')
+    expect(text).not.toContain('X-Amz-Signature')
+  })
+
+  it('points the fallback download at the session uploads area when the daemon could not save the upload', async () => {
+    const [block] = await buildAttachmentBlocks([upload], {
+      download: async () => null,
+      supports: () => true,
+      transferUrl: async () => ({ url: 'https://store.example.test/k', expiresAt: Date.UTC(2026, 9, 9) }),
+      saveTransfer: async () => ({ ok: false as const, dir: '/home/agent/files/session-example/uploads' })
+    })
+    const text = (block as { text: string }).text
+    expect(text).toContain(
+      `curl -fsSL -o '/home/agent/files/session-example/uploads/it'\\''s.pdf' 'https://store.example.test/k'`
+    )
+    expect(text).not.toContain('mkdir -p uploads')
+  })
+
   it('says the upload is gone when no link can be issued', async () => {
     const [block] = await buildAttachmentBlocks([upload], {
       download: async () => null,

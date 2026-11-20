@@ -211,11 +211,14 @@ import {
   type TaskInitiator,
   type TaskLinkFacts,
   type UserTurnBody,
-  WORKSPACE_UPLOADS_DIR
+  parseSessionFileName,
+  sessionFileName,
+  SessionFileArea,
+  SESSION_FILES_FEATURE
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { basename, dirname, join, posix, resolve } from 'node:path'
 import {
   installMicrosandbox,
   installedMicrosandbox,
@@ -357,7 +360,7 @@ import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/re
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
 import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { WorkBoundary } from './messages/message-boundary.js'
-import { attachmentMention } from './session/attachment-block.js'
+import { attachmentMention, type TransferSave } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import {
   COMPUTER_BROWSER_DESCRIPTORS,
@@ -763,7 +766,9 @@ import {
   foldSessionRemovals,
   type PrepareSessionWorkspaceRequest,
   type RetiredRootRemoval,
-  type SessionWorktreeRemoval
+  type SessionWorktreeRemoval,
+  realSessionFilesPath,
+  type SessionFilesLocation
 } from './workspace/workspace-manager.js'
 import { sessionInitiatedBy } from './workspace/session-branch.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
@@ -1068,7 +1073,7 @@ import {
 } from './workspace/workspace-files.js'
 import { readRegularFile, RegularFileError } from './fs/regular-file.js'
 import { localWorkspaceFs } from './workspace/workspace-fs.js'
-import type { SaveAttachmentResult } from './mcp/ops/platform-reads.js'
+import { attachmentFileName, type SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
 import { sharedFileKind } from './mcp/ops/share-file-types.js'
@@ -1194,6 +1199,7 @@ import {
   fromPlatformMessage,
   stableMessageId,
   stableTurnId,
+  type Attachment,
   type NormalizedMessage,
   sessionChannelOf,
   sessionThreadOf,
@@ -5839,6 +5845,10 @@ export class Daemon {
         if (!p || p.outputSuppressed || !this.toolTurnRunnable(ctx)) return undefined
         return this.turnSurfaces.exact(p.plan.platform)?.fileUploader?.(p)
       },
+      normalizeSharePath: async (ctx, path) => {
+        const file = await this.sessionFileOf(ctx, path)
+        return file ? sessionFileName(file.area, file.path) : path
+      },
       readWorkspaceFile: async (ctx, rel): Promise<ShareReadResult> => {
         const cap = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
         const read = await this.readShareWorkspaceFile(ctx, rel, cap)
@@ -5900,40 +5910,8 @@ export class Daemon {
         if (!sessionId) return
         await snapshotSharedFile(this.sharedFileSnapshotDeps(), { agentId: ctx.agentId, sessionId, ...file })
       },
-      // read*File (inbound-file-attachments.md §2): a downloaded non-image binary lands under
-      // `uploads/` at the session's working root, so the agent's own tools can open it. The same
-      // location resolution as readWorkspaceFile above; the write goes through the WorkspaceFs
-      // seam so a cluster agent's sandbox volume is reached over the fd-anchored channel.
-      saveAttachment: async (ctx, name, bytes): Promise<SaveAttachmentResult> => {
-        const scope = createWorkspaceScope({
-          workspaces: this.workspaces,
-          agentOf: (id) => this.agents.get(id),
-          sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
-          runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
-        })
-        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        const row = await this.store.getSession(key).catch(() => undefined)
-        const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
-        const location =
-          (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
-          (await scope.location(ctx.agentId).catch(() => undefined))
-        if (!location) return { ok: false, reason: 'no-workspace' }
-
-        // Pod or executor arm: the channel's descent is the containment; local arm: realpath re-verifies `uploads/`. Anything thrown past the helper is the channel or the disk.
-        const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
-        if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
-        const target: SaveAttachmentTarget = podFs
-          ? { kind: 'workspace-fs', fs: podFs, root: location.root }
-          : process.platform === 'linux'
-            ? { kind: 'pinned', root: location.root }
-            : { kind: 'workspace-fs', fs: localWorkspaceFs, root: location.root, canonicalDir: canonicalWorkspacePath }
-        try {
-          return await saveAttachmentTo(target, name, bytes)
-        } catch (err) {
-          if (podFs) return { ok: false, reason: 'sandboxed' }
-          return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
-        }
-      },
+      // read*File: a downloaded non-image binary lands in the session files directory's `uploads/` (inbound-file-attachments.md §2.4).
+      saveAttachment: (ctx, name, bytes) => this.saveSessionUpload(ctx, name, bytes),
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const perFile = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
@@ -6261,7 +6239,9 @@ export class Daemon {
             ) ?? Promise.resolve(null))
           : Promise.resolve(null),
       attachmentMaxBytes: cfg.limits.maxAttachmentBytes,
-      // The control plane signs the agent's GET; the bytes stay in the bucket until the agent fetches them.
+      // A console upload is fetched into the session's uploads area at prompt build, within the attachment cap (§2.4).
+      saveTransfer: (agentId, scope, attachment, link) => this.saveChatUpload(agentId, scope, attachment, link),
+      // The control plane signs the agent's GET; the daemon fetches it into the session's uploads, or the agent does.
       transferUrl: (agentId, attachment) =>
         resolveChatUploadUrl(attachment, {
           agentId,
@@ -10322,6 +10302,8 @@ export class Daemon {
       WORKSPACE_SESSION_READ_FEATURE,
       WORKSPACE_REPO_SCOPE_FEATURE,
       WORKSPACE_FILE_DOWNLOAD_FEATURE,
+      // Answers workspace list/read/upload frames scoped to one area of a session's files directory (inbound-file-attachments.md §2.4).
+      SESSION_FILES_FEATURE,
       // Snapshots workspace files onto, and fetches console uploads from, URLs the control plane signs; static.
       FILE_TRANSFER_FEATURE,
       WEBCHAT_UPLOADS_FEATURE,
@@ -14535,6 +14517,148 @@ export class Daemon {
     this.memoryExtractionQuarantines.set(key, agentId)
   }
 
+  /** Land bytes in one session's `uploads/` through the filesystem that holds it; the pod or executor channel is the containment there, a descriptor descent here. */
+  private async saveSessionUpload(ctx: SessionContext, name: string, bytes: Buffer): Promise<SaveAttachmentResult> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const row = await this.store.getSession(key).catch(() => undefined)
+    return await this.saveSessionUploadAt(ctx.agentId, key, row?.workspaceIsolation, name, bytes)
+  }
+
+  private async saveSessionUploadAt(
+    agentId: string,
+    key: string,
+    isolation: SessionRecord['workspaceIsolation'],
+    name: string,
+    bytes: Buffer
+  ): Promise<SaveAttachmentResult> {
+    const agent = this.agents.get(agentId)
+    if (!agent) return { ok: false, reason: 'no-workspace' }
+    const location = this.workspaces.sessionFilesLocation(agent, key, isolation)
+    const podFs = this.workspaces.offDiskFsFor(agentId, location.scope)
+    if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+    try {
+      const root = podFs ? location.anchor : realpathSync(location.anchor)
+      const target: SaveAttachmentTarget = podFs
+        ? { kind: 'workspace-fs', fs: podFs, root, segments: location.segments }
+        : process.platform === 'linux'
+          ? { kind: 'pinned', root, segments: location.segments }
+          : {
+              kind: 'workspace-fs',
+              fs: localWorkspaceFs,
+              root,
+              segments: location.segments,
+              canonicalDir: canonicalWorkspacePath
+            }
+      return await saveAttachmentTo(target, name, bytes)
+    } catch (err) {
+      if (podFs) return { ok: false, reason: 'sandboxed' }
+      return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** Fetch one console upload on the URL the control plane signed for it and save it in the session's uploads; the area for the agent's own download when it cannot. */
+  private async saveChatUpload(
+    agentId: string,
+    scope: { sessionKey: string; isolation: 'shared' | 'session' },
+    att: Attachment,
+    link: { url: string; expiresAt: number }
+  ): Promise<TransferSave> {
+    const agent = this.agents.get(agentId)
+    if (!agent) return { ok: false }
+    const areas = await this.workspaces.sessionFileAreas(agent, scope)
+    if (!areas) return { ok: false }
+    const cap = this.cfg.limits.maxAttachmentBytes
+    if (att.size === undefined || att.size > cap) return { ok: false, dir: areas.uploads }
+    let bytes: Buffer
+    try {
+      const response = await fetch(link.url, { redirect: 'error', signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) {
+        await response.body?.cancel()
+        return { ok: false, dir: areas.uploads }
+      }
+      bytes = await readBoundedBody(response, cap, 'uploaded attachment')
+    } catch {
+      return { ok: false, dir: areas.uploads }
+    }
+    // The signed object was checked for this size by the control plane; a short read is a failed fetch.
+    if (bytes.length !== att.size) return { ok: false, dir: areas.uploads }
+    const name = attachmentFileName('', att.mimeType, 'upload', att.name)
+    const saved = await this.saveSessionUploadAt(agentId, scope.sessionKey, scope.isolation, name, bytes)
+    return saved.ok ? { ok: true, path: saved.path, name: saved.name } : { ok: false, dir: areas.uploads }
+  }
+
+  /** A share path naming a file in one of the session's areas, by `files:` name or absolute path; undefined for anything else, which the checkout's fence judges. */
+  private async sessionFileOf(
+    ctx: SessionContext,
+    path: string
+  ): Promise<{ area: SessionFileArea; path: string; location: SessionFilesLocation } | undefined> {
+    const agent = this.agents.get(ctx.agentId)
+    if (!agent) return undefined
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const row = await this.store.getSession(key).catch(() => undefined)
+    const location = this.workspaces.sessionFilesLocation(agent, key, row?.workspaceIsolation)
+    const named = parseSessionFileName(path)
+    if (named) return { ...named, location }
+    if (!posix.isAbsolute(path)) return undefined
+    const offDisk = this.workspaces.offDiskFsFor(ctx.agentId, location.scope) !== undefined
+    // The same directory by the path the agent was told and, locally, by its canonical one.
+    const anchors = offDisk ? [location.anchor] : [location.anchor, realpathSync(location.anchor)]
+    for (const anchor of anchors) {
+      for (const area of SessionFileArea.options) {
+        const root = posix.join(anchor, ...location.segments, area)
+        if (path.startsWith(`${root}/`)) return { area, path: path.slice(root.length + 1), location }
+      }
+    }
+    return undefined
+  }
+
+  /** Single-shot read of one session file under its area's fence: the pod's descent there, a link-free canonical area here. */
+  private async readSessionFile(
+    agentId: string,
+    file: { area: SessionFileArea; path: string; location: SessionFilesLocation },
+    cap: number
+  ): Promise<
+    | { ok: true; bytes: Buffer }
+    | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
+  > {
+    const podFs = this.workspaces.offDiskFsFor(agentId, file.location.scope)
+    if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+    if (podFs) {
+      let resolved: string
+      try {
+        resolved = containedWorkspacePath(join(file.location.anchor, ...file.location.segments, file.area), file.path)
+      } catch (err) {
+        return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+      }
+      let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
+      try {
+        read = await podFs.readFileBytes(resolved, cap)
+      } catch {
+        read = 'channel-lost'
+      }
+      if (read === 'channel-lost') return { ok: false, reason: 'sandboxed' }
+      if (!read) return { ok: false, reason: 'not-found' }
+      if ('tooLarge' in read)
+        return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
+      return { ok: true, bytes: read.bytes }
+    }
+    let resolved: string | null
+    try {
+      resolved = await canonicalWorkspacePath(realSessionFilesPath(file.location, file.area), file.path)
+    } catch (err) {
+      return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
+    }
+    if (!resolved) return { ok: false, reason: 'not-found' }
+    try {
+      return { ok: true, bytes: await readRegularFile(resolved, cap) }
+    } catch (err) {
+      if (err instanceof RegularFileError && err.reason === 'too-large') {
+        return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
+      }
+      return { ok: false, reason: 'not-found' }
+    }
+  }
+
   /** Resolve + fence + single-shot read of a workspace-relative file for `shareFile` (agent-authored-attachments.md §4). */
   private async readShareWorkspaceFile(
     ctx: SessionContext,
@@ -14544,6 +14668,9 @@ export class Daemon {
     | { ok: true; bytes: Buffer }
     | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
   > {
+    // A session file is read from its own area, the one fence root it may name (inbound-file-attachments.md §2.4).
+    const file = await this.sessionFileOf(ctx, rel)
+    if (file) return await this.readSessionFile(ctx.agentId, file, cap)
     const scope = createWorkspaceScope({
       workspaces: this.workspaces,
       agentOf: (id) => this.agents.get(id),
@@ -23691,10 +23818,35 @@ export class Daemon {
         ),
         agentId: agent.id,
         cwd,
-        roots
+        roots,
+        areas: this.sessionFileAreaPaths(agent, run.key, session.workspaceIsolation)
       })
     } catch {
       return undefined
+    }
+  }
+
+  /** Each area of a session's files by the path the agent was told and, locally, the canonical one, so either spelling links and is rewritten; none when unresolvable. */
+  private sessionFileAreaPaths(
+    agent: Agent,
+    key: string,
+    isolation: SessionRecord['workspaceIsolation']
+  ): { area: SessionFileArea; paths: string[] }[] {
+    try {
+      const files = this.workspaces.sessionFilesLocation(agent, key, isolation)
+      const offDisk = this.workspaces.offDisk({ agentId: agent.id, ...files.scope })
+      return SessionFileArea.options.map((area) => {
+        const told = join(files.anchor, ...files.segments, area)
+        let canonical: string | undefined
+        try {
+          canonical = offDisk ? undefined : realSessionFilesPath(files, area)
+        } catch {
+          canonical = undefined
+        }
+        return { area, paths: canonical && canonical !== told ? [told, canonical] : [told] }
+      })
+    } catch {
+      return []
     }
   }
 
@@ -23710,7 +23862,7 @@ export class Daemon {
       sessionOf: (id, outwardId) => this.store.getSessionByOutwardId(outwardId, id),
       runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
     })
-    const roots: Array<{ path: string; name: string; title?: string; branch: string; skipUntracked?: string }> = []
+    const roots: Array<{ path: string; name: string; title?: string; branch: string }> = []
     if (agent.workspace.mode === 'git-repo') {
       const primary = await scope.location(agent.id, p.outwardSessionId)
       if (primary)
@@ -23718,9 +23870,7 @@ export class Daemon {
           path: primary.root,
           name: 'workspace',
           title: 'the working directory',
-          branch: agent.workspace.gitBranch,
-          // Saved chat attachments land here; they are copies of chat files, not task changes.
-          skipUntracked: WORKSPACE_UPLOADS_DIR
+          branch: agent.workspace.gitBranch
         })
     }
     const rootScope = { sessionKey: session.key, isolation: 'session' as const }
@@ -30534,7 +30684,7 @@ export class Daemon {
     if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
     const agent = this.agents.get(rec.agentId)
     // "Could this session own a directory at all", from the spec, since the disk that holds the roots is not bound yet.
-    if (!agent || !this.sessionMayOwnDirectories(agent, rec)) {
+    if (!agent || (!this.sessionMayOwnDirectories(agent, rec) && !this.sessionMayOwnFiles(agent, rec))) {
       return { outcome: 'not_applicable' }
     }
     return this.withWorkspaceAdmissionFence(rec.agentId, async () => {
@@ -30542,20 +30692,26 @@ export class Daemon {
       // queued mutation boundary. In that case it owns the worktree, so defer.
       if (await this.sessionRetentionActive(rec)) return { outcome: 'active' }
       const currentAgent = this.agents.get(rec.agentId)
-      if (!currentAgent || !this.sessionMayOwnDirectories(currentAgent, rec)) {
-        return { outcome: 'not_applicable' }
+      if (!currentAgent) return { outcome: 'not_applicable' }
+      let result: SessionWorktreeRemoval | undefined
+      if (this.sessionMayOwnDirectories(currentAgent, rec)) {
+        // A host bound to this session runs inside the directory about to go: stop it before the removal.
+        await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
+        // A pod that will not come up is THIS session's failure, never the whole sweep's: it retries next pass.
+        result = await this.judgeSessionDirectories(currentAgent, rec.key, rec.workspaceIsolation).catch(
+          (err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message })
+        )
       }
-      // A host bound to this session runs inside the directory about to go: stop it before the removal.
-      await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
-      // A pod that will not come up is THIS session's failure, never the whole sweep's: it retries next pass.
-      const result = await this.judgeSessionDirectories(currentAgent, rec.key, rec.workspaceIsolation).catch(
-        (err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message })
-      )
+      // Its files beside the agent's roots go with whatever else of it went, and are never judged dirty themselves (§2.4).
+      const kept = result !== undefined && result.outcome !== 'removed' && result.outcome !== 'absent'
+      const files = kept ? undefined : await this.retireSessionFiles(currentAgent, rec.key)
+      if (files?.outcome === 'failed') this.log.warn(`retention: session ${rec.key} files were kept (${files.error})`)
+      result ??= files?.outcome === 'removed' ? files : undefined
       if (result === undefined) return { outcome: 'not_applicable' }
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
       // attachment naming a directory that is gone would skip preparation on its next turn.
       const changed = result.outcome === 'removed' || result.outcome === 'absent' || result.partial === true
-      if (changed && rec.acpSessionId) {
+      if (changed && rec.acpSessionId && this.sessionMayOwnDirectories(currentAgent, rec)) {
         // The session row intentionally survives lifecycle cleanup. Evict only
         // this stale warm binding so the next reopened/comment turn recreates
         // the worktree and runs session/load/new before prompting in its cwd.
@@ -30566,6 +30722,35 @@ export class Daemon {
       }
       return result
     })
+  }
+
+  /** Whether a session may have `files/<leaf>` beside the agent's roots to retire: asked of this disk, and of a pool agent's volume only while its pod is already up. */
+  private sessionMayOwnFiles(agent: LoadedAgent, rec: SessionRecord): boolean {
+    if (rec.platform === 'dream') return false
+    if (!this.k8sPlane) return this.workspaces.hasLocalSessionFiles(agent, rec.key)
+    const release = this.k8sPlane.holdIfBound(agentSandboxSubject(agent.id))
+    release?.()
+    return release !== undefined
+  }
+
+  /** Remove one session's `files/<leaf>`; on a pool only through an agent pod that is already up, which a sweep never wakes for this. */
+  private async retireSessionFiles(agent: LoadedAgent, key: string): Promise<SessionWorktreeRemoval | undefined> {
+    if (!this.k8sPlane) {
+      return this.workspaces.hasLocalSessionFiles(agent, key)
+        ? await this.workspaces.removeSessionFiles(agent, key)
+        : undefined
+    }
+    const release = this.k8sPlane.holdIfBound(agentSandboxSubject(agent.id))
+    if (!release) return undefined
+    try {
+      return (await this.workspaces.hasSessionFilesOnVolume(agent, key))
+        ? await this.workspaces.removeSessionFiles(agent, key)
+        : undefined
+    } catch (err) {
+      return { outcome: 'failed', error: formatErr(err) }
+    } finally {
+      release()
+    }
   }
 
   /** Whether retention has a directory of this session's to judge: its on-demand clones beside the agent's roots (decision 20) — recorded on its row once handed, so later rows cannot hide them — shared or not, else an isolated one's worktrees or clones. */
@@ -30646,6 +30831,7 @@ export class Daemon {
       }
       // After the VMs: a directory one of them still mounts waits for the pass after it is retired.
       await this.retireOrphanSessionDirs()
+      await this.retireOrphanSessionFiles()
       // Decision 12's removal step rides the same sweep, but not the retention window: a retired
       // root is not an expired session, and an install that keeps sessions forever still retires.
       await this.sweepRetiredWorkspaceRoots()
@@ -31032,6 +31218,30 @@ export class Daemon {
       this.log.info(
         `retention: keeping ${retained.length} session director${retained.length === 1 ? 'y' : 'ies'} whose row is gone — ${retained.join(', ')} (delete or push the work to release them)`
       )
+  }
+
+  /** Remove `files/<leaf>` on this disk that no session maps to (§2.4); only session-leaf names are judged, so a person's own `files/` entries stay. */
+  private async retireOrphanSessionFiles(): Promise<void> {
+    for (const agent of [...this.agents.values()]) {
+      if (this.draining) return
+      try {
+        const leaves = this.workspaces.sessionFileLeaves(agent)
+        if (leaves.length === 0 || this.orphanSweepHeld(agent.id)) continue
+        await this.withWorkspaceAdmissionFence(agent.id, async () => {
+          const current = this.agents.get(agent.id)
+          if (!current || this.orphanSweepHeld(agent.id)) return
+          // Re-judged inside the fence, which holds turn admission, so a session reopened under the same key keeps its files.
+          const kept = await this.keptSessionLeaves(agent.id)
+          for (const leaf of this.workspaces.sessionFileLeaves(current)) {
+            if (kept.has(leaf)) continue
+            this.workspaces.removeOrphanSessionFiles(current, leaf)
+            this.log.info(`retention: removed session files ${leaf} of agent ${agent.id}, whose session row is gone`)
+          }
+        })
+      } catch (err) {
+        this.log.warn(`retention: could not judge the session files of agent ${agent.id} (${formatErr(err)})`)
+      }
+    }
   }
 
   /** The agent's session directories on this disk that nothing maps to — no row, dream or host, nor a VM, which its own sweep retires first. */

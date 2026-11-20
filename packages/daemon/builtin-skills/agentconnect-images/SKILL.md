@@ -1,6 +1,6 @@
 ---
 name: agentconnect-images
-description: Create an image with the tools this runtime actually has, save it in the workspace, and show it in the current AgentConnect conversation with the shareFile tool. Use when someone asks you to generate, draw, edit, plot or show an image, illustration, chart or diagram.
+description: Create an image with the tools this runtime actually has, save it in your session outputs directory, and show it in the current AgentConnect conversation with the shareFile tool. Use when someone asks you to generate, draw, edit, plot or show an image, illustration, chart or diagram.
 ---
 
 # Generating and sharing images
@@ -26,26 +26,27 @@ If no generation capability is available, explain which capability is missing. D
 invent a tool name, install a provider, ask for new credentials on your own, or claim
 that AgentConnect can call tools that only exist inside another runtime.
 
-## 2. Save it in the workspace
+## 2. Save it in your session outputs directory
 
-- Save the finished original inside your workspace, preferably under
-  `outputs/images/` with a unique, descriptive name such as
-  `outputs/images/product-illustration-2.png`.
+- Save the finished original in the `images/` folder of your session outputs directory
+  (your standing instructions name its absolute path) with a unique, descriptive name.
+  Its `files:` name is then `files:outputs/images/product-illustration-2.png`.
 - A generator may hand you bytes, a temporary path or a download link. Use your file or
-  network tools to put the result in the workspace first; a file outside the workspace
+  network tools to put the result there first; a file anywhere else outside the workspace
   cannot be shared.
+- Save it in the repository instead only when the person asks for that.
 - If you can inspect images, look at the result before sharing it.
 
 ## 3. Share it
 
-Call `shareFile` with the workspace-root-relative path and an optional short caption:
+Call `shareFile` with the image's `files:` name and an optional short caption:
 
 ```json
-{ "path": "outputs/images/product-illustration.png", "caption": "Product illustration" }
+{ "path": "files:outputs/images/product-illustration.png", "caption": "Product illustration" }
 ```
 
-- Your working directory may be a subdirectory; the path is always relative to the
-  workspace root.
+- A file in the repository is shared by its path relative to the workspace root, even
+  when your working directory is a subdirectory.
 - One call shares one image. Several images need several calls.
 - The result is a short receipt (`"type": "agentconnect.image"`, `"published": true`).
   The person already sees an image card with **View original** and **Download**.
@@ -62,6 +63,6 @@ Generation failing and sharing failing are different outcomes:
 - If generation failed, say what went wrong and stop.
 - If `shareFile` refused the file (wrong type, too large, unsafe SVG, path outside the
   workspace), fix what the error names and try once more, or tell the person the image
-  was created at its workspace path but could not be displayed.
+  was created at its `files:` name but could not be displayed.
 - Never call `shareFile` again for an image that was already published — a later problem
   with the original's upload does not remove the card.
