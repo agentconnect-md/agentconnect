@@ -296,6 +296,50 @@ describe('Runtime changes before the first turn', () => {
     await act(async () => pgSetModel(id, agent.id, 'model-standard'))
     expect(sent(socket).at(-1)).toEqual({ type: 'set_model', model: 'model-standard' })
   })
+
+  it('serves a playground conversation’s steps by the session the daemon made of it, and retires them by its rows', async () => {
+    RuntimeSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', RuntimeSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    let id = ''
+    await act(async () => {
+      id = openPlayground(agent)
+      pgSend(id, agent.id, 'open a task')
+    })
+    const socket = RuntimeSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+    })
+    const [turn] = sent(socket)
+    const frame = (output: Record<string, unknown>) =>
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'output', output: { turnId: turn!.turnId, agentId: agent.id, ...output } })
+      })
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'ack', ack: { accepted: true, turnId: turn!.turnId, agentId: agent.id } })
+      })
+      frame({ index: 0, status: { sessionId: 'session-1' } })
+      frame({ index: 1, event: { kind: 'tool_call', toolCallId: 'tc-1', title: 'delegateTask', status: 'completed' } })
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId: turn!.turnId, agentId: agent.id, lastIndex: 1 } })
+      })
+    })
+    expect(getLiveSteps('session-1').map((step) => step.kind)).toEqual(['msg', 'tool'])
+    expect(getLiveSteps(id)).toEqual(getLiveSteps('session-1'))
+    act(() =>
+      reconcileLiveSteps(
+        'session-1',
+        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'open a task' }],
+        agent.id,
+        { readStartedAtMs: Date.now() }
+      )
+    )
+    expect(getPgSession(id)?.steps).toEqual([])
+  })
 })
 
 // An approval decision is news the conversation must speak, but the composer is

@@ -1318,10 +1318,18 @@ export default function SessionDetailView() {
   // from the owning daemon. Playground + mock sessions carry their own steps, so they never fetch.
   const sid = session?.id
   const aid = session?.agentId
-  const wantTranscript = !!session && session.platform !== 'playground' && session.steps.length === 0 && !!aid
+  // A one-agent playground conversation the daemon made a session of, which the Control Plane knows, reads that session's rows as a reload would (webchat-transcript-refresh.md §1).
+  const pgOnRows =
+    !!session?.realSessionId &&
+    session.platform === 'playground' &&
+    (session.participants?.length ?? 1) <= 1 &&
+    sessionDetail?.id === session.realSessionId
+  const transcriptSid = pgOnRows ? session.realSessionId : sid
+  const wantTranscript =
+    !!session && !!aid && (pgOnRows || (session.platform !== 'playground' && session.steps.length === 0))
   const sessionBusy = session ? isPgBusy(session.id) : false
   // A coordinator's thread shape: webchat's own, or what its platform module declares (webchat-threads.md §7).
-  const threadShape = session?.coordinator === true ? threadShapeOf(session.platform) : undefined
+  const threadShape = session?.coordinator === true ? threadShapeOf(pgOnRows ? 'webchat' : session.platform) : undefined
   // The transcript fetch machine (history + live tail + cross-source "load earlier") lives in its
   // own hook; the view decides WHEN to refresh the tail and renders the merged result.
   const {
@@ -1346,7 +1354,7 @@ export default function SessionDetailView() {
     conversationSourcePlatformByMessageRef,
     conversationSourceAgentByMessageRef
   } = useSessionTranscript({
-    sid,
+    sid: transcriptSid,
     aid,
     wantTranscript,
     sessionPlatform: session?.platform ?? '',
@@ -1763,7 +1771,7 @@ export default function SessionDetailView() {
   }, [coordinatorLive, openTaskThread, session])
   // On a desktop, a thread whose first reply starts while the reader watches opens beside the chat (webchat-threads.md §6.2).
   const autoOpen = useRef<{ scope: string; state: ThreadAutoOpen } | null>(null)
-  const threadsLoaded = threadsView && transcriptSessionId === sid && msgs !== null
+  const threadsLoaded = threadsView && transcriptSessionId === transcriptSid && msgs !== null
   useEffect(() => {
     if (!threadsLoaded || !session || isMobile) return
     if (autoOpen.current?.scope !== session.id) autoOpen.current = { scope: session.id, state: threadAutoOpen() }
@@ -2055,7 +2063,7 @@ export default function SessionDetailView() {
   const toolSid = session?.realSessionId ?? sid
   // This component now survives id changes. Do not paint session A's transcript
   // for one frame under session B's header before the loading effect clears it.
-  const transcriptMatchesSession = !wantTranscript || transcriptSessionId === sid
+  const transcriptMatchesSession = !wantTranscript || transcriptSessionId === transcriptSid
   const visibleMsgs = transcriptMatchesSession ? msgs : null
   // The viewer downloads the file it shows, in the focused session's root; a share's digest pins only its chip.
   const viewerDownload = useMemo((): SessionFileDownload | null => {
@@ -2141,7 +2149,7 @@ export default function SessionDetailView() {
     return composerHistoryFromRows(prompts, isSelf, (stp) => `live:${stp.turnId}`)
   }, [wantTranscript, visibleMsgs, sessionSteps, sessionUser, me, sid])
 
-  const sessionActivityVersion = sid ? (sessionActivityVersionById[sid] ?? 0) : 0
+  const sessionActivityVersion = transcriptSid ? (sessionActivityVersionById[transcriptSid] ?? 0) : 0
   // The rows are read on every transcript signal, mid-turn too, and once a turn ends (webchat-transcript-refresh.md §4).
   useEffect(() => {
     if (!visibleTailReady) return
@@ -2557,7 +2565,7 @@ export default function SessionDetailView() {
   const ownerFeatures = owner ? agentCapabilitySource(owner, daemons, memberSets)?.caps.features : undefined
   const threadsWritable =
     threadsView &&
-    isWebchat &&
+    (isWebchat || pgOnRows) &&
     isLive &&
     !resumeDisabled &&
     canWriteWebchat &&
@@ -2610,7 +2618,7 @@ export default function SessionDetailView() {
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
   // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
   const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
-  const liveSteps = isWebchat || isContinuable ? getLiveSteps(session.id) : []
+  const liveSteps = isWebchat || isContinuable || pgOnRows ? getLiveSteps(session.id) : []
   // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
   const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
   // A message in a thread that a task answers there keeps this timeline still; one the coordinator answers streams here.
@@ -3223,9 +3231,10 @@ export default function SessionDetailView() {
         )
   const focusedTranscriptStats =
     wantTranscript && focusedMessages !== null ? activityStatsFromTranscript(focusedMessages) : null
-  const focusedLiveActivityStats = isPg
-    ? activityStatsFromSteps(stepsForFocusedAgent(session.steps))
-    : activityStatsFromSteps(stepsForFocusedAgent(overlaySteps))
+  const focusedLiveActivityStats =
+    isPg && !pgOnRows
+      ? activityStatsFromSteps(stepsForFocusedAgent(session.steps))
+      : activityStatsFromSteps(stepsForFocusedAgent(overlaySteps))
   const durationFirst = minTime(focusedTranscriptStats?.firstMs, focusedLiveActivityStats.firstMs)
   const durationLast = maxTime(
     focusedTranscriptStats?.lastMs,
@@ -4050,7 +4059,7 @@ export default function SessionDetailView() {
             {/* CONVERSATION MODE, concealed rather than unmounted. Everything below belongs to the transcript and the composer, and all of it is state a session round trip must not spend: every expanded tool body and its refetch, the composer's caret and any open @mention menu (with the `mentionJoining` latch it reports upward, which has no owner left to clear it once the composer is gone), and the approval cards' poll. `contents` keeps the flex layout it has today exactly — an active box here would be a second flex item in the column.
           The cost, accepted: a pending webchat MCP write approval is concealed with the composer and has no header twin the way permission requests do (those stay in the Requests popover). A reader who opened a file sees the agent stall until they come back. */}
             <div data-conversation-pane="" className={viewerOpen ? 'hidden' : 'contents'}>
-              {wantTranscript && visibleMsgLoading && (
+              {wantTranscript && visibleMsgLoading && !pgOnRows && (
                 <div className="flex justify-center py-10">
                   <Spinner size={30} />
                 </div>
