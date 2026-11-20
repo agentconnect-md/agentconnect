@@ -204,7 +204,7 @@ task. The `delegateTask` description and guide say so (§3.2, §3.4).
   "channel": "C_EXAMPLE",
   "message": "The report and screenshots are ready.",
   "attachments": [
-    { "source": "workspace", "path": "/home/agent/files/session-example/outputs/report.pdf" },
+    { "source": "workspace", "path": "files:outputs/report.pdf" },
     { "source": "upload", "uploadId": "00000000-0000-4000-8000-000000000001" },
     { "source": "platform", "platform": "slack", "integrationId": "source-bot", "fileId": "F_EXAMPLE" }
   ]

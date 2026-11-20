@@ -62,7 +62,7 @@ platforms:    provider ──(metadata)──▶ daemon ──(credentialed down
                                                                                     ▼
                                                    <session files dir>/uploads/spec.pdf
                                                                                     │
-              prompt: [attached: spec.pdf (application/pdf, 1.2 MB, saved to /uploads/spec.pdf)]
+              prompt: [attached: spec.pdf (application/pdf, 1.2 MB, saved to files:uploads/spec.pdf)]
 ```
 
 A directory on the session's own filesystem — not a daemon-side attachment store with a
@@ -75,8 +75,8 @@ reasons in §2.4.
 ### 2.1 Placement rules
 
 - **Directory:** `uploads/` in the session files directory (§2.4), never in the checkout.
-  The agent-facing text names the absolute path, because the agent's cwd may be a
-  subdirectory of the checkout or a secondary root.
+  The agent's cwd may be a subdirectory of the checkout or a secondary root, so the
+  standing context names the area's absolute path.
 - **Names are hostile input.** The stored name is derived from the platform-supplied one
   by sanitization: path separators, `..`, control characters, leading dots, and
   parentheses (the marker's entry delimiters, §3) are stripped or replaced; an empty
@@ -136,69 +136,82 @@ files. In a Git checkout that treated inputs as task work:
 - **The primary checkout only grew,** since it has no reclamation event.
 
 The agent's generated files had the same problem under `outputs/`. Both now live in a
-**session files directory**, a sibling of the session's checkout:
+**session files directory** beside the session's checkout. It holds the two **areas** and
+nothing else, in every tier:
 
 ```
 <files dir>/uploads/   inbound attachments the daemon saved (this document)
 <files dir>/outputs/   files the agent generated for the user (agent-authored-attachments.md)
 ```
 
-| Session                                                               | Checkout                                                 | Files directory                                         |
-| --------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------- |
-| Own directory: a sandboxing strategy, a pool session pod, an executor | `sessions/<leaf>/workspace`                              | `sessions/<leaf>`                                       |
-| Host worktree                                                         | `worktrees/<id>`                                         | `<agentDir>/files/<leaf>`                               |
-| Shared checkout, Git or not                                           | `<agentDir>/workspace` (pool: `/agent/repo` or `/agent`) | `<agentDir>/files/<leaf>` (pool: `/agent/files/<leaf>`) |
+| Session                                                               | Checkout                         | Files directory                     |
+| --------------------------------------------------------------------- | -------------------------------- | ----------------------------------- |
+| Own directory: a sandboxing strategy, a pool session pod, an executor | `sessions/<leaf>/workspace`      | `sessions/<leaf>/files`             |
+| Host worktree, or a shared checkout                                   | `worktrees/<id>` or the checkout | `<agentDir>/files/<leaf>`           |
+| Shared checkout on a pool agent without a repository                  | `/agent`                         | `/agent/.agentconnect/files/<leaf>` |
 
 - **One per session, in every tier.** `<leaf>` is the session key's directory name, the
-  one `sessions/<leaf>` uses. Shared sessions get their own too, so a private session's
-  uploads are as private as its transcript, and the console reads them through that
-  session's visibility gate.
-- **Not under `sessions/` for the other tiers.** A real `sessions/<leaf>` is the record
+  one `sessions/<leaf>` uses. Shared sessions get their own too.
+- **Not `sessions/<leaf>` for the other tiers.** A real `sessions/<leaf>` is the record
   that a session has its own directory (`confinedSessionDirIn`); creating one for a
   worktree or shared session would move it to that tier. One function in
   `session-layout.ts` answers the files directory for preparation, launch grants, saving,
   reading, the console and retirement.
-- **Non-Git workspaces use the same rule,** so the prompt and tool text have one shape.
-  The one exception is a pool agent without a repository: its checkout is `/agent`
-  itself, so `/agent/files/<leaf>` sits inside it. There is no Git there, so none of the
-  problems above apply.
+- **A pool agent without a repository** has `/agent` as both its checkout and its runtime
+  HOME, so its leaves go under the mount's daemon-owned `.agentconnect/`, and the
+  checkout read refuses `.agentconnect/files`. Otherwise the agent-gated checkout read
+  would reach every session's uploads without the session gate.
+- **A session keeps its tier for life** (git-workspace-model.md §11), so the function's
+  answer does not change under a live session. A re-placement that starts the session in
+  a new directory starts with empty areas.
 
 #### Reach
 
-The agent must read and write the directory on every plane, without a new mount:
+The agent must read and write both areas on every plane, without a new mount:
 
 - **Own session directory** (local sandboxing strategy, session VM, pool session pod,
   executor): already writable. The sandbox grants the whole `sessions/<leaf>`, a session
   VM mounts it, an executor anchors at it, and a pod owns its volume.
-- **Local `host`:** unconfined, but the runtime's own sandbox still needs the exact
-  path. The daemon adds `files/<leaf>` to the session's ACP `additionalDirectories`.
-  Under the daemon's permission profiles, codex-acp passes those directories to Codex
-  as `runtimeWorkspaceRoots`, which the `:workspace` profile makes writable (verified
-  with codex-acp 2.8.0-agentconnect.1, below). Claude's `allowWrite` gains the same
-  path.
+- **The runtime's own sandbox, every tier:** the daemon adds both areas to the session's
+  ACP `additionalDirectories`. Under the daemon's permission profiles, codex-acp passes
+  those directories to Codex as `runtimeWorkspaceRoots`, which the `:workspace` profile
+  makes writable (verified with codex-acp 2.8.0-agentconnect.1, §9). Claude's grant is
+  verified before the change lands; if `additionalDirectories` does not open its Bash
+  sandbox, `allowWrite` gains the two areas.
 - **Local sandboxing strategy, shared checkout:** `trustedWorkspaceWriteRoots` adds
   `<agentDir>/files`. One runtime serves every shared session there, so the grant is the
-  parent; which session's files the agent is told about, and which the daemon reads back,
-  is the daemon's separation, as it already is for the checkout they share.
+  parent.
 - **Agent VM** (microsandbox, shared checkout): mounts `<agentDir>/files` writable beside
   the checkout.
-- **Pool agent pod:** `/agent/files/<leaf>` is on the same volume, inside the shim's
-  anchor.
+- **Pool agent pod:** the leaves are on the same volume, inside the shim's anchor.
 
-#### Paths the agent sees, paths the console sees
+**Privacy holds for console readers, not between sessions of one runtime.** The console
+reads a leaf only through its own session's gate. A runtime that serves several shared
+sessions holds the parent grant, so its agent can read a sibling session's leaf, as it can
+read every file in the checkout those sessions share. For an assistant-mode agent, an
+upload in a direct message therefore stays reachable from a shared-channel session on the
+same checkout. That is no regression from a shared `uploads/`; isolation between sessions
+is what `isolation: 'session'` buys.
 
-- **The agent gets absolute paths.** The saved-attachment result, the console-upload text
-  and the tool descriptions name `<files dir>/uploads/…` and `<files dir>/outputs/…` in
-  the runtime's own coordinates. A pod and an executor mount at the same path the daemon
-  composes, so no translation is needed.
-- **Nothing stored or shown in the console carries a host path.** A files-directory path is
-  written `/<area>/<rest>`, rooted at the files directory: `/outputs/report.pdf`,
-  `/uploads/spec.pdf`. The `[shared: …]` marker records that form. An older console
-  refuses absolute paths in its workspace fallback, so it can still download only from
-  the share's snapshot.
+#### How files are named
+
+- **`files:<area>/<rest>`** names a file in the session's files directory:
+  `files:outputs/report.pdf`, `files:uploads/spec.pdf`. It cannot be mistaken for an
+  absolute path or for a path in the checkout, carries no host path, and means the same
+  thing in the transcript, the console and replayed context.
+- **The standing context names both areas** with their absolute paths in the runtime's
+  coordinates, and says that `files:` refers to them. A pod and an executor mount at the
+  same path the daemon composes, so no translation is needed. Replies that mention a
+  session file use the `files:` form, so chat platforms never see a daemon's home
+  directory.
+- **Markers record the `files:` form.** `[attached: …]` (§3) and `[shared: …]`
+  (agent-authored-attachments.md §4) store it. An older console treats it as an unknown
+  checkout path, so it downloads a shared file only from the share's snapshot.
 - **`shareFile` and `sendMessage`** (`{source: 'workspace', path}`) accept a path relative
-  to the checkout, as today, or an absolute path inside the files directory. Each root
-  keeps its own containment: realpath locally, the fd-anchored descent on a pod.
+  to the checkout, as today, a `files:` path, or an absolute path inside one of the two
+  areas. Each area is its own fence root, with the checkout's containment: realpath
+  locally, the fd-anchored descent on a pod. Nothing else in the session directory is
+  reachable.
 - **`outputs/` is the default destination for generated files**: reports, exports,
   images under `outputs/images/`. A place the user names, such as a path in the
   repository, wins.
@@ -206,15 +219,18 @@ The agent must read and write the directory on every plane, without a new mount:
 #### Console
 
 - **One more read scope.** The workspace list, read, download and transfer gain a root
-  selector, `root: 'files'`, beside `sessionId` and `repo`. It is an enum, never a path,
-  and it requires `sessionId`. Daemon feature `session-files-v1` gates it; an older
-  daemon is refused with 409 before any frame is sent.
+  selector, `root: 'uploads' | 'outputs'`, beside `sessionId` and `repo`. It is an enum,
+  never a path; it requires `sessionId` and excludes `repo`. Its gate is the visibility
+  half of the session gate alone (`visibleAgentSession`): `canReadWorkspaceScope` admits a
+  `sessionId` only for an isolated session, and the areas exist for shared sessions too.
+  Daemon feature `session-files-v1` gates it; an older daemon is refused with 409 before
+  any frame is sent.
 - **The dock's Files tab gains a section.** Below the checkout tree, a "Session files"
   section lists `/outputs` and `/uploads` through that scope. It shows no Git status,
   opens a file in the left viewer like any tree row, and refreshes on the turn's falling
   edge with the tree.
-- **Links in replies.** `workspace-file-links.ts` links a path under the files directory as
-  it links one under the checkout.
+- **Links in replies.** `workspace-file-links.ts` links a `files:` path as it links one in
+  the checkout.
 
 #### The bucket holds copies, never the files
 
@@ -232,20 +248,25 @@ FUSE is unavailable on many daemon hosts.
   the directory is reclaimed. Shared files stay downloadable from their snapshots.
 - **Console uploads are saved by the daemon.** At prompt build the daemon asks
   `transfer/get` and fetches the presigned GET into `uploads/` itself (on a pod or
-  executor, inside a shim operation, as bundle fetches already are). The prompt then names
-  the saved path instead of a `curl` recipe. The recipe, with its absolute target, stays
-  as the fallback when the write fails and for a file above the materialization cap
-  (§7).
+  executor, the bytes are written over the `WorkspaceFs` channel). The prompt then names
+  the saved file instead of a `curl` recipe. The recipe, with its absolute target, stays
+  as the fallback when the write fails and for a file above `limits.maxAttachmentBytes`.
 
 #### Retention
 
-- **An own session directory** is removed with `sessions/<leaf>`, which is never judged
-  dirty. Nothing changes there.
+- **The areas never count toward a dirty judgement.** In an own session directory, they
+  go with `sessions/<leaf>`; the clones beside them keep their existing safeguards, so a
+  directory with unpushed work is still kept.
 - **`files/<leaf>`** is removed when its session's workspace is reclaimed
-  (`sessions.workspaceRetention`) or its row is purged, and is never judged dirty: nothing
-  in it is Git work. A pass beside `retireOrphanSessionDirs` removes leaves that no
-  session row maps to. On the pool, the same sweep removes `/agent/files/<leaf>` through
-  the agent pod's `WorkspaceFs`, since the local orphan pass skips the pool.
+  (`sessions.workspaceRetention`) or its row is purged. A pass beside
+  `retireOrphanSessionDirs` removes leaves that no session row maps to, and only names
+  with the session-leaf shape (`session-<24 hex>`). On the pool, the same sweep removes
+  the agent pod's leaves through its `WorkspaceFs`, since the local orphan pass skips the
+  pool.
+- **The lifetime is the workspace window**, 7 days by default, while the row and
+  transcript stay for `sessions.retention`. A shared checkout used to keep uploads
+  indefinitely. A resumed session gets empty areas; a `files:` marker whose file is gone
+  reads as missing, and the console section says the directory was cleaned up.
 - **Removing an agent** removes its directory, `files/` included.
 - **The primary checkout stops growing,** since nothing lands in it any more.
 
@@ -256,6 +277,16 @@ FUSE is unavailable on many daemon hosts.
 - **The #4143 task-diff filter is removed in the same change.** It only made sense while
   attachments landed in the checkout, and it hides a repository's own untracked files.
 
+#### Threat model
+
+- **Skill roots.** codex-acp points Codex's skill roots at each additional directory's
+  `.agents/skills`. A saved attachment cannot create that (names lose leading dots), but
+  an archive the agent extracts into an area can add skills, as one extracted into the
+  checkout can today. Claude's equivalent is checked with its grant.
+- **Prompt-build fetch.** The daemon fetches only a URL the Control Plane signed for that
+  upload in `transfer/get`, never a URL from message text, and writes at most
+  `limits.maxAttachmentBytes` through the same exclusive-create path as platform files.
+
 ## 3. Prompt representation
 
 The `[attached: …]` marker (the string `sendMessage`'s forwarding contract already keys
@@ -263,11 +294,11 @@ on) gains the saved path — **inside the parentheses**, because the marker has 
 an entry's shape is `name (details)`:
 
 ```
-[attached: spec.pdf (application/pdf, 1.2 MB, saved to /uploads/spec.pdf)]
+[attached: spec.pdf (application/pdf, 1.2 MB, saved to files:uploads/spec.pdf)]
 ```
 
-The marker is stored in the transcript, so it carries the files-directory form (§2.4), not
-a host path. The prompt's block for the file names the absolute path the agent opens.
+The marker is stored in the transcript, so it carries the `files:` form (§2.4), not a host
+path; the standing context tells the agent where that is.
 
 The consumers that move with the format, checked rather than assumed: `attachmentMention`
 itself (the builder); `withoutAttachmentMention` in the daemon's session reader, whose
@@ -408,8 +439,9 @@ mode of the same bounded workspace read the file viewer already uses:
   with a content type (anything a browser could execute stays `application/octet-stream`),
   an attachment `Content-Disposition`, `nosniff` and a sandboxing CSP. It holds one file
   in memory for the length of the request and stores nothing.
-- **Session files.** With `root: 'files'` (§2.4) the same read serves the session files
-  directory instead of a checkout, under the same session gate.
+- **Session files.** With `root: 'uploads'` or `root: 'outputs'` (§2.4) the same read
+  serves that area of the session files directory instead of a checkout, gated by the
+  session's visibility.
 - **Bound.** `MAX_WORKSPACE_DOWNLOAD_BYTES` (8 MiB, the default `maxAttachmentBytes`). A
   larger file is refused with 413 after its first slice; above the cap, a deployment with a
   transfer bucket serves the file through a presigned transfer instead.
@@ -463,7 +495,7 @@ materialization exists — the link rung only fires on over-cap files and write 
 
 The session files directory (§2.4) ships first, in its own phases: (a) the daemon layout,
 grants, retention, absolute paths in the prompt and tool text, and removal of the #4143
-filter; (b) the `root: 'files'` read scope, the dock section and reply links; (c) daemon
+filter; (b) the `root` read scope, the dock section and reply links; (c) daemon
 materialization of console uploads from the bucket. The phases below then land in that
 directory.
 
@@ -492,13 +524,8 @@ console), because every new field is optional and the image path survives untouc
   the latter — nothing existing is mutated).
 - Codex grant, verified 2026-11-20 with codex-acp 2.8.0-agentconnect.1 and the daemon's
   `codexPermissionProfileConfig` (lab outside `/tmp`, which `:workspace` always opens):
-  with the files directory in `additionalDirectories`, `touch` in it succeeded and in an
-  ungranted sibling failed with "Read-only file system"; without it, both failed and
-  the checkout stayed writable. codex-acp also points Codex's skill roots at each
-  additional directory's `.agents/skills`, so an archive the agent extracts into the
-  files directory can add skills, as one extracted into the checkout can today.
-- Claude's equivalent: whether `additionalDirectories` alone opens its Bash sandbox, or
-  only `allowWrite` does.
-- Whether an agent that reads a replayed `/outputs/…` marker resolves it against the
-  files directory rather than the filesystem root; if not, the prompt names the
-  directory once per session.
+  with an area in `additionalDirectories`, `touch` in it succeeded and in an ungranted
+  sibling failed with "Read-only file system"; without it, both failed and the checkout
+  stayed writable.
+- Claude's equivalent, before the code lands: whether `additionalDirectories` alone opens
+  its Bash sandbox, or only `allowWrite` does.
