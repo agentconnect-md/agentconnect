@@ -18,7 +18,8 @@ export const EMAIL_CHANNEL_LIST: WebChannelListSemantics = {
 
 export const emailModule: WebPlatformModule = {
   platformId: 'email',
-  docsPath: 'connect-automate/chat-platforms/email',
+  integrationGroup: 'workflow',
+  docsPath: 'connect-automate/triggers-automation/email',
   requires: 'email',
   offered: emailApi.offered,
   Mark: EmailMark,

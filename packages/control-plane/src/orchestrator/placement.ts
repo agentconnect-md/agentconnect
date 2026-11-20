@@ -200,6 +200,10 @@ export const isAssistantModeAgent = (a: Pick<AgentRecord, 'assistantMode'>): boo
 /** Conversation gating (resource-visibility.md §14), derived from restricted visibility alone, whatever the mode; never stored. */
 export const isGatedAgent = (a: Pick<AgentRecord, 'visibility'>): boolean => a.visibility === 'restricted'
 
+/** Whether this install's conversations gate a restricted agent: never on a platform that lists none, whose module screens senders itself. */
+export const isConversationGated = (a: Pick<AgentRecord, 'visibility'>, platform: string): boolean =>
+  isGatedAgent(a) && manifestFor(platform).listsConversations
+
 /** One member of a shared bot a daemon is currently SERVING — what the route compile routes to. */
 export interface PlacedMember<T> {
   integration: T
@@ -216,7 +220,7 @@ export interface PlacedMember<T> {
  * Order is the caller's (`listForBot` is createdAt-ordered), which is what makes
  * {@link defaultMemberOf} deterministic.
  */
-export async function placedMembers<T extends { agentId: string }>(
+export async function placedMembers<T extends { agentId: string; platform: string }>(
   installs: readonly T[],
   agentOf: (agentId: string) => AgentRecord | null | undefined,
   routableDaemon: (agent: AgentRecord) => Promise<string | null>
@@ -228,7 +232,7 @@ export async function placedMembers<T extends { agentId: string }>(
     const daemonId = await routableDaemon(agent)
     if (!daemonId) continue
     // The ONE predicate decides the keyword rung, the default, and `gatedAgentIds` together.
-    placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
+    placed.push({ integration, agent, daemonId, gated: isConversationGated(agent, integration.platform) })
   }
   return placed
 }
@@ -345,7 +349,7 @@ export async function integrationToSpec(
   channels: IntegrationChannelRecord[] = [],
   owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
-  const gated = owner ? isGatedAgent(owner) : false
+  const gated = owner ? isConversationGated(owner, i.platform) : false
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
   // set to Any needs its own auto rule; Mention is covered by the default mention rule.
   const channelRules: IntegrationBindRule[] = [
@@ -389,7 +393,7 @@ export async function httpIntegrationToSpec(
   channels: IntegrationChannelRecord[] = [],
   owner?: SpecOwner
 ): Promise<IntegrationSpec | null> {
-  const gated = owner ? isGatedAgent(owner) : false
+  const gated = owner ? isConversationGated(owner, i.platform) : false
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
   // The shared-mode payload's remaining inputs — `shareable` (the daemon's
   // in-thread "Switch agent" control), the provider app id, the bot's own user

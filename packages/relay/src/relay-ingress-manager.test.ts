@@ -2472,6 +2472,17 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     expect(ingest.postText).toHaveBeenCalledTimes(2)
   })
 
+  it('reports no conversation on a platform that lists none, whose daemon screens each sender first', async () => {
+    const reportBotConversation = vi.fn(() => true)
+    const manager = new RelayIngressManager(deps({ reportBotConversation }))
+    const internals = internalsOf(manager)
+    internals.router.upsert(gatedAssignment())
+    internals.slackPool.set(BOT_ID, fakeIngest())
+
+    await internals.forward(BOT_ID, dm({ platform: 'email', channel: 'dm:alice@corp.example.test' }))
+    expect(reportBotConversation).not.toHaveBeenCalled()
+  })
+
   it('a first gated DM on a NON-authority pod still posts (single event copy, receiving pod owns it)', async () => {
     const manager = new RelayIngressManager(deps({ selfRelayId: () => PEER_RELAY }))
     const internals = internalsOf(manager)

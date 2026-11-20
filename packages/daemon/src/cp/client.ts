@@ -332,6 +332,8 @@ export interface CpClientDeps
   orgForAgent?: (agentId: string) => string | undefined
   /** Tenant lookup for integration reports whose payload has no agent id. */
   orgForIntegration?: (integrationId: string) => string | undefined
+  /** Whether an integration's platform keeps a row per conversation; a report for one that keeps none is never sent. */
+  listsConversations?: (integrationId: string) => boolean
   /** Tenant lookup for cron control frames, which name only the cron. */
   orgForCron?: (cronId: string) => string | undefined
   /** Unservable CP-rule agentIds, surfaced in heartbeat.degradedScopes. Defaults to []. */
@@ -1047,6 +1049,8 @@ export class CpClient {
    */
   emitIntegrationChannels(snapshot: IntegrationChannels): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    // Every report path ends here, so a platform that lists no conversations (mail) never reports one.
+    if (this.deps.listsConversations?.(snapshot.integrationId) === false) return
     this.transport?.send(
       encode(this.scopedFrame('integration/channels', snapshot, this.deps.orgForIntegration?.(snapshot.integrationId)))
     )

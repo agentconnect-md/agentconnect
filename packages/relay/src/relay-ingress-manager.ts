@@ -22,7 +22,8 @@ import {
   DECISION_ROUTING_V1_FEATURE,
   DECISION_TRIGGER_V1_FEATURE,
   RD_ACK_NOT_HOLDER,
-  RD_IM_ADMISSION_V1
+  RD_IM_ADMISSION_V1,
+  manifestFor
 } from '@agentconnect.md/protocol'
 import { parseCommand } from '@agentconnect.md/activation-policy'
 import { commandText } from '@agentconnect.md/message'
@@ -1337,7 +1338,10 @@ export class RelayIngressManager {
     // holds the humans and other apps named in the same message.
     const namesThisBot = explicitlyAddressesBot(assignment, msg)
     const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
-    if (addressesBot && !msg.sender.isBot) await this.reportObservedConversation(botId, msg)
+    // A platform that lists no conversations (mail) screens each sender at the daemon, so a conversation is never reported ahead of that check.
+    if (addressesBot && !msg.sender.isBot && manifestFor(msg.platform).listsConversations) {
+      await this.reportObservedConversation(botId, msg)
+    }
     // A By decision routed conversation: every eligible human message goes once to its evaluation host.
     const routed = this.router.routedConversationFor(botId, msg)
     if (routed) {

@@ -31,7 +31,7 @@ import type {
   ExecutorStrategyTable,
   TransferNetwork
 } from '@agentconnect.md/protocol'
-import { POD_TEMPLATE_HASH_ENV } from '@agentconnect.md/protocol'
+import { POD_TEMPLATE_HASH_ENV, manifestFor } from '@agentconnect.md/protocol'
 import { ClientTransport, systemClock } from '@agentconnect.md/connection'
 import { CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome, type CpClient, type CpClientDeps } from './client.js'
 import type { ConfigApply } from './config-apply.js'
@@ -163,6 +163,8 @@ export interface CpClientReadyHost {
 
 /** Tenant lookups for agent-scoped frames, plus the duty seam the heartbeat carries. */
 export interface CpClientOrgHost {
+  /** The platform an integration this daemon holds is on, for a report its platform keeps no row of. */
+  integrationPlatform(integrationId: string): string | undefined
   cpAgents(): CpAgentRegistry | undefined
   cpIntegrations(): CpIntegrationRegistry | undefined
   cpCrons(): CpCronRegistry | undefined
@@ -425,6 +427,10 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     orgForIntegration: (integrationId) => {
       const agentId = host.cpIntegrations()?.agentForIntegration(integrationId)
       return agentId ? (host.cpAgents()?.orgForAgent(agentId) ?? host.cpCollab().orgForAgent(agentId)) : undefined
+    },
+    listsConversations: (integrationId) => {
+      const platform = host.integrationPlatform(integrationId)
+      return platform === undefined || manifestFor(platform).listsConversations
     },
     orgForCron: (cronId) => {
       const agentId = host.cpCrons()?.agentForCron(cronId)

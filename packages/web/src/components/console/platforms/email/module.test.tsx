@@ -16,6 +16,12 @@ describe('the email module', () => {
     expect(email.wizard.affordances).toEqual({})
   })
 
+  it('sits with the workflow integrations, and its agent card lists no conversations', () => {
+    expect(email.integrationGroup).toBe('workflow')
+    expect(email.docsPath).toBe('connect-automate/triggers-automation/email')
+    expect(email.agentCard?.Body).toBeTypeOf('function')
+  })
+
   it('names a thread room, leaves nothing from the Console and runs one session a thread', () => {
     expect(channelListSemantics('email')).toMatchObject({
       roomNoun: 'thread',

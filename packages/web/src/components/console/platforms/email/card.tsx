@@ -24,7 +24,12 @@ function RemoveBody({ integration }: { integration: IntegrationRow }) {
   return t.rich('remove', { name: () => <span className="mono text-(--text-primary)">{integration.name}</span> })
 }
 
-export const emailAgentCard: WebAgentIntegrationCardFacet = { HeaderActions, RemoveBody }
+/** Mail lists no conversations (each sender is admitted by the member question), so the card is its header alone. */
+function Body() {
+  return null
+}
+
+export const emailAgentCard: WebAgentIntegrationCardFacet = { HeaderActions, RemoveBody, Body }
 
 function RowSettings({ bot }: { bot: BotDto; canWrite: boolean }) {
   return (
