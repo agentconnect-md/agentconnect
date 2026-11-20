@@ -824,11 +824,11 @@ function BotsCard({
                         })}
                       </div>
                     </>
-                  ) : (
+                  ) : channelListSemantics(b.platform).roster !== 'none' ? (
                     <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
                       {t('noConversations', { room: roomNoun })}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
             </Fragment>

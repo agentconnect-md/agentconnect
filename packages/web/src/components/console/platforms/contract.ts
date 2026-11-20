@@ -572,8 +572,8 @@ export interface WebChannelListSemantics {
   /** The localized sentence explaining a non-leavable room row's "Remove from
    *  this list" (:284-288). Absent ⇒ the host's generic wording. */
   cannotLeaveRowHint?: WebChannelListMessage
-  /** `'observed'` (default): rows record rooms the bot was seen in and can be dropped; `'derived'`: the platform's own roster, nothing added or removed here. */
-  roster?: 'observed' | 'derived'
+  /** `'observed'` (default): rows record rooms the bot was seen in and can be dropped; `'derived'`: the platform's own roster, nothing added or removed here; `'none'`: the platform lists no rooms, so no empty roster is promised. */
+  roster?: 'observed' | 'derived' | 'none'
   /** Room-row triggers (absent ⇒ all); drop `any` without unaddressed traffic, and omitting `decision` withholds By decision. */
   triggers?: readonly ('off' | 'mention' | 'any' | 'decision')[]
   /** The mention trigger's sentence where the host's ("and in threads it has joined") overstates what the platform delivers. Absent ⇒ the host's. */
