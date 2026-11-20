@@ -15,7 +15,7 @@ const RECIPE_LABEL = 'io.agentconnect.recipe.digest'
 const VERSION_LABEL = 'io.agentconnect.image.version'
 
 // A fake docker answers `buildx imagetools inspect <ref> [--format ...]` from files named after the ref, the way
-// the registry would: the labels JSON (or `null`) for a tag that exists, `not found` on stderr and exit 1 otherwise.
+// the registry would: the `.Image` JSON for a tag that exists, `not found` on stderr and exit 1 otherwise.
 function harness(t) {
   const root = mkdtempSync(join(tmpdir(), 'ac-runtime-effective-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -35,11 +35,12 @@ function harness(t) {
     ].join('\n'),
     { mode: 0o755 }
   )
-  const publish = (tag, labels) =>
-    writeFileSync(
-      join(registry, `${IMAGE}:${tag}`.replace(/[/:]/g, '_')),
-      `${labels === null ? 'null' : JSON.stringify(labels)}\n`
-    )
+  // One image config, or with `platforms` an index of one config per platform as imagetools prints it.
+  const publish = (tag, labels, platforms) => {
+    const config = { architecture: 'amd64', os: 'linux', config: labels === null ? {} : { Labels: labels } }
+    const image = platforms ? Object.fromEntries(platforms.map((platform) => [platform, config])) : config
+    writeFileSync(join(registry, `${IMAGE}:${tag}`.replace(/[/:]/g, '_')), `${JSON.stringify(image)}\n`)
+  }
   const decide = (previous, { version = 'v1.2.3', shim = SHIM, recipe = RECIPE } = {}) => {
     const result = spawnSync('bash', [script, IMAGE, version, previous, shim, recipe], {
       encoding: 'utf8',
@@ -108,6 +109,24 @@ test('matching digests alias to the build the previous tag points at', { skip: p
   )
   assert.match(result.reason, /unchanged since v1\.2\.0/)
 })
+
+test(
+  'a multi-platform previous image is read through its amd64 config',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const { publish, decide } = harness(t)
+    const labels = { [SHIM_LABEL]: SHIM, [RECIPE_LABEL]: RECIPE, [VERSION_LABEL]: 'v1.2.0' }
+    publish('v1.2.0', labels, ['linux/amd64', 'linux/arm64'])
+    publish('v1.2.2', labels, ['linux/amd64', 'linux/arm64'])
+    const result = decide('v1.2.2')
+    assert.deepEqual(
+      { effective: result.effective, unchanged: result.unchanged },
+      { effective: 'v1.2.0', unchanged: 'true' }
+    )
+    publish('v1.2.2', labels, ['linux/arm64'])
+    assert.match(decide('v1.2.2').reason, /carries no fingerprint labels/)
+  }
+)
 
 test(
   'without a usable version label the previous tag itself is the effective version',

@@ -76,17 +76,22 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/*
-ARG CHROME_VERSION=152.0.7977.75
-ARG CHROME_SHA256_AMD64=a16d36890636bd72251133b27f05825f7f9269c2425b3408fa3a76e10dccd8f1
+ARG CHROME_VERSION=158.0.8127.36
+ARG CHROME_SHA256_AMD64=dba9cc838e1ce269c33ea68170881127bd15d078fc3ca5891c90802819a4d7c7
+ARG CHROME_SHA256_ARM64=f811b64a50cbc73f94fda7b3f3b3bf62be5d9409b3207e6ead9b61e6706afffe
 ARG TARGETARCH
 RUN set -eu; \
   arch="${TARGETARCH:-amd64}"; \
-  if [ "$arch" != amd64 ]; then echo "Chrome for Testing publishes no linux build for TARGETARCH=$arch" >&2; exit 1; fi; \
+  case "$arch" in \
+  amd64) platform=linux64; sha256="$CHROME_SHA256_AMD64" ;; \
+  arm64) platform=linux-arm64; sha256="$CHROME_SHA256_ARM64" ;; \
+  *) echo "no pinned Chrome checksum for TARGETARCH=$arch" >&2; exit 1 ;; \
+  esac; \
   curl -fsSL -o /tmp/chrome.zip \
-    "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"; \
-  printf '%s  /tmp/chrome.zip\n' "$CHROME_SHA256_AMD64" | sha256sum -c -; \
+    "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/${platform}/chrome-${platform}.zip"; \
+  printf '%s  /tmp/chrome.zip\n' "$sha256" | sha256sum -c -; \
   unzip -q /tmp/chrome.zip -d /tmp/cft; \
-  mv /tmp/cft/chrome-linux64 /out; \
+  mv "/tmp/cft/chrome-${platform}" /out; \
   test -x /out/chrome; \
   chmod -R a-w /out
 

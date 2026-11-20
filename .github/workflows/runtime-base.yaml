@@ -33,9 +33,10 @@ jobs:
           fi
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
 
+  # One native leg per platform, so the real shim session in verification never runs under emulation.
   build:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -46,22 +47,41 @@ jobs:
         include:
           - variant: runtime-sandbox
             base_arg: RUNTIME_SANDBOX_BASE
+            arch: amd64
+            runner: ubuntu-latest
+            cache_suffix: ''
+          - variant: runtime-sandbox
+            base_arg: RUNTIME_SANDBOX_BASE
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            cache_suffix: -arm64
+          # amd64 only: several of its runtimes publish no linux/arm64 build.
           - variant: runtime-sandbox-full
             base_arg: RUNTIME_SANDBOX_FULL_BASE
+            arch: amd64
+            runner: ubuntu-latest
+            cache_suffix: ''
+    # Shared with build.yaml's leg for the same image and platform, which writes the same cache refs.
     concurrency:
-      group: image-build-${{ matrix.variant }}
+      group: image-build-${{ matrix.variant }}${{ matrix.cache_suffix }}
       cancel-in-progress: false
     env:
       IMAGE: ghcr.io/agentconnect-md/${{ matrix.variant }}
       BASE_TAG: ${{ needs.prepare.outputs.tag }}
+      PLATFORM: linux/${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Verify native runtime architecture
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          test "$(uname -m)" = x86_64
-          grep -qw avx /proc/cpuinfo
+          case "$ARCH" in
+          amd64) test "$(uname -m)" = x86_64 && grep -qw avx /proc/cpuinfo ;;
+          arm64) test "$(uname -m)" = aarch64 ;;
+          *) exit 1 ;;
+          esac
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -78,6 +98,7 @@ jobs:
             cat "$RUNNER_TEMP/base-inspect.log" >&2
             exit 1
           fi
+      # Pushed untagged; `publish` tags the index only after every platform of the variant has been verified.
       - name: Publish candidate system base
         id: base
         uses: docker/build-push-action@v7
@@ -85,34 +106,95 @@ jobs:
           context: .
           file: docker/runtime-sandbox-base.Dockerfile
           target: ${{ matrix.variant }}-base
-          platforms: linux/amd64
-          tags: ${{ env.IMAGE }}:${{ env.BASE_TAG }}
-          push: true
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-base
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-base,mode=max
+          platforms: ${{ env.PLATFORM }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-base${{ matrix.cache_suffix }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-base${{ matrix.cache_suffix }},mode=max
       - name: Verify application configuration
         env:
           VARIANT: ${{ matrix.variant }}
           BASE_ARG: ${{ matrix.base_arg }}
           DIGEST: ${{ steps.base.outputs.digest }}
-        run: node scripts/verify-runtime-image.mjs "$VARIANT" --build-arg "$BASE_ARG=$IMAGE@$DIGEST"
+        run: node scripts/verify-runtime-image.mjs "$VARIANT" --platform "$PLATFORM" --build-arg "$BASE_ARG=$IMAGE@$DIGEST"
       - name: Verify applications, runtime table and real shim session
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/runtime-sandbox.Dockerfile
           target: ${{ matrix.variant }}-verify
-          platforms: linux/amd64
+          platforms: ${{ env.PLATFORM }}
           build-args: ${{ matrix.base_arg }}=${{ env.IMAGE }}@${{ steps.base.outputs.digest }}
           outputs: type=cacheonly
           cache-from: |
-            type=registry,ref=${{ env.IMAGE }}:buildcache
-            type=registry,ref=${{ env.IMAGE }}:buildcache-verify
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-verify,mode=max
+            type=registry,ref=${{ env.IMAGE }}:buildcache${{ matrix.cache_suffix }}
+            type=registry,ref=${{ env.IMAGE }}:buildcache${{ matrix.cache_suffix }}-verify
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache${{ matrix.cache_suffix }}-verify,mode=max
+      - name: Record the verified platform digest
+        env:
+          ARCH: ${{ matrix.arch }}
+          DIGEST: ${{ steps.base.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/base-digest"
+          printf '%s\n' "$DIGEST" > "${RUNNER_TEMP}/base-digest/${ARCH}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: base-digest-${{ matrix.variant }}--${{ matrix.arch }}
+          path: ${{ runner.temp }}/base-digest/${{ matrix.arch }}
+          if-no-files-found: error
+
+  # Tags one index per variant from its verified platform digests; the pin names the index.
+  publish:
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: runtime-sandbox
+            base_arg: RUNTIME_SANDBOX_BASE
+            platforms: 2
+          - variant: runtime-sandbox-full
+            base_arg: RUNTIME_SANDBOX_FULL_BASE
+            platforms: 1
+    env:
+      IMAGE: ghcr.io/agentconnect-md/${{ matrix.variant }}
+      BASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: base-digest-${{ matrix.variant }}--*
+          merge-multiple: true
+          path: ${{ runner.temp }}/base-digest
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Tag the verified base index
+        id: index
+        env:
+          EXPECTED: ${{ matrix.platforms }}
+        run: |
+          set -euo pipefail
+          refs=()
+          for file in "${RUNNER_TEMP}"/base-digest/*; do refs+=("${IMAGE}@$(cat "$file")"); done
+          if [ "${#refs[@]}" -ne "$EXPECTED" ]; then
+            echo "::error::expected ${EXPECTED} verified platform digests, found ${#refs[@]}"
+            exit 1
+          fi
+          docker buildx imagetools create --tag "${IMAGE}:${BASE_TAG}" "${refs[@]}"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${BASE_TAG}" --format '{{json .Manifest}}' | jq -r .digest)"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - name: Record the verified base pin
         env:
           BASE_ARG: ${{ matrix.base_arg }}
-          DIGEST: ${{ steps.base.outputs.digest }}
+          DIGEST: ${{ steps.index.outputs.digest }}
         run: |
           printf '%s=%s:%s@%s\n' "$BASE_ARG" "$IMAGE" "$BASE_TAG" "$DIGEST" > base-pin.txt
           printf '### Verified base: %s\n\n```dockerfile\nARG %s\n```\n' "$BASE_TAG" "$(cat base-pin.txt)" >> "$GITHUB_STEP_SUMMARY"
