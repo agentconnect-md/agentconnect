@@ -99,7 +99,7 @@ export interface BillingCardSetupCreated {
 export interface BillingCredit {
   type: 'credit'
   id: string
-  kind: 'purchase' | 'adjustment' | 'promo' | 'refund'
+  kind: 'purchase' | 'adjustment' | 'promo' | 'refund' | 'subscription'
   amountMicro: number
   /** ISO 8601 instant. */
   at: string

@@ -5313,7 +5313,8 @@
       "purchase": "Credit purchase",
       "adjustment": "Adjustment",
       "promo": "Promotional credit",
-      "refund": "Refund"
+      "refund": "Refund",
+      "subscription": "Plan credit"
     },
     "transactions": {
       "title": "Transactions",
