@@ -83,6 +83,12 @@ import { TranscriptApprovalsProvider, UnplacedApprovals } from '@/components/con
 import { approvalTurnStart, type ApprovalTurnAnchor } from '@/components/console/approval-placement'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
+import {
+  openAgentPlayground,
+  opensCoordinator,
+  playgroundAgentId,
+  prewarmsOnOpen
+} from '@/components/console/playground/coordinator'
 import { AgentIconView, LoadingState, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import type { McpAppRpc } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
@@ -1000,6 +1006,7 @@ export default function SessionDetailView() {
   const conversationFamily = conversationMode ? (conversationLineage?.family ?? EMPTY_CONVERSATION_FAMILY) : undefined
   const {
     agents,
+    agentsLoading,
     allSessions,
     getSessions,
     sessionsLoading,
@@ -1302,6 +1309,22 @@ export default function SessionDetailView() {
           daemon: sessionBase.daemon ?? owner?.daemon
         }
       : sessionBase
+  // An unsent playground id lives only in this page's memory, so a reload reopens that agent's Playground instead of a not-found.
+  const reopenAgentId =
+    !session && !localSession && !sessionsLoading && !sessionDetailLoading ? playgroundAgentId(id) : undefined
+  const reopenAgent = reopenAgentId ? agents.find((a) => a.id === reopenAgentId) : undefined
+  const reopenedFrom = useRef<string | null>(null)
+  useEffect(() => {
+    if (!reopenAgent || reopenedFrom.current === id) return
+    reopenedFrom.current = id
+    void openAgentPlayground({
+      agent: reopenAgent,
+      orgId: MOCK_MODE ? undefined : activeOrg?.id,
+      coordinator: opensCoordinator(reopenAgent, daemons, memberSets),
+      prewarm: prewarmsOnOpen(reopenAgent, orgSetIds),
+      openPlayground
+    }).then((next) => router.replace(orgPath(`/sessions/${next}`)))
+  }, [id, reopenAgent, activeOrg?.id, daemons, memberSets, orgSetIds, openPlayground, router, orgPath])
   const decisionCatalog = useOptionalDecisionsPrototype()
   const agentRuntime = runtimeSelections[session?.id ?? '']?.runtime || session?.runtime || owner?.runtime || ''
   // Hoisted above this component's loading / not-found returns: a deep link renders it
@@ -2369,7 +2392,11 @@ export default function SessionDetailView() {
     // Shell owns detail navigation at both breakpoints; this branch only renders the
     // loading or not-found body.
     // Still pulling the sessions list — it's not "not found" until that settles.
-    if (sessionsLoading || (detailId !== null && sessionDetailLoading)) {
+    if (
+      sessionsLoading ||
+      (detailId !== null && sessionDetailLoading) ||
+      (reopenAgentId !== undefined && (agentsLoading || reopenAgent !== undefined))
+    ) {
       return (
         <SessionDetailFrame>
           <LoadingState fill />
