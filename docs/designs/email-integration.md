@@ -334,9 +334,9 @@ switched on or off, because admission is by person (§4).
 A message that names a started thread by its tag (§5.1) belongs to that
 thread's conversation whatever its own participants are, so a plain Reply from
 one of several recipients of a started mail stays in the started thread. The
-started mail stands as the thread's opening message: its recipients are the
-thread's first members for the fence below, and the person whose turn sent it
-is its opener.
+started mail stands as the thread's opening message. Its recipients are the
+thread's first current members for the fence below, and from the first reply on
+the current members follow each admitted message as in any thread.
 
 A conversation with a participant who is not a member of the organization is
 **external**, by the rule every other platform follows: the module reports it
@@ -387,6 +387,16 @@ only Console reader never received it. A current member brings someone back by
 naming them on a message. A direct conversation needs no fence: its key is the
 authenticated sender.
 
+A started thread (§6.4) keeps the sender check and drops the opener check. Its
+replies are addressed to the agent, which sent the mail on someone's behalf,
+not to that person, so a recipient's plain Reply never names them and would
+otherwise always split off. The session's reader is the person the sending
+turn ran for, who asked for the mail and reads what came back to it in the
+Console; a turn no person is behind, such as a schedule's run with no asker,
+has none, and its thread's session follows "Outside senders' sessions"
+(§4.1). A message whose sender is not a current member still starts a thread
+of its own.
+
 Mail never runs a coordinator. A new thread opens its session directly, for an
 assistant-mode agent too: the manifest lists no kind in `appendKinds`, so no
 row is put on `auto` and assistant mode has no place to force onto one session.
@@ -411,8 +421,10 @@ fixed then, as every session's visibility is; changing it later moves no
 existing session. A thread an outside sender opens and a member later joins
 stays where it started.
 
-A session of a group conversation is `private` to the member whose message
-opened it, which is a new default row for mail: the general rule would make a
+A started thread's session is `private` to the person its sending turn ran
+for, or follows "Outside senders' sessions" when no person is behind that turn
+(§5.2), whoever replies. A session of a group conversation is `private` to the
+member whose message opened it, which is a new default row for mail: the general rule would make a
 group conversation `org`, and a mail thread among three people is not the
 organization's. Every message of the session reached that member (§5.2), and
 the other participants have the messages they were sent and continue the
