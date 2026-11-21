@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
+import { CRON_RUN_SKIPPED_FEATURE, MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
 import { agentHostKey, sessionHostKey, sessionKeyDirName } from '../src/acp/host-key.js'
 import { Daemon } from '../src/daemon.js'
 import { LONG_IDLE_SKIP_AFTER_TTLS, LONG_IDLE_SKIP_REPORT_INTERVAL_MS } from '../src/daemon/constants.js'
@@ -1630,6 +1630,66 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(conn.postMessage).not.toHaveBeenCalled()
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
+  })
+
+  const skippedFire = async (features: string[]) => {
+    const host = quietHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const emitCronReport = vi.fn()
+    const syncCronReport = vi.fn(async (_report: Record<string, unknown>) => 'acknowledged' as const)
+    ;(daemon as any).cpClient = {
+      state: 'READY',
+      emitCronReport,
+      syncCronReport,
+      supportsServerFeature: (feature: string) => features.includes(feature),
+      emitEventSession: vi.fn(),
+      emitUsageReport: vi.fn(),
+      stop: vi.fn(async () => {})
+    }
+    ;(daemon as any).agents.get('bot-a').pause = true
+    await (daemon as any).onCronFire(
+      'bot-a',
+      { ...dm('100', 'scheduled'), source: 'cron' },
+      {
+        id: 'cron-1',
+        schedule: '0 9 * * *',
+        timezone: 'UTC',
+        trigger: 'scheduled',
+        enabled: true,
+        origin: 'cp',
+        target: { platform: 'slack', channel: 'C1', integrationId: 'int-a' }
+      }
+    )
+    return { daemon, conn, host, emitCronReport, syncCronReport }
+  }
+
+  it('closes a fire a paused agent skipped as skipped, naming why', async () => {
+    const run = await skippedFire([CRON_RUN_SKIPPED_FEATURE])
+    await vi.waitFor(
+      () =>
+        expect(run.syncCronReport).toHaveBeenCalledWith(
+          expect.objectContaining({ cronId: 'cron-1', status: 'skipped', reason: 'agent is paused' })
+        ),
+      WAIT
+    )
+    expect(run.syncCronReport.mock.calls[0]![0]).not.toHaveProperty('sessionId')
+    expect(run.conn.postMessage).not.toHaveBeenCalled()
+    expect(run.host.prompt).not.toHaveBeenCalled()
+    await run.daemon.stop()
+  })
+
+  it('sends no skipped outcome to a control plane that cannot record one', async () => {
+    const run = await skippedFire([])
+    await run.daemon.stop()
+    expect(run.emitCronReport).toHaveBeenCalledTimes(1)
+    expect(run.emitCronReport.mock.calls[0]![0]).not.toHaveProperty('status')
+    expect(run.syncCronReport).not.toHaveBeenCalled()
   })
 
   it('attributes a cron anchor to its agent and uses its Slack timestamp for follow-ups', async () => {

@@ -4466,6 +4466,8 @@
       "running": "Running",
       "success": "Success",
       "failed": "Failed",
+      "skipped": "Skipped",
+      "notRun": "not run",
       "started": "Started",
       "status": "Status",
       "target": "Target",

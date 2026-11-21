@@ -159,6 +159,7 @@ import {
   RUNTIME_PROBE_FEATURE,
   COMPUTER_POOL_MEMBER_FEATURE,
   COMPUTER_POOL_FEATURE,
+  CRON_RUN_SKIPPED_FEATURE,
   COMPUTER_POOL_QUOTA_FEATURE,
   type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
@@ -824,6 +825,7 @@ import {
   GithubReviewOrchestrator,
   HookStartRefused,
   type AnchorTriggerResult,
+  type TriggerNotStarted,
   type GithubReviewHost
 } from './github/review-orchestrator.js'
 import { CodeHostReviewRouter } from './codehost/review-adapter.js'
@@ -1703,6 +1705,9 @@ const RUNTIME_FAILURE_RETRY_MS = 5_000
 const TASK_HOLD_CLEAR_MS = 2_000
 /** How long a coordinator's turn waits for the history of a thread it meets part-way. */
 const COORDINATOR_THREAD_READ_MS = 5_000
+// A dispatch gate dropped the fire before its turn (dispatch resolves null); the anchor gate names its own reason.
+const GATE_DROPPED: TriggerNotStarted = { status: 'skipped', reason: 'dropped before its turn started' }
+const THREAD_NOT_CREATED = 'the thread for this run could not be created'
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
@@ -33313,14 +33318,18 @@ export class Daemon {
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
     // and start no turn.
-    if (
-      this.draining ||
-      this.drainingAgents.has(agentId) ||
-      this.paused(agentId) ||
-      (this.safetyDrainBlocks(agentId, key) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
-    ) {
-      this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
-      return { message: null, postAttempted: false }
+    const gate = this.paused(agentId)
+      ? 'agent is paused'
+      : this.draining
+        ? 'daemon is draining'
+        : this.drainingAgents.has(agentId)
+          ? 'agent is draining'
+          : this.safetyDrainBlocks(agentId, key) && !this.safetyDrainAllows(agentId, key, safetyReviewLane)
+            ? 'interrupted turns are still stopping'
+            : undefined
+    if (gate) {
+      this.log.info(`${label}: skipped for agent "${agentId}" (${gate})`)
+      return { message: null, postAttempted: false, notStarted: { status: 'skipped', reason: gate } }
     }
     let postAttempted = false
     if (target?.channel) {
@@ -33385,13 +33394,13 @@ export class Daemon {
                 this.log.warn(
                   `${label}: posted trigger to ${target.channel}, but failed to create its required thread (${formatErr(err)}) — session not started`
                 )
-                return { message: null, postAttempted }
+                return { message: null, postAttempted, notStarted: { status: 'failed', reason: THREAD_NOT_CREATED } }
               }
               if (!thread) {
                 this.log.warn(
                   `${label}: posted trigger to ${target.channel}, but its required thread was not created — session not started`
                 )
-                return { message: null, postAttempted }
+                return { message: null, postAttempted, notStarted: { status: 'failed', reason: THREAD_NOT_CREATED } }
               }
             } else {
               thread = threadKeyForPost(
@@ -33452,13 +33461,17 @@ export class Daemon {
     anchorText: string,
     label: string,
     onSessionReady?: (sessionId: string) => void,
-    onAnchored?: (channel: string, thread: string) => void
+    onAnchored?: (channel: string, thread: string) => void,
+    onNotStarted?: (outcome: TriggerNotStarted) => void
   ): Promise<string | null> {
-    const { message: anchored } = await this.anchorTrigger(agentId, msg, target, anchorText, label)
-    if (!anchored) return null
+    const { message: anchored, notStarted } = await this.anchorTrigger(agentId, msg, target, anchorText, label)
+    if (!anchored) {
+      onNotStarted?.(notStarted ?? GATE_DROPPED)
+      return null
+    }
     if (target?.channel && anchored.transcriptTs && anchored.thread) onAnchored?.(target.channel, anchored.thread)
     // Same integration for the session's replies as for the anchor.
-    return this.dispatch(
+    const sessionId = await this.dispatch(
       agentId,
       anchored,
       target?.integrationId,
@@ -33466,6 +33479,8 @@ export class Daemon {
       undefined,
       onSessionReady ? { onSessionReady } : undefined
     )
+    if (sessionId === null) onNotStarted?.(GATE_DROPPED)
+    return sessionId
   }
 
   /**
@@ -33570,7 +33585,9 @@ export class Daemon {
         (channel, thread) =>
           void this.store.workCanvases
             .noteAnchor(agentId, { cronId: cron.id, channel, thread, firedAt })
-            .catch((err) => this.log.warn(`cron anchor record failed: ${formatErr(err)}`))
+            .catch((err) => this.log.warn(`cron anchor record failed: ${formatErr(err)}`)),
+        // A fire that never starts a turn still closes its run, so the CP's reaper does not label it a daemon outage.
+        (outcome) => report({ ...outcome, durationMs: Math.max(0, this.clock.now() - firedAt) })
       )
       if (sessionId !== null)
         report({
@@ -33595,6 +33612,8 @@ export class Daemon {
     update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}
   ): void {
     if (msg.source !== 'cron' || !msg.cronRun) return
+    // An older CP's decoder rejects `skipped`; it keeps closing such a run through its reaper.
+    if (update.status === 'skipped' && this.cpClient?.supportsServerFeature?.(CRON_RUN_SKIPPED_FEATURE) !== true) return
     const report = { ...msg.cronRun, agentId, ...update }
     // A terminal outcome is held until the CP ACKs it; fire and session progress stay best-effort.
     if (update.status) void this.cronReportOutbox.record(report)
