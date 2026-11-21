@@ -30,9 +30,11 @@ build() {
 
 errors="$(mktemp)"
 trap 'rm -f "$errors"' EXIT
-if ! labels="$(docker buildx imagetools inspect "${IMAGE}:${PREVIOUS}" --format '{{json .Image.Config.Labels}}' 2> "$errors")"; then
+if ! image="$(docker buildx imagetools inspect "${IMAGE}:${PREVIOUS}" --format '{{json .Image}}' 2> "$errors")"; then
   build "${IMAGE}:${PREVIOUS} is unavailable ($(tr '\n' ' ' < "$errors"))"
 fi
+# An index lists one config per platform, all built from one recipe with the same labels; read amd64's.
+labels="$(jq -c 'if type != "object" then null elif has("config") then .config.Labels else .["linux/amd64"].config.Labels end' <<< "$image" 2> /dev/null || echo null)"
 label() {
   jq -r --arg key "$1" 'if type == "object" then .[$key] // empty else empty end' <<< "$labels"
 }

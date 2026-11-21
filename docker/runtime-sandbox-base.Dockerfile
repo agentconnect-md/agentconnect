@@ -6,9 +6,9 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
-ARG GH_CLI_VERSION=2.97.0
-ARG GH_CLI_SHA256_AMD64=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112
-ARG GH_CLI_SHA256_ARM64=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
+ARG GH_CLI_VERSION=2.105.0
+ARG GH_CLI_SHA256_AMD64=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
+ARG GH_CLI_SHA256_ARM64=b1278c75107423d818f1937fd92cafc9e5e9b606631568f68d7fb816f5885a02
 ARG TARGETARCH
 RUN set -eu; \
   arch="${TARGETARCH:-amd64}"; \
@@ -29,9 +29,9 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
-ARG GLAB_CLI_VERSION=1.130.0
-ARG GLAB_CLI_SHA256_AMD64=ce06313b2075af25180cd195ab3496d42bc5857c85a1c12ba996838dfe9d822c
-ARG GLAB_CLI_SHA256_ARM64=062d53acb0f2cbcc79a014600df1aa0fb440bb3a08a5d4900d3b49b553b22767
+ARG GLAB_CLI_VERSION=1.131.0
+ARG GLAB_CLI_SHA256_AMD64=580dbca43835b47267e512476a442f6b2e8785a82b26ccacee22bd7010662b2d
+ARG GLAB_CLI_SHA256_ARM64=7c4befd271203745b674caae2a69590ea5f9c6e5dee78bd3b40ba0e2a7c74749
 ARG TARGETARCH
 RUN set -eu; \
   arch="${TARGETARCH:-amd64}"; \
@@ -76,17 +76,22 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl unzip \
   && rm -rf /var/lib/apt/lists/*
-ARG CHROME_VERSION=152.0.7977.75
-ARG CHROME_SHA256_AMD64=a16d36890636bd72251133b27f05825f7f9269c2425b3408fa3a76e10dccd8f1
+ARG CHROME_VERSION=158.0.8127.36
+ARG CHROME_SHA256_AMD64=dba9cc838e1ce269c33ea68170881127bd15d078fc3ca5891c90802819a4d7c7
+ARG CHROME_SHA256_ARM64=f811b64a50cbc73f94fda7b3f3b3bf62be5d9409b3207e6ead9b61e6706afffe
 ARG TARGETARCH
 RUN set -eu; \
   arch="${TARGETARCH:-amd64}"; \
-  if [ "$arch" != amd64 ]; then echo "Chrome for Testing publishes no linux build for TARGETARCH=$arch" >&2; exit 1; fi; \
+  case "$arch" in \
+  amd64) platform=linux64; sha256="$CHROME_SHA256_AMD64" ;; \
+  arm64) platform=linux-arm64; sha256="$CHROME_SHA256_ARM64" ;; \
+  *) echo "no pinned Chrome checksum for TARGETARCH=$arch" >&2; exit 1 ;; \
+  esac; \
   curl -fsSL -o /tmp/chrome.zip \
-    "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"; \
-  printf '%s  /tmp/chrome.zip\n' "$CHROME_SHA256_AMD64" | sha256sum -c -; \
+    "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/${platform}/chrome-${platform}.zip"; \
+  printf '%s  /tmp/chrome.zip\n' "$sha256" | sha256sum -c -; \
   unzip -q /tmp/chrome.zip -d /tmp/cft; \
-  mv /tmp/cft/chrome-linux64 /out; \
+  mv "/tmp/cft/chrome-${platform}" /out; \
   test -x /out/chrome; \
   chmod -R a-w /out
 
@@ -159,8 +164,8 @@ ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
 # Codex needs --argv0 to re-enter its sandbox while its credential directory stays hidden.
 FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS bubblewrap-builder
-ARG BUBBLEWRAP_VERSION=0.11.2
-ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
+ARG BUBBLEWRAP_VERSION=0.13.1
+ARG BUBBLEWRAP_SHA256=0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl gcc libc6-dev meson pkg-config libcap-dev xz-utils \
   && curl -fsSL --retry 5 "https://github.com/containers/bubblewrap/releases/download/v${BUBBLEWRAP_VERSION}/bubblewrap-${BUBBLEWRAP_VERSION}.tar.xz" -o /tmp/bubblewrap.tar.xz \
@@ -168,17 +173,17 @@ RUN apt-get update \
   && mkdir /src \
   && tar -xJf /tmp/bubblewrap.tar.xz -C /src --strip-components=1 \
   && meson setup /build /src --prefix=/usr/local -Dman=disabled -Dtests=false \
-    -Dselinux=disabled -Dbash_completion=disabled -Dzsh_completion=disabled -Dsupport_setuid=false \
+    -Dselinux=disabled -Dbash_completion=disabled -Dzsh_completion=disabled \
   && meson compile -C /build \
   && DESTDIR=/out meson install -C /build
 
 # The full system base adds native sandbox tools and Docker.
 FROM runtime-base AS runtime-sandbox-full-base
 USER root
-ARG DOCKER_VERSION=5:29.8.0-1~debian.12~bookworm
-ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
-ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
-ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
+ARG DOCKER_VERSION=5:29.10.0-1~debian.12~bookworm
+ARG CONTAINERD_VERSION=2.4.2-4~debian.12~bookworm
+ARG DOCKER_BUILDX_VERSION=0.39.1-1~debian.12~bookworm
+ARG DOCKER_COMPOSE_VERSION=5.8.0-1~debian.12~bookworm
 RUN apt-get update \
   && apt-get install --no-install-recommends -y libcap2 socat ripgrep \
   && rm -rf /var/lib/apt/lists/*
