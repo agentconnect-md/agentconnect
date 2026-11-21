@@ -1705,7 +1705,7 @@ const RUNTIME_FAILURE_RETRY_MS = 5_000
 const TASK_HOLD_CLEAR_MS = 2_000
 /** How long a coordinator's turn waits for the history of a thread it meets part-way. */
 const COORDINATOR_THREAD_READ_MS = 5_000
-// A dispatch gate dropped the fire before its turn (dispatch resolves null); the anchor gate names its own reason.
+// A dispatch gate dropped the fire before its prompt was sent; the anchor gate names its own reason.
 const GATE_DROPPED: TriggerNotStarted = { status: 'skipped', reason: 'dropped before its turn started' }
 const THREAD_NOT_CREATED = 'the thread for this run could not be created'
 
@@ -21796,6 +21796,8 @@ export class Daemon {
       /** Best-effort notification once the session exists, before prompt. Carries its OUTWARD
        *  id (session-concept.md §1.1) — every consumer of this reports it onward. */
       onSessionReady?: (sessionId: string) => void
+      /** Called once, just before the prompt is sent. */
+      onTurnStarted?: () => void
     },
     githubReply?: CodeHostReplyTarget,
     hookContext?: HookDispatchContext,
@@ -22020,6 +22022,7 @@ export class Daemon {
           ...(callMeta ? { callMeta } : {}),
           ...(hookContext ? { hookContext } : {}),
           ...(opts?.onSessionReady ? { onSessionReady: opts.onSessionReady } : {}),
+          ...(opts?.onTurnStarted ? { onTurnStarted: opts.onTurnStarted } : {}),
           ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
           ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
           ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
@@ -22941,6 +22944,7 @@ export class Daemon {
       if (surfaceContext) handled.blocks.push({ type: 'text', text: surfaceContext })
       const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
+      entry.onTurnStarted?.()
       const outcome = await this.runPromptLoop(p, run, {
         ...prompt,
         host,
@@ -33470,6 +33474,7 @@ export class Daemon {
       return null
     }
     if (target?.channel && anchored.transcriptTs && anchored.thread) onAnchored?.(target.channel, anchored.thread)
+    let turnStarted = false
     // Same integration for the session's replies as for the anchor.
     const sessionId = await this.dispatch(
       agentId,
@@ -33477,9 +33482,15 @@ export class Daemon {
       target?.integrationId,
       undefined,
       undefined,
-      onSessionReady ? { onSessionReady } : undefined
+      onSessionReady || onNotStarted
+        ? {
+            ...(onSessionReady ? { onSessionReady } : {}),
+            ...(onNotStarted ? { onTurnStarted: () => void (turnStarted = true) } : {})
+          }
+        : undefined
     )
-    if (sessionId === null) onNotStarted?.(GATE_DROPPED)
+    // A null after the prompt was sent is a cancelled turn that may have done work, never a skip.
+    if (sessionId === null && !turnStarted) onNotStarted?.(GATE_DROPPED)
     return sessionId
   }
 

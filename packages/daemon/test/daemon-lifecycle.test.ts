@@ -1653,6 +1653,7 @@ describe('Daemon session lifecycle (#118)', () => {
       stop: vi.fn(async () => {})
     }
     ;(daemon as any).agents.get('bot-a').pause = true
+    const recorded = vi.spyOn((daemon as any).cronReportOutbox, 'record')
     await (daemon as any).onCronFire(
       'bot-a',
       { ...dm('100', 'scheduled'), source: 'cron' },
@@ -1666,7 +1667,7 @@ describe('Daemon session lifecycle (#118)', () => {
         target: { platform: 'slack', channel: 'C1', integrationId: 'int-a' }
       }
     )
-    return { daemon, conn, host, emitCronReport, syncCronReport }
+    return { daemon, conn, host, emitCronReport, syncCronReport, recorded }
   }
 
   it('closes a fire a paused agent skipped as skipped, naming why', async () => {
@@ -1684,11 +1685,56 @@ describe('Daemon session lifecycle (#118)', () => {
     await run.daemon.stop()
   })
 
+  it('does not call a turn that started and was cancelled a skipped run', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    ;(daemon as any).cpClient = {
+      state: 'READY',
+      emitCronReport: vi.fn(),
+      syncCronReport: vi.fn(async () => 'acknowledged' as const),
+      supportsServerFeature: (feature: string) => feature === CRON_RUN_SKIPPED_FEATURE,
+      emitEventSession: vi.fn(),
+      emitUsageReport: vi.fn(),
+      stop: vi.fn(async () => {})
+    }
+    const recorded = vi.spyOn((daemon as any).cronReportOutbox, 'record')
+    const run = (daemon as any).onCronFire(
+      'bot-a',
+      { ...dm('100', 'scheduled'), source: 'cron' },
+      {
+        id: 'cron-1',
+        schedule: '0 9 * * *',
+        timezone: 'UTC',
+        trigger: 'scheduled',
+        enabled: true,
+        origin: 'cp',
+        target: { platform: 'slack', channel: 'C1', integrationId: 'int-a' }
+      }
+    )
+    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
+    // The prompt is running; an interrupt now ends the turn as cancelled and dispatch resolves null.
+    pendingFor(daemon, 'acp-1').outputSuppressed = 'stop'
+    blocked.release()
+    await run
+    await daemon.stop()
+    expect(blocked.host.prompt).toHaveBeenCalled()
+    // Asserted where the outcome is queued: the drain to the control plane is asynchronous and would pass vacuously.
+    expect(recorded).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'skipped' }))
+  })
+
   it('sends no skipped outcome to a control plane that cannot record one', async () => {
     const run = await skippedFire([])
     await run.daemon.stop()
     expect(run.emitCronReport).toHaveBeenCalledTimes(1)
     expect(run.emitCronReport.mock.calls[0]![0]).not.toHaveProperty('status')
+    // Asserted where an outcome is queued: the drain to the control plane is asynchronous.
+    expect(run.recorded).not.toHaveBeenCalled()
     expect(run.syncCronReport).not.toHaveBeenCalled()
   })
 
