@@ -198,8 +198,9 @@ export function createAssistantActivity(deps: AssistantActivityDeps): AssistantA
           const child = await store.getSessionByOutwardId(req.sessionId, req.agentId)
           const row =
             child?.agentId === req.agentId ? await store.assistantSubsessions.get(req.agentId, child.key) : undefined
-          // A follow-up is shown only in assistant mode, as the list does.
-          if (!row || (row.mode === 'watch' && !assistant)) return { operation: 'task', task: null }
+          // A follow-up is shown only in assistant mode, and only once it names a conversation, as the list does.
+          if (!row || row.parentSessionId === '' || (row.mode === 'watch' && !assistant))
+            return { operation: 'task', task: null }
           return { operation: 'task', task: await taskOf(store, req.agentId, row) }
         }
         case 'drafts': {

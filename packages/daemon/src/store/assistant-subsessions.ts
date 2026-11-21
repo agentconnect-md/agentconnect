@@ -843,11 +843,11 @@ export class AssistantSubsessionIndex {
     return row ? subsessionOf(row) : undefined
   }
 
-  /** The agent's sub-sessions: open ones first, then the newest; `delegationsOnly` leaves follow-ups out. */
+  /** The agent's sub-sessions that name a conversation, open ones first, then the newest; `delegationsOnly` leaves follow-ups out. */
   async list(agentId: string, limit: number, opts: { delegationsOnly?: boolean } = {}): Promise<AssistantSubsession[]> {
     const rows = (
       await this.db.query(
-        `SELECT * FROM assistant_subsession WHERE agentId = ? AND ${LIVE}${opts.delegationsOnly ? DELEGATIONS : ''}
+        `SELECT * FROM assistant_subsession WHERE agentId = ? AND parentSessionId <> '' AND ${LIVE}${opts.delegationsOnly ? DELEGATIONS : ''}
          ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, createdAt DESC, childSessionKey LIMIT ?`,
         [agentId, limit]
       )

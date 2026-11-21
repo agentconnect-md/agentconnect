@@ -418,6 +418,36 @@ describe('the Activity view: follow-ups in place of items', () => {
     await session(off, offItem.taskKey, 'sid-off')
     expect(await one(off, 'sid-off')).toBeNull()
   })
+
+  it('leaves out a migrated follow-up whose place had no session, so the rest of the list still answers', async () => {
+    const { s, a, activity } = await setup()
+    const kept = await createFollowUp(s, a, { now: 1_000 })
+    // The item-ledger migration indexes such a follow-up with an empty parent until a session at its place adopts it.
+    const parentless = await s.assistantWatchTasks.open({
+      agentId: a,
+      title: 'Watch the nightly',
+      doneWhen: 'It is green',
+      origin: { platform: 'webchat', channel: 'wc-gone', transportScope: null },
+      taskKey: sessionKey('webchat', 'wc-gone', `subsession:check-${randomUUID()}`, a, null),
+      owner: { sessionId: '', key: '' },
+      now: 2_000
+    })
+    await s.upsertSession({
+      key: parentless.taskKey,
+      agentId: a,
+      platform: 'webchat',
+      channel: 'wc-gone',
+      thread: parentless.taskKey.split(':')[2]!,
+      acpSessionId: 'acp-parentless',
+      sessionId: 'sid-parentless',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 2_000
+    })
+    const { subsessions } = await read(activity, { agentId: a, operation: 'subsessions', limit: 10 })
+    expect(subsessions).toEqual([expect.objectContaining({ followUp: expect.objectContaining({ id: kept.taskKey }) })])
+    expect((await read(activity, { agentId: a, operation: 'task', sessionId: 'sid-parentless' })).task).toBeNull()
+  })
 })
 
 describe('the Activity view: sub-sessions', () => {
