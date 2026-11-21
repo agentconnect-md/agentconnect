@@ -224,7 +224,7 @@ describe('Decision contracts and consumer matching', () => {
   })
 
   it('matches every passing key, including equality, ties and non-top options, without a confidence veto', () => {
-    expect(matchDecisionRouting(choice, routing, answer, 'default-agent')).toEqual({
+    expect(matchDecisionRouting(choice, routing, answer, 'default-agent')).toMatchObject({
       matchedRuleIds: ['billing', 'technical'],
       matchedKeys: ['billing', 'technical'],
       agentIds: ['billing-agent', 'technical-agent'],
@@ -711,6 +711,50 @@ describe('routing preview settlement (decisions.md §9.3)', () => {
     expect(result.match?.matchedRuleIds).toEqual(['billing', 'technical'])
     mixed.rules[1]!.action = { type: 'skip' }
     expect(preview({ routing: mixed })).toMatchObject({ outcome: 'skip', targets: [] })
+  })
+
+  it("lists a chain's step rules, matched against each step's own answer, and marks unentered steps", () => {
+    const yesNo = DecisionQuestion.parse({
+      type: 'boolean',
+      instructions: 'Urgent?',
+      criteria: { true: 'Y', false: 'N' }
+    })
+    const yes = { type: 'boolean' as const, values: [true] }
+    const no = { type: 'boolean' as const, values: [false] }
+    const chained = {
+      ...routing,
+      rules: [
+        { id: 'r-main', when: yes, action: { type: 'decision' as const, nextStepId: 's2' } },
+        { id: 'r-other', when: no, action: { type: 'decision' as const, nextStepId: 's3' } }
+      ],
+      steps: [
+        {
+          id: 's2',
+          decisionId: 'd2',
+          rules: [{ id: 'r-step', when: no, action: { type: 'agent' as const, agentId: 'B' } }]
+        },
+        {
+          id: 's3',
+          decisionId: 'd3',
+          rules: [{ id: 'r-unused', when: yes, action: { type: 'agent' as const, agentId: 'A' } }]
+        }
+      ]
+    }
+    const boolean = (value: boolean): DecisionAnswer => ({ type: 'boolean', value, probability: value ? 0.9 : 0.1 })
+    const result = preview({
+      question: yesNo,
+      routing: chained,
+      answer: boolean(true),
+      chain: new Map([['s2', { question: yesNo, answer: boolean(false) }]])
+    })
+    expect(agents(result)).toEqual(['B'])
+    expect(result.match?.matchedRuleIds).toEqual(['r-main', 'r-step'])
+    expect(result.rules.map((r) => [r.ruleId, r.stepId ?? null, r.reached, r.matched])).toEqual([
+      ['r-main', null, true, true],
+      ['r-other', null, true, false],
+      ['r-step', 's2', true, true],
+      ['r-unused', 's3', false, false]
+    ])
   })
 
   it('Boolean Yes/No and Score 1, 2.49, 2.5, 3 select one destination', () => {

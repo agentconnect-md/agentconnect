@@ -1189,8 +1189,18 @@ export function matchDecisionCondition(
   return { matched: false, matchedKeys: [] }
 }
 
+/** One rule as settlement walked it: `stepId` absent for the first step, `reached` false for a step never entered. */
+export interface DecisionRoutingRuleRow {
+  ruleId: string
+  stepId?: string
+  reached: boolean
+  matched: boolean
+  matchedKeys: string[]
+}
+
 export interface DecisionRoutingMatch {
   matchedRuleIds: string[]
+  rules: DecisionRoutingRuleRow[]
   matchedKeys: string[]
   agentIds: string[]
   usedOtherwise: boolean
@@ -1208,6 +1218,7 @@ export function matchDecisionRouting(
   parseDecisionAnswer(question, answer)
   const result: DecisionRoutingMatch = {
     matchedRuleIds: [],
+    rules: [],
     matchedKeys: [],
     agentIds: [],
     usedOtherwise: false,
@@ -1216,10 +1227,12 @@ export function matchDecisionRouting(
   if (!routing.enabled) return result
   const visited = new Set<string>()
   const steps = new Map(routing.steps?.map((step) => [step.id, step]))
-  const visit = (step: DecisionRoutingStep, question: DecisionQuestion, answer: DecisionAnswer) => {
+  const rows = new Map<string, DecisionRoutingRuleRow>()
+  const visit = (step: DecisionRoutingStep, question: DecisionQuestion, answer: DecisionAnswer, stepId?: string) => {
     requireValid(decisionRuleIssues(question, step.rules))
     const matched = step.rules.filter((rule) => {
       const match = matchDecisionCondition(question, rule.when, answer)
+      rows.set(rule.id, { ruleId: rule.id, ...(stepId ? { stepId } : {}), reached: true, ...match })
       if (match.matched) result.matchedKeys.push(...match.matchedKeys)
       return match.matched
     })
@@ -1233,11 +1246,23 @@ export function matchDecisionRouting(
         const evaluated = chain?.get(id)
         if (!next || !evaluated) throw new Error('Missing chained Decision answer.')
         visited.add(id)
-        visit(next, evaluated.question, evaluated.answer)
+        visit(next, evaluated.question, evaluated.answer, id)
       }
     }
   }
   visit(routing, question, answer)
+  result.rules = [routing, ...(routing.steps ?? [])].flatMap((step) =>
+    step.rules.map(
+      (rule) =>
+        rows.get(rule.id) ?? {
+          ruleId: rule.id,
+          ...('id' in step ? { stepId: step.id } : {}),
+          reached: false,
+          matched: false,
+          matchedKeys: []
+        }
+    )
+  )
   result.activates = result.agentIds.length > 0 || (result.usedOtherwise && routing.otherwise.type === 'default_agent')
   if (result.usedOtherwise && routing.otherwise.type === 'default_agent' && defaultAgentId)
     result.agentIds.push(defaultAgentId)
@@ -1379,19 +1404,10 @@ export function resolveRoutingTargets(input: {
   return { evaluate, targets, disposition: targets.length > 0 ? 'match' : 'skip', match }
 }
 
-/** Each rule's own match against an answer, in rule order, so a preview can show every threshold result. */
-export function decisionRoutingRuleMatches(
-  question: DecisionQuestion,
-  routing: Pick<SharedBotDecisionRouting, 'rules'>,
-  answer: DecisionAnswer
-): Array<{ ruleId: string; matched: boolean; matchedKeys: string[] }> {
-  return routing.rules.map((rule) => ({ ruleId: rule.id, ...matchDecisionCondition(question, rule.when, answer) }))
-}
-
 export type RoutingPreviewOutcome = 'activate' | 'continue' | 'skip' | 'unavailable'
 
 export interface RoutingPreviewSettlement extends RoutingSettlement {
-  rules: Array<{ ruleId: string; matched: boolean; matchedKeys: string[] }>
+  rules: DecisionRoutingRuleRow[]
   outcome: RoutingPreviewOutcome
   /** Set when the answer failed validation and settled like the router's `invalid_response`. */
   reason?: 'invalid_response'
@@ -1407,8 +1423,7 @@ export function settleRoutingPreview(input: Parameters<typeof resolveRoutingTarg
     reason = 'invalid_response'
     settlement = resolveRoutingTargets({ ...input, answer: 'unavailable' })
   }
-  const answer = reason || input.answer === 'unavailable' ? undefined : input.answer
-  const rules = answer && settlement.evaluate ? decisionRoutingRuleMatches(input.question, input.routing, answer) : []
+  const rules = settlement.match?.rules ?? []
   const { participants, eligible } = partitionRoutingConstraint(input.constraint)
   const constrained = participants.length + eligible.length > 0
   const outcome: RoutingPreviewOutcome =
