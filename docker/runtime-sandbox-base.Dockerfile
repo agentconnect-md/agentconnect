@@ -6,9 +6,9 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
-ARG GH_CLI_VERSION=2.97.0
-ARG GH_CLI_SHA256_AMD64=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112
-ARG GH_CLI_SHA256_ARM64=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
+ARG GH_CLI_VERSION=2.105.0
+ARG GH_CLI_SHA256_AMD64=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
+ARG GH_CLI_SHA256_ARM64=b1278c75107423d818f1937fd92cafc9e5e9b606631568f68d7fb816f5885a02
 ARG TARGETARCH
 RUN set -eu; \
   arch="${TARGETARCH:-amd64}"; \
@@ -29,9 +29,9 @@ FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
-ARG GLAB_CLI_VERSION=1.130.0
-ARG GLAB_CLI_SHA256_AMD64=ce06313b2075af25180cd195ab3496d42bc5857c85a1c12ba996838dfe9d822c
-ARG GLAB_CLI_SHA256_ARM64=062d53acb0f2cbcc79a014600df1aa0fb440bb3a08a5d4900d3b49b553b22767
+ARG GLAB_CLI_VERSION=1.131.0
+ARG GLAB_CLI_SHA256_AMD64=580dbca43835b47267e512476a442f6b2e8785a82b26ccacee22bd7010662b2d
+ARG GLAB_CLI_SHA256_ARM64=7c4befd271203745b674caae2a69590ea5f9c6e5dee78bd3b40ba0e2a7c74749
 ARG TARGETARCH
 RUN set -eu; \
   arch="${TARGETARCH:-amd64}"; \
@@ -164,8 +164,8 @@ ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentconnect/shim/index.js"]
 
 # Codex needs --argv0 to re-enter its sandbox while its credential directory stays hidden.
 FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS bubblewrap-builder
-ARG BUBBLEWRAP_VERSION=0.11.2
-ARG BUBBLEWRAP_SHA256=69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6
+ARG BUBBLEWRAP_VERSION=0.13.1
+ARG BUBBLEWRAP_SHA256=0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl gcc libc6-dev meson pkg-config libcap-dev xz-utils \
   && curl -fsSL --retry 5 "https://github.com/containers/bubblewrap/releases/download/v${BUBBLEWRAP_VERSION}/bubblewrap-${BUBBLEWRAP_VERSION}.tar.xz" -o /tmp/bubblewrap.tar.xz \
@@ -173,17 +173,17 @@ RUN apt-get update \
   && mkdir /src \
   && tar -xJf /tmp/bubblewrap.tar.xz -C /src --strip-components=1 \
   && meson setup /build /src --prefix=/usr/local -Dman=disabled -Dtests=false \
-    -Dselinux=disabled -Dbash_completion=disabled -Dzsh_completion=disabled -Dsupport_setuid=false \
+    -Dselinux=disabled -Dbash_completion=disabled -Dzsh_completion=disabled \
   && meson compile -C /build \
   && DESTDIR=/out meson install -C /build
 
 # The full system base adds native sandbox tools and Docker.
 FROM runtime-base AS runtime-sandbox-full-base
 USER root
-ARG DOCKER_VERSION=5:29.8.0-1~debian.12~bookworm
-ARG CONTAINERD_VERSION=2.3.5-1~debian.12~bookworm
-ARG DOCKER_BUILDX_VERSION=0.37.0-1~debian.12~bookworm
-ARG DOCKER_COMPOSE_VERSION=5.5.1-1~debian.12~bookworm
+ARG DOCKER_VERSION=5:29.10.0-1~debian.12~bookworm
+ARG CONTAINERD_VERSION=2.4.2-4~debian.12~bookworm
+ARG DOCKER_BUILDX_VERSION=0.39.1-1~debian.12~bookworm
+ARG DOCKER_COMPOSE_VERSION=5.8.0-1~debian.12~bookworm
 RUN apt-get update \
   && apt-get install --no-install-recommends -y libcap2 socat ripgrep \
   && rm -rf /var/lib/apt/lists/*
