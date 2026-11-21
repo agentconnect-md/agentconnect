@@ -69,6 +69,7 @@ the picture it draws.
 - [webchat-preset-agentconnect-mcp.md](designs/webchat-preset-agentconnect-mcp.md) — The AgentConnect admin MCP for webchat sessions.
 - [webchat-mcp-apps.md](designs/webchat-mcp-apps.md) — MCP Apps (`ui://`) rendered in a sandboxed console frame; webchat-only by construction.
 - [webchat-native-integration-ui.md](designs/webchat-native-integration-ui.md) — Trusted admin MCP resources mapped to native integration configuration dialogs.
+- **(proposal)** [webchat-ui-spec.md](designs/webchat-ui-spec.md) — Agent-authored UI cards: a daemon-local `showUi` tool, a zod-defined catalog, and json-render mapped onto Console components.
 - [merged-conversation-view.md](designs/merged-conversation-view.md) — One merged transcript across a conversation's sessions.
 - [icon-uploads.md](designs/icon-uploads.md) — Agent and organization icon upload, storage, and serving.
 
