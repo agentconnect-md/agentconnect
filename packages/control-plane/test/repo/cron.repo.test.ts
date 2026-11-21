@@ -196,4 +196,40 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     expect(run?.sessionId).toBe('late')
     expect(run?.reason).toBeNull() // the orphaned marker was cleared
   })
+
+  it('counts the failed runs since the last success, skips and open runs aside, with the latest reason', async () => {
+    await fixtures()
+    const repo = new PgCronRepo(prisma)
+    await repo.upsert(upsertInput())
+    const at = (hour: number) => new Date(`2026-07-03T${String(hour).padStart(2, '0')}:00:00.000Z`)
+    await repo.recordReport(CronId(CRON), { firedAt: at(9), status: 'failed', reason: 'before the last success' })
+    await repo.recordReport(CronId(CRON), { firedAt: at(10), status: 'success' })
+    await repo.recordReport(CronId(CRON), { firedAt: at(11), status: 'failed', reason: 'Authentication required' })
+    await repo.recordReport(CronId(CRON), { firedAt: at(12), status: 'skipped', reason: 'agent is paused' })
+    await repo.recordReport(CronId(CRON), { firedAt: at(13), status: 'failed', reason: 'spend limit reached' })
+    await repo.recordReport(CronId(CRON), { firedAt: at(14) })
+
+    const streaks = await repo.failureStreaks(OrgId(DEFAULT_ORG_ID))
+    expect(streaks.get(CRON)).toEqual({ streak: 2, since: at(11), reason: 'spend limit reached' })
+  })
+
+  it('reports no streak once a run succeeds, and every failure of a schedule that never has', async () => {
+    await fixtures()
+    const repo = new PgCronRepo(prisma)
+    const never = 'c2222222-2222-4222-8222-222222222222'
+    await repo.upsert(upsertInput())
+    await repo.upsert(upsertInput({ cronId: CronId(never) }))
+    const at = (hour: number) => new Date(`2026-07-03T${String(hour).padStart(2, '0')}:00:00.000Z`)
+    await repo.recordReport(CronId(CRON), { firedAt: at(9), status: 'failed', reason: 'dispatch failed' })
+    await repo.recordReport(CronId(CRON), { firedAt: at(10), status: 'success' })
+    for (const hour of [9, 10, 11]) await repo.recordReport(CronId(never), { firedAt: at(hour), status: 'failed' })
+
+    const streaks = await repo.failureStreaks(OrgId(DEFAULT_ORG_ID))
+    expect(streaks.has(CRON)).toBe(false)
+    expect(streaks.get(never)).toEqual({ streak: 3, since: at(9), reason: null })
+    // One schedule can be asked for by itself, and another organization sees none of it.
+    expect([...(await repo.failureStreaks(OrgId(DEFAULT_ORG_ID), [CronId(CRON)])).keys()]).toEqual([])
+    expect([...(await repo.failureStreaks(OrgId(DEFAULT_ORG_ID), [CronId(never)])).keys()]).toEqual([never])
+    expect((await repo.failureStreaks(OrgId('org_someone_else0000000000000'))).size).toBe(0)
+  })
 })

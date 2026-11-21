@@ -3247,6 +3247,13 @@ export interface CronRunRecord {
   reason: string | null // short failure or skip text
 }
 
+/** A schedule's unbroken run of failures since its last success; skipped and still-open runs neither count nor break it. */
+export interface CronFailureStreak {
+  streak: number
+  since: Date // the first failed run of the streak
+  reason: string | null // the latest failure's reason
+}
+
 /** The payload of one `cron/report` EVT (fire/session progress when `status`
  *  is absent, completion when present). */
 export interface CronReportInput {
@@ -3301,6 +3308,8 @@ export interface CronRepo {
    *  their own `orgId`, so the fence rides this query directly rather than only
    *  through the parent cron (§3.6). */
   listRuns(orgId: OrgId, cronId: CronId, limit?: number): Promise<CronRunRecord[]>
+  /** The schedules of `orgId` whose latest closed run failed, keyed by cron id; `cronIds` narrows the read. */
+  failureStreaks(orgId: OrgId, cronIds?: readonly CronId[]): Promise<Map<string, CronFailureStreak>>
   /** Reconcile orphaned runs: close every row still `running` whose `startedAt`
    *  is before `staleBefore` to `failed` with a marker reason (its completion
    *  report was lost — daemon offline / drained at turn end). Non-destructive: a

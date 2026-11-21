@@ -10,7 +10,15 @@
 import type { Platform } from '@agentconnect.md/protocol'
 import { Prisma, type CronDef, type User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import type { CronRepo, CronRecord, CronReportInput, CronRunRecord, UpsertCronInput, ViewCtx } from '../ports.js'
+import type {
+  CronFailureStreak,
+  CronRepo,
+  CronRecord,
+  CronReportInput,
+  CronRunRecord,
+  UpsertCronInput,
+  ViewCtx
+} from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
 import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
@@ -274,6 +282,31 @@ export class PgCronRepo implements CronRepo {
       sessionId: r.sessionId,
       reason: r.reason
     }))
+  }
+
+  async failureStreaks(orgId: OrgId, cronIds?: readonly CronId[]): Promise<Map<string, CronFailureStreak>> {
+    if (cronIds?.length === 0) return new Map()
+    const only = cronIds ? Prisma.sql`AND r."cronId" = ANY(${[...cronIds]}::uuid[])` : Prisma.empty
+    // Failed runs newer than the schedule's last success; `(cronId, startedAt)` is unique, so the inner read is an index probe.
+    const rows = await this.db.$queryRaw<Array<{ cronId: string; streak: number; since: Date; reason: string | null }>>(
+      Prisma.sql`
+        SELECT r."cronId"::text AS "cronId",
+               COUNT(*)::int AS "streak",
+               MIN(r."startedAt") AS "since",
+               (ARRAY_AGG(r."reason" ORDER BY r."startedAt" DESC))[1] AS "reason"
+        FROM "cron_run" r
+        WHERE r."orgId" = ${orgId}
+          AND r."status" = 'failed'::"CronRunStatus"
+          ${only}
+          AND r."startedAt" > COALESCE(
+            (SELECT MAX(s."startedAt") FROM "cron_run" s
+              WHERE s."cronId" = r."cronId" AND s."status" = 'success'::"CronRunStatus"),
+            '-infinity'::timestamptz
+          )
+        GROUP BY r."cronId"
+      `
+    )
+    return new Map(rows.map((r) => [r.cronId, { streak: r.streak, since: r.since, reason: r.reason }]))
   }
 
   async reapStaleRuns(staleBefore: Date): Promise<number> {

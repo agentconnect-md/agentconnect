@@ -4437,6 +4437,14 @@
       "save": "Save",
       "create": "Create"
     },
+    "failingNotification": {
+      "title": "Schedule keeps failing",
+      "message": "“{name}” has failed its last {count} runs.",
+      "messageWithReason": "“{name}” has failed its last {count} runs. Latest reason: {reason}",
+      "action": "Open schedule",
+      "resolvedTitle": "Schedule failure cleared",
+      "resolvedMessage": "“{name}” is no longer failing."
+    },
     "detail": {
       "scheduleNotFound": "Schedule not found",
       "agent": "Agent",
