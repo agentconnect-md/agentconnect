@@ -19,6 +19,10 @@ import type { StoreQueryResult, StoreTx } from './store-database.js'
 /** `open` while a work round runs and holds a slot; `reporting` while the daemon's round-end report awaits admission; then `done` or `failed` until another round opens. */
 export type AssistantSubsessionState = 'open' | 'reporting' | 'done' | 'failed'
 
+/** The status a task gives with its summary (auto-session-mode.md §6.7). */
+export const TASK_STATUSES = ['in_progress', 'waiting', 'done', 'blocked'] as const
+export type TaskStatus = (typeof TASK_STATUSES)[number]
+
 export interface AssistantSubsession {
   agentId: string
   /** The child's logical session key, the `taskId` `delegateTask` handed back. */
@@ -53,6 +57,8 @@ export interface AssistantSubsession {
   /** The task's own account of its scope, status and next step (auto-session-mode.md §6.7). */
   summary?: string
   summaryUpdatedAt?: number
+  /** The status its latest summary gave, cleared when a round starts. */
+  taskStatus?: TaskStatus
   /** Turns it ran since it last wrote its summary; read back only when nonzero. */
   turnsSinceSummary?: number
   /** When a round last started or settled or its title changed, the work board's order (assistant-mode.md §5.18). */
@@ -174,6 +180,9 @@ export const ASSISTANT_TASK_OPENED_SCHEMA = `
       );
 `
 
+/** How every look-back item's text begins (assistant-mode.md §5.20), which conversation views leave out. */
+export const LOOK_BACK_ITEM_PREFIX = '[look back] Task '
+
 /** The task row's columns for looking back (assistant-mode.md §5.20). */
 export const LOOK_BACK_COLUMN_TYPES: readonly (readonly [string, string])[] = [
   ['lookedAt', 'INTEGER'],
@@ -206,6 +215,7 @@ export const ASSISTANT_SUBSESSION_SCHEMA = `
         background TEXT,
         summary TEXT,
         summaryUpdatedAt INTEGER,
+        taskStatus TEXT,
         turnsSinceSummary INTEGER NOT NULL DEFAULT 0,
         changedAt INTEGER,
         closedAt INTEGER,
@@ -286,6 +296,7 @@ type OpenInput = Omit<
   | 'round'
   | 'summary'
   | 'summaryUpdatedAt'
+  | 'taskStatus'
   | 'turnsSinceSummary'
   | 'changedAt'
   | 'closedAt'
@@ -294,6 +305,8 @@ type OpenInput = Omit<
 > & {
   now?: number
 }
+
+const isTaskStatus = (value: unknown): value is TaskStatus => TASK_STATUSES.includes(value as TaskStatus)
 
 function subsessionOf(row: Row): AssistantSubsession {
   return {
@@ -324,6 +337,7 @@ function subsessionOf(row: Row): AssistantSubsession {
     ...(row.background != null ? { background: String(row.background) } : {}),
     ...(row.summary != null ? { summary: String(row.summary) } : {}),
     ...(row.summaryUpdatedAt != null ? { summaryUpdatedAt: Number(row.summaryUpdatedAt) } : {}),
+    ...(isTaskStatus(row.taskStatus) ? { taskStatus: row.taskStatus } : {}),
     ...(Number(row.turnsSinceSummary ?? 0) > 0 ? { turnsSinceSummary: Number(row.turnsSinceSummary) } : {}),
     changedAt: Number(row.changedAt ?? row.createdAt),
     ...(row.closedAt != null ? { closedAt: Number(row.closedAt) } : {}),
@@ -581,7 +595,7 @@ export class AssistantSubsessionIndex {
     return await this.opening.run(async () => {
       const { changes } = await this.db.query(
         `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0,
-            changedAt = ?
+            taskStatus = NULL, changedAt = ?
           WHERE agentId = ? AND childSessionKey = ? AND round = ? AND state IN ('done', 'failed') AND closedAt IS NULL
             AND (${THREADED('assistant_subsession')} OR ${RUNNING_DELEGATIONS} < ?)`,
         [now, agentId, childSessionKey, round, agentId, cap.startedSince, cap.limit]
@@ -988,20 +1002,29 @@ export class AssistantSubsessionIndex {
     }))
   }
 
-  /** Set a work or watch task's summary, and its title when given, and restart its turn count (auto-session-mode.md §6.7); false when it is not indexed. */
+  /** Set a work or watch task's summary with its status, and its title when given, and restart its turn count (auto-session-mode.md §6.7); false when it is not indexed. */
   async setSummary(
     agentId: string,
     childSessionKey: string,
-    update: { summary: string; title?: string; now: number }
+    update: { summary: string; status?: TaskStatus; title?: string; now: number }
   ): Promise<boolean> {
     if ([...update.summary].length > TASK_SUMMARY_MAX_CHARS)
       throw new Error(`a task summary is at most ${TASK_SUMMARY_MAX_CHARS} characters`)
     // Only a new title moves the task on the work board; a summary alone changes no line.
     const { changes } = await this.db.query(
-      `UPDATE assistant_subsession SET summary = ?, summaryUpdatedAt = ?, turnsSinceSummary = 0, title = COALESCE(?, title),
+      `UPDATE assistant_subsession SET summary = ?, summaryUpdatedAt = ?, taskStatus = ?, turnsSinceSummary = 0, title = COALESCE(?, title),
           changedAt = CASE WHEN COALESCE(title, '') = COALESCE(?, title, '') THEN changedAt ELSE ? END
         WHERE agentId = ? AND childSessionKey = ? AND ((mode = 'work' AND closedAt IS NULL) OR watchStatus IS NOT NULL)`,
-      [update.summary, update.now, update.title ?? null, update.title ?? null, update.now, agentId, childSessionKey]
+      [
+        update.summary,
+        update.now,
+        update.status ?? null,
+        update.title ?? null,
+        update.title ?? null,
+        update.now,
+        agentId,
+        childSessionKey
+      ]
     )
     return changes > 0
   }
@@ -1098,7 +1121,7 @@ export class AssistantSubsessionIndex {
   /** A threaded task's next turn starts: its settled row is `open` again in the next round, outside the cap (auto-session-mode.md §6.2); false when it is not one or already runs. */
   async resumeThreaded(agentId: string, childSessionKey: string, now = Date.now()): Promise<boolean> {
     const { changes } = await this.db.query(
-      `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0, changedAt = ?
+      `UPDATE assistant_subsession SET state = 'open', round = round + 1, endReport = NULL, reportAttempts = 0, taskStatus = NULL, changedAt = ?
         WHERE agentId = ? AND childSessionKey = ? AND mode = 'work' AND state IN ('done', 'failed') AND closedAt IS NULL
           AND ${THREADED('assistant_subsession')}`,
       [now, agentId, childSessionKey]
@@ -1471,6 +1494,7 @@ export class AssistantSubsessionIndex {
            JOIN sessions p ON p.key = a.parentSessionKey
           WHERE a.agentId = ? AND a.mode = 'work' AND a.closedAt IS NULL AND a.state IN ('done', 'failed')
             AND a.gettingToKnow = 0 AND a.childSessionKey NOT LIKE ? AND COALESCE(a.changedAt, a.createdAt) <= ?
+            AND COALESCE(a.taskStatus, '') <> 'done'
             AND ${THREADED('a')}
           ORDER BY CASE WHEN a.lookedAt IS NULL THEN 0 ELSE 1 END, a.lookedAt, a.changedAt, a.childSessionKey`,
         [agentId, RESEARCH_SESSION_KEY_PATTERN, quietBefore]

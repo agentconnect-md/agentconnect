@@ -667,6 +667,20 @@ describe('looking back at a place’s quiet tasks', () => {
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
     expect(coordinatorPrompts).toHaveLength(1)
     expect(coordinatorPrompts[0]).toContain('[2 reports in C1]')
+    // The items reached the model, but no conversation view shows them.
+    for (const [key, coordinate] of [
+      [coordinatorKey, coordinator],
+      [keys[1]!, '2.2']
+    ] as const) {
+      const scope_ = {
+        transcriptChannel: transcriptChannelKey('C1', scope),
+        coordinate,
+        sessionKey: key,
+        agentId: 'bot-a'
+      }
+      const page = await d.store.transcriptPageForAgent(scope_, null, 50)
+      expect(page.rows.filter((row: { text: string }) => row.text.includes('[look back]'))).toEqual([])
+    }
     expect(coordinatorPrompts[0]).toContain('Last person to write in its threads: Alice (U0ALICE), at ')
     expect(outcomes).toEqual([expect.objectContaining({ ok: true, taskId: keys[0] })])
     expect(taskPrompts[0]).toContain("Your coordinator's note: Start the copy you were approved to run.")

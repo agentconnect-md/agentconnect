@@ -15,7 +15,8 @@ import {
   ASSISTANT_SUBSESSION_THREAD_SCHEMA,
   ASSISTANT_TASK_OPENED_SCHEMA,
   AssistantSubsessionIndex,
-  LOOK_BACK_COLUMN_TYPES
+  LOOK_BACK_COLUMN_TYPES,
+  LOOK_BACK_ITEM_PREFIX
 } from './assistant-subsessions.js'
 import { CLOSE_TASK } from './closed-tasks.js'
 import {
@@ -760,6 +761,10 @@ const THREADS_AGENTS_TOOK_PART_IN_SQL = `SELECT t.thread FROM transcript t
 // A coordinator's own post in a thread (`UserTurnBody.threadPost`): a message of the thread, not output of its turn (webchat-threads.md §6).
 const THREAD_POST_SQL = `(transcript.kind = 'text' AND COALESCE(transcript.body, '') LIKE '%"threadPost":true%')`
 
+// A look-back item (assistant-mode.md §5.20), delivered under the agent's own name: coordinator input only, never a row of a conversation view.
+const LOOK_BACK_ROW_SQL = `(transcript.kind = 'text' AND COALESCE(transcript.recipient, '') = transcript.sender
+        AND transcript.text LIKE '${LOOK_BACK_ITEM_PREFIX}%')`
+
 // A row of the reading session's own turns in a thread other than its coordinate, which its page shows instead (§6.1). Binds (coordinate, agentId, sessionKey).
 const OWN_TURN_IN_THREAD_SQL = `(transcript.thread <> ? AND transcript.sender = ?
         AND EXISTS (SELECT 1 FROM transcript_recipient tr_o WHERE tr_o.seq = transcript.seq AND tr_o.sessionKey = ?)
@@ -1430,7 +1435,7 @@ export const SOURCE_CACHE_SCHEMA = `
       );
 `
 
-export const SCHEMA_VERSION = 84
+export const SCHEMA_VERSION = 85
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -2234,7 +2239,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean; postgres: bool
     )
   },
   // v84 keeps the mail index: each message an agent's address received or sent, its thread and conversation (email-integration.md §5.6).
-  async () => {}
+  async () => {},
+  // v85 keeps the status a task gives with its summary, so looking back skips a task that says it is done (§5.20).
+  async (db, store) => await addColumn(db, store.postgres, 'assistant_subsession', 'taskStatus', 'TEXT')
 ]
 
 /** Tasks gain when they closed, the message they were opened for, what they opened and a getting-to-know task's marker; an ended watch task counts as closed when it last changed. */
@@ -4460,7 +4467,7 @@ export class LocalStore {
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND seq < ?
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
+               AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}${roots}
              ORDER BY seq DESC LIMIT ?`
           )
           .all(partition, scope.transcriptChannel, beforeSeq, ...session, ...agent, ...hiddenToolTitles, limit + 1)
@@ -4469,7 +4476,7 @@ export class LocalStore {
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
+               AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}${roots}
              ORDER BY seq DESC LIMIT ?`
           )
           .all(
@@ -4512,7 +4519,7 @@ export class LocalStore {
                AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
+               AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}${roots}
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
@@ -4531,7 +4538,7 @@ export class LocalStore {
             `SELECT * FROM transcript WHERE orgId = ? AND channel = ?
                AND ${SESSION_ROW_SCOPE_SQL}
                AND ${AGENT_DELIVERY_SCOPE_SQL}
-               AND NOT (kind = 'tool' AND text IN (?, ?))${roots}
+               AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}${roots}
              ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
           )
           .all(
@@ -4563,7 +4570,7 @@ export class LocalStore {
          WHERE orgId = ? AND channel = ? AND revision > ?
            AND ${SESSION_ROW_SCOPE_SQL}
            AND ${AGENT_DELIVERY_SCOPE_SQL}
-           AND NOT (kind = 'tool' AND text IN (?, ?))${rootsViewSql(view)}
+           AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}${rootsViewSql(view)}
          ORDER BY revision ASC LIMIT ?`
       )
       .all(
@@ -4642,7 +4649,7 @@ export class LocalStore {
     const partition = this.orgForRead(scope.agentId, scope.orgId)
     const replies = `orgId = ? AND channel = ? AND kind = 'text'
             AND (handedTo IS NOT NULL OR NOT (COALESCE(ts, '') = transcript.thread OR COALESCE(postId, '') = transcript.thread))
-            AND NOT ${OWN_TURN_IN_THREAD_SQL}`
+            AND NOT ${OWN_TURN_IN_THREAD_SQL} AND NOT ${LOOK_BACK_ROW_SQL}`
     const own = [scope.coordinate, scope.agentId, scope.sessionKey]
     const marks = rootIds.map(() => '?').join(', ')
     const counts = (await this.db
@@ -4727,7 +4734,7 @@ export class LocalStore {
       .prepare(
         `SELECT * FROM transcript WHERE orgId = ? AND channel = ?${beforeSeq !== null ? ' AND seq < ?' : ''}
            AND ${THREAD_RECORD_SQL}
-           AND NOT (kind = 'tool' AND text IN (?, ?))
+           AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}
          ORDER BY seq DESC LIMIT ?`
       )
       .all(
@@ -4755,7 +4762,7 @@ export class LocalStore {
           before !== null ? ' AND (eventTimeUs < ? OR (eventTimeUs = ? AND seq < ?))' : ''
         }
            AND ${THREAD_RECORD_SQL}
-           AND NOT (kind = 'tool' AND text IN (?, ?))
+           AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}
          ORDER BY eventTimeUs DESC, seq DESC LIMIT ?`
       )
       .all(
@@ -4781,7 +4788,7 @@ export class LocalStore {
       .prepare(
         `SELECT * FROM transcript WHERE orgId = ? AND channel = ? AND revision > ?
            AND ${THREAD_RECORD_SQL}
-           AND NOT (kind = 'tool' AND text IN (?, ?))
+           AND NOT (kind = 'tool' AND text IN (?, ?)) AND NOT ${LOOK_BACK_ROW_SQL}
          ORDER BY revision ASC LIMIT ?`
       )
       .all(

@@ -3,7 +3,12 @@ import type { Agent } from '../agents/agent-schema.js'
 import { assistantModeOn } from '../mcp/ops/assistant-items.js'
 import { isCoordinatorSessionKey } from '../session/append-coordinate.js'
 import { NO_RESPONSE_SENTINEL } from '../session/no-response.js'
-import type { AssistantSubsessionIndex, PlacedSubsession, TaskLookBack } from '../store/assistant-subsessions.js'
+import {
+  LOOK_BACK_ITEM_PREFIX,
+  type AssistantSubsessionIndex,
+  type PlacedSubsession,
+  type TaskLookBack
+} from '../store/assistant-subsessions.js'
 
 const HOUR_MS = 60 * 60_000
 
@@ -162,7 +167,7 @@ const times = (n: number): string => (n === 1 ? 'once' : n === 2 ? 'twice' : `${
 export function lookBackItemText(f: LookBackFacts): string {
   const quoted = (s: string): string => `"${s.replace(/"/g, '\\"')}"`
   const lines = [
-    `[look back] Task ${quoted(f.title?.trim() || 'Untitled')} has been quiet since ${iso(f.quietSince)} (${ago(f.now - f.quietSince)}).`
+    `${LOOK_BACK_ITEM_PREFIX}${quoted(f.title?.trim() || 'Untitled')} has been quiet since ${iso(f.quietSince)} (${ago(f.now - f.quietSince)}).`
   ]
   if (f.summary?.trim())
     lines.push(

@@ -1570,6 +1570,39 @@ describe('looking back at a task', () => {
     expect(recent).toBeDefined()
   })
 
+  it('never lists a task whose summary says it is done, until a round starts', async () => {
+    const s = await open()
+    const a = agent()
+    await s.upsertSession({
+      key: coordinatorOf(a),
+      agentId: a,
+      platform: 'slack',
+      channel: 'C0GENERAL',
+      thread: COORDINATOR_THREAD,
+      transportScope: 'T0EXAMPLE',
+      acpSessionId: null,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    const index = s.assistantSubsessions
+    const done = await threadedTask(s, a, '150.1', 1_000)
+    const waiting = await threadedTask(s, a, '150.2', 1_000)
+    const unsaid = await threadedTask(s, a, '150.3', 1_000)
+    await index.setSummary(a, done, { summary: 'Done. The report is posted.', status: 'done', now: 1_000 })
+    await index.setSummary(a, waiting, { summary: 'Waiting on Alice.', status: 'waiting', now: 1_000 })
+    await index.setSummary(a, unsaid, { summary: 'Done.', now: 1_000 })
+    expect((await index.get(a, done))?.taskStatus).toBe('done')
+    expect((await index.lookBackCandidates(a, 5_000)).map((t) => t.childSessionKey).sort()).toEqual(
+      [waiting, unsaid].sort()
+    )
+    // A new round clears the status it gave, so the task is looked at again unless it says done once more.
+    await index.resumeThreaded(a, done, 2_000)
+    await index.finish(a, done, 'done', undefined, 2_000)
+    expect(await index.get(a, done)).not.toHaveProperty('taskStatus')
+    expect((await index.lookBackCandidates(a, 5_000)).map((t) => t.childSessionKey)).toContain(done)
+  })
+
   it('records a look, its outcomes, a person’s message that starts them over, and a stop', async () => {
     const s = await open()
     const a = agent()
