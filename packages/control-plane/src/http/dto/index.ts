@@ -3502,13 +3502,11 @@ export const CronDto = z.object({
   canManageSharing: z.boolean() // visible + non-viewer; gates the sharing control
 })
 
-// One daemon-reported fire (console run history). `running` = fire report seen,
-// completion not yet — or lost, in which case the CronRunReaper closes it to
-// `failed` (orphaned) once it ages past CRON_RUN_TTL_SEC.
+// One daemon-reported fire (console run history): `running` until its outcome arrives, or until the CronRunReaper fails a lost one; `skipped` = due but deliberately not run.
 export const CronRunDto = z.object({
   id: z.string(),
   startedAt: z.string(),
-  status: z.enum(['running', 'success', 'failed']),
+  status: z.enum(['running', 'success', 'failed', 'skipped']),
   durationMs: z.number().int().nullable(),
   sessionId: z.string().nullable(), // ACP session id (console deep-link)
   reason: z.string().nullable()

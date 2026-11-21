@@ -8440,7 +8440,7 @@ export async function deleteCron(id: string): Promise<void> {
 export interface CronRunDto {
   id: string
   startedAt: string // ISO-8601
-  status: 'running' | 'success' | 'failed'
+  status: 'running' | 'success' | 'failed' | 'skipped'
   durationMs: number | null
   sessionId: string | null // ACP session id — deep-links to the session page
   reason: string | null // short failure text

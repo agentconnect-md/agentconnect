@@ -3241,17 +3241,17 @@ export interface CronRunRecord {
   id: string
   cronId: CronId
   startedAt: Date
-  status: 'running' | 'success' | 'failed'
+  status: 'running' | 'success' | 'failed' | 'skipped'
   durationMs: number | null
   sessionId: string | null // ACP session id (console deep-link)
-  reason: string | null // short failure text
+  reason: string | null // short failure or skip text
 }
 
 /** The payload of one `cron/report` EVT (fire/session progress when `status`
  *  is absent, completion when present). */
 export interface CronReportInput {
   firedAt: Date
-  status?: 'success' | 'failed'
+  status?: 'success' | 'failed' | 'skipped'
   durationMs?: number
   sessionId?: string
   reason?: string
