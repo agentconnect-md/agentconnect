@@ -259,24 +259,33 @@ describe('claudeSessionMeta', () => {
   it('carries the repository auto mode rules in the flag settings', () => {
     const autoMode = { allow: ['$defaults', 'Example rollout is pre-authorized.'] }
     const meta = (effort?: string) =>
-      claudeSessionMeta(
-        effort,
-        true,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        false,
-        [],
-        [],
-        [],
-        undefined,
+      claudeSessionMeta(effort, true, undefined, undefined, undefined, undefined, false, [], [], [], undefined, {
         autoMode
-      )
+      })
     expect(meta()).toEqual(cc({ thinking: THINKING, settings: { autoMode } }))
     expect(meta('ultracode')).toEqual(
       cc({ thinking: THINKING, settings: { ultracode: true, enableWorkflows: true, autoMode } })
     )
+  })
+
+  it("carries the repository's permission lists, after the denies that protect the runtime's credentials", () => {
+    const permissions = {
+      allow: ['Bash(scripts/example:*)'],
+      ask: ['Bash(scripts/example push:*)'],
+      deny: ['Bash(rm:*)']
+    }
+    const meta = (roots?: string[]) =>
+      claudeSessionMeta(undefined, true, undefined, undefined, roots, undefined, false, [], [], [], undefined, {
+        permissions
+      })
+    expect(meta()).toEqual(cc({ thinking: THINKING, settings: { permissions } }))
+    expect(meta(['/host/auth'])?.claudeCode.options.settings).toEqual({
+      permissions: {
+        ...permissions,
+        deny: ['Read(//host/auth)', 'Read(//host/auth/**)', 'Edit(//host/auth)', 'Edit(//host/auth/**)', 'Bash(rm:*)']
+      },
+      plansDirectory: './.claude/plans'
+    })
   })
 
   it('enables the native Claude sandbox only behind an outer AgentConnect sandbox', () => {
