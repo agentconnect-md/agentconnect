@@ -201,6 +201,15 @@ describe('Source Cache web identity credentials', () => {
     expect((err as Error).message).toBe('STS AssumeRoleWithWebIdentity failed: HTTP 403 AccessDenied')
   })
 
+  it('keeps the errno and cause when the token file cannot be read', async () => {
+    const { fs, fetch, provider } = setup()
+    fs.set(tokenFile)
+    const error = (await provider.get(0).catch((e: unknown) => e)) as Error & { cause?: { code?: string } }
+    expect(error.message).toBe('Source Cache web identity token file is unreadable (ENOENT)')
+    expect(error.cause?.code).toBe('ENOENT')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('reports a network failure by name only', async () => {
     const { provider } = setup({
       responses: [
