@@ -47,6 +47,19 @@ function settings(path: string): { filesystem: { allowWrite: string[] } } {
 }
 
 describe('stored runtime credential discovery', () => {
+  it('defers native Antigravity Keychain status to ACP while recognizing CLI file credentials and API keys', () => {
+    const { hostHome } = fixture()
+    const env = { HOME: hostHome, USERPROFILE: hostHome }
+    expect(runtimeCredentialsConfigured('antigravity-acp', undefined, env)).toBeUndefined()
+    expect(
+      runtimeCredentialsConfigured('antigravity-acp', undefined, { ...env, GEMINI_API_KEY: 'synthetic-key' })
+    ).toBe(true)
+    const credential = join(hostHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
+    mkdirSync(dirname(credential), { recursive: true })
+    writeFileSync(credential, '{"refresh_token":"synthetic-refresh"}')
+    expect(runtimeCredentialsConfigured('antigravity-acp', undefined, env)).toBe(true)
+  })
+
   it('uses META_API_KEY for Muse and seeds settings without copying the host browser login', () => {
     const { hostHome, scopeDir, cwd } = fixture()
     const config = join(hostHome, 'xdg')

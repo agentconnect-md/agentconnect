@@ -12,7 +12,7 @@ import {
 const COPILOT_KEY = 'fixture-copilot-provider-key'
 const GEMINI_KEY = 'fixture-gemini-api-key'
 const copilot = { command: 'copilot', args: ['--acp'], env: [] }
-const antigravity = { command: './agy_acp_server.par', args: [], env: [] }
+const antigravity = { command: 'agy', args: ['acp'], env: [] }
 const COPILOT_BASE = 'https://models.example.test/v1'
 
 function bindings(runtimeId: string, runtime: typeof copilot, hostEnv: NodeJS.ProcessEnv, explicitEnv = {}) {

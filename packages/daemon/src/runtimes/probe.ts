@@ -201,8 +201,8 @@ const DSH_CREDENTIALS = [
   { path: '.credentials.yaml', format: 'dsh' },
   { path: '.env', format: 'dsh-env' }
 ] as const
-/** Antigravity settings and CLI state; ACP login files are declared separately. */
-const ANTIGRAVITY_SEED = ['settings.json', 'antigravity-oauth-token', 'installation_id'] as const
+// Antigravity CLI configuration; credentials are declared separately.
+const ANTIGRAVITY_SEED = ['settings.json', 'installation_id'] as const
 /** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
 const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
 
@@ -475,15 +475,13 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.openclaw'), '.openclaw', OPENCLAW_SEED)
   ],
 
-  // Antigravity ACP uses its own consumer/business login files, separate from the CLI token.
+  // The native CLI uses its own login, independently of the standalone ACP server.
   'antigravity-acp': (env) => {
-    const root = (env.GEMINI_HOME || join(home(env), '.gemini')).replace(/^~(?=$|\/)/, home(env))
+    const root = join(home(env), '.gemini')
     return [
-      ...state(join(root, 'antigravity-acp'), join('.gemini', 'antigravity-acp'), ANTIGRAVITY_SEED, undefined, [
-        { path: 'acp_token.json', format: 'oauth', provider: 'google' },
-        { path: 'acp_business_token.json', format: 'oauth', provider: 'google' }
-      ]),
-      ...state(join(root, 'antigravity-cli'), join('.gemini', 'antigravity-cli'), ANTIGRAVITY_SEED)
+      ...state(join(root, 'antigravity-cli'), join('.gemini', 'antigravity-cli'), ANTIGRAVITY_SEED, undefined, [
+        { path: 'antigravity-oauth-token', format: 'oauth', provider: 'google' }
+      ])
     ]
   },
 

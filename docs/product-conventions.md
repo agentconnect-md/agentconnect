@@ -3016,7 +3016,7 @@ reports them. Which mode is which follows the description each runtime reports f
 | Devin                      | Smart            |
 | Qoder CLI and Qoder CN CLI | Auto             |
 | Qwen Code                  | Auto             |
-| Google Antigravity         | YOLO             |
+| Google Antigravity         | Auto             |
 | DeepSeek Harness           | Full access      |
 | Copilot                    | Autopilot        |
 
@@ -3196,6 +3196,13 @@ Gemini CLI (`gemini`) is excluded from automatic runtime discovery, including
 cached registry data. Google coding agents use the Google Antigravity
 (`antigravity-acp`) entry. Existing agents configured for Gemini CLI need to
 select Antigravity and complete its authentication before starting new sessions.
+
+Self-hosted daemons need the native Antigravity CLI (`agy`) on their PATH.
+Sign in with the CLI before resuming a session created with the standalone
+adapter. With the default data directories, the daemon imports that session's
+history on its first native resume. The full runtime image includes the CLI.
+Version 1.5.14 supports Streamable HTTP MCP connections. For a directly
+configured remote MCP server, use its Streamable HTTP endpoint.
 
 On self-hosted daemons, a tab that starts the image initially folds away runtimes
 installed in the image but not on the host. A **Show runtimes not on host** control

@@ -139,7 +139,7 @@ it.each([
 })
 
 it.each([
-  ['Google Antigravity’s full-access mode', 'antigravity-acp', ['default', 'auto_edit', 'yolo'], 'default', 'yolo'],
+  ['Google Antigravity’s auto mode', 'antigravity-acp', ['default', 'accept-edits', 'auto', 'plan'], 'default', 'auto'],
   ['Qwen Code’s auto mode', 'qwen-code', ['plan', 'default', 'auto-edit', 'auto', 'yolo'], 'default', 'auto'],
   ['the runtime’s own default for an unclassified runtime', 'cursor', ['agent', 'plan', 'ask'], 'agent', 'agent']
 ])('preselects %s', async (_label, id, modes, defaultMode, expected) => {

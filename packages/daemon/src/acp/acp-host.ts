@@ -21,6 +21,8 @@ import {
   type McpTransportCapabilities
 } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
+import { antigravityMcpFallback } from '../runtime-defs/antigravity-runtime.js'
+import { AntigravityHistoryError, importAntigravityHistory } from '../runtime-defs/antigravity-history.js'
 import {
   anchorRepositoryRules,
   claudeAbsolutePathPattern,
@@ -650,6 +652,7 @@ export class AcpHost {
   // baseline and always accepted). null until the handshake completes; the
   // unstable `acp` transport flag is deliberately ignored. Read via mcpCapabilities().
   private mcpCaps: McpTransportCapabilities | null = null
+  private importLegacyHistory?: (id: string) => Promise<boolean>
   private agentAuthMethods: AuthMethod[] = []
   private canUseCustomInstructions = false
   private canUseCodexSessionProfiles = false
@@ -978,6 +981,24 @@ export class AcpHost {
       }
     })
     this.negotiatedProtocolVersion = init.protocolVersion
+    if (
+      this.opts.runtimeId === 'antigravity-acp' &&
+      init.agentInfo?.name === 'Antigravity ACP Server' &&
+      /(?:^|[\\/])agy(?:\.exe)?$/i.test(this.runtime.command) &&
+      this.runtime.args.length === 1 &&
+      this.runtime.args[0] === 'acp' &&
+      !env.ANTIGRAVITY_GEMINI_DIR &&
+      !env.ANTIGRAVITY_APP_DATA_DIR
+    ) {
+      this.importLegacyHistory = (id) =>
+        importAntigravityHistory(
+          driver,
+          { env: env as Record<string, string>, hostKey: this.opts.hostKey, sandbox: this.opts.sandbox },
+          id
+        )
+    } else {
+      this.importLegacyHistory = undefined
+    }
     this.agentAuthMethods = init.authMethods ?? []
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
@@ -988,7 +1009,9 @@ export class AcpHost {
     this.canClose = init.agentCapabilities?.sessionCapabilities?.close != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     this.canSteer = steeringSupported(init._meta)
-    const mcp = init.agentCapabilities?.mcpCapabilities
+    const mcp =
+      init.agentCapabilities?.mcpCapabilities ??
+      antigravityMcpFallback(this.opts.runtimeId, init.agentInfo?.name, init.agentInfo?.version)
     this.mcpCaps = {
       http: mcp?.http ?? false,
       sse: mcp?.sse ?? false
@@ -1339,12 +1362,18 @@ export class AcpHost {
         [cwd, ...additionalDirectories]
       )
       const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
+      // Native agy accepts an unknown ID at load and only reports the missing history on the next prompt.
+      const hasLegacyHistory = await this.importLegacyHistory?.(sessionId)
       const res = await this.conn!.agent.request(methods.agent.session.load, {
         sessionId,
         cwd,
         ...(activeAdditionalDirectories.length > 0 ? { additionalDirectories: activeAdditionalDirectories } : {}),
         mcpServers: this.clampSessionMcpServers(mcpServers),
         ...(_meta ? { _meta } : {})
+      }).catch((cause: unknown) => {
+        if (hasLegacyHistory)
+          throw new AntigravityHistoryError('The saved Antigravity session could not be resumed.', { cause })
+        throw cause
       })
       this.live.set(sessionId, cwd)
       // Re-apply config prefs: ACP sessions restore their own last model/effort,

@@ -328,13 +328,7 @@ describe('private runtime HOME', () => {
     },
     {
       runtime: 'antigravity-acp',
-      path: join('.gemini', 'antigravity-acp', 'acp_token.json'),
-      credential: { refresh_token: 'synthetic-refresh', client_id: 'synthetic-client', client_secret: 'synthetic' },
-      provider: 'google'
-    },
-    {
-      runtime: 'antigravity-acp',
-      path: join('.gemini', 'antigravity-acp', 'acp_business_token.json'),
+      path: join('.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
       credential: { refresh_token: 'synthetic-refresh', client_id: 'synthetic-client', client_secret: 'synthetic' },
       provider: 'google'
     },
@@ -508,21 +502,22 @@ describe('private runtime HOME', () => {
     expect(readFileSync(join(home, '.local', 'share', 'devin', 'credentials.toml'), 'utf8')).toBe(text)
   })
 
-  it('uses Antigravity ACP file login under GEMINI_HOME instead of counting the separate CLI token', () => {
+  it('seeds the native Antigravity CLI login without treating standalone ACP tokens as CLI credentials', () => {
     const { hostHome, scopeDir } = fixture()
-    const gemini = join(hostHome, 'custom-gemini')
+    const gemini = join(hostHome, '.gemini')
     mkdirSync(join(gemini, 'antigravity-cli'), { recursive: true })
     mkdirSync(join(gemini, 'antigravity-acp'))
-    writeFileSync(join(gemini, 'antigravity-cli', 'antigravity-oauth-token'), 'synthetic-cli-token')
-    const env = { HOME: hostHome, GEMINI_HOME: '~/custom-gemini' }
+    writeFileSync(join(gemini, 'antigravity-acp', 'acp_token.json'), '{"refresh_token":"standalone-token"}')
+    const env = { HOME: hostHome }
     expect(discoverSeededRuntimeCredentials('antigravity-acp', env).paths).toEqual([])
-    const source = join(gemini, 'antigravity-acp', 'acp_token.json')
+    const source = join(gemini, 'antigravity-cli', 'antigravity-oauth-token')
     const text = '{"refresh_token":"synthetic-refresh"}'
     writeFileSync(source, text)
     expect(discoverSeededRuntimeCredentials('antigravity-acp', env)).toEqual({ paths: [source], providers: ['google'] })
     const home = prepareRuntimeHome('antigravity-acp', scopeDir, env)
-    expect(readFileSync(join(home, '.gemini', 'antigravity-acp', 'acp_token.json'), 'utf8')).toBe(text)
-    expect(runtimeHomeEnvironment('antigravity-acp', home, {}, env).GEMINI_HOME).toBe(join(home, '.gemini'))
+    expect(readFileSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'), 'utf8')).toBe(text)
+    expect(runtimeHomeEnvironment('antigravity-acp', home, {}, env).HOME).toBe(home)
+    expect(existsSync(join(home, '.gemini', 'antigravity-acp'))).toBe(false)
   })
 
   it('uses Grok file and home overrides for both discovery and the private runtime', () => {
@@ -569,12 +564,6 @@ describe('private runtime HOME', () => {
       path: join('.copilot', 'config.json'),
       override: 'COPILOT_HOME',
       credential: { copilotTokens: { 'example-user': 'ignored-key' } }
-    },
-    {
-      runtime: 'antigravity-acp',
-      path: join('.gemini', 'antigravity-acp', 'acp_token.json'),
-      override: 'GEMINI_HOME',
-      credential: { refresh_token: 'ignored-key' }
     }
   ])(
     'keeps $runtime auth absent when its effective override has no login',
