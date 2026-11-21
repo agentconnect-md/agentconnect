@@ -1,8 +1,10 @@
 # Assistant Mode
 
-**Status:** Design, fourteenth revision (2026-10-10). Reviewed by three independent design reviews
-and the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
-Prerequisites: #2812, #2813. Work breakdown: #2810.
+**Status:** Implemented (Beta in the console); hundred-and-eleventh revision (2026-11-14). Core
+assistant mode, the work board and sibling task awareness (§5.18), Slack Work canvas (§5.19), and
+quiet-task look-backs (§5.20) are shipped; individual subsections below record what remains
+proposed or deferred. Early design reviews are recorded in §10. Prerequisites: #2812, #2813. Work
+breakdown: #2810.
 
 **In one sentence:** switch an agent into assistant mode and it behaves like one person on the
 team — it keeps a continuous conversation with you in every place, what it hears in one place it
