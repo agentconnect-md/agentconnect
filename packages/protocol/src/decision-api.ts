@@ -15,6 +15,7 @@ import type {
   DecisionQuestion,
   DecisionRoutingEvaluationRecordDetail,
   DecisionRoutingEvaluationRecordPage,
+  DecisionRoutingRuleRow,
   DecisionUsageRules,
   DecisionUsageTarget,
   DecisionValidationIssue,
@@ -260,7 +261,7 @@ export interface DecisionRoutingPreviewResult {
     reason?: string
     /** False when every recipient participates, so the set settled with no model call. */
     evaluated: boolean
-    rules: Array<{ ruleId: string; matched: boolean; matchedKeys: string[] }>
+    rules: DecisionRoutingRuleRow[]
     matchedRuleIds: string[]
     matchedKeys: string[]
     matchedAgentIds: string[]

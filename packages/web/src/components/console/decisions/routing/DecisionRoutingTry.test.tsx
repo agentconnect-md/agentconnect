@@ -222,6 +222,44 @@ describe('DecisionRoutingTry', () => {
     expect(text).toContain('Matched rules2')
   })
 
+  it("lists a chain's step rules by their Decision, as continuing, matched, or not reached", async () => {
+    const [first, second, third] = saved.rules
+    const step = (id: string, ruleId: string) => ({
+      id,
+      decisionId: decision.id,
+      rules: [{ ...first!, id: ruleId, action: { type: 'agent' as const, agentId: 'technical-agent' } }]
+    })
+    const draft: RoutingDraft = {
+      ...saved,
+      rules: [{ ...first!, action: { type: 'decision', nextStepId: 's2' } }, second!, third!],
+      steps: [step('s2', 'r-step'), step('s3', 'r-unused')]
+    }
+    draft.rules[1] = { ...second!, action: { type: 'decision', nextStepId: 's3' } }
+    const api = decisionMock.createDecisionMockApi()
+    const real = api.previewRouting.bind(api)
+    vi.spyOn(api, 'previewRouting').mockImplementation(async (...args) => {
+      const preview = await real(...args)
+      const row = (ruleId: string, matched: boolean, stepId?: string, reached = true) => ({
+        ruleId,
+        ...(stepId ? { stepId } : {}),
+        reached,
+        matched,
+        matchedKeys: []
+      })
+      const rules = [row(first!.id, true), row(second!.id, false), row(third!.id, false)]
+      rules.push(row('r-step', true, 's2'), row('r-unused', false, 's3', false))
+      return { ...preview, consumer: { ...preview.consumer, rules, matchedRuleIds: [first!.id, 'r-step'] } }
+    })
+    const { view } = await render(api, draft)
+    await runWith(view)
+    const text = result(view)
+    expect(text).toContain('Rule 1 matched')
+    expect(text).toContain(`${decision.name} rule 1 matched`)
+    expect(text).toContain(`${decision.name} rule 1 not reached`)
+    expect(text).toContain(`Matched rules1, ${decision.name} rule 1`)
+    expect(text).toContain('Matched actionsContinue with a decision, Technical')
+  })
+
   it('uses Otherwise when no rule matches, naming the resolved default or Would not activate', async () => {
     const draft = { ...saved, rules: saved.rules.slice(2), otherwise: 'default_agent' as const }
     const { view, rerender } = await render(decisionMock.createDecisionMockApi(), draft)

@@ -76,7 +76,15 @@ const RoutingPreviewDto = z.object({
     notAppliedReason: z.enum(['off', 'outside_scope', 'paused', 'needs_review', 'unsupported']).optional(),
     reason: z.string().optional(),
     evaluated: z.boolean(),
-    rules: z.array(z.object({ ruleId: z.string(), matched: z.boolean(), matchedKeys: z.array(z.string()) })),
+    rules: z.array(
+      z.object({
+        ruleId: z.string(),
+        stepId: z.string().optional(),
+        reached: z.boolean(),
+        matched: z.boolean(),
+        matchedKeys: z.array(z.string())
+      })
+    ),
     matchedRuleIds: z.array(z.string()),
     matchedKeys: z.array(z.string()),
     matchedAgentIds: z.array(z.string()),
