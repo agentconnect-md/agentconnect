@@ -20,7 +20,8 @@ import type {
   SlackManifestExportResult,
   SlackManifestUpdateResult,
   SlackOAuthExchangeResult,
-  SlackRotateResult
+  SlackRotateResult,
+  SlackAppIconSetResult
 } from '../../src/http/slack-config-api.js'
 
 /** Wait until a backend is genuinely queued on a row lock — the interleaving each race below is
@@ -79,6 +80,9 @@ class StubExchangeApi implements SlackConfigApi {
   }): Promise<SlackOAuthExchangeResult> {
     this.exchangeCalls.push(p)
     return this.exchangeResult
+  }
+  async setAppIcon(): Promise<SlackAppIconSetResult> {
+    return { ok: true }
   }
   async rotateConfigToken(): Promise<SlackRotateResult> {
     return { ok: false, error: 'unused' }
