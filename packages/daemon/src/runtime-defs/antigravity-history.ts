@@ -1,4 +1,5 @@
-import type { SpawnDriver, SpawnRequest } from '../acp/spawn-driver.js'
+import { LocalDriver, type SpawnDriver, type SpawnRequest } from '../acp/spawn-driver.js'
+import { nodeExecutable } from '../runtimes/node-executable.js'
 
 export class AntigravityHistoryError extends Error {}
 
@@ -65,7 +66,7 @@ export async function importAntigravityHistory(
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return false
   try {
     const child = await driver.launch({
-      command: 'node',
+      command: driver instanceof LocalDriver ? nodeExecutable() : 'node',
       args: ['--input-type=module', '-e', IMPORT_HISTORY, id],
       env: launch.env,
       hostKey: launch.hostKey,

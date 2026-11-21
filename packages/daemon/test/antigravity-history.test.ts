@@ -13,7 +13,7 @@ it('restores committed WAL history once and preserves the native continuation', 
   const native = join(home, '.gemini', 'antigravity-cli', 'conversations')
   const id = randomUUID()
   const driver = new LocalDriver()
-  const launch = { env: { PATH: process.env.PATH!, HOME: home, USERPROFILE: home } }
+  const launch = { env: { PATH: home, HOME: home, USERPROFILE: home } }
   mkdirSync(legacy, { recursive: true })
   const source = new DatabaseSync(join(legacy, id + '.db'))
   try {
