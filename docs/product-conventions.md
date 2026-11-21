@@ -164,7 +164,12 @@ Every level keeps these rules:
   message only they see, on Telegram in an alert on the tap, on Feishu/Lark in a toast on the
   click, and on Google Chat in a private message.
 - The setting does not change the agent's permission policy. Which tool calls need approval is
-  set in the console, and an agent that allows every tool call never asks.
+  set by the agent's permission mode in the console and, for a Claude Code agent whose workspace
+  is a Git repository, by that repository's `allow`, `ask` and `deny` rules ("A repository's
+  Claude Code rules"). A call the repository allows is not asked about, though an edit under a
+  folder the runtime protects, such as `.git` or `.claude`, still is. A call it lists under `ask`
+  is asked about in every mode, including one that otherwise never asks, and `ask` wins over
+  `allow`.
 
 Three things are outside this setting:
 
