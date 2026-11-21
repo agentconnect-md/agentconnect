@@ -12734,9 +12734,10 @@ export class Daemon {
       null,
       LOOK_BACK_SCANNED_ROWS
     )
-    // The agent's own words, never a stop's audit row, which it writes under the agent's name too.
+    // The agent's own words: never a delivered input under its name (a report, a look back; they carry a recipient), nor a stop's audit row.
     const reply = page.rows.find(
-      (row) => row.kind === 'text' && row.sender === agentId && row.text.trim() && !row.text.startsWith('🛑')
+      (row) =>
+        row.kind === 'text' && row.sender === agentId && !row.recipient && row.text.trim() && !row.text.startsWith('🛑')
     )
     const person = look?.person && look.personAt !== undefined ? look.person : undefined
     const userId = person?.asker.userId

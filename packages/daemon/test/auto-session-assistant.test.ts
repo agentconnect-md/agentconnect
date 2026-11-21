@@ -683,6 +683,59 @@ describe('looking back at a place’s quiet tasks', () => {
     await daemon.stop()
   })
 
+  it('quotes the task’s own last reply, never a look-back item delivered into its thread', async () => {
+    const { daemon, d, scope } = await boot()
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    const key = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
+    await d.store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1.1',
+      transportScope: scope,
+      acpSessionId: 'acp-1.1',
+      sessionId: 'sid-1.1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: key,
+      parentSessionId: 'sid-coordinator',
+      parentSessionKey: coordinatorKey,
+      title: 'Task 1.1',
+      openedFor: { place: 'slack:C1', messageId: 'msg-1.1' },
+      now: 1_000
+    })
+    const channel = transcriptChannelKey('C1', scope)
+    await d.store.appendTranscript({
+      channel,
+      thread: '1.1',
+      admission: { agentId: 'bot-a', sessionKey: key },
+      ts: '1700000100.000001',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'The report is posted here.'
+    })
+    // A look-back item lands in the task's thread under the agent's name, admitted by the coordinator.
+    await d.store.appendTranscript({
+      channel,
+      thread: '1.1',
+      admission: { agentId: 'bot-a', sessionKey: coordinatorKey },
+      ts: '1700000200.000001',
+      sender: 'bot-a',
+      recipient: 'bot-a',
+      kind: 'text',
+      text: '[look back] Task "Task 1.1" has been quiet since then.'
+    })
+    const task = await d.store.assistantSubsessions.get('bot-a', key)
+    expect(await d.lookBackFacts('bot-a', task, false)).toMatchObject({ lastReply: 'The report is posted here.' })
+    await daemon.stop()
+  })
+
   it('marks a person’s stop on the task, and starts its counts over when a person writes in its thread', async () => {
     const prompts: string[] = []
     const { daemon, d, scope, route } = await boot(async (blocks) => {
