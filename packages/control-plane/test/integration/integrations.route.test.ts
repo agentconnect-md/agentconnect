@@ -1474,6 +1474,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       accessExpiresAt: new Date(Date.now() + 60 * 60 * 1000)
     })
     let submitted: unknown
+    const iconCalls: string[] = []
     app.platformStubs.slackConfigApi = {
       createApp: async () => ({ ok: false, error: 'unused' }),
       exportApp: async () => ({
@@ -1490,7 +1491,11 @@ describe('bot roster (GET/DELETE /bots)', () => {
         return { ok: true, permissionsUpdated: true }
       },
       exchangeOAuth: async () => ({ ok: false, error: 'unused' }),
-      rotateConfigToken: async () => ({ ok: false, error: 'unused' })
+      rotateConfigToken: async () => ({ ok: false, error: 'unused' }),
+      setAppIcon: async (_token, appId) => {
+        iconCalls.push(appId)
+        return { ok: true }
+      }
     } satisfies SlackConfigApi
     app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
@@ -1523,6 +1528,8 @@ describe('bot roster (GET/DELETE /bots)', () => {
         event_subscriptions: { bot_events: expect.arrayContaining(['app_home_opened', ...SLACK_BOT_EVENTS]) }
       }
     })
+    // A dedicated app is re-branded with its agent's icon.
+    expect(iconCalls).toEqual(['A0TESTAPP1'])
   })
 
   it('POST Slack refresh keeps an unverified manifest distinct from current workspace scopes', async () => {
@@ -1594,7 +1601,8 @@ describe('bot roster (GET/DELETE /bots)', () => {
       },
       updateApp: async () => ({ ok: true, permissionsUpdated: false }),
       exchangeOAuth: async () => ({ ok: false, error: 'unused' }),
-      rotateConfigToken: async () => ({ ok: false, error: 'unused' })
+      rotateConfigToken: async () => ({ ok: false, error: 'unused' }),
+      setAppIcon: async () => ({ ok: true })
     } satisfies SlackConfigApi
     app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',

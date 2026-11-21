@@ -441,7 +441,8 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
       exportApp: vi.fn(),
       updateApp: vi.fn(),
       exchangeOAuth: vi.fn(),
-      rotateConfigToken: vi.fn(async () => ({ ok: false as const, error: 'invalid_refresh_token' }))
+      rotateConfigToken: vi.fn(async () => ({ ok: false as const, error: 'invalid_refresh_token' })),
+      setAppIcon: vi.fn(async () => ({ ok: true as const }))
     } as unknown as NonNullable<SlackUserConfigDeps['slackConfigApi']>,
     store: {
       get: vi.fn(async () => stored),

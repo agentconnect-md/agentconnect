@@ -34,6 +34,7 @@ import {
   slackOAuthRedirectUri
 } from '../slack-manifest.js'
 import { relayHttpBase } from '../relay-ingress.js'
+import { syncSlackAppIcon } from '../slack-app-icon.js'
 
 /** Slack errors from the manifest export/update that mean "this app is not
  *  managed by the caller's config token" — a graceful `manual_update_required`,
@@ -161,6 +162,22 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
                 bot.slackAppId,
                 mergeManagedSlackManifest(exported.manifest, bot.name, redirectUrl, httpRelayBase ?? undefined)
               )
+              // A dedicated app wears its one agent's icon; a shared app keeps whatever icon it has.
+              if (updated.ok && !bot.shareable) {
+                const memberships = await deps.repos.integration.listForBot(bot.id)
+                const agent =
+                  memberships.length === 1 ? await deps.repos.agent.get(bot.orgId, memberships[0]!.agentId) : null
+                if (agent) {
+                  const iconError = await syncSlackAppIcon(
+                    api,
+                    config.accessToken,
+                    bot.slackAppId,
+                    agent,
+                    deps.iconStore
+                  )
+                  if (iconError) req.log.warn({ botId: bot.id, error: iconError }, 'slack app icon sync failed')
+                }
+              }
               manifest = updated.ok
                 ? 'synced'
                 : MANUAL_MANIFEST_ERRORS.has(updated.error)
