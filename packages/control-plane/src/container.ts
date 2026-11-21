@@ -2860,6 +2860,7 @@ export function buildContainer(
     hookRouting,
     ...(githubRunReporter ? { kickGithubRunReporter: () => githubRunReporter.kick() } : {}),
     recomputeDuties: (orgId: string) => dutyRecompute.kick(orgId),
+    recomputeDutiesNow: (orgId: string) => dutyRecompute.recomputeOrg(orgId),
     auth,
     apiKeys,
     computers,
