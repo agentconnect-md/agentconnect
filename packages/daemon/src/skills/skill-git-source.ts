@@ -249,8 +249,9 @@ function hostedGitSkillUrl(cloneUrl: string): void {
   let url: URL
   try {
     url = new URL(cloneUrl)
-  } catch {
-    throw new Error('skill Git source outside GitHub must be an https address')
+  } catch (error) {
+    // The raw value stays out of the message: a malformed remote can still embed a credential.
+    throw new Error('skill Git source outside GitHub is not a valid URL', { cause: error })
   }
   if (
     url.protocol !== 'https:' ||
