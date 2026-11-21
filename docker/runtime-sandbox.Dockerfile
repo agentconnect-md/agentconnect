@@ -90,22 +90,21 @@ RUN set -eu; \
 
 # Antigravity is the first, independently cached application layer in the full image.
 FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS antigravity
-ARG ANTIGRAVITY_VERSION=1.4.5
-ARG ANTIGRAVITY_SHA256_AMD64=923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b
+ARG ANTIGRAVITY_CLI_RELEASE=1.5.14-5302690847260672
+ARG ANTIGRAVITY_SHA512_AMD64=83311d3f354567612dc16c1ae2ea9b503d6f6833aa4e138d39aa229da3f3bb99b0e4d7cca0bce4796b0060d6a51d8113eb7449ed5dc0e7900bf217107ea5bff9
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
-  && apt-get install --no-install-recommends -y ca-certificates curl unzip \
+  && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /out/antigravity
-RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
-  "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-${ANTIGRAVITY_VERSION}-linux-x86_64.zip" \
-  && printf '%s  /tmp/antigravity.zip\n' "$ANTIGRAVITY_SHA256_AMD64" | sha256sum -c - \
-  && unzip -q /tmp/antigravity.zip -d /out/antigravity \
-  && test -x /out/antigravity/agy_acp_server.par \
-  && test -x /out/antigravity/localharness_external \
-  && chmod -R a-w /out/antigravity \
-  && rm /tmp/antigravity.zip
+RUN curl --retry 5 -fsSL -o /tmp/antigravity.tar.gz \
+  "https://storage.googleapis.com/antigravity-public/antigravity-cli/${ANTIGRAVITY_CLI_RELEASE}/linux-x64/cli_linux_x64.tar.gz" \
+  && printf '%s  /tmp/antigravity.tar.gz\n' "$ANTIGRAVITY_SHA512_AMD64" | sha512sum -c - \
+  && tar -xzf /tmp/antigravity.tar.gz -C /out/antigravity antigravity \
+  && mv /out/antigravity/antigravity /out/antigravity/agy \
+  && chmod 0555 /out/antigravity/agy \
+  && rm /tmp/antigravity.tar.gz
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
 FROM rust:1.100.0-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS muse-acp
@@ -177,11 +176,7 @@ FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-apps
 USER root
 COPY --link --from=azure-cli --chown=0:0 /opt/az/ /opt/az/
 COPY --from=azure-cli --chown=0:0 /usr/bin/az /usr/bin/az
-# Antigravity resolves its local harness relative to the ACP executable.
-COPY --link --from=antigravity --chown=0:0 /out/antigravity/ /opt/agentconnect/runtimes/antigravity/
-RUN printf '%s\n' '#!/bin/sh' \
-  'exec /opt/agentconnect/runtimes/antigravity/agy_acp_server.par "$@"' > /usr/local/bin/antigravity-acp \
-  && chmod 0555 /usr/local/bin/antigravity-acp
+COPY --link --from=antigravity --chown=0:0 /out/antigravity/agy /usr/local/bin/agy
 
 ARG AGENT_BROWSER_VERSION
 RUN --mount=type=bind,source=docker/runtime-sandbox/install-agent-browser.sh,target=/tmp/install-agent-browser.sh \

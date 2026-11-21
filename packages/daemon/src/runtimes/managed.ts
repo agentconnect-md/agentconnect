@@ -6,10 +6,13 @@ export interface ManagedRuntimeEntry {
   runtime: RuntimeDef
 }
 
-/** AgentConnect-maintained runtime builds that intentionally override the public ACP registry.
- *  Explicit operator config remains the final authority. The daemon installs each `npx` spec below
- *  into its own runtime store at start and launches from there, never through `npx` (runtime-store.ts). */
+// Reviewed runtime launchers that override the public ACP registry; explicit operator config still wins.
 export const MANAGED_RUNTIME_CATALOG: Readonly<Record<string, ManagedRuntimeEntry>> = Object.freeze({
+  'antigravity-acp': {
+    name: 'Google Antigravity',
+    version: '',
+    runtime: { command: 'agy', args: ['acp'], env: [] }
+  },
   'codex-acp': {
     name: 'Codex',
     // The ACP probe reports the concrete version resolved by this release channel.
