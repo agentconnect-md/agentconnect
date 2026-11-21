@@ -1,6 +1,7 @@
 # Organization Session Policy
 
-**Status:** storage and delivery implemented. Nothing reads the policy yet; see [Not yet](#not-yet).
+**Status:** storage, delivery, and monthly session counting implemented. Nothing refuses a session
+yet; see [Not yet](#not-yet).
 
 ## What it is
 
@@ -57,9 +58,46 @@ usage ingest secret or the usage ServiceAccounts.
 
 With neither configured the route is not registered, so the path answers 404.
 
+## Monthly session count
+
+`org_session_month` holds one row per organization and UTC month: `monthStart`, the first instant
+of the month, and `used`, the sessions started in it. A session counts once, the first time the
+Control Plane records it: the transaction that inserts its `session_meta` row from a daemon's
+`event/session` milestone also increments the organization's row for the current month. Later
+milestones of the same session update that row and count nothing, and a milestone the agent guard
+drops (an unknown agent, or a session id another agent owns) writes nothing and counts nothing.
+
+- **Month.** The UTC month is read from the database clock when the row is inserted, never from
+  the time the daemon reports, so a late or skewed report counts in the month it arrived.
+- **Every platform.** Every new session counts, whatever surface started it.
+- **Counting only.** The increment consults no limit and never refuses; a failed increment fails
+  the whole milestone, like any other statement in that transaction.
+- **No backfill.** Rows come only from sessions first recorded after this change shipped, so
+  sessions that existed before it are never counted.
+- **Reported sessions only.** The count covers sessions daemons report. An admission step before a
+  session starts is later work.
+
+The increment is the transaction's last statement, so concurrent new sessions of one organization
+queue on its month row only until commit. Deleting the organization deletes its rows.
+
+### Read route
+
+`GET /api/v1/orgs/{orgId}/usage/sessions` sits beside the other usage reads and takes the same two
+credentials: a signed-in member of the organization, or the install-level usage reader workload
+(`usage-service-auth.ts`). A non-member and an unknown organization get 404.
+
+| Field            | Meaning                                                                       |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `used`           | Sessions counted in the current UTC month; 0 when none.                       |
+| `limit`          | The policy's `monthlySessionLimit`; null without a limit or a policy.         |
+| `policyRevision` | The stored policy revision; null without a policy.                            |
+| `monthStart`     | The current UTC month's first instant, by the database clock.                 |
+| `resetsAt`       | The next UTC month's first instant.                                           |
+| `asOf`           | The database time of the read; every field comes from that one SQL statement. |
+
 ## Not yet
 
-- Nothing reads the policy today; no route, frame, or daemon behaves differently because of it.
-- Counting sessions per organization and UTC month, and refusing a new session when `enforce` is
-  true and the limit is reached, are later work.
+- Refusing a new session when `enforce` is true and the limit is reached, and an admission request
+  before a session starts, are later work; until then the policy changes no route, frame, or
+  daemon behavior, and the count is only read.
 - Applying `historyRetentionDays` to hosted session history is later work.

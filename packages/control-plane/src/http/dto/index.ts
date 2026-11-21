@@ -5438,6 +5438,18 @@ export const ComputerScreenshotUsageDto = z.object({
   /** Screenshots held now, not yet expired. */
   stored: z.object({ count: z.number().int(), bytes: z.number().int() })
 })
+/** Sessions the organization started this UTC month beside its session policy (org-session-policy.md). */
+export const SessionMonthUsageDto = z.object({
+  /** Sessions the Control Plane first recorded since `monthStart`. */
+  used: z.number().int(),
+  /** The policy's monthly session limit; null when there is no limit or no policy. */
+  limit: z.number().int().nullable(),
+  /** The stored policy revision; null when the organization has no policy. */
+  policyRevision: z.number().int().nullable(),
+  monthStart: z.string().datetime(),
+  resetsAt: z.string().datetime(),
+  asOf: z.string().datetime()
+})
 export const ComputerScreenshotUsageQuery = z
   .object({ from: z.string().datetime({ offset: true }), to: z.string().datetime({ offset: true }) })
   .refine((q) => Date.parse(q.from) < Date.parse(q.to), {
