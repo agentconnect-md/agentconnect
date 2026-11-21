@@ -2288,6 +2288,7 @@ enum CronRunStatus {
   running
   success
   failed
+  skipped
 }
 
 model CronRun {

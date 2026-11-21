@@ -338,6 +338,8 @@ export interface QueueEntry {
   /** Best-effort lifecycle notification after ACP session initialization but
    *  before prompting. Used by trigger sources that expose a live deep-link. */
   onSessionReady?: (sessionId: string) => void
+  /** Called once, just before this entry's prompt is sent; a null dispatch after it is a cancelled turn, not a skip. */
+  onTurnStarted?: () => void
   /** True when this entry was buffered via the user `!queue` command (ACK wording only —
    *  it is one and the same admission queue as ordinary inbound, per §6.9 #390). */
   isQueueCmd?: boolean

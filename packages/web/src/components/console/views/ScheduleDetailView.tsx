@@ -68,7 +68,8 @@ export default function ScheduleDetailView() {
   const runStyle = {
     running: { dot: 'var(--status-paused)', color: 'var(--text-secondary)', label: t('running') },
     success: { dot: 'var(--status-online)', color: 'var(--text-primary)', label: t('success') },
-    failed: { dot: 'var(--status-error)', color: 'var(--status-error)', label: t('failed') }
+    failed: { dot: 'var(--status-error)', color: 'var(--status-error)', label: t('failed') },
+    skipped: { dot: 'var(--text-disabled)', color: 'var(--text-tertiary)', label: t('skipped') }
   } as const
 
   const c = crons.find((x) => x.id === id)
@@ -376,7 +377,7 @@ export default function ScheduleDetailView() {
                           </span>
                         ) : (
                           <span className="flex-none font-sans text-[11px] font-normal leading-normal text-(--text-disabled)">
-                            {channelName ? t('postedNoSession') : t('headless')}
+                            {r.status === 'skipped' ? t('notRun') : channelName ? t('postedNoSession') : t('headless')}
                           </span>
                         )}
                         {r.reason && (

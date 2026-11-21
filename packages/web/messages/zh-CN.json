@@ -4466,6 +4466,8 @@
       "running": "运行中",
       "success": "成功",
       "failed": "失败",
+      "skipped": "已跳过",
+      "notRun": "未运行",
       "started": "开始时间",
       "status": "状态",
       "target": "目标",

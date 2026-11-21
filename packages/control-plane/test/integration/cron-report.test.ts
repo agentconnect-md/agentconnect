@@ -194,6 +194,26 @@ describe('cron/report EVT → lastRunAt convergence', () => {
       new Date('2026-07-03T10:00:00.000Z')
     )
   })
+  it('records a skipped fire as skipped with its reason, not as a failure', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const cronId = await seedCron(agentId)
+    const repo = new PgCronRepo(prisma)
+
+    await report(DAEMON, cronId, agentId, '2026-07-03T11:00:00.000Z')
+    await report(DAEMON, cronId, agentId, '2026-07-03T11:00:00.000Z', {
+      status: 'skipped',
+      durationMs: 3,
+      reason: 'agent is paused'
+    })
+    const runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({ status: 'skipped', reason: 'agent is paused', sessionId: null })
+    // A closed row is past the reaper, which would otherwise relabel it as a daemon outage.
+    expect(await repo.reapStaleRuns(new Date('2026-07-04T00:00:00.000Z'))).toBe(0)
+    expect((await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId)))[0]!.status).toBe('skipped')
+  })
 })
 
 /** Dispatch a hand-built `cron/report-sync` REQ through the real handler and return its replies. */
@@ -324,6 +344,45 @@ describe('a one-shot cron after its run', () => {
     await send({ status: 'success', durationMs: 1000 })
     expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).toBeNull()
     expect(cronRemove).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a one-shot whose only fire was skipped, so it can still be run', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const repo = new PgCronRepo(prisma)
+    const cronId = randomUUID()
+    await repo.upsert({
+      cronId: CronId(cronId),
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(agentId),
+      schedule: '2026-07-03T09:00:00',
+      timezone: 'UTC',
+      trigger: 'check once'
+    })
+    const retireOneShot = vi.fn(async () => {})
+    const deps = {
+      cron: repo,
+      agent: new PgAgentRepo(prisma),
+      log: { error: () => {} },
+      placementResolver: new PlacementResolver({ duties: new PgDutyGroupRepo(prisma), clock: systemClock }),
+      agentCrons: { retireOneShot }
+    } as unknown as DaemonWsDeps
+    await handleCronReport(
+      {
+        v: 1,
+        id: randomUUID(),
+        ts: new Date().toISOString(),
+        type: 'cron/report',
+        orgId: DEFAULT_ORG_ID,
+        payload: { cronId, agentId, firedAt: '2026-07-03T09:00:00.000Z', status: 'skipped', reason: 'agent is paused' }
+      } as AnyFrame,
+      { daemonId: DAEMON } as DaemonConnection,
+      deps
+    )
+    expect(retireOneShot).not.toHaveBeenCalled()
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId))).not.toBeNull()
+    expect((await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId)))[0]).toMatchObject({ status: 'skipped' })
   })
 
   it('leaves a one-shot rescheduled during the run for its own later fire', async () => {
