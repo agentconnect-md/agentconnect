@@ -58,6 +58,22 @@ COPY packages/web/package.json packages/web/
 COPY packages/k8s-client/package.json packages/k8s-client/
 COPY packages/object-store/package.json packages/object-store/
 
+# ───────────────────────── control-plane: prisma ────────────────────────────
+# Generate on the runner's own platform: Prisma's wasm schema parser misreads valid schemas under QEMU arm64.
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS cp-prisma
+WORKDIR /app
+ENV PNPM_HOME=/pnpm \
+  PATH=/pnpm:$PATH
+RUN npm install --global corepack@0.36.0 && corepack enable
+COPY --from=manifests /root/.npmrc /root/.npmrc
+COPY --from=manifests /app ./
+RUN --mount=type=cache,id=pnpm-build,target=/pnpm/store \
+  pnpm install --frozen-lockfile --filter "@agentconnect.md/control-plane"
+COPY tsconfig.base.json ./
+COPY packages/control-plane/prisma.config.ts packages/control-plane/tsconfig.json packages/control-plane/
+COPY packages/control-plane/prisma packages/control-plane/prisma
+RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
+
 # ───────────────────────── control-plane: build ─────────────────────────────
 # Install the control-plane, the self-contained Setup Server package, and
 # their workspace deps (skips the daemon and its native better-sqlite3 build).
@@ -70,9 +86,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 # Source last — editing app code no longer busts the install layer above.
 COPY . .
 
-RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
+COPY --from=cp-prisma /app/packages/control-plane/src/generated/prisma packages/control-plane/src/generated/prisma
 
-# Build the dependency closure once; Prisma was generated above.
+# Build the dependency closure once; Prisma was generated in cp-prisma.
 RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/control-plane..." build:package
 
