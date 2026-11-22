@@ -3079,11 +3079,16 @@ export interface OrgSessionMonthUsage {
   asOf: Date
 }
 
+/** A session admission's outcome: admitted, counted only when the CP first learned of the id here, or the id is another agent's. */
+export type OrgSessionAdmission = { admitted: true; counted: boolean } | { admitted: false; conflict: 'other_agent' }
+
 export interface OrgSessionPolicyRepo {
   /** Store the policy if its revision is above the stored one; returns the revision now held, or null when the org does not exist. */
   apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null>
   /** This UTC month's session count by the database clock with the policy's limit; null when the org does not exist. */
   monthUsage(orgId: string): Promise<OrgSessionMonthUsage | null>
+  /** Admit a session id for the agent's org, idempotently; consults no limit and never refuses (org-session-policy.md, Admission). */
+  admit(orgId: string, agentId: string, sessionId: string): Promise<OrgSessionAdmission>
 }
 
 export interface SessionUsageRepo {

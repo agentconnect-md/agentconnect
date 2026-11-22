@@ -18,6 +18,7 @@ import {
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
+  SESSION_ADMIT_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   MAX_FRAME_BYTES,
   MSTEAMS_RELAY_EGRESS_V1_FEATURE,
@@ -192,6 +193,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     expect(snap.serverFeatures).toContain(READ_ACCESS_BATCH_V1_FEATURE)
     // source-cache.md §11: a daemon reports skill Source failures only to a CP that stores them.
     expect(snap.serverFeatures).toContain(AGENT_SKILL_STATUS_V1_FEATURE)
+    // org-session-policy.md, Admission: a daemon asks to admit a new session only of a CP that answers it.
+    expect(snap.serverFeatures).toContain(SESSION_ADMIT_FEATURE)
 
     // assignments: exactly the one active row for this daemon, as a RouteAssign.
     expect(snap.assignments).toHaveLength(1)

@@ -1022,6 +1022,7 @@ have dedicated schemas under `packages/protocol/src/frames/`.
 | `session/*`                                               | paired        | correlated paginated reads                            | fetch daemon-local session data                                               |
 | `session/visibility`, `session/visibility/snapshot`       | C→D           | correlated requests (`session/visibility/ok` / `ack`) | push CP-authoritative session privacy gate state (session-visibility.md §5.1) |
 | `channel/agents`                                          | D→C           | correlated reply                                      | resolve collaboration directory metadata                                      |
+| `session/admit`                                           | D→C           | correlated reply (`session/admit/result`)             | admit a new session for its organization (org-session-policy.md)              |
 | `error`, `ack`                                            | either        | correlated replies                                    | provide generic protocol outcomes                                             |
 
 ---

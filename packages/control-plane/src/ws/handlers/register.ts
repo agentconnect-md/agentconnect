@@ -66,6 +66,7 @@ import {
   SESSION_EXECUTORS_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
+  SESSION_ADMIT_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   DAEMON_LIFECYCLE_BEGIN_FEATURE
@@ -184,6 +185,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       ...(deps.webchatRemoteMcp ? [WEBCHAT_MCP_GRANT_RENEW_FEATURE] : []),
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,
+      // org-session-policy.md, Admission: this CP admits a new session for its org; it counts and refuses none.
+      ...(deps.sessionAdmission ? [SESSION_ADMIT_FEATURE] : []),
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
       // high-availability.md: this CP ACKs a terminal cron outcome, so the daemon keeps it until then.
