@@ -88,23 +88,24 @@ RUN set -eu; \
   chmod -R a-w /opt/az /usr/bin/az; \
   rm -rf /var/lib/apt/lists/* /tmp/azure-cli.deb "/tmp/${wheel}"
 
-# Antigravity is the first, independently cached application layer in the full image.
+# Antigravity is the first, independently cached application layer in both images; arm64 has no build, so its stage stays empty.
 FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS antigravity
 ARG ANTIGRAVITY_CLI_RELEASE=1.5.14-5302690847260672
 ARG ANTIGRAVITY_SHA512_AMD64=83311d3f354567612dc16c1ae2ea9b503d6f6833aa4e138d39aa229da3f3bb99b0e4d7cca0bce4796b0060d6a51d8113eb7449ed5dc0e7900bf217107ea5bff9
 ARG TARGETARCH
-RUN test "${TARGETARCH:-amd64}" = amd64 \
-  && apt-get update \
-  && apt-get install --no-install-recommends -y ca-certificates curl \
-  && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /out/antigravity
-RUN curl --retry 5 -fsSL -o /tmp/antigravity.tar.gz \
-  "https://storage.googleapis.com/antigravity-public/antigravity-cli/${ANTIGRAVITY_CLI_RELEASE}/linux-x64/cli_linux_x64.tar.gz" \
-  && printf '%s  /tmp/antigravity.tar.gz\n' "$ANTIGRAVITY_SHA512_AMD64" | sha512sum -c - \
-  && tar -xzf /tmp/antigravity.tar.gz -C /out/antigravity antigravity \
-  && mv /out/antigravity/antigravity /out/antigravity/agy \
-  && chmod 0555 /out/antigravity/agy \
-  && rm /tmp/antigravity.tar.gz
+RUN mkdir -p /out/antigravity \
+  && if [ "${TARGETARCH:-amd64}" = amd64 ]; then \
+    apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --retry 5 -fsSL -o /tmp/antigravity.tar.gz \
+      "https://storage.googleapis.com/antigravity-public/antigravity-cli/${ANTIGRAVITY_CLI_RELEASE}/linux-x64/cli_linux_x64.tar.gz" \
+    && printf '%s  /tmp/antigravity.tar.gz\n' "$ANTIGRAVITY_SHA512_AMD64" | sha512sum -c - \
+    && tar -xzf /tmp/antigravity.tar.gz -C /out/antigravity antigravity \
+    && mv /out/antigravity/antigravity /out/antigravity/agy \
+    && chmod 0555 /out/antigravity/agy \
+    && rm /tmp/antigravity.tar.gz; \
+  fi
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
 FROM rust:1.100.0-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS muse-acp
@@ -232,6 +233,8 @@ FROM ${RUNTIME_SANDBOX_BASE} AS runtime-sandbox-apps
 USER root
 COPY --link --from=azure-cli --chown=0:0 /opt/az/ /opt/az/
 COPY --from=azure-cli --chown=0:0 /usr/bin/az /usr/bin/az
+# The stage directory's contents: agy on amd64, nothing on arm64.
+COPY --link --from=antigravity --chown=0:0 /out/antigravity/ /usr/local/bin/
 ARG AGENT_BROWSER_VERSION
 RUN --mount=type=bind,source=docker/runtime-sandbox/install-agent-browser.sh,target=/tmp/install-agent-browser.sh \
   HOME=/root sh /tmp/install-agent-browser.sh
@@ -246,7 +249,8 @@ RUN --mount=type=bind,source=docker/runtime-sandbox/install-core-harnesses.sh,ta
 
 # Bake the runtime table after all applications are installed, using a disposable non-root HOME.
 COPY docker/runtime-sandbox/generate-runtime-table.mjs /opt/agentconnect/bin/generate-runtime-table.mjs
-COPY docker/runtime-sandbox/installed-runtimes.json /opt/agentconnect/runtime/installed-runtimes.json
+ARG TARGETARCH
+COPY docker/runtime-sandbox/installed-runtimes-${TARGETARCH}.json /opt/agentconnect/runtime/installed-runtimes.json
 USER 10001:10001
 RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
   && HOME=/tmp/ac-probe/home AC_PROBE_CWD=/tmp/ac-probe/cwd \
@@ -270,8 +274,9 @@ RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
   && touch /tmp/ac-table-check.ok
 
 FROM runtime-sandbox-apps AS runtime-sandbox-table-check
+ARG TARGETARCH
 COPY scripts/runtime-table-diff.mjs scripts/verify-runtime-table.mjs /tmp/ac-check/
-COPY docker/runtime-sandbox/installed-runtimes.json /tmp/ac-check/installed-runtimes.json
+COPY docker/runtime-sandbox/installed-runtimes-${TARGETARCH}.json /tmp/ac-check/installed-runtimes.json
 RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
   && HOME=/tmp/ac-probe/home AC_PROBE_CWD=/tmp/ac-probe/cwd \
     node /tmp/ac-check/verify-runtime-table.mjs runtime-sandbox /tmp/ac-check/installed-runtimes.json \
