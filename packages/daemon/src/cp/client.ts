@@ -181,6 +181,7 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_ADMIT_FEATURE,
+  type SessionAdmitRequest,
   CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_FILE_SNAPSHOT_FEATURE,
@@ -1008,10 +1009,14 @@ export class CpClient {
   }
 
   /** D→C `session/admit` (org-session-policy.md, Admission): one attempt over the live link only, never thrown, so a new session is never held on it. */
-  async admitSession(agentId: string, sessionId: string): Promise<'admitted' | 'unsupported' | 'failed'> {
+  async admitSession(
+    agentId: string,
+    sessionId: string,
+    purpose?: SessionAdmitRequest['purpose']
+  ): Promise<'admitted' | 'unsupported' | 'failed'> {
     if (!this.admitsSessions()) return 'unsupported'
     try {
-      const frame = this.scopedFrame('session/admit', { agentId, sessionId })
+      const frame = this.scopedFrame('session/admit', { agentId, sessionId, ...(purpose ? { purpose } : {}) })
       const rep = await this.correlator.request(frame, (encoded) => this.transport!.send(encoded), {
         maxTries: 1,
         ackTimeoutMs: SESSION_ADMIT_TIMEOUT_MS

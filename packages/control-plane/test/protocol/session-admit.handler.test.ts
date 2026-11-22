@@ -66,6 +66,34 @@ describe('session/admit over the daemon WS edge', () => {
     expect(await used()).toBe(1)
   })
 
+  it('exempts a memory dream only for an agent whose stored config runs dreaming on managed memory', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const disabled = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa05'
+    const unmanaged = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06'
+    await seedAgent(prisma, disabled, {
+      daemonId: DAEMON,
+      runtimeOverrides: { memory: { provider: 'managed', dreaming: { enabled: false } } }
+    })
+    await seedAgent(prisma, unmanaged, { daemonId: DAEMON, runtimeOverrides: { memory: { provider: 'none' } } })
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, DAEMON)
+    const dream = (agentId: string, sessionId: string) =>
+      answerTo(stub, stub.inject('session/admit', { agentId, sessionId, purpose: 'memory-dream' }))
+
+    expect(await dream(AGENT, 'd-1')).toEqual({ reply: { admitted: true, counted: false }, error: undefined })
+    expect(await used()).toBe(0)
+    expect((await dream(disabled, 'd-2')).reply).toEqual({ admitted: true, counted: true })
+    expect((await dream(unmanaged, 'd-3')).reply).toEqual({ admitted: true, counted: true })
+    expect(await used()).toBe(2)
+    const rows = await prisma.orgSessionAdmission.findMany({ orderBy: { sessionId: 'asc' } })
+    expect(rows.map((r) => [r.sessionId, r.maintenance])).toEqual([
+      ['d-1', 'memory-dream'],
+      ['d-2', null],
+      ['d-3', null]
+    ])
+  })
+
   it('refuses a daemon the agent is not placed on, and writes nothing', async () => {
     await seedPlaced()
     const h = buildWsHarness(prisma)

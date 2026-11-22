@@ -701,6 +701,14 @@ Memory Dream list links the execution session and shows that run's model, durati
 token/cost, and prompt/output byte metrics. Source-session selection is input
 metadata, not the Dream session's usage.
 
+Before it issues the dedicated dream host's model credential or starts that host,
+the daemon admits the dream's execution session with the Control Plane under its
+outward id and `purpose: 'memory-dream'`. When the agent's stored policy runs
+dreaming on the managed provider, the Control Plane exempts it from the
+organization's monthly session count, up to a per-agent daily cap; see
+[org-session-policy.md, Maintenance exemption](org-session-policy.md#maintenance-exemption).
+The dream runs whatever the answer.
+
 ## 11. Explicitly out of scope (v1)
 
 - **`native` provider** — the runtime owns that store; rewriting it behind the

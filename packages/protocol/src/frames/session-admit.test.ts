@@ -25,6 +25,21 @@ describe('session/admit frames (org-session-policy.md, Admission)', () => {
     expect(SessionAdmitRequest.safeParse({ agentId: AGENT_ID }).success).toBe(false)
   })
 
+  it('carries an optional maintenance purpose from a closed set', () => {
+    const dream = { agentId: AGENT_ID, sessionId: 's-1', purpose: 'memory-dream' }
+    expect(SessionAdmitRequest.parse(dream)).toEqual(dream)
+    expect(SessionAdmitRequest.safeParse({ ...dream, purpose: 'chat' }).success).toBe(false)
+    expect(SessionAdmitRequest.safeParse({ ...dream, purpose: null }).success).toBe(false)
+  })
+
+  it('reads a purpose an older schema does not know as a plain admission', () => {
+    const older = SessionAdmitRequest.omit({ purpose: true })
+    expect(older.parse({ agentId: AGENT_ID, sessionId: 's-1', purpose: 'memory-dream' })).toEqual({
+      agentId: AGENT_ID,
+      sessionId: 's-1'
+    })
+  })
+
   it('answers an admission with whether it counted, and refuses any other shape for now', () => {
     expect(SessionAdmitResult.parse({ admitted: true, counted: true })).toEqual({ admitted: true, counted: true })
     expect(SessionAdmitResult.parse({ admitted: true, counted: false })).toEqual({ admitted: true, counted: false })

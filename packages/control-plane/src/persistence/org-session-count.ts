@@ -14,7 +14,7 @@ export async function countSessionStart(tx: PrismaLike, orgId: string): Promise<
   `)
 }
 
-/** Whether a daemon admitted this session id, which then counted it at admission. */
+/** Whether a daemon admitted this session id, which settled its count at admission, counted or exempt. */
 export async function sessionAdmitted(tx: PrismaLike, sessionId: string): Promise<boolean> {
   const rows = await tx.$queryRaw<Array<{ one: number }>>(Prisma.sql`
     SELECT 1 AS "one" FROM "org_session_admission" WHERE "sessionId" = ${sessionId}
