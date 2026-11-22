@@ -210,7 +210,8 @@ describe('credentialed attachment tools', () => {
       'readQQFile',
       'readDingTalkFile',
       'readWeChatFile',
-      'readWeComFile'
+      'readWeComFile',
+      'readGoogleChatFile'
     ])
   })
 

@@ -44,6 +44,7 @@ import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { DINGTALK_ATTACHMENT_TOOL } from './dingtalk/attachments.js'
 import { EMAIL_AGENT_TOOLS } from './email/agent-tools.js'
+import { GOOGLECHAT_ATTACHMENT_TOOL } from './googlechat/attachments.js'
 import { WECHAT_ATTACHMENT_TOOL } from './wechat/attachments.js'
 import { WECOM_ATTACHMENT_TOOL } from './wecom/attachments.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
@@ -304,12 +305,13 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       sessionTools: LINEAR_SESSION_TOOLS
     }
   ],
-  // Declares nothing: no attachment read (unsupported both ways), no history, no reactions (google-chat-integration.md §5).
+  // Uploaded attachments are read through the app's credentials; no history, no reactions (google-chat-integration.md §5).
   [
     'googlechat',
     {
       platform: 'googlechat',
-      label: 'Google Chat'
+      label: 'Google Chat',
+      attachmentReadTool: GOOGLECHAT_ATTACHMENT_TOOL
     }
   ],
   // History is read through Graph under the package's consent; no attachments or reactions (teams-integration.md §1). The audience is judged as Slack's.

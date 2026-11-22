@@ -1,14 +1,20 @@
 // The deployment Google Chat app's egress on the relay (google-chat-integration.md §10.10): its customer rows' Chat API calls, so its key never reaches a daemon.
-import { createPrivateKey, type KeyObject } from 'node:crypto'
+import { createHmac, createPrivateKey, timingSafeEqual, type KeyObject } from 'node:crypto'
 import { SignJWT } from 'jose'
 import {
+  GOOGLE_CHAT_MEDIA_MAX_BYTES,
+  GOOGLE_CHAT_MEDIA_PATH,
   RD_PLATFORM_REQUEST_BUDGET_MS,
   googleChatCallRequest,
+  googleChatMediaRequest,
+  googleChatUploadedResourceName,
   type GoogleChatHttpRequest,
   type RcGoogleChatDeploymentApp,
   type RdPlatformReply,
   type WireGoogleChatCall,
-  type WireGoogleChatCallResult
+  type WireGoogleChatCallResult,
+  type WireGoogleChatMediaTicketCall,
+  type WireGoogleChatMediaTicketResult
 } from '@agentconnect.md/protocol'
 import { retryAfterMs, within } from '../provider-call.js'
 
@@ -31,6 +37,11 @@ const TENANTS_MAX = 10_000
 /** One row's share on one relay: a quarter of the project's 3,000 calls a minute, as a daemon's own budget defaults to. */
 export const GOOGLE_CHAT_ROW_CALLS_PER_MINUTE = 750
 const ROW_LIMITS_MAX = 10_000
+/** How long a media ticket may be redeemed after the relay signs it. */
+export const GOOGLE_CHAT_MEDIA_TICKET_TTL_MS = 60_000
+/** One media download's whole bound on the relay, from Google's first byte to the last. */
+const MEDIA_TIMEOUT_MS = 120_000
+const MEDIA_TICKET_CONTEXT = 'agentconnect.googlechat-media-ticket.v1'
 
 type Obj = Record<string, unknown>
 const obj = (value: unknown): Obj | undefined =>
@@ -286,6 +297,72 @@ export class GoogleChatRelayEgress {
     return answered(result)
   }
 
+  /** Sign a ticket for one uploaded attachment of the row's own tenant (§5): the bytes then stream over HTTP, never through a frame. */
+  async mediaTicket(
+    row: GoogleChatEgressRow,
+    call: WireGoogleChatMediaTicketCall,
+    publicRelayUrl: string | undefined
+  ): Promise<RdPlatformReply> {
+    if (!publicRelayUrl) return refused('no_public_url')
+    const started = this.clock()
+    const left = () => this.budgetMs - (this.clock() - started)
+    const wait = this.limiter.take(row.botId, 'read')
+    if (wait > 0) return ticketAnswer({ status: 429, retryAfterMs: wait })
+    const fenced = await this.fence(call.attachment.slice(0, call.attachment.indexOf('/messages/')), row, left)
+    if (fenced) return fenced
+    const performed = await this.perform({ op: 'get-attachment', attachment: call.attachment }, left)
+    if ('stopped' in performed) return performed.stopped
+    const { result } = performed
+    if (!succeeded(result)) return ticketAnswer(result)
+    const resourceName = googleChatUploadedResourceName(result.body)
+    if (!resourceName)
+      return ticketAnswer({ status: 404, body: { error: { message: 'the attachment has no uploaded content' } } })
+    const ticket = signMediaTicket(this.app, {
+      p: this.app.projectNumber,
+      b: row.botId,
+      r: resourceName,
+      m: call.maxBytes,
+      e: this.now() + GOOGLE_CHAT_MEDIA_TICKET_TTL_MS
+    })
+    return ticketAnswer({
+      status: 200,
+      url: `${publicRelayUrl.replace(/\/+$/, '')}${GOOGLE_CHAT_MEDIA_PATH}/${ticket}`
+    })
+  }
+
+  /** Redeem a ticket: Google's media response for its attachment and the byte bound, or the status that refuses it. */
+  async openMedia(ticket: string): Promise<{ response: Response; maxBytes: number } | { status: number }> {
+    const claims = verifyMediaTicket(this.app, ticket)
+    if (!claims || claims.p !== this.app.projectNumber || claims.e <= this.now()) return { status: 404 }
+    const request = googleChatMediaRequest(claims.r)
+    const url = new URL(`${CHAT_API_ORIGIN}${CHAT_API_PATH}/${request.path}`)
+    if (url.origin !== CHAT_API_ORIGIN || url.pathname !== `${CHAT_API_PATH}/${request.path}`) return { status: 404 }
+    for (const [name, value] of Object.entries(request.query ?? {})) url.searchParams.set(name, value)
+    for (let attempt = 0; ; attempt += 1) {
+      let token: string
+      try {
+        token = await this.token.get()
+      } catch {
+        return { status: 503 }
+      }
+      let response: Response
+      try {
+        response = await this.fetchImpl(url.toString(), {
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS)
+        })
+      } catch {
+        return { status: 502 }
+      }
+      if (response.status === 401 && attempt === 0) {
+        await response.body?.cancel().catch(() => {})
+        this.token.drop()
+        continue
+      }
+      return { response, maxBytes: Math.min(claims.m, GOOGLE_CHAT_MEDIA_MAX_BYTES) }
+    }
+  }
+
   // Undefined when the Space is the row's own; anything else, a failed lookup included, stops the call before its operation.
   private async fence(
     space: string,
@@ -377,6 +454,49 @@ export class GoogleChatRelayEgress {
   }
 }
 
+const ticketAnswer = (result: WireGoogleChatMediaTicketResult): RdPlatformReply => ({ outcome: 'ok', payload: result })
+
+/** What a media ticket binds: the app's project, the row, Google's resource name, the byte bound and the expiry. */
+interface MediaTicketClaims {
+  p: string
+  b: string
+  r: string
+  m: number
+  e: number
+}
+
+// Keyed by the deployment key every relay holds, so any relay of the pool redeems it and a key rotation voids it.
+function mediaTicketMac(app: RcGoogleChatDeploymentApp, payload: string): Buffer {
+  const key = createHmac('sha256', app.serviceAccountKey).update(MEDIA_TICKET_CONTEXT).digest()
+  return createHmac('sha256', key).update(payload).digest()
+}
+
+function signMediaTicket(app: RcGoogleChatDeploymentApp, claims: MediaTicketClaims): string {
+  const payload = Buffer.from(JSON.stringify(claims)).toString('base64url')
+  return `${payload}.${mediaTicketMac(app, payload).toString('base64url')}`
+}
+
+function verifyMediaTicket(app: RcGoogleChatDeploymentApp, ticket: string): MediaTicketClaims | undefined {
+  const [payload, mac, extra] = ticket.split('.')
+  if (!payload || !mac || extra !== undefined) return undefined
+  const given = Buffer.from(mac, 'base64url')
+  const expected = mediaTicketMac(app, payload)
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined
+  const claims = obj(
+    (() => {
+      try {
+        return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown
+      } catch {
+        return undefined
+      }
+    })()
+  )
+  const { p, b, r, m, e } = claims ?? {}
+  if (typeof p !== 'string' || typeof b !== 'string' || typeof r !== 'string') return undefined
+  if (typeof m !== 'number' || !Number.isInteger(m) || m <= 0 || typeof e !== 'number') return undefined
+  return { p, b, r, m, e }
+}
+
 // The Space a call acts in, when the call names one.
 function targetSpace(call: WireGoogleChatCall): string | undefined {
   switch (call.op) {
@@ -390,6 +510,8 @@ function targetSpace(call: WireGoogleChatCall): string | undefined {
     case 'delete-message':
     case 'get-message':
       return call.message.slice(0, call.message.indexOf('/messages/'))
+    case 'get-attachment':
+      return call.attachment.slice(0, call.attachment.indexOf('/messages/'))
     case 'find-direct-message':
     case 'list-spaces':
       return undefined

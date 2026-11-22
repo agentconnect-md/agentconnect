@@ -45,8 +45,9 @@ adapters remain a separate discussion.
 | Elicitation      | Agent questions as an in-thread card of buttons or form inputs, settled in place (§5).                       |
 | Approvals        | An in-thread approval card where people in chat may approve tool calls, else the Console queue (§6).         |
 | Context          | Messages delivered to this app and the daemon's retained session history.                                    |
+| Attachments      | Files uploaded to an inbound message, read with the app's own credentials; never Drive files (§5).           |
 
-Ambient Space history, unmentioned thread follow-ups, group DMs, attachments,
+Ambient Space history, unmentioned thread follow-ups, group DMs, Drive attachments, outbound files,
 cards other than the welcome, elicitation and approval cards, dialogs, app-home surfaces,
 Google-native commands other than `/help` (§11.4) and shared bots are outside the first
 version. Google identity linking is described in §10.6 and permission sync in §12.
@@ -105,7 +106,8 @@ Credential replacement drains old output connections using existing egress lease
 Use one module-owned HTTPS route mounted at `GOOGLE_CHAT_EVENTS_PATH`
 (`/googlechat/events`), a constant the protocol package owns so the Setup Server's
 published endpoint URL and the relay's route cannot drift. The chart's relay
-`HTTPRoute` lists every public relay path explicitly, so it carries this one too;
+`HTTPRoute` lists every public relay path explicitly, so it carries this one, and
+the attachment download at `GOOGLE_CHAT_MEDIA_PATH` (`/googlechat/media`, §5), too;
 without it the gateway answers 404 before a callback reaches the relay. Google
 posts each event with `Authorization: Bearer <Google ID token>`: RS256 with a
 `kid` header, a Google issuer, the configured endpoint URL as its audience, the
@@ -684,10 +686,38 @@ terminate or suspend the affected delivery with an actionable status. Keep
 generated output in the daemon transcript, subject to normal access rules;
 private DM output is not automatically available to a Console administrator.
 
-Attachments are explicitly unsupported, including attachment-only inputs. Report
-that limitation without claiming to read the file. In particular, Google's
+### Attachments
+
+A file uploaded to an inbound message reaches the agent as one of the message's
+`attachments`, named by its attachment resource
+(`spaces/…/messages/…/attachments/…`) and read through the
+`readGoogleChatFile` tool, so an attachment-only message still starts a turn. A
+name outside the message itself is not carried. Reading it is two app-authenticated
+calls: `spaces.messages.attachments.get` yields the upload's
+`attachmentDataRef.resourceName`, and
+[`media.download`](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/download)
+returns its bytes, bounded by the daemon's attachment limit and refused rather
+than cut when larger. The row's tenant fence (§10.8) is checked first.
+
+A Drive file (`driveDataRef`) needs Drive access the app does not hold, so it is
+not carried; the message text instead says it was not read, and the same note
+stands for any attachment the event does not describe completely. Nothing
+claims to have read a file it did not.
+
+An organization's own app downloads with its own token. A deployment app's
+customer row holds no key (§10.10), and a download does not fit one relay frame,
+so the daemon asks its relay for a ticket over `rd/platform/request`
+(`media-ticket`). The relay fences the attachment's Space, reads the attachment,
+and answers a URL under its public origin, `/googlechat/media/<ticket>`. The
+ticket binds the project, the bot row, Google's resource name, the byte bound
+and an expiry one minute out; it is an HMAC keyed from the deployment key, so
+any relay of the pool redeems it and a key rotation voids it. The daemon then
+GETs that URL, and the relay streams Google's response through, holding nothing
+and cutting a body past the bound. The daemon follows no other URL.
+
+Sending files remains unsupported: Google's
 [upload endpoint](https://developers.google.com/workspace/chat/api/reference/rest/v1/media/upload)
-requires user authentication; adding uploads is not simply another `chat.bot`
+requires user authentication, so uploads are not simply another `chat.bot`
 operation.
 
 ### Elicitation cards
@@ -820,7 +850,8 @@ The implementation must then demonstrate:
 - Bounded send queues and backoff under throttling; key rotation, removal, relay
   revocation, and assignment handover without stale delivery.
 - Honest saved/connected/tested states, private DM visibility, authorized Console
-  approvals, explicit attachment limitations, and an elicitation card answered
+  approvals, uploaded attachments read on both egress paths and Drive files
+  reported as unread, and an elicitation card answered
   and settled in place.
 
 Use focused contract and recovery tests around these boundaries plus the live
@@ -1375,7 +1406,8 @@ relay says never went out is retried.
 **The daemon.** `GoogleChatConnection` sits on a transport chosen from the spec:
 direct with the organization's own key, or the relay. Without a relay a
 deployment row cannot send, and there is no other way out. The daemon's own
-fence, discovery filter and write budget stay as a second line.
+fence, discovery filter and write budget stay as a second line. An attachment
+download takes a relay-signed ticket and streams over HTTP instead (§5).
 
 **High availability.** No Control Plane call is on this path. A relay keeps
 serving from its last snapshot through a Control Plane outage, and any relay can

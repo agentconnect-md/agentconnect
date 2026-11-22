@@ -50,10 +50,14 @@ function relay(answer: (call: WireGoogleChatCall) => RdPlatformReply | Promise<R
   return { port, sent }
 }
 
-function connection(port: PlatformRelay | undefined, fetched: string[] = []) {
+function connection(
+  port: PlatformRelay | undefined,
+  fetched: string[] = [],
+  serve: (url: string) => Response = () => new Response(null, { status: 500 })
+) {
   const fetchImpl = (async (url: unknown) => {
     fetched.push(String(url))
-    return new Response(null, { status: 500 })
+    return serve(String(url))
   }) as typeof fetch
   const group: ConsolidatedGoogleChatGroup = {
     key: googleChatConnKey(RELAY_CONFIG),
@@ -273,6 +277,33 @@ describe('a relay-egress Google Chat connection', () => {
     const err = await failure(connection(port).getChannelInfo(SPACE))
     expect(err.unsent).toBe(true)
     expect(err.kind).toBe('unavailable')
+  })
+
+  it('downloads an attachment over the relay’s ticketed URL, never through a frame', async () => {
+    const attachment = `${SPACE}/messages/EXAMPLE_MESSAGE/attachments/EXAMPLE_FILE`
+    const url = 'https://relay.example.test/googlechat/media/EXAMPLE_TICKET'
+    const asked: unknown[] = []
+    const { port } = relay((call) => {
+      asked.push(call)
+      return { outcome: 'ok', payload: { status: 200, url } }
+    })
+    const fetched: string[] = []
+    const conn = connection(port, fetched, () => new Response(Buffer.from('relayed bytes')))
+    expect((await conn.downloadFile(attachment, 1024))?.toString()).toBe('relayed bytes')
+    expect(asked).toEqual([{ op: 'media-ticket', attachment, maxBytes: 1024 }])
+    expect(fetched).toEqual([url])
+  })
+
+  it('follows no URL outside the relay’s media route and reads a refusal as no bytes', async () => {
+    const attachment = `${SPACE}/messages/EXAMPLE_MESSAGE/attachments/EXAMPLE_FILE`
+    const fetched: string[] = []
+    const elsewhere = relay(() => ({ outcome: 'ok', payload: { status: 200, url: 'https://example.test/other' } }))
+    expect(await connection(elsewhere.port, fetched).downloadFile(attachment)).toBeNull()
+    const refused = relay(() => ({ outcome: 'refused', reason: 'tenant_refused' }))
+    expect(await connection(refused.port, fetched).downloadFile(attachment)).toBeNull()
+    const missing = relay(() => ({ outcome: 'ok', payload: { status: 404 } }))
+    expect(await connection(missing.port, fetched).downloadFile(attachment)).toBeNull()
+    expect(fetched).toEqual([])
   })
 
   it('stops waiting for the relay when the caller’s signal fires', async () => {

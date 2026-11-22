@@ -2,9 +2,13 @@
 import { createPrivateKey, type KeyObject } from 'node:crypto'
 import { SignJWT } from 'jose'
 import {
+  GOOGLE_CHAT_MEDIA_PATH,
   GOOGLE_CHAT_PLATFORM,
   WireGoogleChatCallResult,
+  WireGoogleChatMediaTicketResult,
   googleChatCallRequest,
+  googleChatMediaRequest,
+  googleChatUploadedResourceName,
   type RdPlatformReply,
   type WireGoogleChatCall
 } from '@agentconnect.md/protocol'
@@ -22,6 +26,8 @@ export const TOKEN_RENEW_MARGIN_MS = 5 * 60 * 1000
 /** How long a failed mint blocks the next attempt, so a rejected key is not hammered per send. */
 export const TOKEN_RETRY_MS = 30_000
 const REQUEST_TIMEOUT_MS = 15_000
+/** One attachment download's whole bound, first byte to last. */
+const MEDIA_TIMEOUT_MS = 120_000
 
 /** Why one Chat API call failed, in the vocabulary the delivery status is reported in. */
 export type GoogleChatFailureKind =
@@ -66,8 +72,49 @@ export interface GoogleChatTransport {
   /** Warm whatever the first call would otherwise wait for; no read is made. */
   start(): Promise<void>
   attempt(call: WireGoogleChatCall, signal?: AbortSignal): Promise<GoogleChatAnswer>
+  /** An uploaded attachment's bytes by its resource name, at most `maxBytes`; throws a {@link GoogleChatApiError} when Google or the relay refuses it. */
+  download(attachment: string, maxBytes: number): Promise<Buffer>
   /** A 401 may be a token that aged out: drop it, where this side holds one. */
   invalidate(): void
+}
+
+// A refused attachment read, in the delivery vocabulary; a size the caller set is never Google's to break.
+function downloadRefusal(status: number, what: string): GoogleChatApiError {
+  const kind: GoogleChatFailureKind =
+    status === 401
+      ? 'credential_rejected'
+      : status === 403
+        ? 'forbidden'
+        : status === 404
+          ? 'not_found'
+          : status === 413
+            ? 'invalid'
+            : status === 429
+              ? 'rate_limited'
+              : 'unavailable'
+  return new GoogleChatApiError(`${what} answered ${status}`, kind, status)
+}
+
+/** A response body read up to `maxBytes`; a longer one is refused rather than cut. */
+export async function readBounded(res: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => {})
+    throw new GoogleChatApiError(`the attachment is larger than ${maxBytes} bytes`, 'invalid', 413)
+  }
+  const chunks: Buffer[] = []
+  let total = 0
+  if (res.body) {
+    for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+      total += chunk.byteLength
+      if (total > maxBytes) {
+        await res.body.cancel().catch(() => {})
+        throw new GoogleChatApiError(`the attachment is larger than ${maxBytes} bytes`, 'invalid', 413)
+      }
+      chunks.push(Buffer.from(chunk))
+    }
+  }
+  return Buffer.concat(chunks)
 }
 
 interface CachedToken {
@@ -179,6 +226,30 @@ export class DirectGoogleChatTransport implements GoogleChatTransport {
     return { status: res.status, ...(body ? { body } : {}), ...(wait !== undefined ? { retryAfterMs: wait } : {}) }
   }
 
+  /** `attachments.get` names the upload's resource, then `media.download` streams it, both with the app's own token (§5). */
+  async download(attachment: string, maxBytes: number): Promise<Buffer> {
+    let answer = await this.attempt({ op: 'get-attachment', attachment })
+    if (answer.status === 401) {
+      this.invalidate()
+      answer = await this.attempt({ op: 'get-attachment', attachment })
+    }
+    if (answer.status < 200 || answer.status >= 300) throw downloadRefusal(answer.status, 'attachments.get')
+    const resourceName = googleChatUploadedResourceName(answer.body)
+    if (!resourceName) throw new GoogleChatApiError('the attachment has no uploaded content', 'not_found', 404)
+    const request = googleChatMediaRequest(resourceName)
+    const url = new URL(`${GOOGLE_CHAT_API_ROOT}/${request.path}`)
+    for (const [k, v] of Object.entries(request.query ?? {})) url.searchParams.set(k, v)
+    const res = await this.fetchImpl(url, {
+      headers: { authorization: `Bearer ${await this.token()}` },
+      signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS)
+    })
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {})
+      throw downloadRefusal(res.status, 'media.download')
+    }
+    return await readBounded(res, maxBytes)
+  }
+
   /** A live access token: the cache while it is outside the renewal margin, else one single-flight mint. */
   private async token(): Promise<string> {
     const now = this.now()
@@ -275,7 +346,8 @@ export class RelayGoogleChatTransport implements GoogleChatTransport {
 
   constructor(
     private readonly relay: PlatformRelay | undefined,
-    private readonly botId: string
+    private readonly botId: string,
+    private readonly fetchImpl: typeof fetch = (...args) => fetch(...args)
   ) {}
 
   async start(): Promise<void> {}
@@ -313,5 +385,39 @@ export class RelayGoogleChatTransport implements GoogleChatTransport {
     const parsed = WireGoogleChatCallResult.safeParse(reply.payload)
     if (!parsed.success) throw new Error('the relay answered an unreadable result')
     return parsed.data
+  }
+
+  /** The relay fences the attachment and signs a short-lived ticket; the bytes then stream over HTTP from the relay, never through a frame (§5). */
+  async download(attachment: string, maxBytes: number): Promise<Buffer> {
+    if (!this.relay) throw new GoogleChatApiError('googlechat: no relay is reachable', 'unavailable')
+    let reply: RdPlatformReply
+    try {
+      reply = await this.relay.request({
+        platformId: GOOGLE_CHAT_PLATFORM,
+        botId: this.botId,
+        payload: { op: 'media-ticket', attachment, maxBytes }
+      })
+    } catch {
+      throw new GoogleChatApiError('googlechat: the relay did not answer', 'unavailable')
+    }
+    if (reply.outcome !== 'ok')
+      throw new GoogleChatApiError(
+        `googlechat: the relay refused the attachment (${reply.reason ?? reply.outcome})`,
+        reply.reason === 'tenant_refused' ? 'tenant_refused' : reply.outcome === 'refused' ? 'forbidden' : 'unavailable'
+      )
+    const parsed = WireGoogleChatMediaTicketResult.safeParse(reply.payload)
+    if (!parsed.success) throw new GoogleChatApiError('the relay answered an unreadable ticket', 'unavailable')
+    const { status, url } = parsed.data
+    if (status < 200 || status >= 300 || !url) throw downloadRefusal(status, 'attachments.get')
+    const target = new URL(url)
+    // The relay names only its own media route; anything else is not followed.
+    if (!/^https?:$/.test(target.protocol) || !target.pathname.startsWith(`${GOOGLE_CHAT_MEDIA_PATH}/`))
+      throw new GoogleChatApiError('the relay named an unexpected download URL', 'unavailable')
+    const res = await this.fetchImpl(target, { redirect: 'error', signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS) })
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {})
+      throw downloadRefusal(res.status, 'the relay media route')
+    }
+    return await readBounded(res, maxBytes)
   }
 }

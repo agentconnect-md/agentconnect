@@ -50,6 +50,9 @@ export const CP_WS_PATH = '/daemon/ws'
 /** The relay route Google Chat posts a Workspace add-on's events to (google-chat-integration.md §2); the Setup Server publishes the same path as the app's HTTP endpoint URL. */
 export const GOOGLE_CHAT_EVENTS_PATH = '/googlechat/events'
 
+/** The relay route a daemon streams a deployment app's attachment from, with a relay-signed ticket as the last path segment (google-chat-integration.md §5). */
+export const GOOGLE_CHAT_MEDIA_PATH = '/googlechat/media'
+
 /** The events URL under a relay's public origin: every request token's audience and every card button's `function` (§11). */
 export function googleChatEventsUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${GOOGLE_CHAT_EVENTS_PATH}`

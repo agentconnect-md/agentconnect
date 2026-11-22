@@ -544,7 +544,42 @@ describe('start() and the app identity', () => {
     expect(await conn.listChannels()).toEqual([{ id: SPACE, name: 'Example Space', isPrivate: false }])
   })
 
-  it('answers the read port from spaces.get and never fetches an attachment', async () => {
+  it('downloads an uploaded attachment through attachments.get and media.download with the app token', async () => {
+    const attachment = `${SPACE}/messages/EXAMPLE_MESSAGE/attachments/EXAMPLE_FILE`
+    const { conn, chatCalls } = harness((call) => {
+      if (call.url.pathname === `/v1/${attachment}`)
+        return reply(200, {
+          name: attachment,
+          source: 'UPLOADED_CONTENT',
+          attachmentDataRef: { resourceName: 'EXAMPLE_RESOURCE' }
+        })
+      if (call.url.pathname === '/v1/media/EXAMPLE_RESOURCE')
+        return new Response(Buffer.from('file bytes'), { headers: { 'content-length': '10' } })
+      return reply(404, {})
+    })
+    expect((await conn.downloadFile(attachment))?.toString()).toBe('file bytes')
+    const media = chatCalls().find((c) => c.url.pathname === '/v1/media/EXAMPLE_RESOURCE')
+    expect(media?.url.searchParams.get('alt')).toBe('media')
+    expect(media?.headers.authorization).toBe('Bearer tok-1')
+    // Over the caller's bound: refused rather than cut, by the declared length or the bytes themselves.
+    expect(await conn.downloadFile(attachment, 4)).toBeNull()
+  })
+
+  it('reads no bytes for a Drive file, a foreign name or a refused read', async () => {
+    const drive = `${SPACE}/messages/EXAMPLE_MESSAGE/attachments/EXAMPLE_DRIVE`
+    const gone = `${SPACE}/messages/EXAMPLE_MESSAGE/attachments/EXAMPLE_GONE`
+    const { conn, chatCalls } = harness((call) => {
+      if (call.url.pathname === `/v1/${drive}`)
+        return reply(200, { name: drive, source: 'DRIVE_FILE', driveDataRef: { driveFileId: 'EXAMPLE_ID' } })
+      return reply(404, { error: { message: 'not found' } })
+    })
+    expect(await conn.downloadFile(drive)).toBeNull()
+    expect(await conn.downloadFile(gone)).toBeNull()
+    expect(await conn.downloadFile('https://example.test/file')).toBeNull()
+    expect(chatCalls().some((c) => c.url.pathname.startsWith('/v1/media/'))).toBe(false)
+  })
+
+  it('answers the read port from spaces.get', async () => {
     const { conn, calls } = harness((call) => {
       if (call.url.pathname === `/v1/${DM}`) return reply(200, { name: DM, spaceType: 'DIRECT_MESSAGE' })
       if (call.url.pathname === `/v1/${DM}/members`)
@@ -566,7 +601,6 @@ describe('start() and the app identity', () => {
     const members = calls.find((c) => c.url.pathname === `/v1/${DM}/members`)
     expect(members?.url.searchParams.get('filter')).toBe('member.type = "HUMAN"')
     expect(calls.filter((c) => c.url.pathname === `/v1/${SPACE}/members`)).toHaveLength(0)
-    expect(await conn.downloadFile('anything')).toBeNull()
     expect(await conn.getUserProfile('users/1')).toEqual({ id: 'users/1' })
   })
 

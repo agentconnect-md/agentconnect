@@ -102,6 +102,20 @@ const weComInt: Integration = {
   config: { botId: 'aibot-example', secret: 'secret' }
 }
 
+const googleChatInt: Integration = {
+  id: 'int-7',
+  platform: 'googlechat',
+  core: {
+    mode: 'shared',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
+  config: { projectId: 'example-project', projectNumber: '100000000000', serviceAccountKey: '{}' }
+}
+
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
 // Port gates open per SESSION platform, so one platform's tool list is not the whole surface:
@@ -120,6 +134,11 @@ const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([dingTalkInt], { organizationKnowledge: true, decisions: true, currentPlatform: 'dingtalk' }),
   ...toolsForIntegrations([weChatInt], { organizationKnowledge: true, decisions: true, currentPlatform: 'wechat' }),
   ...toolsForIntegrations([weComInt], { organizationKnowledge: true, decisions: true, currentPlatform: 'wecom' }),
+  ...toolsForIntegrations([googleChatInt], {
+    organizationKnowledge: true,
+    decisions: true,
+    currentPlatform: 'googlechat'
+  }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...GITHUB_REVIEW_TOOLS,
   ...CODE_HOST_EFFECT_TOOLS.map((t) => t.descriptor),
