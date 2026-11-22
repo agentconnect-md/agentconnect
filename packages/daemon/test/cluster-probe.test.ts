@@ -8,6 +8,7 @@ import {
 } from '../src/runtimes/cluster-probe.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 import { configuredRuntimeEnvironment } from '../src/runtimes/runtime-environment.js'
+import { configuredModelCredentials, modelPairsShape } from '../src/runtimes/model-provider-config.js'
 
 /** The `--k8s` credentialed model probe: what a probed runtime launches with, and how the sweep
  *  behaves when one of them refuses. */
@@ -226,5 +227,21 @@ describe('pool probe key', () => {
     const b = { AC_CODEX_CONFIG: '{}', ANTHROPIC_DEFAULT_FABLE_MODEL: 'm' }
     expect(poolProbeKey(image, a)).toBe(poolProbeKey(image, b))
     expect(poolProbeKey(image, a)).not.toBe(poolProbeKey(image, { ANTHROPIC_DEFAULT_FABLE_MODEL: 'm' }))
+  })
+
+  it('re-probes when a model pair is added or re-aimed, but never carries a key value', () => {
+    const base = { OPENAI_MODEL_BASE_URL: 'http://gateway.example.test:8082/v1' }
+    const withGoogle = { ...base, GOOGLE_MODEL_BASE_URL: 'http://gateway.example.test:8085/v1' }
+    const key = (env: Record<string, string>) =>
+      poolProbeKey(image, { AC_MODEL_PAIRS: modelPairsShape(configuredModelCredentials(env)) })
+    expect(key(withGoogle)).not.toBe(key(base))
+    expect(key({ GOOGLE_MODEL_BASE_URL: 'http://other.example.test/v1' })).not.toBe(
+      key({ GOOGLE_MODEL_BASE_URL: 'http://gateway.example.test:8085/v1' })
+    )
+    // A rotated key alone is the freshness window's job, not the key's: the value never reaches the digest input.
+    const shape = modelPairsShape(configuredModelCredentials({ ...withGoogle, GOOGLE_MODEL_TOKEN: 'secret-a' }))
+    expect(shape).not.toContain('secret-a')
+    expect(shape).toBe(modelPairsShape(configuredModelCredentials({ ...withGoogle, GOOGLE_MODEL_TOKEN: 'secret-b' })))
+    expect(modelPairsShape(undefined)).toBeUndefined()
   })
 })

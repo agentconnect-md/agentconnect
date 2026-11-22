@@ -955,6 +955,7 @@ import {
   configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
+  modelPairsShape,
   modelProviderTarget,
   requiresSelectedModel,
   organizationModelProvider,
@@ -34002,7 +34003,9 @@ export class Daemon {
       : poolProbeKey(imageRef, {
           ...this.claudeModelAliases,
           AC_CODEX_CONFIG: this.codexSessionFloor,
-          AC_RUNTIME_ENV_BINDINGS: process.env.AC_RUNTIME_ENV_BINDINGS
+          AC_RUNTIME_ENV_BINDINGS: process.env.AC_RUNTIME_ENV_BINDINGS,
+          // A newly configured pair changes the providers OpenCode advertises, so it must not adopt an answer probed without it.
+          AC_MODEL_PAIRS: modelPairsShape(this.modelSessions.staticModelCredentials)
         })
   }
 

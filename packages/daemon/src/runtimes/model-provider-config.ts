@@ -397,6 +397,15 @@ export function configuredModelCredentials(env: NodeJS.ProcessEnv): StaticModelC
   return Object.keys(resolved).length > 0 ? resolved : undefined
 }
 
+/** Which static pairs are configured and where each points, never a key value: the provider set a probe advertises follows it. */
+export function modelPairsShape(credentials: StaticModelCredentials | undefined): string | undefined {
+  const parts = Object.entries(credentials ?? {})
+    .filter((entry): entry is [string, ModelCredential] => entry[1] !== undefined)
+    .map(([pair, { key, baseUrl }]) => `${pair}=${baseUrl ?? ''}${key ? '+key' : ''}`)
+    .sort()
+  return parts.length > 0 ? parts.join(',') : undefined
+}
+
 /** The static pair a target reads: its provider's, else its runtime's; a google target reads the google pair or none. */
 export function staticModelCredential(
   credentials: StaticModelCredentials | undefined,
