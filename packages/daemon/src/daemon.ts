@@ -1407,7 +1407,8 @@ import type {
   McpAppOutcome,
   RuntimeStrategyEntries,
   ChannelSessionMode,
-  WebchatRemoteMcpEntitlement
+  WebchatRemoteMcpEntitlement,
+  SessionAdmitRequest
 } from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { BackgroundExecs, noteOpenExec } from './daemon/background-execs.js'
@@ -14994,6 +14995,8 @@ export class Daemon {
     if (!this.dreamOperationsAllowed()) throw new DreamStateError(DREAM_MODEL_READABLE_CREDENTIALS_REASON)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
+    // Admitted once, under the outward id its execution row and milestones carry, before any credential or host exists.
+    await this.admitNewSession(agentId, dreamExecutionKey(agentId, context.dreamId), 'memory-dream')
     // Credential isolation (task #36 A2): the dream runs on its OWN dedicated,
     // one-off host — NOT the agent's warm host — sandboxed whenever the agent
     // runs sandboxed so the attacker-controlled transcript is confined from
@@ -23124,13 +23127,13 @@ export class Daemon {
   }
 
   /** Admit a new session with the CP under its outward id; fails open, since the CP only counts it (org-session-policy.md, Admission). */
-  private async admitNewSession(agentId: string, key: string): Promise<void> {
+  private async admitNewSession(agentId: string, key: string, purpose?: SessionAdmitRequest['purpose']): Promise<void> {
     const cp = this.cpClient
     if (!cp?.admitsSessions?.()) return
     let sessionId: string | undefined
     try {
       sessionId = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
-      if ((await cp.admitSession(agentId, sessionId)) !== 'failed') return
+      if ((await cp.admitSession(agentId, sessionId, purpose)) !== 'failed') return
     } catch (err) {
       this.log.debug(`session admission for ${key} threw: ${formatErr(err)}`)
     }

@@ -69,7 +69,8 @@ drops (an unknown agent, or a session id another agent owns) writes nothing and 
 
 - **Month.** The UTC month is read from the database clock when the row is inserted, never from
   the time the daemon reports, so a late or skewed report counts in the month it arrived.
-- **Every platform.** Every new session counts, whatever surface started it.
+- **Every platform.** Every new session counts, whatever surface started it, except a memory
+  dream the Control Plane exempts at admission as [maintenance](#maintenance-exemption).
 - **Counting only.** The increment consults no limit and never refuses; a failed increment fails
   the whole milestone, like any other statement in that transaction.
 - **No backfill.** Rows come only from sessions first recorded after this change shipped, so
@@ -98,23 +99,30 @@ credentials: a signed-in member of the organization, or the install-level usage 
 ## Admission
 
 A daemon may ask the Control Plane to admit a new session before it starts: `session/admit`
-(D→C REQ `{ agentId, sessionId }` → `session/admit/result`), where `sessionId` is the session's
-outward id, the same id `event/session` later carries. The Control Plane advertises
+(D→C REQ `{ agentId, sessionId, purpose? }` → `session/admit/result`), where `sessionId` is the
+session's outward id, the same id `event/session` later carries, and `purpose` is either absent
+or `memory-dream`. The Control Plane advertises
 `session-admit-v1` in `register/ok.serverFeatures`, and a daemon sends the request only to a
 Control Plane that does. The reporting daemon must serve the agent, as for `event/session`; the
 organization is the agent's own, read under the frame's organization fence.
 
 `org_session_admission` keeps one row per admitted session id: its organization, agent, the UTC
-month it was counted in or would have been, and whether it counted. One transaction first takes
-the same session lineage fence a milestone takes on that id, then:
+month it was counted in or would have been, whether it counted, and `maintenance`, the purpose it
+was exempted for or null. One transaction first takes the same session lineage fence a milestone
+takes on that id, then:
 
 1. **Already admitted.** The stored answer comes back unchanged, so a re-sent admit never counts
    twice. An admission another agent holds is refused.
 2. **Already recorded.** A `session_meta` row exists, for example a session started before this
    feature or resumed on another daemon: the session is admitted with `counted: false`. A row
    another agent owns is refused.
-3. **New.** The session is admitted with `counted: true`, and the organization's current month is
+3. **New maintenance.** An exemptable [maintenance](#maintenance-exemption) session is admitted
+   with `counted: false` and its purpose stored, and the month is not incremented.
+4. **New.** The session is admitted with `counted: true`, and the organization's current month is
    incremented by the database clock, with the same statement the milestone count runs.
+
+The first two steps ignore `purpose`: a re-sent admit, exempt or not, gets its stored answer, and
+a session the Control Plane already recorded is never exempted after the fact.
 
 | Answer                         | When                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------ |
@@ -137,7 +145,32 @@ runtime, so chat, cron, hook, delegation, and task turns are all admitted at tha
 later turn, or a runtime recreated after a failed load, finds the local record and sends nothing.
 It sends once, over a live link only, with a short timeout and no retry, and it fails open: the
 session starts whatever the answer, and one whose admission never committed is counted at its first
-milestone instead. Memory-maintenance runs do not open sessions this way and never send it.
+milestone instead. A memory dream does not open its session this way: the daemon admits it once per
+dream, with `purpose: 'memory-dream'` and the outward id of the dream's execution session, before
+it issues the dream host's model credential or starts that host, under the same fail-open rules.
+
+### Maintenance exemption
+
+A memory dream ([memory-dreaming.md](memory-dreaming.md)) is background maintenance of the
+agent's own memory, so it does not consume the organization's count when the Control Plane can
+verify it as such. A new session is exempt when all of these hold:
+
+- the request carries `purpose: 'memory-dream'`;
+- the agent's stored configuration runs dreaming on the managed memory provider, the same
+  effective policy the daemon dreams under (no memory binding reads as managed with the default
+  policy); and
+- the agent has fewer than 24 exempt admissions since the current UTC day start by the database
+  clock.
+
+Otherwise the request falls back to normal counting: the session is admitted with `counted: true`
+and `maintenance` null, exactly as without a purpose. The handler decides the first two conditions
+from the agent it already loaded; the repository checks the daily cap under a transaction-scoped
+advisory lock per agent, taken after the lineage fence, so concurrent exempt admits of one agent
+cannot overrun it. The answer is the ordinary `{ admitted: true, counted: false }`; no new result
+field says why. A re-sent admit of an exempt id returns that stored answer, and the dream's first
+milestone counts nothing because its admission row exists. A daemon that does not send `purpose`,
+or a Control Plane that predates it (whose schema strips the unknown key), counts the dream like
+any other session.
 
 ## Not yet
 

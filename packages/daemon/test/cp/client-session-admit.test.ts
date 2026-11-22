@@ -97,6 +97,17 @@ describe('CpClient.admitSession', () => {
     await expect(outcome).resolves.toBe('admitted')
   })
 
+  it('carries a maintenance purpose only when given one', async () => {
+    const { client, t } = await ready([SESSION_ADMIT_FEATURE])
+    void client.admitSession(AGENT, SESSION, 'memory-dream')
+    void client.admitSession(AGENT, 'other-session')
+    await tick()
+    const [dream, plain] = admits(t)
+    expect(dream.payload).toEqual({ agentId: AGENT, sessionId: SESSION, purpose: 'memory-dream' })
+    expect(plain.payload).toEqual({ agentId: AGENT, sessionId: 'other-session' })
+    client.stop()
+  })
+
   it('resolves failed on an error reply without retrying', async () => {
     const { client, t, clock } = await ready([SESSION_ADMIT_FEATURE])
     const outcome = client.admitSession(AGENT, SESSION)

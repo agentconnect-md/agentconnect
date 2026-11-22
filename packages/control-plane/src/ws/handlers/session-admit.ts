@@ -1,5 +1,5 @@
 // `session/admit` handler — admit a new session for its agent's organization before it starts (org-session-policy.md, Admission).
-import { isFrame } from '@agentconnect.md/protocol'
+import { effectiveMemoryDreamingPolicy, isFrame } from '@agentconnect.md/protocol'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import { frameOrgId } from './frame-org.js'
@@ -25,8 +25,13 @@ export const handleSessionAdmit: Handler = async (frame, conn, deps) => {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'this daemon does not serve that agent', false)
       return
     }
+    // A dream is maintenance only when the agent's own stored config runs dreaming on the managed provider.
+    const maintenance =
+      frame.payload.purpose === 'memory-dream' && effectiveMemoryDreamingPolicy(agent.memory ?? undefined)?.enabled
+        ? frame.payload.purpose
+        : undefined
     // The agent's own org, read under the frame's org fence, never one the frame names beyond it.
-    const outcome = await deps.sessionAdmission.admit(agent.orgId, agent.id, frame.payload.sessionId)
+    const outcome = await deps.sessionAdmission.admit(agent.orgId, agent.id, frame.payload.sessionId, maintenance)
     if (!outcome.admitted) {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'that session id belongs to another agent', false)
       return

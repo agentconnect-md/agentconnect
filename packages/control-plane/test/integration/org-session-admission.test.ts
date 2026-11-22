@@ -3,7 +3,10 @@ import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEF_ORG, seedAgent } from '../fixtures/seed.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
-import { PgOrgSessionPolicyRepo } from '../../src/persistence/repositories/org-session-policy.repo.js'
+import {
+  MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY,
+  PgOrgSessionPolicyRepo
+} from '../../src/persistence/repositories/org-session-policy.repo.js'
 import { AgentId, SessionId } from '../../src/domain/ids.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -35,6 +38,9 @@ async function used(orgId: string = DEF_ORG): Promise<number> {
 
 const admit = (sessionId: string, agentId: string = AGENT, orgId: string = DEF_ORG) =>
   new PgOrgSessionPolicyRepo(prisma).admit(orgId, agentId, sessionId)
+
+const dream = (sessionId: string, agentId: string = AGENT) =>
+  new PgOrgSessionPolicyRepo(prisma).admit(DEF_ORG, agentId, sessionId, 'memory-dream')
 
 /** Wait until a backend queues on a session lineage fence, the overlap the race tests are written for. */
 async function awaitLineageLockWaiter(): Promise<void> {
@@ -130,6 +136,72 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
     })
     expect((await racing!).recorded).toBe(true)
     expect(await used()).toBe(1)
+  })
+
+  it('exempts allowed maintenance from the count and stores its purpose', async () => {
+    await seedAgent(prisma, AGENT)
+    expect(await dream('s-dream')).toEqual({ admitted: true, counted: false })
+    expect(await used()).toBe(0)
+    const row = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-dream' } })
+    expect(row).toMatchObject({ counted: false, maintenance: 'memory-dream', monthStart: await dbMonthStart() })
+    expect(await admit('s-plain')).toEqual({ admitted: true, counted: true })
+    const plain = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-plain' } })
+    expect(plain.maintenance).toBeNull()
+  })
+
+  it('answers a re-sent exempt admit the same, and its first milestone counts nothing', async () => {
+    await seedAgent(prisma, AGENT)
+    await dream('s-dream')
+    expect(await dream('s-dream')).toEqual({ admitted: true, counted: false })
+    expect(await admit('s-dream')).toEqual({ admitted: true, counted: false })
+    const repo = new PgSessionRepo(prisma)
+    expect((await repo.recordMilestone({ ...ev('s-dream'), platform: 'dream' as const })).recorded).toBe(true)
+    await repo.recordMilestone({ ...ev('s-dream', 'end'), platform: 'dream' as const })
+    expect(await used()).toBe(0)
+    expect(await prisma.orgSessionAdmission.count({ where: { maintenance: { not: null } } })).toBe(1)
+  })
+
+  it('ignores the purpose for a session already admitted or recorded', async () => {
+    await seedAgent(prisma, AGENT)
+    await admit('s-counted')
+    expect(await dream('s-counted')).toEqual({ admitted: true, counted: true })
+    await new PgSessionRepo(prisma).recordMilestone(ev('s-known'))
+    expect(await dream('s-known')).toEqual({ admitted: true, counted: false })
+    const known = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-known' } })
+    expect(known.maintenance).toBeNull()
+    expect(await used()).toBe(2)
+  })
+
+  it('counts maintenance past the per-agent daily cap, and keeps another agent’s allowance', async () => {
+    await seedAgent(prisma, AGENT)
+    await seedAgent(prisma, OTHER_AGENT)
+    for (let i = 0; i < MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY; i++) {
+      expect(await dream(`s-dream-${i}`)).toEqual({ admitted: true, counted: false })
+    }
+    expect(await dream('s-dream-over')).toEqual({ admitted: true, counted: true })
+    const over = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-dream-over' } })
+    expect(over.maintenance).toBeNull()
+    expect(await used()).toBe(1)
+    expect(await dream('s-other', OTHER_AGENT)).toEqual({ admitted: true, counted: false })
+  })
+
+  it('counts exempt admissions per UTC day by the database clock', async () => {
+    await seedAgent(prisma, AGENT)
+    for (let i = 0; i < MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY; i++) await dream(`s-old-${i}`)
+    await prisma.$executeRaw`
+      UPDATE "org_session_admission" SET "createdAt" = date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 second'`
+    expect(await dream('s-today')).toEqual({ admitted: true, counted: false })
+  })
+
+  it('holds the cap under concurrent exempt admits of one agent', async () => {
+    await seedAgent(prisma, AGENT)
+    for (let i = 0; i < MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY - 1; i++) await dream(`s-dream-${i}`)
+    const results = await Promise.all([dream('s-race-a'), dream('s-race-b'), dream('s-race-c')])
+    expect(results.filter((r) => r.admitted && !r.counted)).toHaveLength(1)
+    expect(await used()).toBe(2)
+    expect(await prisma.orgSessionAdmission.count({ where: { maintenance: { not: null } } })).toBe(
+      MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY
+    )
   })
 
   it('counts once when the first milestone holds the fence while an admit waits', async () => {

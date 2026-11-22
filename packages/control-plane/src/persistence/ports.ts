@@ -3082,13 +3082,21 @@ export interface OrgSessionMonthUsage {
 /** A session admission's outcome: admitted, counted only when the CP first learned of the id here, or the id is another agent's. */
 export type OrgSessionAdmission = { admitted: true; counted: boolean } | { admitted: false; conflict: 'other_agent' }
 
+/** A maintenance purpose the caller verified against the agent's own configuration, which the admission may exempt from the count. */
+export type OrgSessionMaintenance = 'memory-dream'
+
 export interface OrgSessionPolicyRepo {
   /** Store the policy if its revision is above the stored one; returns the revision now held, or null when the org does not exist. */
   apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null>
   /** This UTC month's session count by the database clock with the policy's limit; null when the org does not exist. */
   monthUsage(orgId: string): Promise<OrgSessionMonthUsage | null>
-  /** Admit a session id for the agent's org, idempotently; consults no limit and never refuses (org-session-policy.md, Admission). */
-  admit(orgId: string, agentId: string, sessionId: string): Promise<OrgSessionAdmission>
+  /** Admit a session id for the agent's org, idempotently, exempting allowed maintenance under its daily cap; never refuses on policy (org-session-policy.md, Admission). */
+  admit(
+    orgId: string,
+    agentId: string,
+    sessionId: string,
+    maintenance?: OrgSessionMaintenance
+  ): Promise<OrgSessionAdmission>
 }
 
 export interface SessionUsageRepo {
