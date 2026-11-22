@@ -168,6 +168,7 @@ app.kubernetes.io/component: {{ .component }}
   "claude" (dict "provider" "anthropic" "daemon" (dict "base" "ANTHROPIC_MODEL_BASE_URL" "key" "ANTHROPIC_MODEL_TOKEN") "runtime" (dict "base" "AC_CLAUDE_BASE_URL" "key" "AC_CLAUDE_API_KEY"))
   "codex" (dict "provider" "openai" "daemon" (dict "base" "OPENAI_MODEL_BASE_URL" "key" "OPENAI_MODEL_TOKEN") "runtime" (dict "base" "AC_CODEX_BASE_URL" "key" "AC_CODEX_API_KEY"))
   "deepseek" (dict "provider" "deepseek" "daemon" (dict "base" "DEEPSEEK_MODEL_BASE_URL" "key" "DEEPSEEK_MODEL_TOKEN") "runtime" (dict "base" "AC_DEEPSEEK_BASE_URL" "key" "AC_DEEPSEEK_API_KEY"))
+  "google" (dict "provider" "google" "daemon" (dict "base" "GOOGLE_MODEL_BASE_URL" "key" "GOOGLE_MODEL_TOKEN"))
   "typesafe" (dict "provider" "typesafe" "daemon" (dict "base" "TYPESAFE_MODEL_BASE_URL"))
 -}}
 {{- range $client, $cfg := $egress.clients }}

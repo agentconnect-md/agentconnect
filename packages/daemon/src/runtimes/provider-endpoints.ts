@@ -16,7 +16,7 @@ export interface KeyVariables {
   base?: string
 }
 
-type Dialect = 'anthropic' | 'openai' | 'deepseek'
+type Dialect = 'anthropic' | 'openai' | 'deepseek' | 'google'
 
 const ANTHROPIC = { key: 'ANTHROPIC_API_KEY', base: 'ANTHROPIC_BASE_URL' } as const
 const OPENAI = { key: 'OPENAI_API_KEY', base: 'OPENAI_BASE_URL' } as const
@@ -28,6 +28,8 @@ const OPENCODE = {
   openai: { key: OPENAI.key },
   deepseek: { key: DEEPSEEK.key }
 } as const
+// OpenCode's google SDK reads this variable itself, so a key with no base URL still reaches its own provider.
+const OPENCODE_GOOGLE = { key: 'GOOGLE_GENERATIVE_AI_API_KEY' } as const
 
 /** Each runtime's provider key variables, per dialect it speaks. */
 export const RUNTIME_KEY_VARIABLES = {
@@ -37,7 +39,7 @@ export const RUNTIME_KEY_VARIABLES = {
   qwen: { anthropic: ANTHROPIC, openai: OPENAI },
   goose: { anthropic: { key: ANTHROPIC.key, base: 'ANTHROPIC_HOST' }, openai: OPENAI },
   copilot: { anthropic: COPILOT, openai: COPILOT },
-  opencode: OPENCODE,
+  opencode: { ...OPENCODE, google: OPENCODE_GOOGLE },
   kilo: OPENCODE
 } as const satisfies Record<ModelRuntimeKind, Partial<Record<Dialect, KeyVariables>>>
 

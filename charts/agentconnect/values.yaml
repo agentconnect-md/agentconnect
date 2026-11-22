@@ -278,7 +278,9 @@ daemonPool:
   # never holds the value. Create the Secret with one entry per variable the daemon reads:
   # `<PREFIX>MODEL_TOKEN` and `<PREFIX>MODEL_BASE_URL`, where PREFIX is `ANTHROPIC_` (claude),
   # `OPENAI_` (codex), `DEEPSEEK_`, or empty for the shared fallback of those recognized runtimes.
-  # OpenCode reuses these three provider pairs; other ACP runtimes need `runtimeEnvironment` below. A token
+  # OpenCode reuses these three provider pairs, and alone reads a `GOOGLE_` pair that the shared
+  # fallback never fills and whose base URL must serve OpenAI Chat Completions. Other ACP runtimes
+  # need `runtimeEnvironment` below. A token
   # with no base URL is a plain provider key on that provider's own endpoint; a base URL with no
   # token aims a runtime at an endpoint that issues its own credential. Every entry is optional,
   # so the Secret names only the providers this install pays for and may land in either order
@@ -1074,15 +1076,17 @@ modelEgress:
   # one. A port missing from this list is a model call timing out with no obvious cause.
   ports: [8080]
   # The one gateway address this install's runtimes talk to. Each client is given
-  # `<gatewayUrl>/<provider dialect>` — `/anthropic`, `/openai`, `/deepseek` — because one
+  # `<gatewayUrl>/<provider dialect>` — `/anthropic`, `/openai`, `/deepseek`, `/google` — because one
   # address is one address, while the runtimes disagree about what they append to it (Claude
   # Code adds `/v1/messages`, Codex `/responses`, the DeepSeek Harness `/chat/completions`).
   # Routing those remainders onto real upstreams is the gateway's job; the chart states only
   # which dialect a client speaks. A client may still set `baseUrl` to override the whole
   # thing, for an endpoint laid out some other way.
   gatewayUrl: ''
-  # Clients: claude, codex, deepseek, typesafe; each accepts an optional baseUrl override.
+  # Clients: claude, codex, deepseek, google, typesafe; each accepts an optional baseUrl override.
   # Runtime clients also accept apiKey and populate sandbox defaults; typesafe supplies only a daemon endpoint.
+  # google is OpenCode's Gemini models over OpenAI Chat Completions: it accepts apiKey, and the daemon pool
+  # alone holds the pair and writes it into OpenCode's configuration at launch.
   # Over an https endpoint the apiKey reaches the daemon pool alone, which gives each sandbox a
   # credential-proxy placeholder in its place; a plain http endpoint keeps it in the sandbox too.
   #

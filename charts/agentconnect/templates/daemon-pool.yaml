@@ -301,7 +301,7 @@ spec:
             {{- end }}
             {{- $modelCredentials := .Values.daemonPool.modelCredentials.existingSecret }}
             {{- if $modelCredentials }}
-            {{- $modelVars := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" "TYPESAFE_MODEL_BASE_URL" }}
+            {{- $modelVars := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" "GOOGLE_MODEL_TOKEN" "GOOGLE_MODEL_BASE_URL" "TYPESAFE_MODEL_BASE_URL" }}
             {{- /* One source per install, because a HALF of a pair is worse than none: a Secret
                    holding only a token is a supported shape, and an entry it omits would fall
                    through to whatever another source left in that variable — a real provider key

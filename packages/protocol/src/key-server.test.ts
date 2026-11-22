@@ -32,6 +32,13 @@ describe('agentconnect.key-server/v1 schemas', () => {
     ).toThrow()
   })
 
+  it('names every dialect an issuer can mint for, and refuses any other', () => {
+    for (const provider of ['anthropic', 'openai', 'deepseek', 'google', 'typesafe']) {
+      expect(IssueKeyRequest.parse({ ...request, provider }).provider).toBe(provider)
+    }
+    expect(() => IssueKeyRequest.parse({ ...request, provider: 'example' })).toThrow()
+  })
+
   it('strips unknown response fields instead of rejecting the issuance', () => {
     // The retired `baseUrl` is the live case: an issuer still sending one must not
     // fail every grant, and the daemon must not see it either — topology is config.

@@ -1176,7 +1176,7 @@ A self-hosted pool's install-wide keys use it in pool pod sessions: the static
 pairs (`<PREFIX>MODEL_TOKEN` with its base URL, which `modelEgress.clients`
 renders too) and the provider key variables `daemonPool.runtimeEnvironment`
 maps (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`,
-`COPILOT_PROVIDER_API_KEY`). The pool member reads them from its own
+`COPILOT_PROVIDER_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`). The pool member reads them from its own
 environment, so the pod needs none. A pair is a slot `install:model:<provider>`
 and a mapped variable a slot `install:<runtime>:<variable>`, each at the
 endpoint the launch's runtime sends that key to, read from the launch's final

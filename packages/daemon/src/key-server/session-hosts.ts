@@ -9,9 +9,9 @@ import type { Logger } from '../log.js'
 import { shareStartup, awaitStartup } from '../session/startup-progress.js'
 import {
   isOpenCodeShaped,
-  modelCredentialRuntime,
   modelProviderTarget,
   requiresSelectedModel,
+  staticModelCredential,
   type ModelCredential,
   type ModelProviderTarget,
   type StaticModelCredentials
@@ -193,9 +193,7 @@ export class ModelSessionHostPool {
   }
 
   staticCredential(target: ModelProviderTarget): ModelCredential | undefined {
-    return (
-      this.staticModelCredentials?.[modelCredentialRuntime(target)] ?? this.staticModelCredentials?.[target.runtime]
-    )
+    return staticModelCredential(this.staticModelCredentials, target)
   }
 
   /** Base URLs come only from deployment configuration; key-server grants carry no endpoint. */

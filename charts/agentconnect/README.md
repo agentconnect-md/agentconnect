@@ -51,7 +51,9 @@ release tag; `daemonPool.runtime.image` remains available for an exact image pin
 OpenCode reuses the Anthropic, OpenAI, and DeepSeek pairs from
 `daemonPool.modelCredentials` or `modelEgress.clients`, and Kilo, Qwen Code, GitHub Copilot CLI
 and goose reuse the Anthropic and OpenAI pairs, so existing provider configuration needs no separate
-mapping for them. Qwen Code, Copilot and goose run one model named at launch: name the default
+mapping for them. OpenCode alone also reads a Google pair (`GOOGLE_MODEL_TOKEN` and
+`GOOGLE_MODEL_BASE_URL`, or the `google` client) for Gemini models, whose base URL must serve
+OpenAI Chat Completions. Qwen Code, Copilot and goose run one model named at launch: name the default
 in the runtime's own variable (`OPENAI_MODEL` or `ANTHROPIC_MODEL`, `COPILOT_MODEL`,
 `GOOSE_MODEL`) with `daemonPool.runtimeEnvironment.runtimes`. For other runtimes, other
 providers, or additional settings, map the runtime's environment variables from a Secret

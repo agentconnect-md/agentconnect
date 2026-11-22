@@ -139,6 +139,21 @@ describe('the endpoint a launch sends a provider key to', () => {
     ['copilot other key', 'copilot', 'OPENAI_API_KEY', { COPILOT_PROVIDER_TYPE: 'openai' }, undefined],
     ['opencode default', 'opencode', 'DEEPSEEK_API_KEY', {}, 'https://api.deepseek.com'],
     [
+      'opencode google default',
+      'opencode',
+      'GOOGLE_GENERATIVE_AI_API_KEY',
+      {},
+      'https://generativelanguage.googleapis.com'
+    ],
+    [
+      'opencode google base',
+      'opencode',
+      'GOOGLE_GENERATIVE_AI_API_KEY',
+      openCodeConfig('OPENCODE_CONFIG_CONTENT', { google: { options: { baseURL: 'https://g.example.test/v1' } } }),
+      'https://g.example.test/v1'
+    ],
+    ['kilo has no google key variable', 'kilo', 'GOOGLE_GENERATIVE_AI_API_KEY', {}, undefined],
+    [
       'opencode configured base',
       'opencode',
       'ANTHROPIC_API_KEY',
@@ -176,7 +191,8 @@ describe('the endpoint a launch sends a provider key to', () => {
       'ANTHROPIC_API_KEY',
       'OPENAI_API_KEY',
       'DEEPSEEK_API_KEY',
-      'COPILOT_PROVIDER_API_KEY'
+      'COPILOT_PROVIDER_API_KEY',
+      'GOOGLE_GENERATIVE_AI_API_KEY'
     ])
   })
 })
@@ -194,6 +210,7 @@ describe('what the writers put in a launch, read back', () => {
     { provider: 'openai', runtime: 'copilot' },
     { provider: 'anthropic', runtime: 'opencode', opencodeProvider: 'anthropic' },
     { provider: 'openai', runtime: 'opencode', opencodeProvider: 'openai' },
+    { provider: 'google', runtime: 'opencode', opencodeProvider: 'google' },
     { provider: 'anthropic', runtime: 'kilo', opencodeProvider: 'anthropic' },
     { provider: 'openai', runtime: 'kilo', opencodeProvider: 'openai' }
   ]
