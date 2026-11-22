@@ -3069,9 +3069,21 @@ export interface OrgSessionPolicyInput {
   enforce: boolean
 }
 
+/** Sessions an org started this UTC month beside its policy, read in one statement at `asOf` (org-session-policy.md). */
+export interface OrgSessionMonthUsage {
+  used: number
+  limit: number | null
+  policyRevision: number | null
+  monthStart: Date
+  resetsAt: Date
+  asOf: Date
+}
+
 export interface OrgSessionPolicyRepo {
   /** Store the policy if its revision is above the stored one; returns the revision now held, or null when the org does not exist. */
   apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null>
+  /** This UTC month's session count by the database clock with the policy's limit; null when the org does not exist. */
+  monthUsage(orgId: string): Promise<OrgSessionMonthUsage | null>
 }
 
 export interface SessionUsageRepo {
