@@ -186,7 +186,10 @@ therefore costs one slow startup rather than a pool that advertises nothing. A
 published answer is adopted only while it is fresh (one hour): an image reference is
 not always an immutable identity — a template pinned to a moving tag keeps one key
 across rebuilds — and the answer also depends on the deployment's credentials, so a
-newly configured provider pair must be able to take effect.
+newly configured provider pair must be able to take effect. Which static model pairs
+are configured, and the base URL each points at, is part of the key (as a digest, never
+a key value), so adding, removing or re-aiming a pair re-probes at the rollout that
+does it rather than after the hour.
 
 **The pool re-probes on a timer, and a self-hosted console can ask for one.** A
 probe only sees what the image's runtimes report, and some of that moves without a
