@@ -85,6 +85,26 @@ describe('daemon model-key session lifecycle', () => {
     await h.daemon.modelSessions.release('session-a')
   })
 
+  it('issues an OpenCode google model a google credential aimed at the google pair’s base', async () => {
+    const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
+    const configured = {
+      id: 'agent-a',
+      runtime: 'opencode',
+      runtimeOverrides: { model: 'google/gemini-3-flash-preview', env: [], secrets: [] }
+    }
+    h.daemon.runtimes = { opencode: { command: 'opencode', args: ['acp'], env: [] } }
+    h.daemon.modelSessions.staticModelCredentials = {
+      codex: { key: '', baseUrl: 'https://gw.example/openai/v1' },
+      google: { key: '', baseUrl: 'https://gw.example/google/v1' }
+    }
+    await h.daemon.modelSessions.ensure(configured, 'session-a')
+    expect(h.issue).toHaveBeenCalledWith(expect.objectContaining({ provider: 'google' }))
+    const [, entry] = h.starts.mock.calls[0]!
+    expect(entry.target).toEqual({ provider: 'google', runtime: 'opencode', opencodeProvider: 'google' })
+    expect(h.daemon.modelSessions.staticBaseUrl(entry.target)).toEqual({ baseUrl: 'https://gw.example/google/v1' })
+    await h.daemon.modelSessions.release('session-a')
+  })
+
   it('issues a launch-model runtime its probed default’s dialect and pins that model', async () => {
     const h = harness([{ keyId: 'key-1', key: 'secret', requestedAtMs: 1_000 }])
     const configured = { id: 'agent-a', runtime: 'github-copilot-cli' }

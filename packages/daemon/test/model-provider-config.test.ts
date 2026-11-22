@@ -15,7 +15,9 @@ import {
   configuredModelCredentials,
   launchModelChoice,
   modelCredentialRuntime,
-  modelProviderTarget
+  modelProviderTarget,
+  staticModelCredential,
+  type ModelProviderTarget
 } from '../src/runtimes/model-provider-config.js'
 
 const runtime = (command: string, args: string[] = []): RuntimeDef => ({ command, args, env: [] })
@@ -181,6 +183,17 @@ describe('modelProviderTarget', () => {
       opencodeProvider: 'anthropic'
     })
   })
+
+  it('gives an OpenCode google model a google credential, and any other provider id an OpenAI one', () => {
+    const google = modelProviderTarget(agent('opencode', 'google/gemini-3-flash-preview'), runtime('opencode', ['acp']))
+    expect(google).toEqual({ provider: 'google', runtime: 'opencode', opencodeProvider: 'google' })
+    expect(modelCredentialRuntime(google!)).toBe('google')
+    expect(modelProviderTarget(agent('opencode', 'example/example-model'), runtime('opencode', ['acp']))).toEqual({
+      provider: 'openai',
+      runtime: 'opencode',
+      opencodeProvider: 'example'
+    })
+  })
 })
 
 describe('applyModelCredential', () => {
@@ -269,6 +282,64 @@ describe('applyModelCredential', () => {
     })
   })
 
+  it("reaches a google base through OpenCode's OpenAI-compatible SDK, under the google provider id", () => {
+    const target = { provider: 'google', runtime: 'opencode', opencodeProvider: 'google' } as const
+    const env: Record<string, string> = {}
+    applyModelCredential(target, env, { key: 'google-key', baseUrl: 'https://gateway.example/google/v1' })
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBe('google-key')
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
+      provider: {
+        google: {
+          npm: '@ai-sdk/openai-compatible',
+          options: { apiKey: '{env:GOOGLE_GENERATIVE_AI_API_KEY}', baseURL: 'https://gateway.example/google/v1' }
+        }
+      }
+    })
+
+    const keyOnly: Record<string, string> = {}
+    applyModelCredential(target, keyOnly, { key: 'google-key' })
+    expect(JSON.parse(keyOnly.OPENCODE_CONFIG_CONTENT!).provider.google).toEqual({
+      options: { apiKey: '{env:GOOGLE_GENERATIVE_AI_API_KEY}' }
+    })
+
+    const operatorPackage: Record<string, string> = {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { google: { npm: '@ai-sdk/google' } } })
+    }
+    applyModelCredential(target, operatorPackage, { key: 'google-key', baseUrl: 'https://gateway.example/google' })
+    expect(JSON.parse(operatorPackage.OPENCODE_CONFIG_CONTENT!).provider.google.npm).toBe('@ai-sdk/google')
+  })
+
+  it('probes and launches OpenCode with the google pair beside the other three', () => {
+    const env: Record<string, string> = {}
+    const pairs: Record<string, { key: string; baseUrl: string }> = {
+      claude: { key: 'claude-key', baseUrl: 'https://gw.example/anthropic' },
+      codex: { key: 'openai-key', baseUrl: 'https://gw.example/openai/v1' },
+      deepseek: { key: 'deepseek-key', baseUrl: 'https://gw.example/deepseek' },
+      google: { key: 'google-key', baseUrl: 'https://gw.example/google/v1' }
+    }
+    const asked: Array<[string | undefined, string]> = []
+    applyConfiguredModelProviders({ runtime: 'opencode', provider: 'openai' }, env, (target) => {
+      asked.push([target.opencodeProvider, target.provider])
+      return pairs[modelCredentialRuntime(target)]
+    })
+    expect(asked).toEqual([
+      ['anthropic', 'anthropic'],
+      ['openai', 'openai'],
+      ['deepseek', 'deepseek'],
+      ['google', 'google']
+    ])
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBe('google-key')
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
+    expect(config.enabled_providers).toEqual(['anthropic', 'openai', 'deepseek', 'google'])
+    expect(config.provider.google).toEqual({
+      npm: '@ai-sdk/openai-compatible',
+      options: { apiKey: '{env:GOOGLE_GENERATIVE_AI_API_KEY}', baseURL: 'https://gw.example/google/v1' }
+    })
+    expect(config.provider.openai).toEqual({
+      options: { apiKey: '{env:OPENAI_API_KEY}', baseURL: 'https://gw.example/openai/v1' }
+    })
+  })
+
   it('keeps OpenCode provider keys separate and preserves explicit model restrictions', () => {
     const env: Record<string, string> = {
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
@@ -341,6 +412,42 @@ describe('applyModelCredential', () => {
     })
   })
 
+  it('gives OpenCode no google provider from the shared pair alone', () => {
+    const shared = configuredModelCredentials({ MODEL_TOKEN: 'k', MODEL_BASE_URL: 'https://gw.example' })
+    const google = { provider: 'google', runtime: 'opencode', opencodeProvider: 'google' } as const
+    expect(staticModelCredential(shared, google)).toBeUndefined()
+    expect(
+      staticModelCredential(shared, { provider: 'openai', runtime: 'opencode', opencodeProvider: 'example' })
+    ).toEqual({ key: 'k', baseUrl: 'https://gw.example' })
+    const launch = (selected: ModelProviderTarget) => {
+      const env: Record<string, string> = {}
+      applyConfiguredModelProviders(selected, env, (target) => staticModelCredential(shared, target))
+      return env
+    }
+    // The probe writes the three providers it always did, and a google model gains no google entry from the shared pair.
+    for (const env of [launch({ runtime: 'opencode', provider: 'openai' }), launch(google)]) {
+      expect(Object.keys(env).sort()).toEqual([
+        'ANTHROPIC_API_KEY',
+        'DEEPSEEK_API_KEY',
+        'OPENAI_API_KEY',
+        'OPENCODE_CONFIG_CONTENT'
+      ])
+      expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
+        provider: {
+          anthropic: { options: { apiKey: '{env:ANTHROPIC_API_KEY}', baseURL: 'https://gw.example/v1' } },
+          openai: { options: { apiKey: '{env:OPENAI_API_KEY}', baseURL: 'https://gw.example' } },
+          deepseek: {
+            npm: '@ai-sdk/anthropic',
+            options: { apiKey: '{env:DEEPSEEK_API_KEY}', baseURL: 'https://gw.example/v1' }
+          }
+        },
+        enabled_providers: ['anthropic', 'openai', 'deepseek']
+      })
+    }
+    const own = configuredModelCredentials({ MODEL_TOKEN: 'k', GOOGLE_MODEL_TOKEN: 'g' })
+    expect(staticModelCredential(own, google)).toEqual({ key: 'g' })
+  })
+
   it('lets each runtime carry the base its own dialect needs', () => {
     expect(
       configuredModelCredentials({
@@ -350,13 +457,16 @@ describe('applyModelCredential', () => {
         OPENAI_MODEL_BASE_URL: 'https://gw.example/v1',
         OPENAI_MODEL_TOKEN: 'gw-token',
         DEEPSEEK_MODEL_BASE_URL: 'https://gw.example/deepseek/v1',
-        DEEPSEEK_MODEL_TOKEN: 'gw-token'
+        DEEPSEEK_MODEL_TOKEN: 'gw-token',
+        GOOGLE_MODEL_BASE_URL: 'https://gw.example/google/v1'
       })
     ).toEqual({
       claude: { key: 'gw-token', baseUrl: 'https://gw.example' },
       codex: { key: 'gw-token', baseUrl: 'https://gw.example/v1' },
       opencode: { key: 'gw-token' },
-      deepseek: { key: 'gw-token', baseUrl: 'https://gw.example/deepseek/v1' }
+      deepseek: { key: 'gw-token', baseUrl: 'https://gw.example/deepseek/v1' },
+      // The google pair is only ever its own, so a URL-only one waits for an issued key.
+      google: { key: '', baseUrl: 'https://gw.example/google/v1' }
     })
   })
 
@@ -534,6 +644,18 @@ describe('Kilo, Qwen Code, Copilot and goose', () => {
     expect(modelProviderTarget(agent('kilo', 'deepseek/deepseek-chat'), runtime('./kilo', ['acp']))).toBeUndefined()
   })
 
+  it('leaves a Kilo google model on an OpenAI credential, its own SDK and the shared pair', () => {
+    const target = modelProviderTarget(agent('kilo', 'google/gemini-3-flash-preview'), runtime('./kilo', ['acp']))!
+    expect(target).toEqual({ provider: 'openai', runtime: 'kilo', opencodeProvider: 'google' })
+    expect(modelCredentialRuntime(target)).toBe('opencode')
+    const env: Record<string, string> = {}
+    applyModelCredential(target, env, { key: 'issued', baseUrl: 'https://gw.example/v1' })
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBeUndefined()
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!).provider.google).toEqual({
+      options: { apiKey: '{env:MODEL_TOKEN}', baseURL: 'https://gw.example/v1' }
+    })
+  })
+
   it('reads explicit, Qwen-advertised and bare model ids', () => {
     expect(launchModelChoice('openai/claude-like')).toEqual({ provider: 'openai', model: 'claude-like' })
     expect(launchModelChoice('$runtime|openai|gpt-5.5(openai)')).toEqual({ provider: 'openai', model: 'gpt-5.5' })
@@ -549,7 +671,7 @@ describe('Kilo, Qwen Code, Copilot and goose', () => {
 
   it('writes Kilo through KILO_CONFIG_CONTENT and limits it to the configured providers', () => {
     const env: Record<string, string> = { KILO_CONFIG_CONTENT: JSON.stringify({ share: 'disabled' }) }
-    const pairs = { anthropic: anthropicPair, openai: openaiPair, deepseek: openaiPair }
+    const pairs = { anthropic: anthropicPair, openai: openaiPair, deepseek: openaiPair, google: openaiPair }
     applyConfiguredModelProviders(
       { provider: 'anthropic', runtime: 'kilo', opencodeProvider: 'anthropic' },
       env,

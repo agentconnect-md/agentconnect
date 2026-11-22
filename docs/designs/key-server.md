@@ -69,11 +69,13 @@ hold to check it are decided together by the key server's own design and the
 deployment that installs both. This document stops at the header.
 
 `provider` names the API dialect the credential must speak (`anthropic` /
-`openai` / `deepseek` / `typesafe`) and selects which key comes back. A dialect
+`openai` / `deepseek` / `google` / `typesafe`) and selects which key comes back. A dialect
 is listed here once an issuer can mint for it. `typesafe` is consumed by the
 daemon Decision evaluator (§2.2); `modelProviderTarget` does not map an ACP runtime
 to that dialect. A `deepseek` key is DeepSeek's, but at a configured base it speaks
-the Messages API, the DeepSeek Harness's dialect (§4). There is
+the Messages API, the DeepSeek Harness's dialect (§4). A `google` key is issued for
+OpenCode's `google/` models alone and, at a configured base, speaks OpenAI Chat
+Completions rather than the Gemini API (§4). There is
 deliberately **no `model` parameter**: per-model usage attribution belongs to
 whatever observes actual requests (a gateway data path, or the runtime's own usage
 reports), and a spawn-time hint would invite implementations to treat it as truth
@@ -271,6 +273,9 @@ per-runtime pair that replaces it whole: `ANTHROPIC_MODEL_TOKEN`/`ANTHROPIC_MODE
 for Claude, `OPENAI_MODEL_*` for Codex, `DEEPSEEK_MODEL_*` for the DeepSeek Harness.
 OpenCode reuses these provider pairs: `anthropic` uses `ANTHROPIC_MODEL_*`, `openai`
 uses `OPENAI_MODEL_*`, and `deepseek` uses `DEEPSEEK_MODEL_*`, with the same shared fallback.
+OpenCode's `google` provider has its own pair, `GOOGLE_MODEL_*`, which no other runtime
+reads and which has no shared fallback: an install that sets only the shared pair gets no
+`google` provider.
 Kilo reuses the `anthropic` and `openai` pairs the same way.
 Qwen Code, GitHub Copilot CLI and goose reuse the `anthropic` or `openai` pair of the dialect
 their launch speaks (below).
@@ -288,8 +293,13 @@ default). OpenCode therefore reaches a DeepSeek base through its Anthropic SDK
 (`npm: "@ai-sdk/anthropic"`, unless the launch config names its own package), with the
 same `/v1` rule. A DeepSeek key without a base keeps OpenCode's built-in DeepSeek
 provider. OpenAI bases pass through unchanged: OpenAI clients append `/chat/completions` or
-`/responses` to a base that already ends in `/v1`. Each pair is translated at runtime
-launch:
+`/responses` to a base that already ends in `/v1`. A Google base is addressed the same way
+and passes through unchanged: it serves OpenAI Chat Completions, so OpenCode reaches it
+through its OpenAI-compatible SDK (`npm: "@ai-sdk/openai-compatible"`, unless the launch
+config names its own package) under the `google` provider id, which keeps that provider's
+model catalog, with the key in `GOOGLE_GENERATIVE_AI_API_KEY`. A Google key without a base
+keeps OpenCode's built-in Google provider. Kilo takes no Google pair: a `google/` model
+there is still issued an `openai` credential. Each pair is translated at runtime launch:
 
 | Runtime  | Token                                                                                                                              | Base URL                                                                                                                             |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |

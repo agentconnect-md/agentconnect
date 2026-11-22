@@ -29,8 +29,8 @@ export const KEY_SERVER_ORG_STANDING_PATH = '/v1/org-standing' as const
 export const KEY_SERVER_AUTH_HEADER = 'authorization' as const
 
 /** Provider API dialect the credential must speak. */
-// TypeSafe is consumed by daemon Decisions rather than an ACP runtime.
-export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek', 'typesafe'])
+// TypeSafe is consumed by daemon Decisions rather than an ACP runtime; a google credential speaks OpenAI Chat Completions.
+export const KeyProvider = z.enum(['anthropic', 'openai', 'deepseek', 'google', 'typesafe'])
 export type KeyProvider = z.infer<typeof KeyProvider>
 
 // No `daemonId` field: caller identity belongs to the transport, and a server able to

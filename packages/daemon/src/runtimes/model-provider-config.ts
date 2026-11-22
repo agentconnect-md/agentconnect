@@ -35,6 +35,9 @@ export type ModelRuntimeKind = 'claude' | 'codex' | 'opencode' | 'deepseek' | 'k
 /** Runtimes whose launch environment names the one model they run, so the target carries it. */
 export type LaunchModelRuntimeKind = 'qwen' | 'copilot' | 'goose'
 
+/** The static pair a credential is read from: a runtime's own, or the google one only OpenCode reads. */
+export type ModelCredentialPair = ModelRuntimeKind | 'google'
+
 export interface ModelProviderTarget {
   provider: KeyProvider
   runtime: ModelRuntimeKind
@@ -57,20 +60,34 @@ export function requiresSelectedModel(target: ModelProviderTarget): boolean {
   return isOpenCodeShaped(target) || isLaunchModelRuntime(target.runtime)
 }
 
-const OPENCODE_PROVIDERS: Record<string, { runtime: ModelRuntimeKind }> = {
-  anthropic: { runtime: 'claude' },
-  openai: { runtime: 'codex' },
-  deepseek: { runtime: 'deepseek' }
+const OPENCODE_PROVIDERS: Record<string, { pair: ModelCredentialPair }> = {
+  anthropic: { pair: 'claude' },
+  openai: { pair: 'codex' },
+  deepseek: { pair: 'deepseek' },
+  google: { pair: 'google' }
 }
 
-// The deepseek pair speaks Messages, and Kilo's built-in deepseek provider sends chat completions whatever its `npm`.
+// Kilo's built-in deepseek provider sends chat completions to a Messages-only pair, and only OpenCode takes the google pair.
+const KILO_UNPAIRED: ReadonlySet<string> = new Set(['deepseek', 'google'])
+
 function openCodeShapedProviders(target: ModelProviderTarget): string[] {
   const providers = Object.keys(OPENCODE_PROVIDERS)
-  return target.runtime === 'kilo' ? providers.filter((provider) => provider !== 'deepseek') : providers
+  return target.runtime === 'kilo' ? providers.filter((provider) => !KILO_UNPAIRED.has(provider)) : providers
 }
 
-export function modelCredentialRuntime(target: ModelProviderTarget): ModelRuntimeKind {
-  if (isOpenCodeShaped(target)) return OPENCODE_PROVIDERS[target.opencodeProvider ?? 'openai']?.runtime ?? 'opencode'
+// Google is a dialect of its own on OpenCode alone; any other provider id takes an OpenAI credential.
+function openCodeKeyProvider(runtime: ModelRuntimeKind, provider: string): KeyProvider {
+  if (provider === 'anthropic' || provider === 'deepseek') return provider
+  return provider === 'google' && runtime === 'opencode' ? 'google' : 'openai'
+}
+
+export function modelCredentialRuntime(target: ModelProviderTarget): ModelCredentialPair {
+  if (isOpenCodeShaped(target)) {
+    const provider = target.opencodeProvider ?? 'openai'
+    // The google pair's base serves a google credential alone, never the OpenAI one Kilo sends a google model.
+    if (provider === 'google' && target.provider !== 'google') return 'opencode'
+    return OPENCODE_PROVIDERS[provider]?.pair ?? 'opencode'
+  }
   // A launch-model runtime reuses the pair of the dialect it speaks.
   if (isLaunchModelRuntime(target.runtime)) return target.provider === 'anthropic' ? 'claude' : 'codex'
   return target.runtime
@@ -152,11 +169,7 @@ export function modelProviderTarget(
   const configuredProvider = effectiveModel?.includes('/') ? effectiveModel.split('/', 1)[0]?.trim() : undefined
   const opencodeProvider = configuredProvider || 'openai'
   if (launchKind === 'kilo' && opencodeProvider === 'deepseek') return undefined
-  return {
-    provider: opencodeProvider === 'anthropic' || opencodeProvider === 'deepseek' ? opencodeProvider : 'openai',
-    runtime: launchKind,
-    opencodeProvider
-  }
+  return { provider: openCodeKeyProvider(launchKind, opencodeProvider), runtime: launchKind, opencodeProvider }
 }
 
 function applyOpenCodeCredential(
@@ -181,12 +194,15 @@ function applyOpenCodeCredential(
     url.pathname = `${url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`
     baseURL = url.toString()
   }
+  // A google base speaks Chat Completions and passes through like an OpenAI one, so OpenCode reaches it through its OpenAI-compatible SDK.
+  const chatBase = !!baseURL && target.provider === 'google'
   env[configEnv] = JSON.stringify({
     ...config,
     provider: {
       ...providers,
       [providerId]: {
         ...(messagesBase && providerId === 'deepseek' ? { npm: '@ai-sdk/anthropic' } : {}),
+        ...(chatBase ? { npm: '@ai-sdk/openai-compatible' } : {}),
         ...provider,
         options: {
           ...options,
@@ -344,16 +360,17 @@ export function configuredCodexSessionFloor(env: NodeJS.ProcessEnv): string | un
   return raw
 }
 
-export type StaticModelCredentials = Partial<Record<ModelRuntimeKind, ModelCredential>>
+export type StaticModelCredentials = Partial<Record<ModelCredentialPair, ModelCredential>>
 
-// OpenCode reuses each provider's runtime pair, including its shared fallback.
-const RUNTIME_ENV_PREFIX: Partial<Record<ModelRuntimeKind, string>> = {
+// OpenCode reuses each provider's runtime pair, including its shared fallback; the google pair is OpenCode's alone and has none.
+const RUNTIME_ENV_PREFIX: Partial<Record<ModelCredentialPair, string>> = {
   claude: 'ANTHROPIC_',
   codex: 'OPENAI_',
-  deepseek: 'DEEPSEEK_'
+  deepseek: 'DEEPSEEK_',
+  google: 'GOOGLE_'
 }
 
-const RUNTIME_KINDS: readonly ModelRuntimeKind[] = ['claude', 'codex', 'opencode', 'deepseek']
+const RUNTIME_KINDS: readonly ModelCredentialPair[] = ['claude', 'codex', 'opencode', 'deepseek', 'google']
 
 function staticPair(env: NodeJS.ProcessEnv, prefix: string): ModelCredential | undefined {
   const key = env[`${prefix}MODEL_TOKEN`]?.trim()
@@ -373,10 +390,20 @@ export function configuredModelCredentials(env: NodeJS.ProcessEnv): StaticModelC
   const resolved: StaticModelCredentials = {}
   for (const kind of RUNTIME_KINDS) {
     const prefix = RUNTIME_ENV_PREFIX[kind]
-    const pair = (prefix ? staticPair(env, prefix) : undefined) ?? shared
+    // A shared base was never addressed to Google models, so the google pair is only ever its own.
+    const pair = (prefix ? staticPair(env, prefix) : undefined) ?? (kind === 'google' ? undefined : shared)
     if (pair) resolved[kind] = pair
   }
   return Object.keys(resolved).length > 0 ? resolved : undefined
+}
+
+/** The static pair a target reads: its provider's, else its runtime's; a google target reads the google pair or none. */
+export function staticModelCredential(
+  credentials: StaticModelCredentials | undefined,
+  target: ModelProviderTarget
+): ModelCredential | undefined {
+  const pair = modelCredentialRuntime(target)
+  return credentials?.[pair] ?? (pair === 'google' ? undefined : credentials?.[target.runtime])
 }
 
 export function applyStaticModelConfig(
@@ -416,7 +443,7 @@ export function applyConfiguredModelProviders(
     ? [...new Set([...openCodeShapedProviders(target), target.opencodeProvider ?? 'openai'])].map((provider) => ({
         runtime: target.runtime,
         opencodeProvider: provider,
-        provider: provider === 'anthropic' || provider === 'deepseek' ? provider : 'openai'
+        provider: openCodeKeyProvider(target.runtime, provider)
       }))
     : [resolved]
   let configured = false

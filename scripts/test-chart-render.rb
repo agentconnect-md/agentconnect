@@ -116,7 +116,8 @@ abort('daemon pool must serve its readiness endpoint') unless env['AC_READINESS_
 # non-optional entry would wedge every member of an install whose Secret names one provider.
 model_credential_env = container.fetch('env').select { |item| item.fetch('name').end_with?('MODEL_TOKEN', 'MODEL_BASE_URL') }
 %w[MODEL_TOKEN MODEL_BASE_URL ANTHROPIC_MODEL_TOKEN ANTHROPIC_MODEL_BASE_URL
-   OPENAI_MODEL_TOKEN OPENAI_MODEL_BASE_URL DEEPSEEK_MODEL_TOKEN DEEPSEEK_MODEL_BASE_URL].each do |name|
+   OPENAI_MODEL_TOKEN OPENAI_MODEL_BASE_URL DEEPSEEK_MODEL_TOKEN DEEPSEEK_MODEL_BASE_URL
+   GOOGLE_MODEL_TOKEN GOOGLE_MODEL_BASE_URL].each do |name|
   entry = model_credential_env.find { |item| item.fetch('name') == name } ||
           abort("daemon pool must project #{name} from the model-credential Secret")
   abort("#{name} must be a Secret reference, never a value") if entry.key?('value')
@@ -312,7 +313,9 @@ egress_rendered, egress_error, egress_status = Open3.capture3(
   '--set', 'modelEgress.clients.claude.baseUrl=https://gateway.example.test/anthropic',
   '--set', 'modelEgress.clients.claude.apiKey=example-https-key',
   '--set', 'modelEgress.clients.codex.baseUrl=http://gateway.example.test:8080/openai',
-  '--set', 'modelEgress.clients.codex.apiKey=example-cleartext-key'
+  '--set', 'modelEgress.clients.codex.apiKey=example-cleartext-key',
+  '--set', 'modelEgress.gatewayUrl=http://gateway.example.test:8080/',
+  '--set', 'modelEgress.clients.google.apiKey=example-google-key'
 )
 abort("helm template (model egress) failed:\n#{egress_error}") unless egress_status.success?
 egress_documents = YAML.load_stream(egress_rendered).compact
@@ -328,6 +331,10 @@ abort('the member must hold every model-egress key') unless
 abort('an https model-egress key must stay out of the sandbox template') if egress_sandbox.key?('AC_CLAUDE_API_KEY')
 abort('the sandbox template must keep the https base URL') unless egress_sandbox['AC_CLAUDE_BASE_URL'] == 'https://gateway.example.test/anthropic'
 abort('a cleartext model-egress key must stay in the sandbox template') unless egress_sandbox['AC_CODEX_API_KEY'] == 'example-cleartext-key'
+# The google client is the member's alone: the daemon writes it into OpenCode's configuration at launch.
+abort('the member must hold the google pair at the gateway-derived base') unless
+  egress_member['GOOGLE_MODEL_BASE_URL'] == 'http://gateway.example.test:8080/google' && egress_member['GOOGLE_MODEL_TOKEN'] == 'example-google-key'
+abort('the google pair must stay out of the sandbox template') if egress_sandbox.keys.any? { |name| name.include?('GOOGLE') }
 # One value serves all three shim surfaces: the sandbox listener, the member's dialer, and the
 # ingress policy port. Split them and an override leaves the shim on its baked-in default while
 # every daemon-to-sandbox bind times out.
