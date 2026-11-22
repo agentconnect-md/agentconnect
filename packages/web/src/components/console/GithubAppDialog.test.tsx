@@ -127,7 +127,7 @@ describe('GithubAppDialog', () => {
     mocks.selectGithubAppOwners.mockRejectedValueOnce(new Error('cancelled'))
     await render('agent-retry', vi.fn(), vi.fn(), 'create')
     await act(async () => button('Choose from my GitHub organizations')?.click())
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not complete GitHub authorization')
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Couldn’t complete GitHub authorization')
     await act(async () => button('Choose from my GitHub organizations')?.click())
     expect(document.querySelector('[role="alert"]')).toBeNull()
     expect(document.body.textContent).toContain('example-user')

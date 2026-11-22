@@ -1,8 +1,10 @@
 # Assistant Mode
 
-**Status:** Design, fourteenth revision (2026-10-10). Reviewed by three independent design reviews
-and the repository's review bot; §10 records what each round corrected. Nothing is implemented yet.
-Prerequisites: #2812, #2813. Work breakdown: #2810.
+**Status:** Implemented (Beta in the console); hundred-and-twelfth revision (2026-11-21). Core
+assistant mode, the work board and sibling task awareness (§5.18), Slack Work canvas (§5.19), and
+quiet-task look-backs (§5.20) are shipped; individual subsections below record what remains
+proposed or deferred. Early design reviews are recorded in §10. Prerequisites: #2812, #2813. Work
+breakdown: #2810.
 
 **In one sentence:** switch an agent into assistant mode and it behaves like one person on the
 team — it keeps a continuous conversation with you in every place, what it hears in one place it
@@ -4212,6 +4214,10 @@ four hours per place. A task of the place is listed when all of these hold:
   (longer after it was sent back to work, under Limits);
 - no person stopped it: stopping or cancelling its turn, or muting its thread, keeps it off the
   list until a person writes in its threads again;
+- its latest summary did not give the status `done` (`updateTask`'s optional `status`,
+  auto-session-mode.md §6.7): a task that says nothing is left to do or waiting on anyone has
+  nothing to look back at. A round that starts clears the status, so the task is listed again
+  unless it says `done` once more; a summary that gives no status is listed as before;
 - its limits below are not spent.
 
 A place with nothing to list gets no turn, so a look costs a model call only where something is
@@ -4371,15 +4377,23 @@ ended; who stopped it is written only into the transcript.
 - **Columns.** On `assistant_subsession`, store version 82 on both backends: `lookedAt`,
   `lookReminders`, `lookRemindedAt`, `lookSentBack`, `lookLeft`, `stoppedAt`, `personAt`,
   `lastPerson` and `openedBy`.
+- **Status.** Store version 85 adds `taskStatus` to `assistant_subsession` on both backends:
+  `in_progress`, `waiting`, `done` or `blocked`, set with each summary and cleared when a round
+  starts.
 - **Work that was already there.** Store version 83 marks every open work task no look has listed
   as listed at the upgrade and left six looks in a row, which is the existing rule for a task that
   is not listed until it changes; nothing new is stored. The place's first look then comes four
   hours after the upgrade at the earliest.
 - **Delivery.** Each item is its task's report (`deliverDaemonReport` with the task's session as the
   caller and `kind="look back"`), replying in the thread the task's latest turn delivered to in the
-  place, or, for a task working in a room it holds, in the thread that asked for the room. The
-  daemon holds the coordinator's session gate while it admits a look's items, so an idle coordinator
-  takes them in one turn; a busy one takes them in its next batch.
+  place, or, for a task working in a room it holds, in the thread that asked for the room. An item
+  is the coordinator's input only: its turn body carries `sessionMessage.lookBack`, and
+  conversation views, thread reply counts and the transcript reads behind `recall` and `readTask`
+  leave out a row whose body carries it, so a place sees what the coordinator did with it (a
+  reminder, a round of the task), never the item. A coordinator batch writes each folded member's
+  body onto its row, as the session's ingest does for the batch's head. The daemon holds the
+  coordinator's session gate while it admits a look's items, so an idle coordinator takes them in
+  one turn; a busy one takes them in its next batch.
 - **A stale item.** `replyToMessage` and `messageTask` on an item read the task's row and its mute
   latch again (`lookBackStale`) and are refused when the task closed, was stopped, heard from a
   person or ran a round after the look listed it; the wake itself reads the stop mark once more.

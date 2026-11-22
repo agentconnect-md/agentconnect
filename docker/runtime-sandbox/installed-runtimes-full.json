@@ -1,5 +1,5 @@
 [
-  { "id": "antigravity-acp", "command": "antigravity-acp", "args": ["--uid="] },
+  { "id": "antigravity-acp", "command": "agy", "args": ["acp"] },
   { "id": "claude-acp", "command": "claude-agent-acp", "args": [] },
   { "id": "cline", "command": "cline", "args": ["--acp"] },
   { "id": "codex-acp", "command": "codex-acp", "args": [] },

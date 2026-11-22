@@ -53,7 +53,7 @@ describe('AddPoolComputer', () => {
     const onClose = vi.fn()
     const host = render(onClose)
     expect(host.textContent).toContain('Add cloud computer')
-    expect(host.textContent).toContain('isolated in its own container')
+    expect(host.textContent).toContain('An isolated Linux desktop')
     // A name is needed; agents get it on their own Tools tab.
     expect(button('Create computer').disabled).toBe(true)
     const input = host.querySelector<HTMLInputElement>('input.inp')!

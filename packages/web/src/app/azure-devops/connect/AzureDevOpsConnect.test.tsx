@@ -318,7 +318,7 @@ describe('AzureDevOpsConnect', () => {
     await chooseProjects()
     await click('Connect')
     const outcomes = host.querySelector('[data-azure-devops-trigger-outcomes]')!
-    expect(outcomes.textContent).toContain('Example Project: your account cannot change its service hook permissions.')
+    expect(outcomes.textContent).toContain('Example Project: your account can’t change service hook permissions.')
     expect(outcomes.textContent).not.toContain('Other Project')
     expect([...outcomes.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(CHECKLIST)
   })
@@ -359,8 +359,8 @@ describe('AzureDevOpsConnect', () => {
     ['project_collection_administrator_required', 'Only a Project Collection Administrator'],
     ['entitlement_refused', 'Azure DevOps refused the access level'],
     ['memberships_incomplete', 'Some project memberships are missing'],
-    ['not_in_organization', 'The application is not in the organization yet'],
-    ['no_repository_access', 'The application sees no repository']
+    ['not_in_organization', 'The app isn’t in the organization yet'],
+    ['no_repository_access', 'The app can’t see any repositories']
   ])('shows the checklist for %s and checks again with the ticket it carries', async (code, text) => {
     mocks.apply.mockRejectedValue(
       new mocks.FakeApiError('refused', 403, code, { checklist: CHECKLIST, ticket: 'ticket-resume' })
@@ -385,7 +385,7 @@ describe('AzureDevOpsConnect', () => {
     mocks.start.mockResolvedValue({ authorizeUrl: 'https://login.example.test/authorize?state=new' })
     await chooseProjects()
     await click('Connect')
-    expect(host.textContent).toContain('Your account cannot grant this access')
+    expect(host.textContent).toContain('Your account can’t grant this access')
     expect(button('Check again')).toBeUndefined()
     await click('Start over')
     expect(mocks.start).toHaveBeenCalledWith(undefined, 'org-a')

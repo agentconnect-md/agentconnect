@@ -410,15 +410,15 @@ describe('IntegrationChannelList gated-agent banner', () => {
     )
 
   it('states the gate in one clause', () => {
-    expect(banner('slack')).toContain('Private agent — answers only where enabled below.')
-    expect(banner('telegram')).toContain('Private agent — answers only where enabled below.')
+    expect(banner('slack')).toContain('Private agent. Replies only where enabled below.')
+    expect(banner('telegram')).toContain('Private agent. Replies only where enabled below.')
   })
 
   it('lets a platform whose gate is more than the row say so itself', () => {
     // §4.3: a gated Linear member acts in a team only as its default, so the host's
     // "enable it below" would promise a per-member switch the model does not have.
     const html = banner('linear')
-    expect(html).toContain('Private agent — answers only in teams where it is the default.')
+    expect(html).toContain('Private agent. Replies only in teams where it is the default.')
     expect(html).not.toContain('enabled below')
   })
 
@@ -431,7 +431,7 @@ describe('IntegrationChannelList gated-agent banner', () => {
       for (const platform of ['slack', 'linear']) {
         const html = banner(platform, conversationGate(agent))
         expect(html, platform).not.toContain('role="note"')
-        expect(html, platform).not.toContain('answers only')
+        expect(html, platform).not.toContain('Replies only')
       }
     expect(conversationGate(privateAssistant)).toBe('private')
   })
@@ -535,7 +535,7 @@ describe('IntegrationChannelList default dispatch on a one-member bot', () => {
 
   it('keeps it once a second agent shares the bot', () => {
     const html = render('bot_shared')
-    expect(html).toContain('Default dispatch — Alice')
+    expect(html).toContain('Default dispatch: Alice')
   })
 })
 
@@ -562,7 +562,7 @@ describe('IntegrationChannelList default dispatch control', () => {
 
   it('names the default accessibly without displaying its name on a chat row', () => {
     const html = render('alice')
-    expect(html).toContain('aria-label="Default dispatch — Alice"')
+    expect(html).toContain('aria-label="Default dispatch: Alice"')
     expect(html).not.toContain('>Alice</span>')
   })
 })
@@ -592,7 +592,7 @@ describe('IntegrationChannelList direct rows', () => {
         channels: [{ channelId: 'D1', name: '@Alice', kind: 'im', trigger: 'any', agentId: 'bob' }]
       })
     )
-    expect(html).toContain('Default dispatch — Bob')
+    expect(html).toContain('Default dispatch: Bob')
     expect(html).not.toContain('>Bob</span>')
   })
 })

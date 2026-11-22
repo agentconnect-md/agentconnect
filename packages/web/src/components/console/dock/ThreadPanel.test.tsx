@@ -592,7 +592,7 @@ describe('ThreadPanel', () => {
   it('says who a reply reaches in its placeholder, and offers to attach a file where the hint was', async () => {
     await render()
     expect(container.querySelector('textarea')?.getAttribute('placeholder')).toBe(
-      'Reply in this task — only this task sees it'
+      'Reply to this task (visible only to this task)'
     )
     expect(container.querySelector('[data-task-thread-hint]')).toBeNull()
     const attach = container.querySelector<HTMLButtonElement>('[data-task-thread-attach]')
@@ -972,7 +972,7 @@ describe('ThreadPanel on a thread’s record (webchat-threads.md §6.2)', () => 
     withTask = false
     props = { record: ref }
     await render()
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe('This thread isn’t in this conversation.')
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('This thread isn’t part of this conversation.')
   })
 
   it('pages in earlier messages of a long thread, drawing each row once', async () => {

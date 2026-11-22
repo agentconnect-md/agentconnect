@@ -38,7 +38,7 @@ it('opens a child gate in a sheet and removes the whole continuation from the ro
   try {
     await act(async () => root.render(<Form />))
     await act(async () =>
-      container.querySelector<HTMLButtonElement>('[aria-label="Continue with a Decision"]')!.click()
+      container.querySelector<HTMLButtonElement>('[aria-label="Continue with a decision"]')!.click()
     )
     await act(async () =>
       [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
@@ -55,7 +55,7 @@ it('opens a child gate in a sheet and removes the whole continuation from the ro
         .click()
     )
     expect(document.querySelector('[role="dialog"]')).toBeNull()
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Remove next Decision"]')!.click())
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Remove next decision"]')!.click())
     expect(saved).toEqual({ type: 'gate', decisionId: '0', when: { type: 'boolean', values: [true] } })
   } finally {
     await act(async () => root.unmount())

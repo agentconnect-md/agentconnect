@@ -304,7 +304,7 @@ describe('native agent tools and skills roster', () => {
     expect(completed).not.toHaveBeenCalled()
     await act(async () => click('Done'))
     expect(completed).toHaveBeenCalledWith(
-      'Reviewed my-agent’s tools and skills — 1 MCP server(s) attached · 3 skill(s) enabled.'
+      'Reviewed my-agent’s tools and skills: 1 MCP server(s) attached · 3 skill(s) enabled.'
     )
   })
 

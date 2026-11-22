@@ -652,7 +652,7 @@ describe('the session page in viewer mode', () => {
     wire.fileExists = false
     nav.search = 'file=src%2Fgone.ts'
     await render()
-    expect(text()).toContain('this checkout has no file at that path')
+    expect(text()).toContain('File not found at this path.')
     expect(viewer()).toBeNull()
     expect(pane()?.className).toBe('hidden')
   })
@@ -975,7 +975,7 @@ describe('the Git tab', () => {
     })
     await render()
     expect(container?.querySelector('[data-dock-tab="git"]')?.textContent).not.toContain('2')
-    expect(container?.querySelector('[data-git-panel]')?.textContent).toContain('Nothing has changed')
+    expect(container?.querySelector('[data-git-panel]')?.textContent).toContain('Working tree is clean')
   })
 
   it('opens a row’s diff in the viewer, on the side of the index the row came from', async () => {
@@ -1097,7 +1097,7 @@ describe('the Git tab', () => {
     expect(container?.querySelector('[data-viewer-stage]')).toBeNull()
     // The diff is still readable — a viewer reviews, and is told why there is nothing to press.
     expect(container?.querySelector('[data-viewer-diff]')).not.toBeNull()
-    expect(container?.querySelector('[data-git-panel]')?.textContent).toContain('Review only')
+    expect(container?.querySelector('[data-git-panel]')?.textContent).toContain('Read-only')
   })
 })
 

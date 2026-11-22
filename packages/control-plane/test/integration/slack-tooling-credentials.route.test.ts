@@ -44,7 +44,8 @@ import type {
   SlackManifestExportResult,
   SlackManifestUpdateResult,
   SlackOAuthExchangeResult,
-  SlackRotateResult
+  SlackRotateResult,
+  SlackAppIconSetResult
 } from '../../src/http/slack-config-api.js'
 import { OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
@@ -101,6 +102,9 @@ class CountingConfigApi implements SlackConfigApi {
   }
   async exchangeOAuth(): Promise<SlackOAuthExchangeResult> {
     return { ok: false, error: 'unused' }
+  }
+  async setAppIcon(): Promise<SlackAppIconSetResult> {
+    return { ok: true }
   }
   async rotateConfigToken(refreshToken: string): Promise<SlackRotateResult> {
     this.rotateCalls.push(refreshToken)

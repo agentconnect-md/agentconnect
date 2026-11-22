@@ -1,4 +1,5 @@
 // The `agentconnect-secrets` wrapper the daemon writes for its runtimes; secret-free (paths only).
+// No relative imports: scripts/emit-shim-secrets-wrapper.mjs loads this file with plain Node, which cannot resolve them.
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'

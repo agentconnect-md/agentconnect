@@ -170,7 +170,7 @@ describe('GoogleChatClaim', () => {
 
     await act(async () => button('Connect').click())
     expect(window.location.assign).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Google Chat could not be connected.')
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Couldn’t connect Google Chat.')
   })
 
   it('leads a person with no editable organization to create one', async () => {

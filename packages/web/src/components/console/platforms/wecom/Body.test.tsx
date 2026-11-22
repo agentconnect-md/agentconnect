@@ -121,12 +121,12 @@ describe('WeComWizardBody', () => {
     [
       'WECOM_LONG_CONNECTION_DISABLED',
       400,
-      'This smart bot does not use long connection. Set its API mode to long connection in WeCom, then connect again.'
+      'This smart bot doesn’t use long connection. Set its API mode to long connection in WeCom, then try again.'
     ],
     [
       'WECOM_CHECK_UNAVAILABLE',
       503,
-      'AgentConnect could not reach WeCom to check this bot, so nothing was saved. Try again in a moment.'
+      'AgentConnect couldn’t reach WeCom to verify this bot, so nothing was saved. Try again in a moment.'
     ]
   ])('explains %s in the console’s own words', async (code, status, expected) => {
     const state = await submitRefused(new ApiError('Control Plane wording', status, code))
@@ -137,14 +137,18 @@ describe('WeComWizardBody', () => {
 
   it('points an already installed BotID at reusing the existing bot', async () => {
     const coded = await submitRefused(new ApiError('Control Plane wording', 409, 'WECOM_BOT_ALREADY_INSTALLED'))
-    expect(coded.setError).toHaveBeenLastCalledWith(expect.stringContaining('Reuse it instead of adding it again'))
+    expect(coded.setError).toHaveBeenLastCalledWith(
+      expect.stringContaining('Disconnect it from any agent using it, then choose “An unused WeCom bot” to reuse it.')
+    )
     expect(coded.setError).toHaveBeenLastCalledWith(expect.stringContaining('“An unused WeCom bot”'))
   })
 
   it('reads the duplicate fence of a racing install the same way, by its message', async () => {
     const refusal = new ApiError('This WeCom bot is already installed. Reuse the existing bot.', 409)
     const state = await submitRefused(refusal)
-    expect(state.setError).toHaveBeenLastCalledWith(expect.stringContaining('Reuse it instead of adding it again'))
+    expect(state.setError).toHaveBeenLastCalledWith(
+      expect.stringContaining('Disconnect it from any agent using it, then choose “An unused WeCom bot” to reuse it.')
+    )
   })
 
   it('shows any other refusal as the Control Plane words it, a different 409 included', async () => {

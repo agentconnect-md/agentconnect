@@ -245,14 +245,14 @@ describe('a revoked built-in Slack app’s row', () => {
     await settle()
 
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      "Couldn't refresh this Slack app — Slack is unreachable"
+      "Couldn't refresh this Slack app: Slack is unreachable"
     )
   })
 
   it('lists the agents it served, each marked revoked', async () => {
     const row = await botRow()
     const agent = row.querySelector<HTMLAnchorElement>('a[aria-label="Open pilot configuration"]')!
-    expect(agent.title).toBe('pilot — revoked')
+    expect(agent.title).toBe('pilot (revoked)')
     expect(agent.querySelector('[data-revoked-dot]')).not.toBeNull()
   })
 

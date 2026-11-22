@@ -1,5 +1,6 @@
 import { RESERVED_MCP_SERVER_NAME } from '@agentconnect.md/protocol'
 import { existsSync, realpathSync } from 'node:fs'
+import { nodeExecutable } from '../runtimes/node-executable.js'
 import { canonicalNodeExecArgv } from '../runtimes/node-exec-argv.js'
 import { shimPaths } from '../shim/sandbox-paths.js'
 
@@ -32,7 +33,7 @@ export function buildMcpServers(opts: {
   return [
     {
       name: opts.name ?? RESERVED_MCP_SERVER_NAME,
-      command: realpathSync(process.execPath),
+      command: nodeExecutable(),
       args: [...canonicalNodeExecArgv(), cliEntry, 'mcp-bridge', ...(opts.lazyTools ? ['--lazy-tools'] : [])],
       env: [
         { name: 'AC_MCP_ENDPOINT', value: opts.socketPath },

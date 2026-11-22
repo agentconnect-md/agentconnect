@@ -119,10 +119,13 @@ describe('EmailWizardBody', () => {
   })
 
   it.each([
-    ['ab', 'An address name is 3 to 40 characters long.'],
-    ['-help', 'Use lower-case letters, digits, dots and hyphens, starting and ending with a letter or a digit.'],
+    ['ab', 'Address names must be 3 to 40 characters long.'],
+    ['-help', 'Use lowercase letters, numbers, dots, and hyphens, starting and ending with a letter or number.'],
     ['postmaster', 'This name is reserved. Choose another one.'],
-    ['taken', 'This address is in use or was used before, and an address is never issued twice. Choose another name.']
+    [
+      'taken',
+      'This address is already taken or was previously used. Addresses can’t be reused, so choose another name.'
+    ]
   ])('refuses %s with the reason the check gives', async (name, message) => {
     await render()
     await type(name)
@@ -142,7 +145,7 @@ describe('EmailWizardBody', () => {
     expect(status()).toBe('Checking…')
     await type('Help')
     expect(mocks.check.mock.calls.map(([, name]) => name)).toEqual([undefined, 'help'])
-    expect(status()).toBe(`help@${DOMAIN} is free.`)
+    expect(status()).toBe(`help@${DOMAIN} is available.`)
     expect(primary('Create')?.disabled).toBe(false)
   })
 
@@ -173,7 +176,7 @@ describe('EmailWizardBody', () => {
     await type('help')
     await act(async () => primary('Create')?.click())
     expect(state.setError).toHaveBeenLastCalledWith(
-      'This address is in use or was used before, and an address is never issued twice. Choose another name.'
+      'This address is already taken or was previously used. Addresses can’t be reused, so choose another name.'
     )
     expect(input().value).toBe('help')
     expect(primary('Create')?.disabled).toBe(false)
@@ -186,7 +189,7 @@ describe('EmailWizardBody', () => {
     })
     await render()
     await type('help')
-    expect(status()).toBe('The name could not be checked. Try again in a moment.')
+    expect(status()).toBe('Couldn’t check this name. Try again in a moment.')
     expect(primary('Create')?.disabled).toBe(true)
   })
 })

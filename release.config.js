@@ -18,7 +18,7 @@ export default {
       '@semantic-release/release-notes-generator',
       {
         preset: 'conventionalcommits',
-        writerOpts: { headerPartial: '' },
+        writerOpts: { headerPartial: () => '' },
         presetConfig: {
           types: [
             { type: 'feat', section: 'Features' },

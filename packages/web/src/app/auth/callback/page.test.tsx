@@ -171,7 +171,7 @@ it('fails the test when the sign-in did not come through the connection', async 
   mocks.reportOrgSsoTest.mockResolvedValue(false)
   await land('?code=abc')
   expect(host.textContent).toContain('Sign-in test failed')
-  expect(host.textContent).toContain('could not be matched to the test.')
+  expect(host.textContent).toContain('Couldn’t match this sign-in to the test.')
 })
 
 it('says the provider returned no usable address when the landed account is refused', async () => {
@@ -223,5 +223,5 @@ it('shows no attribute list for a refusal that is not about the address', async 
 it('keeps reporting a cancelled sign-in', async () => {
   await land('?error=access_denied')
   expect(mocks.completeLogin).not.toHaveBeenCalled()
-  expect(host.textContent).toContain('Sign-in was cancelled or could not finish.')
+  expect(host.textContent).toContain('Sign-in was cancelled or couldn’t finish.')
 })

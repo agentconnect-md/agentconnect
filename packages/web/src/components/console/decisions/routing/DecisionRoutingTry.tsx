@@ -63,11 +63,33 @@ export function DecisionRoutingTry({
   })
   const names = new Map(agents.map((agent) => [agent.id, agent.name]))
   const nameOf = (id: string) => names.get(id) ?? id
-  const numbers = ruleNumbers(decision.question, draft.rules)
-  const ruleNumber = (ruleId: string) => numbers.get(ruleId) ?? 0
-  const ruleCondition = (ruleId: string) => {
-    const when = draft.rules.find((rule) => rule.id === ruleId)?.when
-    return when ? conditionSummary(decision.question, when, words) : '—'
+  // Every rule in the chain, numbered and summarized against its own step's question.
+  const chainRules = new Map(
+    [{ id: null, decisionId: decision.id, rules: draft.rules }, ...(draft.steps ?? [])].flatMap((step, stepIndex) => {
+      const stepDecision = step.id ? decisions.find((entry) => entry.id === step.decisionId) : decision
+      const question = stepDecision?.question ?? null
+      const numbers = ruleNumbers(question, step.rules)
+      return step.rules.map((rule) => [
+        rule.id,
+        {
+          rule,
+          stepIndex,
+          number: numbers.get(rule.id) ?? 0,
+          decisionName: stepDecision?.name ?? tDecisions('chain.missing'),
+          condition: question && rule.when ? conditionSummary(question, rule.when, words) : '—'
+        }
+      ])
+    })
+  )
+  const ruleLabel = (ruleId: string, short = false) => {
+    const entry = chainRules.get(ruleId)
+    if (!entry) return ruleId
+    if (entry.stepIndex) return t('try.stepRule', { decision: entry.decisionName, number: entry.number })
+    return short ? String(entry.number) : t('rules.number', { number: entry.number })
+  }
+  const ruleOrder = (ruleId: string) => {
+    const entry = chainRules.get(ruleId)
+    return entry ? entry.stepIndex * 100 + entry.number : Number.MAX_SAFE_INTEGER
   }
 
   const view = (preview: DecisionRoutingPreviewResult): TryResultView => {
@@ -86,8 +108,12 @@ export function DecisionRoutingTry({
               ? tDecisions('try.unavailableBadge')
               : t('try.notApplied')
     const matchedActions = consumer.matchedRuleIds.map((id) => {
-      const rule = draft.rules.find((entry) => entry.id === id)
-      return rule?.action.type === 'agent' && rule.action.agentId ? nameOf(rule.action.agentId) : t('action.skip')
+      const action = chainRules.get(id)?.rule.action
+      return action?.type === 'agent' && action.agentId
+        ? nameOf(action.agentId)
+        : action?.type === 'decision'
+          ? tDecisions('chain.next')
+          : t('action.skip')
     })
     return {
       badge,
@@ -135,16 +161,17 @@ export function DecisionRoutingTry({
                 <TryRow key={row.label} label={<span className="mono">{row.label}</span>} value={row.value} />
               ))}
             {[...consumer.rules]
-              .sort((a, b) => ruleNumber(a.ruleId) - ruleNumber(b.ruleId))
+              .sort((a, b) => ruleOrder(a.ruleId) - ruleOrder(b.ruleId))
               .map((rule) => (
                 <TryRow
                   key={rule.ruleId}
-                  label={
-                    rule.matched
-                      ? t('try.ruleMatched', { number: ruleNumber(rule.ruleId) })
-                      : t('try.ruleNotMatched', { number: ruleNumber(rule.ruleId) })
-                  }
-                  value={`${t('try.threshold')}: ${ruleCondition(rule.ruleId)}`}
+                  label={t(
+                    rule.matched ? 'try.ruleMatched' : rule.reached ? 'try.ruleNotMatched' : 'try.ruleNotReached',
+                    {
+                      rule: ruleLabel(rule.ruleId)
+                    }
+                  )}
+                  value={`${t('try.threshold')}: ${chainRules.get(rule.ruleId)?.condition ?? '—'}`}
                 />
               ))}
             {consumer.evaluated && consumer.outcome !== 'unavailable' && (
@@ -153,7 +180,7 @@ export function DecisionRoutingTry({
                 value={
                   consumer.usedOtherwise
                     ? t('try.otherwiseUsed')
-                    : consumer.matchedRuleIds.map((id) => ruleNumber(id)).join(', ') || '—'
+                    : consumer.matchedRuleIds.map((id) => ruleLabel(id, true)).join(', ') || '—'
                 }
               />
             )}

@@ -337,8 +337,8 @@ describe('invite hint copy', () => {
     [
       'wechat',
       undefined,
-      "message the bot directly in WeChat to start; it can't join a group.",
-      '在微信里直接给机器人发消息即可开始；它不能加入群。'
+      "message the bot directly in WeChat to start. It can't join a group.",
+      '在微信里直接给机器人发消息即可开始，它不能加入群。'
     ],
     [
       'googlechat',

@@ -300,8 +300,8 @@ describe('the default-dispatch selector', () => {
   it('reads each team’s current owner off its own row', async () => {
     await render()
 
-    expect(dispatchPickers()[0]?.getAttribute('aria-label')).toBe('Default dispatch — triage-bot')
-    expect(dispatchPickers()[1]?.getAttribute('aria-label')).toBe('Default dispatch — docs-bot')
+    expect(dispatchPickers()[0]?.getAttribute('aria-label')).toBe('Default dispatch: triage-bot')
+    expect(dispatchPickers()[1]?.getAttribute('aria-label')).toBe('Default dispatch: docs-bot')
   })
 
   it('moves an unrestricted owner straight away, addressed to the team row', async () => {
@@ -320,7 +320,7 @@ describe('the default-dispatch selector', () => {
     // writer — so its bound sessions are stoppable but never handed to the new default.
     expect(text()).toContain('Move this team’s default?')
     expect(text()).toContain('triage-bot is a private agent')
-    expect(text()).toContain('can still be stopped, but it will not answer in them again')
+    expect(text()).toContain("can still be stopped, but triage-bot won't reply in them again")
     expect(mocks.setChannelAgent).not.toHaveBeenCalled()
 
     await act(async () => buttonWithText('Move')!.click())
@@ -401,7 +401,7 @@ describe('a private agent’s own card', () => {
 
     // §4.3: a gated member acts in a team only as its default, so the banner promises no
     // per-member enabling the model does not have.
-    expect(text()).toContain('Private agent — answers only in teams where it is the default.')
+    expect(text()).toContain('Private agent. Replies only in teams where it is the default.')
     // Linear has no per-row enable to promise.
     expect(text()).not.toContain('enabled below')
   })

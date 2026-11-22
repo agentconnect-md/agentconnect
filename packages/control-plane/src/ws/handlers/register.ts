@@ -51,6 +51,7 @@ import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   CRON_REPORT_ACK_FEATURE,
+  CRON_RUN_SKIPPED_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   KNOWLEDGE_RECORD_FEATURE,
   AGENT_SKILL_STATUS_V1_FEATURE,
@@ -190,6 +191,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_VISIBILITY_FEATURE,
       // high-availability.md: this CP ACKs a terminal cron outcome, so the daemon keeps it until then.
       CRON_REPORT_ACK_FEATURE,
+      // This CP stores a `skipped` run outcome, so a daemon reports a gated fire instead of leaving it to the reaper.
+      CRON_RUN_SKIPPED_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
       // assistant-mode.md §5.16: this CP serves `knowledge/record/*` and honours `withOutsiders` on the knowledge reads.
       ...(deps.organizationRecord ? [KNOWLEDGE_RECORD_FEATURE] : []),

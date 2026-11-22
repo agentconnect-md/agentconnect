@@ -261,7 +261,7 @@ describe('AddAgentRepoModal, GitLab projects', () => {
     await settleSearch()
 
     expect(document.body.textContent).toContain(
-      'GitLab is not enabled on this deployment — no GitLab application is configured.'
+      "GitLab isn't enabled on this deployment. No GitLab application is configured."
     )
     expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()
   })

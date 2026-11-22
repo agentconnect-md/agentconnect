@@ -126,8 +126,9 @@ export function webIdentityCredentials(opts: WebIdentityOptions): CredentialsPro
     let token: string
     try {
       token = readFile(tokenFile).trim()
-    } catch {
-      throw new Error('Source Cache web identity token file is unreadable')
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? (err as Error).name
+      throw new Error(`Source Cache web identity token file is unreadable (${code})`, { cause: err })
     }
     if (!token) throw new Error('Source Cache web identity token file is empty')
     const body = new URLSearchParams({

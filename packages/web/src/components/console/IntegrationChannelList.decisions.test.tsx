@@ -311,7 +311,7 @@ describe('IntegrationChannelList By decision', () => {
     [
       { readiness: { status: 'unsupported' as const } },
       'Unsupported',
-      'The daemon or relay serving this conversation is too old'
+      "This deployment or the daemon serving this conversation doesn't support By decision yet"
     ],
     [
       { enabled: false, disabledReason: 'access_revoked' as const, readiness: { status: 'ready' as const } },
@@ -434,9 +434,7 @@ describe('IntegrationChannelList By decision', () => {
     await render([group(), group({ channelId: 'C2', name: 'random' })])
     await addDecision()
     await click(byText('Apply to all channels'))
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
-      '1 channel could not be saved (random)'
-    )
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("1 channel couldn't be saved (random)")
     data.setChannelDecision.mockReset().mockResolvedValue(undefined)
     await click(byText('Retry'))
     expect(data.setChannelDecision.mock.calls.map((call) => call[1])).toEqual(['C1', 'C2'])
@@ -481,9 +479,7 @@ describe('IntegrationChannelList By decision', () => {
     await render([group()])
     await addDecision()
     await click(byText('Save'))
-    expect(
-      byText('Decision not available. It was deleted or is no longer shared with you — choose another.')
-    ).toBeTruthy()
+    expect(byText('Decision unavailable. It was deleted or is no longer shared with you. Choose another.')).toBeTruthy()
     expect(byText('Trigger when')).toBeTruthy()
   })
 
@@ -493,7 +489,9 @@ describe('IntegrationChannelList By decision', () => {
     await addDecision()
     await click(byText('Save'))
     expect(
-      byText("The daemon or relay serving this conversation doesn't support By decision yet. Upgrade it, then retry.")
+      byText(
+        "This deployment or the daemon serving this conversation doesn't support By decision yet. Upgrade and try again."
+      )
     ).toBeTruthy()
     await click(byText('Retry'))
     expect(data.setChannelDecision).toHaveBeenCalledTimes(2)
@@ -526,7 +524,7 @@ describe('IntegrationChannelList By decision', () => {
     expect(await openSettings()).toEqual(['Per thread', 'Single session', '@-mentions', 'All messages'])
     const plain = all('[role="menuitemradio"][aria-disabled="true"]').map((node) => node.textContent?.trim())
     expect(plain).toEqual(['@-mentions', 'All messages'])
-    expect(document.body.textContent).toContain('Respond to unavailable — By decision chooses which messages')
+    expect(document.body.textContent).toContain('Respond to unavailable: By decision chooses which messages')
     await pick('@-mentions')
     expect(data.setChannelTrigger).not.toHaveBeenCalled()
     // The button reads the session mode alone.

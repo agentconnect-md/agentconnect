@@ -189,7 +189,7 @@ describe('EditWorkspaceModal repository access toggle', () => {
     expect(linkRow?.className).toContain('flex-wrap')
     expect(links[0]?.parentElement?.className).toContain('basis-full')
     expect(
-      document.querySelector('span[title="The GitHub App installation no longer reaches this repository"]')
+      document.querySelector('span[title="The GitHub App installation can no longer access this repository"]')
     ).not.toBeNull()
   })
 

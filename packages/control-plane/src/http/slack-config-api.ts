@@ -46,6 +46,7 @@ export interface SlackRotatedConfig {
 export type SlackAppCreateResult = { ok: true; app: SlackAppCreation } | { ok: false; error: string }
 export type SlackManifestExportResult = { ok: true; manifest: Record<string, unknown> } | { ok: false; error: string }
 export type SlackManifestUpdateResult = { ok: true; permissionsUpdated: boolean } | { ok: false; error: string }
+export type SlackAppIconSetResult = { ok: true } | { ok: false; error: string }
 export type SlackOAuthExchangeResult = { ok: true; result: SlackOAuthResult } | { ok: false; error: string }
 export type SlackRotateResult = { ok: true; rotated: SlackRotatedConfig } | { ok: false; error: string }
 
@@ -59,6 +60,8 @@ export interface SlackConfigApi {
   exportApp(configToken: string, appId: string): Promise<SlackManifestExportResult>
   /** `apps.manifest.update` — replace an existing app's complete manifest. */
   updateApp(configToken: string, appId: string, manifest: unknown): Promise<SlackManifestUpdateResult>
+  /** `apps.icon.set` — upload the app's icon (512–2000px square). */
+  setAppIcon(configToken: string, appId: string, png: Buffer): Promise<SlackAppIconSetResult>
   /** `oauth.v2.access` — exchange the OAuth `code` for the bot token. `redirectUri`
    *  MUST be byte-identical to the one used in the authorize step. */
   exchangeOAuth(p: {
@@ -143,6 +146,15 @@ export function createSlackConfigApi(options: SlackConfigApiOptions = {}): Slack
         })
         if (typeof body.permissions_updated !== 'boolean') return { ok: false, error: 'malformed_response' }
         return { ok: true, permissionsUpdated: body.permissions_updated }
+      } catch (error) {
+        return { ok: false, error: slackError(error) }
+      }
+    },
+
+    async setAppIcon(configToken, appId, png) {
+      try {
+        await client().apps.icon.set({ token: configToken, app_id: appId, file: png })
+        return { ok: true }
       } catch (error) {
         return { ok: false, error: slackError(error) }
       }

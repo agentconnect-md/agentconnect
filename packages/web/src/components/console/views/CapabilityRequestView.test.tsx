@@ -177,7 +177,7 @@ describe('the capability request page', () => {
     })
     await act(async () => button(scope, 'Forward')!.click())
     expect(mocks.forward).toHaveBeenCalledWith('req-1', 'u-ben', 'org-1')
-    expect(scope.textContent).toContain('Forwarded — they got a direct message.')
+    expect(scope.textContent).toContain('Forwarded via direct message.')
   })
 
   it('declines with a note', async () => {
@@ -225,7 +225,7 @@ describe('the capability request page', () => {
     const state = scope.querySelector('[data-status="completed"]')!
     expect(state.textContent).toContain('Completed by Ana')
     expect(state.textContent).toContain('What changed: The model is now opus.')
-    expect(state.textContent).toContain('The agent is paused; it will be told when it resumes.')
+    expect(state.textContent).toContain('The agent is paused. It will be notified when it resumes.')
     expect(button(scope, 'Decline')).toBeUndefined()
   })
 })

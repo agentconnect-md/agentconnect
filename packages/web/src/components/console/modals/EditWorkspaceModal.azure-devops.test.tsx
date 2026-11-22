@@ -196,7 +196,7 @@ describe('EditWorkspaceModal, Azure DevOps workspace', () => {
     mocks.fetchConnections.mockResolvedValue({ enabled: false, connections: [], deploymentApplication: false })
     await render()
     await act(async () => buttonsNamed('Azure DevOps')[0]?.click())
-    expect(document.body.textContent).toContain('Azure DevOps is not enabled on this deployment')
+    expect(document.body.textContent).toContain("Azure DevOps isn't enabled on this deployment")
     expect(mocks.fetchVisible).not.toHaveBeenCalled()
   })
 })

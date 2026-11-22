@@ -76,9 +76,9 @@ describe('ExecutionStrategyField', () => {
     const rows = await open(await mount())
     expect(rows.map((row) => row.getAttribute('title'))).toEqual([
       'No isolation boundary: sessions run directly on the machine.',
-      'SRT: process isolation with bubblewrap, on Linux.',
-      `microsandbox: one microVM per session. Needs KVM.\n${KVM}`,
-      'Docker: container isolation.\nNot offered where this agent is placed.',
+      'SRT: process isolation with bubblewrap on Linux.',
+      `microsandbox: one microVM per session (requires KVM).\n${KVM}`,
+      'Docker: container isolation.\nNot available where this agent runs.',
       null
     ])
   })
@@ -87,7 +87,7 @@ describe('ExecutionStrategyField', () => {
     const rows = await open(await mount())
     expect(rows[2]?.disabled).toBe(true)
     expect(rows[2]?.getAttribute('title')).toContain(KVM)
-    expect(rows[3]?.getAttribute('title')).toContain('Not offered where this agent is placed.')
+    expect(rows[3]?.getAttribute('title')).toContain('Not available where this agent runs.')
     await act(async () => rows[2]!.click())
     await act(async () => rows[1]!.click())
     expect(picked).toEqual(['srt'])

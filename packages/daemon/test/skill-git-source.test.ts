@@ -254,6 +254,16 @@ describe('Git skill source policy boundary', () => {
     expect(() => resolveBoundedGitSkillSource(entry('ssh://git@gitlab.com/acme/skills.git'))).toThrow(
       /must be an https address/i
     )
+    // A malformed remote is told apart from a disallowed scheme and keeps the parser's error.
+    const malformed = (() => {
+      try {
+        resolveBoundedGitSkillSource(entry('git@gitlab.com:acme/skills.git'))
+      } catch (error) {
+        return error as Error
+      }
+    })()
+    expect(malformed?.message).toMatch(/is not a valid URL/i)
+    expect(malformed?.cause).toBeInstanceOf(TypeError)
 
     configureWorkspaceGitOrigins(['ssh://github.com'])
     expect(() => resolveBoundedGitSkillSource(entry('git@github.com:acme/skills.git'))).toThrow(

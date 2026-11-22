@@ -127,7 +127,7 @@ describe('ComputersSection', () => {
     const heading = el.querySelector('#computers')!
     expect(heading.textContent).toBe('Computers')
     expect(heading.parentElement!.textContent).toContain('2')
-    expect(el.textContent).toContain('Desktops members register for their agents')
+    expect(el.textContent).toContain('Desktops that members register for agents')
   })
 
   it('lists each cloud computer in a section of its own, with who made it and how long it has slept', () => {

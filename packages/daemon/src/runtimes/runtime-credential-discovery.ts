@@ -10,8 +10,11 @@ import { discoverOmpCredentialProviders } from './omp-credentials.js'
 import { runtimeStateLocations } from './probe.js'
 
 /** Provider API keys that authenticate a runtime with no on-disk login. */
-const RUNTIME_CREDENTIAL_ENV: Readonly<Record<string, { provider: string; keys: readonly string[] }>> = Object.freeze({
-  'muse-acp': { provider: 'meta', keys: ['META_API_KEY'] }
+const RUNTIME_CREDENTIAL_ENV: Readonly<
+  Record<string, { provider: string; keys: readonly string[]; nativeStore?: boolean }>
+> = Object.freeze({
+  'muse-acp': { provider: 'meta', keys: ['META_API_KEY'] },
+  'antigravity-acp': { provider: 'google', keys: ['GEMINI_API_KEY'], nativeStore: true }
 })
 
 function envCredentialProviders(runtimeId: string, hostEnv: NodeJS.ProcessEnv): string[] {
@@ -33,7 +36,9 @@ export function runtimeCredentialsConfigured(
   )
     return undefined
   const found = discoverRuntimeCredentials(runtimeId, runtime, hostEnv)
-  return found.paths.length > 0 || found.providers.length > 0
+  if (found.paths.length > 0 || found.providers.length > 0) return true
+  // A runtime may also authenticate from an OS credential store that file discovery cannot inspect.
+  return RUNTIME_CREDENTIAL_ENV[runtimeId]?.nativeStore ? undefined : false
 }
 
 export function discoverRuntimeCredentials(

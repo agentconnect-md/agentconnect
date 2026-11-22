@@ -35,6 +35,7 @@ import { CONFIG_ACCESS_TTL_MS, configUsable } from '../slack-user-config.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import { integrationPlatformAvailability, noInstallDaemonMessage } from '../daemon-platform-capability.js'
 import { relayHttpBase, relayIngress } from '../relay-ingress.js'
+import { syncSlackAppIcon } from '../slack-app-icon.js'
 import {
   SlackAppStartBody,
   SlackAppStartDto,
@@ -162,14 +163,14 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         // The CP owns the manifest (chiefly `redirect_urls`): a client-supplied
         // redirect would be an open-redirect / token-theft hole.
         const name = req.body.name?.trim() || agent.name
-        // Brand the created app with the agent's icon color (Slack has no API to set
-        // the app image itself) — its avatar plate → the manifest background_color.
+        // Brand the app's background with the agent's avatar plate color; the icon itself is set after create.
         const bgColor = agentIconBackgroundColor(agent.icon)
         const manifest = buildInstallManifest(name, redirectUri, {
           ...(httpBase ? { httpRelayBase: httpBase } : {}),
           ...(bgColor ? { backgroundColor: bgColor } : {})
         })
-        let created = await api.createApp(config.accessToken, manifest)
+        let configToken = config.accessToken
+        let created = await api.createApp(configToken, manifest)
 
         // Slack rejected the config token. resolve() hands back a fresh (unexpired) access
         // token WITHOUT re-validating it, so a refresh-backed config may still hold a
@@ -183,7 +184,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             const rotated = await api.rotateConfigToken(stored.refreshToken)
             if (rotated.ok) {
               await deps.repos.slackUserConfig.put(orgId, req.principal.userId, rotated.rotated)
-              created = await api.createApp(rotated.rotated.accessToken, manifest)
+              configToken = rotated.rotated.accessToken
+              created = await api.createApp(configToken, manifest)
             } else if (rotated.error === 'unreachable') {
               // Couldn't reach Slack to rotate — transient, not a dead config. Keep the row.
               return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: 'could not reach Slack' })
@@ -215,6 +217,10 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             message: 'Slack did not return an app signing secret — cannot set up HTTP mode.'
           })
         }
+
+        // Cosmetic: a failed icon upload leaves Slack's default icon and never blocks the install.
+        const iconError = await syncSlackAppIcon(api, configToken, created.app.appId, agent, deps.iconStore)
+        if (iconError) req.log.warn({ appId: created.app.appId, error: iconError }, 'slack app icon sync failed')
 
         const installId = randomUUID()
         await deps.repos.slackInstall.create({

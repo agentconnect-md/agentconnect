@@ -3,7 +3,13 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { claudeAutoModeRules, repositoryAutoModeRules } from '../src/acp/claude-auto-mode.js'
+import {
+  anchorRepositoryRules,
+  claudeAutoModeRules,
+  claudePermissionRules,
+  claudeRepositoryRules,
+  repositoryClaudeRules
+} from '../src/acp/claude-auto-mode.js'
 import { createExecHandler } from '../src/shim/exec-handler.js'
 import { ShimGitRunner } from '../src/shim/git-exec.js'
 import { gitFor } from '../src/workspace/git-injection.js'
@@ -57,8 +63,14 @@ function sandboxed(root: string): GitRunner {
   return new ShimGitRunner({ request: (capability, payload) => handle(capability, payload) }, root)
 }
 
-const TRUSTED = { autoMode: { allow: ['Example rollout: syncing the example release is pre-authorized.'] } }
-const TRUSTED_RULES = { allow: ['$defaults', 'Example rollout: syncing the example release is pre-authorized.'] }
+const TRUSTED = {
+  permissions: { allow: ['Bash(scripts/example:*)'] },
+  autoMode: { allow: ['Example rollout: syncing the example release is pre-authorized.'] }
+}
+const TRUSTED_RULES = {
+  autoMode: { allow: ['$defaults', 'Example rollout: syncing the example release is pre-authorized.'] },
+  permissions: { allow: ['Bash(scripts/example:*)'] }
+}
 
 describe('claudeAutoModeRules', () => {
   it('keeps the four rule lists and makes each extend the built-in rules', () => {
@@ -96,37 +108,129 @@ describe('claudeAutoModeRules', () => {
   )
 })
 
-describe('repositoryAutoModeRules', () => {
+describe('claudePermissionRules', () => {
+  it('keeps the allow, ask and deny lists and nothing else of the block', () => {
+    expect(
+      claudePermissionRules(
+        JSON.stringify({
+          permissions: {
+            allow: ['Bash(scripts/example:*)', ' '],
+            ask: ['Bash(scripts/example push:*)'],
+            deny: ['Bash(git push*main)'],
+            defaultMode: 'bypassPermissions',
+            additionalDirectories: ['/']
+          },
+          autoMode: { allow: ['Example'] }
+        })
+      )
+    ).toEqual({
+      allow: ['Bash(scripts/example:*)'],
+      ask: ['Bash(scripts/example push:*)'],
+      deny: ['Bash(git push*main)']
+    })
+  })
+
+  it('grants nothing without rules of its own', () => {
+    expect(claudePermissionRules('{}')).toBeUndefined()
+    expect(claudePermissionRules(JSON.stringify({ permissions: {} }))).toBeUndefined()
+    expect(claudePermissionRules(JSON.stringify({ permissions: { allow: [''], defaultMode: 'plan' } }))).toBeUndefined()
+  })
+
+  it.each(['[]', '{"permissions":[]}', '{"permissions":{"allow":"all"}}', '{"permissions":{"deny":[1]}}'])(
+    'rejects %s',
+    (settings) => {
+      expect(() => claudePermissionRules(settings)).toThrow()
+    }
+  )
+})
+
+describe('claudeRepositoryRules', () => {
+  it('passes both blocks, either alone, or nothing', () => {
+    expect(claudeRepositoryRules(JSON.stringify(TRUSTED))).toEqual(TRUSTED_RULES)
+    expect(claudeRepositoryRules(JSON.stringify({ permissions: TRUSTED.permissions }))).toEqual({
+      permissions: TRUSTED_RULES.permissions
+    })
+    expect(claudeRepositoryRules(JSON.stringify({ autoMode: TRUSTED.autoMode }))).toEqual({
+      autoMode: TRUSTED_RULES.autoMode
+    })
+    expect(claudeRepositoryRules('{"hooks":{}}')).toBeUndefined()
+  })
+
+  it('passes nothing from a file with one unusable block', () => {
+    expect(() => claudeRepositoryRules(JSON.stringify({ ...TRUSTED, permissions: { allow: 'all' } }))).toThrow()
+  })
+})
+
+describe('anchorRepositoryRules', () => {
+  it('roots each project-relative file rule at the checkout, and leaves every other rule as it is', () => {
+    const rules = {
+      autoMode: TRUSTED_RULES.autoMode,
+      permissions: {
+        allow: ['Edit(/**)', 'Edit(/docs/*.md)', 'Read(/)', 'Bash(scripts/example:*)', 'Bash(/opt/tool:*)'],
+        ask: ['Edit(./local/**)', 'Read(~/notes/**)', 'Write(/docs/**)'],
+        deny: ['Edit(//etc/**)', 'Edit(/decisions/**)', 'mcp__example__write', 'WebFetch(domain:example.com)']
+      }
+    }
+    expect(anchorRepositoryRules(rules, '/agents/w 1/')).toEqual({
+      autoMode: TRUSTED_RULES.autoMode,
+      permissions: {
+        allow: [
+          'Edit(//agents/w\\ 1/**)',
+          'Edit(//agents/w\\ 1/docs/*.md)',
+          'Read(//agents/w\\ 1/)',
+          'Bash(scripts/example:*)',
+          'Bash(/opt/tool:*)'
+        ],
+        // Claude matches no path in a Write rule, so it is passed as written.
+        ask: ['Edit(./local/**)', 'Read(~/notes/**)', 'Write(/docs/**)'],
+        deny: [
+          'Edit(//etc/**)',
+          'Edit(//agents/w\\ 1/decisions/**)',
+          'mcp__example__write',
+          'WebFetch(domain:example.com)'
+        ]
+      }
+    })
+  })
+
+  it('returns rules without a permissions block unchanged', () => {
+    const rules = { autoMode: TRUSTED_RULES.autoMode }
+    expect(anchorRepositoryRules(rules, '/repo')).toBe(rules)
+  })
+})
+
+describe('repositoryClaudeRules', () => {
   it.each([
     ['this disk', local],
     ['the sandbox exec channel', sandboxed]
   ])('reads the tracked branch through %s, never the working tree', async (_name, runner) => {
     const root = checkout(TRUSTED)
     git(root, ['checkout', '-b', 'task'])
-    writeSettings(root, { autoMode: { allow: ['Everything is pre-authorized.'] } })
+    writeSettings(root, { permissions: { allow: ['Bash(*)'] }, autoMode: { allow: ['Everything is pre-authorized.'] } })
     git(root, ['commit', '-am', 'widen'])
-    writeSettings(root, { autoMode: { allow: ['Uncommitted and pre-authorized.'] } })
-    expect(await repositoryAutoModeRules(runner(root), 'main')).toEqual(TRUSTED_RULES)
+    writeSettings(root, { permissions: { allow: ['Edit(//**)'] }, autoMode: { allow: ['Uncommitted.'] } })
+    expect(await repositoryClaudeRules(runner(root), 'main')).toEqual(TRUSTED_RULES)
   })
 
   it('resolves the settings file beside the session cwd', async () => {
     const root = checkout(TRUSTED)
     mkdirSync(join(root, 'nested'))
-    expect(await repositoryAutoModeRules(local(join(root, 'nested')), 'main')).toBeUndefined()
+    expect(await repositoryClaudeRules(local(join(root, 'nested')), 'main')).toBeUndefined()
   })
 
   it('grants nothing without a settings file, a tracked branch, or a checkout', async () => {
-    expect(await repositoryAutoModeRules(local(checkout()), 'main')).toBeUndefined()
-    expect(await repositoryAutoModeRules(local(checkout(TRUSTED)), 'release')).toBeUndefined()
-    expect(await repositoryAutoModeRules(local(checkout(TRUSTED)), 'main:x')).toBeUndefined()
+    expect(await repositoryClaudeRules(local(checkout()), 'main')).toBeUndefined()
+    expect(await repositoryClaudeRules(local(checkout(TRUSTED)), 'release')).toBeUndefined()
+    expect(await repositoryClaudeRules(local(checkout(TRUSTED)), 'main:x')).toBeUndefined()
     const plain = mkdtempSync(join(tmpdir(), 'claude-auto-mode-'))
     roots.push(plain)
-    expect(await repositoryAutoModeRules(local(plain), 'main')).toBeUndefined()
+    expect(await repositoryClaudeRules(local(plain), 'main')).toBeUndefined()
   })
 
   it('reports a settings file it cannot use', async () => {
-    await expect(repositoryAutoModeRules(local(checkout('{')), 'main')).rejects.toThrow()
+    await expect(repositoryClaudeRules(local(checkout('{')), 'main')).rejects.toThrow()
+    await expect(repositoryClaudeRules(local(checkout({ permissions: { allow: [1] } })), 'main')).rejects.toThrow()
     const oversized = { autoMode: { allow: ['x'.repeat(300 * 1024)] } }
-    await expect(repositoryAutoModeRules(local(checkout(oversized)), 'main')).rejects.toThrow('exceed')
+    await expect(repositoryClaudeRules(local(checkout(oversized)), 'main')).rejects.toThrow('exceed')
   })
 })

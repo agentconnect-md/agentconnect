@@ -305,7 +305,7 @@ describe('GiteaCard', () => {
     await render()
 
     expect(host.textContent).toContain('below 1.23')
-    expect(host.textContent).toContain('Repositories already set up keep working')
+    expect(host.textContent).toContain('Existing repositories keep working')
   })
 
   it('asks for a replacement token when Gitea has rejected the stored one', async () => {
@@ -317,7 +317,7 @@ describe('GiteaCard', () => {
 
     expect(host.textContent).toContain('token rejected')
     // Gitea tokens carry no expiry, so the card says what a rejection actually means.
-    expect(host.textContent).toContain('do not expire on their own')
+    expect(host.textContent).toContain("don't expire automatically")
   })
 
   it('replaces the token against the connection and says to revoke the old one', async () => {

@@ -176,7 +176,8 @@ function toRunRecord(r: HookRun): HookRunRecord {
     reviewCommitId: r.reviewCommitId,
     publishedCommentKind: r.publishedCommentKind as HookRunRecord['publishedCommentKind'],
     publishedCommentId: r.publishedCommentId,
-    status: r.status,
+    // The enum is shared with cron runs; no hook report carries `skipped`.
+    status: r.status as HookRunRecord['status'],
     durationMs: r.durationMs,
     sessionId: r.sessionId,
     reason: r.reason,

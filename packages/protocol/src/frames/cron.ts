@@ -64,7 +64,8 @@ export type CronRemove = z.infer<typeof CronRemove>
  * fields) closes the run once the dispatched turn ends. A completion without
  * a prior fire report (CP was down at fire time) still creates the run row.
  */
-export const CronRunStatus = z.enum(['success', 'failed'])
+// `skipped`: the fire was due and deliberately not run (agent paused, daemon draining); it is not a failure.
+export const CronRunStatus = z.enum(['success', 'failed', 'skipped'])
 export type CronRunStatus = z.infer<typeof CronRunStatus>
 
 export const CronReport = z.object({
@@ -76,12 +77,15 @@ export const CronReport = z.object({
   durationMs: z.number().int().nonnegative().optional(), // fire → turn end
   // Sent once the session exists, then repeated on completion.
   sessionId: z.string().optional(), // the session the run prompted, by its outward id (§1.1)
-  reason: z.string().optional() // short failure text (status "failed")
+  reason: z.string().optional() // short failure or skip text (status "failed" / "skipped")
 })
 export type CronReport = z.infer<typeof CronReport>
 
 /** CP accepts `cron/report-sync`, the acknowledged form of a terminal `cron/report`; without it a daemon sends the EVT. */
 export const CRON_REPORT_ACK_FEATURE = 'cron-report-ack-v1'
+
+/** CP records a `skipped` outcome; without it a daemon reports none and the run reaper closes the row as before. */
+export const CRON_RUN_SKIPPED_FEATURE = 'cron-run-skipped-v1'
 
 /**
  * `cron/run` (C→D REQ → ack) — fire one CP-owned cron NOW (console "Run now").

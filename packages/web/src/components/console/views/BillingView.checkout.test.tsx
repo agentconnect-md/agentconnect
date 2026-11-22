@@ -157,7 +157,7 @@ describe('checkout return: transient poll failures', () => {
       .mockResolvedValue(purchase('completed'))
     await render()
     await tick(0)
-    expect(host.innerHTML).toContain('Could not check the payment')
+    expect(host.innerHTML).toContain("Couldn't check payment status")
     const retry = Array.from(host.querySelectorAll('button')).find((b) => b.textContent?.includes('Check again'))
     expect(retry).toBeTruthy()
     await act(async () => retry!.click())

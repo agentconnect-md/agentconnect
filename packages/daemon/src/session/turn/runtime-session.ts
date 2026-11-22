@@ -1,5 +1,6 @@
 import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import { ModelSelectionError, type AcpHost } from '../../acp/acp-host.js'
+import { AntigravityHistoryError } from '../../runtime-defs/antigravity-history.js'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { LocalStore, SessionRecord } from '../../store/local-store.js'
 import { withStartupPhase } from '../startup-progress.js'
@@ -285,7 +286,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
         )
       } catch (error) {
         if (signal?.aborted) throw interrupted(signal)
-        if (error instanceof ModelSelectionError) throw error
+        if (error instanceof ModelSelectionError || error instanceof AntigravityHistoryError) throw error
         // agent couldn't load it (GC'd / not durably persisted) — recreate below
       }
     }

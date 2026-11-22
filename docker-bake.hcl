@@ -41,7 +41,7 @@ group "default" {
 target "_release" {
   context    = "."
   dockerfile = "docker/Dockerfile"
-  platforms  = ["linux/amd64"]
+  platforms  = ["linux/amd64", "linux/arm64"]
 }
 
 target "control-plane" {
@@ -63,7 +63,7 @@ target "control-plane" {
 target "runtime-sandbox" {
   context    = "."
   dockerfile = "docker/runtime-sandbox.Dockerfile"
-  platforms  = ["linux/amd64"]
+  platforms  = ["linux/amd64", "linux/arm64"]
   target     = "runtime-sandbox"
   labels = {
     # Read back through an alias by build.yaml, so an aliased tag still names the build it points at.
@@ -75,9 +75,11 @@ target "runtime-sandbox" {
   )
 }
 
+// amd64 only: several bundled runtimes (Devin among them) publish no linux/arm64 build.
 target "runtime-sandbox-full" {
-  inherits = ["runtime-sandbox"]
-  target   = "runtime-sandbox-full"
+  inherits  = ["runtime-sandbox"]
+  platforms = ["linux/amd64"]
+  target    = "runtime-sandbox-full"
   tags = concat(
     ["${REGISTRY}/${OWNER}/runtime-sandbox-full:${VERSION}"],
     LATEST ? ["${REGISTRY}/${OWNER}/runtime-sandbox-full:latest"] : []

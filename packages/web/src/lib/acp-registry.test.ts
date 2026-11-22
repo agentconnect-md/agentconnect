@@ -52,7 +52,10 @@ describe('ACP Registry metadata', () => {
     expect(response.status).toBe(200)
     const { agents } = (await response.json()) as { agents: Record<string, unknown> }
     expect(agents['kiro-cli']).toBeDefined()
-    expect(agents['muse-acp']).toEqual({ name: 'Muse Code', icon: null })
+    expect(agents['muse-acp']).toEqual({
+      name: 'Muse Code',
+      icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@1.104.0/icons/muse-color.svg'
+    })
   })
 
   // The alias table above is DISPLAY-only: it gives `claude`/`codex` a name and a mark, and

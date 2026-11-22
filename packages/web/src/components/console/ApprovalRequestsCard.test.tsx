@@ -271,17 +271,17 @@ describe('a webchat conversation’s proposals in its pending-requests strip', (
     await renderStrip(false)
     await click('Reason and details')
     const shown = row('proposal-1')!.querySelector('[data-proposed-follow-up]')!
-    expect(shown.textContent).toContain('Takes this follow-up')
+    expect(shown.textContent).toContain('Handles this follow-up')
     expect(shown.textContent).toContain('A date is posted.')
     expect(shown.textContent).not.toContain('Done when')
-    expect(shown.textContent).toContain('No check until it is messaged')
+    expect(shown.textContent).toContain('No check until messaged')
     await choose('proposal-1', 'Approve')
     expect(host!.textContent).toContain(
-      'Take this follow-up in this conversation? It is followed up for you, and nothing else runs.'
+      'Take this follow-up in this conversation? The agent will follow up for you, and nothing else will run.'
     )
     await confirm('proposal-1')
     expect(row('proposal-1')!.textContent).toContain(
-      'Approved. The follow-up was taken; this conversation’s Tasks list it.'
+      'Approved. The follow-up was taken. View it in this conversation’s Tasks.'
     )
   })
 

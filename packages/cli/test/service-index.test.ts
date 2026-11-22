@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -119,6 +119,25 @@ describe('installService / uninstallService', () => {
     expect(existsSync(join(scope.polkitDir, '49-agentconnect@dev.rules'))).toBe(false)
     expect(existsSync(join(root, 'service.json'))).toBe(false)
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'writes the Node alias a package upgrade keeps, not the versioned path',
+    async () => {
+      const prefix = tmp('ac-brew-')
+      const cellarNode = join(prefix, 'Cellar/node/26.13.0_2/bin/node')
+      mkdirSync(join(prefix, 'Cellar/node/26.13.0_2/bin'), { recursive: true })
+      writeFileSync(cellarNode, '')
+      mkdirSync(join(prefix, 'opt'))
+      symlinkSync('../Cellar/node/26.13.0_2', join(prefix, 'opt/node'))
+      const scope = linuxScope()
+
+      await installService({ root: tmp('ac-root-'), ...scope }, { ...opts, execPath: cellarNode })
+
+      const unit = readFileSync(join(scope.systemUnitDir, 'agentconnect.service'), 'utf8')
+      expect(unit).toContain(`ExecStart=${join(prefix, 'opt/node/bin/node')} `)
+      expect(unit).not.toContain('26.13.0_2')
+    }
+  )
 
   it('keeps two instances on the same host independent', async () => {
     const scope = linuxScope()

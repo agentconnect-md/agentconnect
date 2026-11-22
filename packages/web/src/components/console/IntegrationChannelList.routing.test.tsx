@@ -210,11 +210,11 @@ describe('IntegrationChannelList shared-bot routing', () => {
   it('returns a newly created Decision to its child branch without replacing the root', async () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row()])
-    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(document.body.querySelector('button[aria-label="Default dispatch: deploy-bot"]'))
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
-    await click(document.body.querySelector('button[aria-label="Continue with a Decision"]'))
+    await click(document.body.querySelector('button[aria-label="Continue with a decision"]'))
     await click(all('[role="menuitem"]').find((node) => node.textContent?.includes('Support category')))
     await click(all('[role="dialog"]').at(-1)?.querySelector('button[aria-haspopup="menu"]'))
     await click(all('a').find((node) => node.textContent?.includes('Add decision')))
@@ -240,7 +240,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
         decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
       })
     ])
-    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
     await click(all('button').find((node) => node.getAttribute('aria-label')?.startsWith('Edit By decision rules:')))
     expect(dialog()?.getAttribute('aria-label')).toBe('deploys · By decision rules')
     expect(dialog()?.textContent).toContain('Shared bot · picks among deploy-bot, review-bot')
@@ -273,7 +273,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
       ],
       'agent-1'
     )
-    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
     await click(all('button').find((node) => node.getAttribute('aria-label')?.startsWith('Edit By decision rules:')))
     await click(document.body.querySelector('button[aria-label="Target for billing"]'))
     const options = all('[role="menuitemradio"]')
@@ -284,7 +284,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
   it('adds an unrouted row from + Decision and saves it into the bot’s scope with the picked target', async () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row()])
-    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(document.body.querySelector('button[aria-label="Default dispatch: deploy-bot"]'))
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
     expect(dialog()?.textContent).toContain('Save to apply By decision rules in this channel.')
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
@@ -314,7 +314,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
         decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
       })
     ])
-    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
     await click(all('button').find((node) => node.getAttribute('aria-label')?.startsWith('Edit By decision rules:')))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Support category')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Needs a response')))
@@ -337,7 +337,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
   }
   const openAdd = async () => {
-    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(document.body.querySelector('button[aria-label="Default dispatch: deploy-bot"]'))
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
   }
   const saveButton = () => all('button').find((node) => node.textContent?.trim() === 'Save') as HTMLButtonElement
@@ -366,7 +366,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
         }),
         row({ channelId: 'C2', name: 'ops' })
       ])
-      await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+      await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
       await click(all('button').find((node) => node.getAttribute('aria-label')?.startsWith('Edit By decision rules:')))
       await click(document.body.querySelector('button[aria-label="Target for billing"]'))
       await click(all('[role="menuitemradio"]').find((node) => node.textContent?.includes('review-bot')))
@@ -403,7 +403,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
     routing.getRouting.mockResolvedValue(detail())
     routing.saveRouting.mockRejectedValue(new ApiError('By decision applies only to group conversations', 400))
     await render([row()])
-    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(document.body.querySelector('button[aria-label="Default dispatch: deploy-bot"]'))
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
@@ -423,7 +423,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
         decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
       })
     ])
-    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
     await click(all('button').find((node) => node.getAttribute('aria-label')?.startsWith('Edit By decision rules:')))
     expect(dialog()?.textContent).toContain('Routing paused')
     await click(document.body.querySelector('[aria-label="Routing enabled"]'))
@@ -434,7 +434,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
   it('reopens the row on its kept draft after an inline Create decision returns', async () => {
     routing.getRouting.mockResolvedValue(detail())
     await render([row()])
-    await click(document.body.querySelector('button[aria-label="Default dispatch — deploy-bot"]'))
+    await click(document.body.querySelector('button[aria-label="Default dispatch: deploy-bot"]'))
     await click(document.body.querySelector('button[aria-label="Add decision"]'))
     await click(all('button[aria-haspopup="menu"]').find((node) => node.textContent?.includes('Select a decision…')))
     await click(all('[role="menuitemradio"]').find((node) => node.textContent?.startsWith('Support category')))
@@ -459,7 +459,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
         decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
       })
     ])
-    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
     expect(dialog()).toBeNull()
     expect(document.body.textContent).toContain('Send every message to')
     expect(all('button[aria-pressed="true"]')).toHaveLength(0)
@@ -482,7 +482,7 @@ describe('IntegrationChannelList shared-bot routing', () => {
         decision: { id: 'support-category', name: 'Support category', enabled: true, readiness: { status: 'ready' } }
       })
     ])
-    await click(document.body.querySelector('button[aria-label="Dispatch by decision — Support category"]'))
+    await click(document.body.querySelector('button[aria-label="Dispatch by decision: Support category"]'))
     await click(document.body.querySelector('button[aria-label="Stop using By decision in this channel"]'))
     expect(routing.saveRouting).toHaveBeenCalledWith(
       'bot-shared',

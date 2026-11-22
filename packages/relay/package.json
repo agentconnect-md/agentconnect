@@ -39,7 +39,7 @@
     "@agentconnect.md/observability": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
     "@opentelemetry/api": "^1.10.0",
-    "@slack/web-api": "^8.4.0",
+    "@slack/web-api": "^8.5.0",
     "fastify": "^5.12.8",
     "jose": "^6.2.17",
     "postal-mime": "^4.2.1",
@@ -52,7 +52,7 @@
     "@ag-ui/core": "^1.0.4",
     "@types/node": "^26.6.6",
     "@types/ws": "^8.18.2",
-    "ai": "^7.0.166",
+    "ai": "^7.0.173",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "vitest": "^5.1.0"
