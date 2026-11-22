@@ -11,7 +11,7 @@ import { executeTool } from '../src/mcp/ops.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { checkCoordinate } from '../src/session/subsession-coordinate.js'
-import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey, type TranscriptRow } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -667,6 +667,27 @@ describe('looking back at a place’s quiet tasks', () => {
     await vi.waitFor(() => expect(d.pending.size + d.inflight.size).toBe(0), WAIT)
     expect(coordinatorPrompts).toHaveLength(1)
     expect(coordinatorPrompts[0]).toContain('[2 reports in C1]')
+    // The items reached the model, but no conversation view shows them.
+    for (const [key, coordinate] of [
+      [coordinatorKey, coordinator],
+      [keys[1]!, '2.2']
+    ] as const) {
+      const scope_ = {
+        transcriptChannel: transcriptChannelKey('C1', scope),
+        coordinate,
+        sessionKey: key,
+        agentId: 'bot-a'
+      }
+      const page = await d.store.transcriptPageForAgent(scope_, null, 50)
+      expect(page.rows.filter((row: { text: string }) => row.text.includes('[look back]'))).toEqual([])
+    }
+    // Each item's own row carries the flag, the one folded in behind the batch's head included.
+    for (const thread of ['1.1', '2.2']) {
+      const { rows } = await d.store.transcriptPage(transcriptChannelKey('C1', scope), thread, null, 50, 'bot-a')
+      const items = rows.filter((row: TranscriptRow) => row.text.startsWith('[look back] Task '))
+      expect(items).toHaveLength(1)
+      expect(JSON.parse(items[0]!.body ?? '{}')).toMatchObject({ sessionMessage: { kind: 'report', lookBack: true } })
+    }
     expect(coordinatorPrompts[0]).toContain('Last person to write in its threads: Alice (U0ALICE), at ')
     expect(outcomes).toEqual([expect.objectContaining({ ok: true, taskId: keys[0] })])
     expect(taskPrompts[0]).toContain("Your coordinator's note: Start the copy you were approved to run.")
@@ -680,6 +701,59 @@ describe('looking back at a place’s quiet tasks', () => {
     // The place was just looked at, so another sweep hands it nothing.
     await d.lookBack.lookAt('bot-a')
     expect(coordinatorPrompts).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('quotes the task’s own last reply, never a look-back item delivered into its thread', async () => {
+    const { daemon, d, scope } = await boot()
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const coordinatorKey = sessionKey('slack', 'C1', coordinator, 'bot-a', scope)
+    const key = sessionKey('slack', 'C1', '1.1', 'bot-a', scope)
+    await d.store.upsertSession({
+      key,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1.1',
+      transportScope: scope,
+      acpSessionId: 'acp-1.1',
+      sessionId: 'sid-1.1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await d.store.assistantSubsessions.open({
+      agentId: 'bot-a',
+      childSessionKey: key,
+      parentSessionId: 'sid-coordinator',
+      parentSessionKey: coordinatorKey,
+      title: 'Task 1.1',
+      openedFor: { place: 'slack:C1', messageId: 'msg-1.1' },
+      now: 1_000
+    })
+    const channel = transcriptChannelKey('C1', scope)
+    await d.store.appendTranscript({
+      channel,
+      thread: '1.1',
+      admission: { agentId: 'bot-a', sessionKey: key },
+      ts: '1700000100.000001',
+      sender: 'bot-a',
+      kind: 'text',
+      text: 'The report is posted here.'
+    })
+    // A look-back item lands in the task's thread under the agent's name, admitted by the coordinator.
+    await d.store.appendTranscript({
+      channel,
+      thread: '1.1',
+      admission: { agentId: 'bot-a', sessionKey: coordinatorKey },
+      ts: '1700000200.000001',
+      sender: 'bot-a',
+      recipient: 'bot-a',
+      kind: 'text',
+      text: '[look back] Task "Task 1.1" has been quiet since then.'
+    })
+    const task = await d.store.assistantSubsessions.get('bot-a', key)
+    expect(await d.lookBackFacts('bot-a', task, false)).toMatchObject({ lastReply: 'The report is posted here.' })
     await daemon.stop()
   })
 

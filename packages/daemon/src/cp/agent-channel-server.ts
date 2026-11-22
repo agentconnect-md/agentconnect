@@ -16,6 +16,7 @@ import {
 } from '../codehost/credentials.js'
 import { IMPLICIT_CREDENTIAL_PROVIDER } from '../gitcred/managed-hosts.js'
 import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
+import { nodeExecutable } from '../runtimes/node-executable.js'
 import {
   DAEMON_SKILL_WINDOW_SUBJECT,
   SkillCredentialWindows,
@@ -560,7 +561,7 @@ export function writeGitcredShim(root: string, cliEntry: string): string {
   // Production runs the built dist (a .js entry node executes directly). A dev
   // daemon runs under tsx with a .ts argv[1] — route the shim through the tsx
   // CLI then, or plain `node entry.ts` would die resolving .js-suffixed imports.
-  const argv = [shQuote(realpathSync(process.execPath))]
+  const argv = [shQuote(nodeExecutable())]
   if (executableEntry.endsWith('.ts')) {
     const req = createRequire(import.meta.url)
     argv.push(shQuote(req.resolve('tsx/cli')))

@@ -1142,6 +1142,20 @@ export class CollabCoordinator {
         kind: 'report'
       })
     }
+    const input = this.sessionInput(
+      callMeta,
+      `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`,
+      {
+        shown: {
+          text: shown?.text ?? text,
+          notes: [
+            ...(shown?.notes ?? []).map((note) => (elsewhere ? withoutContinueHint(note) : note)),
+            REPORT_ANSWER_LANGUAGE
+          ]
+        }
+      }
+    )
+    if (report.lookBack && input.turnBody?.sessionMessage) input.turnBody.sessionMessage.lookBack = true
     const msg: NormalizedMessage = {
       msgId: `agentcall:${parent.channel}:${deliveryId}`,
       traceId: deliveryId,
@@ -1153,15 +1167,7 @@ export class CollabCoordinator {
       ...(parent.transportScope ? { transportScope: parent.transportScope } : {}),
       transcriptTs: monotonicTs(),
       sender: { id: agentId, isBot: true },
-      ...this.sessionInput(callMeta, `${elsewhere ? withoutContinueHint(text) : text}\n\n${REPORT_ANSWER_LANGUAGE}`, {
-        shown: {
-          text: shown?.text ?? text,
-          notes: [
-            ...(shown?.notes ?? []).map((note) => (elsewhere ? withoutContinueHint(note) : note)),
-            REPORT_ANSWER_LANGUAGE
-          ]
-        }
-      }),
+      ...input,
       // Session-only, never a live conversation post (#966).
       parentReport: true,
       mentionedBots: botUserId ? [botUserId] : [],

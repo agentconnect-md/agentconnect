@@ -366,7 +366,7 @@ describe('MemoryLayerBrowser unreadable layers', () => {
     expect(rowNames().at(-1)).toBe('个人')
     expect(tree().textContent).toContain('你能看到 5 层')
     await click(tree(), '#secret-room')
-    expect(panel()?.textContent).toContain('这个对话的会话你都看不到')
+    expect(panel()?.textContent).toContain('你无权查看此对话的任何会话')
     expect(panel()?.textContent).toContain('清空这一层')
   })
 })

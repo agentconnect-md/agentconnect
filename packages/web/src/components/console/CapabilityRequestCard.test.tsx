@@ -92,7 +92,7 @@ describe('a capability request card', () => {
     mocks.fetch.mockResolvedValue(dto({ whoCan: [{ userId: 'u-1', name: 'Ana' }] }))
     const scope = await render(BODY)
     expect(scope.querySelector('[data-completion]')).toBeNull()
-    expect(scope.textContent).toContain('People who can complete it: Ana')
+    expect(scope.textContent).toContain('People who can complete this: Ana')
     expect(scope.querySelector('a[href="/acme/requests/req-1"]')).not.toBeNull()
   })
 

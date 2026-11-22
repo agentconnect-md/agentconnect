@@ -111,27 +111,27 @@ afterEach(() => {
 describe('an email address’s status line', () => {
   it('says the address takes mail from members', async () => {
     await render(MEMBERS_ONLY)
-    expect(status()).toBe('Takes mail from members of your organization')
+    expect(status()).toBe('Accepts mail from organization members')
   })
 
   it('names the one member who sees mail from outside', async () => {
     await render({ ...MEMBERS_ONLY, whoMayWrite: 'anyone' })
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: only Ann sees it')
+    expect(status()).toBe('Accepts mail from anyone · External mail: visible only to Ann')
   })
 
   it('says everyone in the organization sees mail from outside', async () => {
     await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } })
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: everyone in the organization sees it')
+    expect(status()).toBe('Accepts mail from anyone · External mail: visible to everyone in the organization')
   })
 
   it('says the people who can edit the agent see mail from outside', async () => {
     await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'editors' } })
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: people who can edit this agent')
+    expect(status()).toBe('Accepts mail from anyone · External mail: people who can edit this agent')
   })
 
   it('says outside mail is refused while the picked member is gone', async () => {
     await render({ whoMayWrite: 'anyone', outsideSessions: { kind: 'member', userId: 'user-left', active: false } })
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: nobody sees it, so it is refused')
+    expect(status()).toBe('Accepts mail from anyone · External mail: nobody can view it, so it’s refused')
   })
 })
 
@@ -139,7 +139,7 @@ describe('an email address’s settings dialog', () => {
   it('offers the gear to an editor of the agent alone', async () => {
     mocks.canEdit = false
     await render(MEMBERS_ONLY)
-    expect(status()).toBe('Takes mail from members of your organization')
+    expect(status()).toBe('Accepts mail from organization members')
     expect(gear()).toBeNull()
   })
 
@@ -163,7 +163,7 @@ describe('an email address’s settings dialog', () => {
       outsideSessions: { kind: 'member', userId: 'user-ann' }
     })
     expect(dialog()).toBeNull()
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: only Ann sees it')
+    expect(status()).toBe('Accepts mail from anyone · External mail: visible only to Ann')
   })
 
   it('gives outside mail to the organization or to another member', async () => {
@@ -187,7 +187,7 @@ describe('an email address’s settings dialog', () => {
       whoMayWrite: 'anyone',
       outsideSessions: { kind: 'member', userId: 'user-me' }
     })
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: only Me sees it')
+    expect(status()).toBe('Accepts mail from anyone · External mail: visible only to Me')
   })
 
   it('lists the agent’s editors first, marked as the default, then the organization, then a specific member', async () => {
@@ -212,7 +212,7 @@ describe('an email address’s settings dialog', () => {
       whoMayWrite: 'anyone',
       outsideSessions: { kind: 'editors' }
     })
-    expect(status()).toBe('Takes mail from anyone · Mail from outside: people who can edit this agent')
+    expect(status()).toBe('Accepts mail from anyone · External mail: people who can edit this agent')
 
     await click(gear())
     await click(radio('Everyone in the organization'))
@@ -268,7 +268,7 @@ describe('an email address’s settings dialog', () => {
     await click(button('Cancel'))
     expect(dialog()).toBeNull()
     expect(mocks.saveSettings).not.toHaveBeenCalled()
-    expect(status()).toBe('Takes mail from members of your organization')
+    expect(status()).toBe('Accepts mail from organization members')
   })
 
   it('says so inside the dialog when the change could not be saved', async () => {
@@ -277,8 +277,8 @@ describe('an email address’s settings dialog', () => {
     await click(gear())
     await click(radio('Anyone'))
     await click(button('Save'))
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toContain('Couldn’t save settings')
     expect(radio('Anyone')?.getAttribute('aria-checked')).toBe('true')
-    expect(status()).toBe('Takes mail from members of your organization')
+    expect(status()).toBe('Accepts mail from organization members')
   })
 })

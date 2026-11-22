@@ -334,7 +334,7 @@ describe('SessionViewer body', () => {
   it('draws a path this checkout does not have as a not-found state, not a failure', async () => {
     wire.slices[0] = { exists: false, content: null, size: null }
     await render({ path: 'src/gone.ts' })
-    expect(text()).toContain('this checkout has no file at that path')
+    expect(text()).toContain('File not found at this path')
     expect(text()).not.toContain('daemon may be offline')
     expect(container?.querySelector('[data-viewer-gutter]')).toBeNull()
   })
@@ -342,7 +342,7 @@ describe('SessionViewer body', () => {
   it('withholds a binary file by name and size, as the daemon withheld its bytes', async () => {
     wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
     await render({ path: 'assets/blob.bin' })
-    expect(text()).toContain('Binary file — not displayed (2.0 KB)')
+    expect(text()).toContain('Binary file (2.0 KB), preview unavailable')
     expect(container?.querySelector('[data-viewer-gutter]')).toBeNull()
   })
 })
@@ -372,7 +372,7 @@ describe('SessionViewer images and downloads', () => {
     wire.slices[0] = { encoding: 'none', content: null, size: 2048 }
     await render({ path: 'assets/anim.gif' })
     await settle()
-    expect(text()).toContain('Binary file — not displayed (2.0 KB)')
+    expect(text()).toContain('Binary file (2.0 KB), preview unavailable')
     expect(container?.querySelector('[data-viewer-image]')).toBeNull()
     expect(container?.querySelector('[data-viewer-download]')).toBeNull()
     expect(wire.blobCalls).toHaveLength(0)
@@ -707,7 +707,9 @@ describe('SessionViewer mode', () => {
     wire.diffs.unstaged = { diff: TWO_LINE_DIFF, truncated: true }
     await render({ mode: 'diff' })
 
-    expect(container?.querySelector('[data-viewer-diff-truncated]')?.textContent).toContain('too large to send whole')
+    expect(container?.querySelector('[data-viewer-diff-truncated]')?.textContent).toContain(
+      'too large to display in full'
+    )
     // The header says so too, beside the counts, because the counts describe only what arrived.
     expect(text()).toContain('partial')
   })

@@ -122,7 +122,7 @@ describe('CodeHostRoutingTry', () => {
     )
     const view = await render('pull_request')
     expect(view.textContent).toContain('"pullRequest":')
-    expect(view.querySelector('[title^="Filled in here"]')?.getAttribute('title')).toContain('repository')
+    expect(view.querySelector('[title^="Set automatically"]')?.getAttribute('title')).toContain('repository')
     await type(view.querySelector('textarea[aria-label="Current message"]'), 'Please review the config change')
     await tryIt(view)
     expect(mocks.previewCodeHostRouting).toHaveBeenCalledWith(
@@ -156,7 +156,7 @@ describe('CodeHostRoutingTry', () => {
     await type(view.querySelector('textarea[aria-label="Current message"]'), 'It crashes')
     await tryIt(view)
     expect(result(view)).toContain('Evaluation unavailable')
-    expect(result(view)).toContain('Every agent takes the event')
+    expect(result(view)).toContain('Every agent will handle the event as usual')
     expect(result(view)).not.toContain('Would not activate')
   })
 })

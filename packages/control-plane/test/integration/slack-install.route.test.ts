@@ -25,7 +25,8 @@ import type {
   SlackManifestExportResult,
   SlackManifestUpdateResult,
   SlackOAuthExchangeResult,
-  SlackRotateResult
+  SlackRotateResult,
+  SlackAppIconSetResult
 } from '../../src/http/slack-config-api.js'
 import { PLATFORM_APP_DESCRIPTION } from '../../src/http/platform-app-description.js'
 import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
@@ -110,6 +111,12 @@ class StubConfigApi implements SlackConfigApi {
   async rotateConfigToken(refreshToken: string): Promise<SlackRotateResult> {
     this.rotateCalls.push(refreshToken)
     return this.rotateResult
+  }
+  iconResult: SlackAppIconSetResult = { ok: true }
+  iconCalls: Array<{ configToken: string; appId: string; png: Buffer }> = []
+  async setAppIcon(configToken: string, appId: string, png: Buffer): Promise<SlackAppIconSetResult> {
+    this.iconCalls.push({ configToken, appId, png })
+    return this.iconResult
   }
 }
 
@@ -215,6 +222,21 @@ describe('slack auto-install funnel', () => {
     const row = await prisma.slackInstall.findUnique({ where: { id: dto.installId } })
     expect(row).toMatchObject({ appId: 'A1TEST', clientSecret: 'csecret', botToken: null })
     expect(JSON.stringify(dto)).not.toContain('csecret')
+    // The created app wears the agent's icon as a 512px PNG.
+    expect(stub.iconCalls).toHaveLength(1)
+    expect(stub.iconCalls[0]).toMatchObject({ configToken: 'xoxe.xoxp-stored', appId: 'A1TEST' })
+    const { default: sharp } = await import('sharp')
+    expect(await sharp(stub.iconCalls[0]!.png).metadata()).toMatchObject({ format: 'png', width: 512, height: 512 })
+  })
+
+  it('POST /app still returns the install link when Slack rejects the app icon', async () => {
+    const agentId = await placedAgent()
+    await seedUserConfig()
+    const { app, stub } = withFunnel()
+    stub.iconResult = { ok: false, error: 'invalid_icon_size' }
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/integrations/slack/app`, payload: { agentId } })
+    expect(res.statusCode).toBe(201)
+    expect(stub.iconCalls).toHaveLength(1)
   })
 
   it('POST /app rotates a STALE stored token before creating the app, persisting the fresh pair', async () => {
@@ -229,6 +251,7 @@ describe('slack auto-install funnel', () => {
     expect(res.statusCode).toBe(201)
     expect(stub.rotateCalls).toEqual(['xoxe-stored']) // rotated the stale refresh token
     expect(stub.createCalls[0]!.configToken).toBe('xoxe.xoxp-rotated') // created with the fresh access token
+    expect(stub.iconCalls[0]!.configToken).toBe('xoxe.xoxp-rotated')
     // The rotated pair was persisted.
     const cfg = await prisma.slackUserConfig.findUnique({
       where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }

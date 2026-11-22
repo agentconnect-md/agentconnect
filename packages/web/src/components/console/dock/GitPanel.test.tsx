@@ -411,7 +411,7 @@ describe('GitPanel', () => {
 
     expect(commitRows()).toHaveLength(1)
     expect(text()).not.toContain('unpushed')
-    expect(text()).toContain('tracks no remote branch')
+    expect(text()).toContain('isn’t tracking a remote branch')
   })
 
   it('withholds every write control from a reader whose role cannot write, and says why', async () => {
@@ -425,8 +425,8 @@ describe('GitPanel', () => {
     expect(stageAll('changes')).toBeUndefined()
     expect(container?.querySelector('[data-commit-box]')).toBeNull()
     expect(container?.querySelector('textarea')).toBeNull()
-    expect(text()).toContain('Review only')
-    expect(text()).toContain('cannot change this checkout')
+    expect(text()).toContain('Read-only')
+    expect(text()).toContain('can’t modify this workspace')
   })
 
   it('draws a from-scratch workspace as data, with no sections and no log', async () => {
@@ -434,7 +434,7 @@ describe('GitPanel', () => {
     wire.log = gitLog({ isRepo: false })
     await render()
 
-    expect(text()).toContain('not a git checkout')
+    expect(text()).toContain('isn’t a Git repository')
     expect(rows('staged')).toHaveLength(0)
     expect(container?.querySelector('[data-git-section="commits"]')).toBeNull()
     // Nothing to badge, so the tab gets no count at all rather than a zero — and a non-checkout has no branch facts to report either.
@@ -460,10 +460,10 @@ describe('GitPanel', () => {
 
     // The refusal pressed the wake once, the session's own; a daemon with nothing to wake leaves the terminal copy, without Start.
     expect(vi.mocked(wakeAgent)).toHaveBeenCalledExactlyOnceWith('agent-a', 'session-1')
-    expect(text()).toContain('its pod is not running')
+    expect(text()).toContain('sandbox isn’t running')
     expect(text()).toContain('Sandbox not running')
     expect(text()).not.toContain('daemon may be offline')
-    expect(text()).not.toContain('Not a git checkout')
+    expect(text()).not.toContain('Not a Git repository')
     expect(text()).not.toContain('Start')
     // Still data: the tab settles and the panel stays mounted, like every other degraded answer.
     expect(verdicts.at(-1)).toEqual({ settled: true, changed: null, branch: null, tracking: null, base: null })
@@ -474,14 +474,14 @@ describe('GitPanel', () => {
     wire.gitFailure = { status: 503 }
     await render()
     expect(text()).toContain('daemon may be offline')
-    expect(text()).not.toContain('its pod is not running')
+    expect(text()).not.toContain('sandbox isn’t running')
     // Only the sleeping-sandbox code earns a press.
     expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
   })
 
   it('draws a clean tree as data', async () => {
     await render()
-    expect(text()).toContain('Nothing has changed in this checkout')
+    expect(text()).toContain('Working tree is clean. All tracked files match the last commit.')
   })
 
   it('says the status list was capped rather than implying the tree is that small', async () => {
@@ -915,7 +915,7 @@ describe('GitPanel — staging', () => {
     await render({ canWrite: true })
 
     expect(container?.querySelector('[data-commit-box]')).toBeNull()
-    expect(text()).toContain('not a git checkout')
+    expect(text()).toContain('isn’t a Git repository')
   })
 })
 
@@ -928,7 +928,7 @@ describe('GitPanel sandbox wake', () => {
     wire.gitFailure = asleep
     await render({ active: false })
     expect(vi.mocked(wakeAgent)).not.toHaveBeenCalled()
-    expect(text()).toContain('its pod is not running')
+    expect(text()).toContain('sandbox isn’t running')
     expect(text()).toContain('Start')
 
     await rerender({ active: true })
@@ -944,7 +944,7 @@ describe('GitPanel sandbox wake', () => {
     wire.gitFailure = asleep
     await render()
     expect(text()).toContain('Starting the agent’s sandbox')
-    expect(text()).not.toContain('its pod is not running')
+    expect(text()).not.toContain('sandbox isn’t running')
     const reads = wire.statusCalls
 
     wire.gitFailure = null

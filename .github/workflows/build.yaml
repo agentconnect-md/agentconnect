@@ -323,6 +323,27 @@ jobs:
                   verify: ({"daemon": "daemon", "runtime-sandbox": "runtime-sandbox", "runtime-sandbox-full": "runtime-sandbox-full"}[$name] // "")
                 }
             ]
+            # A multi-platform runtime target verifies real runtimes, so it runs one native leg per platform; finalize joins them.
+            | map(
+                if .component != "" and (.platforms | contains(",")) then
+                  . as $leg
+                  | ($leg.platforms | split(","))[]
+                  | (sub("^linux/"; "")) as $arch
+                  | (if $arch == "amd64" then "" else "-\($arch)" end) as $suffix
+                  | $leg + {
+                      platforms: .,
+                      all_platforms: $leg.platforms,
+                      arch: $arch,
+                      split: true,
+                      primary: ($arch == "amd64"),
+                      runner: (if $arch == "arm64" then "ubuntu-24.04-arm" else "ubuntu-latest" end),
+                      suffix: $suffix,
+                      cache_ref: ($leg.cache_ref + $suffix)
+                    }
+                else
+                  . + {all_platforms: .platforms, arch: "", split: false, primary: true, runner: "ubuntu-latest", suffix: ""}
+                end
+              )
           ' "$bake_config")"
 
           echo "matrix=$(jq -cn --argjson include "$matrix" '{include: $include}')" >> "$GITHUB_OUTPUT"
@@ -498,10 +519,10 @@ jobs:
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/agentconnect-vscode.vsix" --clobber
 
   build-images:
-    name: Build & push ${{ matrix.target }}
+    name: Build & push ${{ matrix.target }}${{ matrix.suffix }}
     needs: prepare
     if: needs.prepare.outputs.version != ''
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -511,7 +532,7 @@ jobs:
     # Registry cache refs are mutable performance hints. Serialize each target
     # across release runs so two channels cannot overwrite one simultaneously.
     concurrency:
-      group: image-build-${{ matrix.target }}
+      group: image-build-${{ matrix.target }}${{ matrix.suffix }}
       cancel-in-progress: false
     steps:
       - name: Checkout
@@ -536,9 +557,9 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Multi-arch targets (the computer image) run their arm64 install steps under emulation on this amd64 runner.
+      # Multi-arch targets (the services and the computer image) run their arm64 install steps under emulation on this amd64 runner.
       - name: Set up QEMU
-        if: contains(matrix.platforms, 'linux/arm64')
+        if: contains(matrix.platforms, 'linux/arm64') && runner.arch != 'ARM64'
         uses: docker/setup-qemu-action@v4
         with:
           platforms: arm64
@@ -566,7 +587,8 @@ jobs:
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
           BUILD_TARGET: ${{ matrix.build_target }}
-          PLATFORMS: ${{ matrix.platforms }}
+          # Every leg of a split target fingerprints the whole platform set, so all of them reach one decision.
+          PLATFORMS: ${{ matrix.all_platforms }}
           BUILD_ARGS: ${{ matrix.build_args }}
           BUILD_CONTEXTS: ${{ matrix.build_contexts }}
         run: >-
@@ -592,10 +614,11 @@ jobs:
         if: startsWith(matrix.verify, 'runtime-sandbox') && steps.decision.outputs.unchanged != 'true'
         env:
           VARIANT: ${{ matrix.build_target }}
+          PLATFORM: ${{ matrix.platforms }}
           BUILD_ARGS: ${{ matrix.build_args }}
         run: |
           set -eu
-          set -- "$VARIANT"
+          set -- "$VARIANT" --platform "$PLATFORM"
           while IFS= read -r arg; do
             [ -z "$arg" ] || set -- "$@" --build-arg "$arg"
           done <<< "$BUILD_ARGS"
@@ -638,16 +661,20 @@ jobs:
 
       # Publish the verified runtime from the same builder; service and daemon cache exports retain their existing path.
       - name: Build
+        id: build
         if: steps.decision.outputs.unchanged != 'true'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.build_target }}
-          platforms: ${{ matrix.platforms }}
-          push: ${{ matrix.verify != 'daemon' }}
+          # The runner's image store cannot load a multi-platform result, so the daemon verifies its amd64 half; Push publishes both.
+          platforms: ${{ matrix.verify == 'daemon' && 'linux/amd64' || matrix.platforms }}
+          push: ${{ matrix.verify != 'daemon' && !matrix.split }}
           load: ${{ matrix.verify == 'daemon' }}
-          tags: ${{ matrix.tags }}
+          tags: ${{ !matrix.split && matrix.tags || '' }}
+          # A split leg pushes its platform untagged; finalize tags the index once every leg has passed.
+          outputs: ${{ matrix.split && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', matrix.image) || '' }}
           build-args: ${{ matrix.build_args }}
           build-contexts: ${{ matrix.build_contexts }}
           labels: |
@@ -696,8 +723,9 @@ jobs:
 
       # finalize reads the decision from an artifact: a matrix job's outputs merge across legs, and a leg that leaves
       # a key empty can clobber another leg's value.
+      # The amd64 leg of a split target decides for it; every leg reaches the same decision from the same fingerprint.
       - name: Record the runtime image decision
-        if: matrix.component != ''
+        if: matrix.component != '' && matrix.primary
         env:
           COMPONENT: ${{ matrix.component }}
           EFFECTIVE: ${{ steps.decision.outputs.effective }}
@@ -705,10 +733,36 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/image-decision"
           echo "${COMPONENT}=${EFFECTIVE}" | tee "${RUNNER_TEMP}/image-decision/${COMPONENT}"
       - uses: actions/upload-artifact@v7
-        if: matrix.component != ''
+        if: matrix.component != '' && matrix.primary
         with:
           name: image-decision-${{ matrix.component }}
           path: ${{ runner.temp }}/image-decision/${{ matrix.component }}
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+      # Every split leg hands finalize its platform digest, empty when the image was unchanged and not built.
+      - name: Record the platform digest
+        if: matrix.split
+        env:
+          TARGET: ${{ matrix.target }}
+          COMPONENT: ${{ matrix.component }}
+          ARCH: ${{ matrix.arch }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ matrix.tags }}
+          ALL_PLATFORMS: ${{ matrix.all_platforms }}
+        run: |
+          dir="${RUNNER_TEMP}/image-digest/${TARGET}"
+          mkdir -p "$dir"
+          printf '%s\n' "$DIGEST" > "${dir}/${ARCH}.digest"
+          printf '%s\n' "$COMPONENT" > "${dir}/component"
+          printf '%s\n' "$TAGS" > "${dir}/tags"
+          printf '%s\n' "$ALL_PLATFORMS" > "${dir}/platforms"
+      - uses: actions/upload-artifact@v7
+        if: matrix.split
+        with:
+          name: image-digest-${{ matrix.target }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-digest
           if-no-files-found: error
           retention-days: 1
           overwrite: true
@@ -762,6 +816,43 @@ jobs:
       - name: Retry Buildx setup
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: image-digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/image-digest
+      # A split target built at this release gets its tags only here, as one index over every verified platform.
+      - name: Join split runtime images into their release tags
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/image-digest"
+          [ -d "$root" ] || exit 0
+          for dir in "$root"/*/; do
+            target="$(basename "$dir")"
+            component="$(cat "${dir}component")"
+            effective="$(sed -n "s/^${component}=//p" "${RUNNER_TEMP}/image-decision/${component}")"
+            if [ "$effective" != "$VERSION" ]; then
+              echo "${target} is unchanged since ${effective}; aliased below"
+              continue
+            fi
+            expected="$(tr ',' '\n' < "${dir}platforms" | grep -c .)"
+            refs=()
+            image="$(head -1 "${dir}tags" | sed 's/:[^/]*$//')"
+            for file in "$dir"*.digest; do
+              digest="$(cat "$file")"
+              [ -z "$digest" ] || refs+=("${image}@${digest}")
+            done
+            if [ "${#refs[@]}" -ne "$expected" ]; then
+              echo "::error::${target}: ${#refs[@]} of ${expected} platform images were built"
+              exit 1
+            fi
+            tags=()
+            while IFS= read -r tag; do [ -z "$tag" ] || tags+=(--tag "$tag"); done < "${dir}tags"
+            docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+          done
 
       # Components skipped above still get this release's tag: an alias of the
       # effective image (imagetools create adds tags to the SAME manifest

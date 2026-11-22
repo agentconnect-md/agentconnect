@@ -130,7 +130,7 @@ describe('AzureDevOpsCard', () => {
     expect(host.textContent).toContain('Not connected')
     expect(buttonIn(host, 'Use your own application instead')).toBeTruthy()
     expect(host.querySelector('[data-azure-devops-attention]')?.textContent).toContain(
-      'Grant it only the projects agents need.'
+      'Only grant access to projects agents need.'
     )
     const docs = host.querySelector<HTMLAnchorElement>('[data-azure-devops-attention] a')!
     expect(docs.href).toMatch(/\/connect-automate\/triggers-automation\/azure-devops$/)

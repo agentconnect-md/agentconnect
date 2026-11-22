@@ -156,7 +156,7 @@ describe('DecisionEvaluationsDrawer', () => {
     vi.spyOn(api, 'getEvaluation').mockRejectedValue(new ApiError('forbidden', 403))
     await render(api, () => {}, second!.seq)
     expect(detail()!.textContent).toContain('Skipped')
-    expect(detail()!.textContent).toContain('need edit access to every agent')
+    expect(detail()!.textContent).toContain('requires edit access to every agent')
   })
 
   it('loads the next page by cursor', async () => {
@@ -371,7 +371,7 @@ describe('DecisionEvaluationsDrawer', () => {
       }
     }
     await render(api, () => {}, undefined, offline)
-    expect(drawer().textContent).toContain("evaluates this repository's routing is not connected")
+    expect(drawer().textContent).toContain("evaluating this repository's routing isn't connected")
   })
 
   // auto-session-mode.md §4.7: the coordinator filter asks its own question, so the lane names it and states its threshold.
@@ -421,7 +421,7 @@ describe('DecisionEvaluationsDrawer', () => {
     expect(rows()).toHaveLength(1)
     expect(rows()[0]!.textContent).toContain('lunch anyone?')
     expect(rows()[0]!.textContent).toContain('Coordinator filter')
-    expect(drawer().textContent).toContain('20 most recent evaluations of this agent')
+    expect(drawer().textContent).toContain('20 most recent evaluations for this agent')
     await click(rows()[0])
     expect(detail()!.textContent).toContain('Reaches the coordinator unless Yes is below 25%')
     expect(detail()!.textContent).toContain('Should the agent get involved?')

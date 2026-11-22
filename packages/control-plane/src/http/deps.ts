@@ -485,6 +485,8 @@ export interface HttpDeps {
    *  cron enablement, bot credentials, placement). Fire-and-forget: the periodic
    *  rotation is the backstop, so this only buys latency. */
   recomputeDuties?: (orgId: string) => void
+  /** Awaited recompute, for a move that must vacate the old holder's lease before its target claims it. */
+  recomputeDutiesNow?: (orgId: string) => Promise<void>
   auth: DaemonAuth
   /** API-key lifecycle (onboarding / rotation / revocation). */
   apiKeys: ApiKeyAdmin

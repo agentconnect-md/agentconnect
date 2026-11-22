@@ -80,9 +80,9 @@ describe('WeCom bot settings', () => {
   it('says plainly that the new Secret is not tested and that the bot reconnects with it', async () => {
     await render(bot())
     await act(async () => buttonWith('Replace secret')!.click())
-    expect(host.textContent).toContain('AgentConnect does not test the new Secret')
-    expect(host.textContent).toContain('testing it would disconnect the running bot')
-    expect(host.textContent).toContain('The bot reconnects with the new Secret')
+    expect(host.textContent).toContain('AgentConnect doesn’t verify the new Secret')
+    expect(host.textContent).toContain('to avoid disconnecting the running bot')
+    expect(host.textContent).toContain('It will reconnect automatically')
     expect(host.querySelector('input')!.type).toBe('password')
     // Nothing is checked, so the button never claims to be checking.
     expect(buttonWith('Checking')).toBeUndefined()

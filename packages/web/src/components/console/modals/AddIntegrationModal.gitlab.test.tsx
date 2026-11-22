@@ -207,7 +207,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
 
     await act(async () => tileNamed('GitLab')?.click())
     expect(document.body.textContent).toContain(
-      'GitLab is not enabled on this deployment — no GitLab application is configured.'
+      "GitLab isn't enabled on this deployment. No GitLab application is configured."
     )
     expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
   })
@@ -415,7 +415,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
 
     const help = Array.from(document.querySelectorAll('label[title]')).map((row) => row.getAttribute('title') ?? '')
     // §15.3: request-changes needs the bot to be a current reviewer; approval is its own act.
-    expect(help.some((text) => text.includes('current reviewer'))).toBe(true)
+    expect(help.some((text) => text.includes('assigned as a reviewer'))).toBe(true)
     expect(help.some((text) => text.includes('separate act from a review'))).toBe(true)
     expect(help.join(' ')).not.toContain('Check Run')
     expect(help.join(' ')).not.toContain('CODEOWNERS')
@@ -494,7 +494,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
 
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [connection] })
-    await act(async () => clickText('I’ve connected it — sync')?.click())
+    await act(async () => clickText('I’ve connected it, sync now')?.click())
 
     expect(mocks.fetchGitlabConnections).toHaveBeenCalledTimes(2)
     expect(document.body.textContent).not.toContain('Connect GitLab to watch projects')

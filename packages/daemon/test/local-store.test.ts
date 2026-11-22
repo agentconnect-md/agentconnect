@@ -4379,6 +4379,16 @@ describe.skipIf(pg)('decision table migrations', () => {
     expect(userVersion(path)).toBe(SCHEMA_VERSION)
   })
 
+  it('upgrades a v82 store that never created assistant_subsession', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v82-')), 'local.sqlite')
+    await (await LocalStore.open(path)).close()
+    const old = new DatabaseSync(path)
+    old.exec('DROP TABLE IF EXISTS assistant_subsession; PRAGMA user_version = 82')
+    old.close()
+    await (await LocalStore.open(path)).close()
+    expect(userVersion(path)).toBe(SCHEMA_VERSION)
+  })
+
   it('adds the Source Cache tables to a v34 store', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v34-')), 'local.sqlite')
     await (await LocalStore.open(path)).close()

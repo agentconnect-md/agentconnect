@@ -11,6 +11,7 @@ import { defaultExec } from './exec.js'
 import { cliCommand } from '../invocation.js'
 import { clearInstancePointer, resolveServiceTarget, shellArg, writeInstancePointer } from './instance.js'
 import { LaunchdController } from './launchd.js'
+import { stableNodePath } from './node-path.js'
 import { ScheduledTaskController } from './schtasks.js'
 import { SystemdController } from './systemd.js'
 import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
@@ -207,7 +208,7 @@ export async function installService(target: ControllerTarget, opts: InstallOpts
     clearInstancePointer(previous.root)
   }
   const controller = resolveController({ ...target, scope: target.scope ?? defaultScope(target) })
-  await controller.install(opts)
+  await controller.install({ ...opts, execPath: stableNodePath(opts.execPath) })
   writeInstancePointer(root, { ...(instance ? { instance } : {}), label: controller.label })
   return controller
 }

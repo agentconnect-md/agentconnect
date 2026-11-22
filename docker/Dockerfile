@@ -28,7 +28,7 @@
 # build (prisma engines, sharp, esbuild, unrs-resolver) ships a prebuilt binary —
 # so no node-gyp toolchain is needed.
 # Exact patch + digest on every FROM (Dependabot can't see an ARG) so a release never ships whichever Node a floating tag resolved to.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS base
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS base
 WORKDIR /app
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH \
@@ -58,6 +58,22 @@ COPY packages/web/package.json packages/web/
 COPY packages/k8s-client/package.json packages/k8s-client/
 COPY packages/object-store/package.json packages/object-store/
 
+# ───────────────────────── control-plane: prisma ────────────────────────────
+# Generate on the runner's own platform: Prisma's wasm schema parser misreads valid schemas under QEMU arm64.
+FROM --platform=$BUILDPLATFORM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS cp-prisma
+WORKDIR /app
+ENV PNPM_HOME=/pnpm \
+  PATH=/pnpm:$PATH
+RUN npm install --global corepack@0.36.0 && corepack enable
+COPY --from=manifests /root/.npmrc /root/.npmrc
+COPY --from=manifests /app ./
+RUN --mount=type=cache,id=pnpm-build,target=/pnpm/store \
+  pnpm install --frozen-lockfile --filter "@agentconnect.md/control-plane"
+COPY tsconfig.base.json ./
+COPY packages/control-plane/prisma.config.ts packages/control-plane/tsconfig.json packages/control-plane/
+COPY packages/control-plane/prisma packages/control-plane/prisma
+RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
+
 # ───────────────────────── control-plane: build ─────────────────────────────
 # Install the control-plane, the self-contained Setup Server package, and
 # their workspace deps (skips the daemon and its native better-sqlite3 build).
@@ -70,9 +86,9 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 # Source last — editing app code no longer busts the install layer above.
 COPY . .
 
-RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
+COPY --from=cp-prisma /app/packages/control-plane/src/generated/prisma packages/control-plane/src/generated/prisma
 
-# Build the dependency closure once; Prisma was generated above.
+# Build the dependency closure once; Prisma was generated in cp-prisma.
 RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/control-plane..." build:package
 
@@ -88,7 +104,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /control-plane
 
 # ──────────────────────── control-plane: runtime ────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS control-plane
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS control-plane
 WORKDIR /app/packages/control-plane
 ENV NODE_ENV=production \
   PORT=8080 \
@@ -136,7 +152,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /relay
 
 # ───────────────────────────── relay: runtime ───────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS relay
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS relay
 WORKDIR /app/packages/relay
 ENV NODE_ENV=production \
   PORT=8080 \
@@ -173,7 +189,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /daemon
 
 # ─────────────────────────── daemon: runtime ────────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS daemon
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS daemon
 WORKDIR /app/packages/daemon
 ENV NODE_ENV=production \
   # The port the daemon DIALS on a ready sandbox pod's IP — the shim listens there, not here.
@@ -241,7 +257,7 @@ RUN mkdir -p packages/web/public \
   && pnpm --filter "@agentconnect.md/web..." build:package
 
 # ───────────────────────────── web: runtime ─────────────────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS web
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS web
 WORKDIR /app/packages/web
 ENV NODE_ENV=production \
   NEXT_TELEMETRY_DISABLED=1 \
@@ -276,7 +292,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   deploy --prod /memory-plugin-mem0
 
 # ───────────────── memory-plugin-mem0 (wrapper): runtime ─────────────────────
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS mem0
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS mem0
 WORKDIR /app/packages/memory-plugin-mem0
 # HTTP (remote) mode is the deployable shape; each request carries its own
 # X-Mem0-Api-Key, so no credential is baked in. PORT matches the chart's mem0.port.

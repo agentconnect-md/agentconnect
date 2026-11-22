@@ -161,7 +161,11 @@ describe('a runtime’s auto, else full-access, permission mode', () => {
   const COPILOT_MODE = 'https://agentclientprotocol.com/protocol/session-modes#'
 
   it.each([
-    ['antigravity-acp', { default: 'asks', auto_edit: 'asks', yolo: 'full-access' }, 'yolo'],
+    [
+      'antigravity-acp',
+      { default: 'asks', 'accept-edits': 'asks', auto: 'auto', auto_edit: 'asks', yolo: 'full-access' },
+      'auto'
+    ],
     [
       'codebuddy-code',
       {

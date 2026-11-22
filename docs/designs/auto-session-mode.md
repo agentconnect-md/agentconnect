@@ -667,7 +667,9 @@ place new messages.
 - **Content**: fixed parts set by the task's prompt, at most 500 characters: the status (in progress,
   waiting on someone, done or blocked) in a first sentence that stands on its own, since a short list
   may quote only that sentence, then the scope (what the task is about, the coordinator's main
-  signal), and the next step and open questions.
+  signal), and the next step and open questions. `updateTask` also takes an optional `status`
+  (`in_progress`, `waiting`, `done`, `blocked`) that repeats the first sentence for the daemon;
+  `done` keeps the task out of looking back (assistant-mode.md §5.20) until its next round.
 - **When**: the prompt asks for an update in any turn where the scope or status changes. As a
   backstop the daemon adds a reminder before the first turn's message to call `updateTask` before
   replying, even if the task finishes in that turn. Later turns keep the reminder when a task has

@@ -208,7 +208,7 @@ describe('ComputerDetailView', () => {
     )
     const own = computer({ agentAccess: { mode: 'all', agents: [] }, desktops: [] })
     const separate = render({ ...own, policy: { ...own.policy, shareBrowserLogins: false } })
-    expect(separate.querySelector('[data-desktops-notice]')!.textContent).toContain('a browser profile of its own')
+    expect(separate.querySelector('[data-desktops-notice]')!.textContent).toContain('separate browser profile')
     expect(
       render(computer({ agentAccess: { mode: 'all', agents: [] } })).querySelector('[data-desktops-notice]')
     ).toBeNull()
@@ -316,7 +316,7 @@ describe('ComputerDetailView', () => {
     expect(line.textContent).toBe('1 waiting')
     expect(line.title).toContain('peer')
     expect(el.querySelector('[data-pool-chip]')!.textContent).toBe('Pool · Awake')
-    expect(el.textContent).toContain('Pool computer, shared')
+    expect(el.textContent).toContain('Shared pool computer')
     expect(button(el, 'Wake')).toHaveLength(0)
     expect(el.querySelector<HTMLElement>('[data-pool-power="sleep"]')!.title).toContain('keeps its files')
     await act(async () => button(el, 'Sleep')[0]!.click())
@@ -381,7 +381,7 @@ describe('ComputerDetailView', () => {
     openMenu(el)
     act(() => button(el, 'Reset desktop')[0]!.click())
     expect(mocks.resetComputer).not.toHaveBeenCalled()
-    expect(document.body.textContent).toContain('files, browser profile and sign-ins are deleted')
+    expect(document.body.textContent).toContain('deleting all files, browser profiles, and sign-ins')
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
     await act(async () => button(dialog, 'Reset')[0]!.click())
     await settle()

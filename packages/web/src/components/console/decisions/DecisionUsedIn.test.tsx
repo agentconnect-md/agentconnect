@@ -145,7 +145,7 @@ describe('DecisionUsedIn', () => {
     expect(chip.textContent).toBe('billing ≥ 50%, bug ≥ 60%')
     const card = await hover(chip)
     expect(card?.textContent).toBe(
-      '1billing ≥ 50%billing-bot2bug ≥ 60%An agent you cannot see—OtherwiseUse default agent'
+      "1billing ≥ 50%billing-bot2bug ≥ 60%An agent you can't see—OtherwiseUse default agent"
     )
   })
 
@@ -155,7 +155,7 @@ describe('DecisionUsedIn', () => {
       hiddenCount: 2
     })
     expect(container!.textContent).toContain('4 places')
-    expect(container!.textContent).toContain('2 more you cannot see')
+    expect(container!.textContent).toContain("2 more you can't see")
     expect(button('agent_tool:agent-9', /^Recent evaluations/)).toBeUndefined()
     expect(count('agent_tool:agent-9')).toBe('—')
     const ops = row('gate-local:C7')
@@ -216,7 +216,7 @@ describe('DecisionUsedIn', () => {
     await mount(() => [{ kind: 'gate', id: 'gate-1', label: '#help', integrationId: 'int-1', channelId: 'C1' }], {
       before: (api) => vi.spyOn(api, 'listEvaluations').mockRejectedValueOnce(new Error('offline'))
     })
-    expect(container!.querySelector('[role="alert"]')?.textContent).toContain('1 place could not be loaded.')
+    expect(container!.querySelector('[role="alert"]')?.textContent).toContain("1 place couldn't be loaded.")
     await act(async () =>
       [...container!.querySelectorAll('button')].find((node) => node.textContent === 'Retry')!.click()
     )

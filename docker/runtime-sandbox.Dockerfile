@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261114-073312@sha256:919d383ef0ac249725d9665cc99a33ac3ab34929ab85f6c2ae3b6fcb3ccf8663
-ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261114-073312@sha256:fa834a1a2e7f9ec951c964d9b1a305585980113b9fa37da15297ec80a4de2b63
+ARG RUNTIME_SANDBOX_BASE=ghcr.io/agentconnect-md/runtime-sandbox:base-20261121-055758@sha256:59e7ce798cd7a2fb97ee1b451561b36b6bf5f892029c296f384cd05583f561a6
+ARG RUNTIME_SANDBOX_FULL_BASE=ghcr.io/agentconnect-md/runtime-sandbox-full:base-20261121-055758@sha256:6995a86217fe14745214f233ef496e0f4b3e52bf22db078bed75ae9986a33bc6
 
 ARG AGENT_BROWSER_VERSION=0.43.0
-ARG CLAUDE_ACP_VERSION=0.109.0
-ARG CODEX_ACP_VERSION=2.8.0-agentconnect.1
+ARG CLAUDE_ACP_VERSION=0.109.1
+ARG CODEX_ACP_VERSION=2.9.0-agentconnect.1
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.41
 ARG OPENCODE_VERSION=2.2.7
 
@@ -13,7 +13,7 @@ ARG OPENCODE_VERSION=2.2.7
 
 # ───────────────────────────── shim builder ─────────────────────────────────
 # The shim build inlines its dependencies so runtime images need no daemon node_modules.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS shim-builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
@@ -61,7 +61,7 @@ FROM scratch AS runtime-payload-digest-export
 COPY --from=runtime-payload-digest /payload-digest /
 
 # Both runtime images share the pinned CLI and its system extension, independent of each session's empty Azure state.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS azure-cli
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS azure-cli
 ARG AZURE_CLI_VERSION=2.92.0
 ARG AZURE_CLI_SHA256_AMD64=ad0285eaf900cd5e91218e9ad6ac28ce2749d3f8d3fe17f397d7fbf4ca5a5457
 ARG AZURE_CLI_SHA256_ARM64=670627cb5338b95dd77d3bfc8f548b11fe125a723ebff647e245a27e241ddcb9
@@ -89,28 +89,27 @@ RUN set -eu; \
   rm -rf /var/lib/apt/lists/* /tmp/azure-cli.deb "/tmp/${wheel}"
 
 # Antigravity is the first, independently cached application layer in the full image.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS antigravity
-ARG ANTIGRAVITY_VERSION=1.4.5
-ARG ANTIGRAVITY_SHA256_AMD64=923923a0d7dc8073f66cc6f78647a3107e3a7ee2b7e1a24df8b3927b5188013b
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS antigravity
+ARG ANTIGRAVITY_CLI_RELEASE=1.5.14-5302690847260672
+ARG ANTIGRAVITY_SHA512_AMD64=83311d3f354567612dc16c1ae2ea9b503d6f6833aa4e138d39aa229da3f3bb99b0e4d7cca0bce4796b0060d6a51d8113eb7449ed5dc0e7900bf217107ea5bff9
 ARG TARGETARCH
 RUN test "${TARGETARCH:-amd64}" = amd64 \
   && apt-get update \
-  && apt-get install --no-install-recommends -y ca-certificates curl unzip \
+  && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /out/antigravity
-RUN curl --retry 5 -fsSL -o /tmp/antigravity.zip \
-  "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-${ANTIGRAVITY_VERSION}-linux-x86_64.zip" \
-  && printf '%s  /tmp/antigravity.zip\n' "$ANTIGRAVITY_SHA256_AMD64" | sha256sum -c - \
-  && unzip -q /tmp/antigravity.zip -d /out/antigravity \
-  && test -x /out/antigravity/agy_acp_server.par \
-  && test -x /out/antigravity/localharness_external \
-  && chmod -R a-w /out/antigravity \
-  && rm /tmp/antigravity.zip
+RUN curl --retry 5 -fsSL -o /tmp/antigravity.tar.gz \
+  "https://storage.googleapis.com/antigravity-public/antigravity-cli/${ANTIGRAVITY_CLI_RELEASE}/linux-x64/cli_linux_x64.tar.gz" \
+  && printf '%s  /tmp/antigravity.tar.gz\n' "$ANTIGRAVITY_SHA512_AMD64" | sha512sum -c - \
+  && tar -xzf /tmp/antigravity.tar.gz -C /out/antigravity antigravity \
+  && mv /out/antigravity/antigravity /out/antigravity/agy \
+  && chmod 0555 /out/antigravity/agy \
+  && rm /tmp/antigravity.tar.gz
 
 # Build Muse's adapter against Bookworm: upstream Linux binaries require glibc 2.39.
-FROM rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS muse-acp
-ARG MUSE_ACP_VERSION=0.21.0
-ARG MUSE_ACP_SOURCE_SHA256=36e984ff3808783cbaacfd76b24fe1b68e8ea6e6bad16c5888a11a10dc5b841c
+FROM rust:1.100.0-slim-bookworm@sha256:7c7d4eb4d05b7781187a327809466cfddf29753f6defdc3d19a0e291951b7a37 AS muse-acp
+ARG MUSE_ACP_VERSION=0.25.0
+ARG MUSE_ACP_SOURCE_SHA256=55470fd9a2473857a2e4130f98cfd8bf446797b4084dd1822a2e82a794fac9ec
 RUN apt-get update \
   && apt-get install --no-install-recommends -y ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
@@ -125,13 +124,13 @@ RUN curl --retry 5 -fsSL -o /tmp/muse-acp.tar.gz \
   && cp LICENSE NOTICE /out/licenses/muse-acp/
 
 # Other native harness downloads are independent of Antigravity and agent-browser.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS full-native-runtimes
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS full-native-runtimes
 ARG OMP_VERSION=18.18.6
 ARG OMP_SHA256_AMD64=a8059b95de5eaba0b3fb6f7182842d661feae29cb2931cdbeba2986db4751ecb
-ARG DEVIN_VERSION=3000.12.43
-ARG DEVIN_SHA256_AMD64=6a19997b5fc2d6ba1a8c341d4e2b12f1b78cad5d415ee9c0ca413a8d52a99562
-ARG MUSE_VERSION=1.4.15-R8339.1
-ARG MUSE_SHA256_AMD64=abe0a72878c62b570c6eed6c17c5fc3c520a990ecf040511741c00092312a3d5
+ARG DEVIN_VERSION=3000.14.30821
+ARG DEVIN_SHA256_AMD64=4dc43e3e4388bace60fe2aa8010cbb399402e724892d7175845b1cdef00e7ddb
+ARG MUSE_VERSION=1.4.24-R9131.1
+ARG MUSE_SHA256_AMD64=d752c45dce079ee29e118804b091d81ac2b1b89b67f317b4a162fa1af1206465
 ARG KILO_VERSION=7.8.27
 ARG KILO_SHA256_AMD64=4c08aa46dd87453a329f48b0f00d34d0fa7b8f0ac910fe8937814d4e8582de08
 ARG GOOSE_VERSION=1.58.1
@@ -177,11 +176,7 @@ FROM ${RUNTIME_SANDBOX_FULL_BASE} AS runtime-sandbox-full-apps
 USER root
 COPY --link --from=azure-cli --chown=0:0 /opt/az/ /opt/az/
 COPY --from=azure-cli --chown=0:0 /usr/bin/az /usr/bin/az
-# Antigravity resolves its local harness relative to the ACP executable.
-COPY --link --from=antigravity --chown=0:0 /out/antigravity/ /opt/agentconnect/runtimes/antigravity/
-RUN printf '%s\n' '#!/bin/sh' \
-  'exec /opt/agentconnect/runtimes/antigravity/agy_acp_server.par "$@"' > /usr/local/bin/antigravity-acp \
-  && chmod 0555 /usr/local/bin/antigravity-acp
+COPY --link --from=antigravity --chown=0:0 /out/antigravity/agy /usr/local/bin/agy
 
 ARG AGENT_BROWSER_VERSION
 RUN --mount=type=bind,source=docker/runtime-sandbox/install-agent-browser.sh,target=/tmp/install-agent-browser.sh \

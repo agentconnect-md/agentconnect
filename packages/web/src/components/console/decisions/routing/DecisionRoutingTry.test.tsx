@@ -133,7 +133,7 @@ describe('DecisionRoutingTry', () => {
     expect(text).toContain('Would activate')
     expect(text).toContain('Rule 1 matched')
     expect(text).toContain('Rule 2 matched')
-    expect(text).toContain('Rule 3 did not match')
+    expect(text).toContain("Rule 3 didn't match")
     expect(text).toContain('billing ≥ 30%')
     expect(text).toContain('Matched rules1, 2')
     expect(text).toContain('Billing')
@@ -217,16 +217,54 @@ describe('DecisionRoutingTry', () => {
     const { view } = await render(decisionMock.createDecisionMockApi(), draft, frustration)
     await runWith(view)
     const text = result(view)
-    expect(text).toContain('Rule 1 did not match')
+    expect(text).toContain("Rule 1 didn't match")
     expect(text).toContain('Rule 2 matched')
     expect(text).toContain('Matched rules2')
+  })
+
+  it("lists a chain's step rules by their Decision, as continuing, matched, or not reached", async () => {
+    const [first, second, third] = saved.rules
+    const step = (id: string, ruleId: string) => ({
+      id,
+      decisionId: decision.id,
+      rules: [{ ...first!, id: ruleId, action: { type: 'agent' as const, agentId: 'technical-agent' } }]
+    })
+    const draft: RoutingDraft = {
+      ...saved,
+      rules: [{ ...first!, action: { type: 'decision', nextStepId: 's2' } }, second!, third!],
+      steps: [step('s2', 'r-step'), step('s3', 'r-unused')]
+    }
+    draft.rules[1] = { ...second!, action: { type: 'decision', nextStepId: 's3' } }
+    const api = decisionMock.createDecisionMockApi()
+    const real = api.previewRouting.bind(api)
+    vi.spyOn(api, 'previewRouting').mockImplementation(async (...args) => {
+      const preview = await real(...args)
+      const row = (ruleId: string, matched: boolean, stepId?: string, reached = true) => ({
+        ruleId,
+        ...(stepId ? { stepId } : {}),
+        reached,
+        matched,
+        matchedKeys: []
+      })
+      const rules = [row(first!.id, true), row(second!.id, false), row(third!.id, false)]
+      rules.push(row('r-step', true, 's2'), row('r-unused', false, 's3', false))
+      return { ...preview, consumer: { ...preview.consumer, rules, matchedRuleIds: [first!.id, 'r-step'] } }
+    })
+    const { view } = await render(api, draft)
+    await runWith(view)
+    const text = result(view)
+    expect(text).toContain('Rule 1 matched')
+    expect(text).toContain(`${decision.name} rule 1 matched`)
+    expect(text).toContain(`${decision.name} rule 1 not reached`)
+    expect(text).toContain(`Matched rules1, ${decision.name} rule 1`)
+    expect(text).toContain('Matched actionsContinue with a decision, Technical')
   })
 
   it('uses Otherwise when no rule matches, naming the resolved default or Would not activate', async () => {
     const draft = { ...saved, rules: saved.rules.slice(2), otherwise: 'default_agent' as const }
     const { view, rerender } = await render(decisionMock.createDecisionMockApi(), draft)
     await runWith(view)
-    expect(result(view)).toContain('No rule matched; Otherwise applies.')
+    expect(result(view)).toContain('No rule matched. Otherwise applies.')
     expect(result(view)).toContain('Default agent')
     await rerender({ ...draft, otherwise: 'skip' })
     expect(view.textContent).toContain('The draft or sample changed after this run.')
@@ -246,7 +284,7 @@ describe('DecisionRoutingTry', () => {
     )
     expect(result(view)).toContain('Would continue')
     expect(result(view)).toContain('Sales')
-    expect(result(view)).toContain('the recipients are kept')
+    expect(result(view)).toContain('the original recipients are kept')
     await click(view.querySelector('button[aria-label="Remove Sales"]'))
     await choose(view.querySelector('select[aria-label="Add an agent to participantAgentIds"]'), 'sales-agent')
     await click(button(view, 'Try'))
@@ -263,7 +301,7 @@ describe('DecisionRoutingTry', () => {
     const { view } = await render(decisionMock.createDecisionMockApi(), saved, decision, 'off-channel')
     await runWith(view)
     expect(result(view)).toContain('Not applied')
-    expect(result(view)).toContain('This channel is Off')
+    expect(result(view)).toContain('This channel is off')
   })
 
   it('names the continuation on a provider failure, never a skip', async () => {
@@ -290,7 +328,7 @@ describe('DecisionRoutingTry', () => {
   it('says the evaluation host is offline instead of showing a result', async () => {
     const { view } = await render(decisionMock.createDecisionMockApi({ scenario: 'daemon_offline' }))
     await runWith(view)
-    expect(view.querySelector('[role="alert"]')?.textContent).toContain('The evaluation host is offline')
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('The evaluation daemon is offline')
     expect(view.querySelector('[data-testid="try-result"]')).toBeNull()
   })
 })

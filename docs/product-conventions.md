@@ -164,7 +164,12 @@ Every level keeps these rules:
   message only they see, on Telegram in an alert on the tap, on Feishu/Lark in a toast on the
   click, and on Google Chat in a private message.
 - The setting does not change the agent's permission policy. Which tool calls need approval is
-  set in the console, and an agent that allows every tool call never asks.
+  set by the agent's permission mode in the console and, for a Claude Code agent whose workspace
+  is a Git repository, by that repository's `allow`, `ask` and `deny` rules ("A repository's
+  Claude Code rules"). A call the repository allows is not asked about, though an edit under a
+  folder the runtime protects, such as `.git` or `.claude`, still is. A call it lists under `ask`
+  is asked about in every mode, including one that otherwise never asks, and `ask` wins over
+  `allow`.
 
 Three things are outside this setting:
 
@@ -3011,7 +3016,7 @@ reports them. Which mode is which follows the description each runtime reports f
 | Devin                      | Smart            |
 | Qoder CLI and Qoder CN CLI | Auto             |
 | Qwen Code                  | Auto             |
-| Google Antigravity         | YOLO             |
+| Google Antigravity         | Auto             |
 | DeepSeek Harness           | Full access      |
 | Copilot                    | Autopilot        |
 
@@ -3029,29 +3034,40 @@ The built-in agent a new organization gets on an install that runs a daemon pool
 Code with its `default` model, in Auto. The console's form likewise picks a runtime's `default`
 model when the runtime offers one, so the agent follows the runtime's own recommendation.
 
-## A repository's auto mode rules
+## A repository's Claude Code rules
 
 In Claude Code's auto mode a classifier decides each action from prose rules: the `environment`,
 `allow`, `soft_deny` and `hard_deny` lists of the `autoMode` block in its settings. It takes them
 from user-level, managed and programmatic settings and not from the settings file in a
-repository, and a session nobody is watching has no person's message to clear a blocked action
-either. A team therefore needs one place to say what its agent may do unattended in a repository,
-without configuring every machine the agent can run on.
+repository. Claude Code also ignores the `permissions.allow` list of a repository's settings file
+until someone has trusted that folder, and each conversation's checkout is a new folder nobody has
+trusted. Its `ask` and `deny` lists still apply, so every command the repository
+allows asks a person instead. A session nobody is watching has no person to answer a request or to
+clear a blocked action. A team therefore needs one place to say what its agent may do unattended
+in a repository, without configuring every machine the agent can run on.
 
 That place is the repository. For an agent whose workspace is a Git repository, the daemon passes
-the `autoMode` lists of `.claude/settings.json` to every Claude Code session as programmatic
-settings, when the session is created and again when it is resumed:
+the `autoMode` lists and the `permissions` `allow`, `ask` and `deny` lists of
+`.claude/settings.json` to every Claude Code session as programmatic settings, when the session is
+created and again when it is resumed:
 
 - **The agent's branch decides, never the working tree.** The file is read as the checkout's
   remote-tracking copy of the agent's configured branch holds it, beside the session's working
   directory. A task branch, an uncommitted edit and a pull request under review grant a session
   nothing; whoever can land a commit on that branch sets the rules, as with the repository's CI
   configuration.
-- **A repository adds to the runtime's rules and cannot drop them.** Each list is passed with
-  `$defaults` in it whether or not the file spells it, so a list in the file never replaces the
-  built-in one. Other keys of the block are not passed.
+- **A repository adds to the runtime's rules and cannot drop them.** Each auto mode list is passed
+  with `$defaults` in it whether or not the file spells it, so a list in the file never replaces the
+  built-in one. Other keys of the block are not passed, nor `permissions` keys other than the
+  three lists (`defaultMode`, `additionalDirectories`).
+- **A path rule keeps its meaning.** Claude Code reads a rule that names a path from the
+  repository's root, such as `Edit(/docs/**)`, against the folder of the file that holds it, and
+  programmatic settings reach it as a temporary file. So the daemon passes such a rule as the
+  absolute path in the session's checkout.
 - **Rules from other places still apply.** The runtime combines these lists with any in the
-  user-level and managed settings of the machine; none replaces another.
+  user-level and managed settings of the machine and with the working tree's own `ask` and `deny`
+  lists; none replaces another. A deny wins over an ask and an ask over an allow, wherever each
+  comes from, so a repository cannot allow what the daemon denies to protect a runtime's credentials.
 - **A file that cannot be used grants nothing.** No file or no such branch is the ordinary case and
   is silent. A file that is not valid, or is larger than 256 KiB, is logged by the daemon. The
   session starts either way.
@@ -3060,8 +3076,7 @@ settings, when the session is created and again when it is resumed:
 
 The remote-tracking ref lives in the checkout, which a session's own tools can write. Reading it
 keeps a branch or a reviewed change from granting itself rules; it is not a defense against a
-runtime that deliberately rewrites its own refs. `permissions.allow` in the same file is
-unaffected: Claude Code loads it from the working tree as before.
+runtime that deliberately rewrites its own refs.
 
 ## Agent model credentials
 
@@ -3181,6 +3196,13 @@ Gemini CLI (`gemini`) is excluded from automatic runtime discovery, including
 cached registry data. Google coding agents use the Google Antigravity
 (`antigravity-acp`) entry. Existing agents configured for Gemini CLI need to
 select Antigravity and complete its authentication before starting new sessions.
+
+Self-hosted daemons need the native Antigravity CLI (`agy`) on their PATH.
+Sign in with the CLI before resuming a session created with the standalone
+adapter. With the default data directories, the daemon imports that session's
+history on its first native resume. The full runtime image includes the CLI.
+Version 1.5.14 supports Streamable HTTP MCP connections. For a directly
+configured remote MCP server, use its Streamable HTTP endpoint.
 
 On self-hosted daemons, a tab that starts the image initially folds away runtimes
 installed in the image but not on the host. A **Show runtimes not on host** control

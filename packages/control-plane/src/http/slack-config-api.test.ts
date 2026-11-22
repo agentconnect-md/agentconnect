@@ -83,6 +83,26 @@ describe('slackConfigApi.exportApp (apps.manifest.export)', () => {
   })
 })
 
+describe('slackConfigApi.setAppIcon (apps.icon.set)', () => {
+  it('uploads the icon as multipart file for the target app', async () => {
+    mockFetch(() => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    expect(await slackConfigApi.setAppIcon('xoxe.xoxp-token', 'A012ABCD0A0', Buffer.from('png'))).toEqual({ ok: true })
+    const request = vi.mocked(globalThis.fetch).mock.calls[0]!
+    expect(request[0]).toBe('https://slack.com/api/apps.icon.set')
+    const body = request[1]?.body as FormData
+    expect(body.get('app_id')).toBe('A012ABCD0A0')
+    expect(body.get('file')).toBeInstanceOf(Blob)
+  })
+
+  it('surfaces Slack errors', async () => {
+    mockFetch(() => new Response(JSON.stringify({ ok: false, error: 'invalid_icon_size' }), { status: 200 }))
+    expect(await slackConfigApi.setAppIcon('t', 'A1', Buffer.from('png'))).toEqual({
+      ok: false,
+      error: 'invalid_icon_size'
+    })
+  })
+})
+
 describe('slackConfigApi.updateApp (apps.manifest.update)', () => {
   it('returns permissions_updated and submits the complete manifest', async () => {
     mockFetch(

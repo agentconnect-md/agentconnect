@@ -1,5 +1,5 @@
 import { initiatorName, sessionInitiator } from './codehost/initiator.js'
-import { repositoryAutoModeRules, type ClaudeAutoModeRules } from './acp/claude-auto-mode.js'
+import { repositoryClaudeRules, type ClaudeRepositoryRules } from './acp/claude-auto-mode.js'
 import {
   CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
   codexSessionPermissionProfiles
@@ -159,6 +159,7 @@ import {
   RUNTIME_PROBE_FEATURE,
   COMPUTER_POOL_MEMBER_FEATURE,
   COMPUTER_POOL_FEATURE,
+  CRON_RUN_SKIPPED_FEATURE,
   COMPUTER_POOL_QUOTA_FEATURE,
   type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
@@ -824,6 +825,7 @@ import {
   GithubReviewOrchestrator,
   HookStartRefused,
   type AnchorTriggerResult,
+  type TriggerNotStarted,
   type GithubReviewHost
 } from './github/review-orchestrator.js'
 import { CodeHostReviewRouter } from './codehost/review-adapter.js'
@@ -1703,6 +1705,9 @@ const RUNTIME_FAILURE_RETRY_MS = 5_000
 const TASK_HOLD_CLEAR_MS = 2_000
 /** How long a coordinator's turn waits for the history of a thread it meets part-way. */
 const COORDINATOR_THREAD_READ_MS = 5_000
+// A dispatch gate dropped the fire before its prompt was sent; the anchor gate names its own reason.
+const GATE_DROPPED: TriggerNotStarted = { status: 'skipped', reason: 'dropped before its turn started' }
+const THREAD_NOT_CREATED = 'the thread for this run could not be created'
 
 /** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
 type RelayAckTrace = { stage: string }
@@ -9561,17 +9566,17 @@ export class Daemon {
     return built.host
   }
 
-  // The auto mode rules of the repository checked out at `cwd`; an unreadable or malformed file grants nothing and never fails the session.
-  private async repositoryAutoModeRules(
+  // The Claude rules of the repository checked out at `cwd`; an unreadable or malformed file grants nothing and never fails the session.
+  private async repositoryClaudeRules(
     agent: LoadedAgent,
     hostKey: HostKey,
     cwd: string
-  ): Promise<ClaudeAutoModeRules | undefined> {
+  ): Promise<ClaudeRepositoryRules | undefined> {
     try {
       const git = this.workspaces.consoleWorkspaceGitRunner(agent.id, cwd, undefined, hostKeySessionKey(hostKey))
-      return git ? await repositoryAutoModeRules(git, agent.workspace.gitBranch) : undefined
+      return git ? await repositoryClaudeRules(git, agent.workspace.gitBranch) : undefined
     } catch (err) {
-      this.log.warn(`acp: agent "${agent.id}" got no repository auto mode rules: ${formatErr(err)}`)
+      this.log.warn(`acp: agent "${agent.id}" got no repository Claude rules: ${formatErr(err)}`)
       return undefined
     }
   }
@@ -10144,7 +10149,7 @@ export class Daemon {
         : {}),
       // A dream or research host works on content the repository's maintainers never vouched for, so it gets no repository rules.
       ...(agent.workspace.mode === 'git-repo' && !credentialless
-        ? { claudeAutoModeRules: (cwd: string) => this.repositoryAutoModeRules(agent, opts.hostKey, cwd) }
+        ? { claudeRepositoryRules: (cwd: string) => this.repositoryClaudeRules(agent, opts.hostKey, cwd) }
         : {}),
       // A plane runs the runtime in a sandbox pod or a VM; with none AcpHost falls back to its LocalDriver, which is what a self-hosted daemon wants.
       ...this.planeFor(planeLaunch)?.spawnFor(planeLaunch),
@@ -12729,9 +12734,10 @@ export class Daemon {
       null,
       LOOK_BACK_SCANNED_ROWS
     )
-    // The agent's own words, never a stop's audit row, which it writes under the agent's name too.
+    // The agent's own words: never a delivered input under its name (a report, a look back; they carry a recipient), nor a stop's audit row.
     const reply = page.rows.find(
-      (row) => row.kind === 'text' && row.sender === agentId && row.text.trim() && !row.text.startsWith('🛑')
+      (row) =>
+        row.kind === 'text' && row.sender === agentId && !row.recipient && row.text.trim() && !row.text.startsWith('🛑')
     )
     const person = look?.person && look.personAt !== undefined ? look.person : undefined
     const userId = person?.asker.userId
@@ -16308,7 +16314,9 @@ export class Daemon {
         continue
       }
       next.admissionWait = undefined
-      if (next.deferObservedInbound) await this.admitInbound(next.msg, next.agentId)
+      // Only the head goes through the session's ingest, so each folded message's row gets its prompt and facts here.
+      if (next.deferObservedInbound || (next.msg.turnBody && originKindOf(next.msg.platform) === 'chat'))
+        await this.admitInbound(next.msg, next.agentId, { withBody: true })
       batch.push(next)
       // Before the model sees it, so every read and write of the turn is judged by every sender.
       this.noteFoldedMessage(key, next)
@@ -19874,7 +19882,11 @@ export class Daemon {
 
   /** Step 6 (message-intake.md §5): the step-1 row plus THIS agent's admission at its own session
    *  coordinate — an idempotent upgrade, since the row dedups and the admission is INSERT OR IGNORE. */
-  private async admitInbound(msg: NormalizedMessage, agentId: string): Promise<void> {
+  private async admitInbound(
+    msg: NormalizedMessage,
+    agentId: string,
+    opts: { withBody?: boolean } = {}
+  ): Promise<void> {
     const { thread, ts } = transcriptCoords(msg)
     const mention = attachmentMention(msg.attachments)
     await this.threadContext.observeInbound({
@@ -19895,7 +19907,8 @@ export class Daemon {
       ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
-      // Bodyless for the same reason as step 1: the authoritative ingest persists the prompt.
+      // Bodyless unless asked, as step 1: the authoritative ingest persists the prompt, which a coordinator batch's members never reach.
+      ...(opts.withBody && msg.turnBody ? { body: JSON.stringify(msg.turnBody) } : {}),
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {}),
       ...(this.isTrustedAgentBotPost(msg) ? { trustedAgentBot: true } : {})
     })
@@ -21791,6 +21804,8 @@ export class Daemon {
       /** Best-effort notification once the session exists, before prompt. Carries its OUTWARD
        *  id (session-concept.md §1.1) — every consumer of this reports it onward. */
       onSessionReady?: (sessionId: string) => void
+      /** Called once, just before the prompt is sent. */
+      onTurnStarted?: () => void
     },
     githubReply?: CodeHostReplyTarget,
     hookContext?: HookDispatchContext,
@@ -22015,6 +22030,7 @@ export class Daemon {
           ...(callMeta ? { callMeta } : {}),
           ...(hookContext ? { hookContext } : {}),
           ...(opts?.onSessionReady ? { onSessionReady: opts.onSessionReady } : {}),
+          ...(opts?.onTurnStarted ? { onTurnStarted: opts.onTurnStarted } : {}),
           ...(opts?.admissionWait ? { admissionWait: opts.admissionWait } : {}),
           ...(opts?.deferObservedInbound ? { deferObservedInbound: true } : {}),
           ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
@@ -22936,6 +22952,7 @@ export class Daemon {
       if (surfaceContext) handled.blocks.push({ type: 'text', text: surfaceContext })
       const prompt = await this.prePromptContextRefresh(p, run, sessionId, handled)
       this.emitTurnStarted(run, host, sessionId, created, prompt.finalCaptureInput, turnModel)
+      entry.onTurnStarted?.()
       const outcome = await this.runPromptLoop(p, run, {
         ...prompt,
         host,
@@ -33313,14 +33330,18 @@ export class Daemon {
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
     // and start no turn.
-    if (
-      this.draining ||
-      this.drainingAgents.has(agentId) ||
-      this.paused(agentId) ||
-      (this.safetyDrainBlocks(agentId, key) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
-    ) {
-      this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
-      return { message: null, postAttempted: false }
+    const gate = this.paused(agentId)
+      ? 'agent is paused'
+      : this.draining
+        ? 'daemon is draining'
+        : this.drainingAgents.has(agentId)
+          ? 'agent is draining'
+          : this.safetyDrainBlocks(agentId, key) && !this.safetyDrainAllows(agentId, key, safetyReviewLane)
+            ? 'interrupted turns are still stopping'
+            : undefined
+    if (gate) {
+      this.log.info(`${label}: skipped for agent "${agentId}" (${gate})`)
+      return { message: null, postAttempted: false, notStarted: { status: 'skipped', reason: gate } }
     }
     let postAttempted = false
     if (target?.channel) {
@@ -33385,13 +33406,13 @@ export class Daemon {
                 this.log.warn(
                   `${label}: posted trigger to ${target.channel}, but failed to create its required thread (${formatErr(err)}) — session not started`
                 )
-                return { message: null, postAttempted }
+                return { message: null, postAttempted, notStarted: { status: 'failed', reason: THREAD_NOT_CREATED } }
               }
               if (!thread) {
                 this.log.warn(
                   `${label}: posted trigger to ${target.channel}, but its required thread was not created — session not started`
                 )
-                return { message: null, postAttempted }
+                return { message: null, postAttempted, notStarted: { status: 'failed', reason: THREAD_NOT_CREATED } }
               }
             } else {
               thread = threadKeyForPost(
@@ -33452,20 +33473,33 @@ export class Daemon {
     anchorText: string,
     label: string,
     onSessionReady?: (sessionId: string) => void,
-    onAnchored?: (channel: string, thread: string) => void
+    onAnchored?: (channel: string, thread: string) => void,
+    onNotStarted?: (outcome: TriggerNotStarted) => void
   ): Promise<string | null> {
-    const { message: anchored } = await this.anchorTrigger(agentId, msg, target, anchorText, label)
-    if (!anchored) return null
+    const { message: anchored, notStarted } = await this.anchorTrigger(agentId, msg, target, anchorText, label)
+    if (!anchored) {
+      onNotStarted?.(notStarted ?? GATE_DROPPED)
+      return null
+    }
     if (target?.channel && anchored.transcriptTs && anchored.thread) onAnchored?.(target.channel, anchored.thread)
+    let turnStarted = false
     // Same integration for the session's replies as for the anchor.
-    return this.dispatch(
+    const sessionId = await this.dispatch(
       agentId,
       anchored,
       target?.integrationId,
       undefined,
       undefined,
-      onSessionReady ? { onSessionReady } : undefined
+      onSessionReady || onNotStarted
+        ? {
+            ...(onSessionReady ? { onSessionReady } : {}),
+            ...(onNotStarted ? { onTurnStarted: () => void (turnStarted = true) } : {})
+          }
+        : undefined
     )
+    // A null after the prompt was sent is a cancelled turn that may have done work, never a skip.
+    if (sessionId === null && !turnStarted) onNotStarted?.(GATE_DROPPED)
+    return sessionId
   }
 
   /**
@@ -33570,7 +33604,9 @@ export class Daemon {
         (channel, thread) =>
           void this.store.workCanvases
             .noteAnchor(agentId, { cronId: cron.id, channel, thread, firedAt })
-            .catch((err) => this.log.warn(`cron anchor record failed: ${formatErr(err)}`))
+            .catch((err) => this.log.warn(`cron anchor record failed: ${formatErr(err)}`)),
+        // A fire that never starts a turn still closes its run, so the CP's reaper does not label it a daemon outage.
+        (outcome) => report({ ...outcome, durationMs: Math.max(0, this.clock.now() - firedAt) })
       )
       if (sessionId !== null)
         report({
@@ -33595,6 +33631,8 @@ export class Daemon {
     update: Omit<CronReport, 'cronId' | 'agentId' | 'firedAt'> = {}
   ): void {
     if (msg.source !== 'cron' || !msg.cronRun) return
+    // An older CP's decoder rejects `skipped`; it keeps closing such a run through its reaper.
+    if (update.status === 'skipped' && this.cpClient?.supportsServerFeature?.(CRON_RUN_SKIPPED_FEATURE) !== true) return
     const report = { ...msg.cronRun, agentId, ...update }
     // A terminal outcome is held until the CP ACKs it; fire and session progress stay best-effort.
     if (update.status) void this.cronReportOutbox.record(report)

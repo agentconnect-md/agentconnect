@@ -8,7 +8,10 @@ interface RawRegistryEntry {
 
 // Curated display names and marks; keep ids in sync with the daemon's CURATED_RUNTIME_CATALOG.
 const CURATED_AGENTS: Record<string, { name: string; icon: string | null }> = {
-  'muse-acp': { name: 'Muse Code', icon: null },
+  'muse-acp': {
+    name: 'Muse Code',
+    icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@1.104.0/icons/muse-color.svg'
+  },
   'hermes-agent': {
     name: 'Hermes Agent',
     icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/hermesagent.svg'

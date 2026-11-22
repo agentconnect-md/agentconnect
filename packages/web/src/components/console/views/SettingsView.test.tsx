@@ -160,6 +160,6 @@ describe('session access card', () => {
     await render()
 
     expect(rowNames()).toEqual(['Slack'])
-    expect(host.textContent).toContain('Could not load Slack session access.')
+    expect(host.textContent).toContain("Couldn't load Slack session access.")
   })
 })

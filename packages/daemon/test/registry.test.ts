@@ -207,6 +207,33 @@ describe('cachedRuntimeNames', () => {
 })
 
 describe('resolveRuntimes', () => {
+  it('replaces the standalone Antigravity archive with the native CLI while preserving explicit launchers', async () => {
+    const root = tmpRoot()
+    const standalone = {
+      id: 'antigravity-acp',
+      name: 'Google Antigravity',
+      version: '1.4.5',
+      distribution: {
+        binary: { [platformKey()!]: { archive: 'https://dl.example.test/acp.zip', cmd: './agy_acp_server.par' } }
+      }
+    }
+    const fetchImpl = (async () => new Response(JSON.stringify({ agents: [standalone] }))) as typeof fetch
+    const catalog = await resolveRuntimeCatalog({} as any, root, { fetchImpl })
+    expect(catalog.entries['antigravity-acp']).toEqual({
+      name: 'Google Antigravity',
+      version: '',
+      runtime: { command: 'agy', args: ['acp'], env: [] },
+      source: 'managed',
+      skillsAgentId: null
+    })
+    const explicit = { command: '/custom/antigravity-acp', args: [], env: [] }
+    const overridden = await resolveRuntimeCatalog({ runtimes: { 'antigravity-acp': explicit } } as any, root, {
+      neededRuntimes: ['antigravity-acp'],
+      fetchImpl
+    })
+    expect(overridden.runtimes['antigravity-acp']).toEqual(explicit)
+  })
+
   it('uses the managed Codex build by default while preserving operator overrides', async () => {
     const root = tmpRoot()
     const registry = {

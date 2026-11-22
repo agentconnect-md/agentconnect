@@ -102,7 +102,7 @@ describe('DecisionGateTry', () => {
     const previewGate = vi.spyOn(api, 'previewGate')
     const view = await render(<Try when={{ type: 'boolean', values: [true] }} />)
     // Bound fields fold into one line; the sender id stays a quiet field.
-    expect(view.querySelector('[title^="Filled in here"]')?.getAttribute('title')).toContain('agent')
+    expect(view.querySelector('[title^="Set automatically"]')?.getAttribute('title')).toContain('agent')
     await click(view.querySelector('button[aria-label="Add a history message"]') ?? undefined)
     await type(view.querySelector('textarea[aria-label="History message 1"]'), 'Is anyone around?')
     await type(view.querySelector(CURRENT), ' Please help ')
@@ -135,11 +135,13 @@ describe('DecisionGateTry', () => {
     })
     await type(raw, JSON.stringify({ agent: { name: 'x' }, currentMessage: { text: 'Hi' } }))
     await click(button(view, 'Try'))
-    expect(view.querySelector('[role="alert"]')?.textContent).toContain('"agent" is filled in here')
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('"agent" is set automatically')
     expect(previewGate).not.toHaveBeenCalled()
     await type(raw, '{ "currentMessage": { "text": "Hi there", "threadId": "t" } }')
     await click(button(view, 'Fields'))
-    expect(view.querySelector('[role="alert"]')?.textContent).toContain('"currentMessage.threadId" is filled in here')
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain(
+      '"currentMessage.threadId" is set automatically'
+    )
     await type(raw, '{ "currentMessage": { "text": "Hi there" } }')
     await click(button(view, 'Fields'))
     expect(view.querySelector<HTMLTextAreaElement>(CURRENT)?.value).toBe('Hi there')
@@ -285,7 +287,7 @@ describe('DecisionGateTry', () => {
     await click(button(view, 'Try'))
     const result = view.querySelector('[data-testid="try-result"]')!
     expect(result.textContent).toContain('Evaluation unavailable')
-    expect(result.textContent).toContain('continue to Moderator')
+    expect(result.textContent).toContain('would still go to Moderator')
     expect(result.textContent).not.toContain('Would skip')
   })
 

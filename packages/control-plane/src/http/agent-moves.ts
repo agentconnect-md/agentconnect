@@ -33,7 +33,8 @@ export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMo
     memberSets: deps.repos.memberSet,
     taskLocks: { sessions: deps.repos.session, stores: deps.repos.memberSet },
     liveness: deps.liveness,
-    ...(deps.recomputeDuties ? { recomputeDuties: deps.recomputeDuties } : {}),
+    // Awaited, never the debounced kick: the target claims the agent's duty right after this returns.
+    ...(deps.recomputeDutiesNow ? { recomputeDuties: deps.recomputeDutiesNow } : {}),
     log
   })
 }

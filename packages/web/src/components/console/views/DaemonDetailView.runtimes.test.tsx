@@ -340,8 +340,8 @@ describe.each([false, true])('one runtime tab per strategy in the daemon’s tab
     expect(tabs.map((tab) => tab.textContent)).toEqual(['Host', 'Sandbox', 'VM'])
     expect(tabs.map((tab) => tab.getAttribute('title'))).toEqual([
       'No isolation boundary: sessions run directly on the machine.',
-      'SRT: process isolation with bubblewrap, on Linux.',
-      'microsandbox: one microVM per session. Needs KVM.'
+      'SRT: process isolation with bubblewrap on Linux.',
+      'microsandbox: one microVM per session (requires KVM).'
     ])
     expect(control()?.querySelector('[aria-pressed="true"]')?.textContent).toBe('Host')
   })

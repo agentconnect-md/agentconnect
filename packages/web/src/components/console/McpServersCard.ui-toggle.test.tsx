@@ -116,7 +116,7 @@ describe('a header a capability request asks for', () => {
       )
     )
     expect(host.textContent).toContain('The agent never sees this value')
-    expect(host.textContent).toContain('enter X-Org again')
+    expect(host.textContent).toContain('Re-enter X-Org')
     const names = [...host.querySelectorAll<HTMLInputElement>('input[aria-label="Header name"]')].map((i) => i.value)
     expect(names).toEqual(['X-Api-Key', 'X-Org'])
     const save = () => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save')!

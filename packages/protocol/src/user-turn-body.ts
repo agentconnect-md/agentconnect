@@ -106,6 +106,8 @@ export const SessionMessageTurnFacts = z.object({
   inReplyTo: z.string().optional(),
   replyRequested: z.boolean().optional(),
   startsTask: z.boolean().optional(),
+  /** On a look-back item (assistant-mode.md §5.20): coordinator input only, never a row of a conversation view. */
+  lookBack: z.literal(true).optional(),
   /** The guidance the model received around the body, verbatim, in order. */
   notes: z.array(z.string()).optional()
 })

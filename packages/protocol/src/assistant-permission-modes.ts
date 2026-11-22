@@ -24,9 +24,11 @@ const CODEX_PERMISSION_MODES: AssistantModePermissionModes = Object.freeze({
 
 // Every mode below is classified by the description the runtime itself reports; a mode whose description leaves approvals unclear is absent.
 
-// Google Antigravity: `auto_edit` approves only file edits, `yolo` every tool.
+// Native Antigravity CLI modes; retain standalone mode classifications for explicit operator launchers.
 const ANTIGRAVITY_PERMISSION_MODES: AssistantModePermissionModes = Object.freeze({
   default: 'asks',
+  'accept-edits': 'asks',
+  auto: 'auto',
   auto_edit: 'asks',
   yolo: 'full-access'
 })

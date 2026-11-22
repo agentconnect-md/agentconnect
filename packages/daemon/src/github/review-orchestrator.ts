@@ -102,9 +102,17 @@ export interface GithubHookDispatchOptions {
 /** The relay's suffix on a host copy's msgId, so its ack never collides with the host agent's own fire. */
 export const HOOK_ROUTE_MSG_SUFFIX = ':route'
 
+/** Why a fire ended before a turn started: a gate skipped it, or its anchor could not be set up. */
+export interface TriggerNotStarted {
+  status: 'skipped' | 'failed'
+  reason: string
+}
+
 export interface AnchorTriggerResult {
   message: NormalizedMessage | null
   postAttempted: boolean
+  /** Set whenever `message` is null. */
+  notStarted?: TriggerNotStarted
 }
 
 /** Exactly what the GitHub review orchestration touches on the Daemon — nothing wider. */

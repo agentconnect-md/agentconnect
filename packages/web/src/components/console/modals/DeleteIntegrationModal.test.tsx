@@ -40,7 +40,7 @@ describe('DeleteIntegrationModal', () => {
   it('keeps the bot identity freed for reuse by default', async () => {
     for (const bot of [null, {}, { releasedWhenFreed: false }]) {
       const text = await render(bot)
-      expect(text).toContain('freed for reuse')
+      expect(text).toContain('available for reuse')
       await act(async () => root!.unmount())
       host?.remove()
       root = undefined
@@ -49,7 +49,7 @@ describe('DeleteIntegrationModal', () => {
 
   it('says the identity is deleted when its platform releases a freed bot and this is its last install', async () => {
     const text = await render({ releasedWhenFreed: true })
-    expect(text).toContain('The bot identity is deleted with it')
+    expect(text).toContain('Its bot identity will also be deleted')
     expect(text).not.toContain('Settings → Bots')
   })
 
@@ -59,13 +59,13 @@ describe('DeleteIntegrationModal', () => {
       { ...integration, platform: 'email', name: 'help@example.test' }
     )
     expect(text).toContain(
-      'help@example.test will be removed, and its address is retired for good: it is never issued again.'
+      'help@example.test will be removed and its address permanently retired. It can never be issued again.'
     )
-    expect(text).not.toContain('connected again')
+    expect(text).not.toContain('reconnect')
   })
 
   it('keeps the default while another agent still holds the bot', async () => {
     const text = await render({ releasedWhenFreed: true, agentIds: ['agent-a', 'agent-b'] })
-    expect(text).toContain('freed for reuse')
+    expect(text).toContain('available for reuse')
   })
 })

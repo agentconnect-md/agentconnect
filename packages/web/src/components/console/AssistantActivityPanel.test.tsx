@@ -531,7 +531,9 @@ describe('follow-ups in Activity', () => {
     const row = taskRow(host, 'sid-follow')
     await click(button(row, 'End'))
     expect(api.stopAssistantSubsession).not.toHaveBeenCalled()
-    expect(row.querySelector('[role="group"]')?.textContent).toContain('End this follow-up? The agent stops checking.')
+    expect(row.querySelector('[role="group"]')?.textContent).toContain(
+      'End this follow-up? The agent will stop checking.'
+    )
     const reads = api.fetchAssistantSubsessions.mock.calls.length
     await click(button(row.querySelector('[role="group"]')!, 'End follow-up'))
     expect(api.stopAssistantSubsession).toHaveBeenCalledWith(AGENT, 'sid-follow')
@@ -636,7 +638,7 @@ describe('Waiting for you', () => {
     ],
     [
       { status: 'outcome_unknown', failure: 'socket hang up' },
-      'Not sure this went through. Check the conversation; it won’t be posted again.'
+      'Not sure this went through. Check the conversation. It won’t be posted again.'
     ]
   ])('says when a post failed or may not have gone through', async (outcome, text) => {
     mocks.outcome = outcome
@@ -701,7 +703,7 @@ describe('Waiting for you', () => {
     expect(row).not.toBeNull()
     expect(row.textContent).toContain('Message to #support')
     expect(row.querySelector('[data-assistant-draft-outcome]')?.textContent).toBe(
-      'Couldn’t confirm the decision, and it is no longer waiting. Check the destination; it may have been posted.'
+      'Couldn’t confirm the decision, and it’s no longer waiting. Check the destination, as it may have been posted.'
     )
     expect(actions(row)).toEqual([])
   })
@@ -814,18 +816,18 @@ describe('Waiting for you', () => {
     expect(row.querySelector('[data-proposed-follow-up]')).toBeNull()
     await click(row.querySelector('[data-preview-line]'))
     const proposed = row.querySelector('[data-proposed-follow-up]')!
-    expect(proposed.textContent).toContain('Takes this follow-up')
+    expect(proposed.textContent).toContain('Handles this follow-up')
     expect(proposed.textContent).toContain('The 2.6 release date')
     expect(proposed.textContent).toContain('A date is posted.')
     expect(proposed.textContent).not.toContain('Done when')
     expect(proposed.textContent).toContain('First check')
     await click(button(row, 'Approve'))
     expect(row.querySelector('[role="group"]')?.textContent).toContain(
-      'Take this follow-up in #support? It is followed up for you, and nothing else runs.'
+      'Take this follow-up in #support? The agent will follow up for you, and nothing else will run.'
     )
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     const outcome = row.querySelector('[data-assistant-draft-outcome]')!
-    expect(outcome.textContent).toContain('Approved. The follow-up was taken; it reports back in #support.')
+    expect(outcome.textContent).toContain('Approved. The follow-up was taken and will report back in #support.')
     expect(outcome.querySelector('a')?.getAttribute('href')).toBe('/example/sessions/sid-support')
     expect(outcome.querySelector('a')?.textContent).toBe('See it in its conversation’s Tasks')
   })
@@ -838,7 +840,7 @@ describe('Waiting for you', () => {
     await click(button(row, 'Approve'))
     await click(button(row.querySelector('[role="group"]')!, 'Approve'))
     const outcome = row.querySelector('[data-assistant-draft-outcome]')!
-    expect(outcome.textContent).toBe('Approved. The follow-up was taken; it reports back in #support.')
+    expect(outcome.textContent).toBe('Approved. The follow-up was taken and will report back in #support.')
     expect(outcome.querySelector('a')).toBeNull()
   })
 
@@ -946,7 +948,7 @@ describe('the Activity view on a phone and in Chinese', () => {
     expect(meta(taskRow(host, 'sid-follow'))).toContain('下次检查：')
     expect(button(taskRow(host, 'sid-follow'), '结束')).toBeTruthy()
     expect(taskRow(host, 'sid-follow').querySelector('[data-follow-up-watch]')?.textContent).toBe(
-      '已不再关注：没有这个拉取请求、合并请求或 issue'
+      '已不再关注：找不到对应的拉取请求、合并请求或 Issue'
     )
     expect(host.querySelector('[data-finished-toggle]')?.textContent).toBe('2 个已结束')
   })

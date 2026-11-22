@@ -366,7 +366,7 @@ describe('organization Skills library', () => {
 
     const inputs = () => [...host.querySelectorAll<HTMLInputElement>('.modalbody input.inp')]
     await typeInto(inputs()[0]!, 'http://git.example.test/ops/kit')
-    expect(host.querySelector('.modalbody')?.textContent).toContain('Enter a plain https:// address')
+    expect(host.querySelector('.modalbody')?.textContent).toContain('Enter a plain https:// URL')
     expect(buttonWithText('Check repository', '.modalbody').disabled).toBe(true)
 
     await typeInto(inputs()[0]!, 'https://git.example.test/ops/kit')
