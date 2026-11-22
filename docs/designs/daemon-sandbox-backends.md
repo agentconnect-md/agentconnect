@@ -913,10 +913,9 @@ base build and an explicit digest update; release builds reuse these pinned base
 even with an empty build cache.
 
 `docker/runtime-sandbox.Dockerfile` owns the application versions and installation.
-Both images first add Antigravity in an independent, fixed-version layer, then
-agent-browser, then the other harnesses. Antigravity publishes no linux/arm64
-build, so the pool image's arm64 variant leaves that layer empty and bakes a roster
-without it: each pool architecture has its own roster file. Routine application upgrades change
+The full image first adds Antigravity in an independent, fixed-version layer,
+then agent-browser, then the other harnesses. The pool image starts with
+agent-browser and then installs its harnesses. Routine application upgrades change
 these exact version pins and use the normal release image build, without publishing
 another base. Standalone downloads also pin SHA-256. The shim remains an independent
 compilation stage whose small helper payload is copied last into both final images;
@@ -928,7 +927,7 @@ The image workflow creates this alias even when it reuses an older component
 image. The pool continues to use the separate `runtime-sandbox` image. Both targets
 share the same helper payload over their respective application layers. Additional
 self-hosted runtimes belong in the full application stage. The pool provides Claude Code,
-Codex, DeepSeek Harness, OpenCode, and on amd64 Antigravity. The full image additionally installs
+Codex, DeepSeek Harness, and OpenCode. The full image additionally installs Antigravity,
 Cline, Devin, GitHub Copilot, goose, Grok Build, Kilo, Oh My Pi, pi, Qwen Code,
 Qoder CLI, and Qoder CN CLI. The `qoder` compatibility ID resolves to `qoder-cli`
 before host discovery and image projection. Both IDs share one native launch
