@@ -31,7 +31,7 @@ const keyJson = (id: string) =>
 const APP: RcGoogleChatDeploymentApp = { projectNumber: PROJECT_NUMBER, serviceAccountKey: keyJson('kid-1') }
 
 // A fake Google holding one uploaded attachment in the row's own Space and one in a foreign Space.
-function google(bytes = Buffer.from('attachment bytes')) {
+function google(bytes: Buffer | ReadableStream<Uint8Array> = Buffer.from('attachment bytes')) {
   const paths: string[] = []
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = new URL(String(input))
@@ -48,7 +48,9 @@ function google(bytes = Buffer.from('attachment bytes')) {
         attachmentDataRef: { resourceName: 'RES-1' }
       })
     if (url.pathname === '/v1/media/RES-1')
-      return new Response(bytes, { headers: { 'content-type': 'application/pdf' } })
+      return new Response(bytes as ConstructorParameters<typeof Response>[0], {
+        headers: { 'content-type': 'application/pdf' }
+      })
     return new Response(null, { status: 404 })
   }) as typeof fetch
   return { fetchImpl, paths }
@@ -132,5 +134,22 @@ describe('the deployment app’s attachment download', () => {
     now -= GOOGLE_CHAT_MEDIA_TICKET_TTL_MS + 1
     egress.update({ ...APP, serviceAccountKey: keyJson('kid-2') })
     expect((await served(egress, url)).statusCode).toBe(404)
+  })
+
+  it('carries a Google body that fails after its headers to the response without an unhandled error', async () => {
+    const failing = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial'))
+        setTimeout(() => controller.error(new Error('Google disconnected')), 5)
+      }
+    })
+    const { fetchImpl } = google(failing)
+    const egress = new GoogleChatRelayEgress(APP, fetchImpl)
+    const ticket = ticketOf(
+      await egress.mediaTicket(ROW, { op: 'media-ticket', attachment: ATTACHMENT, maxBytes: 1024 }, RELAY)
+    )
+    const res = await served(egress, ticket.url!).catch((err: unknown) => err)
+    // The relay stays up and never answers the cut-off body as a complete file.
+    expect(res instanceof Error || (res as { rawPayload: Buffer }).rawPayload.toString() !== 'partial').toBe(true)
   })
 })

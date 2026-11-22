@@ -1,5 +1,5 @@
 // The deployment app's ticketed attachment download (google-chat-integration.md §5): Google's bytes pass through, bounded, and are never kept.
-import { Readable, Transform } from 'node:stream'
+import { Readable, Transform, pipeline } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import type { FastifyInstance } from 'fastify'
 import { GOOGLE_CHAT_MEDIA_PATH } from '@agentconnect.md/protocol'
@@ -40,7 +40,11 @@ export function registerGoogleChatMediaRoute(app: FastifyInstance, deps: GoogleC
       await response.body.cancel().catch(() => {})
       return reply.code(413).send()
     }
-    const body = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>).pipe(bounded(maxBytes))
+    // A pipeline carries an upstream failure to the response and tears down Google's body on a bound failure or a client disconnect.
+    const body = bounded(maxBytes)
+    pipeline(Readable.fromWeb(response.body as WebReadableStream<Uint8Array>), body, (err) => {
+      if (err) deps.log.warn(`googlechat media: download stopped (${err.message})`)
+    })
     return reply
       .header('content-type', response.headers.get('content-type') ?? 'application/octet-stream')
       .header('cache-control', 'no-store')
