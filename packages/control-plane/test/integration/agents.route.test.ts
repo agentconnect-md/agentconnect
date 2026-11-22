@@ -23,6 +23,8 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
+import { CronId } from '../../src/domain/ids.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -1420,6 +1422,39 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
 
     const miss = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${randomUUID()}` })
     expect(miss.statusCode).toBe(404)
+  })
+
+  it('GET /crons and GET /crons/:id carry a failure streak, and null for a schedule that is not failing', async () => {
+    const app = build()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const [failing, healthy] = [randomUUID(), randomUUID()]
+    for (const cronId of [failing, healthy]) {
+      const put = await app.app.inject({
+        method: 'PUT',
+        url: `${ORG}/crons/${cronId}`,
+        payload: { agentId, schedule: '0 9 * * *', trigger: 'daily check', enabled: true }
+      })
+      expect(put.statusCode).toBe(200)
+      expect((put.json() as { failing: unknown }).failing).toBeNull()
+    }
+    const repo = new PgCronRepo(prisma)
+    const at = (day: number) => new Date(`2026-07-0${day}T09:00:00.000Z`)
+    await repo.recordReport(CronId(failing), { firedAt: at(1), status: 'failed', reason: 'Authentication required' })
+    await repo.recordReport(CronId(failing), { firedAt: at(2), status: 'skipped', reason: 'agent is paused' })
+    await repo.recordReport(CronId(failing), { firedAt: at(3), status: 'failed', reason: 'Authentication required' })
+    await repo.recordReport(CronId(healthy), { firedAt: at(1), status: 'failed', reason: 'dispatch failed' })
+    await repo.recordReport(CronId(healthy), { firedAt: at(2), status: 'success' })
+
+    const list = (await app.app.inject({ method: 'GET', url: `${ORG}/crons` })).json() as Array<{
+      id: string
+      failing: { streak: number; since: string; reason: string | null } | null
+    }>
+    const streak = { streak: 2, since: at(1).toISOString(), reason: 'Authentication required' }
+    expect(list.find((c) => c.id === failing)?.failing).toEqual(streak)
+    expect(list.find((c) => c.id === healthy)?.failing).toBeNull()
+    const one = await app.app.inject({ method: 'GET', url: `${ORG}/crons/${failing}` })
+    expect((one.json() as { failing: unknown }).failing).toEqual(streak)
   })
 
   it('PUT /crons (upsert) → GET /crons → DELETE round-trips through the real repo', async () => {

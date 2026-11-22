@@ -321,6 +321,8 @@ interface ConsoleData {
   sessionsLoadingMore: boolean
   daemonsLoading: boolean
   cronsLoading: boolean
+  /** The schedule list has answered at least once; false through a failed first read, unlike `!cronsLoading`. */
+  cronsLoaded: boolean
   loadMoreSessions: () => Promise<void>
   error: string | null
 }
@@ -335,6 +337,7 @@ const RESOURCE_REFRESH_MS = 30_000
 // A stable empty bot list while the first pull is outstanding, so memos keyed on it do not recompute every render.
 const NO_BOTS: BotDto[] = []
 const NO_MCP_PROVIDERS: McpProviderDto[] = []
+const NO_CRONS: CronDto[] = []
 
 const EMPTY_SESSION_FACETS: SessionFacets = {
   agentIds: [],
@@ -886,13 +889,16 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateDaemonLiveness, mutateDaemonCapabilities, mutateCache]
   )
   const {
-    data: realCrons = [],
+    data: cronsData,
     error: cronsError,
     isLoading: cronsIsLoading,
     mutate: mutateCrons
   } = useSWR<CronDto[]>(consoleKeys.crons(orgKey), ([, orgId]) => fetchCrons(orgId as string), {
     refreshInterval: RESOURCE_REFRESH_MS
   })
+  const realCrons = cronsData ?? NO_CRONS
+  // A failed first read ends loading with nothing loaded; only an answered read may resolve a notification.
+  const cronsLoaded = MOCK_MODE || cronsData !== undefined
   const {
     data: realIntegrations,
     error: integrationsError,
@@ -1885,6 +1891,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       sessionsLoading,
       daemonsLoading,
       cronsLoading,
+      cronsLoaded,
       sessionsLoadingMore,
       loadMoreSessions,
       error
@@ -1977,6 +1984,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       loadMoreSessions,
       daemonsLoading,
       cronsLoading,
+      cronsLoaded,
       error
     ]
   )

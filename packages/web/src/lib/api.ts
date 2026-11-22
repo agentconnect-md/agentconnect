@@ -871,6 +871,8 @@ export interface CronDto {
   sharedWith: string[]
   canEdit: boolean
   canManageSharing: boolean
+  // The failures since the last success while the latest closed run failed; absent from an older control plane.
+  failing?: { streak: number; since: string; reason: string | null } | null
 }
 
 // PUT /crons/:id body (idempotent upsert keyed on the cron UUID).

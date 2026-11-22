@@ -3499,7 +3499,9 @@ export const CronDto = z.object({
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // explicit app_user.id audience; owners also have access
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
-  canManageSharing: z.boolean() // visible + non-viewer; gates the sharing control
+  canManageSharing: z.boolean(), // visible + non-viewer; gates the sharing control
+  // Set while the latest closed run failed: the failures since the last success (skipped runs aside), and the latest reason.
+  failing: z.object({ streak: z.number().int(), since: z.string(), reason: z.string().nullable() }).nullable()
 })
 
 // One daemon-reported fire (console run history): `running` until its outcome arrives, or until the CronRunReaper fails a lost one; `skipped` = due but deliberately not run.

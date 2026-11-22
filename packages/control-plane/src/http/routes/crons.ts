@@ -15,7 +15,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { isSyntheticEmail, type AgentRecord, type CronRecord } from '../../persistence/ports.js'
+import { isSyntheticEmail, type AgentRecord, type CronFailureStreak, type CronRecord } from '../../persistence/ports.js'
 import { AgentId, CronId, IntegrationId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
@@ -36,7 +36,7 @@ import {
   type CronDtoT
 } from '../dto/index.js'
 
-function toDto(c: CronRecord, ctx: ViewCtx): CronDtoT {
+function toDto(c: CronRecord, ctx: ViewCtx, failing?: CronFailureStreak): CronDtoT {
   return {
     id: c.id,
     orgId: c.orgId,
@@ -61,12 +61,17 @@ function toDto(c: CronRecord, ctx: ViewCtx): CronDtoT {
     visibility: c.visibility,
     sharedWith: c.sharedWith,
     canEdit: canEdit(c, ctx),
-    canManageSharing: canManageSharing(c, ctx)
+    canManageSharing: canManageSharing(c, ctx),
+    failing: failing ? { streak: failing.streak, since: failing.since.toISOString(), reason: failing.reason } : null
   }
 }
 
 export function cronRoutes(deps: HttpDeps) {
   return async function cronRoutesPlugin(app: FastifyInstance): Promise<void> {
+    /** One schedule's failure streak, for the routes that answer with a single cron. */
+    const failingOf = async (cron: CronRecord): Promise<CronFailureStreak | undefined> =>
+      (await deps.repos.cron.failureStreaks(cron.orgId, [cron.id])).get(cron.id)
+
     const r = app.withTypeProvider<ZodTypeProvider>()
     const refreshMutationAgent = (observed: AgentRecord) => refreshAgentUnderMutation(deps.repos.agent, observed)
 
@@ -235,7 +240,7 @@ export function cronRoutes(deps: HttpDeps) {
                 app.log.warn({ err }, 'capability request: re-evaluation after a cron save failed')
               )
           }
-          return toDto(cron, ctxOf(req))
+          return toDto(cron, ctxOf(req), await failingOf(cron))
         } finally {
           release()
         }
@@ -256,7 +261,8 @@ export function cronRoutes(deps: HttpDeps) {
       async (req) => {
         const ctx = ctxOf(req)
         const rows = await deps.repos.cron.listForOrg(orgOf(req), ctx)
-        return rows.map((c) => toDto(c, ctx))
+        const streaks = await deps.repos.cron.failureStreaks(orgOf(req))
+        return rows.map((c) => toDto(c, ctx, streaks.get(c.id)))
       }
     )
 
@@ -277,7 +283,7 @@ export function cronRoutes(deps: HttpDeps) {
         if (!cron) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'cron not found' })
         }
-        return toDto(cron, ctxOf(req))
+        return toDto(cron, ctxOf(req), await failingOf(cron))
       }
     )
 
@@ -533,7 +539,7 @@ export function cronRoutes(deps: HttpDeps) {
             { visibility: req.body.visibility, sharedWith },
             req.principal?.userId
           )
-          return toDto(cron, ctxOf(req))
+          return toDto(cron, ctxOf(req), await failingOf(cron))
         } finally {
           release()
         }

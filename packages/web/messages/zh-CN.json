@@ -4437,6 +4437,14 @@
       "save": "保存",
       "create": "创建"
     },
+    "failingNotification": {
+      "title": "定时任务持续失败",
+      "message": "“{name}”最近 {count} 次运行均失败。",
+      "messageWithReason": "“{name}”最近 {count} 次运行均失败。最近一次原因：{reason}",
+      "action": "打开定时任务",
+      "resolvedTitle": "定时任务失败已解除",
+      "resolvedMessage": "“{name}”不再失败。"
+    },
     "detail": {
       "scheduleNotFound": "未找到定时任务",
       "agent": "Agent",
