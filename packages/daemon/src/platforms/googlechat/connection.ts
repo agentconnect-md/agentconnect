@@ -1,6 +1,8 @@
 // Google Chat's Layer-1 connection (google-chat-integration.md §5): REST egress with no socket, over the row's transport.
 import { createHash, randomUUID } from 'node:crypto'
 import {
+  GOOGLE_CHAT_MEDIA_MAX_BYTES,
+  WireGoogleChatAttachmentName,
   googleChatCallRequest,
   type IntegrationGoogleChatConfig,
   type WireGoogleChatCall
@@ -46,6 +48,8 @@ const SEND_MAX_ATTEMPTS = 3
 const SEND_RETRY_BASE_MS = 1_000
 const SEND_RETRY_CAP_MS = 5_000
 const MAX_LISTED_SPACES = 200
+/** The attachment bound when a caller sets none, as every other platform's. */
+const GOOGLE_CHAT_DEFAULT_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
 /** One connection's worth of consolidated integrations (§7.5 registry group shape). */
 export interface ConsolidatedGoogleChatGroup {
@@ -222,16 +226,11 @@ export class GoogleChatConnection implements PlatformConnection {
     this.now = deps.now ?? (() => Date.now())
     const config = group.config
     // Chosen by the spec alone: a relay row holds no key, so it has no direct path to fall back on.
+    const fetchImpl = deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
     this.transport =
       'egress' in config
-        ? new RelayGoogleChatTransport(deps.relay, config.botId)
-        : new DirectGoogleChatTransport(
-            config.serviceAccountKey,
-            deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args)),
-            this.now,
-            deps.log,
-            this.integrationId
-          )
+        ? new RelayGoogleChatTransport(deps.relay, config.botId, fetchImpl)
+        : new DirectGoogleChatTransport(config.serviceAccountKey, fetchImpl, this.now, deps.log, this.integrationId)
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.random = deps.random ?? (() => Math.random())
     this.newRequestId = deps.newRequestId ?? (() => randomUUID())
@@ -544,9 +543,18 @@ export class GoogleChatConnection implements PlatformConnection {
     return { id: user }
   }
 
-  /** Attachments are unsupported in both directions (§5): never fetched, never claimed. */
-  async downloadFile(_ref: string, _maxBytes?: number): Promise<Buffer | null> {
-    return null
+  /** An uploaded attachment of the row's own tenant by its resource name (§5); a Drive file, any refusal or an oversized file reads as null. */
+  async downloadFile(ref: string, maxBytes = GOOGLE_CHAT_DEFAULT_ATTACHMENT_BYTES): Promise<Buffer | null> {
+    if (this.stopped || !WireGoogleChatAttachmentName.safeParse(ref).success) return null
+    try {
+      await this.assertOwnTenant(spaceOf(ref))
+      return await this.transport.download(ref, Math.min(maxBytes, GOOGLE_CHAT_MEDIA_MAX_BYTES))
+    } catch (err) {
+      this.deps.log?.warn(
+        `googlechat: integration ${this.integrationId}: attachment not read (${(err as Error).message})`
+      )
+      return null
+    }
   }
 
   // ── REST transport ──

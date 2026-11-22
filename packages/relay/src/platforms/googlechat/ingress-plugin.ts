@@ -12,6 +12,7 @@ import {
   GOOGLE_CHAT_ELICIT_FUNCTION,
   GOOGLE_CHAT_PLATFORM,
   WireGoogleChatCall,
+  WireGoogleChatMediaTicketCall,
   googleChatEventsUrl,
   type RcDeploymentConfig,
   type RdMsgPlatformAction,
@@ -33,6 +34,7 @@ import {
 import { GoogleChatRelayEgress } from './egress.js'
 import { googleChatHelp, googleChatWelcome } from './help.js'
 import { registerGoogleChatHttpIngress } from './http-ingress.js'
+import { registerGoogleChatMediaRoute } from './media.js'
 import { GoogleChatTokenVerifier, bearerToken, unverifiedProjectNumber } from './token.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
@@ -164,15 +166,20 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
   const refused = new UnclaimedTenantMemo()
   let egress: GoogleChatRelayEgress | undefined
   let claimAnchor: RcDeploymentConfig['googleChatAnchor']
+  let publicRelayUrl: string | undefined
   return {
     platformId: GOOGLE_CHAT_PLATFORM,
     verifier,
 
-    // `POST /googlechat/events`, the path the Setup Server publishes; pinned by route-mounts.test.ts.
-    installRoutes: registerGoogleChatHttpIngress,
+    // `POST /googlechat/events`, the path the Setup Server publishes, and the ticketed media download; pinned by route-mounts.test.ts.
+    installRoutes(app, routeDeps) {
+      registerGoogleChatHttpIngress(app, routeDeps)
+      registerGoogleChatMediaRoute(app, { egress: () => egress, log: routeDeps.log })
+    },
 
     deploymentAssignments(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
       claimAnchor = snapshot?.googleChatAnchor
+      publicRelayUrl = snapshot?.publicRelayUrl
       // The deployment app's egress for its customer rows (§10.10), kept in place so a call in flight finishes.
       const app = snapshot?.googleChatApp
       if (!app) egress = undefined
@@ -186,9 +193,12 @@ export function createGoogleChatIngressPlugin(deps: GoogleChatIngressPluginDeps 
       // Only a customer row's daemon asks, so a mismatch is this relay's snapshot trailing another's; nothing was called yet.
       if (!egress || a.apiAppId !== egress.projectNumber || !a.tenantIds?.length)
         return { outcome: 'refused', reason: 'not_deployment_app', retryable: true }
+      const row = { botId: a.botId, tenantIds: a.tenantIds }
+      const ticket = WireGoogleChatMediaTicketCall.safeParse(payload)
+      if (ticket.success) return await egress.mediaTicket(row, ticket.data, publicRelayUrl)
       const call = WireGoogleChatCall.safeParse(payload)
       if (!call.success) return { outcome: 'refused', reason: 'invalid' }
-      return await egress.call({ botId: a.botId, tenantIds: a.tenantIds }, call.data)
+      return await egress.call(row, call.data)
     },
 
     buildIngest(a: BotAssignment, host: RelayIngressHost): GoogleChatHttpIngest | undefined {

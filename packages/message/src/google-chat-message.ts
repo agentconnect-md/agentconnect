@@ -1,7 +1,9 @@
 import {
   GOOGLE_CHAT_ACTION_PARAMETER,
   GOOGLE_CHAT_PLATFORM,
-  type NormalizedPlatformMessage
+  googleChatUploadedResourceName,
+  type NormalizedPlatformMessage,
+  type PlatformAttachment
 } from '@agentconnect.md/protocol'
 
 // Plain-object views of a Workspace add-on's `EventObject` and the Chat resources it embeds; every field is optional because the body is only structurally trusted.
@@ -189,7 +191,7 @@ const CHILD_NAME = {
 }
 const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/i
 const MENTION_TYPES = new Set(['MENTION', 'ADD'])
-const ATTACHMENT_NOTE = '[Attachment not read: Google Chat attachments are not supported.]'
+const ATTACHMENT_SEGMENT = new RegExp(`^${SEGMENT}$`)
 
 function obj(value: unknown): Obj | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Obj) : undefined
@@ -434,10 +436,8 @@ function normalizeMessage(
   const thread = isDm ? space : messageThread
   if (!thread) return { skip: { kind: 'unsupported', reason: 'thread_missing' } }
   const stripped = stripAppMentions(message.text ?? '', message.annotations, context.appUserName)
-  const text =
-    Array.isArray(message.attachment) && message.attachment.length
-      ? [stripped.text, ATTACHMENT_NOTE].filter(Boolean).join('\n')
-      : stripped.text
+  const files = googleChatAttachments(name, message.attachment)
+  const text = [stripped.text, ...files.notes].filter(Boolean).join('\n')
   const platformTimeMs = rfc3339Ms(message.createTime) ?? rfc3339Ms(parts.chat.eventTime)
   const displayName = str(sender.displayName)
   return {
@@ -452,9 +452,41 @@ function normalizeMessage(
       text,
       mentionedBots: stripped.mentioned ? [context.appUserName] : [],
       isDm,
+      ...(files.attachments.length ? { attachments: files.attachments } : {}),
       ...(platformTimeMs !== undefined ? { platformTimeMs } : {})
     }
   }
+}
+
+// An uploaded file of this message is read later by its attachment name; a Drive file or anything unreadable is a note, never a claim (design §5).
+function googleChatAttachments(
+  messageName: string,
+  raw: unknown
+): { attachments: PlatformAttachment[]; notes: string[] } {
+  const attachments: PlatformAttachment[] = []
+  const notes: string[] = []
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const attachment = obj(item)
+    const name = str(attachment?.name)
+    const label = str(attachment?.contentName)?.replace(/[\r\n[\]]+/g, ' ')
+    const prefix = `${messageName}/attachments/`
+    const own = name?.startsWith(prefix) && ATTACHMENT_SEGMENT.test(name.slice(prefix.length)) ? name : undefined
+    if (attachment?.source === 'DRIVE_FILE' || obj(attachment?.driveDataRef)) {
+      notes.push(
+        `[Attachment not read: ${label ? `"${label}" is` : 'it is'} a Google Drive file, which cannot be opened.]`
+      )
+    } else if (own && googleChatUploadedResourceName(attachment)) {
+      attachments.push({
+        id: own,
+        name: label ?? own.slice(own.lastIndexOf('/') + 1),
+        mimeType: str(attachment?.contentType) ?? 'application/octet-stream',
+        sourceUrl: own
+      })
+    } else {
+      notes.push(`[Attachment not read: ${label ? `"${label}"` : 'a file'} could not be fetched from Google Chat.]`)
+    }
+  }
+  return { attachments, notes }
 }
 
 /** Normalize one verified add-on request by the payload it carries; pure, and fail-closed on anything it cannot classify. */

@@ -242,15 +242,47 @@ describe('Google Chat event normalization', () => {
     expect(googleChatPayloadOf(null)).toBeUndefined()
   })
 
-  it('says an attachment was not read rather than dropping or claiming it', () => {
+  it('carries an uploaded file as an attachment named by its resource, attachment-only included', () => {
     const withFile = copy(dmMessage)
-    messageIn(withFile).attachment = [{ name: `${DM}/messages/EXAMPLE_DM_MESSAGE/attachments/EXAMPLE_FILE` }]
-    expect(messageOf(normalize(withFile)).text).toBe(
-      'Summarize the open incidents\n[Attachment not read: Google Chat attachments are not supported.]'
-    )
+    const name = `${DM}/messages/EXAMPLE_DM_MESSAGE/attachments/EXAMPLE_FILE`
+    messageIn(withFile).attachment = [
+      {
+        name,
+        contentName: 'report.pdf',
+        contentType: 'application/pdf',
+        source: 'UPLOADED_CONTENT',
+        attachmentDataRef: { resourceName: 'EXAMPLE_RESOURCE_NAME' }
+      }
+    ]
+    const message = messageOf(normalize(withFile))
+    expect(message.text).toBe('Summarize the open incidents')
+    expect(message.attachments).toEqual([
+      { id: name, name: 'report.pdf', mimeType: 'application/pdf', sourceUrl: name }
+    ])
     messageIn(withFile).text = ''
-    expect(messageOf(normalize(withFile)).text).toBe(
-      '[Attachment not read: Google Chat attachments are not supported.]'
+    expect(messageOf(normalize(withFile)).attachments).toHaveLength(1)
+  })
+
+  it('says a Drive file or an unreadable attachment was not read rather than claiming it', () => {
+    const withFile = copy(dmMessage)
+    messageIn(withFile).attachment = [
+      {
+        name: `${DM}/messages/EXAMPLE_DM_MESSAGE/attachments/EXAMPLE_DRIVE`,
+        contentName: 'plan',
+        source: 'DRIVE_FILE',
+        driveDataRef: { driveFileId: 'EXAMPLE_DRIVE_ID' }
+      },
+      {
+        name: `${DM}/messages/OTHER_MESSAGE/attachments/EXAMPLE_FILE`,
+        attachmentDataRef: { resourceName: 'EXAMPLE_RESOURCE_NAME' }
+      }
+    ]
+    const message = messageOf(normalize(withFile))
+    expect(message.attachments).toBeUndefined()
+    expect(message.text).toBe(
+      'Summarize the open incidents\n' +
+        '[Attachment not read: "plan" is a Google Drive file, which cannot be opened.]\n' +
+        '[Attachment not read: a file could not be fetched from Google Chat.]'
     )
   })
 

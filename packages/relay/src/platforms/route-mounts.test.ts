@@ -29,14 +29,15 @@ import type { RelayIngressRouteDeps } from './contract.js'
 
 /** TODAY'S TABLE — the routes `index.ts` registered when it named the two
  *  register functions itself. `HEAD` (Fastify's automatic twin of every GET) is
- *  omitted; there are no GETs on this seam. */
+ *  omitted. */
 const EXPECTED_MOUNTS: Record<string, string[]> = {
   slack: ['POST /slack/events', 'POST /slack/interactions'],
   feishu: ['POST /feishu/events'],
   // One static, shared URL — a Linear app configures exactly one webhook endpoint.
   linear: ['POST /linear/events'],
   // The HTTPS endpoint the Setup Server tells the operator to enter in the Chat app configuration.
-  googlechat: ['POST /googlechat/events'],
+  // …and the ticketed attachment download a daemon of the deployment app's row reads from.
+  googlechat: ['POST /googlechat/events', 'GET /googlechat/media/*'],
   // The messaging endpoint the admin enters in the Teams bot registration.
   msteams: ['POST /msteams/messages'],
   // The inbound URL the Setup Server tells the operator to configure the ingress Worker with.

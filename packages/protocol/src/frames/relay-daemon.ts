@@ -915,6 +915,9 @@ const GoogleChatSpaceName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}`)
 const GoogleChatMessageName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}/messages/${GOOGLE_CHAT_SEGMENT}`)
 const GoogleChatThreadName = googleChatName(`spaces/${GOOGLE_CHAT_SEGMENT}/threads/${GOOGLE_CHAT_SEGMENT}`)
 const GoogleChatUserName = googleChatName(`users/${GOOGLE_CHAT_SEGMENT}`)
+const GoogleChatAttachmentName = googleChatName(
+  `spaces/${GOOGLE_CHAT_SEGMENT}/messages/${GOOGLE_CHAT_SEGMENT}/attachments/${GOOGLE_CHAT_SEGMENT}`
+)
 const GoogleChatClientId = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/)
 const GoogleChatCards = z.array(z.record(z.string(), z.unknown())).max(100)
 const GoogleChatText = z.string().max(40_000)
@@ -936,6 +939,7 @@ export const WireGoogleChatCall = z.discriminatedUnion('op', [
   z.object({ op: z.literal('patch-cards'), message: GoogleChatMessageName, cardsV2: GoogleChatCards }),
   z.object({ op: z.literal('delete-message'), message: GoogleChatMessageName }),
   z.object({ op: z.literal('get-message'), message: GoogleChatMessageName }),
+  z.object({ op: z.literal('get-attachment'), attachment: GoogleChatAttachmentName }),
   z.object({ op: z.literal('get-space'), space: GoogleChatSpaceName }),
   z.object({ op: z.literal('list-dm-humans'), space: GoogleChatSpaceName }),
   z.object({
@@ -955,6 +959,45 @@ export const WireGoogleChatCallResult = z.object({
   retryAfterMs: z.number().int().nonnegative().optional()
 })
 export type WireGoogleChatCallResult = z.infer<typeof WireGoogleChatCallResult>
+
+/** A Google Chat attachment's resource name, by which a direct download and a relay ticket both name the file. */
+export const WireGoogleChatAttachmentName = GoogleChatAttachmentName
+
+/** The most bytes one attachment download carries, whatever a daemon's own limit. */
+export const GOOGLE_CHAT_MEDIA_MAX_BYTES = 64 * 1024 * 1024
+
+/** A deployment app's row asks the relay for a short-lived ticket to stream one uploaded attachment (§5); the relay fences the attachment's Space first. */
+export const WireGoogleChatMediaTicketCall = z.object({
+  op: z.literal('media-ticket'),
+  attachment: GoogleChatAttachmentName,
+  maxBytes: z.number().int().positive().max(GOOGLE_CHAT_MEDIA_MAX_BYTES)
+})
+export type WireGoogleChatMediaTicketCall = z.infer<typeof WireGoogleChatMediaTicketCall>
+
+/** The relay's answer: the URL to GET the bytes from on success, else Google's own status for the attachment read. */
+export const WireGoogleChatMediaTicketResult = z.object({
+  status: z.number().int().min(100).max(599),
+  url: z.string().url().max(8192).optional(),
+  body: z.record(z.string(), z.unknown()).optional(),
+  retryAfterMs: z.number().int().nonnegative().optional()
+})
+export type WireGoogleChatMediaTicketResult = z.infer<typeof WireGoogleChatMediaTicketResult>
+
+/** An attachment resource's uploaded-content reference; a Drive file has none (§5). */
+export function googleChatUploadedResourceName(attachment: Record<string, unknown> | undefined): string | undefined {
+  if (!attachment || attachment.source === 'DRIVE_FILE') return undefined
+  const ref = attachment.attachmentDataRef
+  const name =
+    ref !== null && typeof ref === 'object' && !Array.isArray(ref)
+      ? (ref as Record<string, unknown>).resourceName
+      : undefined
+  return typeof name === 'string' && /^\S{1,4096}$/.test(name) ? name : undefined
+}
+
+/** The `media.download` request for an uploaded attachment's resource name. */
+export function googleChatMediaRequest(resourceName: string): GoogleChatHttpRequest {
+  return { method: 'GET', path: `media/${encodeGoogleChatName(resourceName)}`, query: { alt: 'media' } }
+}
 
 /** One Chat API request, relative to the API root. */
 export interface GoogleChatHttpRequest {
@@ -1005,6 +1048,8 @@ export function googleChatCallRequest(call: WireGoogleChatCall): GoogleChatHttpR
       return { method: 'DELETE', path: encodeGoogleChatName(call.message) }
     case 'get-message':
       return { method: 'GET', path: encodeGoogleChatName(call.message) }
+    case 'get-attachment':
+      return { method: 'GET', path: encodeGoogleChatName(call.attachment) }
     case 'get-space':
       return { method: 'GET', path: encodeGoogleChatName(call.space) }
     case 'list-dm-humans':
