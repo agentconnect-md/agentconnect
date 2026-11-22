@@ -4387,12 +4387,13 @@ ended; who stopped it is written only into the transcript.
 - **Delivery.** Each item is its task's report (`deliverDaemonReport` with the task's session as the
   caller and `kind="look back"`), replying in the thread the task's latest turn delivered to in the
   place, or, for a task working in a room it holds, in the thread that asked for the room. An item
-  is the coordinator's input only: conversation views, thread reply counts and the transcript
-  reads behind `recall` and `readTask` leave out a row the agent delivered to itself whose text
-  starts `[look back] Task `, so a place sees what the coordinator did with it (a reminder, a round
-  of the task), never the item. The daemon holds the coordinator's session gate while it admits a
-  look's items, so an idle coordinator takes them in one turn; a busy one takes them in its next
-  batch.
+  is the coordinator's input only: its turn body carries `sessionMessage.lookBack`, and
+  conversation views, thread reply counts and the transcript reads behind `recall` and `readTask`
+  leave out a row whose body carries it, so a place sees what the coordinator did with it (a
+  reminder, a round of the task), never the item. A coordinator batch writes each folded member's
+  body onto its row, as the session's ingest does for the batch's head. The daemon holds the
+  coordinator's session gate while it admits a look's items, so an idle coordinator takes them in
+  one turn; a busy one takes them in its next batch.
 - **A stale item.** `replyToMessage` and `messageTask` on an item read the task's row and its mute
   latch again (`lookBackStale`) and are refused when the task closed, was stopped, heard from a
   person or ran a round after the look listed it; the wake itself reads the stop mark once more.

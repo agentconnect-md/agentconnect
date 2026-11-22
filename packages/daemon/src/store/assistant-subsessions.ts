@@ -180,9 +180,6 @@ export const ASSISTANT_TASK_OPENED_SCHEMA = `
       );
 `
 
-/** How every look-back item's text begins (assistant-mode.md §5.20), which conversation views leave out. */
-export const LOOK_BACK_ITEM_PREFIX = '[look back] Task '
-
 /** The task row's columns for looking back (assistant-mode.md §5.20). */
 export const LOOK_BACK_COLUMN_TYPES: readonly (readonly [string, string])[] = [
   ['lookedAt', 'INTEGER'],

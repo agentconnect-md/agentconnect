@@ -11,7 +11,7 @@ import { executeTool } from '../src/mcp/ops.js'
 import { ASSISTANT_REMINDER_TOOLS } from '../src/mcp/ops/assistant-reminders.js'
 import { isCoordinatorCoordinate } from '../src/session/append-coordinate.js'
 import { checkCoordinate } from '../src/session/subsession-coordinate.js'
-import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey, type TranscriptRow } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
@@ -680,6 +680,13 @@ describe('looking back at a place’s quiet tasks', () => {
       }
       const page = await d.store.transcriptPageForAgent(scope_, null, 50)
       expect(page.rows.filter((row: { text: string }) => row.text.includes('[look back]'))).toEqual([])
+    }
+    // Each item's own row carries the flag, the one folded in behind the batch's head included.
+    for (const thread of ['1.1', '2.2']) {
+      const { rows } = await d.store.transcriptPage(transcriptChannelKey('C1', scope), thread, null, 50, 'bot-a')
+      const items = rows.filter((row: TranscriptRow) => row.text.startsWith('[look back] Task '))
+      expect(items).toHaveLength(1)
+      expect(JSON.parse(items[0]!.body ?? '{}')).toMatchObject({ sessionMessage: { kind: 'report', lookBack: true } })
     }
     expect(coordinatorPrompts[0]).toContain('Last person to write in its threads: Alice (U0ALICE), at ')
     expect(outcomes).toEqual([expect.objectContaining({ ok: true, taskId: keys[0] })])

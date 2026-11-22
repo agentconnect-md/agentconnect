@@ -16314,7 +16314,9 @@ export class Daemon {
         continue
       }
       next.admissionWait = undefined
-      if (next.deferObservedInbound) await this.admitInbound(next.msg, next.agentId)
+      // Only the head goes through the session's ingest, so each folded message's row gets its prompt and facts here.
+      if (next.deferObservedInbound || (next.msg.turnBody && originKindOf(next.msg.platform) === 'chat'))
+        await this.admitInbound(next.msg, next.agentId, { withBody: true })
       batch.push(next)
       // Before the model sees it, so every read and write of the turn is judged by every sender.
       this.noteFoldedMessage(key, next)
@@ -19880,7 +19882,11 @@ export class Daemon {
 
   /** Step 6 (message-intake.md §5): the step-1 row plus THIS agent's admission at its own session
    *  coordinate — an idempotent upgrade, since the row dedups and the admission is INSERT OR IGNORE. */
-  private async admitInbound(msg: NormalizedMessage, agentId: string): Promise<void> {
+  private async admitInbound(
+    msg: NormalizedMessage,
+    agentId: string,
+    opts: { withBody?: boolean } = {}
+  ): Promise<void> {
     const { thread, ts } = transcriptCoords(msg)
     const mention = attachmentMention(msg.attachments)
     await this.threadContext.observeInbound({
@@ -19901,7 +19907,8 @@ export class Daemon {
       ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
-      // Bodyless for the same reason as step 1: the authoritative ingest persists the prompt.
+      // Bodyless unless asked, as step 1: the authoritative ingest persists the prompt, which a coordinator batch's members never reach.
+      ...(opts.withBody && msg.turnBody ? { body: JSON.stringify(msg.turnBody) } : {}),
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {}),
       ...(this.isTrustedAgentBotPost(msg) ? { trustedAgentBot: true } : {})
     })

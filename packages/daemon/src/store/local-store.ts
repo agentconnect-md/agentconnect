@@ -15,8 +15,7 @@ import {
   ASSISTANT_SUBSESSION_THREAD_SCHEMA,
   ASSISTANT_TASK_OPENED_SCHEMA,
   AssistantSubsessionIndex,
-  LOOK_BACK_COLUMN_TYPES,
-  LOOK_BACK_ITEM_PREFIX
+  LOOK_BACK_COLUMN_TYPES
 } from './assistant-subsessions.js'
 import { CLOSE_TASK } from './closed-tasks.js'
 import {
@@ -761,9 +760,8 @@ const THREADS_AGENTS_TOOK_PART_IN_SQL = `SELECT t.thread FROM transcript t
 // A coordinator's own post in a thread (`UserTurnBody.threadPost`): a message of the thread, not output of its turn (webchat-threads.md §6).
 const THREAD_POST_SQL = `(transcript.kind = 'text' AND COALESCE(transcript.body, '') LIKE '%"threadPost":true%')`
 
-// A look-back item (assistant-mode.md §5.20), delivered under the agent's own name: coordinator input only, never a row of a conversation view.
-const LOOK_BACK_ROW_SQL = `(transcript.kind = 'text' AND COALESCE(transcript.recipient, '') = transcript.sender
-        AND transcript.text LIKE '${LOOK_BACK_ITEM_PREFIX}%')`
+// A look-back item (`SessionMessageTurnFacts.lookBack`, assistant-mode.md §5.20): coordinator input only, never a row of a conversation view.
+const LOOK_BACK_ROW_SQL = `(transcript.kind = 'text' AND COALESCE(transcript.body, '') LIKE '%"lookBack":true%')`
 
 // A row of the reading session's own turns in a thread other than its coordinate, which its page shows instead (§6.1). Binds (coordinate, agentId, sessionKey).
 const OWN_TURN_IN_THREAD_SQL = `(transcript.thread <> ? AND transcript.sender = ?
