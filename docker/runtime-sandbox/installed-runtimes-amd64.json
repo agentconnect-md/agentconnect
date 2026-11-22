@@ -1,0 +1,7 @@
+[
+  { "id": "antigravity-acp", "command": "agy", "args": ["acp"] },
+  { "id": "claude-acp", "command": "claude-agent-acp", "args": [] },
+  { "id": "codex-acp", "command": "codex-acp", "args": [] },
+  { "id": "dsh-acp", "command": "dsh-acp", "args": ["--dsh-path", "/usr/local/bin/dsh"] },
+  { "id": "opencode", "command": "opencode", "args": ["acp"] }
+]

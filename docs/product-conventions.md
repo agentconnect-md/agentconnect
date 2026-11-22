@@ -3200,7 +3200,8 @@ select Antigravity and complete its authentication before starting new sessions.
 Self-hosted daemons need the native Antigravity CLI (`agy`) on their PATH.
 Sign in with the CLI before resuming a session created with the standalone
 adapter. With the default data directories, the daemon imports that session's
-history on its first native resume. The full runtime image includes the CLI.
+history on its first native resume. The full runtime image includes the CLI, and
+so does the pool image on amd64, so Cloud agents can run Antigravity.
 Version 1.5.14 supports Streamable HTTP MCP connections. For a directly
 configured remote MCP server, use its Streamable HTTP endpoint.
 
