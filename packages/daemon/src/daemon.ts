@@ -23123,6 +23123,20 @@ export class Daemon {
     return 'ok'
   }
 
+  /** Admit a new session with the CP under its outward id; fails open, since the CP only counts it (org-session-policy.md, Admission). */
+  private async admitNewSession(agentId: string, key: string): Promise<void> {
+    const cp = this.cpClient
+    if (!cp?.admitsSessions?.()) return
+    let sessionId: string | undefined
+    try {
+      sessionId = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
+      if ((await cp.admitSession(agentId, sessionId)) !== 'failed') return
+    } catch (err) {
+      this.log.debug(`session admission for ${key} threw: ${formatErr(err)}`)
+    }
+    this.log.warn(`session admission for ${sessionId ?? key} failed; starting the session anyway`)
+  }
+
   /** Open (or reuse) this turn's ACP session: install the delivery route, prepare the review
    *  workspace / model host / remote MCP descriptor, then run `sessions.handle()`.
    *
@@ -23162,6 +23176,8 @@ export class Daemon {
     let handled: HandledTurnSession
     const persisted = await this.store.getSession(key)
     const persistedSessionId = persisted?.acpSessionId
+    // A session with no local record is admitted before anything below prepares or starts its runtime.
+    if (!persisted) await this.admitNewSession(agentId, key)
     // A cold host can spend minutes on checkout, sandbox and session/load; report that instead of the last turn's `idle`.
     if (persisted?.acpSessionId && !plan.hostAlreadyRunning) {
       entry.resumingReported = persisted.acpSessionId

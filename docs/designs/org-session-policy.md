@@ -1,7 +1,7 @@
 # Organization Session Policy
 
-**Status:** storage, delivery, monthly session counting, and the Control Plane half of admission
-implemented. Nothing refuses a session yet; see [Not yet](#not-yet).
+**Status:** storage, delivery, monthly session counting, and admission implemented. Nothing
+refuses a session yet; see [Not yet](#not-yet).
 
 ## What it is
 
@@ -131,10 +131,18 @@ committed row and the session counts exactly once in either order. A daemon that
 Admission consults no limit and refuses no session on policy: an authorized request is always
 answered `admitted: true`. Deleting the organization deletes its admission rows.
 
+**When the daemon sends it.** A daemon admits a session when it first opens one it has no local
+record of, before it prepares the session's workspace, issues its model credential, or starts its
+runtime, so chat, cron, hook, delegation, and task turns are all admitted at that one point. A
+later turn, or a runtime recreated after a failed load, finds the local record and sends nothing.
+It sends once, over a live link only, with a short timeout and no retry, and it fails open: the
+session starts whatever the answer, and one whose admission never committed is counted at its first
+milestone instead. Memory-maintenance runs do not open sessions this way and never send it.
+
 ## Not yet
 
-- No daemon sends `session/admit` yet; wiring it into session start is the next change.
 - Refusing a new session at admission when `enforce` is true and the limit is reached is later
-  work, as an additive refusal variant of `session/admit/result`; until then the policy changes no
-  route, frame, or daemon behavior, and the count is only read.
+  work, as an additive refusal variant of `session/admit/result`, and the daemon then waits on the
+  answer instead of failing open; until then the policy changes no route, frame, or daemon
+  behavior, and the count is only read.
 - Applying `historyRetentionDays` to hosted session history is later work.
