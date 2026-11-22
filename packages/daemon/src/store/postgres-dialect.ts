@@ -367,6 +367,8 @@ export const canonicalColumns = [
   'personAt',
   'lastPerson',
   'openedBy',
+  // the status a task gives with its summary (auto-session-mode.md §6.7)
+  'taskStatus',
   'watchStatus',
   'ownerPlatform',
   'ownerChannel',

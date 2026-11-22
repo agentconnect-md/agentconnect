@@ -27,7 +27,8 @@ import {
   type AssistantSubsession,
   type AssistantSubsessionIndex,
   type OpenedObject,
-  type TaskMessage
+  type TaskMessage,
+  TASK_STATUSES
 } from '../../store/assistant-subsessions.js'
 import { sessionKey } from '../../store/local-store.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
@@ -156,7 +157,11 @@ export const UPDATE_TASK_ARGS = z.object({
           message: `argument summary must be at most ${TASK_SUMMARY_MAX_CHARS} characters`
         })
     ),
-  title: taskTitleField.nullish().transform((title) => title ?? undefined)
+  title: taskTitleField.nullish().transform((title) => title ?? undefined),
+  status: z
+    .enum(TASK_STATUSES)
+    .nullish()
+    .transform((status) => status ?? undefined)
 })
 
 export const READ_TASK_ARGS = z.object({
@@ -202,6 +207,11 @@ export const UPDATE_TASK_TOOL: ToolDescriptor = {
         minLength: 1,
         maxLength: TASK_SUMMARY_MAX_CHARS,
         description: `The current status in its first sentence, then scope, next step and open questions, at most ${TASK_SUMMARY_MAX_CHARS} characters.`
+      },
+      status: {
+        type: 'string',
+        enum: [...TASK_STATUSES],
+        description: 'The status the first sentence states. `done` means nothing is left to do or waiting on anyone.'
       },
       title: {
         type: 'string',
@@ -644,7 +654,7 @@ const watchTaskAt = (thread: string): boolean => isCheckCoordinate(thread) && !i
 
 /** A task saves its own summary, and its title with it (auto-session-mode.md §5.3); every other session is refused. */
 export const updateTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args, deps) => {
-  const { summary, title } = parseArgs(UPDATE_TASK_ARGS, args)
+  const { summary, title, status } = parseArgs(UPDATE_TASK_ARGS, args)
   const port = deps.assistantSubsessions
   if (!port?.setSummary) throw new Error('updateTask: task summaries are not available on this daemon')
   // An approved proposal and research keep no summary; a threaded task's row is found by its key, a watch task's check writes its own.
@@ -653,6 +663,7 @@ export const updateTask: ToolHandler<AssistantSubsessionDeps> = async (ctx, args
   const here = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
   const saved = await port.setSummary(ctx.agentId, here, {
     summary,
+    ...(status !== undefined ? { status } : {}),
     ...(title !== undefined ? { title } : {}),
     now: port.now?.() ?? Date.now()
   })
