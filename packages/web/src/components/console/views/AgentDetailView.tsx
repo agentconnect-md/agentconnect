@@ -1124,6 +1124,17 @@ function AgentDetail() {
   // selected model's own effort vocabulary, which only the single-daemon read carries.
   const capabilitySource = useDaemonDetail(da ? agentCapabilitySource(da, daemons, memberSets) : undefined)
   const filterProviders = useCoordinatorFilterProviders(agentFilterPlacement(da))
+  // A chat app's out-of-credits notice links `?edit=placement`: open Edit at Runs on once, then drop the param.
+  const editParam = params.get('edit')
+  const editLinkHandled = useRef(false)
+  useEffect(() => {
+    if (editParam !== 'placement' || !da || editLinkHandled.current) return
+    editLinkHandled.current = true
+    if (da.canEdit && !da.name.startsWith(MOCK_PREFIX)) openModal('editAgent', da, { focusSection: 'basics' })
+    const next = new URLSearchParams(params)
+    next.delete('edit')
+    router.replace(`${orgPath(`/agents/${id}`)}?${next.toString()}`, { scroll: false })
+  }, [editParam, da, id, openModal, orgPath, params, router])
   // Unknown id (a stale deep link, or a demo agent that's hidden outside mock mode) —
   // show a not-found notice rather than crash on the `da.*` reads below. While the
   // agents pull is still in flight, though, it's not "not found" yet — spin instead.

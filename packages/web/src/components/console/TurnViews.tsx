@@ -38,6 +38,8 @@ import { type Turn } from '@/components/console/session-turns'
 import type { FmtStep } from '@/components/console/transcript-steps'
 import { ElicitationCard, PlanBlock } from '@/components/console/TranscriptCards'
 import { CopyTurnButton, MessageMenu } from '@/components/console/MessageMenu'
+import { OutOfCreditsNotice, useOutOfCreditsContext } from '@/components/console/billing/OutOfCreditsNotice'
+import { outOfCreditsOffer } from '@/lib/out-of-credits'
 
 function ParticipantAvatar({
   agent,
@@ -328,6 +330,12 @@ export function BotTurnView({
     .filter(Boolean)
     .join('\n\n')
   const turnAgent = turn.agentId ? agentById.get(turn.agentId) : owner
+  // A Cloud turn that failed for lack of credit shows its fixes instead of the failure text.
+  const credit = useOutOfCreditsContext(turnAgent)
+  const creditNotice = (text: string, errorPart: boolean) => {
+    const offer = outOfCreditsOffer({ text, errorPart }, credit)
+    return offer ? <OutOfCreditsNotice agent={turnAgent} agentName={turn.agentName} offer={offer} /> : null
+  }
   const mark = (
     <AgentIconView
       icon={(turnAgent ?? owner)?.icon}
@@ -339,6 +347,14 @@ export function BotTurnView({
   const bubbles: { key: string; items: ReactNode[]; after?: ReactNode }[] = []
   let items: ReactNode[] = []
   saidSteps.forEach((st, si) => {
+    // An out-of-credits failure leaves the bubble and stands on its own, like a notice.
+    const refusal = st.lane === '' && !st.sessionMessage ? creditNotice(st.text, false) : null
+    if (refusal) {
+      if (items.length > 0) bubbles.push({ key: `b:${si}`, items })
+      bubbles.push({ key: `r:${si}`, items: [], after: refusal })
+      items = []
+      return
+    }
     items.push(
       <SaidStep
         key={`s:${si}`}
@@ -418,12 +434,13 @@ export function BotTurnView({
           {noticeSteps.length > 0 && (
             <div className="flex min-w-0 flex-col gap-[3px]">
               {noticeSteps.map((st, si) => (
-                <span
-                  key={`n:${si}`}
-                  className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
-                >
-                  {st.text}
-                </span>
+                <Fragment key={`n:${si}`}>
+                  {creditNotice(st.text, true) ?? (
+                    <span className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                      {st.text}
+                    </span>
+                  )}
+                </Fragment>
               ))}
             </div>
           )}
@@ -432,9 +449,11 @@ export function BotTurnView({
           ))}
           {bubbles.map((bubble) => (
             <Fragment key={bubble.key}>
-              <div className={AGENT_BUBBLE} data-agent-bubble="">
-                {bubble.items}
-              </div>
+              {bubble.items.length > 0 && (
+                <div className={AGENT_BUBBLE} data-agent-bubble="">
+                  {bubble.items}
+                </div>
+              )}
               {bubble.after}
             </Fragment>
           ))}

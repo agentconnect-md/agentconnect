@@ -5446,6 +5446,17 @@
       "copyBillingLink": "Copy billing link",
       "copied": "Copied"
     },
+    "outOfCredits": {
+      "title": "Out of credits.",
+      "bodyOwnerMove": "{agent} couldn't respond because your organization has run out of credits. Add credits to keep using it on Cloud, or move it to your own machine.",
+      "bodyOwner": "{agent} couldn't respond because your organization has run out of credits. Add credits to keep using it on Cloud.",
+      "bodyMemberMove": "{agent} couldn't respond because your organization has run out of credits. Ask an owner to add credits, or move it to your own machine.",
+      "bodyMember": "{agent} couldn't respond because your organization has run out of credits. Ask an owner to add credits.",
+      "addCredits": "Add credits",
+      "moveToOwnMachine": "Move to your own machine",
+      "copyBillingLink": "Copy billing link",
+      "copied": "Copied"
+    },
     "plan": {
       "title": "Plan",
       "loadError": "Couldn't load this organization's plan: {error}",

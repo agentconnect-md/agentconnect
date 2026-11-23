@@ -236,6 +236,24 @@ work began, or a failure requiring user action is reported without another autom
 When a runtime reports an HTTP error without a response body, the failure notice
 retains the status code instead of showing only that the body was empty.
 
+## A turn refused for lack of credit says what to do next
+
+When a Cloud agent's turn is refused because the organization is out of credits
+(`out_of_credits`, [org-refusal-tag.md](designs/org-refusal-tag.md)), the notice says so
+and offers two ways forward instead of the refuser's sentence: add credits, or run the
+agent on the organization's own machine.
+
+- **Webchat** shows the notice as a card. **Add credits** opens Billing and returns to the
+  conversation once the credits land; someone who cannot buy credits is pointed to an
+  Owner instead. **Move to your own machine** opens the agent's settings on its machine
+  picker, and appears only when the organization has a self-hosted daemon and the reader
+  may edit the agent.
+- **Chat apps** have no buttons, so the notice carries two links: Billing, and the agent's
+  settings, which open on the same machine picker for someone who may edit it.
+
+Only a daemon whose model credentials the key server issues reads the reason; elsewhere
+the failure text is shown as written. Other refusal reasons keep the generic failure notice.
+
 ## Moving an agent from an unavailable daemon
 
 A normal agent move is the safe default and uses a hard cutover. The current daemon

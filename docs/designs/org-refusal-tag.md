@@ -1,8 +1,9 @@
 # Org Refusal Tag — Why an Organization Was Refused
 
 **Status:** proposed, together with the key-server §6 line that points here. The format and codes are
-declared by `@agentconnect.md/protocol` `org-refusal.ts`; no reader acts on a tag yet, so no issuer may
-send one yet (§6). This document records what the schema cannot carry.
+declared by `@agentconnect.md/protocol` `org-refusal.ts`. The daemon's failure notice and webchat read
+`out_of_credits` (§5.1); the Control Plane and console 402 do not yet, so issuers wait on them (§6).
+This document records what the schema cannot carry.
 
 ## 1. Why a tag
 
@@ -136,6 +137,19 @@ its refusals read; nothing here requires a deployment to run one.
   classifies failed turns from provider-authored text (`turnFailureCode`, hook reason
   `provider_quota_exhausted`); an `out_of_credits` refusal is classified from its code, whatever the
   sentence says. The mapping for each code is the reader PR's to state.
+
+### 5.1 What the daemon and webchat show
+
+- **Chat apps.** A daemon that reads tags (one whose model credentials the key server issues) replaces
+  the failure notice for `out_of_credits` with one that says the organization is out of credits and
+  links the organization's Billing page and the agent's settings at its machine picker
+  (`/agents/<id>?tab=config&edit=placement`). Feishu, Linear and the failure sinks of platforms without
+  a reply connection post the same text. A runtime that narrated the refusal has that narration
+  replaced by the notice.
+- **Webchat.** The daemon hands the tagged reason through unchanged (`done.error`, the AHP turn error,
+  the transcript row), and the console presents it as a card for a Cloud agent: Add credits, returning
+  to the conversation, and Move to your own machine when the organization has a self-hosted daemon.
+- **Hook outcome.** `out_of_credits` reports `provider_quota_exhausted`, by code.
 
 **A tag is presentation, never authority.** Gateway text reaches the daemon through a runtime and a
 provider endpoint the daemon does not control, so a reader may choose wording from a tag but must not
