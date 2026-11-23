@@ -25,6 +25,7 @@
  */
 import type { Integration } from '../agents/agent-schema.js'
 import { integrationCore, platformIntegrationConfig } from './integration-config.js'
+import { mattermostExternalAppId, normalizeMattermostServerUrl } from './mattermost/module.js'
 
 /** The stable public BotFather bot-id prefix, or undefined for non-standard
  *  test/config tokens. */
@@ -73,7 +74,17 @@ const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string
   // The BotID survives a Secret reset and names one organization's smart bot.
   ['wecom', (int) => platformIntegrationConfig('wecom', int)?.botId],
   // An address is never reissued, so it names one agent's mailbox for good (email-integration.md §3).
-  ['email', (int) => platformIntegrationConfig('email', int)?.address]
+  ['email', (int) => platformIntegrationConfig('email', int)?.address],
+  // Server URL + botUserId survives token rotation; falls back to token when botUserId is omitted in local config.
+  [
+    'mattermost',
+    (int) => {
+      const mm = platformIntegrationConfig('mattermost', int)
+      if (!mm) return undefined
+      const base = normalizeMattermostServerUrl(mm.serverUrl)
+      return base ? `${base}\0${mm.botUserId ?? mm.botToken}` : undefined
+    }
+  ]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
@@ -141,6 +152,15 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integr
     async (host, int) => {
       const address = platformIntegrationConfig('email', int)?.address
       return address ? address.slice(address.lastIndexOf('@') + 1) : await host.minted(int.id)
+    }
+  ],
+  // Mattermost user ids are unique per server; D6 colon-free server realm `mm-<16 hex>` survives token rotation.
+  [
+    'mattermost',
+    async (host, int) => {
+      const mm = platformIntegrationConfig('mattermost', int)
+      const scope = mm ? mattermostExternalAppId(mm.serverUrl) : undefined
+      return scope ?? (await host.minted(int.id))
     }
   ]
 ])

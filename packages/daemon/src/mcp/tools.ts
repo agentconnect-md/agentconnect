@@ -400,7 +400,12 @@ function buildThreadHistoryTool(offered: boolean, integrationId: SchemaProp): To
  *  it is on, unlike the turn-chrome `react` intent core names for it. */
 function buildReactionTools(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
   if (!offered) return []
-  const messageTs = { type: 'string', description: 'Id of the message to act on (Slack ts).' }
+  const messageTs = {
+    type: 'string',
+    description:
+      'Platform message ID to act on (Slack ts like `1700000000.000100`, Mattermost 26-char post id, ' +
+      'Discord/Telegram message id — never pass a `[sender]` user ID prefix; for the thread root use `# Agent` `Thread` when not `dm`, or call `getThreadReplies` / `getChannelHistory` to look up a message’s `ts`).'
+  }
   return [
     {
       name: 'addReaction',

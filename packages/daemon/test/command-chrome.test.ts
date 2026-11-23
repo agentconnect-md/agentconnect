@@ -15,6 +15,7 @@ import { linearCommandChrome } from '../src/platforms/linear/command-chrome.js'
 import { msTeamsCommandChrome } from '../src/platforms/msteams/command-chrome.js'
 import { weChatCommandChrome } from '../src/platforms/wechat/command-chrome.js'
 import { weComCommandChrome } from '../src/platforms/wecom/command-chrome.js'
+import { mattermostCommandChrome } from '../src/platforms/mattermost/command-chrome.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 const ctx = { channel: 'C1', replyThread: '1700000000.001', sessionKey: 'k1' }
@@ -139,9 +140,56 @@ describe('out-of-turn notices (§7.4 notice)', () => {
       dingTalkCommandChrome,
       QQCommandChrome,
       linearCommandChrome,
-      weComCommandChrome
+      weComCommandChrome,
+      mattermostCommandChrome
     ])
       expect(surface.notice).toBeTypeOf('function')
+  })
+
+  it('mattermost posts threaded control replies in channels, flat posts in DMs, and rejects failed notices', async () => {
+    const createPost = vi.fn(async () => ({ id: 'mmpost00000000000000000009' }))
+    const mmCtx = { channel: 'mmch0000000000000000000001', replyThread: 'mmpost00000000000000000001', sessionKey: 'k1' }
+    const channelMsg = {
+      ...msg,
+      platform: 'mattermost',
+      msgId: 'mattermost:mmch0000000000000000000001:mmpost00000000000000000002',
+      channel: 'mmch0000000000000000000001',
+      thread: 'mmpost00000000000000000001',
+      isDm: false
+    } as NormalizedMessage
+    mattermostCommandChrome.status(
+      { createPost },
+      channelMsg,
+      mmCtx,
+      {},
+      'https://mm.example.test/_redirect/pl/mmpost00000000000000000001'
+    )
+    expect(createPost).toHaveBeenLastCalledWith(
+      'mmch0000000000000000000001',
+      '📊 — · [View session](https://mm.example.test/_redirect/pl/mmpost00000000000000000001)',
+      { rootId: 'mmpost00000000000000000001' }
+    )
+
+    const dmMsg = {
+      ...msg,
+      platform: 'mattermost',
+      msgId: 'mattermost:mmdm0000000000000000000001:mmpost00000000000000000003',
+      channel: 'mmdm0000000000000000000001',
+      thread: 'dm',
+      isDm: true
+    } as NormalizedMessage
+    await mattermostCommandChrome.notice!({ createPost }, 'mmdm0000000000000000000001', 'dm', 'dm notice', dmMsg)
+    expect(createPost).toHaveBeenLastCalledWith('mmdm0000000000000000000001', 'dm notice', undefined)
+    await expect(
+      mattermostCommandChrome.notice!(
+        undefined,
+        'mmch0000000000000000000001',
+        'mmpost00000000000000000001',
+        'fail',
+        channelMsg
+      )
+    ).rejects.toThrow()
+    expect(mattermostCommandChrome.threadIdentifiesSession).toBe(true)
   })
 
   it('wecom posts a Markdown message into the conversation, and rejects a send WeCom did not accept', async () => {

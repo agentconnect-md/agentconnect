@@ -49,6 +49,7 @@ describe('daemon platform registry (audit F16)', () => {
       'msteams',
       'wechat',
       'wecom',
+      'mattermost',
       'email'
     ])
   })
@@ -84,6 +85,7 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.msTeamsPool,
       daemon.connections.weChatPool,
       daemon.connections.weComPool,
+      daemon.connections.mattermostPool,
       daemon.connections.emailPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
@@ -102,7 +104,8 @@ describe('daemon platform registry (audit F16)', () => {
       'googlechat',
       'dingtalk',
       'msteams',
-      'wecom'
+      'wecom',
+      'mattermost'
     ])
     // Exact lookup, so a webchat / hook / dream turn rendering through the core (Slack) surface
     // does not inherit Slack's cards — webchat's own card is core-owned.
@@ -134,9 +137,11 @@ describe('observed-membership platforms (audit F17)', () => {
     }
   })
 
-  it('excludes Slack, whose membership snapshot is authoritative', () => {
+  it('excludes Slack and Mattermost, whose membership snapshots are authoritative', () => {
     expect(manifestFor('slack').membershipEnumeration).toBe('authoritative')
+    expect(manifestFor('mattermost').membershipEnumeration).toBe('authoritative')
     expect(observedMembershipPlatforms()).not.toContain('slack')
+    expect(observedMembershipPlatforms()).not.toContain('mattermost')
   })
 
   it('excludes a platform this build has no module for, despite the fail-closed manifest', () => {

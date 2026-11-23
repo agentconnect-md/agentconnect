@@ -116,6 +116,20 @@ const googleChatInt: Integration = {
   config: { projectId: 'example-project', projectNumber: '100000000000', serviceAccountKey: '{}' }
 }
 
+const mattermostInt: Integration = {
+  id: 'int-8',
+  platform: 'mattermost',
+  core: {
+    mode: 'direct',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false,
+    sessionModes: [],
+    decisions: { bindings: [], definitions: [] }
+  },
+  config: { serverUrl: 'https://mm.example.test', botToken: 'mm-token' }
+}
+
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
 // Port gates open per SESSION platform, so one platform's tool list is not the whole surface:
@@ -138,6 +152,11 @@ const advertised: ToolDescriptor[] = [
     organizationKnowledge: true,
     decisions: true,
     currentPlatform: 'googlechat'
+  }),
+  ...toolsForIntegrations([mattermostInt], {
+    organizationKnowledge: true,
+    decisions: true,
+    currentPlatform: 'mattermost'
   }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...GITHUB_REVIEW_TOOLS,

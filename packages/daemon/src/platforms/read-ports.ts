@@ -47,6 +47,7 @@ import { EMAIL_AGENT_TOOLS } from './email/agent-tools.js'
 import { GOOGLECHAT_ATTACHMENT_TOOL } from './googlechat/attachments.js'
 import { WECHAT_ATTACHMENT_TOOL } from './wechat/attachments.js'
 import { WECOM_ATTACHMENT_TOOL } from './wecom/attachments.js'
+import { MATTERMOST_ATTACHMENT_TOOL } from './mattermost/attachments.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
 import { QQ_ATTACHMENT_TOOL } from './qq/attachments.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
@@ -338,6 +339,27 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       threadHistory: true,
       authoritativeMembers: true,
       agentTools: EMAIL_AGENT_TOOLS
+    }
+  ],
+  [
+    'mattermost',
+    {
+      platform: 'mattermost',
+      label: 'Mattermost',
+      openDirectMessage: true,
+      channelMentions: 'gateway',
+      channelHistory: true,
+      threadHistory: true,
+      reactions: true,
+      messageDelete: true,
+      publicMessageSearch: true,
+      conversationCreate: true,
+      publicChannelReach: true,
+      authoritativeMembers: true,
+      channelPrivacy: true,
+      workspaceMembers: true,
+      sharedConversations: true,
+      attachmentReadTool: MATTERMOST_ATTACHMENT_TOOL
     }
   ]
 ])

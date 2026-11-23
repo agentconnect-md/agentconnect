@@ -127,7 +127,7 @@ export interface ShareFileDeps extends GatewayDeps {
  *  suppresses pings natively (allowedMentions). The one form with no inert spelling is a
  *  bare Telegram `@username` — the tool description says so instead of promising it away. */
 export function escapeCaptionMentions(caption: string): string {
-  return caption.replace(/<(?=[@#!]|at[\s>])/gi, '<\u200b').replace(/@(everyone|here)\b/gi, '@\u200b$1')
+  return caption.replace(/<(?=[@#!]|at[\s>])/gi, '<\u200b').replace(/@(everyone|here|channel|all)\b/gi, '@\u200b$1')
 }
 
 const READ_REFUSALS: Record<Exclude<ShareReadResult, { ok: true }>['reason'], (path: string, d?: string) => string> = {

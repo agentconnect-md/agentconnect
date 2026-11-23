@@ -68,6 +68,15 @@ const AUDIENCES = new Map<string, ConversationAudience>([
     }
   ],
   [
+    'mattermost',
+    {
+      platform: 'mattermost',
+      applies: () => true,
+      realmKey: async (host, _integrationId, integration) =>
+        integration ? await host.tenantScope(integration) : undefined
+    }
+  ],
+  [
     'discord',
     {
       platform: 'discord',

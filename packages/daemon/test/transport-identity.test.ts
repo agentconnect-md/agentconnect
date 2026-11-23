@@ -168,6 +168,20 @@ describe('tenant scope (durable owner identity)', () => {
         config: { botId: 'aibot-example' }
       } as never)
     ).toBe('m13')
+    // Mattermost derives its colon-free D6 server realm `mm-<16 hex>` from normalized serverUrl, surviving token rotation.
+    const mmScope = await tenantScopeFor(host(undefined, 'm14'), {
+      id: 'i10',
+      platform: 'mattermost',
+      config: { serverUrl: 'https://MM.Example.Test:443/team/', botToken: 'tok-1', botUserId: 'mmbot1' }
+    } as never)
+    expect(mmScope).toMatch(/^mm-[0-9a-f]{16}$/)
+    expect(
+      await tenantScopeFor(host(undefined, 'm15'), {
+        id: 'i10',
+        platform: 'mattermost',
+        config: { serverUrl: 'https://mm.example.test/team', botToken: 'tok-2', botUserId: 'mmbot1' }
+      } as never)
+    ).toBe(mmScope)
   })
 
   it('falls back to the minted scope on a payload the module schema refuses — never a throw', async () => {
@@ -246,20 +260,27 @@ describe('conversation audience', () => {
     ).toBeUndefined()
   })
 
-  it.each(['feishu', 'googlechat', 'msteams'])(
+  it.each(['feishu', 'googlechat', 'msteams', 'mattermost'])(
     'binds every %s conversation through the tenant anchor',
     async (platform) => {
       const audience = conversationAudienceFor(platform)!
-      const realm = { feishu: 'lark:c1', googlechat: '123456789012', msteams: '11111111-1111-4111-8111-111111111111' }[
-        platform
-      ]
+      const realm = {
+        feishu: 'lark:c1',
+        googlechat: '123456789012',
+        msteams: '11111111-1111-4111-8111-111111111111',
+        mattermost: 'mm-0123456789abcdef'
+      }[platform]
       expect(audience.applies({ isDm: true })).toBe(true)
+      expect(audience.applies({ isDm: false })).toBe(true)
       expect(
         await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => realm }, 'i4', {
           id: 'i4',
           platform
         })
       ).toBe(realm)
+      expect(
+        await audience.realmKey({ liveWorkspaceId: () => undefined, tenantScope: async () => realm }, 'i4', undefined)
+      ).toBeUndefined()
     }
   )
 

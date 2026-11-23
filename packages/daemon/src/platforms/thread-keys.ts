@@ -37,6 +37,7 @@
  * registered per platform rather than inferred.
  */
 
+import { MATTERMOST_DM_THREAD } from './mattermost/module.js'
 import { WECOM_DM_THREAD, WECOM_GROUP_THREAD } from './wecom/module.js'
 
 interface ThreadKeyStrategy {
@@ -61,7 +62,9 @@ const STRATEGIES = new Map<string, ThreadKeyStrategy>([
   // A group post keys on its process query key, which a quote of it brings back; a DM is the one continuous `dm` session.
   ['dingtalk', { key: (_channel, ts, isDm) => (isDm ? 'dm' : ts), dmSensitive: true }],
   // A post keys where `canonicalizeWeComThread` keys a reply: a group on its root key (auto-session-mode.md §6.10), a direct chat on `dm`.
-  ['wecom', { key: (_channel, _ts, isDm) => (isDm ? WECOM_DM_THREAD : WECOM_GROUP_THREAD), dmSensitive: true }]
+  ['wecom', { key: (_channel, _ts, isDm) => (isDm ? WECOM_DM_THREAD : WECOM_GROUP_THREAD), dmSensitive: true }],
+  // Channel posts key on the root post id (`root_id || id`); 1:1 DMs collapse to a continuous `dm` session.
+  ['mattermost', { key: (_channel, ts, isDm) => (isDm ? MATTERMOST_DM_THREAD : ts), dmSensitive: true }]
 ])
 
 /** Whether the platform's root-post session key depends on DM classification. */
@@ -99,7 +102,8 @@ export function rootPostThreadName(text: string): string {
  * registered here, and none is guessed.
  */
 const UPDATE_STRATEGIES = new Map<string, { key(channel: string, thread: string): string }>([
-  ['slack', { key: (_channel, thread) => thread }]
+  ['slack', { key: (_channel, thread) => thread }],
+  ['mattermost', { key: (_channel, thread) => thread }]
 ])
 
 /** Can this platform place a post inside an existing thread? */
@@ -124,7 +128,8 @@ export function threadKeyForPost(platform: string, channel: string, ts: string, 
 const THREAD_ROOTS = new Map<string, (thread: string, isDm: boolean) => string | undefined>([
   ['slack', (thread) => thread],
   ['feishu', (thread, isDm) => (isDm ? undefined : thread)],
-  ['telegram', (thread) => /^tg:(\d+)$/.exec(thread)?.[1]]
+  ['telegram', (thread) => /^tg:(\d+)$/.exec(thread)?.[1]],
+  ['mattermost', (thread, isDm) => (isDm || thread === MATTERMOST_DM_THREAD ? undefined : thread)]
 ])
 
 /** How this platform's physical threads name their root row's ts, or `undefined` for an unregistered platform. */

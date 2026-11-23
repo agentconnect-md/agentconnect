@@ -26,6 +26,7 @@ type LinkSource = (integration: Integration | undefined) => string | undefined
 const SOURCES = new Map<string, LinkSource>([
   ['slack', () => 'slack'],
   ['github', () => 'github'],
+  ['mattermost', () => 'mattermost'],
   ['feishu', (integration) => (integration ? platformIntegrationConfig('feishu', integration)?.region : undefined)]
 ])
 

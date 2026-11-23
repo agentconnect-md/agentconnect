@@ -11,7 +11,7 @@
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
 import { originKindOf } from '@agentconnect.md/protocol'
-import { slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
+import { mattermostMentionAddress, slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
 
 export interface CollabResolved extends CollabAgentPlacement {
   orgId: string
@@ -315,26 +315,37 @@ export class CpCollabRoutes {
     const identities = [...members.values()].map((a) => ({
       agentId: a.agentId,
       ...(a.botUserId !== undefined ? { botUserId: a.botUserId } : {}),
+      ...(a.botUsername !== undefined ? { botUsername: a.botUsername } : {}),
       ...(a.name !== undefined ? { name: a.name } : {})
     }))
+    const sharedIdentityKey = (identity: AgentMentionIdentity): string | undefined => {
+      if (identity.botUserId) return identity.botUserId
+      const handle = identity.botUsername?.trim().replace(/^@+/, '').toLowerCase()
+      return handle || undefined
+    }
     const counts = new Map<string, number>()
     for (const identity of identities) {
-      if (identity.botUserId) counts.set(identity.botUserId, (counts.get(identity.botUserId) ?? 0) + 1)
+      const key = sharedIdentityKey(identity)
+      if (key) counts.set(key, (counts.get(key) ?? 0) + 1)
     }
     // Recompute instead of trusting the wire flag. This corrects an older CP that
     // derived `botShared` from the bot's shareable CAPACITY rather than from the
     // identities actually present in this conversation.
-    return identities.map((identity) => ({
-      ...identity,
-      ...(identity.botUserId && (counts.get(identity.botUserId) ?? 0) > 1 ? { botShared: true } : {})
-    }))
+    return identities.map((identity) => {
+      const key = sharedIdentityKey(identity)
+      return {
+        ...identity,
+        ...(key && (counts.get(key) ?? 0) > 1 ? { botShared: true } : {})
+      }
+    })
   }
 
   /** The exact address for `agentId` in this conversation, or undefined when it has
-   *  none there (no Slack presence, or a shared bot with no slug to disambiguate it). */
+   *  none there (no platform bot identity, or a shared bot with no slug to disambiguate it). */
   mentionAddress(orgId: string, platform: string, channelId: string, agentId: string): string | undefined {
     const identity = this.mentionDirectory(orgId, platform, channelId).find((agent) => agent.agentId === agentId)
-    return identity ? slackMentionAddress(identity) : undefined
+    if (!identity) return undefined
+    return platform === 'mattermost' ? mattermostMentionAddress(identity) : slackMentionAddress(identity)
   }
 
   /** The agents whose bot is this platform user anywhere in the org; empty for a person or an unplaced bot. */

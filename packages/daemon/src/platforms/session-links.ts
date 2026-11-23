@@ -1,10 +1,11 @@
 import { isAppendCoordinate } from '../session/append-coordinate.js'
 import { isSubsessionCoordinate } from '../session/subsession-coordinate.js'
 import type { SessionRecord } from '../store/local-store.js'
+import { mattermostThreadUrl } from './mattermost/module.js'
 import { slackThreadUrl } from './slack/permalink.js'
 import type { PlatformConnection } from './contract.js'
 
-type SessionLinkConnection = Pick<PlatformConnection, 'workspaceUrl'>
+type SessionLinkConnection = object | Pick<PlatformConnection, 'workspaceUrl'>
 
 /**
  * Platform strategy for session-title source links. Ingress adapters persist an
@@ -21,7 +22,24 @@ type SessionThread = Pick<SessionRecord, 'platform' | 'channel' | 'thread'>
 type SessionLinkStrategy = (connection: SessionLinkConnection | undefined, session: SessionThread) => string | undefined
 
 const STRATEGIES = new Map<string, SessionLinkStrategy>([
-  ['slack', (connection, session) => slackThreadUrl(connection?.workspaceUrl, session.channel, session.thread)]
+  [
+    'slack',
+    (connection, session) =>
+      slackThreadUrl(
+        (connection as { workspaceUrl?: string } | undefined)?.workspaceUrl,
+        session.channel,
+        session.thread
+      )
+  ],
+  [
+    'mattermost',
+    (connection, session) =>
+      mattermostThreadUrl(
+        (connection as { workspaceUrl?: string } | undefined)?.workspaceUrl,
+        session.channel,
+        session.thread
+      )
+  ]
 ])
 
 /** No registered strategy means the platform must have persisted an ingress URL

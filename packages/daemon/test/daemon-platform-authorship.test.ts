@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { manifestFor } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { mattermostExternalAppId } from '../src/platforms/mattermost/module.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
 /**
@@ -25,7 +26,8 @@ const CONFIGS: Record<string, Record<string, unknown>> = {
   slack: { botToken: 'xoxb', appToken: 'xapp' },
   telegram: { botToken: '123:ABC' },
   discord: { botToken: 'disc' },
-  feishu: { appId: 'cli_x', appSecret: 's' }
+  feishu: { appId: 'cli_x', appSecret: 's' },
+  mattermost: { serverUrl: 'https://mattermost.example.test', botToken: 'mm-tok' }
 }
 const PLATFORMS = Object.keys(CONFIGS)
 
@@ -132,7 +134,7 @@ const agentMessage = (platform: string, over: Record<string, unknown> = {}) => (
   platform,
   channel: 'C1',
   thread: '1720000000.000100',
-  sender: { id: 'UBOT', isBot: true, appId: OUR_APP },
+  sender: { id: platform === 'mattermost' ? 'UBOTA' : 'UBOT', isBot: true, appId: OUR_APP },
   text: 'please verify the rollout',
   mentionedBots: [] as string[],
   isDm: false,
@@ -154,7 +156,7 @@ describe('bot-authorship admission is a manifest read (audit F19, sites 1–4)',
       // The gate and the manifest are the same fact, checked two ways so a manifest flip
       // and a code change cannot silently disagree.
       expect(admitted).toBe(manifestFor(platform).botSenderRouting)
-      expect(admitted).toBe(platform === 'slack')
+      expect(admitted).toBe(platform === 'slack' || platform === 'mattermost')
     }
     await daemon.stop()
   })
@@ -401,6 +403,214 @@ describe('response closure is a turn-output surface member (audit F19, site 7)',
     }
     await (daemon as any).turnSurfaces.exact('slack').closeResponse(turn)
     expect(finalizeResponse).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+})
+
+describe('Mattermost verified agent authorship (botSenderRouting: true)', () => {
+  it('verifies a known AgentConnect Mattermost bot user ID matching the placement and claim', async () => {
+    expect(manifestFor('mattermost').botSenderRouting).toBe(true)
+    const daemon = await boot(['bot-a', 'bot-b'])
+    installIntegration(daemon, 'bot-a', 'mattermost')
+
+    const valid = agentMessage('mattermost', { sender: { id: 'UBOTA', isBot: true, appId: OUR_APP } })
+    expect((daemon as any).isAgentBotMessage(valid)).toBe(true)
+    expect((daemon as any).verifyAgentAuthor(valid)).toMatchObject({
+      authorAgentId: 'bot-a',
+      orgId: TEST_ORG,
+      sourceHopCount: 0,
+      responseId: 'r-1'
+    })
+
+    // Third-party bot on the SAME Mattermost server (matching server appId) must still be rejected.
+    const thirdParty = agentMessage('mattermost', { sender: { id: 'UTHIRDPARTY', isBot: true, appId: OUR_APP } })
+    expect((daemon as any).isAgentBotMessage(thirdParty)).toBe(false)
+    expect((daemon as any).verifyAgentAuthor(thirdParty)).toBeNull()
+
+    // One AgentConnect Mattermost bot cannot claim authorship for another agent whose botUserId differs.
+    const spoofedPeer = agentMessage('mattermost', {
+      sender: { id: 'UBOTA', isBot: true, appId: OUR_APP },
+      agentAuthorship: {
+        authorAgentId: 'bot-b',
+        responseId: 'r-2',
+        deliveryState: 'final',
+        hopCount: 0,
+        mentionedAgentIds: []
+      }
+    })
+    expect((daemon as any).verifyAgentAuthor(spoofedPeer)).toBeNull()
+
+    // Streaming claims must not verify until final.
+    const streaming = agentMessage('mattermost', {
+      sender: { id: 'UBOTA', isBot: true },
+      agentAuthorship: {
+        authorAgentId: 'bot-a',
+        responseId: 'r-3',
+        deliveryState: 'streaming',
+        hopCount: 0,
+        mentionedAgentIds: ['bot-b']
+      }
+    })
+    expect((daemon as any).verifyAgentAuthor(streaming)).toBeNull()
+
+    expect(typeof (daemon as any).turnSurfaces.exact('mattermost')?.closeResponse).toBe('function')
+    await daemon.stop()
+  })
+
+  it('rejects a bound Mattermost botUserId when sender appId belongs to a different server', async () => {
+    const serverA = 'https://mm-a.example.test'
+    const serverB = 'https://mm-b.example.test'
+    const appA = mattermostExternalAppId(serverA)!
+    const appB = mattermostExternalAppId(serverB)!
+
+    const daemon = await boot(['bot-a', 'bot-b'])
+    ;(daemon as any).agents.get('bot-a').integrations.push({
+      id: 'int-bot-a-mm-a',
+      platform: 'mattermost',
+      core: {
+        mode: 'direct',
+        bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }],
+        mutedChannels: [],
+        gated: false
+      },
+      config: { serverUrl: serverA, botToken: 'tok-a', botUserId: 'UMM_SHARED_ID', botUsername: 'alpha-bot' }
+    })
+    ;(daemon as any).botUserIds['int-bot-a-mm-a'] = 'UMM_SHARED_ID'
+    ;(daemon as any).cpCollab.replace({
+      generation: 2,
+      channels: [
+        {
+          orgId: TEST_ORG,
+          platform: 'mattermost',
+          channelId: 'C1',
+          agents: [
+            {
+              agentId: 'bot-a',
+              daemonId: 'local-daemon',
+              integrationId: 'int-bot-a-mm-a',
+              name: 'bot-a',
+              botAppId: appA,
+              botUserId: 'UMM_SHARED_ID',
+              callPolicy: 'all',
+              allowedCallerAgentIds: [],
+              outboundPolicy: 'all',
+              allowedTargetAgentIds: []
+            }
+          ]
+        }
+      ],
+      agents: []
+    })
+
+    const sameServer = agentMessage('mattermost', {
+      sender: { id: 'UMM_SHARED_ID', isBot: true, appId: appA }
+    })
+    expect((daemon as any).isAgentBotMessage(sameServer)).toBe(true)
+    expect((daemon as any).verifyAgentAuthor(sameServer)).toMatchObject({ authorAgentId: 'bot-a' })
+
+    const crossServer = agentMessage('mattermost', {
+      sender: { id: 'UMM_SHARED_ID', isBot: true, appId: appB }
+    })
+    expect((daemon as any).isAgentBotMessage(crossServer)).toBe(false)
+    expect((daemon as any).verifyAgentAuthor(crossServer)).toBeNull()
+
+    await daemon.stop()
+  })
+
+  it('resolves Mattermost @botUsername mentions in response closure even when botUsername differs from agent name', async () => {
+    const serverUrl = 'https://mm-collab.example.test'
+    const appId = mattermostExternalAppId(serverUrl)!
+    const daemon = await boot(['bot-a', 'bot-b'])
+    ;(daemon as any).agents.get('bot-a').integrations.push({
+      id: 'int-bot-a-mm',
+      platform: 'mattermost',
+      core: {
+        mode: 'direct',
+        bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }],
+        mutedChannels: [],
+        gated: false
+      },
+      config: { serverUrl, botToken: 'tok-a', botUserId: 'UBOTA', botUsername: 'triage-mm-bot' }
+    })
+    ;(daemon as any).agents.get('bot-b').integrations.push({
+      id: 'int-bot-b-mm',
+      platform: 'mattermost',
+      core: {
+        mode: 'direct',
+        bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }],
+        mutedChannels: [],
+        gated: false
+      },
+      config: { serverUrl, botToken: 'tok-b', botUserId: 'UBOTB', botUsername: 'ops-mm-bot' }
+    })
+
+    const patchPost = vi.fn(async () => ({ id: 'mmpost00000000000000000001' }))
+    const turn = {
+      plan: {
+        platform: 'mattermost',
+        agentId: 'bot-a',
+        integrationId: 'int-bot-a-mm',
+        channel: 'C1',
+        sourceHopCount: 0
+      },
+      reply: {
+        text: 'Handing off to @ops-mm-bot for verification.',
+        responseId: 'r-mm-1',
+        lastResponse: {
+          ts: 'mmpost00000000000000000001',
+          text: 'Handing off to @ops-mm-bot for verification.'
+        }
+      },
+      egress: { workspaceId: () => appId, patchPost }
+    }
+    const surface = (daemon as any).turnSurfaces.exact('mattermost')
+    surface.prepareResponseClosure(turn)
+    expect((turn.reply as any).finalRouting).toMatchObject({
+      mentionedAgentIds: ['bot-b'],
+      addressedAnyone: true,
+      hasPeers: true
+    })
+    await surface.closeResponse(turn)
+    expect(patchPost).toHaveBeenCalledWith(
+      'mmpost00000000000000000001',
+      'Handing off to @ops-mm-bot for verification.',
+      expect.objectContaining({
+        identity: expect.objectContaining({
+          agentAuthorId: 'bot-a',
+          response: expect.objectContaining({
+            responseId: 'r-mm-1',
+            deliveryState: 'final',
+            mentionedAgentIds: ['bot-b']
+          })
+        })
+      })
+    )
+
+    // Also verifies live connection botUsername resolution when config omits botUsername.
+    ;(daemon as any).agents.get('bot-b').integrations.find((i: any) => i.id === 'int-bot-b-mm').config.botUsername =
+      undefined
+    ;(daemon as any).mattermostConnByIntegration.set('int-bot-b-mm', {
+      botUserId: 'UBOTB',
+      botUsername: 'live-mm-bot',
+      workspaceId: () => appId
+    })
+    const liveTurn = {
+      plan: {
+        platform: 'mattermost',
+        agentId: 'bot-a',
+        integrationId: 'int-bot-a-mm',
+        channel: 'C1',
+        sourceHopCount: 1
+      },
+      reply: {
+        text: 'Ping @live-mm-bot',
+        responseId: 'r-mm-2',
+        lastResponse: { ts: 'mmpost00000000000000000002', text: 'Ping @live-mm-bot' }
+      },
+      egress: { workspaceId: () => appId, patchPost }
+    }
+    surface.prepareResponseClosure(liveTurn)
+    expect((liveTurn.reply as any).finalRouting.mentionedAgentIds).toEqual(['bot-b'])
     await daemon.stop()
   })
 })

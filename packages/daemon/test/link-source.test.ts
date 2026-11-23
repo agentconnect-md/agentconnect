@@ -4,9 +4,10 @@ import { GithubReviewOrchestrator } from '../src/github/review-orchestrator.js'
 import { sessionLinkSourceFor } from '../src/platforms/link-source.js'
 
 describe('session-link source strategy', () => {
-  it('brands Slack and GitHub as themselves', () => {
+  it('brands Slack, GitHub, and Mattermost as themselves', () => {
     expect(sessionLinkSourceFor('slack')).toBe('slack')
     expect(sessionLinkSourceFor('github')).toBe('github')
+    expect(sessionLinkSourceFor('mattermost')).toBe('mattermost')
   })
 
   const feishuInt = (config: Record<string, unknown>) => ({ id: 'i-fs', platform: 'feishu', config }) as never

@@ -22,12 +22,14 @@ import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
+import type { MattermostConnection } from '../platforms/mattermost/connection.js'
 import { sessionKey, type SessionRecord } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import type { ChatApplicationHost, ChatAuthor, ChatSessionApplication, PreparedChatTurn } from './chat-application.js'
 import type { ChatDispatchOptions, ChatTurnContext } from './chat-turn.js'
 
-export type ChatReplyConnection = SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+export type ChatReplyConnection =
+  SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | MattermostConnection
 
 export interface ChatContinuationRequest {
   agentId: string
@@ -323,7 +325,13 @@ export class ChatSessionContinuation {
     // A message that is only attachments still mirrors a line naming them, which anchors the turn.
     const body = text.trim() ? text : (message.attachments ?? []).map((a) => a.name).join(', ')
     const attributedText = `[${author.name} via console] ${body}`
-    let authorMirror: { conn: SlackConnection; ts: string; text: string } | undefined
+    let authorMirror:
+      | {
+          conn: { postAsAuthor: unknown; finalizeResponse?: SlackConnection['finalizeResponse'] }
+          ts: string
+          text: string
+        }
+      | undefined
     try {
       let mirrorId: string | undefined
       if ('postAsAuthor' in integration.conn) {

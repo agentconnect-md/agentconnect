@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { threadKeyForPost } from '../src/platforms/thread-keys.js'
+import { offersThreadUpdates, threadKeyForPost, threadKeyForUpdate } from '../src/platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from '../src/platforms/malformed-turn.js'
 import { threadPromotionFor, type ThreadPromotionHost } from '../src/platforms/thread-promotion.js'
 import { discordThreadPromotion, discordThreadName } from '../src/platforms/discord/thread-promotion.js'
 import { manifestFor } from '@agentconnect.md/protocol'
 import { canonicalizeDingTalkThread } from '../src/platforms/dingtalk/threading.js'
 import { canonicalizeWeComThread } from '../src/platforms/wecom/module.js'
+import { mattermostPlatformModule } from '../src/platforms/mattermost/module.js'
+import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 describe('outbound thread keys (threadKeyForPost)', () => {
@@ -34,6 +36,48 @@ describe('outbound thread keys (threadKeyForPost)', () => {
     // WeCom: a group post keys on the group's root, a direct chat on its one session, whatever the post's frame id.
     expect(threadKeyForPost('wecom', 'chat-example-group', 'aibot_send_msg_1')).toBe('group')
     expect(threadKeyForPost('wecom', 'dm:user-alice', 'aibot_send_msg_1', true)).toBe('dm')
+    // Mattermost: a channel post keys on its own post id, while 1:1 DMs collapse to a continuous `dm` session.
+    expect(threadKeyForPost('mattermost', 'mmch0000000000000000000001', 'mmpost00000000000000000001')).toBe(
+      'mmpost00000000000000000001'
+    )
+    expect(threadKeyForPost('mattermost', 'mmdm0000000000000000000001', 'mmpost00000000000000000003', true)).toBe('dm')
+    expect(offersThreadUpdates('mattermost')).toBe(true)
+    expect(threadKeyForUpdate('mattermost', 'mmch0000000000000000000001', 'mmpost00000000000000000001')).toBe(
+      'mmpost00000000000000000001'
+    )
+  })
+
+  it('canonicalizes Mattermost channel threads and DMs and resolves /_redirect/pl/ permalinks', async () => {
+    const chMsg = {
+      platform: 'mattermost',
+      isDm: false,
+      msgId: 'mattermost:mmch0000000000000000000001:mmpost00000000000000000001',
+      channel: 'mmch0000000000000000000001'
+    } as NormalizedMessage
+    await mattermostPlatformModule.canonicalizeThread!(undefined as never, chMsg, chMsg.channel)
+    expect(chMsg.thread).toBe('mmpost00000000000000000001')
+    expect(
+      sessionThreadUrlFor(
+        { platform: 'mattermost', channel: chMsg.channel, thread: chMsg.thread! },
+        { workspaceUrl: 'https://mm.example.test/' }
+      )
+    ).toBe('https://mm.example.test/_redirect/pl/mmpost00000000000000000001')
+
+    const dmMsg = {
+      platform: 'mattermost',
+      isDm: true,
+      msgId: 'mattermost:mmdm0000000000000000000001:mmpost00000000000000000003',
+      channel: 'mmdm0000000000000000000001',
+      thread: 'mmpost00000000000000000003'
+    } as NormalizedMessage
+    await mattermostPlatformModule.canonicalizeThread!(undefined as never, dmMsg, dmMsg.channel)
+    expect(dmMsg.thread).toBe('dm')
+    expect(
+      sessionThreadUrlFor(
+        { platform: 'mattermost', channel: dmMsg.channel, thread: dmMsg.thread! },
+        { workspaceUrl: 'https://mm.example.test/' }
+      )
+    ).toBeUndefined()
   })
 
   it('keys a WeCom group message and post on the root its manifest declares (auto-session-mode.md §6.10)', async () => {
