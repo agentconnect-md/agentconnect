@@ -51,4 +51,10 @@ describe('org refusal tag', () => {
     expect(parseOrgRefusal('[ERR:402]Refused')).toBeNull()
     expect(parseOrgRefusal('[ERR:Out] Refused')).toBeNull()
   })
+
+  it('knows every registered code, never_funded apart from out_of_credits', () => {
+    for (const code of ['out_of_credits', 'never_funded', 'standing_lapsed']) {
+      expect(parseOrgRefusal(`turn failed: [ERR:${code}] Refused`)?.known).toBe(code)
+    }
+  })
 })
