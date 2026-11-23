@@ -153,8 +153,9 @@ An agent on a self-hosted daemon, or on an organization's own member set, is nev
 org-less pool and the Computers it runs are Cloud.
 
 **Answers.** `200 {allowed: true}` lets the start through. `org_suspended` refuses it: the console gets
-HTTP 402 with `code: ORG_SUSPENDED` and the key server's message as written, which names where to add
-credit; a daemon's acquire gets `failed` with code `denied` and the same message. The refusal's HTTP
+HTTP 402 with `code: ORG_SUSPENDED` and the key server's message as written; a daemon's acquire gets
+`failed` with code `denied` and the same message. A message that leads with an org refusal tag names
+why the organization was refused ([org-refusal-tag.md](org-refusal-tag.md)). The refusal's HTTP
 status on this operation is the key server's own choice, as on `IssueKey`; the Control Plane answers
 402 whatever it is. Apart from a missing route (below), every other answer means the key server
 cannot say: `unavailable`, any other error code, a malformed body, a timeout, a network failure or an
@@ -415,6 +416,11 @@ state. `org_suspended` is reserved for that organization-wide verdict. `quota_de
 specific request or limit, such as a limit that applies to one session, and says nothing about the
 organization's other sessions. An issuer that does not track organization standing does not enforce
 it; its `IssueKey` can still fail for other reasons.
+
+An issuer that knows why it refuses an organization SHOULD say so in the `org_suspended` message with
+an org refusal tag, `[ERR:<code>] <sentence>` ([org-refusal-tag.md](org-refusal-tag.md)), and use the
+same code wherever else it refuses that organization, its model gateway included. The tag is optional:
+a message without one is still a valid `org_suspended` refusal.
 
 Today the daemon acts on either code only for the session whose request was refused, at its start,
 resume or refresh: that session's turn fails, its host stops, and its key is revoked. The turn's

@@ -204,6 +204,8 @@ export * from './memory-plugin.js'
 
 // ── key-server contract (HTTP client seam for the daemon and the CP's standing check; not a CP wire) ──
 export * from './key-server.js'
+// ── org refusal tag (why an organization was refused, inside any refusal's message) ──
+export * from './org-refusal.js'
 
 // ── the union, the type map, and guards ──
 export { AnyFrame, FRAME_SCHEMAS, FRAME_TYPES, isFrameType } from './frame.js'
