@@ -413,7 +413,7 @@ importers:
         version: 2.6.2
       '@slack/bolt':
         specifier: ^5.1.0
-        version: 5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.12.4)
+        version: 5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.13.1)
       '@slack/web-api':
         specifier: ^8.5.0
         version: 8.5.0
@@ -475,8 +475,8 @@ importers:
         specifier: 7.5.23
         version: 7.5.23
       undici:
-        specifier: ^8.12.4
-        version: 8.12.4
+        specifier: ^8.13.1
+        version: 8.13.1
       unique-names-generator:
         specifier: ^4.7.1
         version: 4.7.1
@@ -716,8 +716,8 @@ importers:
         specifier: ^4.2.1
         version: 4.2.1
       undici:
-        specifier: ^8.12.4
-        version: 8.12.4
+        specifier: ^8.13.1
+        version: 8.13.1
       ws:
         specifier: ^8.22.2
         version: 8.23.0
@@ -3613,10 +3613,6 @@ packages:
     engines: {node: '>=20', npm: '>=9.6.4'}
     peerDependencies:
       undici: ^7.0.0 || ^8.0.0
-
-  '@slack/types@3.3.0':
-    resolution: {integrity: sha512-11r2kM9Zy/UlaV6OwPibZueVlyNJ5xtHEHK/iYDnPLyhQcxRtsifNAwNhJ1Lm0nszW4jrWCHThXCHCNJC/hvqg==}
-    engines: {node: '>= 20', npm: '>=9.6.4'}
 
   '@slack/types@3.3.1':
     resolution: {integrity: sha512-F4JJd1SY5Nro1O6O4izMrBv0/IOpr+a8GGewr23tnP8zO1t9mWFLBjpNPv6nxuxhhw4JVRM9CPltBnLkZj7Ucw==}
@@ -9106,8 +9102,8 @@ packages:
     resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==}
     engines: {node: '>=22.19.0'}
 
-  undici@8.12.4:
-    resolution: {integrity: sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==}
+  undici@8.13.1:
+    resolution: {integrity: sha512-Kt7EaPjh0s93lJH/PmW3d5rhkcpUa6fS3jqZ7+YGxNd9L7Xy/i827xe4C2uhhq+pJebM4tQOl5AgHmW11G5Skg==}
     engines: {node: '>=22.19.0'}
 
   unicode-emoji-modifier-base@1.0.0:
@@ -12541,12 +12537,12 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
-  '@slack/bolt@5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.12.4)':
+  '@slack/bolt@5.1.0(@types/express@5.0.6)(supports-color@7.2.0)(undici@8.13.1)':
     dependencies:
       '@slack/logger': 5.0.0
       '@slack/oauth': 4.0.0
-      '@slack/socket-mode': 3.2.0(undici@8.12.4)
-      '@slack/types': 3.3.0
+      '@slack/socket-mode': 3.2.0(undici@8.13.1)
+      '@slack/types': 3.3.1
       '@slack/web-api': 8.5.0
       '@types/express': 5.0.6
       express: 5.2.1(supports-color@7.2.0)
@@ -12569,15 +12565,13 @@ snapshots:
       '@types/node': 26.6.6
       jsonwebtoken: 9.0.3
 
-  '@slack/socket-mode@3.2.0(undici@8.12.4)':
+  '@slack/socket-mode@3.2.0(undici@8.13.1)':
     dependencies:
       '@slack/logger': 5.0.0
       '@slack/web-api': 8.5.0
       '@types/node': 26.6.6
       eventemitter3: 5.0.4
-      undici: 8.12.4
-
-  '@slack/types@3.3.0': {}
+      undici: 8.13.1
 
   '@slack/types@3.3.1': {}
 
@@ -18627,7 +18621,7 @@ snapshots:
 
   undici@8.12.3: {}
 
-  undici@8.12.4: {}
+  undici@8.13.1: {}
 
   unicode-emoji-modifier-base@1.0.0: {}
 
