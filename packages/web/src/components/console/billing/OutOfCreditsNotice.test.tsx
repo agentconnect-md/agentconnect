@@ -158,6 +158,7 @@ describe('BotTurnView, out-of-credits failure', () => {
     mocks.daemons = new Error('offline')
     await render([plainStep(`⚠️ ${TAG}`)])
     expect(buttonNamed('Move to your own machine')?.disabled).toBe(true)
+    expect(card()?.textContent).toContain("Couldn't check your machines")
   })
 
   it('offers no move to a viewer who cannot edit the agent', async () => {

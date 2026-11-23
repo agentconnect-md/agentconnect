@@ -5460,7 +5460,8 @@
       "copyBillingLink": "Copy billing link",
       "copied": "Copied",
       "noOwnMachine": "No machine of your own is connected yet, so there is nowhere to move it.",
-      "notFound": "This agent no longer exists, or you can't see it."
+      "notFound": "This agent no longer exists, or you can't see it.",
+      "machinesUnreadable": "Couldn't check your machines, so moving isn't available right now."
     },
     "plan": {
       "title": "Plan",

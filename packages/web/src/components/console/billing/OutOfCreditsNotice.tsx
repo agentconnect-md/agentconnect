@@ -109,8 +109,10 @@ export function OutOfCreditsNotice({
           </Button>
         )}
       </div>
-      {move && fleet.data && !machineReady && (
-        <span className="pl-9 text-[12px] text-(--text-tertiary)">{t('noOwnMachine')}</span>
+      {move && !machineReady && (fleet.data || fleet.error) && (
+        <span className="pl-9 text-[12px] text-(--text-tertiary)">
+          {t(fleet.data ? 'noOwnMachine' : 'machinesUnreadable')}
+        </span>
       )}
     </div>
   )
