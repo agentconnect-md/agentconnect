@@ -1,15 +1,17 @@
 ---
 name: update-model-pricing
-description: Verify and refresh AgentConnect's daemon-side public OpenAI fallback pricing, exact model aliases, long-context and cache rules, and regression tests. Use when OpenAI model prices or IDs change, fallback cost becomes missing or stale, codex-acp changes its token mapping, or someone asks to audit or update packages/daemon/src/usage/openai-public-pricing.ts.
+description: Verify and refresh AgentConnect's daemon-side public OpenAI and Gemini fallback pricing, exact model aliases, long-context and cache rules, and regression tests. Use when OpenAI or Gemini model prices or IDs change, fallback cost becomes missing or stale, codex-acp changes its token mapping, or someone asks to audit or update packages/daemon/src/usage/openai-public-pricing.ts or gemini-public-pricing.ts.
 ---
 
 # Update Model Pricing
 
-Keep the daemon's offline cost fallback aligned with current public OpenAI Standard API pricing and the codex-acp version selected by AgentConnect's runtime registry or an explicit runtime override.
+Keep the daemon's offline cost fallback aligned with current public OpenAI and Gemini Standard API pricing, `agy acp`'s usage shape, and the codex-acp version selected by AgentConnect's runtime registry or an explicit runtime override.
+
+This price book only fills the cost a session shows when the runtime reports none. It is not used by the Cloud edition: Cloud credits and billing are metered separately and never read these tables, so a change here never changes what a Cloud organization is charged.
 
 ## Workflow
 
-1. Read `packages/daemon/src/usage/openai-public-pricing.ts`, its focused test, and `packages/daemon/src/runtimes/registry.ts`. Resolve the effective codex-acp package/version from the current ACP registry entry or the deployment's explicit runtime command/args; it is not pinned in `pnpm-lock.yaml`.
+1. Read `packages/daemon/src/usage/openai-public-pricing.ts`, `gemini-public-pricing.ts`, their focused tests, and `packages/daemon/src/runtimes/registry.ts`. Resolve the effective codex-acp package/version from the current ACP registry entry or the deployment's explicit runtime command/args; it is not pinned in `pnpm-lock.yaml`.
 2. Read [references/pricing-sources.md](references/pricing-sources.md) and fetch the current official sources. Do not rely on remembered prices or third-party tables.
 3. Re-check the resolved codex-acp tag's `TokenCount` mapping and compare it with upstream main before changing the formula. Confirm whether ACP input, cache-read, cache-write, output, and thought fields are disjoint and whether PromptResponse usage is per-turn.
 4. Update the manifest with exact published model IDs, prices, dated snapshots, thresholds, and the verification date. Cover text/reasoning models that codex-acp advertises or AgentConnect explicitly supports; do not broaden the manifest to unrelated OpenAI products. Keep unknown models unsupported; never infer a price by prefix or strip an unlisted date suffix.
@@ -32,7 +34,7 @@ Keep the daemon's offline cost fallback aligned with current public OpenAI Stand
 Run:
 
 ```bash
-pnpm --filter @agentconnect.md/daemon exec vitest run test/openai-public-pricing.test.ts test/local-store.test.ts test/daemon-webchat.test.ts test/acp-host.test.ts
+pnpm --filter @agentconnect.md/daemon exec vitest run test/openai-public-pricing.test.ts test/gemini-public-pricing.test.ts test/local-store.test.ts test/daemon-webchat.test.ts test/acp-host.test.ts
 pnpm --filter @agentconnect.md/daemon typecheck
 pnpm format:check
 ```

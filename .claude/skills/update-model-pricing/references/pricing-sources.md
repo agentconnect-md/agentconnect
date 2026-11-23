@@ -11,6 +11,16 @@ Use primary sources only and record the access date in the pricing module.
 
 Do not copy Batch, Flex, Priority, regional, subscription-credit, tool-call, or container prices into the Standard token fallback.
 
+## Gemini (Antigravity)
+
+- Standard paid-tier rates, dated price changes, and cache rules: <https://aistudio.google.com/docs/pricing>
+
+Price only the exact Gemini API model ids Antigravity selects through its `model` config option (`gemini-4-neon`, not `gemini-4-neon-high`). Record each dated price change as a rate period instead of waiting to edit it on the day. Leave Antigravity's non-Google models and its orchestrator ids unsupported: Google's table does not price them. Do not copy Batch, Flex, Priority, Contributor, or free-tier prices.
+
+## Antigravity ACP
+
+As of `agy acp` 1.5.13, PromptResponse usage is the sum over every model request in the prompt, with disjoint `inputTokens` (non-cached), `cachedReadTokens`, and `outputTokens` buckets; `thoughtTokens` is a subset of output, and `usage_update` carries no `cost`. Re-probe with a two-tool-call prompt after an upgrade: the summed `totalTokens` should exceed the final `usage_update.used`.
+
 ## codex-acp
 
 - Current token mapping: <https://github.com/agentclientprotocol/codex-acp/blob/main/src/TokenCount.ts>
