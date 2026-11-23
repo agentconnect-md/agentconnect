@@ -330,6 +330,8 @@ interface ConsoleData {
 const Ctx = createContext<ConsoleData | null>(null)
 const SESSION_EVENT_REFRESH_DEBOUNCE_MS = 500
 const DAEMON_REFRESH_MS = 15_000
+/** Re-read agent and daemon presence this long after the session stream recovers; daemons redial within a 10 s CP handoff window. */
+const STREAM_RECOVERY_PRESENCE_RECHECK_MS = [3_000, 10_000]
 /** Capability changes on connect/upgrade/re-probe, all of which already revalidate the
  *  fleet, so this is a backstop rather than the way a change is noticed. */
 const DAEMON_CAPABILITY_REFRESH_MS = 300_000
@@ -1077,10 +1079,21 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         void drainSessionRefreshes(generation)
       }, SESSION_EVENT_REFRESH_DEBOUNCE_MS)
     }
+    // A reconnect after the first one follows a gap, often a Control Plane restart whose daemons are still re-registering.
+    let connected = false
+    let presenceRechecks: ReturnType<typeof setTimeout>[] = []
+    const recheckPresence = () => {
+      presenceRechecks.forEach(clearTimeout)
+      presenceRechecks = STREAM_RECOVERY_PRESENCE_RECHECK_MS.map((ms) =>
+        setTimeout(() => settleInBackground(mutateAgents(), mutateDaemons()), ms)
+      )
+    }
     const unsubscribe = subscribeSessionEvents(activeOrg.id, {
       onConnect: () => {
         scheduleSessionRefresh()
         setSessionStreamGeneration((current) => current + 1)
+        if (connected) recheckPresence()
+        connected = true
       },
       onSession: scheduleSessionRefresh,
       onActivity: ({ sessionId }) =>
@@ -1094,12 +1107,13 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       sessionRefreshGenerationRef.current++
       sessionRefreshDirtyRef.current = false
       unsubscribe()
+      presenceRechecks.forEach(clearTimeout)
       if (sessionRefreshTimerRef.current) {
         clearTimeout(sessionRefreshTimerRef.current)
         sessionRefreshTimerRef.current = null
       }
     }
-  }, [orgLoading, activeOrg?.id, ssoGated, drainSessionRefreshes, mutatePendingApprovals])
+  }, [orgLoading, activeOrg?.id, ssoGated, drainSessionRefreshes, mutatePendingApprovals, mutateAgents, mutateDaemons])
 
   const members = MOCK_MODE ? MOCK_MEMBERS : (fetchedMembers ?? [])
   const membersLoaded = MOCK_MODE || fetchedMembers !== undefined
