@@ -83,6 +83,27 @@ The exact-instruction control keeps the runner's 120-second default. The two-tur
 
 To export evaluation spans, set `AGENTCONNECT_EVAL_OTEL=true` and configure a standard traces exporter, for example `OTEL_TRACES_EXPORTER=otlp` plus `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. The evaluation flag alone is deliberately insufficient: a run fails as an infrastructure error when no recording exporter is configured, instead of silently producing non-recording spans.
 
+## Real-model scenarios
+
+Each of these replays a bad case that was fixed once, against a real subject. They report counts and never assert the model's choice; a test fails only when the apparatus does. None runs in CI.
+
+| Entry                                              | Guards                                                               | Writes                                                 |
+| -------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------ |
+| `evals/test/thread-chatter-real.test.ts`           | #4186: answering people's untagged chatter after one tag             | `.artifacts/evaluation/thread-chatter/summary.json`    |
+| `evals/test/webchat-addressed-real.test.ts`        | #2865: a second webchat agent answering a post addressed to another  | `.artifacts/evaluation/webchat-addressed/summary.json` |
+| `evals/test/webchat-night-collection-real.test.ts` | Night reports answered in prose instead of `sendMessage {sessionId}` | `.artifacts/evaluation/night-collection/summary.json`  |
+
+```bash
+pnpm --filter @agentconnect.md/daemon build
+export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
+export AGENTCONNECT_EVAL_SUBJECT_ROOT=/absolute/path/to/subject
+export AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS=<template-agent-id>
+export AGENTCONNECT_EVAL_TRIALS=3   # per scenario
+pnpm exec vitest run evals/test/thread-chatter-real.test.ts
+```
+
+The coordinator and `sendMessage` probes in [`packages/daemon/test/acp-matrix`](../packages/daemon/test/acp-matrix/README.md) cover the Auto coordinator's and the messaging tool's bad cases the same way; pin their model with `AC_RUNTIME_MATRIX_COORDINATOR_MODEL` and `AC_RUNTIME_MATRIX_SENDMESSAGE_MODEL`.
+
 ## Evidence and privacy
 
 Each trial writes a mode-0600 `run.json`, `events.jsonl`, and ATIF v1.7 `trajectory.json` below:

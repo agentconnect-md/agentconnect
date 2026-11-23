@@ -846,6 +846,9 @@ function runSendMessageRuntime(
         reps,
         updates,
         support: { withTimeout, providerUnavailable, errorReason: turnFailureReason },
+        ...(process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_MODEL?.trim()
+          ? { model: process.env.AC_RUNTIME_MATRIX_SENDMESSAGE_MODEL.trim() }
+          : {}),
         onRun
       }),
     skipped: (note) =>
