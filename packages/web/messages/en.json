@@ -438,7 +438,12 @@
       "emailProvider": "Email comes from your sign-in provider.",
       "cancel": "Cancel",
       "saving": "Saving…",
-      "save": "Save"
+      "save": "Save",
+      "deleteAccount": "Delete account",
+      "deleteAccountHint": "Leaves every organization and permanently deletes your account.",
+      "delete": "Delete",
+      "confirmDelete": "Confirm delete",
+      "ownsOrganizations": "You’re the only owner of {orgs}. Delete these organizations or make someone else an owner first."
     },
     "account": "Account",
     "name": "Name",

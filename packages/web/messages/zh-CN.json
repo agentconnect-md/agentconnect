@@ -438,7 +438,12 @@
       "emailProvider": "邮箱来自你的登录服务商。",
       "cancel": "取消",
       "saving": "保存中…",
-      "save": "保存"
+      "save": "保存",
+      "deleteAccount": "删除账户",
+      "deleteAccountHint": "退出所有组织，并永久删除你的账户。",
+      "delete": "删除",
+      "confirmDelete": "确认删除",
+      "ownsOrganizations": "你是 {orgs} 的唯一所有者。请先删除这些组织，或把所有者交给其他成员。"
     },
     "account": "账户",
     "name": "姓名",

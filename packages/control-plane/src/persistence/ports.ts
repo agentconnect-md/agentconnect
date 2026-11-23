@@ -7246,6 +7246,16 @@ export interface OrgMemberRecord {
   joinedAt: Date
 }
 
+/** One of the caller's own memberships, as account deletion sees it. */
+export interface AccountMembershipRecord {
+  orgId: string
+  slug: string
+  name: string | null
+  role: OrgMemberRole
+  /** No other active owner remains, so leaving would orphan the org. */
+  soleOwner: boolean
+}
+
 /** A member as the organization's directory knows it: by the directory's own id, never by address. */
 export interface DirectoryMemberRecord {
   userId: string
@@ -7650,6 +7660,12 @@ export interface UserRepo {
     actingUserId: string,
     chat?: MemberChatRelease
   ): Promise<MemberRemovalResult>
+
+  /** Every org the user belongs to, suspended memberships included; `soleOwner` marks one leaving would orphan. */
+  listAccountMemberships(userId: string): Promise<AccountMembershipRecord[]>
+
+  /** Delete the account row and record its sign-in cutoff in one transaction; the caller has already left every org. */
+  deleteAccount(userId: string, cutoffAt: Date, expiresAt: Date): Promise<void>
 
   /** Unlocked dry-run of `removeMember` for the confirmation dialog — advisory display only, never an authorization input. */
   previewMemberRemoval(

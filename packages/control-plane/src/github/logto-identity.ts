@@ -684,6 +684,13 @@ export class LogtoIdentityService {
     })
   }
 
+  /** Delete this Logto user and every identity linked to it; an already-missing user counts as deleted. */
+  async deleteUser(sub: string): Promise<void> {
+    const res = await this.request(`/api/users/${encodeURIComponent(sub)}`, { method: 'DELETE' })
+    if (!res.ok && res.status !== 404) throw await this.responseError('logto user delete', res)
+    this.invalidate(sub)
+  }
+
   /** Drop every cached identity for one user. Called after a link/unlink, so the
    *  Profile does not keep showing a method the user just changed — and, fenced,
    *  so an unlinked identity cannot survive as an authorization grant. */
