@@ -281,6 +281,29 @@ describe('RelayCpClient', () => {
     }
   })
 
+  it('forwards mattermostActionSecret from rc/auth/ok', async () => {
+    const onMattermostActionSecret = vi.fn()
+    const mmSecret = 'm'.repeat(43)
+    const { client, transport } = makeClient({ onMattermostActionSecret })
+    client.start()
+    await flush()
+    const auth = transport.lastReq('rc/auth')!
+    transport.inject(
+      buildRelayCpFrame(
+        'rc/auth/ok',
+        {
+          heartbeatSec: 15,
+          serverTime: '2026-07-07T00:00:00.000Z',
+          mattermostActionSecret: mmSecret
+        },
+        { corr: auth.id }
+      )
+    )
+    await flush()
+    expect(onMattermostActionSecret).toHaveBeenCalledWith(mmSecret)
+    await client.stop()
+  })
+
   it('applies a replay that arrives in the same turn as rc/registered, after onReady', async () => {
     const calls: string[] = []
     const { client, transport } = makeClient({
