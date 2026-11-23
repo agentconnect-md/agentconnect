@@ -585,9 +585,12 @@ by its enclosing admission/operation deadline and authority expiry. This include
 `provider-credentials/request`, `linearcred/request`, CP-homed memory reads and
 writes, `session/admit`, and CP-relayed `executor/prepare`; also relay
 Webchat/agent-chat verification, `rd/hello`, and `rc/thread-lookup`.
-`session/admit` only counts today, so while it does a daemon sends it once over a
-live link, without waiting out a reconnect, and never holds a session on its answer
-([org-session-policy.md](org-session-policy.md#admission)). Reuse the relay's bounded
+`session/admit` blocks a new session only for an organization whose last answer said it
+enforces a session limit: the daemon then waits up to 10 seconds in total, a reconnect included,
+re-sends the same idempotent id once over a replaced link, and refuses the session as temporarily
+unavailable when no answer arrives. For any other organization it sends once over a live link
+with a 2-second timeout and fails open
+([org-session-policy.md](org-session-policy.md#the-daemon-under-enforcement)). Reuse the relay's bounded
 `waitReady` pattern and add its equivalent on the daemon. An uncached valid
 token or already-acknowledged platform follow-up cannot fail solely because the
 link is reconnecting. Authorization rejection stays distinct from transport

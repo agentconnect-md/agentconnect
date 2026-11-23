@@ -181,7 +181,9 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_ADMIT_FEATURE,
+  SESSION_LIMIT_REACHED,
   type SessionAdmitRequest,
+  type SessionAdmitResult,
   CRON_REPORT_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_FILE_SNAPSHOT_FEATURE,
@@ -202,6 +204,7 @@ import {
   isInstallWideFrameType
 } from '@agentconnect.md/protocol'
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
+import type { SessionAdmitOutcome } from '../session-admission.js'
 import type { AgentControlDeps } from './control/agent.js'
 import type { ControlWire } from './control/context.js'
 import type { CodeHostControlDeps } from './control/codehost.js'
@@ -232,8 +235,19 @@ const ACK_TIMEOUT_MS = 5000
 const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
 /** One deadline for a `memory/store` op, the shim carrier's per-op timeout; a safe re-send fits inside it. */
 const MEMORY_STORE_TIMEOUT_MS = 30_000
-/** One `session/admit` attempt: one short CP transaction, and a new session never waits longer for it. */
+/** One `session/admit` attempt while its organization does not enforce: a new session never waits longer for it. */
 const SESSION_ADMIT_TIMEOUT_MS = 2_000
+/** The whole wait, reconnect included, while its organization enforces (high-availability.md turn-path budget). */
+export const SESSION_ADMIT_BUDGET_MS = 10_000
+
+/** A CP that judged this daemon unable to read the refusal variant sends it as a `RATE_LIMITED` error instead. */
+function refusalFromError(err: unknown): Extract<SessionAdmitOutcome, { kind: 'refused' }> | undefined {
+  if (!(err instanceof WireError) || err.code !== 'RATE_LIMITED' || err.details?.reason !== SESSION_LIMIT_REACHED)
+    return undefined
+  const { limit, used, resetsAt } = err.details
+  if (typeof limit !== 'number' || typeof used !== 'number' || typeof resetsAt !== 'string') return undefined
+  return { kind: 'refused', limit, used, resetsAt }
+}
 /** A capability request reads the agent's rows and may join an open one; one attempt, a generous window. */
 const CAPABILITY_CALL_BUDGET_MS = 15_000
 /** The `memory/store` ops that change nothing, so a re-send needs no operation id. */
@@ -1008,25 +1022,48 @@ export class CpClient {
     return this.connected() && this.supportsServerFeature(SESSION_ADMIT_FEATURE)
   }
 
-  /** D→C `session/admit` (org-session-policy.md, Admission): one attempt over the live link only, never thrown, so a new session is never held on it. */
+  /** D→C `session/admit` (org-session-policy.md): one short attempt over a live link, or with `wait` the turn-path budget across a reconnect; never thrown. */
   async admitSession(
     agentId: string,
     sessionId: string,
-    purpose?: SessionAdmitRequest['purpose']
-  ): Promise<'admitted' | 'unsupported' | 'failed'> {
-    if (!this.admitsSessions()) return 'unsupported'
+    purpose?: SessionAdmitRequest['purpose'],
+    opts: { wait?: boolean } = {}
+  ): Promise<SessionAdmitOutcome> {
+    const payload = { agentId, sessionId, ...(purpose ? { purpose } : {}) }
     try {
-      const frame = this.scopedFrame('session/admit', { agentId, sessionId, ...(purpose ? { purpose } : {}) })
-      const rep = await this.correlator.request(frame, (encoded) => this.transport!.send(encoded), {
-        maxTries: 1,
-        ackTimeoutMs: SESSION_ADMIT_TIMEOUT_MS
-      })
-      if (rep.type === 'session/admit/result' && rep.payload.admitted) return 'admitted'
+      let rep: AnyFrame | 'unsupported'
+      if (opts.wait) {
+        // The same id is idempotent at the CP, so it is safely re-sent once over a replaced link.
+        rep = await this.turnPathRequest<AnyFrame | 'unsupported'>(
+          'session/admit',
+          SESSION_ADMIT_BUDGET_MS,
+          true,
+          (budgetMs) =>
+            this.supportsServerFeature(SESSION_ADMIT_FEATURE)
+              ? this.budgetedRequest('session/admit', payload, budgetMs)
+              : Promise.resolve('unsupported' as const)
+        )
+      } else {
+        if (!this.admitsSessions()) return { kind: 'unsupported' }
+        rep = await this.correlator.request(
+          this.scopedFrame('session/admit', payload),
+          (encoded) => this.transport!.send(encoded),
+          { maxTries: 1, ackTimeoutMs: SESSION_ADMIT_TIMEOUT_MS }
+        )
+      }
+      if (rep === 'unsupported') return { kind: 'unsupported' }
+      if (rep.type === 'session/admit/result') {
+        const result = rep.payload as SessionAdmitResult
+        if (result.admitted) return { kind: 'admitted', ...(result.enforcing ? { enforcing: true } : {}) }
+        return { kind: 'refused', limit: result.limit, used: result.used, resetsAt: result.resetsAt }
+      }
       this.deps.log.debug(`cp: session/admit for ${sessionId} got ${rep.type}`)
     } catch (err) {
+      const refused = refusalFromError(err)
+      if (refused) return refused
       this.deps.log.debug(`cp: session/admit for ${sessionId} failed (${(err as Error).message})`)
     }
-    return 'failed'
+    return { kind: 'failed' }
   }
 
   /**

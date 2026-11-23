@@ -707,7 +707,12 @@ outward id and `purpose: 'memory-dream'`. When the agent's stored policy runs
 dreaming on the managed provider, the Control Plane exempts it from the
 organization's monthly session count, up to a per-agent daily cap; see
 [org-session-policy.md, Maintenance exemption](org-session-policy.md#maintenance-exemption).
-The dream runs whatever the answer.
+The dream runs on an admission and whenever the organization is not enforcing a session
+limit. When the organization enforces one and refuses the dream (a dream past the daily cap
+counts like any session) or cannot be asked within the admission budget, the daemon skips
+this run before any credential or host exists: the dream ends `failed` with the refusal as its
+message, and the next scheduled run tries again. Background maintenance loses nothing a
+person sees by waiting; see [org-session-policy.md, Enforcement](org-session-policy.md#enforcement).
 
 ## 11. Explicitly out of scope (v1)
 

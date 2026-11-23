@@ -137,6 +137,11 @@ export interface WebchatHost {
   coordinatorCoordinate?(agentId: string, conversationId: string, authorId: string): Promise<string | undefined>
   /** Key a coordinator conversation's message on the task holding its thread (webchat-threads.md §4). */
   keyCoordinatorMessage?(agentId: string, msg: NormalizedMessage): Promise<void>
+  /** Admit an API turn's new session before its ack, so a refusal answers the caller before any stream (org-session-policy.md). */
+  admitApiSession?(
+    agentId: string,
+    msg: NormalizedMessage
+  ): Promise<{ reason: 'session_limit_reached' | 'session_quota_unavailable'; detail: string } | undefined>
   /** Run a control command sent from the console into a platform session; true when the message was one. */
   continuationCommand?(
     agentId: string,
@@ -217,6 +222,11 @@ export class WebchatTransport {
     const admission = this.application.checkAdmission(result.turn)
     if (!admission.accepted) return { ...admission, turnId }
     const { message: msg, agentId: targetAgentId } = result.turn
+    // An API caller holds an HTTP request open on this ack, so a refused new session is its answer, not a stream.
+    if (apiProtocol !== undefined && !steer) {
+      const refused = await this.host.admitApiSession?.(targetAgentId, msg)
+      if (refused) return { accepted: false, turnId, reason: refused.reason, detail: refused.detail }
+    }
     this.pruneWebchatStreams()
     const streamKey = this.webchatStreamKey(turnId, targetAgentId)
     const existingStream = this.webchatStreams.get(streamKey)

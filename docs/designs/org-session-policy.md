@@ -1,6 +1,6 @@
 # Organization Session Policy
 
-**Status:** storage, delivery, monthly session counting, admission, and Control Plane
+**Status:** storage, delivery, monthly session counting, admission, and
 [enforcement](#enforcement) implemented; see [Not yet](#not-yet).
 
 ## What it is
@@ -148,11 +148,11 @@ request is answered `admitted: true`. Deleting the organization deletes its admi
 record of, before it prepares the session's workspace, issues its model credential, or starts its
 runtime, so chat, cron, hook, delegation, and task turns are all admitted at that one point. A
 later turn, or a runtime recreated after a failed load, finds the local record and sends nothing.
-It sends once, over a live link only, with a short timeout and no retry, and it fails open: the
-session starts whatever the answer, and one whose admission never committed is counted at its first
-milestone instead. A memory dream does not open its session this way: the daemon admits it once per
-dream, with `purpose: 'memory-dream'` and the outward id of the dream's execution session, before
-it issues the dream host's model credential or starts that host, under the same fail-open rules.
+How long it waits depends on the organization's last answer; see
+[The daemon under enforcement](#the-daemon-under-enforcement). A memory dream does not open its
+session this way: the daemon admits it once per dream, with `purpose: 'memory-dream'` and the
+outward id of the dream's execution session, before it issues the dream host's model credential or
+starts that host.
 
 ### Maintenance exemption
 
@@ -241,8 +241,37 @@ there, with their own
 lease). Model credentials come from the key server, which the daemon asks directly, so the Control
 Plane cannot check them; a daemon that admits sessions never asks for one before its admission.
 
+### The daemon under enforcement
+
+The daemon remembers, in memory and per organization, whether the last `session/admit` answer for
+one of its agents said `enforcing`; an answer without the field, from an older Control Plane, reads
+as not enforcing, and a restart forgets every answer.
+
+- **Not enforcing, or no answer yet.** The daemon sends the admission once over a live link with a
+  2-second timeout and fails open: with no link, no answer, or a Control Plane that does not admit
+  sessions, the session starts, and one whose admission never committed is admitted and counted
+  at its first milestone. A refusal is still honored, which is how a daemon learns that an organization started
+  enforcing.
+- **Enforcing.** The daemon waits for the answer within the turn-path budget of
+  [high-availability.md](high-availability.md): 10 seconds in total, a reconnect included, and the
+  same id is re-sent once over a replaced link. With no answer in that budget the session is refused
+  as `session_quota_unavailable`, which is temporary: the next turn asks again.
+- **Refused.** `session_limit_reached` is final for that attempt. The session's runtime never starts
+  and no model credential is issued; the next turn in the same conversation asks again, since a
+  refused id holds no admission.
+
+Each entry reports a refusal through its own result. A Webchat or chat-platform turn shows the
+refusal in the conversation: the organization's used sessions, its limit, and when the count resets,
+or that the check is temporarily unavailable. A chat API turn (`ai-sdk-ui`, `ag-ui`) is admitted
+before its acknowledgement, so the HTTP request is answered `429` for `session_limit_reached` and
+`503` for `session_quota_unavailable`, with the same text as `message`, before any stream starts. A
+hook run ends `failed` with the reason as its completion reason; a scheduled task, a delegation and
+any other caller of the turn receive the turn's failure with the same text. A memory dream skips
+the run ([memory-dreaming.md](memory-dreaming.md)).
+
 ## Not yet
 
-- The daemon still fails open on every admission; waiting on the answer and refusing at the limit
-  is daemon-side work.
+- A session that started fail-open and whose organization has reached its limit by its first
+  milestone runs unrecorded: the [milestone guard](#enforcement) refuses its metadata, and the
+  daemon's outbox keeps the snapshot and retries it, so it is recorded once the month resets.
 - Applying `historyRetentionDays` to hosted session history is later work.
