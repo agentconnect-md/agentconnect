@@ -179,6 +179,68 @@ export interface BillingPurchaseCreated {
 export const PURCHASE_MIN_MICRO = 5_000_000
 export const PURCHASE_MAX_MICRO = 2_000_000_000
 
+// ── Plans (read-only): prices are integer USD cents and credit is microUSD, as the service sends them ──
+
+/** The Free tier's stable slug; a renewal scheduled to it is a cancellation. */
+export const FREE_TIER_ID = 'free'
+
+export interface BillingPlanRef {
+  tierId: string
+  tierName: string
+  optionId: string
+  optionName: string
+}
+
+/** Unexpired plan and operator credit sharing one expiry; already part of the account's `balanceMicro`. */
+export interface BillingPlanGrant {
+  expiresAt: string
+  remainingMicro: number
+}
+
+/** One plan-credit grant, live or expired; already part of the account's `balanceMicro` while live. */
+export interface BillingPlanBatch {
+  grantedAt: string
+  grantedMicro: number
+  remainingMicro: number
+  expiresAt: string
+  expired: boolean
+}
+
+export interface BillingPendingChange {
+  id: string
+  kind: 'checkout' | 'upgrade'
+  tierId: string
+  optionId: string
+  /** Provider page where the payment is completed; null until it exists. Only `https:` survives the boundary. */
+  payUrl: string | null
+}
+
+export interface BillingSubscription extends BillingPlanRef {
+  sessionLimit: number
+  /** Monthly price, USD cents. */
+  priceCents: number
+  /** Credit granted per paid period, microUSD. */
+  grantMicro: number
+  /** Null ⇒ unlimited. */
+  retentionDays: number | null
+  /** ISO instant the current paid period ends; null when not on a paid plan. */
+  paidThrough: string | null
+  /** The plan taken at `paidThrough` (Free for a cancellation); null when nothing is scheduled. */
+  scheduled: BillingPlanRef | null
+  /** Soonest first. Absent ⇒ an older service. */
+  grants?: BillingPlanGrant[]
+  /** The one unsettled checkout or upgrade. Absent ⇒ an older service. */
+  pendingChange?: BillingPendingChange | null
+  /** `syncing` ⇒ the previous plan's limits still apply. Absent ⇒ an older service. */
+  entitlementSync?: 'synced' | 'syncing'
+  /** Unexpired plan credit inside `balanceMicro`, microUSD. Absent ⇒ an older service. */
+  planCreditMicro?: number
+  /** Plan credit that expired unused this UTC month, microUSD. Absent ⇒ an older service. */
+  expiredThisMonthMicro?: number
+  /** Every grant by expiry, expired ones included. Absent ⇒ an older service. */
+  batches?: BillingPlanBatch[]
+}
+
 /** Billing base URL, or null when this deployment has no billing service. */
 export function billingBase(): string | null {
   const runtime = typeof window !== 'undefined' ? window.__AC_ENV?.BILLING_URL : process.env.BILLING_URL
@@ -359,6 +421,80 @@ export function assertTransactionsPage(
   }
 }
 
+function isPlanRef(v: unknown): v is BillingPlanRef {
+  const r = v as Partial<BillingPlanRef> | null
+  return (
+    !!r &&
+    typeof r.tierId === 'string' &&
+    typeof r.tierName === 'string' &&
+    typeof r.optionId === 'string' &&
+    typeof r.optionName === 'string'
+  )
+}
+
+const isNullableFinite = (v: unknown) => v === null || isFiniteNumber(v)
+const isNullableString = (v: unknown) => v === null || typeof v === 'string'
+
+// The plan fields are the fact and refuse the read; the newer fields are garnish, so absent is the older contract and malformed drops.
+export function assertSubscription(body: unknown): asserts body is BillingSubscription {
+  const b = body as (Partial<BillingSubscription> & Record<string, unknown>) | null
+  if (
+    !isPlanRef(b) ||
+    !isFiniteNumber(b.sessionLimit) ||
+    !isFiniteNumber(b.priceCents) ||
+    !isFiniteNumber(b.grantMicro) ||
+    !isNullableFinite(b.retentionDays) ||
+    !isNullableString(b.paidThrough) ||
+    !(b.scheduled === null || isPlanRef(b.scheduled))
+  ) {
+    throw new BillingShapeError('subscription')
+  }
+  if (
+    b.grants !== undefined &&
+    !(
+      Array.isArray(b.grants) &&
+      b.grants.every((g) => !!g && typeof g.expiresAt === 'string' && isFiniteNumber(g.remainingMicro))
+    )
+  )
+    delete b.grants
+  const p = b.pendingChange
+  if (
+    p !== undefined &&
+    p !== null &&
+    !(
+      typeof p.id === 'string' &&
+      (p.kind === 'checkout' || p.kind === 'upgrade') &&
+      typeof p.tierId === 'string' &&
+      typeof p.optionId === 'string' &&
+      isNullableString(p.payUrl)
+    )
+  )
+    delete b.pendingChange
+  if (b.entitlementSync !== undefined && b.entitlementSync !== 'synced' && b.entitlementSync !== 'syncing')
+    delete b.entitlementSync
+  if (b.planCreditMicro !== undefined && !isFiniteNumber(b.planCreditMicro)) delete b.planCreditMicro
+  if (b.expiredThisMonthMicro !== undefined && !isFiniteNumber(b.expiredThisMonthMicro)) delete b.expiredThisMonthMicro
+  if (
+    b.batches !== undefined &&
+    !(
+      Array.isArray(b.batches) &&
+      b.batches.every(
+        (x) =>
+          !!x &&
+          typeof x.grantedAt === 'string' &&
+          isFiniteNumber(x.grantedMicro) &&
+          isFiniteNumber(x.remainingMicro) &&
+          typeof x.expiresAt === 'string' &&
+          typeof x.expired === 'boolean'
+      )
+    )
+  )
+    delete b.batches
+}
+
+// Remote input becomes an `href` only as `https:`.
+const httpsOnly = (url: string | null | undefined): string | null => (url?.startsWith('https://') ? url : null)
+
 async function request<T>(path: string, init?: { method: 'POST'; body: unknown } | { method: 'DELETE' }): Promise<T> {
   const base = billingBase()
   if (!base) throw new BillingError('billing is not configured for this deployment', 0)
@@ -473,6 +609,20 @@ export async function removeBillingCard(orgId: string): Promise<void> {
   await request<unknown>(`${orgPath(orgId)}/card`, { method: 'DELETE' })
 }
 
+/** The org's plan, or null when it has none (404). */
+export async function fetchBillingSubscription(orgId: string): Promise<BillingSubscription | null> {
+  let body: unknown
+  try {
+    body = await request<unknown>(`${orgPath(orgId)}/subscription`)
+  } catch (e) {
+    if (e instanceof BillingError && e.status === 404) return null
+    throw e
+  }
+  assertSubscription(body)
+  const pending = body.pendingChange
+  return pending ? { ...body, pendingChange: { ...pending, payUrl: httpsOnly(pending.payUrl) } } : body
+}
+
 const MICRO_PER_USD = 1_000_000
 
 /** A decimal-string amount, for display only. `Number` is fine HERE and only here: the
@@ -498,6 +648,17 @@ export function fmtDecimalUsd(amount: string): string {
 export function fmtMicroUsd(micro: number): string {
   const sign = micro < 0 ? '-' : ''
   return `${sign}$${(Math.abs(micro) / MICRO_PER_USD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** A plan price in USD cents, whole dollars without decimals (`$40`, `$19.99`). Display only. */
+export function fmtCents(cents: number): string {
+  const digits = cents % 100 === 0 ? 0 : 2
+  return (cents / 100).toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  })
 }
 
 /** Every transaction posted at or after `sinceMs`, newest first. The window goes to the

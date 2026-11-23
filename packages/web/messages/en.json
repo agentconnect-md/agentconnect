@@ -5225,6 +5225,7 @@
     "usd": "USD",
     "retry": "Retry",
     "balance": "Balance",
+    "ownersAddCredits": "Owners add credits",
     "lastDeduction": "Last deduction",
     "alertThreshold": "Alert threshold",
     "statePill": {
@@ -5274,7 +5275,8 @@
       "rangeHint": "Minimum ${min}, maximum ${max} per purchase.",
       "openingCheckout": "Opening Stripe checkout…",
       "addAmount": "Add {amount}",
-      "addCreditsButton": "Add credits"
+      "addCreditsButton": "Add credits",
+      "close": "Close"
     },
     "activity": {
       "title": "Activity",
@@ -5426,6 +5428,56 @@
       "addCard": "Add card",
       "copyBillingLink": "Copy billing link",
       "copied": "Copied"
+    },
+    "plan": {
+      "title": "Plan",
+      "loadError": "Couldn't load this organization's plan: {error}",
+      "noneTitle": "No plan yet",
+      "noneBody": "This organization isn't on a plan.",
+      "ownersChange": "Owners change the plan",
+      "price": "{price} / month",
+      "renews": "{price} · renews {date}",
+      "ends": "{price} · ends {date}",
+      "sessions": "Sessions this month",
+      "resets": "Resets {date}",
+      "switching": "Switching to {plan} on {date}",
+      "switchingAtRenewal": "Switching to {plan} at the next renewal",
+      "syncing": "Limits updating",
+      "syncingHint": "The previous plan's limits apply until this plan's limits take effect.",
+      "pending": {
+        "checkoutTitle": "Your plan subscription is waiting for payment",
+        "upgradeTitle": "Your plan upgrade is waiting for payment",
+        "body": "The plan changes once the payment completes.",
+        "bodyNoLink": "The payment page is being prepared. Check back shortly.",
+        "pay": "Complete payment"
+      },
+      "limitReached": {
+        "title": "Session limit reached",
+        "text": "New sessions resume {date}. Existing sessions continue and still need balance."
+      },
+      "credits": {
+        "planCredits": "Plan credits",
+        "topUps": "Top-ups",
+        "expiring": "Expiring",
+        "expiringOn": "Expiring {date}",
+        "open": "Plan credits by cycle",
+        "title": "Plan credits",
+        "close": "Close",
+        "columns": {
+          "cycle": "Cycle",
+          "granted": "Granted",
+          "remaining": "Remaining",
+          "expires": "Expires (UTC)"
+        },
+        "cycle": "{date} cycle",
+        "tags": {
+          "next": "expires next",
+          "active": "active",
+          "expired": "expired"
+        },
+        "empty": "No plan credits right now.",
+        "footer": "Earliest-expiring credits are used first, then top-ups."
+      }
     }
   },
   "Settings": {

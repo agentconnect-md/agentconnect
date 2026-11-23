@@ -51,6 +51,13 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { AgentIconView, LoadingState, MarkSlot, ModelMark, modelProviderSlug } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AddCardDialog, CardReturnBanner, PaymentMethodCard } from '@/components/console/billing/CardBinding'
+import {
+  PlanBanners,
+  PlanCard,
+  PlanCreditStrip,
+  ScheduledChangeStrip,
+  usePlanReads
+} from '@/components/console/billing/Plan'
 import { useCardSetupReturn } from '@/lib/use-card-setup-return'
 
 // Fixed tracks keep each `.row` grid aligned with its header; mobile scrolls the card sideways.
@@ -709,7 +716,8 @@ function CheckoutBanner({
 
 // ── Add credits (owners only — the service enforces this; the UI just agrees) ─
 
-function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: string }) {
+// The amount picker and the checkout hand-off, shared by the inline card and the plan layout's dialog.
+function AddCreditsForm({ orgId, returnPath }: { orgId: string; returnPath: string }) {
   const t = useTranslations('Billing.addCredits')
   const [preset, setPreset] = useState<number>(50)
   const [custom, setCustom] = useState('')
@@ -742,85 +750,120 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
   }
 
   return (
+    <>
+      <div className="grid grid-cols-4 gap-2">
+        {PRESETS_USD.map((v) => {
+          const on = custom === '' && preset === v
+          return (
+            <button
+              key={v}
+              type="button"
+              className="mono flex h-[38px] cursor-pointer items-center justify-center rounded-[9px] text-[14px] font-semibold"
+              style={
+                on
+                  ? { border: '1.5px solid var(--brand)', background: 'var(--brand-soft)' }
+                  : { border: '1px solid var(--border-default)', background: 'var(--surface-card)' }
+              }
+              onClick={() => {
+                setPreset(v)
+                setCustom('')
+              }}
+            >
+              ${v}
+            </button>
+          )
+        })}
+        {/* The inner input takes focus, so the wrapper shows the focus look via focus-within; invalid stays red. */}
+        <div
+          className={`flex h-[38px] items-center gap-1.5 rounded-[6px] border px-2.5 ${
+            invalidCustom
+              ? 'border-(--status-error)'
+              : 'border-(--border-default) focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)'
+          }`}
+        >
+          <span className="mono text-[12.5px] text-(--text-tertiary)">$</span>
+          <input
+            value={custom}
+            // Digits and one dot only — anything else never enters the state.
+            onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
+            placeholder={t('otherPlaceholder')}
+            inputMode="decimal"
+            aria-label={t('customAmountAriaLabel')}
+            className="mono w-full min-w-0 border-0 bg-transparent text-[12.5px] outline-none"
+          />
+        </div>
+      </div>
+      <div
+        className="mt-2 font-sans text-[11.5px] font-normal leading-[1.5]"
+        style={{ color: invalidCustom ? 'var(--status-error)' : 'var(--text-tertiary)' }}
+      >
+        {invalidCustom
+          ? t('rangeError', {
+              min: MIN_USD.toFixed(2),
+              max: MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })
+            })
+          : t('rangeHint', {
+              min: MIN_USD.toFixed(2),
+              max: MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })
+            })}
+      </div>
+      {error && (
+        <div className="mt-2 flex items-center gap-2 font-sans text-[12px] text-(--status-error)">
+          <Icon name="triangle-exclamation-point" size={14} />
+          <span className="min-w-0 flex-1">{error}</span>
+        </div>
+      )}
+      <div className="mt-3">
+        <Button size="md" disabled={!valid || submitting} onClick={() => void submit()} className="w-full">
+          <span className="inline-flex items-center gap-2">
+            <Icon name={submitting ? 'loader-circle' : 'plus'} size={15} />
+            {submitting
+              ? t('openingCheckout')
+              : valid
+                ? t('addAmount', { amount: fmtMicroUsd(cents * 10_000) })
+                : t('addCreditsButton')}
+          </span>
+        </Button>
+      </div>
+    </>
+  )
+}
+
+function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: string }) {
+  const t = useTranslations('Billing.addCredits')
+  return (
     <div id="add-credits" className="card flex flex-col">
       <div className="cardhead">
         <span className="cardtitle">{t('title')}</span>
       </div>
       <div className="flex flex-1 flex-col p-4">
-        <div className="grid grid-cols-4 gap-2">
-          {PRESETS_USD.map((v) => {
-            const on = custom === '' && preset === v
-            return (
-              <button
-                key={v}
-                type="button"
-                className="mono flex h-[38px] cursor-pointer items-center justify-center rounded-[9px] text-[14px] font-semibold"
-                style={
-                  on
-                    ? { border: '1.5px solid var(--brand)', background: 'var(--brand-soft)' }
-                    : { border: '1px solid var(--border-default)', background: 'var(--surface-card)' }
-                }
-                onClick={() => {
-                  setPreset(v)
-                  setCustom('')
-                }}
-              >
-                ${v}
-              </button>
-            )
-          })}
-          {/* Focus lands on the inner input, so the wrapper carries the console's
-              input focus look via focus-within; invalid keeps the red border either way. */}
-          <div
-            className={`flex h-[38px] items-center gap-1.5 rounded-[6px] border px-2.5 ${
-              invalidCustom
-                ? 'border-(--status-error)'
-                : 'border-(--border-default) focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)'
-            }`}
-          >
-            <span className="mono text-[12.5px] text-(--text-tertiary)">$</span>
-            <input
-              value={custom}
-              // Digits and one dot only — anything else never enters the state.
-              onChange={(e) => setCustom(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
-              placeholder={t('otherPlaceholder')}
-              inputMode="decimal"
-              aria-label={t('customAmountAriaLabel')}
-              className="mono w-full min-w-0 border-0 bg-transparent text-[12.5px] outline-none"
-            />
-          </div>
+        <AddCreditsForm orgId={orgId} returnPath={returnPath} />
+      </div>
+    </div>
+  )
+}
+
+// The plan layout's purchase dialog: the Balance card's Add credits opens it instead of an inline card.
+function AddCreditsDialog({ orgId, returnPath, onClose }: { orgId: string; returnPath: string; onClose: () => void }) {
+  const t = useTranslations('Billing.addCredits')
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal max-w-[520px]" role="dialog" aria-modal="true" aria-label={t('title')}>
+        <div className="modalhead">
+          <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">{t('title')}</span>
+          <button className="iconbtn" onClick={onClose} aria-label={t('close')}>
+            <Icon name="x" size={16} />
+          </button>
         </div>
-        <div
-          className="mt-2 font-sans text-[11.5px] font-normal leading-[1.5]"
-          style={{ color: invalidCustom ? 'var(--status-error)' : 'var(--text-tertiary)' }}
-        >
-          {invalidCustom
-            ? t('rangeError', {
-                min: MIN_USD.toFixed(2),
-                max: MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })
-              })
-            : t('rangeHint', {
-                min: MIN_USD.toFixed(2),
-                max: MAX_USD.toLocaleString('en-US', { minimumFractionDigits: 2 })
-              })}
-        </div>
-        {error && (
-          <div className="mt-2 flex items-center gap-2 font-sans text-[12px] text-(--status-error)">
-            <Icon name="triangle-exclamation-point" size={14} />
-            <span className="min-w-0 flex-1">{error}</span>
-          </div>
-        )}
-        <div className="mt-3">
-          <Button size="md" disabled={!valid || submitting} onClick={() => void submit()} className="w-full">
-            <span className="inline-flex items-center gap-2">
-              <Icon name={submitting ? 'loader-circle' : 'plus'} size={15} />
-              {submitting
-                ? t('openingCheckout')
-                : valid
-                  ? t('addAmount', { amount: fmtMicroUsd(cents * 10_000) })
-                  : t('addCreditsButton')}
-            </span>
-          </Button>
+        <div className="modalbody">
+          <AddCreditsForm orgId={orgId} returnPath={returnPath} />
         </div>
       </div>
     </div>
@@ -1118,6 +1161,10 @@ export default function BillingView() {
   // twice — before rendering the notice that says billing is elsewhere.
   const offered = featureFlagEnabled('billing')
   const fetching = offered && orgId !== null
+  // The plan layout reads only behind both flags, so off means no request.
+  const plansOffered = offered && featureFlagEnabled('subscriptions')
+  const plan = usePlanReads(plansOffered ? orgId : null)
+  const [purchaseOpen, setPurchaseOpen] = useState(false)
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
@@ -1331,8 +1378,18 @@ export default function BillingView() {
         ? { label: t(`statePill.${acct.state}`), color: STATE_COLOR[acct.state] }
         : null
 
-  // Leads INTO the inline form (the design's modal equivalent): scroll to it, blink the card, focus the amount.
+  const statePill = pill && (
+    <span className="inline-flex items-center gap-[7px]">
+      <span className="h-[7px] w-[7px] rounded-full" style={{ background: pill.color }} />
+      <span className="font-sans text-[12px] font-medium leading-normal" style={{ color: pill.color }}>
+        {pill.label}
+      </span>
+    </span>
+  )
+
+  // Opens the plan layout's purchase dialog, or leads INTO the inline form: scroll to it, blink the card, focus the amount.
   const focusAddCredits = () => {
+    if (plansOffered) return setPurchaseOpen(true)
     const card = document.getElementById('add-credits')
     if (!card) return
     // A scripted scroll dodges the CSS reduced-motion block; 'instant' never animates, 'auto' would defer to CSS.
@@ -1399,48 +1456,79 @@ export default function BillingView() {
             canPay={myRole === 'owner'}
             onAddCredits={focusAddCredits}
           />
-          <div className="mb-[18px] grid items-stretch gap-[18px] desktop:grid-cols-2">
-            {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance
-                is every reconciliation fact there is. */}
-            <div className="card">
-              <div className="cardhead justify-between">
-                <span className="cardtitle">{t('balance')}</span>
-                {pill && (
-                  <span className="inline-flex items-center gap-[7px]">
-                    <span className="h-[7px] w-[7px] rounded-full" style={{ background: pill.color }} />
-                    <span className="font-sans text-[12px] font-medium leading-normal" style={{ color: pill.color }}>
-                      {pill.label}
+          {plansOffered && <PlanBanners reads={plan} />}
+          {plansOffered ? (
+            // Design: Balance and Plan side by side, a scheduled change under them; purchases open a dialog.
+            <div className="mb-[18px]">
+              <div className="grid items-stretch gap-[18px] desktop:grid-cols-2">
+                <div className="card flex flex-col" data-balance-card="true">
+                  <div className="cardhead h-[60px] justify-between gap-3 border-b-0">
+                    <span className="inline-flex items-center gap-3">
+                      <span className="cardtitle">{t('balance')}</span>
+                      {statePill}
                     </span>
-                  </span>
-                )}
-              </div>
-              <div className="px-[18px] pt-[22px] pb-5">
-                <div className="flex items-end gap-3.5">
-                  <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
-                    {fmtMicroUsd(acct.balanceMicro)}
-                  </span>
-                  <span className="mono pb-1.5 text-[12px] text-(--text-tertiary)">{t('usd')}</span>
-                </div>
-                <div className="mt-5 flex gap-[26px] border-t border-(--border-subtle) pt-4">
-                  <div>
-                    <div className="eyebrow">{t('lastDeduction')}</div>
-                    <div className="mono mt-[5px] text-[13px]">{lastDebit ? fmtPostedLocal(lastDebit.at) : '—'}</div>
+                    {myRole === 'owner' ? (
+                      <Button size="sm" onClick={() => setPurchaseOpen(true)}>
+                        {t('addCredits.title')}
+                      </Button>
+                    ) : myRole ? (
+                      <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                        {t('ownersAddCredits')}
+                      </span>
+                    ) : null}
                   </div>
-                  <div>
-                    <div className="eyebrow">{t('alertThreshold')}</div>
-                    <div className="mono mt-[5px] text-[13px]">{threshold}</div>
+                  <div className="flex flex-1 items-end gap-3 px-[18px] py-6">
+                    <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
+                      {fmtMicroUsd(acct.balanceMicro)}
+                    </span>
+                    <span className="mono pb-[5px] text-[12px] text-(--text-tertiary)">{t('usd')}</span>
                   </div>
+                  {plan.subscription.data && (
+                    <PlanCreditStrip sub={plan.subscription.data} balanceMicro={acct.balanceMicro} />
+                  )}
                 </div>
+                <PlanCard reads={plan} role={myRole} />
               </div>
+              <ScheduledChangeStrip sub={plan.subscription.data} />
+              {purchaseOpen && myRole === 'owner' && (
+                <AddCreditsDialog orgId={orgId} returnPath={pathname} onClose={() => setPurchaseOpen(false)} />
+              )}
             </div>
-            {/* Only owners move money — the service enforces it (403); the page
-                just doesn't offer members a form that would be refused. */}
-            {myRole === 'owner' ? (
-              <AddCreditsCard orgId={orgId} returnPath={pathname} />
-            ) : myRole ? (
-              <MembersDontPayCard />
-            ) : null}
-          </div>
+          ) : (
+            <div className="mb-[18px] grid items-stretch gap-[18px] desktop:grid-cols-2">
+              {/* One figure, no in-flight caveat: v1 has no hold layer, so the balance is every reconciliation fact there is. */}
+              <div className="card">
+                <div className="cardhead justify-between">
+                  <span className="cardtitle">{t('balance')}</span>
+                  {statePill}
+                </div>
+                <div className="px-[18px] pt-[22px] pb-5">
+                  <div className="flex items-end gap-3.5">
+                    <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
+                      {fmtMicroUsd(acct.balanceMicro)}
+                    </span>
+                    <span className="mono pb-1.5 text-[12px] text-(--text-tertiary)">{t('usd')}</span>
+                  </div>
+                  <div className="mt-5 flex gap-[26px] border-t border-(--border-subtle) pt-4">
+                    <div>
+                      <div className="eyebrow">{t('lastDeduction')}</div>
+                      <div className="mono mt-[5px] text-[13px]">{lastDebit ? fmtPostedLocal(lastDebit.at) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="eyebrow">{t('alertThreshold')}</div>
+                      <div className="mono mt-[5px] text-[13px]">{threshold}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {/* Only owners move money (the service answers 403); members get no form it would refuse. */}
+              {myRole === 'owner' ? (
+                <AddCreditsCard orgId={orgId} returnPath={pathname} />
+              ) : myRole ? (
+                <MembersDontPayCard />
+              ) : null}
+            </div>
+          )}
 
           <PaymentMethodCard
             orgId={orgId}

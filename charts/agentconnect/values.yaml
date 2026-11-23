@@ -138,6 +138,8 @@ features:
   # billing API is — kept separate so a missing endpoint is a misconfiguration rather than a
   # silent opt-out.
   billing: false
+  # The plan, session limit and plan credits on the billing page; shown only with billing on too.
+  subscriptions: false
   # Native-git workspaces — the one switch here that couples a server policy. On (default):
   # the console offers the "Git URL" workspace tile, and the pool's clone-origin policy is
   # whatever daemonPool.workspaceGitAllowedOrigins says (the daemon's own default admits any

@@ -112,6 +112,8 @@ export const consoleKeys = {
    *  have lost days a 24-hour answer carries in full. */
   billingActivity: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'billing-activity', range),
+  billingSubscription: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-subscription'),
+  sessionMonthUsage: (orgId: string | null | undefined) => consoleKey(orgId, 'usage-sessions'),
   sessions: (
     orgId: string | null | undefined,
     cursor: string,
