@@ -231,8 +231,8 @@ describe('BillingView plan layout', () => {
     expect(q('[data-plan-credits]')).toBeNull()
   })
 
-  it('shows a contract as contract pricing ending on its end date', async () => {
-    mocks.subscription.mockResolvedValue({ ...SUB, priceCents: null, scheduled: FREE })
+  it('shows a contract as contract pricing ending on its end date, with nothing scheduled', async () => {
+    mocks.subscription.mockResolvedValue({ ...SUB, priceCents: null, scheduled: null })
     await render()
     expect(q('[data-plan-price]')!.textContent).toBe('Contract pricing · ends Dec 4')
   })
