@@ -50,10 +50,11 @@ they do today (§5).
 
 ## 3. Codes
 
-| Code              | Meaning                                                                                                                                                                                                                     |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `out_of_credits`  | The organization's prepaid credit is used up. Adding credit lets it run again.                                                                                                                                              |
-| `standing_lapsed` | The organization's standing expired and nothing renewed it. The refuser fails closed: until whatever decides standing renews it, the organization may not run. Adding credit does not help; it clears when renewal resumes. |
+| Code              | Meaning                                                                                                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `out_of_credits`  | The organization had prepaid credit and it is used up or expired. Adding credit lets it run again.                                                                                                                                                                  |
+| `never_funded`    | No credit has ever reached the organization: no purchase, grant or promotion. Adding credit lets it start. Kept apart from `out_of_credits` because the next step reads differently, as the console's billing banner already tells "never funded" from "spent out". |
+| `standing_lapsed` | The organization's standing expired and nothing renewed it. The refuser fails closed: until whatever decides standing renews it, the organization may not run. Adding credit does not help; it clears when renewal resumes.                                         |
 
 **`standing_lapsed` is a refusal, not `unavailable`.** On the two key-server channels every code here
 rides inside `org_suspended`, the organization-wide verdict "may not run", with its consequences: the
@@ -96,15 +97,15 @@ the tagged message where the runtime will lift it:
 
 What each runtime hands up for a tagged message at 402, measured 2026-11-23 against a mock gateway with
 claude-agent-acp 0.109.1, codex-acp 2.9.0-agentconnect.1, deepseek-harness-acp 0.4.41 and OpenCode
-1.19.6. The probe's tag carried the status rather than a code; the message is passed through verbatim
-either way, and the same holds at 423.
+1.19.6. The same holds at 423 with `[ERR:standing_lapsed]`, behind `API Error: 423` and
+`unexpected status 423 Locked:`.
 
-| Runtime          | Text handed up                                                                          |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| Claude Code      | `API Error: 402 [ERR:402] Out of AgentConnect credits`                                  |
-| Codex            | `unexpected status 402 Payment Required: [ERR:402] Out of AgentConnect credits, url: …` |
-| DeepSeek Harness | `turn failed: [ERR:402] Out of AgentConnect credits`                                    |
-| OpenCode         | `[ERR:402] Out of AgentConnect credits`                                                 |
+| Runtime          | Text handed up                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------- |
+| Claude Code      | `API Error: 402 [ERR:out_of_credits] Out of AgentConnect credits`                                  |
+| Codex            | `unexpected status 402 Payment Required: [ERR:out_of_credits] Out of AgentConnect credits, url: …` |
+| DeepSeek Harness | `turn failed: [ERR:out_of_credits] Out of AgentConnect credits`                                    |
+| OpenCode         | `[ERR:out_of_credits] Out of AgentConnect credits`                                                 |
 
 The measurement is a one-off probe outside this repository, against four runtimes at pinned versions;
 the catalog has more, and an adapter bump can change its decoration without notice. The reader PR adds
