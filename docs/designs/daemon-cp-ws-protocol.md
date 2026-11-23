@@ -261,8 +261,11 @@ policy's revision is applied, the CP sends `config/push` key `sessions.orgHistor
 that org's entry to the READY daemons on the same replica that serve the org's agents and advertise
 the feature; any other daemon converges at its next `register/ok`. An older daemon gets neither and
 keeps its daemon-wide `sessionRetention`; a daemon reads an absent field (an older CP) as not synced.
-The daemon only counts with it for now; see
-[org-session-policy.md](org-session-policy.md#history-retention-dry-run).
+To a daemon that also advertises `org-history-reclaim-v1`, the snapshot carries `reclaim`, the
+install's `ORG_HISTORY_RECLAIM` switch; absent or `false`, the daemon deletes by its daemon-wide
+window alone and only counts with the org windows. With it `true`, the daemon deletes under the org
+windows, re-confirming them first with `history-retention/confirm`; see
+[org-session-policy.md](org-session-policy.md#reclaim).
 
 **Reconcile contract:** `register/ok` is the **source of truth**. On receipt the daemon: (1) starts/keeps every assignment & cron in the snapshot, (2) releases everything in `drop`, (3) adopts `routingEpoch` as its current routing fence. **CP wins all conflicts.** This makes reconnect convergence idempotent — re-issuing the same snapshot is a no-op.
 
@@ -1035,6 +1038,7 @@ have dedicated schemas under `packages/protocol/src/frames/`.
 | `session/visibility`, `session/visibility/snapshot`       | C→D           | correlated requests (`session/visibility/ok` / `ack`) | push CP-authoritative session privacy gate state (session-visibility.md §5.1) |
 | `channel/agents`                                          | D→C           | correlated reply                                      | resolve collaboration directory metadata                                      |
 | `session/admit`                                           | D→C           | correlated reply (`session/admit/result`)             | admit a new session for its organization, or refuse it at an enforced limit   |
+| `history-retention/confirm`                               | D→C           | correlated reply (`history-retention/confirm/result`) | re-confirm the orgs a retention sweep is about to reclaim for                 |
 | `error`, `ack`                                            | either        | correlated replies                                    | provide generic protocol outcomes                                             |
 
 `session/admit/result` is `{ admitted: true, counted, enforcing }`, where an older CP omits
@@ -1045,6 +1049,14 @@ non-retryable `RATE_LIMITED` error. While an organization enforces its limit, th
 of a session id never admitted admits it; at the limit `event/session-sync` is refused with
 `RATE_LIMITED` and `details` `{ reason: 'session_limit_reached', limit, used, resetsAt }`, and
 `event/session` is dropped ([org-session-policy.md](org-session-policy.md#enforcement)).
+
+`history-retention/confirm` is install-wide, sent only to a CP that advertises
+`history-retention-confirm-v1`: `{ orgIds }` (1 to 500) is answered with `{ entries, noPolicy,
+denied }`, where `entries` holds `{ orgId, revision, historyRetentionDays }` for each asked org
+with a policy, `noPolicy` the asked orgs without one, and `denied` every asked org in which the
+daemon serves no agent (on an org-scoped connection, any org but its own). It is a background read
+on no turn path: one attempt with a 10-second timeout, and no answer means the sweep deletes
+nothing under those orgs' windows ([org-session-policy.md](org-session-policy.md#reclaim)).
 
 ---
 

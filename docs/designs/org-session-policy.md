@@ -1,8 +1,9 @@
 # Organization Session Policy
 
 **Status:** storage, delivery, monthly session counting, admission, and
-[enforcement](#enforcement) implemented; history retention is delivered to daemons and
-[counted in a dry run](#history-retention-dry-run) only; see [Not yet](#not-yet).
+[enforcement](#enforcement) implemented; history retention is delivered to daemons,
+[counted in a dry run](#the-dry-run), and [reclaimed](#reclaim) behind an install switch that is
+off by default; see [Not yet](#not-yet).
 
 ## What it is
 
@@ -270,15 +271,15 @@ hook run ends `failed` with the reason as its completion reason; a scheduled tas
 any other caller of the turn receive the turn's failure with the same text. A memory dream skips
 the run ([memory-dreaming.md](memory-dreaming.md)).
 
-## History retention (dry run)
+## History retention
 
-Today a daemon deletes a finished session's row, transcript and workspace when it has been idle
-longer than the daemon's own window, `sessions.retention` (the console's "Expire sessions",
-delivered as `register/ok.sessionRetention` and `config/push`). A pool member serves many
-organizations, so one window per daemon cannot carry each organization's `historyRetentionDays`.
-This stage delivers the per-organization window to the daemons and has their retention sweep count
-what it would decide. **Nothing is deleted by it**: the deletion path is still exactly the
-daemon-wide rule.
+A daemon deletes a finished session's row, transcript and workspace when it has been idle longer
+than the daemon's own window, `sessions.retention` (the console's "Expire sessions", delivered as
+`register/ok.sessionRetention` and `config/push`). A pool member serves many organizations, so one
+window per daemon cannot carry each organization's `historyRetentionDays`. The per-organization
+window is delivered to the daemons, their retention sweep counts what it would decide in a
+[dry run](#the-dry-run), and with the install's [reclaim switch](#reclaim) on it decides deletion.
+With the switch off, the default, deletion is exactly the daemon-wide rule.
 
 ### Delivery
 
@@ -319,7 +320,8 @@ Each retention sweep, once a Control Plane has answered a `register`, runs the d
 pass that deletes, on the rows those passes are about to judge. It lists the finished sessions
 older than the shortest window in play (the daemon-wide one and every delivered one), and for each
 session this member judges compares today's decision (idle past the daemon-wide window) with the
-org's: its policy window, today's window when missing, or paused. When either would delete, it
+org's: its policy window as a pool member applies it, on any daemon, today's window when missing,
+or paused. When either would delete, it
 first applies the guards the real pass applies before deleting anything: its backoff after a kept
 workspace, a conversation's current append session, and the active-turn exclusions (a live or
 queued turn, pending inbox work, background tasks, an agent not yet loaded or draining). A guarded
@@ -338,24 +340,58 @@ per session names its key, org, both decisions and the basis. The same counts ar
 `agentconnect.session.retention.dry_run.sessions`, by `outcome`. A failed dry run logs a warning
 and the sweep continues.
 
-### What reclaim adds next
+## Reclaim
 
-- The org window replaces the daemon-wide one in the session purge and in the workspace pass's
-  cross-check, which leaves a row past its window to the purge, behind an install switch that is
-  off by default.
-- Before deleting, the daemon re-confirms the org's authoritative revision, the session's last
-  activity and its own duty for the agent; a paused org is never reclaimed.
-- A barrier for an org whose window lengthens: deletions authorized under the shorter window stop
-  before the longer one is reported in effect.
-- A notice to the organization before its window first shortens, and a floor of 30 days after that
-  notice succeeded before the shorter window deletes anything.
-- Delivery to an org a member first serves through a duty grant, and to daemons on other Control
-  Plane replicas without waiting for their next `register/ok`.
+**Install switch.** `ORG_HISTORY_RECLAIM=on` on the Control Plane lets daemons delete under the
+organization windows; the default is `off`. A daemon that advertises `org-history-reclaim-v1`
+receives the switch as `register/ok.orgHistoryRetention.reclaim`, beside the snapshot it governs.
+Changing it needs a Control Plane restart, which every daemon follows with a new `register/ok`; a
+`register/ok` without the snapshot leaves the daemon's switch as it was. With the switch off, or on
+a daemon that does not advertise the feature, deletion is exactly the daemon-wide rule and the
+[dry run](#the-dry-run) keeps counting.
+
+**Window rule.** With the switch on, the retention purge judges each finished session by its
+organization's reading in [the daemon's table](#the-daemons-table):
+
+| Reading | Pool member                                               | Self-hosted daemon                                        |
+| ------- | --------------------------------------------------------- | --------------------------------------------------------- |
+| policy  | The org's window replaces the daemon-wide one.            | The shorter of the org's window and the daemon's own.     |
+| `null`  | Never deleted, however old.                               | The daemon's own window.                                  |
+| missing | Today's daemon-wide window.                               | Today's daemon-wide window.                               |
+| paused  | Nothing is deleted; there is no fallback to today's rule. | Nothing is deleted; there is no fallback to today's rule. |
+
+A daemon is a pool member when its connection is install-wide (`organizationMode: 'frame'`, the
+same predicate that makes it duty-governed, [k8s-daemon-pool.md](k8s-daemon-pool.md) §14); any
+org-scoped connection is self-hosted. A session whose agent has no organization, such as a local
+agent, keeps today's rule. Every guard of the purge still applies: the backoff after a kept
+workspace, a conversation's current append session, the active-turn exclusions, the dirty and
+unpushed workspace check, and on a shared store only the agent's holder judging its rows. The
+workspace pass reads the same window when it leaves a row past its window to the purge, so a paused
+organization's rows stay with the workspace pass. A deletion writes the same purge receipt and
+reports the same `event/session-purged` as today.
+
+**Re-confirmation.** Before the purge deletes anything, the daemon sends one
+`history-retention/confirm` with every organization it is about to delete sessions for, and every
+stale or unknown one it holds sessions of, and the
+Control Plane answers each organization's stored `{ revision, historyRetentionDays }`, that it has
+no policy, or that it is denied. The Control Plane answers only for organizations in which the
+daemon serves an agent, by the same placement-and-duty union its roster uses, and an org-scoped
+connection only for its own organization; every other organization is denied. The daemon deletes
+an organization's sessions only when the answer is exactly what it would act on: the same
+revision and window, or still no policy. Otherwise, or when the Control Plane is unreachable,
+does not advertise `history-retention-confirm-v1`, or does not answer within 10 seconds, nothing
+of that organization is deleted in this pass. A newer answer is folded into the table as a push
+would be, so a policy applied on another Control Plane replica, a lengthened window, and an
+organization first served through a duty grant take effect at the next pass instead of waiting
+for the daemon's next `register/ok`; a stale or unknown organization deletes nothing in the pass
+that asks about it. Each session is deleted only while its organization's reading
+is still the one confirmed: a push, a dropped link or the switch going off during the pass keeps
+the rest.
 
 ## Not yet
 
 - A session that started fail-open and whose organization has reached its limit by its first
   milestone runs unrecorded: the [milestone guard](#enforcement) refuses its metadata, and the
   daemon's outbox keeps the snapshot and retries it, so it is recorded once the month resets.
-- `historyRetentionDays` deletes nothing yet: it is delivered and [dry-run](#history-retention-dry-run)
-  only.
+- `historyRetentionDays` deletes nothing until the install turns [reclaim](#reclaim) on; the dry run
+  still counts what it would decide.

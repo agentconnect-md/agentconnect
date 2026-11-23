@@ -59,6 +59,7 @@ import { handleAgentActivity } from './agent-activity.js'
 import { handleAgentSkillStatus } from './agent-skill-status.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleSessionAdmit } from './session-admit.js'
+import { handleHistoryRetentionConfirm } from './history-retention-confirm.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleLinearCredRequest } from './linearcred.js'
 import { handleProviderCredentials } from './provider-credentials.js'
@@ -171,6 +172,7 @@ export class FrameRouter {
       'agent/skill-status': handleAgentSkillStatus,
       'event/session-purged': handleSessionPurged,
       'session/admit': handleSessionAdmit,
+      'history-retention/confirm': handleHistoryRetentionConfirm,
       'gitcred/request': handleGitCredRequest,
       'linearcred/request': handleLinearCredRequest,
       'provider-credentials/request': handleProviderCredentials,
@@ -242,6 +244,7 @@ export {
   handleAgentSkillStatus,
   handleSessionPurged,
   handleSessionAdmit,
+  handleHistoryRetentionConfirm,
   handleWebchatMcpGrantIssue,
   handleWebchatMcpGrantAccept,
   handleWebchatMcpGrantRenew,

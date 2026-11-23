@@ -115,6 +115,8 @@ export {
   SESSION_ADMIT_REFUSAL_FEATURE,
   ORG_HISTORY_RETENTION_FEATURE,
   CONFIG_KEY_ORG_HISTORY_RETENTION,
+  ORG_HISTORY_RECLAIM_FEATURE,
+  HISTORY_RETENTION_CONFIRM_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SESSION_WAKE_FEATURE,
@@ -181,6 +183,7 @@ export * from './frames/linearcred.js'
 export * from './frames/provider-credentials.js'
 export * from './frames/repo-candidates.js'
 export * from './frames/session-admit.js'
+export * from './frames/history-retention-confirm.js'
 export * from './frames/decision.js'
 export * from './frames/secrets.js'
 export * from './frames/session.js'

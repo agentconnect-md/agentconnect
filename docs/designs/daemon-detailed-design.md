@@ -669,8 +669,14 @@ logger for level changes. It does not persist or ACK; nonallowlisted keys are ig
 state is delivered through the dedicated upsert frames and the authoritative
 `register/ok` roster. The key `sessions.orgHistoryRetention` is not configuration: it carries one
 organization's history retention into the daemon's in-memory per-org table
-([org-session-policy.md](org-session-policy.md#history-retention-dry-run)), and leaves
-`sessions.retention` untouched.
+([org-session-policy.md](org-session-policy.md#history-retention)), and leaves
+`sessions.retention` untouched. With the install's reclaim switch on, delivered in
+`register/ok.orgHistoryRetention.reclaim`, the retention purge and the workspace pass's
+cross-check read each session's window from that table instead of `sessions.retention` alone: a
+pool member's org window replaces it, a self-hosted daemon takes the shorter of the two, and a
+paused org deletes nothing. The purge deletes an org's sessions only after
+`history-retention/confirm` returns exactly the revision and window it judged
+([org-session-policy.md](org-session-policy.md#reclaim)).
 
 ### 5.2 Reconciler: Desired State -> Actual State
 

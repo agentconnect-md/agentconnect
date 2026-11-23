@@ -31,7 +31,10 @@ import {
   type AssistantFollowUpWatchResult,
   DAEMON_LIFECYCLE_BEGIN_FEATURE,
   type DaemonLifecycleBegin,
-  type DaemonLifecycleBeginOk
+  type DaemonLifecycleBeginOk,
+  HISTORY_RETENTION_CONFIRM_FEATURE,
+  HISTORY_RETENTION_CONFIRM_MAX,
+  HistoryRetentionConfirmResult
 } from '@agentconnect.md/protocol'
 /**
  * `CpClient` — the daemon-side CP WebSocket client FSM (protocol §2.1). Dials
@@ -239,6 +242,8 @@ const MEMORY_STORE_TIMEOUT_MS = 30_000
 const SESSION_ADMIT_TIMEOUT_MS = 2_000
 /** The whole wait, reconnect included, while its organization enforces (high-availability.md turn-path budget). */
 export const SESSION_ADMIT_BUDGET_MS = 10_000
+/** One `history-retention/confirm` attempt; a background sweep that gets no answer deletes nothing under the org windows. */
+const HISTORY_RETENTION_CONFIRM_TIMEOUT_MS = 10_000
 
 /** A CP that judged this daemon unable to read the refusal variant sends it as a `RATE_LIMITED` error instead. */
 function refusalFromError(err: unknown): Extract<SessionAdmitOutcome, { kind: 'refused' }> | undefined {
@@ -1771,6 +1776,30 @@ export class CpClient {
       for (const id of (rep.payload as AgentExistsOk).existing) existing.add(id)
     }
     return existing
+  }
+
+  /** `history-retention/confirm` (D→C REQ, org-session-policy.md Reclaim): each org's current history retention, sent once per chunk over a live link; throws when it cannot be asked or answered. */
+  async confirmHistoryRetention(orgIds: string[]): Promise<HistoryRetentionConfirmResult> {
+    this.requireReady('history-retention/confirm')
+    if (!this.supportsServerFeature(HISTORY_RETENTION_CONFIRM_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', 'this control plane does not answer history-retention/confirm', false)
+    }
+    const merged: HistoryRetentionConfirmResult = { entries: [], noPolicy: [], denied: [] }
+    for (let at = 0; at < orgIds.length; at += HISTORY_RETENTION_CONFIRM_MAX) {
+      const rep = await this.correlator.request(
+        this.scopedFrame('history-retention/confirm', { orgIds: orgIds.slice(at, at + HISTORY_RETENTION_CONFIRM_MAX) }),
+        (encoded) => this.transport!.send(encoded),
+        { maxTries: 1, ackTimeoutMs: HISTORY_RETENTION_CONFIRM_TIMEOUT_MS }
+      )
+      if (rep.type !== 'history-retention/confirm/result') {
+        throw new WireError('INTERNAL', `expected history-retention/confirm/result, got ${rep.type}`, false)
+      }
+      const part = HistoryRetentionConfirmResult.parse(rep.payload)
+      merged.entries.push(...part.entries)
+      merged.noPolicy.push(...part.noPolicy)
+      merged.denied.push(...part.denied)
+    }
+    return merged
   }
 
   /** `computer-channel/grant` (computer-use.md §3.7): a session token for a desktop's `/mcp`; NEVER log the reply, it is a bearer credential. */

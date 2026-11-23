@@ -1,7 +1,8 @@
-// Per-organization history retention as the CP delivers it, and the dry run that compares it with the daemon-wide window (org-session-policy.md, History retention).
+// Per-organization history retention as the CP delivers it, the dry run, and the reclaim window rule (org-session-policy.md, History retention, Reclaim).
 import { metrics } from '@opentelemetry/api'
 import {
   OrgHistoryRetention as OrgHistoryRetentionEntry,
+  type HistoryRetentionConfirmResult,
   type OrgHistoryRetentionSnapshot
 } from '@agentconnect.md/protocol'
 
@@ -20,6 +21,8 @@ export type OrgRetentionVerdict =
 export class OrgHistoryRetentionState {
   private registered = false
   private synced = false
+  // The install's reclaim switch as the last snapshot carried it; a register/ok without a snapshot leaves it as it was.
+  private reclaim = false
   private covered = new Set<string>()
   private readonly entries = new Map<string, OrgHistoryRetentionEntry>()
   private readonly stale = new Set<string>()
@@ -36,6 +39,7 @@ export class OrgHistoryRetentionState {
       this.covered = new Set()
       return
     }
+    this.reclaim = snapshot.reclaim === true
     this.covered = new Set([...snapshot.orgIds, ...snapshot.entries.map((entry) => entry.orgId)])
     for (const entry of snapshot.entries) {
       this.entries.set(entry.orgId, entry)
@@ -65,6 +69,22 @@ export class OrgHistoryRetentionState {
   /** Whether a Control Plane has answered a register; a daemon without one has nothing to compare. */
   engaged(): boolean {
     return this.registered
+  }
+
+  /** Whether deletion follows the org windows: the install switched reclaim on in a snapshot this daemon read. */
+  reclaiming(): boolean {
+    return this.registered && this.reclaim
+  }
+
+  /** Fold one org's re-confirmed answer in: a policy as a push would, and "no policy" after one was seen as a lagging read. */
+  applyConfirmation(orgId: string, answer: OrgHistoryRetentionAnswer): void {
+    if (answer.kind === 'policy') {
+      this.applyUpdate({ orgId, revision: answer.revision, historyRetentionDays: answer.historyRetentionDays })
+      return
+    }
+    if (answer.kind !== 'none') return
+    if (this.highest.has(orgId)) this.stale.add(orgId)
+    else this.covered.add(orgId)
   }
 
   /** The CP link dropped: nothing delivered before it is trusted until the next `register/ok`. */
@@ -220,4 +240,51 @@ dryRunGauge.addCallback((result) => {
 /** Expose the pass's counts as the dry-run gauge. */
 export function recordDryRunMetrics(summary: OrgRetentionDryRunSummary): void {
   lastSummary = { ...summary }
+}
+
+/** What the Control Plane answered for one org at a sweep's re-confirmation. */
+export type OrgHistoryRetentionAnswer =
+  { kind: 'policy'; revision: number; historyRetentionDays: number | null } | { kind: 'none' } | { kind: 'denied' }
+
+/** One answer per asked org; an org the reply leaves out stays unconfirmed. */
+export function confirmationAnswers(result: HistoryRetentionConfirmResult): Map<string, OrgHistoryRetentionAnswer> {
+  const answers = new Map<string, OrgHistoryRetentionAnswer>()
+  for (const orgId of result.denied) answers.set(orgId, { kind: 'denied' })
+  for (const orgId of result.noPolicy) answers.set(orgId, { kind: 'none' })
+  for (const entry of result.entries) {
+    answers.set(entry.orgId, {
+      kind: 'policy',
+      revision: entry.revision,
+      historyRetentionDays: entry.historyRetentionDays
+    })
+  }
+  return answers
+}
+
+/** Whether the Control Plane's answer is exactly what the sweep would act on: the same revision and window, or still no policy. */
+export function confirms(verdict: OrgRetentionVerdict, answer: OrgHistoryRetentionAnswer | undefined): boolean {
+  if (verdict.kind === 'missing') return answer?.kind === 'none'
+  if (verdict.kind !== 'policy' || answer?.kind !== 'policy') return false
+  const windowMs = answer.historyRetentionDays === null ? null : answer.historyRetentionDays * DAY_MS
+  return answer.revision === verdict.revision && windowMs === verdict.windowMs
+}
+
+/** Whether two readings of one org are the same basis for deletion: kind, revision and window. */
+export function sameVerdict(a: OrgRetentionVerdict, b: OrgRetentionVerdict): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'policy' && b.kind === 'policy') return a.revision === b.revision && a.windowMs === b.windowMs
+  return a.kind !== 'paused'
+}
+
+/** The idle window reclaim deletes a session after: a pool member's org window replaces the daemon-wide one, a self-hosted daemon takes the shorter; null keeps it, `paused` deletes nothing. */
+export function reclaimWindowMs(
+  verdict: OrgRetentionVerdict,
+  daemonWindowMs: number | null,
+  poolMember: boolean
+): number | null | 'paused' {
+  if (verdict.kind === 'paused') return 'paused'
+  if (verdict.kind === 'missing') return daemonWindowMs
+  if (poolMember) return verdict.windowMs
+  if (verdict.windowMs === null) return daemonWindowMs
+  return daemonWindowMs === null ? verdict.windowMs : Math.min(verdict.windowMs, daemonWindowMs)
 }

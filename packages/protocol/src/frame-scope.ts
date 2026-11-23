@@ -37,6 +37,9 @@ export const INSTALL_WIDE_FRAME_TYPES: ReadonlySet<FrameType> = new Set<FrameTyp
   'duty/claim/ok',
   'agent/exists',
   'agent/exists/ok',
+  // A sweep re-confirms every org it is about to reclaim for in one request; the CP checks each against what the member serves.
+  'history-retention/confirm',
+  'history-retention/confirm/result',
   // Desktop claims sit in the install's one sandbox namespace, whatever org their Computer belongs to.
   'computer-pool/op',
   'computer-pool/op/result'

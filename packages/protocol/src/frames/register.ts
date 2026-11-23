@@ -133,7 +133,9 @@ export type OrgHistoryRetention = z.infer<typeof OrgHistoryRetention>
 /** The organizations a `register/ok` speaks for and the policies among them; a listed org without an entry has no policy. */
 export const OrgHistoryRetentionSnapshot = z.object({
   orgIds: z.array(z.string().min(1).max(64)),
-  entries: z.array(OrgHistoryRetention)
+  entries: z.array(OrgHistoryRetention),
+  // The install's reclaim switch, sent only to a daemon advertising ORG_HISTORY_RECLAIM_FEATURE; absent ⇒ off.
+  reclaim: z.boolean().optional()
 })
 export type OrgHistoryRetentionSnapshot = z.infer<typeof OrgHistoryRetentionSnapshot>
 

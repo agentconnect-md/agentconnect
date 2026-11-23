@@ -3707,6 +3707,7 @@ export function buildContainer(
     usageWriter,
     sessionAdmission: repos.orgSessionPolicy,
     orgHistoryRetention: repos.orgSessionPolicy,
+    orgHistoryReclaim: config.ORG_HISTORY_RECLAIM === 'on',
     integration: repos.integration,
     bot: repos.bot,
     // A daemon socket's lifecycle report takes the same fenced revocation as the relay's, minus a relay release it never had.
