@@ -6,10 +6,10 @@
  * `$update-model-pricing` skill and keep the focused tests in sync.
  *
  * Source: https://developers.openai.com/api/docs/pricing
- * Verified: 2026-11-19
+ * Verified: 2026-11-23
  */
 
-export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-11-19'
+export const OPENAI_PUBLIC_PRICING_AS_OF = '2026-11-23'
 export const OPENAI_PUBLIC_PRICING_SOURCE = 'https://developers.openai.com/api/docs/pricing'
 
 const TOKENS_PER_MILLION = 1_000_000
@@ -34,6 +34,14 @@ interface ModelPricing {
 
 /** Exact public model ids only. Never prefix-match an unknown future model. */
 const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
+  'gpt-6.2-astra': {
+    standard: { input: 8, cachedInput: 0.4, cacheWrite: 10, output: 40 },
+    longContext: { input: 16, cachedInput: 0.8, cacheWrite: 20, output: 60 }
+  },
+  'gpt-6.2-sol': {
+    standard: { input: 2, cachedInput: 0.1, cacheWrite: 2.5, output: 10 },
+    longContext: { input: 4, cachedInput: 0.2, cacheWrite: 5, output: 15 }
+  },
   'gpt-6.1-sol': {
     standard: { input: 2, cachedInput: 0.1, cacheWrite: 2.5, output: 10 },
     longContext: { input: 4, cachedInput: 0.2, cacheWrite: 5, output: 15 }

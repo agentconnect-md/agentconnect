@@ -5458,7 +5458,10 @@
       "addCredits": "充值",
       "moveToOwnMachine": "移到自己的机器",
       "copyBillingLink": "复制账单页链接",
-      "copied": "已复制"
+      "copied": "已复制",
+      "noOwnMachine": "还没有连接你自己的机器，暂时无法迁移。",
+      "notFound": "这个 agent 已不存在，或你无权查看。",
+      "machinesUnreadable": "暂时无法读取你的机器，迁移暂不可用。"
     },
     "plan": {
       "title": "套餐",

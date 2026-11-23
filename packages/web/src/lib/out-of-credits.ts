@@ -10,8 +10,6 @@ export interface OutOfCreditsContext {
   owner: boolean
   /** The viewer can edit the agent, so its placement is theirs to change. */
   canEdit: boolean
-  /** The org has an approved machine of its own the agent could move to. */
-  ownMachine: boolean
 }
 
 export interface OutOfCreditsOffer {
@@ -19,7 +17,13 @@ export interface OutOfCreditsOffer {
   code: 'out_of_credits' | 'never_funded'
   /** An owner gets Billing; anyone else copies its link for an owner. */
   addCredits: 'link' | 'ask-owner'
+  /** Offered to an editor; the card enables it only once the org shows a machine of its own. */
   moveToOwnMachine: boolean
+}
+
+/** A `?code=` from a chat app's link; anything unrecognised reads as spent out. */
+export function creditRefusalCode(raw: string | null): OutOfCreditsOffer['code'] {
+  return raw === 'never_funded' ? 'never_funded' : 'out_of_credits'
 }
 
 /** The lack-of-credit tag a failure carries: an error part as is, said text only as a `⚠` failure line, so prose quoting the tag stays prose. */
@@ -40,7 +44,7 @@ export function outOfCreditsOffer(
 ): OutOfCreditsOffer | null {
   const code = ctx.onCloud ? creditRefusalOf(step.text, step.errorPart) : null
   if (!code) return null
-  return { code, addCredits: ctx.owner ? 'link' : 'ask-owner', moveToOwnMachine: ctx.canEdit && ctx.ownMachine }
+  return { code, addCredits: ctx.owner ? 'link' : 'ask-owner', moveToOwnMachine: ctx.canEdit }
 }
 
 /** Whether the org connected an approved machine of its own; online or not, the Edit dialog says what moving takes. */

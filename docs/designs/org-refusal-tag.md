@@ -142,13 +142,14 @@ its refusals read; nothing here requires a deployment to run one.
 
 - **Chat apps.** A daemon that reads tags (one whose model credentials the key server issues) replaces
   the failure notice for `out_of_credits` and `never_funded` with one that says the organization is out of, or has never had, credits and
-  links the organization's Billing page and the agent's settings at its machine picker
-  (`/agents/<id>?tab=config&edit=placement`). Feishu, Linear and the failure sinks of platforms without
-  a reply connection post the same text. A runtime that narrated the refusal has that narration
-  replaced by the notice.
+  links one console page, `/agents/<id>/out-of-credits?code=<code>`, which shows the webchat card for that
+  agent. Feishu, Linear and the failure sinks of platforms without a reply connection post the same text.
+  A runtime that narrated the refusal has that narration replaced by the notice. The daemon cannot tell
+  whether the organization has a machine of its own, so the page decides that, for its reader.
 - **Webchat.** The daemon hands the tagged reason through unchanged (`done.error`, the AHP turn error,
   the transcript row), and the console presents it as a card for a Cloud agent: Add credits, returning
-  to the conversation, and Move to your own machine when the organization has a self-hosted daemon.
+  to the conversation, and Move to your own machine for an editor, enabled only once the card's own read
+  of the organization's machines finds a self-hosted daemon.
 - **Hook outcome.** Both codes report `provider_quota_exhausted`, by code.
 
 **A tag is presentation, never authority.** Gateway text reaches the daemon through a runtime and a

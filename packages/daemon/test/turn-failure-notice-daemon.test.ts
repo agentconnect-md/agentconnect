@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
-// A chat app gets the out-of-credits next steps as links; webchat keeps the tagged text for the console to read.
+// A chat app gets a link to the console page with the fixes; webchat keeps the tagged text for the console to read.
 async function surface(opts: { keyServer: boolean; webchat?: 'person' | 'agent'; error?: string }) {
   const d = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null }) as any
   d.cfg = {}
@@ -34,13 +34,12 @@ async function surface(opts: { keyServer: boolean; webchat?: 'person' | 'agent';
 }
 
 describe('surfaceTurnFailure on an out-of-credits refusal', () => {
-  it('posts the next steps as console links in a chat app', async () => {
+  it('links the console page with the fixes in a chat app', async () => {
     const { posted } = await surface({ keyServer: true })
     expect(posted).toEqual([
       [
         "⚠️ Your organization is out of credits, so Helper couldn't respond.",
-        '• Add credits: https://console.example.test/acme/billing',
-        '• Or move Helper to your own machine in its settings: https://console.example.test/acme/agents/agent-1?tab=config&edit=placement'
+        'Add credits, or move Helper to your own machine: https://console.example.test/acme/agents/agent-1/out-of-credits?code=out_of_credits'
       ].join('\n')
     ])
   })

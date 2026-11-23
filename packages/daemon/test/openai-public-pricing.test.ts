@@ -82,7 +82,23 @@ describe('estimateOpenAiTurnCost', () => {
     if (longContext.ok) expect(longContext.amount).toBeCloseTo(0.529)
   })
 
-  it.each(['gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna'])('prices %s', (model) => {
+  it('prices GPT-6.2 Astra at its Standard and long-context rates', () => {
+    const usage = {
+      inputTokens: 100_000,
+      cachedReadTokens: 20_000,
+      cachedWriteTokens: 10_000,
+      outputTokens: 5_000
+    }
+    const standard = estimateOpenAiTurnCost('gpt-6.2-astra', usage)
+    expect(standard).toMatchObject({ ok: true, model: 'gpt-6.2-astra', longContext: false })
+    if (standard.ok) expect(standard.amount).toBeCloseTo(1.108)
+
+    const longContext = estimateOpenAiTurnCost('gpt-6.2-astra', { ...usage, tierInputTokens: 300_000 })
+    expect(longContext).toMatchObject({ ok: true, model: 'gpt-6.2-astra', longContext: true })
+    if (longContext.ok) expect(longContext.amount).toBeCloseTo(2.116)
+  })
+
+  it.each(['gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna'])('prices %s', (model) => {
     expect(estimateOpenAiTurnCost(model, { inputTokens: 1_000, outputTokens: 100 })).toMatchObject({ ok: true, model })
   })
 

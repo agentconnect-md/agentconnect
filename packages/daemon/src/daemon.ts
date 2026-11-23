@@ -1211,7 +1211,9 @@ import type {
 import { type ConfigApply } from './cp/config-apply.js'
 import { buildConfigApply, type ConfigApplyHost } from './cp/config-apply-handlers.js'
 import { SystemMetrics } from './metrics/system-metrics.js'
-import { estimateOpenAiTurnCost } from './usage/openai-public-pricing.js'
+import { estimateOpenAiTurnCost, type OpenAiTurnUsage, type PublicCostEstimate } from './usage/openai-public-pricing.js'
+import { estimateGeminiTurnCost } from './usage/gemini-public-pricing.js'
+import { isAntigravityRuntimeDef } from './runtime-defs/antigravity-runtime.js'
 import type { McpServer, SessionUpdate } from '@agentclientprotocol/sdk/unstable'
 import type { Agent, CronDef, Integration } from './agents/agent-schema.js'
 import {
@@ -15437,8 +15439,9 @@ export class Daemon {
             cachedWriteTokens: result.usage.cachedWriteTokens ?? undefined
           }
           await this.store.setTokenUsage(executionKey, counts)
-          if (this.isCodexRuntime(agentId) && !collector.runtimeCostReported) {
-            const estimate = estimateOpenAiTurnCost(model, counts)
+          const costFallback = this.perPromptCostFallback(agentId)
+          if (costFallback && !collector.runtimeCostReported) {
+            const estimate = costFallback(model, counts)
             if (estimate.ok) await this.store.addCost(executionKey, estimate.amount, estimate.currency)
           }
         }
@@ -15688,6 +15691,20 @@ export class Daemon {
 
   private dreamSchedulePolicyFor(agent: { memory?: Agent['memory'] }): MemoryDreamingPolicy | undefined {
     return this.dreamOperationsAllowed() ? dreamingPolicyOf(agent) : undefined
+  }
+
+  /** The public-price estimator for a runtime whose PromptResponse usage is one prompt's delta. */
+  private perPromptCostFallback(
+    agentId: string,
+    sessionKey?: string
+  ): ((model: string | undefined, usage: OpenAiTurnUsage) => PublicCostEstimate) | undefined {
+    if (this.isCodexRuntime(agentId, sessionKey)) return estimateOpenAiTurnCost
+    const agent = this.sessionAgent(agentId, sessionKey)
+    const runtime = agent ? this.runtimes[agent.runtime] : undefined
+    if (agent?.runtime === 'antigravity-acp' || (runtime && isAntigravityRuntimeDef(runtime))) {
+      return (model, usage) => estimateGeminiTurnCost(model, usage)
+    }
+    return undefined
   }
 
   /** Whether this agent is backed by Codex ACP. Registry ids are canonical, while
@@ -24876,7 +24893,7 @@ export class Daemon {
     let regenerationStartedAt: number | undefined
     let regenerationApprovalWaitBaseline = 0
     let { promptBlocks, finalCaptureInput, baseRevision, providerCheckpoint, standingDigest, toolDigests } = turn
-    const codexUsageIsPerPrompt = this.isCodexRuntime(entry.agentId, key)
+    const costFallback = this.perPromptCostFallback(entry.agentId, key)
 
     while (true) {
       if (p.plan.stageAnswer) this.discardStagedAttempt(p)
@@ -24924,10 +24941,8 @@ export class Daemon {
           cachedReadTokens: usage.cachedReadTokens ?? undefined,
           cachedWriteTokens: usage.cachedWriteTokens ?? undefined
         }
-        // codex-acp reports one prompt delta, so every discarded generation is
-        // additive. Other established adapters report a session snapshot and keep
-        // their existing latest-wins fold.
-        if (codexUsageIsPerPrompt) {
+        // Codex and Antigravity report one prompt's delta, so every generation adds; other adapters report a latest-wins session snapshot.
+        if (costFallback) {
           await this.store.addTokenUsage(key, counts)
           evaluationUsage = {
             totalTokens: (evaluationUsage?.totalTokens ?? 0) + (usage.totalTokens ?? 0),
@@ -24938,7 +24953,7 @@ export class Daemon {
             cachedWriteTokens: (evaluationUsage?.cachedWriteTokens ?? 0) + (usage.cachedWriteTokens ?? 0)
           }
           if (!p.signals.runtimeCostReported) {
-            const estimate = estimateOpenAiTurnCost(turnModel, counts)
+            const estimate = costFallback(turnModel, counts)
             if (estimate.ok) {
               if (!(await this.store.addCost(key, estimate.amount, estimate.currency))) {
                 this.log.debug(`cost fallback skipped for session ${sessionId}: existing currency differs from USD`)
@@ -27250,15 +27265,12 @@ export class Daemon {
     }
   }
 
-  /** The chat notice for a failed turn; an out-of-credits refusal links Billing and the agent's machine picker. */
+  /** The chat notice for a failed turn; a lack-of-credit refusal links the console page that offers its fixes. */
   private turnFailureNotice(agentId: string, agentName: string, reason: string): string {
     return turnFailureNotice(reason, {
       readsOrgRefusals: this.modelSessions.enabled,
       agentName,
-      links: () => ({
-        billing: `${this.webAppBase()}${this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''}/billing`,
-        agentPlacement: `${this.agentLink(agentId)}?tab=config&edit=placement`
-      })
+      fixLink: (code) => `${this.agentLink(agentId)}/out-of-credits?code=${code}`
     })
   }
 
