@@ -25,7 +25,8 @@ function scaffold(limits?: Record<string, number>, agentExtra?: Record<string, u
       controlPlane: { enabled: false },
       runtimes: {
         claude: { command: 'node', args: ['unused'] },
-        'test-runtime': { command: 'node', args: ['codex-acp'] }
+        'test-runtime': { command: 'node', args: ['codex-acp'] },
+        'agy-runtime': { command: '/opt/antigravity/bin/agy', args: ['acp'] }
       },
       ...(limits ? { limits } : {})
     })
@@ -702,6 +703,51 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     })
     expect(usage.costAmount).toBeCloseTo(0.261)
     expect((cp.usageReports.at(-1) as any).usage.costAmount).toBeCloseTo(0.261)
+    await daemon.stop()
+  })
+
+  it('accumulates Antigravity per-prompt tokens and Gemini public-price fallback cost across turns', async () => {
+    const { factory } = streamingHost([text('ok')], {
+      model: 'gemini-4-hydrogen',
+      usage: { totalTokens: 310_000, inputTokens: 100_000, cachedReadTokens: 200_000, outputTokens: 10_000 }
+    })
+    const daemon = new Daemon({ root: scaffold(undefined, { runtime: 'agy-runtime' }), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    for (const turnId of ['33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']) {
+      await (daemon as any).dispatch(
+        AGENT_ID,
+        {
+          msgId: `webchat:${CONV}:${turnId}`,
+          traceId: turnId,
+          source: 'user' as const,
+          platform: 'webchat' as const,
+          channel: CONV,
+          thread: `webchat:${CONV}`,
+          sender: { id: 'alice', isBot: false },
+          text: 'go',
+          mentionedBots: [] as string[],
+          isDm: true,
+          trigger: 'dm' as const
+        },
+        undefined,
+        { conversationId: CONV, turnId, sink: cp.sink }
+      )
+    }
+
+    const key = (daemon as any).webchatTransport.webchatSessionKey(CONV, AGENT_ID)
+    const usage = await (daemon as any).store.getUsage(key)
+    expect(usage).toMatchObject({
+      totalTokens: 620_000,
+      inputTokens: 200_000,
+      cachedReadTokens: 400_000,
+      outputTokens: 20_000,
+      costCurrency: 'USD'
+    })
+    // Per turn: 0.1M × $1.50 + 0.2M × $0.075 + 0.01M × $7.50 = $0.24.
+    expect(usage.costAmount).toBeCloseTo(0.48)
     await daemon.stop()
   })
 
