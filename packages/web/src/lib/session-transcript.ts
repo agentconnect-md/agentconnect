@@ -206,3 +206,34 @@ function matchUnnamedPrompts(
   }
   return matched
 }
+
+// A live failure has no post id, so only its words tie it to the row the daemon saved for it.
+const failureWords = (text: string) => text.replace(/^\s*⚠️?\s*/u, '').trim()
+
+/** Drop a live failure (a `⚠` warning or an error notice) once a row its agent saved at or after it already says it. */
+export function dropPersistedFailures(
+  live: readonly SessionStep[],
+  rows: readonly SessionMessageDto[],
+  agentId: string
+): readonly SessionStep[] {
+  const failure = (step: SessionStep) =>
+    !step.segmentId &&
+    !step.postId &&
+    ((step.kind === 'done' && step.text.trimStart().startsWith('⚠')) ||
+      (step.kind === 'notice' && step.standing === true))
+  if (!live.some(failure)) return live
+  const result = live.filter((step) => {
+    if (!failure(step)) return true
+    const words = failureWords(step.text)
+    if (!words) return true
+    const sender = step.agentId ?? agentId
+    return !rows.some(
+      (row) =>
+        row.kind.toLowerCase() === 'text' &&
+        row.sender === sender &&
+        row.text.includes(words) &&
+        (step.observedAtMs === undefined || (transcriptRowTimeMs(row) ?? -1) >= step.observedAtMs - 5_000)
+    )
+  })
+  return result.length === live.length ? live : result
+}

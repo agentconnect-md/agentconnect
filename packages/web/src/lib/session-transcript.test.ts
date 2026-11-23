@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionMessageDto } from './api'
 import type { SessionStep } from './data'
-import { liveOverlay, mergeSessionMessages, reconcilePersistedLiveSteps, retireLiveOverlay } from './session-transcript'
+import {
+  dropPersistedFailures,
+  liveOverlay,
+  mergeSessionMessages,
+  reconcilePersistedLiveSteps,
+  retireLiveOverlay
+} from './session-transcript'
 
 function message(seq: number, ts: string, text: string): SessionMessageDto {
   return { seq, ts, text, sender: 'agent', kind: 'reasoning' }
@@ -376,5 +382,48 @@ describe('the live overlay of a page backed by rows (webchat-transcript-refresh.
     const inThread = { ...preview, thread: 'root-1', laneDoneAtMs: at + 10 }
     expect(retireLiveOverlay([inThread], [], agentId, { readStartedAtMs: at + 20 })).toEqual([inThread])
     expect(retireLiveOverlay([inThread], [], agentId, { thread: 'root-1', readStartedAtMs: at + 20 })).toEqual([])
+  })
+})
+
+describe('dropPersistedFailures', () => {
+  const at = 1_800_000_000_000
+  const TAG = '[ERR:out_of_credits] Out of AgentConnect credits'
+  const row = (text: string, ts = at + 100, sender = 'agent-1'): SessionMessageDto => ({
+    seq: 1,
+    ts: String(ts),
+    text,
+    sender,
+    kind: 'text'
+  })
+  const legacy: SessionStep = { kind: 'done', text: `⚠️ ${TAG}`, turnId: 't1', agentId: 'agent-1', observedAtMs: at }
+  const ahp: SessionStep = {
+    kind: 'notice',
+    text: TAG,
+    turnId: 't1',
+    agentId: 'agent-1',
+    standing: true,
+    observedAtMs: at
+  }
+
+  it.each([
+    ['a legacy failure', legacy],
+    ['an AHP error notice', ahp]
+  ])('drops %s once its agent saved the same failure', (_name, step) => {
+    expect(dropPersistedFailures([step], [row(`⚠️ Agent failed to respond: ${TAG}`)], 'agent-1')).toEqual([])
+  })
+
+  it.each([
+    ['no row says it yet', []],
+    ['only an earlier failure says it', [row(`⚠️ Agent failed to respond: ${TAG}`, at - 60_000)]],
+    ['another agent said it', [row(`⚠️ Agent failed to respond: ${TAG}`, at + 100, 'agent-2')]],
+    ['the row says something else', [row('⚠️ Agent failed to respond: rate limited')]]
+  ])('keeps a live failure while %s', (_name, rows) => {
+    const live = [legacy, ahp]
+    expect(dropPersistedFailures(live, rows as SessionMessageDto[], 'agent-1')).toBe(live)
+  })
+
+  it('leaves streamed text alone, even text that quotes a failure', () => {
+    const reply: SessionStep = { kind: 'done', text: `⚠️ ${TAG}`, turnId: 't1', segmentId: 's1', agentId: 'agent-1' }
+    expect(dropPersistedFailures([reply], [row(`⚠️ Agent failed to respond: ${TAG}`)], 'agent-1')).toEqual([reply])
   })
 })
