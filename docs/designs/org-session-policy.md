@@ -249,8 +249,8 @@ as not enforcing, and a restart forgets every answer.
 
 - **Not enforcing, or no answer yet.** The daemon sends the admission once over a live link with a
   2-second timeout and fails open: with no link, no answer, or a Control Plane that does not admit
-  sessions, the session starts, and one whose admission never committed is counted at its first
-  milestone. A refusal is still honored, which is how a daemon learns that an organization started
+  sessions, the session starts, and one whose admission never committed is admitted and counted
+  at its first milestone. A refusal is still honored, which is how a daemon learns that an organization started
   enforcing.
 - **Enforcing.** The daemon waits for the answer within the turn-path budget of
   [high-availability.md](high-availability.md): 10 seconds in total, a reconnect included, and the
@@ -271,8 +271,7 @@ the run ([memory-dreaming.md](memory-dreaming.md)).
 
 ## Not yet
 
-- A session that started while its organization was not enforcing and whose admission never
-  committed is not admitted later; if the organization starts enforcing before its first milestone
-  lands, the milestone guard refuses its metadata, so the session runs but the console never lists
-  it.
+- A session that started fail-open and whose organization has reached its limit by its first
+  milestone runs unrecorded: the [milestone guard](#enforcement) refuses its metadata, and the
+  daemon's outbox keeps the snapshot and retries it, so it is recorded once the month resets.
 - Applying `historyRetentionDays` to hosted session history is later work.
