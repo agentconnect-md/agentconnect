@@ -7,6 +7,7 @@ import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
+import { SESSION_NOT_ADMITTED_MESSAGE, sessionMayAct } from './session-standing.js'
 
 // Only a daemon that serves the agent may act for its sessions.
 export async function servedAgent(
@@ -36,6 +37,14 @@ export const handleComputerLeaseAcquire: Handler = async (frame, conn, deps) => 
         granted: false,
         code: 'denied',
         message: 'this daemon does not serve the agent'
+      })
+      return
+    }
+    if (!(await sessionMayAct(orgId, p.agentId, p.sessionId, deps))) {
+      conn.replyTo(frame, 'computer-lease/acquire/result', {
+        granted: false,
+        code: 'denied',
+        message: SESSION_NOT_ADMITTED_MESSAGE
       })
       return
     }

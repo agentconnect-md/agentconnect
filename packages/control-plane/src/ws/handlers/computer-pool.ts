@@ -6,6 +6,7 @@ import type { DaemonWsDeps } from '../deps.js'
 import type { Handler } from './index.js'
 import { frameOrgId } from './frame-org.js'
 import { servedAgent } from './computer-lease.js'
+import { SESSION_NOT_ADMITTED_MESSAGE, sessionMayAct } from './session-standing.js'
 
 export const handleComputerPoolAcquire: Handler = async (frame, conn, deps) => {
   if (!isFrame('computer-pool/acquire')(frame)) return
@@ -22,6 +23,14 @@ export const handleComputerPoolAcquire: Handler = async (frame, conn, deps) => {
         state: 'failed',
         code: 'denied',
         message: 'this daemon does not serve the agent'
+      })
+      return
+    }
+    if (!(await sessionMayAct(orgId, p.agentId, p.sessionId, deps))) {
+      conn.replyTo(frame, 'computer-pool/acquire/result', {
+        state: 'failed',
+        code: 'denied',
+        message: SESSION_NOT_ADMITTED_MESSAGE
       })
       return
     }

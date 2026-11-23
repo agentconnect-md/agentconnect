@@ -3,6 +3,7 @@ import { isFrame } from '@agentconnect.md/protocol'
 import type { Handler } from './index.js'
 import { frameOrgId } from './frame-org.js'
 import { servedAgent } from './computer-lease.js'
+import { SESSION_NOT_ADMITTED_MESSAGE, sessionMayAct } from './session-standing.js'
 
 export const handleComputerChannelGrant: Handler = async (frame, conn, deps) => {
   if (!isFrame('computer-channel/grant')(frame)) return
@@ -19,6 +20,14 @@ export const handleComputerChannelGrant: Handler = async (frame, conn, deps) => 
         granted: false,
         code: 'denied',
         message: 'this daemon does not serve the agent'
+      })
+      return
+    }
+    if (!(await sessionMayAct(orgId, p.agentId, p.sessionId, deps))) {
+      conn.replyTo(frame, 'computer-channel/grant/result', {
+        granted: false,
+        code: 'denied',
+        message: SESSION_NOT_ADMITTED_MESSAGE
       })
       return
     }

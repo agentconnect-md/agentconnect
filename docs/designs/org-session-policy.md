@@ -1,7 +1,7 @@
 # Organization Session Policy
 
-**Status:** storage, delivery, monthly session counting, and admission implemented. Nothing
-refuses a session yet; see [Not yet](#not-yet).
+**Status:** storage, delivery, monthly session counting, admission, and Control Plane
+[enforcement](#enforcement) implemented; see [Not yet](#not-yet).
 
 ## What it is
 
@@ -13,7 +13,7 @@ the organization may start and how long its hosted session history is kept.
 | `revision`             | integer ≥ 1       | The writer's monotonically increasing revision of this organization's policy.    |
 | `monthlySessionLimit`  | integer ≥ 0, null | Sessions the organization may start per UTC month; `null` is no limit.           |
 | `historyRetentionDays` | integer ≥ 1, null | Days hosted session history is kept; `null` means this policy does not bound it. |
-| `enforce`              | boolean           | `false` counts only and never refuses; `true` lets the later admission refuse.   |
+| `enforce`              | boolean           | `false` counts only and never refuses; `true` refuses new sessions at the limit. |
 
 An organization with no row has no policy: no limit, no retention bound, nothing enforced.
 
@@ -87,14 +87,15 @@ queue on its month row only until commit. Deleting the organization deletes its 
 credentials: a signed-in member of the organization, or the install-level usage reader workload
 (`usage-service-auth.ts`). A non-member and an unknown organization get 404.
 
-| Field            | Meaning                                                                       |
-| ---------------- | ----------------------------------------------------------------------------- |
-| `used`           | Sessions counted in the current UTC month; 0 when none.                       |
-| `limit`          | The policy's `monthlySessionLimit`; null without a limit or a policy.         |
-| `policyRevision` | The stored policy revision; null without a policy.                            |
-| `monthStart`     | The current UTC month's first instant, by the database clock.                 |
-| `resetsAt`       | The next UTC month's first instant.                                           |
-| `asOf`           | The database time of the read; every field comes from that one SQL statement. |
+| Field            | Meaning                                                                          |
+| ---------------- | -------------------------------------------------------------------------------- |
+| `used`           | Sessions counted in the current UTC month; 0 when none.                          |
+| `limit`          | The policy's `monthlySessionLimit`; null without a limit or a policy.            |
+| `policyRevision` | The stored policy revision; null without a policy.                               |
+| `monthStart`     | The current UTC month's first instant, by the database clock.                    |
+| `enforcing`      | Whether a new session past `limit` is refused now ([Enforcement](#enforcement)). |
+| `resetsAt`       | The next UTC month's first instant.                                              |
+| `asOf`           | The database time of the read; every field comes from that one SQL statement.    |
 
 ## Admission
 
@@ -119,16 +120,20 @@ takes on that id, then:
 3. **New maintenance.** An exemptable [maintenance](#maintenance-exemption) session is admitted
    with `counted: false` and its purpose stored, and the month is not incremented.
 4. **New.** The session is admitted with `counted: true`, and the organization's current month is
-   incremented by the database clock, with the same statement the milestone count runs.
+   incremented by the database clock, with the same statement the milestone count runs. While the
+   organization is [enforcing](#enforcement), the increment is conditional and a miss refuses
+   the session instead.
 
 The first two steps ignore `purpose`: a re-sent admit, exempt or not, gets its stored answer, and
 a session the Control Plane already recorded is never exempted after the fact.
 
-| Answer                         | When                                                                     |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| `{ admitted: true, counted }`  | Admitted; `counted` says whether this admission counted the session.     |
-| `SCOPE_DENIED` (not retryable) | The daemon does not serve the agent, or the id belongs to another agent. |
-| `INTERNAL` (retryable)         | The agent's placement is moving, or the write failed.                    |
+| Answer                                                                                         | When                                                                                                                  |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `{ admitted: true, counted, enforcing }`                                                       | Admitted; `counted` says whether this admission counted the session, `enforcing` whether the org enforces.            |
+| `{ admitted: false, reason: 'session_limit_reached', limit, used, resetsAt, enforcing: true }` | The organization enforces its limit and the month reached it; only to a daemon that reads this variant.               |
+| `RATE_LIMITED` (not retryable)                                                                 | The same refusal to a daemon that does not read the variant; `details` carries `reason`, `limit`, `used`, `resetsAt`. |
+| `SCOPE_DENIED` (not retryable)                                                                 | The daemon does not serve the agent, or the id belongs to another agent.                                              |
+| `INTERNAL` (retryable)                                                                         | The agent's placement is moving, or the write failed.                                                                 |
 
 **Coexistence with the milestone count.** When a first milestone inserts the `session_meta` row,
 it increments the month only if no admission row exists for that id. Admission and milestone take
@@ -136,8 +141,8 @@ the same lineage fence on the id before anything else, so whichever runs second 
 committed row and the session counts exactly once in either order. A daemon that never sends
 `session/admit` is counted at its first milestone exactly as before.
 
-Admission consults no limit and refuses no session on policy: an authorized request is always
-answered `admitted: true`. Deleting the organization deletes its admission rows.
+An organization that is not enforcing never has a session refused on policy: an authorized
+request is answered `admitted: true`. Deleting the organization deletes its admission rows.
 
 **When the daemon sends it.** A daemon admits a session when it first opens one it has no local
 record of, before it prepares the session's workspace, issues its model credential, or starts its
@@ -172,10 +177,72 @@ milestone counts nothing because its admission row exists. A daemon that does no
 or a Control Plane that predates it (whose schema strips the unknown key), counts the dream like
 any other session.
 
+## Enforcement
+
+An organization is **enforcing** when its policy has `enforce: true` and a non-null
+`monthlySessionLimit`, and the install switch has not turned enforcement off. Every other
+organization, including one with no policy row, counts only: its sessions are admitted, recorded,
+and counted exactly as described above, past any limit. A policy with `enforce: true` and no limit
+enforces nothing, since there is nothing to refuse.
+
+**Install switch.** `SESSION_POLICY_ENFORCEMENT=off` on the Control Plane makes every organization
+count only, whatever its delivered `enforce` says; the default is `on`. It rolls enforcement back
+without redelivering any policy, and counting stays accurate while it is off, so an organization
+switched back on is judged against the sessions it actually started.
+
+**Admission.** For an enforcing organization a new session that is neither already admitted, already
+recorded, nor exempt [maintenance](#maintenance-exemption) is counted with a conditional increment
+(`used = used + 1 WHERE used < limit`) on the organization's month row, and its admission row is
+inserted only when that increment landed. A miss writes nothing and answers the refusal with the
+month's `used`, the `limit`, and `resetsAt`, the next UTC month's first instant. Concurrent admits of
+different ids queue on the month row, so of several new sessions racing for the last slot, on one
+Control Plane or several sharing the database, exactly one is admitted and the count rises by one.
+A re-sent admit of an admitted id gets its first answer even at the limit; a refused id has no row,
+so a later admit of it is judged again against the policy and month it meets. Maintenance is
+exempted before the limit is consulted and is never refused; a dream past its daily cap counts like
+any session and can be refused.
+
+The refusal variant `{ admitted: false, reason: 'session_limit_reached', limit, used, resetsAt,
+enforcing: true }` goes only to a daemon that advertises `session-admit-refusal-v1` in its
+`register` capabilities. An older daemon cannot decode it, so it gets a non-retryable
+`RATE_LIMITED` error whose `details` carry the same fields. Every `admitted: true` answer carries
+`enforcing`, so a daemon learns each organization's enforcement from its ordinary admissions; an
+older daemon strips the unknown key.
+
+**Milestone guard.** While an organization is enforcing, an `event/session` or
+`event/session-sync` milestone for a session id that no agent admitted and the Control Plane never
+recorded is admitted at that milestone, inside the milestone's transaction and after the same
+lineage fence admission takes: the same conditional increment `session/admit` runs, without the
+maintenance exemption since a milestone carries no purpose. This covers a session that started
+while the daemon failed open, for example because its organization's last answer said it was not
+enforcing or the 2-second attempt timed out.
+
+- **Below the limit.** The admission row is inserted as counted and the milestone is recorded as
+  usual; later milestones and a re-sent `session/admit` of the id replay that admission, so the
+  session counts once, whichever of the admit and the first milestone runs first.
+- **At the limit.** Nothing is written: no admission, no `session_meta` row, no count.
+  `event/session-sync` is answered with a non-retryable `RATE_LIMITED` error whose `details` carry
+  `reason: 'session_limit_reached'`, `limit`, `used`, and `resetsAt`, so a daemon may deliver the
+  snapshot again once the month resets; the one-way `event/session` has no reply, so the Control
+  Plane drops it and logs why.
+- **Another agent's admission.** An id admitted under a different agent is never recorded for this
+  one. `event/session-sync` is acknowledged, as for an id another agent recorded, so the daemon
+  collects a row that can never be accepted.
+
+A session already recorded, whether it started before enforcement or on a daemon that never admits,
+keeps syncing without a check, so an older daemon's existing sessions stay visible and can continue;
+its new sessions are admitted at their first milestone while the organization is below its limit.
+
+**Session grants.** While an organization is enforcing, the daemon-wire grants that hand a session
+authority of its own refuse a session id the agent never admitted or recorded, without admitting it
+there, with their own
+`denied` result: `computer-channel/grant` (the channel token to a Computer),
+`computer-pool/acquire` (a managed computer), and `computer-lease/acquire` (a Computer's control
+lease). Model credentials come from the key server, which the daemon asks directly, so the Control
+Plane cannot check them; a daemon that admits sessions never asks for one before its admission.
+
 ## Not yet
 
-- Refusing a new session at admission when `enforce` is true and the limit is reached is later
-  work, as an additive refusal variant of `session/admit/result`, and the daemon then waits on the
-  answer instead of failing open; until then the policy changes no route, frame, or daemon
-  behavior, and the count is only read.
+- The daemon still fails open on every admission; waiting on the answer and refusing at the limit
+  is daemon-side work.
 - Applying `historyRetentionDays` to hosted session history is later work.

@@ -1,7 +1,14 @@
 // `session/admit` handler — admit a new session for its agent's organization before it starts (org-session-policy.md, Admission).
-import { effectiveMemoryDreamingPolicy, isFrame } from '@agentconnect.md/protocol'
+import {
+  effectiveMemoryDreamingPolicy,
+  isFrame,
+  SESSION_ADMIT_REFUSAL_FEATURE,
+  SESSION_LIMIT_REACHED
+} from '@agentconnect.md/protocol'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
 import { AgentId, DaemonId } from '../../domain/ids.js'
+import type { DaemonConnection } from '../connection.js'
+import type { DaemonWsDeps } from '../deps.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
 
@@ -32,15 +39,52 @@ export const handleSessionAdmit: Handler = async (frame, conn, deps) => {
         : undefined
     // The agent's own org, read under the frame's org fence, never one the frame names beyond it.
     const outcome = await deps.sessionAdmission.admit(agent.orgId, agent.id, frame.payload.sessionId, maintenance)
-    if (!outcome.admitted) {
+    if (outcome.admitted) {
+      conn.replyTo(frame, 'session/admit/result', {
+        admitted: true,
+        counted: outcome.counted,
+        enforcing: outcome.enforcing
+      })
+      return
+    }
+    if (outcome.conflict === 'other_agent') {
       conn.sendError(frame.id, 'SCOPE_DENIED', 'that session id belongs to another agent', false)
       return
     }
-    conn.replyTo(frame, 'session/admit/result', { admitted: true, counted: outcome.counted })
+    const refusal = {
+      limit: outcome.limit,
+      used: outcome.used,
+      resetsAt: outcome.resetsAt.toISOString()
+    }
+    if (await readsRefusals(conn, deps)) {
+      conn.replyTo(frame, 'session/admit/result', {
+        admitted: false,
+        reason: SESSION_LIMIT_REACHED,
+        ...refusal,
+        enforcing: true
+      })
+      return
+    }
+    // A daemon from before refusals cannot decode the variant; a definite error still keeps it from counting the session.
+    conn.sendError(frame.id, 'RATE_LIMITED', 'the organization reached its monthly session limit', false, {
+      reason: SESSION_LIMIT_REACHED,
+      ...refusal
+    })
   } catch (err) {
     deps.log.error({ err, agentId, sessionId: frame.payload.sessionId }, 'session/admit: admission failed')
     conn.sendError(frame.id, 'INTERNAL', 'session admission failed to persist', true)
   } finally {
     release()
+  }
+}
+
+/** Whether the connected daemon advertised that it reads the refusal variant. */
+async function readsRefusals(conn: DaemonConnection, deps: DaemonWsDeps): Promise<boolean> {
+  try {
+    // eslint-disable-next-line no-restricted-syntax -- the authenticated connection's own daemon row
+    const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
+    return daemon?.capabilities.features.includes(SESSION_ADMIT_REFUSAL_FEATURE) ?? false
+  } catch {
+    return false
   }
 }

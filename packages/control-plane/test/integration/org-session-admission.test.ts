@@ -62,9 +62,9 @@ async function awaitLineageLockWaiter(): Promise<void> {
 describe('PgOrgSessionPolicyRepo.admit', () => {
   it('counts a new session once, and answers a re-sent admit the same without counting again', async () => {
     await seedAgent(prisma, AGENT)
-    expect(await admit('s-new')).toEqual({ admitted: true, counted: true })
+    expect(await admit('s-new')).toEqual({ admitted: true, counted: true, enforcing: false })
     expect(await used()).toBe(1)
-    expect(await admit('s-new')).toEqual({ admitted: true, counted: true })
+    expect(await admit('s-new')).toEqual({ admitted: true, counted: true, enforcing: false })
     expect(await used()).toBe(1)
     const row = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-new' } })
     expect(row).toMatchObject({ orgId: DEF_ORG, agentId: AGENT, counted: true })
@@ -84,8 +84,8 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
     await seedAgent(prisma, AGENT)
     await new PgSessionRepo(prisma).recordMilestone(ev('s-known'))
     expect(await used()).toBe(1)
-    expect(await admit('s-known')).toEqual({ admitted: true, counted: false })
-    expect(await admit('s-known')).toEqual({ admitted: true, counted: false })
+    expect(await admit('s-known')).toEqual({ admitted: true, counted: false, enforcing: false })
+    expect(await admit('s-known')).toEqual({ admitted: true, counted: false, enforcing: false })
     expect(await used()).toBe(1)
   })
 
@@ -129,7 +129,8 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
     await prisma.$transaction(async (tx) => {
       expect(await new PgOrgSessionPolicyRepo(tx).admit(DEF_ORG, AGENT, 's-race')).toEqual({
         admitted: true,
-        counted: true
+        counted: true,
+        enforcing: false
       })
       racing = new PgSessionRepo(prisma).recordMilestone(ev('s-race'))
       await awaitLineageLockWaiter()
@@ -140,11 +141,11 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
 
   it('exempts allowed maintenance from the count and stores its purpose', async () => {
     await seedAgent(prisma, AGENT)
-    expect(await dream('s-dream')).toEqual({ admitted: true, counted: false })
+    expect(await dream('s-dream')).toEqual({ admitted: true, counted: false, enforcing: false })
     expect(await used()).toBe(0)
     const row = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-dream' } })
     expect(row).toMatchObject({ counted: false, maintenance: 'memory-dream', monthStart: await dbMonthStart() })
-    expect(await admit('s-plain')).toEqual({ admitted: true, counted: true })
+    expect(await admit('s-plain')).toEqual({ admitted: true, counted: true, enforcing: false })
     const plain = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-plain' } })
     expect(plain.maintenance).toBeNull()
   })
@@ -152,8 +153,8 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
   it('answers a re-sent exempt admit the same, and its first milestone counts nothing', async () => {
     await seedAgent(prisma, AGENT)
     await dream('s-dream')
-    expect(await dream('s-dream')).toEqual({ admitted: true, counted: false })
-    expect(await admit('s-dream')).toEqual({ admitted: true, counted: false })
+    expect(await dream('s-dream')).toEqual({ admitted: true, counted: false, enforcing: false })
+    expect(await admit('s-dream')).toEqual({ admitted: true, counted: false, enforcing: false })
     const repo = new PgSessionRepo(prisma)
     expect((await repo.recordMilestone({ ...ev('s-dream'), platform: 'dream' as const })).recorded).toBe(true)
     await repo.recordMilestone({ ...ev('s-dream', 'end'), platform: 'dream' as const })
@@ -164,9 +165,9 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
   it('ignores the purpose for a session already admitted or recorded', async () => {
     await seedAgent(prisma, AGENT)
     await admit('s-counted')
-    expect(await dream('s-counted')).toEqual({ admitted: true, counted: true })
+    expect(await dream('s-counted')).toEqual({ admitted: true, counted: true, enforcing: false })
     await new PgSessionRepo(prisma).recordMilestone(ev('s-known'))
-    expect(await dream('s-known')).toEqual({ admitted: true, counted: false })
+    expect(await dream('s-known')).toEqual({ admitted: true, counted: false, enforcing: false })
     const known = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-known' } })
     expect(known.maintenance).toBeNull()
     expect(await used()).toBe(2)
@@ -176,13 +177,13 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
     await seedAgent(prisma, AGENT)
     await seedAgent(prisma, OTHER_AGENT)
     for (let i = 0; i < MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY; i++) {
-      expect(await dream(`s-dream-${i}`)).toEqual({ admitted: true, counted: false })
+      expect(await dream(`s-dream-${i}`)).toEqual({ admitted: true, counted: false, enforcing: false })
     }
-    expect(await dream('s-dream-over')).toEqual({ admitted: true, counted: true })
+    expect(await dream('s-dream-over')).toEqual({ admitted: true, counted: true, enforcing: false })
     const over = await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-dream-over' } })
     expect(over.maintenance).toBeNull()
     expect(await used()).toBe(1)
-    expect(await dream('s-other', OTHER_AGENT)).toEqual({ admitted: true, counted: false })
+    expect(await dream('s-other', OTHER_AGENT)).toEqual({ admitted: true, counted: false, enforcing: false })
   })
 
   it('counts exempt admissions per UTC day by the database clock', async () => {
@@ -190,7 +191,7 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
     for (let i = 0; i < MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY; i++) await dream(`s-old-${i}`)
     await prisma.$executeRaw`
       UPDATE "org_session_admission" SET "createdAt" = date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 second'`
-    expect(await dream('s-today')).toEqual({ admitted: true, counted: false })
+    expect(await dream('s-today')).toEqual({ admitted: true, counted: false, enforcing: false })
   })
 
   it('holds the cap under concurrent exempt admits of one agent', async () => {
@@ -212,7 +213,7 @@ describe('PgOrgSessionPolicyRepo.admit', () => {
       racing = admit('s-race')
       await awaitLineageLockWaiter()
     })
-    expect(await racing!).toEqual({ admitted: true, counted: false })
+    expect(await racing!).toEqual({ admitted: true, counted: false, enforcing: false })
     expect(await used()).toBe(1)
   })
 })

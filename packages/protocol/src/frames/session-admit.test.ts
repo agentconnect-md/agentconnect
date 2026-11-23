@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   INSTALL_WIDE_FRAME_TYPES,
   SESSION_ADMIT_FEATURE,
+  SESSION_ADMIT_REFUSAL_FEATURE,
+  SESSION_LIMIT_REACHED,
   SessionAdmitRequest,
   SessionAdmitResult,
   buildEnvelope,
@@ -40,11 +42,31 @@ describe('session/admit frames (org-session-policy.md, Admission)', () => {
     })
   })
 
-  it('answers an admission with whether it counted, and refuses any other shape for now', () => {
+  it('answers an admission with whether it counted, and whether the organization enforces', () => {
     expect(SessionAdmitResult.parse({ admitted: true, counted: true })).toEqual({ admitted: true, counted: true })
-    expect(SessionAdmitResult.parse({ admitted: true, counted: false })).toEqual({ admitted: true, counted: false })
+    expect(SessionAdmitResult.parse({ admitted: true, counted: false, enforcing: true })).toEqual({
+      admitted: true,
+      counted: false,
+      enforcing: true
+    })
     expect(SessionAdmitResult.safeParse({ admitted: true }).success).toBe(false)
     expect(SessionAdmitResult.safeParse({ admitted: false, counted: false }).success).toBe(false)
+  })
+
+  it('refuses at the limit with the count, the limit and the next reset', () => {
+    const refusal = {
+      admitted: false,
+      reason: SESSION_LIMIT_REACHED,
+      limit: 10,
+      used: 10,
+      resetsAt: '2026-12-01T00:00:00.000Z',
+      enforcing: true
+    }
+    expect(SessionAdmitResult.parse(refusal)).toEqual(refusal)
+    expect(SessionAdmitResult.safeParse({ ...refusal, reason: 'other' }).success).toBe(false)
+    expect(SessionAdmitResult.safeParse({ ...refusal, resetsAt: 'soon' }).success).toBe(false)
+    const { enforcing: _enforcing, ...withoutEnforcing } = refusal
+    expect(SessionAdmitResult.safeParse(withoutEnforcing).success).toBe(false)
   })
 
   it('strips a key a newer peer adds instead of refusing the frame', () => {
@@ -68,6 +90,7 @@ describe('session/admit frames (org-session-policy.md, Admission)', () => {
 
   it('registers both frames as org-scoped members behind their own feature', () => {
     expect(SESSION_ADMIT_FEATURE).toBe('session-admit-v1')
+    expect(SESSION_ADMIT_REFUSAL_FEATURE).toBe('session-admit-refusal-v1')
     for (const type of ['session/admit', 'session/admit/result']) {
       expect(isFrameType(type)).toBe(true)
       expect(INSTALL_WIDE_FRAME_TYPES.has(type as never)).toBe(false)

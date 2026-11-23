@@ -168,6 +168,7 @@ type MonthUsage = {
   used: number
   limit: number | null
   policyRevision: number | null
+  enforcing: boolean
   monthStart: string
   resetsAt: string
   asOf: string
@@ -224,7 +225,25 @@ describe('GET /orgs/:orgId/usage/sessions', () => {
     })
     await withApp(async (app) => {
       const res = await app.inject({ method: 'GET', url: USAGE_URL })
-      expect(res.json()).toMatchObject({ used: 0, limit: null, policyRevision: 1 })
+      expect(res.json()).toMatchObject({ used: 0, limit: null, policyRevision: 1, enforcing: false })
+    })
+  })
+
+  it('says whether the organization enforces its limit now', async () => {
+    const apply = (revision: number, enforce: boolean) =>
+      new PgOrgSessionPolicyRepo(prisma).apply(DEF_ORG, {
+        revision,
+        monthlySessionLimit: 5,
+        historyRetentionDays: null,
+        enforce
+      })
+    await withApp(async (app) => {
+      const read = async () => (await app.inject({ method: 'GET', url: USAGE_URL })).json() as MonthUsage
+      expect((await read()).enforcing).toBe(false)
+      await apply(1, false)
+      expect(await read()).toMatchObject({ limit: 5, enforcing: false })
+      await apply(2, true)
+      expect(await read()).toMatchObject({ limit: 5, enforcing: true })
     })
   })
 

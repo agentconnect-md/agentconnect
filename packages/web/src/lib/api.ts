@@ -4499,6 +4499,8 @@ export interface SessionMonthUsageDto {
   /** Null without a limit or without a policy. */
   limit: number | null
   policyRevision: number | null
+  /** Whether a new session past `limit` is refused now; absent from an older Control Plane. */
+  enforcing?: boolean
   monthStart: string
   /** The start of the next UTC month. */
   resetsAt: string

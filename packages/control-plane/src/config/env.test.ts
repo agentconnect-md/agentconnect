@@ -215,3 +215,16 @@ describe('session policy delivery credentials', () => {
     expect(config.SESSION_POLICY_WRITER_SERVICE_ACCOUNT).toBe('example-policy-writer')
   })
 })
+
+describe('session policy enforcement switch', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+    API_KEY_PEPPER: 'a'.repeat(32)
+  }
+
+  it('enforces by default, accepts off, and refuses any other value', () => {
+    expect(loadConfig(base).SESSION_POLICY_ENFORCEMENT).toBe('on')
+    expect(loadConfig({ ...base, SESSION_POLICY_ENFORCEMENT: 'off' }).SESSION_POLICY_ENFORCEMENT).toBe('off')
+    expect(() => loadConfig({ ...base, SESSION_POLICY_ENFORCEMENT: 'false' })).toThrow()
+  })
+})

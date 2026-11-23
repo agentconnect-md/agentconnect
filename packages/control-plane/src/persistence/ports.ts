@@ -1831,10 +1831,16 @@ export type SessionClassification =
  *  id is already bound to a different agent (nothing was written). `settled`
  *  carries the A2A children this milestone resolved out of `inherited_pending`
  *  (§4.5) — the CP owes each of them a §5.1 gate push. */
+/** Why a milestone of a never-recorded id may not record it while its org enforces (org-session-policy.md, Enforcement). */
+export type MilestoneAdmissionRefusal =
+  { reason: 'session_limit_reached'; limit: number; used: number; resetsAt: Date } | { reason: 'other_agent' }
+
 export interface SessionMilestoneResult {
   recorded: boolean
   session: SessionMetaRecord | null
   settled: SessionMetaRecord[]
+  /** Nothing was written: the org enforces its limit and a never-admitted id met it, or another agent admitted the id (org-session-policy.md). */
+  refused?: MilestoneAdmissionRefusal
 }
 
 /** Outcome of a §4.3 visibility change: the target row plus every descendant a
@@ -3074,13 +3080,18 @@ export interface OrgSessionMonthUsage {
   used: number
   limit: number | null
   policyRevision: number | null
+  /** Whether new sessions past `limit` are refused now: the policy enforces a limit and the install does not count only. */
+  enforcing: boolean
   monthStart: Date
   resetsAt: Date
   asOf: Date
 }
 
-/** A session admission's outcome: admitted, counted only when the CP first learned of the id here, or the id is another agent's. */
-export type OrgSessionAdmission = { admitted: true; counted: boolean } | { admitted: false; conflict: 'other_agent' }
+/** A session admission's outcome; `enforcing` is the org's enforcement read in the same transaction. */
+export type OrgSessionAdmission =
+  | { admitted: true; counted: boolean; enforcing: boolean }
+  | { admitted: false; conflict: 'other_agent' }
+  | { admitted: false; conflict: 'session_limit_reached'; limit: number; used: number; resetsAt: Date }
 
 /** A maintenance purpose the caller verified against the agent's own configuration, which the admission may exempt from the count. */
 export type OrgSessionMaintenance = 'memory-dream'
@@ -3090,13 +3101,15 @@ export interface OrgSessionPolicyRepo {
   apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null>
   /** This UTC month's session count by the database clock with the policy's limit; null when the org does not exist. */
   monthUsage(orgId: string): Promise<OrgSessionMonthUsage | null>
-  /** Admit a session id for the agent's org, idempotently, exempting allowed maintenance under its daily cap; never refuses on policy (org-session-policy.md, Admission). */
+  /** Admit a session id for the agent's org, idempotently, exempting allowed maintenance under its daily cap and refusing past an enforced limit (org-session-policy.md, Admission). */
   admit(
     orgId: string,
     agentId: string,
     sessionId: string,
     maintenance?: OrgSessionMaintenance
   ): Promise<OrgSessionAdmission>
+  /** Whether a session-level grant may name this session: the org does not enforce, or the agent's session is admitted or recorded. */
+  sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean>
 }
 
 export interface SessionUsageRepo {

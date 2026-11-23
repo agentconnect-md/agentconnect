@@ -1022,8 +1022,17 @@ have dedicated schemas under `packages/protocol/src/frames/`.
 | `session/*`                                               | paired        | correlated paginated reads                            | fetch daemon-local session data                                               |
 | `session/visibility`, `session/visibility/snapshot`       | C→D           | correlated requests (`session/visibility/ok` / `ack`) | push CP-authoritative session privacy gate state (session-visibility.md §5.1) |
 | `channel/agents`                                          | D→C           | correlated reply                                      | resolve collaboration directory metadata                                      |
-| `session/admit`                                           | D→C           | correlated reply (`session/admit/result`)             | admit a new session for its organization (org-session-policy.md)              |
+| `session/admit`                                           | D→C           | correlated reply (`session/admit/result`)             | admit a new session for its organization, or refuse it at an enforced limit   |
 | `error`, `ack`                                            | either        | correlated replies                                    | provide generic protocol outcomes                                             |
+
+`session/admit/result` is `{ admitted: true, counted, enforcing }`, where an older CP omits
+`enforcing`, or, only to a daemon that lists `session-admit-refusal-v1` in
+`register.capabilities.features`, `{ admitted: false, reason: 'session_limit_reached', limit,
+used, resetsAt, enforcing: true }`. A daemon without that feature gets the refusal as a
+non-retryable `RATE_LIMITED` error. While an organization enforces its limit, the first milestone
+of a session id never admitted admits it; at the limit `event/session-sync` is refused with
+`RATE_LIMITED` and `details` `{ reason: 'session_limit_reached', limit, used, resetsAt }`, and
+`event/session` is dropped ([org-session-policy.md](org-session-policy.md#enforcement)).
 
 ---
 
