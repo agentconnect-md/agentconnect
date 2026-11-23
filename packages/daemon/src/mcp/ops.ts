@@ -108,6 +108,7 @@ import {
   type PlatformActionDeps
 } from './ops/platform-actions.js'
 import { shareFile, type ShareFileDeps } from './ops/share-file.js'
+import { sharedFileKind } from './ops/share-file-types.js'
 import {
   replyGithubReviewThreads,
   REPLY_GITHUB_REVIEW_THREADS_ARGS,
@@ -672,7 +673,15 @@ async function executeRegisteredTool(
         await start(ctx, held.id, seed)
       },
       attribution: async () => await deps.sessionToolAttributionFor?.(ctx),
-      callingSessionUrl: async () => await deps.sessionToolLinkFor?.(ctx)
+      callingSessionUrl: async () => await deps.sessionToolLinkFor?.(ctx),
+      readWorkspaceFile: async (given) => {
+        if (!deps.readWorkspaceFile) return { ok: false, reason: 'unavailable' }
+        const path = (await deps.normalizeSharePath?.(ctx, given).catch(() => given)) ?? given
+        const read = await deps.readWorkspaceFile(ctx, path)
+        if (!read.ok) return read
+        const { name, mimeType } = sharedFileKind(read.name, read.bytes)
+        return { ok: true, bytes: read.bytes, name, mimeType }
+      }
     })
   }
 

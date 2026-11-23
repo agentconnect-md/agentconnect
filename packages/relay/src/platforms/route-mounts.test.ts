@@ -41,7 +41,7 @@ const EXPECTED_MOUNTS: Record<string, string[]> = {
   // The messaging endpoint the admin enters in the Teams bot registration.
   msteams: ['POST /msteams/messages'],
   // The inbound URL the Setup Server tells the operator to configure the ingress Worker with.
-  email: ['POST /email/inbound']
+  email: ['POST /email/inbound', 'POST /email/send/*']
 }
 
 const routeDeps = (): RelayIngressRouteDeps => ({

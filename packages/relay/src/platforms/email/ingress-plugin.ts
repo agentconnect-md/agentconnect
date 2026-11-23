@@ -11,6 +11,7 @@ import {
 import {
   EMAIL_PLATFORM,
   WireEmailCall,
+  WireEmailSendTicketCall,
   type RcDeploymentConfig,
   type RcEmailDeployment,
   type RdPlatformReply,
@@ -27,6 +28,7 @@ import {
   registerEmailHttpIngress
 } from './http-ingress.js'
 import { readEmailMime } from './mime.js'
+import { registerEmailSendRoute } from './send-route.js'
 import { mintEmailTicket } from './ticket.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
@@ -68,6 +70,7 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
   const now = deps.now ?? Date.now
   // The latest snapshot's Email configuration: the ingress secret, the sending token and the ticket key; no assignment carries any.
   let config: RcEmailDeployment | undefined
+  let publicRelayUrl: string | undefined
   let registeredAtMs = Number.NEGATIVE_INFINITY
   const rate = new EmailInboundRate()
   const egress = new EmailRelayEgress(
@@ -85,17 +88,21 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
     platformId: EMAIL_PLATFORM,
 
     // `POST /email/inbound`, the URL the ingress Worker is configured with; pinned by route-mounts.test.ts.
-    installRoutes: (app, routeDeps) =>
+    installRoutes: (app, routeDeps) => {
       registerEmailHttpIngress(app, routeDeps, {
         config: () => config,
         settling: (at) => at - registeredAtMs < EMAIL_ASSIGNMENT_SETTLE_MS,
         now,
         ...(deps.deadlineMs !== undefined ? { deadlineMs: deps.deadlineMs } : {})
-      }),
+      })
+      // `POST /email/send/<ticket>`: a started mail whose attachments do not fit a frame (§6.4).
+      registerEmailSendRoute(app, { config: () => config, egress })
+    },
 
     // Mail has no deployment-owned bot; the snapshot is read here for the configuration every address shares.
     deploymentAssignments(snapshot: RcDeploymentConfig | undefined): BotAssignment[] {
       config = snapshot?.email
+      publicRelayUrl = snapshot?.publicRelayUrl
       registeredAtMs = now()
       return []
     },
@@ -116,10 +123,14 @@ export function createEmailIngressPlugin(deps: EmailIngressPluginDeps = {}): Ema
       const address = servedAddress(a)
       // No configuration, or an address off the served domain: this relay's snapshot may trail another's, and nothing was called.
       if (!config || !address) return { outcome: 'refused', reason: 'not_configured', retryable: true }
-      const call = WireEmailCall.safeParse(payload)
-      if (!call.success) return { outcome: 'refused', reason: 'invalid' }
       // An assignment from a Control Plane that names no organization is budgeted as an organization of its own.
       const sender = { botId: a.botId, address, organization: a.orgSlug ?? `bot:${a.botId}` }
+      const ticket = WireEmailSendTicketCall.safeParse(payload)
+      if (ticket.success) return egress.sendTicket(config, sender, ticket.data, publicRelayUrl)
+      const call = WireEmailCall.safeParse(payload)
+      // A frame never carries attachments: they are posted with a ticket.
+      if (!call.success || (call.data.op === 'start' && call.data.attachments))
+        return { outcome: 'refused', reason: 'invalid' }
       return call.data.op === 'start'
         ? await egress.start(config, sender, call.data)
         : await egress.send(config, sender, call.data)

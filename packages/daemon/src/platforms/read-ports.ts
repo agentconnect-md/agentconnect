@@ -152,7 +152,13 @@ export interface PlatformAgentToolEnv {
   attribution(): Promise<ReplyAttributionInfo | undefined>
   /** The console link of the session the call runs in; undefined when it has none yet. */
   callingSessionUrl(): Promise<string | undefined>
+  /** One of the calling session's workspace or `files:` files, read and named as `shareFile` reads it. */
+  readWorkspaceFile(path: string): Promise<PlatformWorkspaceFile>
 }
+
+/** A workspace file a platform tool read, or why it could not be. */
+export type PlatformWorkspaceFile =
+  { ok: true; bytes: Buffer; name: string; mimeType: string } | { ok: false; reason: string; detail?: string }
 
 /** One platform's read-port declaration — the pre-connection half of the ask. */
 export interface PlatformReadPorts {

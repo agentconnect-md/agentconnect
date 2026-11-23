@@ -9,7 +9,12 @@ export class PlatformRelayUnsent extends Error {
   }
 }
 
+export interface PlatformRequestOptions {
+  /** Relay features the request needs; a relay that did not advertise every one is skipped. */
+  requires?: readonly string[]
+}
+
 export interface PlatformRelay {
   /** Rejects with {@link PlatformRelayUnsent} when no relay took it; any other rejection may mean the provider call happened. */
-  request(req: RdPlatformRequest): Promise<RdPlatformReply>
+  request(req: RdPlatformRequest, opts?: PlatformRequestOptions): Promise<RdPlatformReply>
 }
