@@ -33,7 +33,8 @@ export const SOCIAL_LOGIN_CATALOG = [
   { target: 'lark', name: 'Lark' },
   { target: 'feishu', name: 'Feishu' },
   { target: 'discord', name: 'Discord' },
-  { target: 'telegram', name: 'Telegram' }
+  { target: 'telegram', name: 'Telegram' },
+  { target: 'mattermost', name: 'Mattermost' }
 ] as const
 
 export type SocialLoginProvider = (typeof SOCIAL_LOGIN_CATALOG)[number]

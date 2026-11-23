@@ -14,6 +14,7 @@ import { TelegramMark } from './telegram/mark'
 import { QQMark } from './qq/mark'
 import { WeChatMark } from './wechat/mark'
 import { WeComMark } from './wecom/mark'
+import { MattermostMark } from './mattermost/mark'
 
 /**
  * The BRAND-MARK view of the platform registry — deliberately a second, tiny
@@ -47,6 +48,7 @@ const MARKS = new Map<string, PlatformMarkComponent>([
   ['msteams', MsTeamsMark],
   ['wechat', WeChatMark],
   ['wecom', WeComMark],
+  ['mattermost', MattermostMark],
   ['email', EmailMark],
   // Lark and Feishu are one platform id (`feishu`) with the cloud on a separate
   // `region` field, so nothing in the console routes a bare 'lark' here today.

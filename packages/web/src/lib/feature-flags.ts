@@ -17,6 +17,8 @@ export type FeatureFlagId =
   | 'wechat'
   // The WeCom integration's console install entry points; existing WeCom bots keep their Bots tab.
   | 'wecom'
+  // The Mattermost integration's console install entry points; existing Mattermost bots keep their Bots tab.
+  | 'mattermost'
   // The Email integration's console install entry points, offered only where the deployment has a mail domain too.
   | 'email'
   // The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; otherwise it connects its own app.

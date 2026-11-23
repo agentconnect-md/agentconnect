@@ -190,6 +190,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /googlechat/events            → relay pool (Google Chat add-on events; Google-signed ID token)
   /googlechat/media             → relay pool (deployment app attachment download; relay-signed ticket)
   /msteams/messages             → relay pool (Microsoft Teams activities; Bot Framework-signed JWT)
+  /mattermost/actions           → relay pool (Mattermost interactive button callbacks; HMAC-signed context token)
   /email/inbound                → relay pool (inbound mail from the ingress Worker; HMAC over the raw message)
   /ai-sdk/agents/:agentId/chat  → relay pool (agent chat API; bearer API key)
   /ag-ui/agents/:agentId/chat   → relay pool (agent chat API over AG-UI; bearer API key)
@@ -295,6 +296,9 @@ spec:
         - path:
             type: PathPrefix
             value: /msteams/messages
+        - path:
+            type: PathPrefix
+            value: /mattermost/actions
         - path:
             type: PathPrefix
             value: /email/inbound

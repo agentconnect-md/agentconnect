@@ -2711,6 +2711,10 @@
           "create": "在企业微信中创建智能机器人",
           "existing": "未使用的企业微信机器人"
         },
+        "mattermost": {
+          "create": "连接 Mattermost 机器人",
+          "existing": "未使用的 Mattermost 机器人"
+        },
         "email": {
           "create": "为此 Agent 选择邮箱地址",
           "existing": "邮箱地址不会转移给其他 Agent"
@@ -5797,6 +5801,15 @@
           "unavailable": "请先为本部署配置 Microsoft 登录，再开启权限同步。",
           "unresolved": "{count, plural, other {已隐藏 # 个会话：缺少可信的对话来源。}}",
           "degraded": "Microsoft Teams 对话来源解析失败，新会话已自动隐藏。"
+        },
+        "mattermost": {
+          "name": "Mattermost",
+          "label": "要求 Mattermost 访问权限",
+          "description": "只有该频道或对话的成员才能看到它的会话。",
+          "details": "频道、多人私聊和一对一私聊按当前成员身份授权，由对话中的 Mattermost 机器人检查。\n请先在个人资料中关联 Mattermost 账号。Agent 此前学到的记忆不会被删除。\n缺少可信来源的历史会话会保持隐藏，直到有新的可信活动补齐来源。\n关闭后，此前同步的会话会被隐藏，重新开启即可恢复权限检查。",
+          "unavailable": "请先为本部署配置 Mattermost 登录，再开启权限同步。",
+          "unresolved": "{count, plural, other {已隐藏 # 个会话：缺少可信的对话来源。}}",
+          "degraded": "Mattermost 对话来源解析失败，新会话已自动隐藏。"
         }
       }
     },
@@ -7622,6 +7635,49 @@
         "updated": "Secret 已保存，机器人会使用它重新连接。"
       },
       "brand": "企业微信"
+    },
+    "mattermost": {
+      "checking": "正在检查凭据…",
+      "connect": "连接",
+      "editions": {
+        "selfHosted": "自托管部署",
+        "cloud": "Mattermost Cloud"
+      },
+      "cloud": {
+        "step1": "在你的 Mattermost Cloud 工作区 → 系统控制台 → 集成 → 机器人账号中创建机器人并复制 Bot Account Token，并将其加入需要回复的团队和频道。",
+        "step2": "填写 Mattermost Cloud 工作区名称或地址和 Bot Token（连接必需）",
+        "workspaceOrUrl": "工作区名称或地址",
+        "workspaceOrUrlPlaceholder": "acme  或  https://acme.cloud.mattermost.com",
+        "tokenHint": "通过 HTTPS 与 WebSocket v4 主动外连，无需暴露公网 Webhook 或开放防火墙端口。"
+      },
+      "step1": "在 Mattermost 系统控制台 → 集成 → 机器人账号中创建机器人并复制 Token（推荐），也支持使用个人访问令牌（PAT）。请将机器人加入需要回复的团队和频道。",
+      "step2": "填写 Mattermost 服务器地址和 Bot Token（连接必需）",
+      "tokenHint": "推荐使用 Bot Account Token，也支持个人访问令牌（PAT）。支持自托管内网及 http:// 地址。",
+      "fields": {
+        "serverUrl": "服务器地址",
+        "serverUrlPlaceholder": "https://mattermost.example.com",
+        "botToken": "Bot Token",
+        "botTokenPlaceholder": "粘贴 Bot Account Token 或个人访问令牌"
+      },
+      "errors": {
+        "invalidServerUrl": "请输入有效的 http:// 或 https:// Mattermost 服务器地址（不能包含用户名、查询参数或片段）。支持内网和回环地址，禁止云元数据及链路本地地址。",
+        "invalidCredentials": "Mattermost 拒绝了此 Bot Token。请检查服务器地址并重新复制有效的 Bot Account Token 或个人访问令牌（PAT），然后再试。",
+        "botMismatch": "此 Token 属于另一个 Mattermost 账号，与当前已安装的机器人不一致。请粘贴同一机器人账号的 Token，或将其作为新机器人接入。",
+        "checkUnavailable": "AgentConnect 无法连接到你的 Mattermost 服务器进行校验，因此未保存任何内容。请检查服务器地址与网络连通性后重试。",
+        "alreadyInstalled": "此 Mattermost 机器人已连接。请先从使用它的 Agent 断开，再选择“未使用的 Mattermost 机器人”复用。若连接在其他组织中，须先在那边移除。"
+      },
+      "settings": {
+        "replace": "更换 Token",
+        "hint": "AgentConnect 会在不断开运行中机器人的情况下向你的 Mattermost 服务器校验新 Token，然后使用新 Token 重新连接。",
+        "newToken": "新的 Bot Token",
+        "save": "保存",
+        "checking": "正在校验…",
+        "close": "关闭",
+        "updated": "Token 已保存，机器人会使用它重新连接。",
+        "revoked": "Mattermost 拒绝了此机器人的 Token。请更换 Token 以重新连接。",
+        "rejected": "Mattermost 拒绝了此机器人的 Token（{code}）。请更换 Token 以重新连接。"
+      },
+      "brand": "Mattermost"
     },
     "email": {
       "brand": "邮件",

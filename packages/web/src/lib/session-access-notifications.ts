@@ -62,7 +62,8 @@ const BOT_PLATFORM_NAMES: Record<string, string> = {
   discord: 'Discord',
   gitlab: 'GitLab',
   googlechat: 'Google',
-  msteams: 'Microsoft'
+  msteams: 'Microsoft',
+  mattermost: 'Mattermost'
 }
 // The sign-in method a platform's people link, where its name differs from the platform's.
 const PROFILE_PROVIDERS: Record<string, string> = { googlechat: 'google', msteams: 'azuread' }
@@ -76,7 +77,9 @@ const APP_ACCESS_MESSAGES: Record<string, string> = {
   msteams:
     'The Teams bot cannot verify conversation membership. Ask an administrator to check that the app is still installed and its client secret is current.',
   gitlab:
-    'The GitLab connection cannot verify project access. Ask an organization owner to reconnect it in Integrations.'
+    'The GitLab connection cannot verify project access. Ask an organization owner to reconnect it in Integrations.',
+  mattermost:
+    'The Mattermost bot cannot verify conversation access. Ask an administrator to check its channel access and credentials.'
 }
 
 function botAccessNotice(

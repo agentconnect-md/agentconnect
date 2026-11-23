@@ -293,4 +293,16 @@ describe('GlobalSearch infra entities', () => {
     expect(host.textContent).toContain('lab-box')
     expect(host.textContent).toContain('1 daemon · 2 agents')
   })
+
+  it('matches mattermost on /integrations only when the mattermost feature flag is enabled', () => {
+    setFlags('')
+    render()
+    type('mattermost')
+    expect(host.textContent).not.toContain('/integrations')
+
+    setFlags('mattermost')
+    render()
+    type('mattermost')
+    expect(resultButton('/integrations')).toBeDefined()
+  })
 })

@@ -57,12 +57,13 @@ describe('SocialLoginButtons layout', () => {
       'Continue with GitLab',
       'Continue with Lark / Feishu',
       'Continue with Discord',
-      'Continue with Telegram'
+      'Continue with Telegram',
+      'Continue with Mattermost'
     ])
 
     const regional = container.querySelector<HTMLButtonElement>('button[aria-label="Continue with Lark / Feishu"]')
     await act(async () => regional?.click())
-    expect(labels().slice(8)).toEqual(['Continue with Lark', 'Continue with Feishu'])
+    expect(labels().slice(9)).toEqual(['Continue with Lark', 'Continue with Feishu'])
   })
 
   it('shows a lone extra provider as a fifth labeled button', async () => {

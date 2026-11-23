@@ -638,11 +638,12 @@ export interface WebThreadShape {
   continuesInThread?: true
 }
 
-/** What a thread link is built from: the conversation's channel, its workspace (as {@link ConversationLinkInput.workspaceId}) and the root's id. */
+/** What a thread link is built from: the conversation's channel, its workspace (as {@link ConversationLinkInput.workspaceId}), optional self-hosted server URL, and the root's id. */
 export interface ThreadLinkInput {
   channelId: string
   workspaceId?: string | null
   rootId: string
+  serverUrl?: string | null
 }
 
 /** Message keys platform modules may hand back to the channel-list host. The

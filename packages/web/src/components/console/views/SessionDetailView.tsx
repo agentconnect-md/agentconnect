@@ -181,7 +181,7 @@ import {
   type TasksPanelVerdict
 } from '@/components/console/dock/TasksPanel'
 import { ThreadPanel } from '@/components/console/dock/ThreadPanel'
-import { sessionPlaceLink } from '@/components/console/place-link'
+import { resolveThreadServerUrl, sessionPlaceLink } from '@/components/console/place-link'
 import { RunningCommandsDock } from '@/components/console/RunningCommandsDock'
 import { StateIcon, sessionState } from '@/components/console/StateIcon'
 import { TaskBrief } from '@/components/console/TaskBrief'
@@ -859,6 +859,25 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
   return [...base, `Your ${providerName} profile isn’t linked or belongs to a different workspace.`]
 }
 
+export function profileProviderHint(value: string | null): SessionProfileProvider | undefined {
+  if (value === 'googlechat') return 'google'
+  if (value === 'msteams') return 'azuread'
+  if (
+    value === 'slack' ||
+    value === 'google' ||
+    value === 'github' ||
+    value === 'gitlab' ||
+    value === 'lark' ||
+    value === 'feishu' ||
+    value === 'telegram' ||
+    value === 'discord' ||
+    value === 'mattermost'
+  ) {
+    return value
+  }
+  return undefined
+}
+
 export default function SessionDetailView() {
   const t = useTranslations('Sessions.detail')
   const unnamedLabel = useUnnamedLabel()
@@ -1184,21 +1203,6 @@ export default function SessionDetailView() {
   // equivalent.
   const source = searchParams.get('source')
   const integration = searchParams.get('integration')
-  const profileProviderHint = (value: string | null): SessionProfileProvider | undefined =>
-    value === 'googlechat'
-      ? 'google'
-      : value === 'msteams'
-        ? 'azuread'
-        : value === 'slack' ||
-            value === 'google' ||
-            value === 'github' ||
-            value === 'gitlab' ||
-            value === 'lark' ||
-            value === 'feishu' ||
-            value === 'telegram' ||
-            value === 'discord'
-          ? value
-          : undefined
   const hintedProvider = profileProviderHint(source) ?? profileProviderHint(integration)
   const profileLinkProvider =
     hintedProvider && socialLoginProviders().some((provider) => provider.target === hintedProvider)
@@ -2657,11 +2661,24 @@ export default function SessionDetailView() {
       ? { sessionId: openRootSummary.task.sessionId, title: openRootSummary.task.title ?? '', how: 'opened' }
       : undefined
   // The open root's thread on its platform, from the conversation's channel and workspace, which the panel links.
+  const openRootServerUrl =
+    openRoot && currentSessionDetail?.channel
+      ? resolveThreadServerUrl(
+          { bots, integrations },
+          {
+            platform: session.platform,
+            tenantScope: currentSessionDetail.tenantScope ?? null,
+            agentId: session.agentId,
+            channelId: currentSessionDetail.channel
+          }
+        )
+      : null
   const openRootUrl =
     openRoot && currentSessionDetail?.channel
       ? threadShape?.threadUrl?.({
           channelId: currentSessionDetail.channel,
           workspaceId: currentSessionDetail.tenantScope ?? null,
+          serverUrl: openRootServerUrl,
           rootId: openRoot
         })
       : undefined

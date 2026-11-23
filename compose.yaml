@@ -103,10 +103,13 @@ services:
       - OIDC_ISSUER
       - LOGTO_ENDPOINT
       - LOGTO_MGMT_ENDPOINT
+      - AGENTCONNECT_INTERNAL_ALLOWED_HOSTS
+      - NODE_EXTRA_CA_CERTS
     init: true
     ports:
       - 127.0.0.1:8091:8091
     networks:
+      - default
       - admin
     restart: unless-stopped
 
@@ -178,6 +181,14 @@ services:
       - LOGTO_MGMT_APP_ID
       - LOGTO_MGMT_APP_SECRET
       - LOGTO_MGMT_RESOURCE
+      # Pure-intranet self-hosted services and custom CA trust; passed through bare so unset stays unset.
+      - CP_ALLOWED_OUTBOUND_HOSTS
+      - AGENTCONNECT_INTERNAL_ALLOWED_HOSTS
+      - MATTERMOST_ALLOW_PRIVATE_NETWORK=${MATTERMOST_ALLOW_PRIVATE_NETWORK:-true}
+      - MATTERMOST_OAUTH_SERVER_URL
+      - GITLAB_BASE_URL
+      - GITEA_BASE_URL
+      - NODE_EXTRA_CA_CERTS
       # Brokers connector browsing and connection provisioning; the origin stays server-side.
       - OPEN_CONNECTOR_URL=http://open-connector:3000
       - OPEN_CONNECTOR_PROVIDER_WHITELIST
@@ -217,6 +228,9 @@ services:
       - DAEMON_DIAL_URL=${AGENTCONNECT_RELAY_DAEMON_URL:-ws://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
       - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
       - GITHUB_APP_WEBHOOK_SECRET
+      - RELAY_MCP_ALLOWED_UPSTREAMS
+      - RELAY_MEMORY_ALLOWED_UPSTREAMS
+      - NODE_EXTRA_CA_CERTS
       # Egress for open_connector bindings — the relay calls its runtime action API.
       - OPEN_CONNECTOR_URL=http://open-connector:3000
       # One host variable drives both ends so runtime auth is never half-configured; the
@@ -271,6 +285,7 @@ services:
       - FEATURE_FLAGS
       # Address of the billing service, when the `billing` feature flag is on.
       - BILLING_URL
+      - NODE_EXTRA_CA_CERTS
     healthcheck:
       test:
         - CMD

@@ -74,6 +74,7 @@ describe('platform set', () => {
     }
     expect(chatRoomSigil('feishu')).toBe(chatRoomSigil('lark'))
     expect(chatRoomSigil('linear')).toBe('')
+    expect(chatRoomSigil('mattermost')).toBe('#')
     // An id no chat platform claims keeps the channel convention every non-module row had.
     expect(chatRoomSigil('teams-x')).toBe('#')
     expect(chatRoomSigil(undefined)).toBe('#')
@@ -161,6 +162,9 @@ describe('platform set', () => {
       expect(platformOffered('wecom')).toBe(false)
       vi.stubEnv('FEATURE_FLAGS', 'wecom')
       expect(platformOffered('wecom')).toBe(true)
+      expect(platformOffered('mattermost')).toBe(false)
+      vi.stubEnv('FEATURE_FLAGS', 'mattermost')
+      expect(platformOffered('mattermost')).toBe(true)
       expect(platformOffered('email')).toBe(false)
       vi.stubEnv('FEATURE_FLAGS', 'email')
       expect(platformOffered('email')).toBe(true)
@@ -173,7 +177,9 @@ describe('platform set', () => {
       expect(shown([{ platform: 'qq' }])).toContain('qq')
       expect(shown([])).not.toContain('wecom')
       expect(shown([{ platform: 'wecom' }])).toContain('wecom')
-      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat,wecom,email')
+      expect(shown([])).not.toContain('mattermost')
+      expect(shown([{ platform: 'mattermost' }])).toContain('mattermost')
+      vi.stubEnv('FEATURE_FLAGS', 'qq,wechat,wecom,mattermost,email')
       expect(visibleBotPlatformTabs([])).toEqual(BOT_PLATFORM_TABS)
     })
   })
@@ -202,6 +208,7 @@ describe('platform set', () => {
       'WeCom',
       'WeChat',
       'QQ',
+      'Mattermost',
       'Linear',
       'Email'
     ])

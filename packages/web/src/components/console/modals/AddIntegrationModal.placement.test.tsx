@@ -185,6 +185,25 @@ describe('AddIntegrationModal, flag-gated platform tiles', () => {
     expect(tileStates()).not.toHaveProperty('QQ')
   })
 
+  it('leaves the Mattermost tile out where the mattermost flag is off, even with another flag on', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'qq,wecom' }
+    await render({ daemon: '—', placementKind: 'daemon' })
+    const more = document.querySelector<HTMLButtonElement>('button.ptile')!
+    await act(async () => more.click())
+    expect(tileStates()).toHaveProperty('WeCom')
+    expect(tileStates()).not.toHaveProperty('Mattermost')
+  })
+
+  it('offers the Mattermost tile where the mattermost flag is on', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'mattermost' }
+    await render({ daemon: '—', placementKind: 'daemon' })
+    const more = document.querySelector<HTMLButtonElement>('button.ptile')!
+    expect(more.textContent).toBe('More')
+    await act(async () => more.click())
+    expect(tileStates()['Mattermost']).toBe(false)
+    expect(tileStates()).not.toHaveProperty('WeCom')
+  })
+
   it('reveals an overflow platform selected after placement loads', async () => {
     window.__AC_ENV = { FEATURE_FLAGS: 'qq' }
     mocks.daemons = [daemon({ caps: { platforms: ['qq'], runtimes: [], acp: true, features: [] } })]

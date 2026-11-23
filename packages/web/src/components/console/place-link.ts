@@ -8,10 +8,61 @@ import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
 /** The bot fields a conversation link can depend on. */
 export type ConversationLinkBot = { workspaceId?: string | null; feishuRegion?: 'feishu' | 'lark' | null }
 
+/** Accepts only well-formed `http:` or `https:` URLs without userinfo or control/whitespace characters. */
+export function safeExternalHttpUrl(raw: string | null | undefined): string | undefined {
+  const trimmed = raw?.trim()
+  if (!trimmed || /[\s\u0000-\u001f\u007f]/.test(trimmed)) return undefined
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return undefined
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined
+  const authority = trimmed.slice(parsed.protocol.length + 2).split(/[/?#]/)[0] ?? ''
+  if (parsed.username || parsed.password || authority.includes('@')) return undefined
+  return trimmed
+}
+
 /** The conversation directory a place is looked up in: the org's integrations and the bots behind them. */
 export interface PlaceDirectory {
   integrations: readonly Pick<IntegrationRow, 'id' | 'agentId' | 'botId' | 'platform' | 'region' | 'channels'>[]
-  bots: readonly Pick<BotDto, 'id' | 'workspaceId' | 'feishuRegion'>[]
+  bots: readonly (Pick<BotDto, 'id' | 'workspaceId' | 'feishuRegion' | 'externalAppId' | 'platformConfig'> &
+    Partial<Pick<BotDto, 'platform'>>)[]
+}
+
+/** Resolves a self-hosted bot's `serverUrl`, prioritizing exact `tenantScope` (`externalAppId`) over integration matching. */
+export function resolveThreadServerUrl(
+  directory: {
+    bots: readonly (Pick<BotDto, 'id' | 'externalAppId' | 'platformConfig'> & Partial<Pick<BotDto, 'platform'>>)[]
+    integrations: readonly Pick<IntegrationRow, 'id' | 'agentId' | 'botId' | 'platform' | 'channels'>[]
+  },
+  query: {
+    platform?: string | null
+    tenantScope?: string | null
+    agentId?: string | null
+    channelId?: string | null
+    integrationId?: string | null
+  }
+): string | null {
+  const { platform, tenantScope, agentId, channelId, integrationId } = query
+  const matchesPlatform = (b: { platform?: string }) => !platform || !b.platform || b.platform === platform
+  if (tenantScope) {
+    const byTenant = directory.bots.find((b) => matchesPlatform(b) && b.externalAppId === tenantScope)
+    if (byTenant) return safeExternalHttpUrl(byTenant.platformConfig?.serverUrl) ?? null
+  }
+  const byIntegration = directory.integrations.find(
+    (i) =>
+      (!platform || i.platform === platform) &&
+      (!integrationId || i.id === integrationId) &&
+      (!agentId || i.agentId === agentId) &&
+      (!channelId || i.channels.some((c) => c.channelId === channelId))
+  )
+  const holderBot = byIntegration ? directory.bots.find((b) => b.id === byIntegration.botId) : undefined
+  if (holderBot && (!tenantScope || !holderBot.externalAppId)) {
+    return safeExternalHttpUrl(holderBot.platformConfig?.serverUrl) ?? null
+  }
+  return null
 }
 
 /** A conversation as a session or a schedule names it: its platform ids, plus what narrows the directory lookup. */
@@ -32,7 +83,7 @@ export const rowUrl = (
   platform: string | undefined,
   bot: ConversationLinkBot | undefined
 ): string | undefined =>
-  c.url ??
+  safeExternalHttpUrl(c.url) ??
   channelListSemantics(platform).conversationUrl?.({
     channelId: c.channelId,
     ...(c.spaceId ? { spaceId: c.spaceId } : {}),
@@ -84,13 +135,30 @@ const isSyntheticCoordinate = (thread: string): boolean => isAppendCoordinate(th
 
 /** Where a session's place opens: the link its daemon reported, else its thread's page, else its conversation's. */
 export function sessionPlaceLink(session: SessionPlaceRef, directory: PlaceDirectory): PlaceLink | undefined {
-  if (session.threadUrl) return { url: session.threadUrl, opens: 'thread' }
+  const reportedThreadUrl = safeExternalHttpUrl(session.threadUrl)
+  if (reportedThreadUrl) return { url: reportedThreadUrl, opens: 'thread' }
   const { channelId, thread } = session
   if (!channelId) return undefined
   // A session on a synthetic coordinate (a whole conversation's, a coordinator's, a task's) runs in no platform thread.
   const shape = platformThreadShape(session.platform)
   const root = thread && thread !== channelId && !isSyntheticCoordinate(thread) ? thread : undefined
-  const input = root ? { channelId, workspaceId: session.workspaceId ?? null, rootId: root } : undefined
+  const serverUrl = root
+    ? resolveThreadServerUrl(directory, {
+        platform: session.platform,
+        tenantScope: session.workspaceId ?? null,
+        agentId: session.agentId ?? null,
+        channelId,
+        integrationId: session.integrationId ?? null
+      })
+    : null
+  const input = root
+    ? {
+        channelId,
+        workspaceId: session.workspaceId ?? null,
+        serverUrl,
+        rootId: root
+      }
+    : undefined
   const threadUrl = !input
     ? undefined
     : shape

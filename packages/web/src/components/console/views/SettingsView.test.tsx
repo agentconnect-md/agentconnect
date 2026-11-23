@@ -66,9 +66,17 @@ async function render() {
 }
 
 function rowNames(): string[] {
-  return ['Slack', 'GitHub', 'GitLab', 'Feishu/Lark', 'Telegram', 'Discord', 'Google Chat', 'Microsoft Teams'].filter(
-    (name) => [...host.querySelectorAll('span')].some((span) => span.textContent === `Require ${name} access`)
-  )
+  return [
+    'Slack',
+    'GitHub',
+    'GitLab',
+    'Feishu/Lark',
+    'Telegram',
+    'Discord',
+    'Google Chat',
+    'Microsoft Teams',
+    'Mattermost'
+  ].filter((name) => [...host.querySelectorAll('span')].some((span) => span.textContent === `Require ${name} access`))
 }
 
 beforeEach(() => {
@@ -83,6 +91,7 @@ beforeEach(() => {
   answers.set('discord', nothingToOffer('discord'))
   answers.set('googlechat', nothingToOffer('googlechat'))
   answers.set('msteams', nothingToOffer('msteams'))
+  answers.set('mattermost', nothingToOffer('mattermost'))
 })
 
 afterEach(async () => {
@@ -101,6 +110,7 @@ describe('session access card', () => {
     answers.set('discord', access('discord'))
     answers.set('googlechat', access('googlechat'))
     answers.set('msteams', access('msteams'))
+    answers.set('mattermost', access('mattermost'))
 
     await render()
 
@@ -112,9 +122,10 @@ describe('session access card', () => {
       'Telegram',
       'Discord',
       'Google Chat',
-      'Microsoft Teams'
+      'Microsoft Teams',
+      'Mattermost'
     ])
-    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(8)
+    expect(host.querySelectorAll('[role="switch"]')).toHaveLength(9)
   })
 
   it('leaves out a provider this deployment cannot offer, rather than showing a dead switch', async () => {

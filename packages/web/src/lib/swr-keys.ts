@@ -83,7 +83,8 @@ export const consoleKeys = {
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
   orgSso: (orgId: string | null | undefined) => consoleKey(orgId, 'org-sso'),
   sessionAccess: <
-    const Provider extends 'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat' | 'msteams'
+    const Provider extends
+      'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat' | 'msteams' | 'mattermost'
   >(
     orgId: string | null | undefined,
     provider: Provider

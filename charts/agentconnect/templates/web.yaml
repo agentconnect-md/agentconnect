@@ -86,6 +86,7 @@ spec:
             {{- if .Values.features.qq }}{{- $flags = append $flags "qq" }}{{- end }}
             {{- if .Values.features.wechat }}{{- $flags = append $flags "wechat" }}{{- end }}
             {{- if .Values.features.wecom }}{{- $flags = append $flags "wecom" }}{{- end }}
+            {{- if .Values.features.mattermost }}{{- $flags = append $flags "mattermost" }}{{- end }}
             {{- if .Values.features.email }}{{- $flags = append $flags "email" }}{{- end }}
             {{- if .Values.features.googleChatDeploymentApp }}{{- $flags = append $flags "google-chat-deployment-app" }}{{- end }}
             {{- if .Values.features.repositoryDecision }}{{- $flags = append $flags "repository-decision" }}{{- end }}

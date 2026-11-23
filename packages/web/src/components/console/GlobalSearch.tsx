@@ -160,6 +160,7 @@ export function GlobalSearch({
   const discordAccess = useSWR(accessKey('discord'), accessFetcher)
   const googlechatAccess = useSWR(accessKey('googlechat'), accessFetcher)
   const msteamsAccess = useSWR(accessKey('msteams'), accessFetcher)
+  const mattermostAccess = useSWR(accessKey('mattermost'), accessFetcher)
   // Hide only when every provider is unavailable and disabled; pending or failed reads keep the entry.
   const sessionAccessRenders = [
     slackAccess,
@@ -169,7 +170,8 @@ export function GlobalSearch({
     telegramAccess,
     discordAccess,
     googlechatAccess,
-    msteamsAccess
+    msteamsAccess,
+    mattermostAccess
   ].some(({ data }) => data === undefined || data.available || data.enabled)
 
   const groups = useMemo<SearchGroup[]>(() => {
@@ -301,7 +303,10 @@ export function GlobalSearch({
       const key = SEARCH_PAGE_LABEL_KEYS[p.href]
       return key ? t(key) : p.label
     }
-    const pageHit = (p: ConsolePage) => hit(p.label) || hit(pageLabel(p)) || (p.keywords ?? []).some(hit)
+    const integrationsExtraKeywords = (p: ConsolePage): string[] =>
+      p.href === '/integrations' && featureFlagEnabled('mattermost') ? ['mattermost'] : []
+    const pageHit = (p: ConsolePage) =>
+      hit(p.label) || hit(pageLabel(p)) || [...(p.keywords ?? []), ...integrationsExtraKeywords(p)].some(hit)
     const toItem = (p: ConsolePage): SearchItem => ({
       key: `${p.kind}:${p.href}`,
       kind: p.kind,
