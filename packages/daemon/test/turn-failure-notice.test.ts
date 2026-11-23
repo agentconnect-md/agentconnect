@@ -29,6 +29,16 @@ describe('turnFailureNotice', () => {
     )
   })
 
+  it('tells an organization that never had credit to add some', () => {
+    const notice = turnFailureNotice('[ERR:never_funded] No credit yet', {
+      readsOrgRefusals: true,
+      agentName: 'Helper',
+      links
+    })
+    expect(notice.split('\n')[0]).toBe("⚠️ Your organization hasn't added any credits yet, so Helper couldn't respond.")
+    expect(notice).toContain('• Add credits: https://console.example.test/acme/billing')
+  })
+
   it('shows the text as before on a daemon that does not read refusals', () => {
     const reason = undecorateRuntimeError(RUNTIME_TEXTS[0]!)
     expect(turnFailureNotice(reason, { readsOrgRefusals: false, agentName: 'Helper', links })).toBe(

@@ -15,15 +15,22 @@ export interface OutOfCreditsContext {
 }
 
 export interface OutOfCreditsOffer {
+  /** Spent out, or never had credit: the same fixes, told differently. */
+  code: 'out_of_credits' | 'never_funded'
   /** An owner gets Billing; anyone else copies its link for an owner. */
   addCredits: 'link' | 'ask-owner'
   moveToOwnMachine: boolean
 }
 
-/** A failure carrying the out-of-credits tag: an error part as is, said text only as a `⚠` failure line, so prose quoting the tag stays prose. */
+/** The lack-of-credit tag a failure carries: an error part as is, said text only as a `⚠` failure line, so prose quoting the tag stays prose. */
+export function creditRefusalOf(text: string, errorPart: boolean): OutOfCreditsOffer['code'] | null {
+  if (!errorPart && !text.trimStart().startsWith('⚠')) return null
+  const code = parseOrgRefusal(text)?.known
+  return code === 'out_of_credits' || code === 'never_funded' ? code : null
+}
+
 export function isOutOfCreditsFailure(text: string, errorPart: boolean): boolean {
-  if (!errorPart && !text.trimStart().startsWith('⚠')) return false
-  return parseOrgRefusal(text)?.known === 'out_of_credits'
+  return creditRefusalOf(text, errorPart) !== null
 }
 
 /** The card's offer for one failure, or null to render the text as it is. */
@@ -31,8 +38,9 @@ export function outOfCreditsOffer(
   step: { text: string; errorPart: boolean },
   ctx: OutOfCreditsContext
 ): OutOfCreditsOffer | null {
-  if (!ctx.onCloud || !isOutOfCreditsFailure(step.text, step.errorPart)) return null
-  return { addCredits: ctx.owner ? 'link' : 'ask-owner', moveToOwnMachine: ctx.canEdit && ctx.ownMachine }
+  const code = ctx.onCloud ? creditRefusalOf(step.text, step.errorPart) : null
+  if (!code) return null
+  return { code, addCredits: ctx.owner ? 'link' : 'ask-owner', moveToOwnMachine: ctx.canEdit && ctx.ownMachine }
 }
 
 /** Whether the org connected an approved machine of its own; online or not, the Edit dialog says what moving takes. */

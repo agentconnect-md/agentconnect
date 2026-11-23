@@ -239,7 +239,7 @@ retains the status code instead of showing only that the body was empty.
 ## A turn refused for lack of credit says what to do next
 
 When a Cloud agent's turn is refused because the organization is out of credits
-(`out_of_credits`, [org-refusal-tag.md](designs/org-refusal-tag.md)), the notice says so
+(`out_of_credits`, or `never_funded` when it never had any; [org-refusal-tag.md](designs/org-refusal-tag.md)), the notice says so
 and offers two ways forward instead of the refuser's sentence: add credits, or run the
 agent on the organization's own machine.
 

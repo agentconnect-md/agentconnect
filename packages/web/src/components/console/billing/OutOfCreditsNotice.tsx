@@ -51,6 +51,7 @@ export function OutOfCreditsNotice({
       ? () => modal.openModal('editAgent', agent, { focusSection: 'basics' })
       : null
   const owner = offer.addCredits === 'link'
+  const neverFunded = offer.code === 'never_funded'
 
   const copyLink = async () => {
     try {
@@ -73,15 +74,10 @@ export function OutOfCreditsNotice({
           <Icon name="wallet" size={14} />
         </span>
         <span className="min-w-0 flex-1">
-          <b className="font-semibold">{t('title')}</b>{' '}
+          <b className="font-semibold">{t(neverFunded ? 'neverFundedTitle' : 'title')}</b>{' '}
           <span className="text-(--text-secondary)">
-            {owner
-              ? move
-                ? t('bodyOwnerMove', { agent: agentName })
-                : t('bodyOwner', { agent: agentName })
-              : move
-                ? t('bodyMemberMove', { agent: agentName })
-                : t('bodyMember', { agent: agentName })}
+            {t(neverFunded ? 'neverFundedLead' : 'lead', { agent: agentName })}{' '}
+            {owner ? (move ? t('nextOwnerMove') : t('nextOwner')) : move ? t('nextMemberMove') : t('nextMember')}
           </span>
         </span>
       </div>

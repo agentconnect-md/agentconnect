@@ -105,6 +105,11 @@ describe('BotTurnView, out-of-credits failure', () => {
     expect(host!.querySelector('[data-agent-bubble]')).toBeNull()
   })
 
+  it('tells a never-funded organization it has no credits yet', async () => {
+    await render([plainStep('⚠️ [ERR:never_funded] No credit yet')])
+    expect(card()?.textContent).toContain("hasn't added any credits yet")
+  })
+
   it('links an owner to Billing with a return to this conversation', async () => {
     await render([plainStep(`⚠️ ${TAG}`)])
     const link = host!.querySelector('a.dsbtn')

@@ -26,8 +26,15 @@ describe('isOutOfCreditsFailure', () => {
 })
 
 describe('outOfCreditsOffer', () => {
+  it('names a never-funded organization apart from one that spent out', () => {
+    expect(outOfCreditsOffer({ text: '[ERR:never_funded] No credit yet', errorPart: true }, CLOUD)?.code).toBe(
+      'never_funded'
+    )
+  })
+
   it('offers both fixes to an owner who can edit and has a machine', () => {
     expect(outOfCreditsOffer({ text: TAG, errorPart: true }, CLOUD)).toEqual({
+      code: 'out_of_credits',
       addCredits: 'link',
       moveToOwnMachine: true
     })
