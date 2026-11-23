@@ -31158,11 +31158,16 @@ export class Daemon {
     const poolMember = this.historyRetentionPoolMember()
     const windows = [...this.orgHistoryRetention.windowsMs(), ...(daemonWindowMs === null ? [] : [daemonWindowMs])]
     const selection: OrgReclaimSelection = { expired: [], basis: new Map(), paused: 0, unconfirmed: 0 }
-    if (windows.length === 0) return selection
     const pending: SessionRecord[] = []
-    // A stale or unknown org (one first served through a duty grant) is asked too, so the next pass can act on it.
+    // Every served org still stale or unknown (one first served through a duty grant) is asked, whatever its sessions' age, so the next pass can act on it.
     const learn = new Set<string>()
-    for (const rec of await this.store.listExpiredSessions(now - Math.min(...windows))) {
+    for (const agentId of this.agents.keys()) {
+      const orgId = this.judgesStoredSessions(agentId) ? this.orgForAgent(agentId) : undefined
+      const verdict = orgId === undefined ? undefined : this.orgHistoryRetention.verdict(orgId)
+      if (orgId !== undefined && verdict?.kind === 'paused' && verdict.reason !== 'unsynced') learn.add(orgId)
+    }
+    const listed = windows.length ? await this.store.listExpiredSessions(now - Math.min(...windows)) : []
+    for (const rec of listed) {
       if (retentionRecheckPending(rec, now)) continue
       if (!this.judgesStoredSessions(rec.agentId) || (await this.keepsAppendSession(rec))) continue
       const orgId = this.orgForAgent(rec.agentId)
@@ -31173,7 +31178,6 @@ export class Daemon {
       // A paused org deletes nothing, never falling back to the daemon-wide rule.
       if (windowMs === 'paused') {
         selection.paused += 1
-        if (orgId !== undefined && verdict.kind === 'paused' && verdict.reason !== 'unsynced') learn.add(orgId)
         continue
       }
       if (windowMs === null || rec.updatedAt >= now - windowMs) continue

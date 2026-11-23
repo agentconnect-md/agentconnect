@@ -314,6 +314,32 @@ describe('retention sweep — org history reclaim', () => {
     await daemon.stop()
   })
 
+  it('learns an unknown org even when no finite window is cached, then reclaims under it', async () => {
+    const cp = controlPlane([{ orgId: ORG, revision: 3, historyRetentionDays: 7 }])
+    const { daemon, d, clock, confirm } = await startDaemon({ retention: 'never', pool: true, answer: cp.answer })
+    d.orgHistoryRetention.applySnapshot({ orgIds: ['org-other'], entries: [], reclaim: true })
+    await seed(d, 'ten', clock.now() - 10 * DAY)
+    await sweep(d)
+    expect(confirm).toHaveBeenCalled()
+    expect(d.orgHistoryRetention.verdict(ORG)).toEqual({ kind: 'policy', windowMs: 7 * DAY, revision: 3 })
+    expect(await surviving(d, ['ten'])).toEqual(['ten'])
+    await sweep(d)
+    expect(await surviving(d, ['ten'])).toEqual([])
+    await daemon.stop()
+  })
+
+  it('learns an unknown org whose sessions are younger than every cached window', async () => {
+    const cp = controlPlane([{ orgId: ORG, revision: 4, historyRetentionDays: 7 }])
+    const { daemon, d, clock } = await startDaemon({ retention: '90d', pool: true, answer: cp.answer })
+    d.orgHistoryRetention.applySnapshot({ orgIds: ['org-other'], entries: [], reclaim: true })
+    await seed(d, 'ten', clock.now() - 10 * DAY)
+    await sweep(d)
+    expect(d.orgHistoryRetention.verdict(ORG)).toEqual({ kind: 'policy', windowMs: 7 * DAY, revision: 4 })
+    await sweep(d)
+    expect(await surviving(d, ['ten'])).toEqual([])
+    await daemon.stop()
+  })
+
   it('keeps every protection of the real pass: a live turn and a recheck back-off survive the org window', async () => {
     const cp = controlPlane([{ orgId: ORG, revision: 1, historyRetentionDays: 7 }])
     const { daemon, d, clock } = await startDaemon({ retention: '90d', pool: true, answer: cp.answer })
