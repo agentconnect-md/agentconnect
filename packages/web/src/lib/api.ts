@@ -4491,6 +4491,22 @@ export async function fetchUsage(range: UsageRange, orgId?: string, source?: Usa
   return apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
 }
 
+/** Sessions the org started this UTC month, against its session policy's limit. */
+export interface SessionMonthUsageDto {
+  used: number
+  /** Null without a limit or without a policy. */
+  limit: number | null
+  policyRevision: number | null
+  monthStart: string
+  /** The start of the next UTC month. */
+  resetsAt: string
+  asOf: string
+}
+
+export async function fetchSessionMonthUsage(orgId?: string): Promise<SessionMonthUsageDto> {
+  return apiGet<SessionMonthUsageDto>(`${orgBase(orgId)}/usage/sessions`)
+}
+
 // Edit an agent's spec (PATCH /agents/:id). The CP persists it and hot-syncs the
 // owning daemon's replica.
 export async function updateAgent(agentId: string, patch: UpdateAgentInput): Promise<Agent> {

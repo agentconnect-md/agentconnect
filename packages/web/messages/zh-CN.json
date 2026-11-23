@@ -5426,6 +5426,77 @@
       "addCard": "添加卡",
       "copyBillingLink": "复制账单页链接",
       "copied": "已复制"
+    },
+    "plan": {
+      "title": "套餐",
+      "loadError": "无法加载此组织的套餐：{error}",
+      "noneTitle": "尚未订阅套餐",
+      "noneBody": "此组织还没有套餐，可在下方比较各套餐。",
+      "perMonth": "{price} / 月",
+      "free": "免费",
+      "contactSales": "联系销售",
+      "perContract": "按合同",
+      "facts": {
+        "price": "月费",
+        "credit": "每期额度",
+        "retention": "数据保留",
+        "nextCharge": "下次扣费",
+        "sessions": "本月会话",
+        "sessionLimit": "会话数 / 月"
+      },
+      "retentionDays": "{days, plural, other {# 天}}",
+      "unlimited": "不限",
+      "sessionsUsed": "{used} / {limit}",
+      "sessionsResets": "{date} 重置",
+      "nextChargeLine": "{date} 扣 {amount}",
+      "scheduledChange": "将于 {date} 变更为 {plan}",
+      "scheduledChangeAtRenewal": "将在下次续费时变更为 {plan}",
+      "cancels": "将于 {date} 取消",
+      "cancelsAtRenewal": "将在下次续费时取消",
+      "syncing": "限额更新中",
+      "syncingHint": "新套餐的限额生效前，仍按原套餐的限额执行。",
+      "pending": {
+        "checkoutTitle": "订阅 {plan} 正在等待付款",
+        "upgradeTitle": "升级到 {plan} 正在等待付款",
+        "body": "付款完成后套餐随即变更。",
+        "bodyNoLink": "付款页面正在准备中，请稍后再查看。",
+        "pay": "完成付款"
+      },
+      "credit": {
+        "title": "套餐额度",
+        "expires": "{date} 到期",
+        "included": "已计入可用余额。"
+      },
+      "compare": {
+        "title": "比较套餐",
+        "loadError": "无法加载套餐：{error}",
+        "empty": "目前没有可选套餐。",
+        "current": "当前",
+        "scheduled": "已安排"
+      },
+      "invoices": {
+        "title": "发票",
+        "columns": {
+          "invoice": "发票",
+          "period": "账期",
+          "status": "状态",
+          "amount": "金额"
+        },
+        "status": {
+          "paid": "已支付",
+          "open": "待支付",
+          "void": "已作废",
+          "uncollectible": "无法收款"
+        },
+        "issued": "开具于 {date}",
+        "view": "查看",
+        "unavailable": "暂时无法获取发票，请稍后再试。",
+        "loadError": "无法加载发票：{error}",
+        "empty": "暂无发票。",
+        "loadMore": "加载更多",
+        "loadingMore": "加载中…",
+        "end": "已加载全部发票"
+      }
     }
   },
   "Settings": {

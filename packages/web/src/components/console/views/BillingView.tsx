@@ -51,6 +51,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { AgentIconView, LoadingState, MarkSlot, ModelMark, modelProviderSlug } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AddCardDialog, CardReturnBanner, PaymentMethodCard } from '@/components/console/billing/CardBinding'
+import { InvoicesCard, PlanSection } from '@/components/console/billing/PlanSection'
 import { useCardSetupReturn } from '@/lib/use-card-setup-return'
 
 // Fixed tracks keep each `.row` grid aligned with its header; mobile scrolls the card sideways.
@@ -1118,6 +1119,8 @@ export default function BillingView() {
   // twice — before rendering the notice that says billing is elsewhere.
   const offered = featureFlagEnabled('billing')
   const fetching = offered && orgId !== null
+  // The plan blocks own their reads and mount only behind both flags, so off means no request.
+  const plansOffered = offered && featureFlagEnabled('subscriptions')
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
@@ -1442,6 +1445,8 @@ export default function BillingView() {
             ) : null}
           </div>
 
+          {plansOffered && <PlanSection orgId={orgId} />}
+
           <PaymentMethodCard
             orgId={orgId}
             acct={acct}
@@ -1459,6 +1464,8 @@ export default function BillingView() {
               onClose={() => setCardDialog(false)}
             />
           )}
+
+          {plansOffered && <InvoicesCard orgId={orgId} />}
 
           {/* Design: the chart only appears once the ledger has something to draw — an
               unfunded org gets the banner and the empty table, not an empty plot. */}

@@ -5426,6 +5426,77 @@
       "addCard": "Add card",
       "copyBillingLink": "Copy billing link",
       "copied": "Copied"
+    },
+    "plan": {
+      "title": "Plan",
+      "loadError": "Couldn't load this organization's plan: {error}",
+      "noneTitle": "No plan yet",
+      "noneBody": "This organization isn't on a plan. Compare the plans below.",
+      "perMonth": "{price} / month",
+      "free": "Free",
+      "contactSales": "Contact sales",
+      "perContract": "Per contract",
+      "facts": {
+        "price": "Monthly price",
+        "credit": "Credit per period",
+        "retention": "Data retention",
+        "nextCharge": "Next charge",
+        "sessions": "Sessions this month",
+        "sessionLimit": "Sessions / month"
+      },
+      "retentionDays": "{days, plural, one {# day} other {# days}}",
+      "unlimited": "Unlimited",
+      "sessionsUsed": "{used} / {limit}",
+      "sessionsResets": "Resets {date}",
+      "nextChargeLine": "{amount} on {date}",
+      "scheduledChange": "Changes to {plan} on {date}",
+      "scheduledChangeAtRenewal": "Changes to {plan} at the next renewal",
+      "cancels": "Cancels on {date}",
+      "cancelsAtRenewal": "Cancels at the next renewal",
+      "syncing": "Limits updating",
+      "syncingHint": "The previous plan's limits apply until this plan's limits take effect.",
+      "pending": {
+        "checkoutTitle": "Subscription to {plan} is waiting for payment",
+        "upgradeTitle": "Upgrade to {plan} is waiting for payment",
+        "body": "The plan changes once the payment completes.",
+        "bodyNoLink": "The payment page is being prepared. Check back shortly.",
+        "pay": "Complete payment"
+      },
+      "credit": {
+        "title": "Plan credit",
+        "expires": "Expires {date}",
+        "included": "Included in your available balance."
+      },
+      "compare": {
+        "title": "Compare plans",
+        "loadError": "Couldn't load plans: {error}",
+        "empty": "No plans are on offer right now.",
+        "current": "Current",
+        "scheduled": "Scheduled"
+      },
+      "invoices": {
+        "title": "Invoices",
+        "columns": {
+          "invoice": "Invoice",
+          "period": "Period",
+          "status": "Status",
+          "amount": "Amount"
+        },
+        "status": {
+          "paid": "Paid",
+          "open": "Open",
+          "void": "Void",
+          "uncollectible": "Uncollectible"
+        },
+        "issued": "Issued {date}",
+        "view": "View",
+        "unavailable": "Invoices are unavailable right now. Try again later.",
+        "loadError": "Couldn't load invoices: {error}",
+        "empty": "No invoices yet.",
+        "loadMore": "Load more",
+        "loadingMore": "Loading…",
+        "end": "end of invoices"
+      }
     }
   },
   "Settings": {
