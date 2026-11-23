@@ -241,6 +241,61 @@ export interface BillingSubscription extends BillingPlanRef {
   batches?: BillingPlanBatch[]
 }
 
+export interface BillingPlanOption extends BillingPlanRef {
+  salesMode: 'self_serve' | 'contact_sales'
+  /** Monthly price, USD cents; null for a contact-sales tier. */
+  priceCents: number | null
+  /** Credit granted per paid period, microUSD. */
+  grantMicro: number
+  sessionLimit: number
+  /** The "×N" label; null for an option shown without one. */
+  multiplier: number | null
+  /** Null ⇒ unlimited. */
+  retentionDays: number | null
+  /** Checkout, upgrade or scheduling can sell it now. */
+  purchasable: boolean
+  /** The org is on exactly this published option. */
+  current: boolean
+  /** The org has exactly this option scheduled for its renewal. */
+  scheduled: boolean
+}
+
+export interface BillingPlans {
+  /** Every published tier's on-sale options, by tier then session limit. */
+  options: BillingPlanOption[]
+}
+
+/** A checkout or upgrade; `pending` until its payment settles, and only the service says it did. */
+export interface BillingSubscriptionChange {
+  id: string
+  status: 'pending' | 'completed' | 'expired'
+  tierId: string
+  optionId: string
+  /** While pending, the provider page where the owner pays or verifies; only `https:` survives the boundary. */
+  payUrl: string | null
+}
+
+export interface BillingSubscriptionCheckout {
+  changeId: string
+  /** Hosted checkout page; the console full-page redirects to it. */
+  url: string
+}
+
+/** The server's locked price for an immediate upgrade; the console sends only the plan and renders this as sent. */
+export interface BillingUpgradeQuote {
+  quoteId: string
+  tierId: string
+  optionId: string
+  /** Charged now for the rest of the current period, USD cents. */
+  amountCents: number
+  /** Credit added once paid, microUSD. */
+  grantMicro: number
+  /** After this instant the quote must be previewed again. */
+  expiresAt: string
+  /** The renewal, which the upgrade does not move. */
+  paidThrough: string
+}
+
 /** Billing base URL, or null when this deployment has no billing service. */
 export function billingBase(): string | null {
   const runtime = typeof window !== 'undefined' ? window.__AC_ENV?.BILLING_URL : process.env.BILLING_URL
@@ -492,10 +547,67 @@ export function assertSubscription(body: unknown): asserts body is BillingSubscr
     delete b.batches
 }
 
+export function assertPlans(body: unknown): asserts body is BillingPlans {
+  const b = body as { options?: unknown } | null
+  if (!b || !Array.isArray(b.options)) throw new BillingShapeError('plan catalog')
+  for (const raw of b.options as unknown[]) {
+    const o = raw as Partial<BillingPlanOption> | null
+    if (
+      !o ||
+      !isPlanRef(raw) ||
+      (o.salesMode !== 'self_serve' && o.salesMode !== 'contact_sales') ||
+      !isNullableFinite(o.priceCents) ||
+      !isFiniteNumber(o.grantMicro) ||
+      !isFiniteNumber(o.sessionLimit) ||
+      !isNullableFinite(o.multiplier) ||
+      !isNullableFinite(o.retentionDays) ||
+      typeof o.purchasable !== 'boolean' ||
+      typeof o.current !== 'boolean' ||
+      typeof o.scheduled !== 'boolean'
+    ) {
+      throw new BillingShapeError('plan catalog')
+    }
+  }
+}
+
+// Polling branches on the status, so an unknown one is refused like a purchase's.
+export function assertSubscriptionChange(body: unknown): asserts body is BillingSubscriptionChange {
+  const b = body as Partial<BillingSubscriptionChange> | null
+  if (
+    !b ||
+    typeof b.id !== 'string' ||
+    (b.status !== 'pending' && b.status !== 'completed' && b.status !== 'expired') ||
+    typeof b.tierId !== 'string' ||
+    typeof b.optionId !== 'string' ||
+    !isNullableString(b.payUrl)
+  ) {
+    throw new BillingShapeError('plan change')
+  }
+}
+
+export function assertUpgradeQuote(body: unknown): asserts body is BillingUpgradeQuote {
+  const b = body as Partial<BillingUpgradeQuote> | null
+  if (
+    !b ||
+    typeof b.quoteId !== 'string' ||
+    typeof b.tierId !== 'string' ||
+    typeof b.optionId !== 'string' ||
+    !isFiniteNumber(b.amountCents) ||
+    !isFiniteNumber(b.grantMicro) ||
+    typeof b.expiresAt !== 'string' ||
+    typeof b.paidThrough !== 'string'
+  ) {
+    throw new BillingShapeError('upgrade quote')
+  }
+}
+
 // Remote input becomes an `href` only as `https:`.
 const httpsOnly = (url: string | null | undefined): string | null => (url?.startsWith('https://') ? url : null)
 
-async function request<T>(path: string, init?: { method: 'POST'; body: unknown } | { method: 'DELETE' }): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: { method: 'POST' | 'PUT'; body: unknown } | { method: 'DELETE' }
+): Promise<T> {
   const base = billingBase()
   if (!base) throw new BillingError('billing is not configured for this deployment', 0)
 
@@ -621,6 +733,61 @@ export async function fetchBillingSubscription(orgId: string): Promise<BillingSu
   assertSubscription(body)
   const pending = body.pendingChange
   return pending ? { ...body, pendingChange: { ...pending, payUrl: httpsOnly(pending.payUrl) } } : body
+}
+
+/** The published plan catalog, with the org's current and scheduled options flagged. */
+export async function fetchBillingPlans(orgId: string): Promise<BillingPlans> {
+  const body = await request<unknown>(`${orgPath(orgId)}/plans`)
+  assertPlans(body)
+  return body
+}
+
+const changeView = (body: unknown): BillingSubscriptionChange => {
+  assertSubscriptionChange(body)
+  return { ...body, payUrl: httpsOnly(body.payUrl) }
+}
+
+/** First purchase from Free: a hosted checkout the browser is redirected to; it returns to `returnPath` with `?checkout=success|cancel&subscriptionChange=<id>`, which proves nothing. */
+export async function createBillingSubscriptionCheckout(
+  orgId: string,
+  args: { tierId: string; optionId: string; idempotencyKey: string; returnPath: string }
+): Promise<BillingSubscriptionCheckout> {
+  const body = await request<unknown>(`${orgPath(orgId)}/subscription/checkout`, { method: 'POST', body: args })
+  const b = body as Partial<BillingSubscriptionCheckout> | null
+  if (!b || typeof b.changeId !== 'string' || typeof b.url !== 'string') throw new BillingShapeError('plan checkout')
+  return { changeId: b.changeId, url: b.url }
+}
+
+/** Price an immediate upgrade; the quote is locked for a while and a 409 means preview it again. */
+export async function quoteBillingUpgrade(
+  orgId: string,
+  args: { tierId: string; optionId: string }
+): Promise<BillingUpgradeQuote> {
+  const body = await request<unknown>(`${orgPath(orgId)}/subscription/quote`, { method: 'POST', body: args })
+  assertUpgradeQuote(body)
+  return body
+}
+
+/** Pay a quote. Same key + same quote replays; a pending result with a `payUrl` needs the owner to act on the provider page. */
+export async function confirmBillingUpgrade(
+  orgId: string,
+  args: { quoteId: string; idempotencyKey: string }
+): Promise<BillingSubscriptionChange> {
+  return changeView(await request<unknown>(`${orgPath(orgId)}/subscription/upgrade`, { method: 'POST', body: args }))
+}
+
+export async function fetchBillingSubscriptionChange(orgId: string, id: string): Promise<BillingSubscriptionChange> {
+  return changeView(await request<unknown>(`${orgPath(orgId)}/subscription/changes/${encodeURIComponent(id)}`))
+}
+
+/** Move to the plan at the next renewal; Free's option cancels the renewal. */
+export async function scheduleBillingChange(orgId: string, args: { tierId: string; optionId: string }): Promise<void> {
+  await request<unknown>(`${orgPath(orgId)}/subscription/scheduled`, { method: 'PUT', body: args })
+}
+
+/** Renew at the current plan again. */
+export async function revokeBillingScheduledChange(orgId: string): Promise<void> {
+  await request<unknown>(`${orgPath(orgId)}/subscription/scheduled`, { method: 'DELETE' })
 }
 
 const MICRO_PER_USD = 1_000_000

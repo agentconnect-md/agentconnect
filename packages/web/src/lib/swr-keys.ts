@@ -113,6 +113,10 @@ export const consoleKeys = {
   billingActivity: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'billing-activity', range),
   billingSubscription: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-subscription'),
+  billingPlans: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-plans'),
+  /** The Increase-limit preview's quote, per target option. */
+  billingUpgradeQuote: (orgId: string | null | undefined, tierId: string, optionId: string) =>
+    consoleKey(orgId, 'billing-upgrade-quote', tierId, optionId),
   sessionMonthUsage: (orgId: string | null | undefined) => consoleKey(orgId, 'usage-sessions'),
   sessions: (
     orgId: string | null | undefined,
