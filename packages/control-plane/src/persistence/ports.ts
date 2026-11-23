@@ -3110,6 +3110,15 @@ export interface OrgSessionPolicyRepo {
   ): Promise<OrgSessionAdmission>
   /** Whether a session-level grant may name this session: the org does not enforce, or the agent's session is admitted or recorded. */
   sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean>
+  /** The stored history retention of each listed org that has a policy; an org without one is absent. */
+  historyRetention(orgIds: readonly string[]): Promise<OrgHistoryRetentionRow[]>
+}
+
+/** One org's stored history retention and the policy revision it came with; null days is unlimited. */
+export interface OrgHistoryRetentionRow {
+  orgId: string
+  revision: number
+  historyRetentionDays: number | null
 }
 
 export interface SessionUsageRepo {

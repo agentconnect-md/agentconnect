@@ -394,6 +394,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     events: new InMemorySessionEventSink(),
     usageWriter: new SessionUsageWriter(repos.sessionUsage),
     sessionAdmission: new PgOrgSessionPolicyRepo(prisma),
+    orgHistoryRetention: new PgOrgSessionPolicyRepo(prisma),
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
     bot: repos.bot,

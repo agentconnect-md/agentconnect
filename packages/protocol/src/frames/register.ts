@@ -122,6 +122,21 @@ export const SessionRetentionSetting = z.custom<SessionRetentionSetting>(
   { message: "expected 'never' or '<days>d' (e.g. '7d')" }
 )
 
+/** One organization's history retention from its session policy (org-session-policy.md, History retention); null days is unlimited. */
+export const OrgHistoryRetention = z.object({
+  orgId: z.string().min(1).max(64),
+  revision: z.number().int().min(1),
+  historyRetentionDays: z.number().int().min(1).nullable()
+})
+export type OrgHistoryRetention = z.infer<typeof OrgHistoryRetention>
+
+/** The organizations a `register/ok` speaks for and the policies among them; a listed org without an entry has no policy. */
+export const OrgHistoryRetentionSnapshot = z.object({
+  orgIds: z.array(z.string().min(1).max(64)),
+  entries: z.array(OrgHistoryRetention)
+})
+export type OrgHistoryRetentionSnapshot = z.infer<typeof OrgHistoryRetentionSnapshot>
+
 export const RegisterOk = z.object({
   routingEpoch: z.number().int(), // version of the routing table this snapshot reflects
   // CP protocol capabilities. Default keeps a new daemon compatible with an
@@ -135,6 +150,8 @@ export const RegisterOk = z.object({
   sessionRetention: SessionRetentionSetting.optional(),
   // Console-set retention of a finished session's workspace and sandbox, same format; absent ⇒ keep local config.
   workspaceRetention: SessionRetentionSetting.optional(),
+  // History retention of the orgs this daemon serves; sent only to a daemon advertising ORG_HISTORY_RETENTION_FEATURE.
+  orgHistoryRetention: OrgHistoryRetentionSnapshot.optional(),
   // Console-set auto-upgrade switch; absent ⇒ an older CP, and the daemon keeps its persisted value.
   autoUpgrade: z.boolean().optional(),
   // The deployment's announced daemon release (the console's upgrade hint); absent ⇒ not resolved yet.

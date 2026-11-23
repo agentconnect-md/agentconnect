@@ -255,6 +255,12 @@ export const SESSION_ADMIT_FEATURE = 'session-admit-v1'
 /** Daemon reads the `session/admit/result` refusal variant; a CP answers a daemon without it with a non-retryable `RATE_LIMITED` error instead. */
 export const SESSION_ADMIT_REFUSAL_FEATURE = 'session-admit-refusal-v1'
 
+/** Daemon reads `register/ok.orgHistoryRetention` and the `config/push` key {@link CONFIG_KEY_ORG_HISTORY_RETENTION}; a CP sends neither to a daemon without it. */
+export const ORG_HISTORY_RETENTION_FEATURE = 'org-history-retention-v1'
+
+/** `config/push` key carrying one organization's `OrgHistoryRetention` after its session policy changed. */
+export const CONFIG_KEY_ORG_HISTORY_RETENTION = 'sessions.orgHistoryRetention'
+
 /** CP accepts `integration/revoked`, a daemon socket's explicit credential-lifecycle report; an older CP rejects the frame, so the daemon keeps its reports instead. */
 export const INTEGRATION_REVOKED_FEATURE = 'integration-revoked-v1'
 
