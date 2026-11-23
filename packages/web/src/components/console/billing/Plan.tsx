@@ -338,7 +338,9 @@ export function RetentionStrip({
         {next.from
           ? t('retention.deletes', { days: next.days, date: day(next.from) })
           : t('retention.awaiting', { days: next.days })}
-        {onChangePlan && <span className="font-normal text-(--text-secondary)"> {t('retention.upgradeKeeps')}</span>}
+        {onChangePlan && (
+          <span className="ml-[0.3em] font-normal text-(--text-secondary)">{t('retention.upgradeKeeps')}</span>
+        )}
       </span>
       {onChangePlan && (
         <button type="button" className="lnk" onClick={onChangePlan}>

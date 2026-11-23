@@ -320,7 +320,7 @@ describe('BillingView history retention', () => {
     expect(strip.getAttribute('data-plan-retention-next')).toBe('dated')
     expect(strip.className).toContain('border-(--amber-500)')
     expect(strip.textContent).toBe(
-      'History older than 7 days will be deleted from Dec 11. Upgrading keeps your history.Change plan'
+      'History older than 7 days will be deleted from Dec 11.Upgrading keeps your history.Change plan'
     )
     // The scheduled change keeps its own strip above.
     expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
