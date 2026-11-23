@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "controlPlane": { "enabled": false },
+  "runtimes": {
+    "claude-acp": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/claude-agent-acp@0.109.1"]
+    }
+  }
+}
