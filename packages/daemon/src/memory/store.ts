@@ -144,14 +144,6 @@ export const CHANNEL_MEMORY_DIRNAME = 'channels'
 export const PERSON_MEMORY_DIRNAME = 'people'
 /** The layer folders beside the shared store, each a set of self-contained memory roots. */
 export const MEMORY_LAYER_DIRNAMES: readonly string[] = [CHANNEL_MEMORY_DIRNAME, PERSON_MEMORY_DIRNAME]
-/** The daemon-owned dirs directly under an agent dir that never hold `agent.json`; the archive dirs join by prefix. */
-export const DAEMON_OWNED_AGENT_DIRNAMES: readonly string[] = [
-  MEMORY_DIRNAME,
-  CHANNEL_MEMORY_DIRNAME,
-  PERSON_MEMORY_DIRNAME,
-  MEMORY_BACKUPS_DIRNAME,
-  MEMORY_DREAMS_DIRNAME
-]
 
 // A Control-Plane home's console reads resolve the same folders, so the derivation is the wire contract's.
 export { memoryChannelKey, memoryPersonKey }
