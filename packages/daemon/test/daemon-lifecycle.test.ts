@@ -4623,5 +4623,69 @@ describe('Daemon session retention GC (#485)', () => {
         await daemon.stop()
       }
     })
+
+    it('waits for an agent that is not loaded here instead of recording its worktree reclaimed untouched', async () => {
+      const clock = new FakeClock()
+      const root = scaffold({}, { retention: '90d', workspaceRetention: '7d' })
+      const daemon = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        root,
+        hostFactory: () => quietHost() as any,
+        clock
+      })
+      const git = (cwd: string, args: string[]) =>
+        execFileSync('git', args, {
+          cwd,
+          encoding: 'utf8',
+          env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'empty-gitconfig') }
+        }).trim()
+      await daemon.start()
+      await sweepRetention(daemon)
+      const d = daemon as any
+      try {
+        const agent = d.agents.get('bot-a')
+        Object.assign(agent.workspace, { mode: 'git-repo', isolation: 'session' })
+        // A clean session worktree of the agent's checkout whose every commit is on the remote.
+        const origin = join(root, 'origin.git')
+        git(root, ['init', '-q', '--bare', '--initial-branch=main', origin])
+        mkdirSync(agent.workspace.path, { recursive: true })
+        git(agent.workspace.path, ['init', '-q', '--initial-branch=main'])
+        git(agent.workspace.path, [
+          '-c',
+          'user.name=Example',
+          '-c',
+          'user.email=agent@example.test',
+          'commit',
+          '-qm',
+          'init',
+          '--allow-empty'
+        ])
+        git(agent.workspace.path, ['remote', 'add', 'origin', origin])
+        git(agent.workspace.path, ['push', '-q', 'origin', 'main'])
+        const worktree = join(root, 'agents', 'bot-a', 'worktrees', d.workspaces.sessionWorktreeId('detached-ws'))
+        git(agent.workspace.path, ['worktree', 'add', '-q', '-b', 'session-detached', worktree, 'origin/main'])
+        await seedSession(daemon, 'detached-ws', 'closed', clock.now())
+
+        // What a member set's register leaves of an agent another member holds: detached, not loaded, its directory still here.
+        d.agents.delete('bot-a')
+        d.cpDroppedAgents.add('bot-a')
+        d.drainingAgents.add('bot-a')
+        clock.advance(8 * DAY)
+        await sweepRetention(daemon)
+        expect(existsSync(worktree)).toBe(true)
+        expect((await d.store.getSession('detached-ws')).workspaceReclaimedAt ?? null).toBeNull()
+
+        // A grant brings the agent back, and the next pass judges the worktree it left.
+        d.cpDroppedAgents.delete('bot-a')
+        d.drainingAgents.delete('bot-a')
+        d.agents.set('bot-a', agent)
+        clock.advance(3_600_000)
+        await sweepRetention(daemon)
+        expect(existsSync(worktree)).toBe(false)
+        expect((await d.store.getSession('detached-ws')).workspaceReclaimedAt).toBe(clock.now())
+      } finally {
+        await daemon.stop()
+      }
+    })
   })
 })

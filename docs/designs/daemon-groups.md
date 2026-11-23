@@ -301,7 +301,11 @@ These are the operator's, not the code's:
   resumes from the successor. On a member's own store, the rows a moved duty leaves
   behind are that member's alone, so its retention sweep ages them out like any others
   even though it no longer serves the agent, and reports each purge receipt; the idle
-  close stays with the holder, since it reports to the control plane (#2246).
+  close stays with the holder, since it reports to the control plane (#2246). Their
+  worktrees can be judged only while the agent is loaded there, and every register
+  detaches an agent the member does not hold, so the workspace pass leaves such a
+  session unmarked until a grant loads the agent again instead of recording directories
+  it never looked at as reclaimed.
 - **Re-cloneable workspaces.** A GitHub-mode workspace re-materializes on the new holder
   from its repo; a scratch workspace does not follow. This is already true for the pool
   and is documented there; a group inherits the same constraint and the same guidance
