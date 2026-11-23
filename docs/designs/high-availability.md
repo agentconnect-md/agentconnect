@@ -590,7 +590,10 @@ enforces a session limit: the daemon then waits up to 10 seconds in total, a rec
 re-sends the same idempotent id once over a replaced link, and refuses the session as temporarily
 unavailable when no answer arrives. For any other organization it sends once over a live link
 with a 2-second timeout and fails open
-([org-session-policy.md](org-session-policy.md#the-daemon-under-enforcement)). Reuse the relay's bounded
+([org-session-policy.md](org-session-policy.md#the-daemon-under-enforcement)). The retention
+sweep's `history-retention/confirm` is not on any turn path: it is sent once over a live link,
+and a handoff only defers that pass's deletions under the organization windows
+([org-session-policy.md](org-session-policy.md#reclaim)). Reuse the relay's bounded
 `waitReady` pattern and add its equivalent on the daemon. An uncached valid
 token or already-acknowledged platform follow-up cannot fail solely because the
 link is reconnecting. Authorization rejection stays distinct from transport

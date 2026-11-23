@@ -163,6 +163,7 @@ import {
   COMPUTER_POOL_QUOTA_FEATURE,
   SESSION_ADMIT_REFUSAL_FEATURE,
   ORG_HISTORY_RETENTION_FEATURE,
+  ORG_HISTORY_RECLAIM_FEATURE,
   type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
@@ -1573,12 +1574,18 @@ import {
 import { nextRetentionRecheck, retentionRecheckPending, workspaceReclaimed } from './daemon/retention-recheck.js'
 import {
   OrgHistoryRetentionState,
+  confirmationAnswers,
+  confirms,
   countDryRun,
   emptyDryRunSummary,
   formatDryRunSummary,
   judgeOrgRetention,
+  reclaimWindowMs,
   recordDryRunMetrics,
-  type OrgRetentionDryRunSummary
+  sameVerdict,
+  type OrgHistoryRetentionAnswer,
+  type OrgRetentionDryRunSummary,
+  type OrgRetentionVerdict
 } from './daemon/org-history-retention.js'
 import {
   observeStartup,
@@ -1734,6 +1741,14 @@ const THREAD_NOT_CREATED = 'the thread for this run could not be created'
 type RelayAckTrace = { stage: string }
 
 /** How a released verdict rides the ordinary tail: a durable receipt, its admission ACK, and last-moment fences. */
+/** One reclaim pass's selection: what it deletes, the org reading each org session is deleted under, and what it kept. */
+interface OrgReclaimSelection {
+  expired: SessionRecord[]
+  basis: Map<string, { orgId: string; verdict: OrgRetentionVerdict }>
+  paused: number
+  unconfirmed: number
+}
+
 interface GateDispatchOptions {
   receiptId: string
   onAdmission: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
@@ -2791,7 +2806,7 @@ export class Daemon {
   // Single-flight for the retention pass — a slow git cleanup must not overlap
   // the next sweep's pass (the sweep itself is synchronous, the GC is not).
   private sessionRetentionSweepInFlight = false
-  // Each served org's history retention as the CP delivered it; read only by the dry run until reclaim uses it.
+  // Each served org's history retention as the CP delivered it: the dry run reads it, and deletion does once the install switches reclaim on.
   private readonly orgHistoryRetention = new OrgHistoryRetentionState()
   // Single-flight for the purge-receipt drain (#485): the sweep and a CP reconnect
   // can both trigger it, and each batch awaits a correlated ACK.
@@ -10496,6 +10511,8 @@ export class Daemon {
       SESSION_ADMIT_REFUSAL_FEATURE,
       // org-session-policy.md, History retention: this daemon reads each served org's retention. Static.
       ORG_HISTORY_RETENTION_FEATURE,
+      // org-session-policy.md, Reclaim: this daemon deletes under the org windows when the install switch is on. Static.
+      ORG_HISTORY_RECLAIM_FEATURE,
       // What each platform module declares for itself (§7.4).
       ...this.platformModules.registrationFeatures()
     ]
@@ -31101,17 +31118,111 @@ export class Daemon {
     }
   }
 
-  /** Returns how many session VMs a completed pass discarded. */
-  private async sweepExpiredSessions(): Promise<number> {
+  /** The sessions today's daemon-wide window expires: the whole selection while reclaim is off. */
+  private async daemonWindowExpired(now: number): Promise<SessionRecord[]> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
-    if (windowMs === null) return 0
-    const now = this.clock.now()
+    if (windowMs === null) return []
     // Holder-only on a shared store: the active-turn exclusions are member-local, so only the holder can judge a row.
     const expired: SessionRecord[] = []
     for (const rec of await this.store.listExpiredSessions(now - windowMs)) {
       if (retentionRecheckPending(rec, now)) continue
       if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
     }
+    return expired
+  }
+
+  /** Whether this daemon is an install-wide pool member, whose org windows replace the daemon-wide one (org-session-policy.md, Reclaim). */
+  private historyRetentionPoolMember(): boolean {
+    return this.cpClient?.organizationScope() === 'frame'
+  }
+
+  /** One `history-retention/confirm` for the orgs a pass is about to reclaim for; undefined when the Control Plane cannot answer, which confirms none of them. */
+  private async confirmOrgHistoryRetention(
+    orgIds: string[]
+  ): Promise<Map<string, OrgHistoryRetentionAnswer> | undefined> {
+    const cp = this.cpClient
+    if (!cp) return undefined
+    try {
+      return confirmationAnswers(await cp.confirmHistoryRetention(orgIds))
+    } catch (err) {
+      this.log.warn(
+        `retention: could not re-confirm ${orgIds.length} org(s); deleting nothing under them (${formatErr(err)})`
+      )
+      return undefined
+    }
+  }
+
+  /** The sessions reclaim deletes this pass: past their org's window, and their org re-confirmed in one request; each org session keeps the reading it is deleted under. */
+  private async reclaimExpired(now: number): Promise<OrgReclaimSelection> {
+    const daemonWindowMs = sessionRetentionMs(this.cfg.sessions.retention)
+    const poolMember = this.historyRetentionPoolMember()
+    const windows = [...this.orgHistoryRetention.windowsMs(), ...(daemonWindowMs === null ? [] : [daemonWindowMs])]
+    const selection: OrgReclaimSelection = { expired: [], basis: new Map(), paused: 0, unconfirmed: 0 }
+    if (windows.length === 0) return selection
+    const pending: SessionRecord[] = []
+    // A stale or unknown org (one first served through a duty grant) is asked too, so the next pass can act on it.
+    const learn = new Set<string>()
+    for (const rec of await this.store.listExpiredSessions(now - Math.min(...windows))) {
+      if (retentionRecheckPending(rec, now)) continue
+      if (!this.judgesStoredSessions(rec.agentId) || (await this.keepsAppendSession(rec))) continue
+      const orgId = this.orgForAgent(rec.agentId)
+      // A session with no org (a local agent) has no policy to wait for: today's rule.
+      const verdict: OrgRetentionVerdict =
+        orgId === undefined ? { kind: 'missing' } : this.orgHistoryRetention.verdict(orgId)
+      const windowMs = reclaimWindowMs(verdict, daemonWindowMs, poolMember)
+      // A paused org deletes nothing, never falling back to the daemon-wide rule.
+      if (windowMs === 'paused') {
+        selection.paused += 1
+        if (orgId !== undefined && verdict.kind === 'paused' && verdict.reason !== 'unsynced') learn.add(orgId)
+        continue
+      }
+      if (windowMs === null || rec.updatedAt >= now - windowMs) continue
+      if (orgId !== undefined) selection.basis.set(rec.key, { orgId, verdict })
+      pending.push(rec)
+    }
+    const orgIds = [...new Set([...[...selection.basis.values()].map((basis) => basis.orgId), ...learn])].sort()
+    const answers = orgIds.length ? await this.confirmOrgHistoryRetention(orgIds) : undefined
+    for (const [orgId, answer] of answers ?? []) this.orgHistoryRetention.applyConfirmation(orgId, answer)
+    for (const rec of pending) {
+      const basis = selection.basis.get(rec.key)
+      // The Control Plane's answer must be exactly what the pass acts on; anything else waits for the next pass.
+      if (basis && !confirms(basis.verdict, answers?.get(basis.orgId))) {
+        selection.unconfirmed += 1
+        continue
+      }
+      selection.expired.push(rec)
+    }
+    return selection
+  }
+
+  /** Whether an org session is still deleted under the reading it was confirmed for: a push, a dropped link or the switch going off stops it. */
+  private reclaimStillConfirmed(rec: SessionRecord, selection: OrgReclaimSelection): boolean {
+    const basis = selection.basis.get(rec.key)
+    if (!basis) return true
+    return (
+      this.orgHistoryRetention.reclaiming() && sameVerdict(basis.verdict, this.orgHistoryRetention.verdict(basis.orgId))
+    )
+  }
+
+  /** The row window the workspace pass leaves to the purge: the reclaim window of the session's org, none while it is paused. */
+  private reclaimRowWindowMs(rec: SessionRecord, daemonWindowMs: number | null, poolMember: boolean): number | null {
+    const orgId = this.orgForAgent(rec.agentId)
+    if (orgId === undefined) return daemonWindowMs
+    const windowMs = reclaimWindowMs(this.orgHistoryRetention.verdict(orgId), daemonWindowMs, poolMember)
+    return windowMs === 'paused' ? null : windowMs
+  }
+
+  /** Returns how many session VMs a completed pass discarded. */
+  private async sweepExpiredSessions(): Promise<number> {
+    const now = this.clock.now()
+    // org-session-policy.md, Reclaim: with the install switch on each org's window decides; off ⇒ exactly the daemon-wide rule.
+    const reclaim = this.orgHistoryRetention.reclaiming() ? await this.reclaimExpired(now) : undefined
+    if (reclaim && (reclaim.paused || reclaim.unconfirmed)) {
+      this.log.info(
+        `retention: org history reclaim kept ${reclaim.paused} session(s) of paused orgs and ${reclaim.unconfirmed} awaiting re-confirmation`
+      )
+    }
+    const expired = reclaim ? reclaim.expired : await this.daemonWindowExpired(now)
     if (!expired.length) return 0
     // ONE stamp for the whole pass, not one per session: it is the sweep that
     // deleted them, and a shared value lets the drain report a pass as a single
@@ -31124,8 +31235,13 @@ export class Daemon {
     let active = 0
     let failed = 0
     let discarded = 0
+    let held = 0
     for (const rec of expired) {
       if (this.draining) return 0
+      if (reclaim && !this.reclaimStillConfirmed(rec, reclaim)) {
+        held += 1
+        continue
+      }
       // A reclaimed workspace has nothing left to judge, and judging it would wake a pod for nothing.
       const res: SessionWorktreeCleanupResult = workspaceReclaimed(rec)
         ? { outcome: 'absent' }
@@ -31154,6 +31270,10 @@ export class Daemon {
         // Recheck inside the admission fence before destroying a VM or deleting its last session record.
         if (await this.sessionRetentionActive(rec)) {
           active += 1
+          return
+        }
+        if (reclaim && !this.reclaimStillConfirmed(rec, reclaim)) {
+          held += 1
           return
         }
         const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
@@ -31204,7 +31324,8 @@ export class Daemon {
       `retention: session GC removed ${removed}/${expired.length} expired session(s)` +
         (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
         (active ? `, ${active} still active` : '') +
-        (failed ? `, ${failed} failed` : '')
+        (failed ? `, ${failed} failed` : '') +
+        (held ? `, ${held} kept as their org's history retention changed` : '')
     )
     if (removed) void this.drainSessionPurges()
     return discarded
@@ -31216,10 +31337,14 @@ export class Daemon {
     if (windowMs === null) return 0
     const now = this.clock.now()
     const rowWindowMs = sessionRetentionMs(this.cfg.sessions.retention)
+    // Under reclaim the purge judges each row by its org's window, so this cross-check reads the same one.
+    const reclaim = this.orgHistoryRetention.reclaiming()
+    const poolMember = reclaim && this.historyRetentionPoolMember()
     const expired: SessionRecord[] = []
     for (const rec of await this.store.listExpiredSessions(now - windowMs)) {
       // A row past its own window is the purge's to judge, which takes the workspace with it.
-      if (rowWindowMs !== null && rec.updatedAt < now - rowWindowMs) continue
+      const ownWindowMs = reclaim ? this.reclaimRowWindowMs(rec, rowWindowMs, poolMember) : rowWindowMs
+      if (ownWindowMs !== null && rec.updatedAt < now - ownWindowMs) continue
       if (workspaceReclaimed(rec) || retentionRecheckPending(rec, now)) continue
       if (this.judgesStoredSessions(rec.agentId) && !(await this.keepsAppendSession(rec))) expired.push(rec)
     }
