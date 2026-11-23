@@ -161,6 +161,7 @@ import {
   COMPUTER_POOL_FEATURE,
   CRON_RUN_SKIPPED_FEATURE,
   COMPUTER_POOL_QUOTA_FEATURE,
+  SESSION_ADMIT_REFUSAL_FEATURE,
   type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
@@ -970,6 +971,14 @@ import {
   type RuntimeEnvironment
 } from './runtimes/runtime-environment.js'
 import { issuerDenialMessage, KeyServerClient, type KeyGrant } from './key-server/client.js'
+import {
+  SESSION_QUOTA_UNAVAILABLE,
+  SessionAdmissionGate,
+  SessionAdmissionRefusedError,
+  sessionAdmissionMessage,
+  type SessionAdmissionRefusal,
+  type SessionAdmissionVerdict
+} from './session-admission.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
 import { DecisionModelEvaluationReader } from './decisions/model-evaluations.js'
@@ -2596,6 +2605,12 @@ export class Daemon {
     log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
   })
   private cpClient?: CpClient
+  /** Each organization's last answered session enforcement, which decides whether a new session waits on its admission. */
+  private readonly sessionAdmission = new SessionAdmissionGate({
+    cp: () => this.cpClient,
+    orgFor: (agentId) => this.orgForAgent(agentId),
+    log: { info: (message) => this.log.info(message), warn: (message) => this.log.warn(message) }
+  })
   private remoteWebchatGrants?: RemoteWebchatGrantManager
   private managedSkillCache?: ManagedSkillCache
   /** Extracted Git skill sources per (agent, repository, commit), so a new session reuses what an earlier one fetched. */
@@ -3875,8 +3890,20 @@ export class Daemon {
         this.webchatCoordinator(agentId, conversationId, authorId),
       keyCoordinatorMessage: async (agentId, msg) => await this.keyCoordinatorMessage(agentId, msg),
       continuationCommand: (agentId, msg, integrationId, reply) =>
-        this.continuationCommand(agentId, msg, integrationId, reply)
+        this.continuationCommand(agentId, msg, integrationId, reply),
+      admitApiSession: async (agentId, msg) => await this.admitApiSession(agentId, msg)
     }
+  }
+
+  /** An API turn's session, admitted under the key `dispatch` gives it, so `openSession`'s later admit replays this answer. */
+  private async admitApiSession(
+    agentId: string,
+    msg: NormalizedMessage
+  ): Promise<{ reason: SessionAdmissionRefusal['reason']; detail: string } | undefined> {
+    const key = sessionKey(msg.platform, sessionChannelOf(msg), sessionThreadOf(msg), agentId, msg.transportScope)
+    if (await this.store.getSession(key)) return undefined
+    const verdict = await this.admitNewSession(agentId, key)
+    return verdict.admitted ? undefined : { reason: verdict.reason, detail: sessionAdmissionMessage(verdict) }
   }
 
   /** A console message into a platform session runs the reply-only commands that conversation's own users can send. */
@@ -10453,6 +10480,8 @@ export class Daemon {
       REPO_SELECTOR_V1_FEATURE,
       // computer-use.md §15.5: this daemon reads the `quota_exceeded` refusal of computer-pool/acquire. Static.
       COMPUTER_POOL_QUOTA_FEATURE,
+      // org-session-policy.md: this daemon reads the `session/admit/result` refusal variant. Static.
+      SESSION_ADMIT_REFUSAL_FEATURE,
       // What each platform module declares for itself (§7.4).
       ...this.platformModules.registrationFeatures()
     ]
@@ -14997,7 +15026,12 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     // Admitted once, under the outward id its execution row and milestones carry, before any credential or host exists.
-    await this.admitNewSession(agentId, dreamExecutionKey(agentId, context.dreamId), 'memory-dream')
+    const admission = await this.admitNewSession(agentId, dreamExecutionKey(agentId, context.dreamId), 'memory-dream')
+    if (!admission.admitted) {
+      // Background maintenance loses nothing by waiting for its next run, so a refusal skips this one (memory-dreaming.md).
+      this.log.info(`dream ${context.dreamId} for agent ${agentId} skipped: session admission ${admission.reason}`)
+      throw new SessionAdmissionRefusedError(admission)
+    }
     // Credential isolation (task #36 A2): the dream runs on its OWN dedicated,
     // one-off host — NOT the agent's warm host — sandboxed whenever the agent
     // runs sandboxed so the attacker-controlled transcript is confined from
@@ -21011,7 +21045,9 @@ export class Daemon {
   ): Promise<void> {
     // Unwrap ACP error data so quota and authentication failures retain their actionable cause.
     const reason = this.maskAgentSecrets(ctx.agentId, turnFailureReason(err))
-    const notice = `⚠️ Agent failed to respond: ${reason}`
+    // A refused new session is not the agent failing: its notice is the refusal alone.
+    const notice =
+      err instanceof SessionAdmissionRefusedError ? `⚠️ ${reason}` : `⚠️ Agent failed to respond: ${reason}`
     if (ctx.webchat) {
       ctx.webchat.doneSent = true
       ctx.webchat.sink.done({
@@ -23127,18 +23163,23 @@ export class Daemon {
     return 'ok'
   }
 
-  /** Admit a new session with the CP under its outward id; fails open, since the CP only counts it (org-session-policy.md, Admission). */
-  private async admitNewSession(agentId: string, key: string, purpose?: SessionAdmitRequest['purpose']): Promise<void> {
-    const cp = this.cpClient
-    if (!cp?.admitsSessions?.()) return
-    let sessionId: string | undefined
+  /** Admit a new session with the CP under its outward id: refused at an enforced limit, fail-open unless its organization last enforced (org-session-policy.md). */
+  private async admitNewSession(
+    agentId: string,
+    key: string,
+    purpose?: SessionAdmitRequest['purpose']
+  ): Promise<SessionAdmissionVerdict> {
+    if (!this.cpClient) return { admitted: true }
+    let sessionId: string
     try {
       sessionId = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
-      if ((await cp.admitSession(agentId, sessionId, purpose)) !== 'failed') return
     } catch (err) {
-      this.log.debug(`session admission for ${key} threw: ${formatErr(err)}`)
+      this.log.warn(`session admission for ${key} could not name the session: ${formatErr(err)}`)
+      return this.sessionAdmission.enforces(agentId)
+        ? { admitted: false, reason: SESSION_QUOTA_UNAVAILABLE }
+        : { admitted: true }
     }
-    this.log.warn(`session admission for ${sessionId ?? key} failed; starting the session anyway`)
+    return await this.sessionAdmission.admit(agentId, sessionId, purpose)
   }
 
   /** Open (or reuse) this turn's ACP session: install the delivery route, prepare the review
@@ -23180,8 +23221,6 @@ export class Daemon {
     let handled: HandledTurnSession
     const persisted = await this.store.getSession(key)
     const persistedSessionId = persisted?.acpSessionId
-    // A session with no local record is admitted before anything below prepares or starts its runtime.
-    if (!persisted) await this.admitNewSession(agentId, key)
     // A cold host can spend minutes on checkout, sandbox and session/load; report that instead of the last turn's `idle`.
     if (persisted?.acpSessionId && !plan.hostAlreadyRunning) {
       entry.resumingReported = persisted.acpSessionId
@@ -23192,6 +23231,11 @@ export class Daemon {
     // …and WHERE it runs, which the host key below reads: decided once at birth, recorded, and kept for the session's life (session-executors.md §7).
     let remoteMcpServer: import('@agentclientprotocol/sdk/unstable').McpServer | undefined
     try {
+      // A session with no local record is admitted before anything below prepares or starts its runtime; a refusal fails the turn.
+      if (!persisted) {
+        const verdict = await this.admitNewSession(agentId, key)
+        if (!verdict.admitted) throw new SessionAdmissionRefusedError(verdict)
+      }
       // A recorded strategy is loaded first: model selection judges its targets in that strategy's catalog (session-executors.md §5).
       if (this.executorPlane) await this.loadBirthStrategy(agent, key)
       // One `executor/candidates` per birth: model selection judges its targets by it, and placement reuses it (session-executors.md §5).
@@ -23343,11 +23387,13 @@ export class Daemon {
           // An issuer's denial is written for the person, links included, so it skips the start-failure redaction.
           const denial = issuerDenialMessage(err)
           await this.surfaceTurnFailure(
-            new Error(
-              denial !== undefined
-                ? this.maskAgentSecrets(agentId, denial)
-                : startFailureDetail(this.maskAgentSecrets(agentId, turnFailureReason(err)))
-            ),
+            err instanceof SessionAdmissionRefusedError
+              ? err
+              : new Error(
+                  denial !== undefined
+                    ? this.maskAgentSecrets(agentId, denial)
+                    : startFailureDetail(this.maskAgentSecrets(agentId, turnFailureReason(err)))
+                ),
             {
               agentId,
               message: msg,
@@ -23381,7 +23427,8 @@ export class Daemon {
       }
       evaluation.failEvaluation(err)
       if (hookContext && this.reportsHookOutcome(entry)) {
-        await this.emitHookCompletion(hookContext, 'failed', { reason: 'session_start_failed' }, entry)
+        const reason = err instanceof SessionAdmissionRefusedError ? err.reason : 'session_start_failed'
+        await this.emitHookCompletion(hookContext, 'failed', { reason }, entry)
       }
       throw err
     }

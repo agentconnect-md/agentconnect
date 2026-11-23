@@ -175,6 +175,9 @@ export function chatRefusalStatus(reason: string | undefined): number {
       return 409
     case 'declined':
       return 422
+    case 'session_limit_reached':
+      return 429
+    case 'session_quota_unavailable':
     case 'no_agent':
     case 'paused':
     case 'draining':
@@ -198,6 +201,7 @@ const STATUS_TEXT: Record<number, string> = {
   409: 'Conflict',
   413: 'Payload Too Large',
   422: 'Unprocessable Content',
+  429: 'Too Many Requests',
   502: 'Bad Gateway',
   503: 'Service Unavailable'
 }

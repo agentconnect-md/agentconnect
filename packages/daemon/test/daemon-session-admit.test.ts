@@ -1,14 +1,16 @@
-// A session this daemon has no record of is admitted with the CP once, under its outward id, before its runtime starts; the turn never waits on the answer (org-session-policy.md, Admission).
+// A session this daemon has no record of is admitted with the CP under its outward id before its runtime starts; a refusal ends the turn (org-session-policy.md).
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
+import { sessionChannelOf, sessionThreadOf } from '../src/messages/normalized.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 import { fakeCpClient } from './webchat-continuation-fixture.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { FakeClock } from './cp/fake-clock.js'
+import type { SessionAdmitOutcome } from '../src/session-admission.js'
 
 const agentId = 'example-agent'
 const roots: string[] = []
@@ -45,9 +47,12 @@ function scaffold(): string {
   return root
 }
 
-type Outcome = 'admitted' | 'unsupported' | 'failed'
+type Outcome = SessionAdmitOutcome
+const ADMITTED: Outcome = { kind: 'admitted' }
+const FAILED: Outcome = { kind: 'failed' }
+const UNSUPPORTED: Outcome = { kind: 'unsupported' }
 
-async function start(outcome: Outcome | (() => Promise<Outcome>) = 'admitted', admits = true) {
+async function start(outcome: Outcome | (() => Promise<Outcome>) = ADMITTED, admits = true) {
   const timeline: string[] = []
   const daemon = new Daemon({
     root: scaffold(),
@@ -76,10 +81,12 @@ async function start(outcome: Outcome | (() => Promise<Outcome>) = 'admitted', a
   daemons.push(daemon)
   await daemon.start()
   const internal = daemon as any
-  const admitSession = vi.fn(async (_agentId: string, _sessionId: string): Promise<Outcome> => {
-    timeline.push('admit')
-    return typeof outcome === 'function' ? await outcome() : outcome
-  })
+  const admitSession = vi.fn(
+    async (_agentId: string, _sessionId: string, _purpose?: string, _opts?: { wait?: boolean }): Promise<Outcome> => {
+      timeline.push('admit')
+      return typeof outcome === 'function' ? await outcome() : outcome
+    }
+  )
   internal.cpClient = {
     ...fakeCpClient(),
     emitEventSession: vi.fn(),
@@ -107,7 +114,7 @@ describe('admitting a new session with the control plane', () => {
     expect(await turn('first')).toMatchObject({ sessionId: 'acp-1', output: 'Done' })
     expect(timeline).toEqual(['admit', 'host.start', 'session/new'])
     const [row] = await internal.store.listSessions(agentId)
-    expect(admitSession.mock.calls).toEqual([[agentId, row.sessionId, undefined]])
+    expect(admitSession.mock.calls).toEqual([[agentId, row.sessionId, undefined, { wait: false }]])
 
     // The session now has a local record, so a later turn of it is never admitted again.
     expect(await turn('first', 'And again')).toMatchObject({ output: 'Done' })
@@ -115,7 +122,7 @@ describe('admitting a new session with the control plane', () => {
   })
 
   it('starts the session anyway when admission fails, warning once', async () => {
-    const { admitSession, warn, turn } = await start('failed')
+    const { admitSession, warn, turn } = await start(FAILED)
     expect(await turn('first')).toMatchObject({ output: 'Done' })
     expect(await turn('first', 'And again')).toMatchObject({ output: 'Done' })
     expect(admitSession).toHaveBeenCalledOnce()
@@ -131,17 +138,67 @@ describe('admitting a new session with the control plane', () => {
   })
 
   it('starts the session without a warning when the control plane does not admit sessions', async () => {
-    const { admitSession, warn, turn } = await start('unsupported')
+    const { admitSession, warn, turn } = await start(UNSUPPORTED)
     expect(await turn('first')).toMatchObject({ output: 'Done' })
     expect(admitSession).toHaveBeenCalledOnce()
     expect(admissionWarnings(warn)).toEqual([])
   })
 
   it('sends nothing while no control plane admits sessions', async () => {
-    const { admitSession, timeline, turn } = await start('admitted', false)
+    const { admitSession, timeline, turn } = await start(ADMITTED, false)
     expect(await turn('first')).toMatchObject({ output: 'Done' })
     expect(admitSession).not.toHaveBeenCalled()
     expect(timeline).toEqual(['host.start', 'session/new'])
+  })
+
+  it('refuses a new session at the limit before its runtime starts, and admits it again on the next turn', async () => {
+    const refused: Outcome = { kind: 'refused', limit: 2, used: 2, resetsAt: '2026-12-01T00:00:00.000Z' }
+    const { internal, admitSession, timeline, turn } = await start(refused)
+
+    const outcome = await turn('first').catch((err: unknown) => err)
+    expect((outcome as Error).message).toContain('used 2 of its 2 sessions')
+    expect(timeline).toEqual(['admit'])
+    expect(await internal.store.listSessions(agentId)).toEqual([])
+    // A refused id has no admission, so the next turn of the conversation asks again, now waiting on the answer.
+    await turn('first', 'Again').catch(() => undefined)
+    expect(admitSession).toHaveBeenCalledTimes(2)
+    expect(admitSession.mock.calls[1]![3]).toEqual({ wait: true })
+    expect(timeline).toEqual(['admit', 'admit'])
+  })
+
+  it('refuses as temporarily unavailable when an enforcing organization cannot be asked', async () => {
+    const answers: Outcome[] = [{ kind: 'admitted', enforcing: true }, FAILED]
+    const { admitSession, timeline, turn } = await start(async () => answers.shift()!)
+
+    expect(await turn('first')).toMatchObject({ output: 'Done' })
+    const outcome = await turn('second').catch((err: unknown) => err)
+    expect((outcome as Error).message).toContain("can't start right now")
+    expect(admitSession.mock.calls[1]![3]).toEqual({ wait: true })
+    expect(timeline).toEqual(['admit', 'host.start', 'session/new', 'admit'])
+  })
+
+  it('admits an API turn under the key its session will have, and only while it has no local record', async () => {
+    const refused: Outcome = { kind: 'refused', limit: 2, used: 2, resetsAt: '2026-12-01T00:00:00.000Z' }
+    const { internal, admitSession, turn } = await start(refused)
+    const msg = { platform: 'webchat', channel: 'conv-api', msgId: 'm1', sender: { id: 'U1' }, text: 'hi' }
+    const answer = await internal.admitApiSession(agentId, msg)
+    expect(answer).toEqual({ reason: 'session_limit_reached', detail: expect.stringContaining('2 of its 2 sessions') })
+    const key = sessionKey('webchat', sessionChannelOf(msg), sessionThreadOf(msg as never), agentId)
+    expect(admitSession.mock.calls[0]![1]).toBe(await internal.store.ensureOutwardSessionId(key, agentId))
+
+    admitSession.mockImplementation(async () => ADMITTED)
+    await turn('known')
+    admitSession.mockClear()
+    const [known] = await internal.store.listSessions(agentId)
+    expect(
+      await internal.admitApiSession(agentId, {
+        ...msg,
+        platform: known.platform,
+        channel: known.channel,
+        thread: known.thread
+      })
+    ).toBeUndefined()
+    expect(admitSession).not.toHaveBeenCalled()
   })
 
   it('admits before the model session is ensured', async () => {
@@ -177,8 +234,52 @@ describe('admitting a new session with the control plane', () => {
     await internal.openSession(run, () => {})
     expect(timeline).toEqual(['admit', 'modelSessions.ensure', 'sessions.handle'])
     expect(admitSession.mock.calls).toEqual([
-      [agentId, await internal.store.ensureOutwardSessionId('session-admit-key', agentId), undefined]
+      [agentId, await internal.store.ensureOutwardSessionId('session-admit-key', agentId), undefined, { wait: false }]
     ])
+  })
+
+  it('neither ensures the model session nor starts the runtime of a refused session, and ends its hook run with the reason', async () => {
+    const refused: Outcome = { kind: 'refused', limit: 1, used: 1, resetsAt: '2026-12-01T00:00:00.000Z' }
+    const { internal, timeline } = await start(refused)
+    const ensure = vi.fn()
+    internal.modelSessions = {
+      enabled: true,
+      keys: () => [],
+      release: async () => {},
+      hasStartedHost: () => false,
+      ensure
+    }
+    const handle = vi.fn()
+    internal.sessions = { handle }
+    const emitHookCompletion = vi.fn(async () => {})
+    internal.emitHookCompletion = emitHookCompletion
+    internal.reportsHookOutcome = () => true
+    internal.surfaceTurnFailure = vi.fn(async () => {})
+    const hookContext = { hookId: 'example-hook', runId: 'example-run' }
+    const run = {
+      entry: {
+        agentId,
+        initAbort: new AbortController(),
+        hookContext,
+        msg: { platform: 'webchat', channel: 'C1', msgId: 'm1', sender: { id: 'U1' }, text: 'hi' }
+      },
+      key: 'session-refused-key',
+      plan: { deliveryBinding: {} },
+      agent: internal.agents.get(agentId),
+      evaluation: { failEvaluation: () => {}, finishEvaluation: () => {} }
+    }
+    await expect(internal.openSession(run, () => {})).rejects.toThrow('used 1 of its 1 sessions')
+    expect(ensure).not.toHaveBeenCalled()
+    expect(handle).not.toHaveBeenCalled()
+    expect(timeline).toEqual(['admit'])
+    expect(emitHookCompletion).toHaveBeenCalledWith(
+      hookContext,
+      'failed',
+      { reason: 'session_limit_reached' },
+      run.entry
+    )
+    const [surfaced] = (internal.surfaceTurnFailure as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect((surfaced as Error).message).toContain('resets on 2026-12-01 00:00 UTC')
   })
 })
 
@@ -211,7 +312,7 @@ describe('admitting a memory dream with the control plane', () => {
     return root
   }
 
-  async function startDream(outcome: Outcome | (() => Promise<Outcome>) = 'admitted') {
+  async function startDream(outcome: Outcome | (() => Promise<Outcome>) = ADMITTED) {
     const timeline: string[] = []
     const root = dreamScaffold()
     const daemon = new Daemon({
@@ -237,10 +338,12 @@ describe('admitting a memory dream with the control plane', () => {
     daemons.push(daemon)
     await daemon.start()
     const internal = daemon as any
-    const admitSession = vi.fn(async (_agentId: string, _sessionId: string, _purpose?: string): Promise<Outcome> => {
-      timeline.push('admit')
-      return typeof outcome === 'function' ? await outcome() : outcome
-    })
+    const admitSession = vi.fn(
+      async (_agentId: string, _sessionId: string, _purpose?: string, _opts?: { wait?: boolean }): Promise<Outcome> => {
+        timeline.push('admit')
+        return typeof outcome === 'function' ? await outcome() : outcome
+      }
+    )
     const emitEventSession = vi.fn()
     internal.cpClient = {
       ...fakeCpClient(),
@@ -269,14 +372,30 @@ describe('admitting a memory dream with the control plane', () => {
       sessionKey('dream', 'memory', 'drm-1', dreamAgent),
       dreamAgent
     )
-    expect(admitSession.mock.calls).toEqual([[dreamAgent, outward, 'memory-dream']])
+    expect(admitSession.mock.calls).toEqual([[dreamAgent, outward, 'memory-dream', { wait: false }]])
     const milestones = emitEventSession.mock.calls.map(([event]) => event).filter((e) => e.platform === 'dream')
     expect(milestones.map((e) => e.phase)).toEqual(['start', 'end'])
     expect(new Set(milestones.map((e) => e.sessionId))).toEqual(new Set([outward]))
   })
 
+  it('skips the dream before its credential or host when admission refuses it', async () => {
+    const refused: Outcome = { kind: 'refused', limit: 1, used: 1, resetsAt: '2026-12-01T00:00:00.000Z' }
+    const { timeline, dream } = await startDream(refused)
+    await expect(dream('drm-refused')).rejects.toThrow('sessions this month')
+    expect(timeline).toEqual(['admit'])
+  })
+
+  it('skips the dream while its enforcing organization cannot be asked', async () => {
+    const answers: Outcome[] = [{ kind: 'admitted', enforcing: true }, FAILED]
+    const { admitSession, timeline, dream } = await startDream(async () => answers.shift()!)
+    expect(await dream('drm-1')).toMatchObject({ sessionId: 'dream-acp' })
+    await expect(dream('drm-2')).rejects.toThrow("can't start right now")
+    expect(admitSession.mock.calls[1]![3]).toEqual({ wait: true })
+    expect(timeline).toEqual(['admit', 'host.start', 'admit'])
+  })
+
   it('runs the dream anyway when admission fails or throws', async () => {
-    const failed = await startDream('failed')
+    const failed = await startDream(FAILED)
     expect(await failed.dream('drm-failed')).toMatchObject({ sessionId: 'dream-acp' })
     expect(failed.admitSession).toHaveBeenCalledOnce()
     const thrown = await startDream(async () => {

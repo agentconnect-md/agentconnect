@@ -185,7 +185,10 @@ export const WebchatAck = z.object({
       // The API turn's Decision gate answered no (shared-bot-relay.md §10.4).
       'declined',
       // `thread` names no root of this coordinator conversation (webchat-threads.md §5.1).
-      'unknown_thread'
+      'unknown_thread',
+      // An API turn's new session was refused at its organization's monthly session limit, or could not be checked now (org-session-policy.md).
+      'session_limit_reached',
+      'session_quota_unavailable'
     ])
     .optional(),
   // One bounded, path-free line naming the fault, so the client can state the cause instead of

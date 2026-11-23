@@ -554,3 +554,46 @@ describe('durable continuation admission', () => {
     expect(onAdmission).not.toHaveBeenCalled()
   })
 })
+
+describe('an API turn whose new session is refused', () => {
+  const api = (transport: WebchatTransport, sink: { output: () => void; done: () => void }, turnId: string) =>
+    transport.dispatchWebchatTurn(
+      agentId,
+      conversationId,
+      'hello',
+      author,
+      sink,
+      turnId,
+      undefined,
+      undefined,
+      undefined,
+      [agentId],
+      { postId: turnId, at: 100 },
+      undefined,
+      undefined,
+      'ai-sdk-ui'
+    )
+
+  it('answers the refusal in the ack and dispatches nothing', async () => {
+    const { host, transport, sink } = await fixture()
+    const detail = 'This organization has used 2 of its 2 sessions this month.'
+    host.admitApiSession = vi.fn(async () => ({ reason: 'session_limit_reached' as const, detail }))
+    await expect(api(transport, sink, 'turn-a')).resolves.toEqual({
+      accepted: false,
+      turnId: 'turn-a',
+      reason: 'session_limit_reached',
+      detail
+    })
+    expect(host.admitApiSession).toHaveBeenCalledWith(agentId, expect.objectContaining({ channel: conversationId }))
+    expect(host.dispatch).not.toHaveBeenCalled()
+  })
+
+  it('admits an API turn before dispatching it, and never asks for an ordinary console turn', async () => {
+    const { host, transport, sink, send } = await fixture()
+    host.admitApiSession = vi.fn(async () => undefined)
+    await expect(api(transport, sink, 'turn-a')).resolves.toEqual({ accepted: true, turnId: 'turn-a' })
+    expect(host.dispatch).toHaveBeenCalledTimes(1)
+    await send('turn-b')
+    expect(host.admitApiSession).toHaveBeenCalledTimes(1)
+  })
+})

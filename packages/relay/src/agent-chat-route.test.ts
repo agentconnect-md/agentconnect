@@ -801,6 +801,8 @@ describe('chatRefusalStatus', () => {
   it('maps daemon refusals to statuses', () => {
     expect(chatRefusalStatus('busy')).toBe(409)
     expect(chatRefusalStatus('declined')).toBe(422)
+    expect(chatRefusalStatus('session_limit_reached')).toBe(429)
+    expect(chatRefusalStatus('session_quota_unavailable')).toBe(503)
     expect(chatRefusalStatus('paused')).toBe(503)
     expect(chatRefusalStatus('no_agent')).toBe(503)
     expect(chatRefusalStatus('unsupported')).toBe(503)
