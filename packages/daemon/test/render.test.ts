@@ -8,6 +8,7 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   OutputConverger,
+  clampTo,
   renderStatusBar,
   buildStatusBlocks,
   buildStatusModal,
@@ -1442,7 +1443,159 @@ describe('permission card', () => {
       `${PERMISSION_ACTION_PREFIX}:2`
     ])
     expect(btns.map((b: any) => b.value)).toEqual(['perm-7|a', 'perm-7|b', 'perm-7|r'])
-    expect(btns.map((b: any) => b.style)).toEqual(['primary', 'primary', 'danger'])
+    expect(btns.map((b: any) => b.style)).toEqual(['primary', undefined, 'danger'])
+  })
+
+  it('lists full numbered rules in the body and clamps button labels to 40 chars when any option is long', () => {
+    const longAlways =
+      "Yes, and don't ask again for commands that start with `python3 -c 'print(1)'` or visit https://evil.example/payload or <https://evil.test/steal|Approve>"
+    const longReject = 'No, and tell Codex what to do differently with a safer command'
+    const [header, actions] = buildPermissionCard(
+      'perm-long',
+      req({
+        options: [
+          { optionId: 'a', name: 'Yes', kind: 'allow_once' },
+          { optionId: 'b', name: longAlways, kind: 'allow_always' },
+          { optionId: 'r', name: longReject, kind: 'reject_once' }
+        ] as any
+      }),
+      'sess-target'
+    ) as any[]
+    expect(header.text.verbatim).toBe(true)
+    expect(header.text.text).toContain('1. Yes')
+    expect(header.text.text).toContain(
+      "2. Yes, and don't ask again for commands that start with `python3 -c 'print(1)'`"
+    )
+    expect(header.text.text).toContain('`https://evil.example/payload`')
+    expect(header.text.text).toContain('&lt;https://evil.test/steal|Approve&gt;')
+    expect(header.text.text).not.toMatch(/<https?:/)
+    expect(header.text.text).toContain(`3. ${longReject}`)
+
+    const btns = actions.elements
+    expect(btns.map((b: any) => b.style)).toEqual(['primary', undefined, 'danger'])
+    expect(btns[0].text.text).toBe('1. Yes')
+    for (const btn of btns) {
+      expect(btn.text.text.length).toBeLessThanOrEqual(40)
+    }
+    expect(btns[1].text.text).toMatch(/^2\. Yes, and don't ask again/)
+    expect(btns[2].text.text).toMatch(/^3\. No, and tell Codex/)
+    expect(slackCardViolations([header, actions])).toEqual([])
+  })
+
+  it('packs long rule lists across multiple sections without truncating, and returns null past 10 sections', () => {
+    const longRule = (i: number) =>
+      `Yes, and don't ask again for commands matching rule-${i} ${'a'.repeat(180)} https://evil.example/p?a=1&b=${i}`
+    const opts = Array.from({ length: 15 }, (_, i) => ({
+      optionId: `o${i}`,
+      name: longRule(i + 1),
+      kind: 'allow_once'
+    }))
+    const card = buildPermissionCard('perm-multi', req({ options: opts as any }), 'sess-multi') as any[]
+    expect(card).not.toBeNull()
+    expect(card.length).toBeGreaterThan(2)
+    expect(card.at(-1).type).toBe('actions')
+    expect(card.at(-1).elements).toHaveLength(15)
+    const sectionText = card
+      .slice(0, -1)
+      .map((b: any) => b.text.text)
+      .join('\n')
+    for (let i = 1; i <= 15; i++) {
+      expect(sectionText).toContain(`${i}. Yes, and don't ask again for commands matching rule-${i}`)
+      expect(sectionText).toContain(`\`https://evil.example/p?a=1&amp;b=${i}\``)
+    }
+    expect(slackCardViolations(card)).toEqual([])
+
+    const expandingOpts = Array.from({ length: 25 }, (_, i) => ({
+      optionId: `exp${i}`,
+      name: `${'&'.repeat(290)} rule-${i}`,
+      kind: 'allow_once'
+    }))
+    expect(buildPermissionCard('perm-overflow', req({ options: expandingOpts as any }))).toBeNull()
+  })
+
+  it('handles surrogate pairs in clampTo, falls back on empty option labels, and neutralizes unbalanced backticks + query URLs', () => {
+    const emojiClamped = clampTo('ab👍cd', 4)
+    expect(emojiClamped).toBe('ab…')
+    expect(emojiClamped.length).toBeLessThanOrEqual(4)
+    expect(/[\uD800-\uDFFF]/.test(emojiClamped)).toBe(false)
+
+    const [section, actions] = buildPermissionCard(
+      'perm-edge',
+      req({
+        options: [
+          { optionId: 'empty', name: '   ', kind: 'allow_once' },
+          {
+            optionId: 'bt',
+            name: 'Run `python with unbalanced backtick and https://evil.example/cb?foo=1&bar=2 please',
+            kind: 'allow_always'
+          }
+        ] as any
+      })
+    ) as any[]
+    expect(actions.elements[0].text.text).toBe('1. Option 1')
+    expect(section.text.text).toContain('1. Option 1')
+    expect(section.text.text).toContain('`https://evil.example/cb?foo=1&amp;bar=2`')
+    // Neutralizing the odd backtick leaves only the balanced URL-defusal backtick pair on line 2.
+    expect((section.text.text.split('\n').at(-1)!.match(/`/g) ?? []).length % 2).toBe(0)
+    expect(slackCardViolations([section, actions])).toEqual([])
+  })
+
+  it('switches to numbered body lines only past the 40-char boundary, rejects >25 long options, and keeps allow_always formatting safe', () => {
+    const exact40 = 'a'.repeat(40)
+    const [shortHeader, shortActions] = buildPermissionCard(
+      'perm-40',
+      req({
+        options: [
+          { optionId: 'a', name: exact40, kind: 'allow_once' },
+          { optionId: 'r', name: 'Reject', kind: 'reject_once' }
+        ] as any
+      })
+    ) as any[]
+    expect(shortHeader.text.text).not.toContain(`1. ${exact40}`)
+    expect(shortActions.elements.map((b: any) => b.text.text)).toEqual([exact40, 'Reject'])
+    expect(slackCardViolations([shortHeader, shortActions])).toEqual([])
+
+    const exact41 = 'b'.repeat(41)
+    const [longHeader, longActions] = buildPermissionCard(
+      'perm-41',
+      req({
+        options: [
+          { optionId: 'a', name: exact41, kind: 'allow_once' },
+          { optionId: 'r', name: 'Reject', kind: 'reject_once' }
+        ] as any
+      })
+    ) as any[]
+    expect(longHeader.text.text).toContain(`1. ${exact41}`)
+    expect(longHeader.text.text).toContain('2. Reject')
+    expect(longActions.elements[0].text.text).toBe(`1. ${'b'.repeat(36)}…`)
+    expect(longActions.elements[1].text.text).toBe('2. Reject')
+    expect(slackCardViolations([longHeader, longActions])).toEqual([])
+
+    const twentySixLong = Array.from({ length: 26 }, (_, i) => ({
+      optionId: `long-${i}`,
+      name: `Allow long command rule ${i + 1} matching pattern *foo_bar*~baz`,
+      kind: 'allow_always'
+    }))
+    expect(buildPermissionCard('perm-26-long', req({ options: twentySixLong as any }))).toBeNull()
+
+    const [mrkdwnSection, mrkdwnActions] = buildPermissionCard(
+      'perm-mrkdwn',
+      req({
+        options: [
+          {
+            optionId: 'always',
+            name: 'Always allow `*star*` and _snake_ ~tilde & <unsafe> for `cat ~/a_b*`',
+            kind: 'allow_always'
+          }
+        ] as any
+      })
+    ) as any[]
+    expect(mrkdwnActions.elements[0].style).toBeUndefined()
+    expect(mrkdwnSection.text.verbatim).toBe(true)
+    expect(mrkdwnSection.text.text).toContain(
+      '1. Always allow `*star*` and _snake_ ~tilde &amp; &lt;unsafe&gt; for `cat ~/a_b*`'
+    )
+    expect(slackCardViolations([mrkdwnSection, mrkdwnActions])).toEqual([])
   })
 
   it('offers every option the actions block holds, and NO card at all past that', () => {
