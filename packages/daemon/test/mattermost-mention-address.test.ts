@@ -244,13 +244,15 @@ describe('Daemon cross-daemon @botUsername mention resolution', () => {
       conn: {}
     })
 
-    expect((daemon as any).resolveMattermostRouting(pending('@peerbot please verify this patch'), directory)).toEqual({
+    expect(
+      (daemon as any).mattermostResponses.resolveRouting(pending('@peerbot please verify this patch'), directory)
+    ).toEqual({
       mentionedAgentIds: [AGENT_REMOTE],
       addressedAnyone: true
     })
 
     const turn = pending('@PeerBot. please inspect')
-    ;(daemon as any).prepareMattermostResponseClosure(turn)
+    ;(daemon as any).mattermostResponses.prepareResponseClosure(turn)
     expect((turn.reply as { finalRouting?: unknown }).finalRouting).toEqual({
       mentionedAgentIds: [AGENT_REMOTE],
       addressedAnyone: true,
@@ -259,10 +261,11 @@ describe('Daemon cross-daemon @botUsername mention resolution', () => {
     })
 
     expect(
-      (daemon as any).resolveMattermostRouting(pending('email me at user@peerbot.com'), directory).mentionedAgentIds
+      (daemon as any).mattermostResponses.resolveRouting(pending('email me at user@peerbot.com'), directory)
+        .mentionedAgentIds
     ).toEqual([])
 
-    expect((daemon as any).resolveMattermostRouting(pending('plain status update'), directory)).toEqual({
+    expect((daemon as any).mattermostResponses.resolveRouting(pending('plain status update'), directory)).toEqual({
       mentionedAgentIds: [],
       addressedAnyone: false
     })

@@ -526,8 +526,8 @@ export interface RelayCardClicks {
   decode(msg: RdMsgPlatformAction): ChatCardClick | null
   /** The ack's `response` carrying a refusal the relay shows only the clicker. */
   response(privateText: string): unknown
-  /** The payload cannot say whether the clicker is a bot, so core looks them up and refuses a click it cannot verify. */
-  verifiesActor?: boolean
+  /** For a platform whose click names its actor unverified: the click with `actor.isBot` settled, true for anyone it cannot vouch for. */
+  verifyActor?(click: ChatCardClick, msg: RdMsgPlatformAction, conn: unknown): Promise<ChatCardClick>
 }
 
 /** §5.3 relayed member joins: people added to a conversation, each looked up for a guest or another organization. */

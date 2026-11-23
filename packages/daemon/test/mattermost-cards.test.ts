@@ -1197,6 +1197,36 @@ describe('Mattermost Fill cards and Assistant Draft cards', () => {
       INT_ID
     )
 
+    // The callback's user id is unsigned: a person counts only as a member of the card's channel.
+    const outsider = server.addUser({ id: fakeMmId('outsider', 8), username: 'outsider', is_bot: false })
+    const clickAs = async (userId: string, userName: string) => {
+      answerSpy.mockClear()
+      await daemon.handleRelayCardClick(
+        {
+          source: 'platform_action',
+          platformId: MATTERMOST_PLATFORM,
+          agentId: AGENT_ID,
+          sessionKey: 'mm:ch',
+          integrationId: INT_ID,
+          botId: INT_ID,
+          msgId: `mm-click-${userName}`,
+          payload: {
+            postId: 'post1',
+            channelId: ch.id,
+            userId,
+            userName,
+            kind: 'approval',
+            requestId: 'req-1',
+            option: 0
+          }
+        },
+        mattermostCardClicks
+      )
+      return (answerSpy.mock.calls[0]![0] as { actor: unknown }).actor
+    }
+    expect(await clickAs(alice.id, 'alice')).toEqual({ userId: alice.id, name: 'alice', isBot: false })
+    expect(await clickAs(outsider.id, 'outsider')).toEqual({ userId: outsider.id, name: 'outsider', isBot: true })
+
     // With no connection to look the clicker up, the click is treated as a bot's rather than a person's.
     daemon.mattermostConnByIntegration.delete(INT_ID)
     answerSpy.mockClear()

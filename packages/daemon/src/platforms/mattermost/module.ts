@@ -198,9 +198,36 @@ export function decodeMattermostCardClick(msg: Pick<RdMsgPlatformAction, 'payloa
   return null
 }
 
+/** What a relayed click needs of the bot's connection to vouch for the user id the callback names. */
+interface CardActorLookup {
+  getUserProfile(userId: string): Promise<{ isBot?: boolean }>
+  hasChannelMember(channelId: string, userId: string): Promise<boolean>
+}
+
+/** A callback's `user_id` is unsigned, so the clicker counts as a person only when the server says they are one and a member of the card's channel. */
+export async function verifyMattermostCardActor(
+  click: ChatCardClick,
+  msg: Pick<RdMsgPlatformAction, 'payload'>,
+  conn: unknown
+): Promise<ChatCardClick> {
+  if (!click.actor || click.actor.isBot !== undefined) return click
+  const lookup = conn as Partial<CardActorLookup> | undefined
+  const channelId = WireMattermostCardAction.safeParse(msg.payload).data?.channelId
+  const userId = click.actor.userId
+  let person = false
+  if (channelId && typeof lookup?.getUserProfile === 'function' && typeof lookup.hasChannelMember === 'function') {
+    const [profile, member] = await Promise.all([
+      lookup.getUserProfile(userId).catch(() => undefined),
+      lookup.hasChannelMember(channelId, userId).catch(() => false)
+    ])
+    person = profile?.isBot === false && member
+  }
+  return { ...click, actor: { ...click.actor, isBot: !person } }
+}
+
 export const mattermostCardClicks: RelayCardClicks = {
   decode: decodeMattermostCardClick,
-  verifiesActor: true,
+  verifyActor: verifyMattermostCardActor,
   response: (privateText) =>
     ({
       ephemeralText: privateText.slice(0, clampSliceBeforeSurrogate(privateText, MATTERMOST_CARD_NOTE_MAX))

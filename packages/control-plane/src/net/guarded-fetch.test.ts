@@ -6,6 +6,7 @@ import {
   isBlockedAddress,
   isLinkLocalOrUnspecifiedAddress,
   guardedRequest,
+  hostAllowlisted,
   makeGuardedLookup
 } from './guarded-fetch.js'
 
@@ -206,6 +207,18 @@ describe('guardedRequest', () => {
     if (!result.ok) return
     expect(result.response.status).toBe(200)
     expect(result.response.json).toEqual({ method: 'POST', echoed: '{"grant_type":"refresh_token"}' })
+  })
+
+  it('holds a host:port allowlist entry to that port, while a bare host covers every port', async () => {
+    const port = new URL(endpoint.url).port
+    const onPort = await guardedRequest(`${endpoint.url}/text`, { allowlist: new Set([`127.0.0.1:${port}`]) })
+    expect(onPort.ok).toBe(true)
+    const otherPort = await guardedRequest(`${endpoint.url}/text`, { allowlist: new Set(['127.0.0.1:1']) })
+    expect(otherPort).toEqual({ ok: false, failure: 'address_blocked' })
+    expect(hostAllowlisted(new Set(['[fd00::7]:8443']), new URL('https://[fd00::7]:8443/x'))).toBe(true)
+    expect(hostAllowlisted(new Set(['[fd00::7]:8443']), new URL('https://[fd00::7]/x'))).toBe(false)
+    expect(hostAllowlisted(new Set(['chat.corp.example:443']), new URL('https://Chat.Corp.Example/x'))).toBe(true)
+    expect(hostAllowlisted(new Set(['chat.corp.example']), new URL('http://chat.corp.example:8065/x'))).toBe(true)
   })
 
   it('hands a 3xx back as a response instead of following it past the pin', async () => {

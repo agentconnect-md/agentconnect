@@ -1895,6 +1895,83 @@ describe('Mattermost catch-up replay, retry, clock skew, and forged response-fin
     expect(messages[0]!.ingressEventTag).toBe(MATTERMOST_RESPONSE_FINAL_EVENT_TAG)
   })
 
+  it('does not redeliver the post that set a watermark once the dedupe set has forgotten it', async () => {
+    const { server, conn, messages } = setup({ botUsername: 'acbot' })
+    const alice = server.addUser({ id: fakeMmId('alice', 36), username: 'alice', is_bot: false })
+    const ch = server.addChannel({ id: fakeMmId('tailch', 1), type: 'O', name: 'tail' }, [server.botUser.id, alice.id])
+    await conn.start()
+
+    const baseMs = Date.now()
+    const live = server.addPost({
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot live',
+      create_at: baseMs + 500
+    })
+    server.lastSocket.emitPosted(live)
+    await vi.waitFor(() => expect(messages).toHaveLength(1))
+
+    // More than SEEN_LIMIT keys passing through other channels evicts it; clearing the set stands in for that.
+    ;(conn as unknown as { seen: Set<string> }).seen.clear()
+    const missed = server.addPost({
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot missed',
+      create_at: baseMs + 900
+    })
+    await conn.catchUpAfterReconnect()
+    await vi.waitFor(() => expect(messages).toHaveLength(2))
+    expect(messages.map((m) => m.msgId)).toEqual([`mattermost:${ch.id}:${live.id}`, `mattermost:${ch.id}:${missed.id}`])
+
+    // The post recovered by that pass set the new watermark, and is remembered the same way.
+    ;(conn as unknown as { seen: Set<string> }).seen.clear()
+    await conn.catchUpAfterReconnect()
+    expect(messages).toHaveLength(2)
+  })
+
+  it('stops at the page cap instead of replaying the same newest posts on every retry', async () => {
+    const server = new FakeMattermostServer({ botUser: { username: 'acbot' } })
+    const messages: NormalizedMessage[] = []
+    const warnings: string[] = []
+    const conn = new MattermostConnection(
+      {
+        serverUrl: server.serverUrl,
+        botToken: server.botToken,
+        integrations: [{ agentId: 'agent-1', integrationId: 'int-mm' }]
+      },
+      {
+        onMessage: (msg) => messages.push(msg),
+        log: { ...quietLog, warn: (message: string) => warnings.push(message) },
+        createSocket: server.createSocket,
+        fetchImpl: server.fetchImpl,
+        catchUpMaxPages: 1,
+        catchUpRetryBaseMs: 60_000,
+        sendIntervalMs: 0
+      }
+    )
+    connections.push(conn)
+    const alice = server.addUser({ id: fakeMmId('alice', 37), username: 'alice', is_bot: false })
+    const ch = server.addChannel({ id: fakeMmId('capch', 1), type: 'O', name: 'cap' }, [server.botUser.id, alice.id])
+    await conn.start()
+
+    const baseMs = Date.now() + 5_000
+    for (let i = 1; i <= 1_005; i++) {
+      server.addPost({ channel_id: ch.id, user_id: alice.id, message: `@acbot burst #${i}`, create_at: baseMs + i })
+    }
+    await conn.catchUpAfterReconnect()
+    await vi.waitFor(() => expect(messages).toHaveLength(1_000), { timeout: 10_000 })
+    expect(messages[0]!.text).toBe('@acbot burst #6')
+    expect(warnings.some((line) => line.includes('1-page cap'))).toBe(true)
+
+    // The channel is settled: a later pass asks only for what came after, and replays nothing.
+    const reqBefore = server.requests.length
+    await conn.catchUpAfterReconnect()
+    const later = server.requests.slice(reqBefore).filter((r) => r.path.startsWith(`/api/v4/channels/${ch.id}/posts`))
+    expect(later).toHaveLength(1)
+    expect(Number(new URL(later[0]!.url).searchParams.get('since'))).toBeGreaterThanOrEqual(baseMs + 1_005 - 1_000)
+    expect(messages).toHaveLength(1_000)
+  })
+
   it('recovers outage posts when the daemon clock runs ahead of the server', async () => {
     const server = new FakeMattermostServer({ botUser: { username: 'acbot' } })
     const skewMs = 60_000

@@ -101,16 +101,16 @@ flowchart LR
 
 ### Module and contract inventory
 
-| Package / host      | Key files                                                                                                                                                                                                                                           | Contract / responsibilities                                                                                                                                                                                                                        |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `protocol`          | `src/platform-manifest.ts`, `src/frames/integration.ts`, `src/frames/auth.ts`, `src/frames/relay-cp.ts`, `src/frames/relay-daemon.ts`, `src/frames/collab.ts`, `src/mattermost-action-token.ts`                                                     | `MATTERMOST_PLATFORM = 'mattermost'`, `PlatformManifest`, `IntegrationMattermostConfig`, `AuthOk`/`RcAuthOk` `mattermostActionSecret`, `CollabAgentPlacement.botUsername`, `WireMattermostCardAction`, `mm1` token signing/verification.           |
-| `message`           | `src/mattermost-message.ts`, `src/mattermost-mention-address.ts`                                                                                                                                                                                    | WS/REST post parsing, CVE-2023-48732-safe `@username` scanning (`stripMattermostNonMentionSpans`), webhook/bot spoofing checks, `props.agentconnect_thread_event`, `response-final`, attachment mapping, multi-agent handle resolution.            |
-| `activation-policy` | `src/index.ts`                                                                                                                                                                                                                                      | Reads `manifestFor('mattermost').botSenderRouting` (`true`) so verified AgentConnect authors and third-party bots explicitly `@mention`ing the receiving bot enter the routing ladder.                                                             |
-| `control-plane`     | `src/platforms/mattermost/{provider,routes,server-url,session-access}.ts`, `src/registry/authService.ts`, `src/container.ts`                                                                                                                        | `CpPlatformProvider`, `PUT /api/v1/orgs/:orgId/bots/:id/mattermost/credentials`, `normalizeMattermostServerUrl`, `mattermostExternalAppId`, `MattermostSessionAccessService`, SSRF rules, per-org/master `mattermostActionSecret` issuance.        |
-| `setup`             | `src/mattermost-probe.ts`, `src/logto-connectors.ts`, `src/server/{index,logto-management}.ts`                                                                                                                                                      | `POST /api/v1/check/mattermost` (`probeMattermostInstance`), `agentconnect-mattermost` Logto `oauth2` connector provisioning, and redirect URI checks.                                                                                             |
-| `relay`             | `src/platforms/mattermost/action-ingress.ts`, `src/index.ts`                                                                                                                                                                                        | Direct mount of `POST /mattermost/actions` (`MATTERMOST_ACTION_PATH`), `mm1` token verification, `orgForAgent` tenant fencing, `HookRateLimiter`, `settleWithin(4_000 ms)` forwarding to `daemonForAgent`.                                         |
-| `daemon`            | `src/platforms/mattermost/{module,client,connection,media,rate-limit,surface,turn-output,command-chrome,attachments,action-button,*-card}.ts`, `src/platforms/{connection-reconciler,read-ports}.ts`, `src/daemon.ts`                               | Pooled WS/REST client, catch-up recovery, per-channel queues, `MattermostTurnStream` / `MattermostConverger`, `READ_PORTS['mattermost']`, SSRF media helpers, Relay card click handling, and pure-WS reply fallback.                               |
-| `web`               | `src/components/console/platforms/mattermost/{index,Body,settings,mark}.tsx`, `src/components/console/platforms/mattermost/api.ts`, `src/components/console/markdown-text.tsx`, `src/components/console/views/{SettingsView,SessionDetailView}.tsx` | Feature-gated (`FEATURE_FLAGS=mattermost`) Self-hosted / Cloud install wizard, token replacement UI, `#` room list semantics, `MarkdownText` (`SafeMarkdownText`), `/_redirect/pl/<postId>` links, `SessionAccessCard`, and `profileProviderHint`. |
+| Package / host      | Key files                                                                                                                                                                                                                                           | Contract / responsibilities                                                                                                                                                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol`          | `src/platform-manifest.ts`, `src/frames/integration.ts`, `src/frames/auth.ts`, `src/frames/relay-cp.ts`, `src/frames/relay-daemon.ts`, `src/frames/collab.ts`, `src/mattermost-action-token.ts`                                                     | `MATTERMOST_PLATFORM = 'mattermost'`, `PlatformManifest`, `IntegrationMattermostConfig`, `AuthOk`/`RcAuthOk` `mattermostActionSecret`, `CollabAgentPlacement.botUsername`, `WireMattermostCardAction`, `mm1` token signing/verification.                                                  |
+| `message`           | `src/mattermost-message.ts`, `src/mattermost-mention-address.ts`                                                                                                                                                                                    | WS/REST post parsing, CVE-2023-48732-safe `@username` scanning (`stripMattermostNonMentionSpans`), webhook/bot spoofing checks, `props.agentconnect_thread_event`, `response-final`, attachment mapping, multi-agent handle resolution.                                                   |
+| `activation-policy` | `src/index.ts`                                                                                                                                                                                                                                      | Reads `manifestFor('mattermost').botSenderRouting` (`true`) so verified AgentConnect authors and third-party bots explicitly `@mention`ing the receiving bot enter the routing ladder.                                                                                                    |
+| `control-plane`     | `src/platforms/mattermost/{provider,routes,server-url,session-access}.ts`, `src/registry/authService.ts`, `src/container.ts`                                                                                                                        | `CpPlatformProvider`, `PUT /api/v1/orgs/:orgId/bots/:id/mattermost/credentials`, `normalizeMattermostServerUrl`, `mattermostExternalAppId`, `MattermostSessionAccessService`, SSRF rules, per-org/master `mattermostActionSecret` issuance.                                               |
+| `setup`             | `src/mattermost-probe.ts`, `src/logto-connectors.ts`, `src/server/{index,logto-management}.ts`                                                                                                                                                      | `POST /api/v1/check/mattermost` (`probeMattermostInstance`), `agentconnect-mattermost` Logto `oauth2` connector provisioning, and redirect URI checks.                                                                                                                                    |
+| `relay`             | `src/platforms/mattermost/action-ingress.ts`, `src/index.ts`                                                                                                                                                                                        | Direct mount of `POST /mattermost/actions` (`MATTERMOST_ACTION_PATH`), `mm1` token verification, `orgForAgent` tenant fencing, `HookRateLimiter`, `settleWithin(4_000 ms)` forwarding to `daemonForAgent`.                                                                                |
+| `daemon`            | `src/platforms/mattermost/{module,client,connection,card-replies,response-routing,media,rate-limit,surface,turn-output,command-chrome,attachments,action-button,*-card}.ts`, `src/platforms/{connection-reconciler,read-ports}.ts`, `src/daemon.ts` | Pooled WS/REST client, catch-up recovery, per-channel queues, reply routing and own-bot recognition (`MattermostResponseRouting`), `MattermostTurnStream` / `MattermostConverger`, `READ_PORTS['mattermost']`, SSRF media helpers, Relay card click handling, and pure-WS reply fallback. |
+| `web`               | `src/components/console/platforms/mattermost/{index,Body,settings,mark}.tsx`, `src/components/console/platforms/mattermost/api.ts`, `src/components/console/markdown-text.tsx`, `src/components/console/views/{SettingsView,SessionDetailView}.tsx` | Feature-gated (`FEATURE_FLAGS=mattermost`) Self-hosted / Cloud install wizard, token replacement UI, `#` room list semantics, `MarkdownText` (`SafeMarkdownText`), `/_redirect/pl/<postId>` links, `SessionAccessCard`, and `profileProviderHint`.                                        |
 
 ### `PlatformManifest` declaration
 
@@ -160,7 +160,8 @@ Relay (`POST /mattermost/actions`) makes **no** outbound HTTP requests to Matter
 SSRF checks live exclusively on Setup, Control Plane, and Daemon.
 
 Two properties of the Control Plane allowlists are worth knowing before adding a host. They match
-the URL **hostname only**, so every port on an allowlisted host is reachable. And
+a bare host on every port, and a `host:port` or `[v6]:port` entry on that port only; the daemon
+applies the same rule to `MATTERMOST_ALLOWED_HOSTS`. And
 `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` is the deliberately shared list: both Mattermost checks and
 the Control Plane's MCP OAuth egress honor it, so on a multi-tenant install any organization's
 `serverUrl` can reach a host placed there. The MCP-specific `CP_ALLOWED_OUTBOUND_HOSTS` is **not**
@@ -266,11 +267,15 @@ post, except the first:
 
 - Posts created between channel seeding and the WebSocket coming up at first start are not
   caught up; there is no earlier watermark to recover from.
-- Deduplication is in memory (`SEEN_LIMIT = 2_000` keys across all channels). Each pass refetches
-  the last second before a channel's watermark, so once more than 2,000 keys have passed, the
-  post that set the watermark can be delivered a second time.
-- A channel that hits `MAX_CATCH_UP_PAGES = 200` keeps its watermark and is retried, and each
-  retry replays whatever has left `seen`.
+- Deduplication is in memory and does not survive a daemon restart. Each pass refetches the last
+  second before a channel's watermark (`CATCH_UP_OVERLAP_MS`); the posts delivered inside that
+  second are remembered per channel and frozen with the recovery watermark (`recoveryTails`), so
+  they are not delivered again even after `seen` (`SEEN_LIMIT = 2_000` keys across all channels)
+  has forgotten them.
+- A channel with more outage posts than `MAX_CATCH_UP_PAGES = 200` pages hold (the newest 1,000
+  from `since` plus 60 per page) recovers the newest of them, logs a warning, and is settled;
+  the older posts are not recovered. Pages run newest to oldest, so retrying would only refetch
+  the same posts.
 - A live post that arrives after reconnect is processed ahead of older outage posts in the same
   channel; the two share a per-channel chain, so neither is duplicated.
 - Every reconnect issues at least one `since` request per joined channel, so its cost grows with
@@ -329,7 +334,8 @@ In `packages/message/src/mattermost-message.ts` and `mattermost-mention-address.
 - **Cross-daemon `@botUsername` collaboration:** `CollabAgentPlacement.botUsername` carries each
   agent's handle without `@`; `resolveMattermostMentionedAgents` maps `@handle` mentions (with
   trailing-slug disambiguation when multiple agents share a handle) into `mentionedAgentIds` on
-  `prepareMattermostResponseClosure` / `closeMattermostResponse`.
+  `MattermostResponseRouting.prepareResponseClosure` / `closeResponse`
+  (`packages/daemon/src/platforms/mattermost/response-routing.ts`).
 
 ### 5.3 Turn streaming, `postAsAuthor`, reactions, and SafeMarkdown
 
@@ -394,8 +400,11 @@ Relay takes `user_id` from the request body, so whoever holds a button's token c
 as any user ID. The scheme is sound only while the token stays between the daemon and the
 Mattermost server: it relies on the server withholding `integration.context` from the posts it
 serves to clients, which nothing here verifies and no minimum server version enforces. Server
-administrators, plugins, and exports can read it. The pure-WebSocket fallback does not share this
-dependency, because the reply arrives as that user's own authenticated post.
+administrators, plugins, and exports can read it. The daemon narrows what a holder can claim: it
+accepts the named user only when the server says they are a person and a member of the card's
+channel, and the permission coordinator still requires that user to be allowed to answer. The
+pure-WebSocket fallback does not share this dependency, because the reply arrives as that user's
+own authenticated post.
 
 ```mermaid
 sequenceDiagram
@@ -458,8 +467,10 @@ sequenceDiagram
    `RdMsgPlatformAction` (`sessionKey: "mattermost-action:<post_id>"`, deterministic `msgId: mattermostActionMsgId`)
    bounded by `settleWithin(..., MATTERMOST_ACTION_DEADLINE_MS = 4_000)`.
 4. **Daemon fail-closed guards & settlement:** `Daemon.handleRelayCardClick` verifies the agent and
-   integration, looks up `conn.getUserProfile(userId)` when `isBot === undefined` (failing closed as
-   `isBot: true` if the lookup fails or the integration has no connection), invokes `answerCardClick`, patches settled posts with
+   integration, then hands the click to the platform's `RelayCardClicks.verifyActor`
+   (`verifyMattermostCardActor`), which treats the clicker as a person only when
+   `getUserProfile(userId)` says they are not a bot **and** `hasChannelMember(channelId, userId)`
+   holds; a failed lookup or a missing connection leaves `isBot: true`. It then invokes `answerCardClick`, patches settled posts with
    `{ props: { attachments: [] } }` to strip buttons, and caps refusal notices at `MATTERMOST_CARD_NOTE_MAX = 400`.
 
 ### 6.3 Card facets and pure-WS numbered reply fallback
@@ -472,7 +483,7 @@ sequenceDiagram
 | **Assistant draft** (`draft-card.ts`)         | `D-` (`D-XXXXXXXX`) | `DRAFT_CARD_TEXT_CAP = 10_000`; fail-closed `isPerson` (`false` unless `profile.isBot === false`).                         | `Approve` + `Discard`/`Deny`             | `<D-XXXXXXXX> 1\|approve`, `<D-XXXXXXXX> 2\|discard\|deny`, `<choice> <D-XXXXXXXX>`, or bare `1`/`2`/`approve`/`discard`/`deny` if unambiguous. |
 | **Form Fill** (`fill-card.ts`)                | —                   | Link-only (`REASON_MAX = 200`); credentials never entered in chat.                                                         | Console Markdown link only               | Console Markdown link only (settled via `patchPost`).                                                                                           |
 
-`matchCardReply` (`packages/daemon/src/platforms/mattermost/connection.ts`) strips leading
+`matchCardReply` (`packages/daemon/src/platforms/mattermost/card-replies.ts`) strips leading
 `@mentions`, matches `<TAG> <choice>` (`O(1)` Map lookup), `<choice> <TAG>` (`O(N)` linear scan),
 or bare digits only when **exactly one** open card or question occupies that channel/thread/DM
 scope (`QUESTION_TAG_LIMIT = 500`), posting refusals privately via `postEphemeral`.

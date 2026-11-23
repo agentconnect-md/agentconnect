@@ -148,6 +148,13 @@ export type LookupFactory = (allowPrivate: boolean, blockAddress?: (ip: string) 
  * caller here has to branch on the failure anyway and none of them may leak the reason
  * into a log line. A 3xx comes back as an ordinary response for the caller to reject.
  */
+/** Whether the allowlist names the URL's host: a bare host covers every port, `host:port` or `[v6]:port` only that one. */
+export function hostAllowlisted(allowlist: ReadonlySet<string>, target: URL): boolean {
+  const host = target.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80')
+  return allowlist.has(host) || allowlist.has(`${host}:${port}`) || allowlist.has(`[${host}]:${port}`)
+}
+
 export function guardedRequest(
   rawUrl: string,
   init: GuardedRequestInit = {},
@@ -167,7 +174,7 @@ export function guardedRequest(
   if (target.username || target.password) return Promise.resolve({ ok: false, failure: 'url_rejected' })
 
   const host = target.hostname.replace(/^\[|\]$/g, '')
-  const allowPrivate = init.allowlist?.has(host.toLowerCase()) === true
+  const allowPrivate = init.allowlist ? hostAllowlisted(init.allowlist, target) : false
   const blockAddress = init.blockAddress ?? isBlockedAddress
   // An IP-literal host never reaches `lookup` (node connects straight to it), so the pin
   // would not run — check literals here or the guard is bypassed by e.g. http://[::1].

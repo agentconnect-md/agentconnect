@@ -728,7 +728,8 @@ import type { MattermostConnection, MattermostConnectionDeps } from './platforms
 import type { MattermostActionCallbackConfig } from './platforms/mattermost/action-button.js'
 import { mattermostDraftCardPort } from './platforms/mattermost/draft-card.js'
 import { mattermostCommandChrome } from './platforms/mattermost/command-chrome.js'
-import { mattermostExternalAppId, mattermostPlatformModule } from './platforms/mattermost/module.js'
+import { mattermostPlatformModule } from './platforms/mattermost/module.js'
+import { MattermostResponseRouting } from './platforms/mattermost/response-routing.js'
 import { createMattermostTurnOutput } from './platforms/mattermost/surface.js'
 import type { EmailConnection } from './platforms/email/connection.js'
 import { emailCommandChrome } from './platforms/email/command-chrome.js'
@@ -741,7 +742,6 @@ import { FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { splitIntoSections } from './slack/formatter.js'
 import {
-  configuredBotSelfId,
   integrationConfig,
   integrationCore,
   platformIds,
@@ -801,11 +801,8 @@ import { telegramCommandChrome } from './platforms/telegram/command-chrome.js'
 import { discordCommandChrome } from './platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
-  type AgentMentionIdentity,
   MATTERMOST_RESPONSE_FINAL_EVENT_TAG,
-  mattermostTextAddressesAnyone,
   nativeMessageCoordinates,
-  resolveMattermostMentionedAgents,
   resolveSlackMentionedAgents,
   slackTextAddressesAnyone,
   SLACK_RESPONSE_FINAL_EVENT_TAG
@@ -2302,15 +2299,16 @@ export class Daemon {
           appendTranscript: async (row) => await this.store.appendTranscript(row),
           nowUs: () => this.clock.now() * 1000,
           warn: (message) => this.log.warn(message),
-          sendIdentity: (p) => this.mattermostSendIdentity(p, 'streaming'),
-          finalIdentity: (p) => (p.reply.finalRouting?.hasPeers ? this.mattermostSendIdentity(p, 'final') : undefined),
+          sendIdentity: (p) => this.mattermostResponses.sendIdentity(p, 'streaming'),
+          finalIdentity: (p) =>
+            p.reply.finalRouting?.hasPeers ? this.mattermostResponses.sendIdentity(p, 'final') : undefined,
           recordPublishedPost: (p, post) => {
             p.reply.lastResponse = { ts: post.ts, text: post.text }
             if (p.reply.firstResponse === undefined) p.reply.firstResponse = post.ts
             if (post.finalStamped) p.reply.finalStamped = post.ts
           },
-          prepareResponseClosure: (p) => this.prepareMattermostResponseClosure(p),
-          closeResponse: (p) => this.closeMattermostResponse(p)
+          prepareResponseClosure: (p) => this.mattermostResponses.prepareResponseClosure(p),
+          closeResponse: (p) => this.mattermostResponses.closeResponse(p)
         })
       )
       registry.register(createEmailTurnOutput(this.emailTurnHost()))
@@ -15803,24 +15801,28 @@ export class Daemon {
    *  says the SENDING APP belongs to AgentConnect — it does not identify WHICH agent
    *  authored the message, which is why {@link verifyAgentAuthor} needs the metadata
    *  claim as well. */
+  private readonly mattermostResponses = new MattermostResponseRouting({
+    agents: () => this.agents.values(),
+    agent: (agentId) => this.agents.get(agentId),
+    connections: () => this.mattermostConnByIntegration.values(),
+    connFor: (integrationId) => this.mattermostConnByIntegration.get(integrationId),
+    liveBotUserId: (integrationId) => this.botUserIds[integrationId],
+    agentPostIdentity: (agentId) => this.agentPostIdentity(agentId),
+    orgForAgent: (agentId) => this.cpCollab.orgForAgent(agentId),
+    mentionDirectory: (orgId, platform, channel) => this.cpCollab.mentionDirectory(orgId, platform, channel),
+    debug: (message) => this.log.debug(message)
+  })
+
+  /** Platforms that recognize their own bots by bot user rather than by app id, each with how it does so. */
+  private readonly botAuthorship = new Map<
+    string,
+    { authorIsBotUser: boolean; isLocalBot(senderId: string, appId?: string): boolean }
+  >([[MATTERMOST_PLATFORM, this.mattermostResponses]])
+
   private isManagedAgentBotIdentity(platform: string, channel: string, senderId: string, appId?: string): boolean {
-    if (platform === 'mattermost') {
-      const localConn = [...this.mattermostConnByIntegration.values()].some(
-        (conn) => !!conn.botUserId && senderId === conn.botUserId && (!appId || conn.workspaceId() === appId)
-      )
-      if (localConn) return true
-      const localConfigured = [...this.agents.values()].some((agent) =>
-        agent.integrations.some((int) => {
-          if (int.platform !== 'mattermost') return false
-          const cfg = platformIntegrationConfig('mattermost', int)
-          if (!cfg) return false
-          const configuredId = configuredBotSelfId(int)
-          const liveId = this.botUserIds[int.id]
-          if (configuredId !== senderId && liveId !== senderId) return false
-          return !appId || mattermostExternalAppId(cfg.serverUrl) === appId
-        })
-      )
-      if (localConfigured) return true
+    const ownBots = this.botAuthorship.get(platform)
+    if (ownBots) {
+      if (ownBots.isLocalBot(senderId, appId)) return true
       const seenOrgs = new Set<string>()
       for (const agent of this.agents.values()) {
         const orgId = this.cpCollab.orgForAgent(agent.id)
@@ -15909,7 +15911,7 @@ export class Daemon {
     // could author messages as any of its co-tenants.
     const placement = this.cpCollab.resolve(orgId, msg.platform, msg.channel, claim.authorAgentId)
     if (!placement) return null
-    if (msg.platform === 'mattermost' && placement.botUserId !== msg.sender.id) {
+    if (this.botAuthorship.get(msg.platform)?.authorIsBotUser && placement.botUserId !== msg.sender.id) {
       return null
     }
     if (msg.sender.appId !== undefined && placement.botAppId !== undefined && placement.botAppId !== msg.sender.appId) {
@@ -18497,16 +18499,7 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
     }
     let click = decoded
-    if (cards.verifiesActor && decoded.actor && decoded.actor.isBot === undefined) {
-      const conn = this.anyConnForIntegration(msg.integrationId) as
-        { getUserProfile?: (userId: string) => Promise<{ isBot?: boolean }> } | undefined
-      // No connection or a failed lookup leaves the clicker unverified, so treat them as a bot and refuse.
-      const profile =
-        conn && typeof conn.getUserProfile === 'function'
-          ? await conn.getUserProfile(decoded.actor.userId).catch(() => undefined)
-          : undefined
-      click = { ...decoded, actor: { ...decoded.actor, isBot: profile?.isBot !== false } }
-    }
+    if (cards.verifyActor) click = await cards.verifyActor(decoded, msg, this.anyConnForIntegration(msg.integrationId))
     const told = await this.answerCardClick(click, msg.agentId, msg.integrationId)
     return { msgId: msg.msgId, accepted: true, ...(told ? { response: cards.response(told) } : {}) }
   }
@@ -26789,147 +26782,6 @@ export class Daemon {
           .join(' ')}]`
     )
     await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
-  }
-
-  private mattermostSendIdentity(p: Pending, deliveryState: 'streaming' | 'final'): SendIdentity {
-    const base = this.agentPostIdentity(p.plan.agentId)
-    if (!p.reply.responseId) return base
-    const prepared = p.reply.finalRouting
-    const mentionedAgentIds = deliveryState === 'final' ? (prepared?.mentionedAgentIds ?? []) : []
-    return {
-      ...base,
-      response: {
-        responseId: p.reply.responseId,
-        deliveryState,
-        hopCount: p.plan.sourceHopCount ?? 0,
-        mentionedAgentIds
-      }
-    }
-  }
-
-  private mattermostServerAppIdForTurn(p: Pending): string | undefined {
-    const conn = p.egress ?? p.conn
-    const workspaceId = (conn as { workspaceId?(): string } | undefined)?.workspaceId?.()
-    if (workspaceId) return workspaceId
-    if (!p.plan.integrationId) return undefined
-    const boundConn = this.mattermostConnByIntegration.get(p.plan.integrationId)
-    if (boundConn) return boundConn.workspaceId()
-    const int = this.agents
-      .get(p.plan.agentId)
-      ?.integrations.find((item) => item.id === p.plan.integrationId && item.platform === 'mattermost')
-    const cfg = int ? platformIntegrationConfig('mattermost', int) : undefined
-    return cfg?.serverUrl ? mattermostExternalAppId(cfg.serverUrl) : undefined
-  }
-
-  private mattermostMentionHandles(entry: AgentMentionIdentity, turnAppId?: string): string[] {
-    const handles: string[] = []
-    const pushHandle = (raw?: string) => {
-      const handle = raw?.trim().replace(/^@+/, '').trim()
-      if (handle && !handles.includes(handle)) handles.push(handle)
-    }
-    pushHandle(entry.botUsername)
-    const entryIntegrationId = (entry as { integrationId?: string }).integrationId
-    for (const agent of this.agents.values()) {
-      for (const int of agent.integrations) {
-        if (int.platform !== 'mattermost') continue
-        const conn = this.mattermostConnByIntegration.get(int.id)
-        const cfg = platformIntegrationConfig('mattermost', int)
-        const intAppId = conn?.workspaceId() ?? (cfg?.serverUrl ? mattermostExternalAppId(cfg.serverUrl) : undefined)
-        if (turnAppId && intAppId && intAppId !== turnAppId) continue
-        const intBotUserId = conn?.botUserId || this.botUserIds[int.id] || configuredBotSelfId(int)
-        const matchesEntry =
-          (entryIntegrationId !== undefined && int.id === entryIntegrationId) ||
-          (entry.botUserId !== undefined && intBotUserId === entry.botUserId) ||
-          agent.id === entry.agentId
-        if (!matchesEntry) continue
-        pushHandle(conn?.botUsername?.trim() || cfg?.botUsername?.trim())
-      }
-    }
-    pushHandle(entry.name)
-    return handles
-  }
-
-  private resolveMattermostRouting(
-    p: Pending,
-    directory: readonly AgentMentionIdentity[]
-  ): { mentionedAgentIds: string[]; addressedAnyone: boolean } {
-    const turnAppId = this.mattermostServerAppIdForTurn(p)
-    const expandedDir: AgentMentionIdentity[] = []
-    for (const entry of directory) {
-      const handles = this.mattermostMentionHandles(entry, turnAppId)
-      if (handles.length === 0) {
-        expandedDir.push(entry)
-        continue
-      }
-      for (const handle of handles) {
-        expandedDir.push({ ...entry, botUsername: handle })
-      }
-    }
-    const mentionedAgentIds = resolveMattermostMentionedAgents(p.reply.text, expandedDir).filter(
-      (id) => id !== p.plan.agentId
-    )
-    return {
-      mentionedAgentIds,
-      addressedAnyone: mattermostTextAddressesAnyone(p.reply.text)
-    }
-  }
-
-  private prepareMattermostResponseClosure(p: Pending): void {
-    const conn = p.egress ?? p.conn
-    if (!conn || !p.reply.responseId) return
-    const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
-    const directory = orgId ? this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel) : []
-    const hasPeers = directory.some((entry) => entry.agentId !== p.plan.agentId)
-    const ownEntry = directory.find((entry) => entry.agentId === p.plan.agentId)
-    const ownInt = p.plan.integrationId
-      ? this.agents.get(p.plan.agentId)?.integrations.find((i) => i.id === p.plan.integrationId)
-      : undefined
-    const ownBotUserId =
-      (p.plan.integrationId ? this.mattermostConnByIntegration.get(p.plan.integrationId)?.botUserId : undefined) ||
-      (p.plan.integrationId ? this.botUserIds[p.plan.integrationId] : undefined) ||
-      (ownInt ? configuredBotSelfId(ownInt) : undefined) ||
-      ownEntry?.botUserId
-    const peerSharesBot = Boolean(
-      ownBotUserId && directory.some((entry) => entry.agentId !== p.plan.agentId && entry.botUserId === ownBotUserId)
-    )
-    const { mentionedAgentIds, addressedAnyone } = this.resolveMattermostRouting(p, directory)
-    p.reply.finalRouting = {
-      mentionedAgentIds,
-      addressedAnyone,
-      hasPeers,
-      peerSharesBot
-    }
-  }
-
-  private async closeMattermostResponse(p: Pending): Promise<void> {
-    const conn = (p.egress ?? p.conn) as unknown as MattermostConnection | undefined
-    if (!conn || !p.reply.responseId) return
-    if (p.reply.finalStamped !== undefined && p.reply.finalStamped === p.reply.lastResponse?.ts) return
-    const prepared = p.reply.finalRouting
-    if (prepared && !prepared.hasPeers) return
-    const body = p.reply.lastResponse
-    if (!body) return
-    const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
-    const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel) : []
-    const fallback = prepared ? undefined : this.resolveMattermostRouting(p, mentionDir)
-    const recipients = prepared?.mentionedAgentIds ?? fallback!.mentionedAgentIds
-    const addressedAnyone = prepared?.addressedAnyone ?? fallback!.addressedAnyone
-    p.reply.closedRouting = { mentionedAgentIds: recipients, addressedAnyone }
-    if (typeof conn.patchPost !== 'function') return
-    await conn
-      .patchPost(body.ts, body.text, {
-        identity: {
-          ...this.agentPostIdentity(p.plan.agentId),
-          response: {
-            responseId: p.reply.responseId,
-            deliveryState: 'final',
-            hopCount: p.plan.sourceHopCount ?? 0,
-            mentionedAgentIds: recipients,
-            ...(addressedAnyone ? { addressedAnyone: true } : {})
-          }
-        }
-      })
-      .catch((err) => this.log.debug(`mattermost: closeResponse patch failed (${formatErr(err)})`))
   }
 
   /** Slack's turn output lives in its platform module (§7.3) — and doubles as the

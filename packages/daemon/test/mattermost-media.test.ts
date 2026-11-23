@@ -267,6 +267,16 @@ describe('Mattermost media download & 2-step upload', () => {
       }).ok
     ).toBe(true)
 
+    // An entry with a port admits only that port, for an address and for a hostname alike; a bare host admits every port.
+    const k8s = (allowed: string) => ({ AGENTCONNECT_SUPERVISOR: 'k8s', MATTERMOST_ALLOWED_HOSTS: allowed })
+    expect(validateMattermostServerUrl('http://10.0.0.5:8065', k8s('10.0.0.5:8065')).ok).toBe(true)
+    expect(validateMattermostServerUrl('http://10.0.0.5:9200', k8s('10.0.0.5:8065')).ok).toBe(false)
+    expect(validateMattermostServerUrl('https://[fd00::7]:8443', k8s('[fd00::7]:8443')).ok).toBe(true)
+    expect(validateMattermostServerUrl('https://[fd00::7]', k8s('[fd00::7]:8443')).ok).toBe(false)
+    expect(validateMattermostServerUrl('https://mm.internal', k8s('mm.internal:443')).ok).toBe(true)
+    expect(validateMattermostServerUrl('http://mm.internal:9200', k8s('mm.internal:443')).ok).toBe(false)
+    expect(validateMattermostServerUrl('http://mm.internal:9200', k8s('mm.internal:443,mm.internal')).ok).toBe(true)
+
     const resolvePrivate = ((_host: string, _opts: unknown, cb: (e: null, a: LookupAddress[]) => void) =>
       cb(null, [{ address: '10.0.0.5', family: 4 }])) as unknown as typeof import('node:dns').lookup
     const ask = (host: string) =>

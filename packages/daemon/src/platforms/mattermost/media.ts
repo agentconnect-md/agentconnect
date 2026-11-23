@@ -158,20 +158,36 @@ export function allowMattermostPrivateNetwork(env: NodeJS.ProcessEnv = process.e
   return env.AGENTCONNECT_SUPERVISOR !== 'k8s'
 }
 
-/** Allowed intranet hostnames when `allowMattermostPrivateNetwork()` is false. */
+interface AllowedHost {
+  host: string
+  port?: string
+}
+
+/** Allowlist entries for when private networks are off: a bare host covers every port, `host:port` or `[v6]:port` only that one. */
+function mattermostAllowedEntries(env: NodeJS.ProcessEnv = process.env): AllowedHost[] {
+  return [env.MATTERMOST_ALLOWED_HOSTS, env.AGENTCONNECT_INTERNAL_ALLOWED_HOSTS]
+    .filter(Boolean)
+    .join(',')
+    .split(',')
+    .map((raw) => raw.trim().toLowerCase())
+    .filter(Boolean)
+    .map((entry) => {
+      const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(entry)
+      if (bracketed) return { host: bracketed[1]!, ...(bracketed[2] ? { port: bracketed[2] } : {}) }
+      const withPort = isIP(entry) === 0 ? /^(.+):(\d+)$/.exec(entry) : null
+      return withPort ? { host: withPort[1]!, port: withPort[2]! } : { host: entry }
+    })
+}
+
+/** Allowed intranet hostnames when `allowMattermostPrivateNetwork()` is false, whatever port each entry names. */
 export function mattermostAllowedHosts(env: NodeJS.ProcessEnv = process.env): Set<string> {
-  const combined = [env.MATTERMOST_ALLOWED_HOSTS, env.AGENTCONNECT_INTERNAL_ALLOWED_HOSTS].filter(Boolean).join(',')
-  return new Set(
-    combined
-      .split(',')
-      .map((h) =>
-        h
-          .trim()
-          .toLowerCase()
-          .replace(/^\[|\]$/g, '')
-      )
-      .filter(Boolean)
-  )
+  return new Set(mattermostAllowedEntries(env).map((entry) => entry.host))
+}
+
+/** Whether the allowlist admits this host on this port; a host named only with other ports is not admitted. */
+function mattermostPortAllowed(host: string, port: string, env: NodeJS.ProcessEnv): boolean {
+  const named = mattermostAllowedEntries(env).filter((entry) => entry.host === host)
+  return named.some((entry) => entry.port === undefined || entry.port === port)
 }
 
 /**
@@ -210,15 +226,23 @@ export function validateMattermostServerUrl(
     return { ok: false, reason: 'Mattermost serverUrl must include a hostname' }
   }
   const host = url.hostname.replace(/^\[|\]$/g, '')
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
   if (isIP(host) !== 0) {
     if (isLinkLocalOrUnspecifiedAddress(host)) {
       return { ok: false, reason: 'Mattermost serverUrl address is blocked (link-local or unspecified)' }
     }
-    if (!allowMattermostPrivateNetwork(env) && !mattermostAllowedHosts(env).has(host.toLowerCase())) {
+    if (!allowMattermostPrivateNetwork(env) && !mattermostPortAllowed(host.toLowerCase(), port, env)) {
       if (isBlockedPrivateAddress(host)) {
         return { ok: false, reason: 'Mattermost serverUrl private address is blocked unless allowlisted' }
       }
     }
+  } else if (
+    !allowMattermostPrivateNetwork(env) &&
+    mattermostAllowedHosts(env).has(host.toLowerCase()) &&
+    !mattermostPortAllowed(host.toLowerCase(), port, env)
+  ) {
+    // The DNS check sees only the hostname, so a host allowlisted for particular ports is held to them here.
+    return { ok: false, reason: 'Mattermost serverUrl port is not allowlisted for this host' }
   }
   const path = url.pathname.replace(/\/+$/, '')
   return { ok: true, serverUrl: `${url.origin}${path}` }
