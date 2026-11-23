@@ -1855,44 +1855,44 @@ describe('Mattermost catch-up replay, retry, clock skew, and forged response-fin
     expect(delivered[0]!.msgId).toBe(`mattermost:${ch.id}:${missed.id}`)
   })
 
-  it('skips channels the fresh listing shows were quiet since long before the watermark', async () => {
+  it('replays a response finalized by an edit during the outage in a channel with no new post', async () => {
     const { server, conn, messages } = setup({ botUsername: 'acbot' })
-    const alice = server.addUser({ id: fakeMmId('alice', 35), username: 'alice', is_bot: false })
+    const peer = server.addUser({ id: fakeMmId('peer', 35), username: 'peerbot', is_bot: true })
     const startedAt = Date.now()
-    const quiet = server.addChannel(
-      { id: fakeMmId('quietch', 1), type: 'O', name: 'quiet', last_post_at: startedAt - 3_600_000 },
-      [server.botUser.id, alice.id]
+    const ch = server.addChannel(
+      { id: fakeMmId('finalch', 1), type: 'O', name: 'long-run', last_post_at: startedAt - 3_600_000 },
+      [server.botUser.id, peer.id]
     )
-    const recent = server.addChannel(
-      { id: fakeMmId('quietch', 2), type: 'O', name: 'recent', last_post_at: startedAt - 60_000 },
-      [server.botUser.id, alice.id]
-    )
-    const active = server.addChannel(
-      { id: fakeMmId('quietch', 3), type: 'O', name: 'active', last_post_at: startedAt - 3_600_000 },
-      [server.botUser.id, alice.id]
-    )
+    // The response started streaming an hour before the outage; an edit does not move the channel's last_post_at.
+    const response = server.addPost({
+      channel_id: ch.id,
+      user_id: peer.id,
+      message: 'working...',
+      create_at: startedAt - 3_600_000,
+      update_at: startedAt - 3_600_000,
+      props: { from_bot: 'true' }
+    })
     await conn.start()
 
-    const missed = server.addPost({
-      channel_id: active.id,
-      user_id: alice.id,
-      message: '@acbot sent during the outage',
-      create_at: Date.now() + 2_000
-    })
-    const reqBefore = server.requests.length
+    response.message = 'All clear now'
+    response.update_at = Date.now() + 2_000
+    response.props = {
+      from_bot: 'true',
+      agentconnect_thread_event: {
+        author_agent_id: 'agent-peer',
+        response_id: 'resp-long',
+        delivery_state: 'final',
+        hop_count: 1,
+        mentioned_agent_ids: ['agent-1'],
+        addressed_anyone: true
+      }
+    }
+    expect(server.channels.get(ch.id)!.last_post_at).toBe(startedAt - 3_600_000)
+
     await conn.catchUpAfterReconnect()
     await vi.waitFor(() => expect(messages).toHaveLength(1))
-    expect(messages[0]!.msgId).toBe(`mattermost:${active.id}:${missed.id}`)
-
-    const fetched = new Set(
-      server.requests
-        .slice(reqBefore)
-        .map((r) => /^\/api\/v4\/channels\/([^/]+)\/posts/.exec(r.path)?.[1])
-        .filter((id): id is string => Boolean(id))
-    )
-    // An edit can finalize a response without moving last_post_at, so a channel inside the margin is still fetched.
-    expect(fetched).toEqual(new Set([active.id, recent.id]))
-    expect(fetched.has(quiet.id)).toBe(false)
+    expect(messages[0]!.msgId).toContain(response.id)
+    expect(messages[0]!.ingressEventTag).toBe(MATTERMOST_RESPONSE_FINAL_EVENT_TAG)
   })
 
   it('recovers outage posts when the daemon clock runs ahead of the server', async () => {

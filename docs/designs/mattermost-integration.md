@@ -220,11 +220,9 @@ at-least-once within the limits listed after them, not a guarantee against every
 2. **Full sweep of all non-deleted joined channels:** `catchUpOnce()` calls unpaginated
    `GET /api/v4/users/me/channels?include_deleted=false`, deduplicates by channel ID, drops deleted
    channels (`delete_at` truthy), and sorts **every** non-deleted channel (`O`, `P`, `G`, `D`) in
-   `last_post_at ?? update_at` descending order (no channel count truncation). A channel whose
-   fresh `last_post_at` is more than `CATCH_UP_QUIET_MARGIN_MS = 10 min` older than its `since` is
-   marked complete without a request, so a reconnect costs requests in proportion to the channels
-   that were active, not the channels joined. The margin exists because an edit that finalizes a
-   response does not move `last_post_at`. If `getMyChannels`
+   `last_post_at ?? update_at` descending order (no channel count truncation). Every channel is
+   queried, quiet ones included: an edit that finalizes a response does not move `last_post_at`,
+   so that field cannot show a channel has nothing to recover. If `getMyChannels`
    fails (`channelsListComplete = false`), it merges cached `this.channels` with any non-deleted
    channel IDs present in `recoveryWatermarks` and resolves missing `channel.type` metadata via
    `getChannelCached(ch.id)` before dispatching posts.
@@ -275,8 +273,8 @@ post, except the first:
   retry replays whatever has left `seen`.
 - A live post that arrives after reconnect is processed ahead of older outage posts in the same
   channel; the two share a per-channel chain, so neither is duplicated.
-- A response that started streaming more than `CATCH_UP_QUIET_MARGIN_MS` before the outage, in
-  a channel with no other post since, and was finalized during it, is not replayed to peer agents.
+- Every reconnect issues at least one `since` request per joined channel, so its cost grows with
+  the channels joined, not the channels that were active.
 - A channel that fails permanently (`403`/`404`) keeps the steady retry alive until the next
   disconnect.
 
