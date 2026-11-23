@@ -172,7 +172,7 @@ export default function DaemonDetailView() {
     />
   )
   const runtimeModeControl = <StrategyTabs tabs={runtimeTabs} value={runtimeStrategy} onChange={setRuntimeTab} />
-  const seen = daemon.uptime === '—' ? t('neverConnected') : t('lastSeenAgo', { value: daemon.uptime })
+  const seen = daemon.lastSeenAt == null ? t('neverConnected') : t('lastSeenAgo', { value: daemon.uptime })
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
   // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
   // is serving names the set, not the machine, so a full 8-slot member would read `0 / 8` — and

@@ -62,6 +62,8 @@ function daemon(over: Partial<DaemonRow>): DaemonRow {
     activeSessions: '0',
     conns: '4',
     uptime: '1m',
+    lastSeenAt: '2026-01-01T00:00:00.000Z',
+    createdAtIso: '2026-01-01T00:00:00.000Z',
     createdBy: '',
     createdAt: '',
     lastModifiedBy: '',

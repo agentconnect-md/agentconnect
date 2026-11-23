@@ -2632,6 +2632,8 @@ export function daemonFromDto(
     hostedSessions: d.hostedSessions ?? null,
     conns: String(d.maxAgents),
     uptime: fmtSeen(d.lastSeenAt),
+    lastSeenAt: d.lastSeenAt,
+    createdAtIso: d.createdAt,
     createdBy: d.createdBy ?? '', // creator userId; creatorLabel resolves it to a name / "You" at render
     createdAt: fmtDate(d.createdAt),
     lastModifiedBy: d.lastModifiedBy ?? '', // editor userId; creatorLabel resolves it to a name / "You" at render

@@ -1792,7 +1792,18 @@
       "daemon": {
         "label": "Connect a daemon",
         "description": "Run one command on the machine where your agents will run. It stays connected and executes agents locally over ACP.",
-        "action": "Add a daemon"
+        "action": "Add a daemon",
+        "waiting": "Waiting for the daemon to connect. If you haven't run the command on the host yet, get it again.",
+        "notConnected": "Your daemon was created but has never connected. Usually the command wasn't run on the host, the process stopped, or the host can't reach this console. Get a fresh command and run it there.",
+        "reconnectAction": "Get the connect command"
+      },
+      "runtime": {
+        "label": "Get a runtime ready",
+        "description": "Agents run on a coding runtime such as Claude Code or Codex, installed and signed in on the daemon's host.",
+        "action": "Check runtimes",
+        "checking": "Your daemon hasn't confirmed a working runtime yet. Its check may still be running; open the daemon to see each runtime.",
+        "login": "A runtime on your daemon needs a login. Run the login command on the daemon's host.",
+        "loginAction": "Show login command"
       },
       "slack": {
         "label": "Connect Slack",
@@ -4624,6 +4635,12 @@
     "rename": "Rename",
     "restart": "Restart",
     "reconnect": "Reconnect",
+    "runtimeBlocked": {
+      "login": "Login required",
+      "loginHint": "No runtime on this daemon can run agents until you sign in on its host. Show the login command.",
+      "missing": "No runtime",
+      "missingHint": "No supported runtime is installed on this daemon's host, so it cannot run agents."
+    },
     "reconnectModal": {
       "title": "Reconnect daemon",
       "runOnHost": "Run this command on {daemon}’s host to reconnect it. Existing agents are preserved.",
