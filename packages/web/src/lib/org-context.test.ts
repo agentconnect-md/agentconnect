@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { resolveOrgTarget, switchOrgTarget } from './org-context'
+import { mutate } from 'swr'
+import { cacheCreatedOrg, resolveOrgTarget, switchOrgTarget } from './org-context'
 import type { OrgDto } from './api'
 
 const org = (id: string, slug: string) => ({ id, slug }) as OrgDto
@@ -62,5 +63,15 @@ describe('switchOrgTarget', () => {
 
   it('treats a brand-new org as a switch — nothing is active from its point of view', () => {
     expect(switchOrgTarget(other, undefined, '/acme/sessions/s_123', 'acme')).toBe('/other/home')
+  })
+})
+
+describe('cacheCreatedOrg', () => {
+  it('adds a new org to the cached list once, keeping the ones already there', async () => {
+    const existing = org('existing', 'existing')
+    const created = org('created', 'created')
+    await mutate('console:orgs', [existing], { revalidate: false })
+    expect(await cacheCreatedOrg(created)).toEqual([existing, created])
+    expect(await cacheCreatedOrg(created)).toEqual([existing, created])
   })
 })

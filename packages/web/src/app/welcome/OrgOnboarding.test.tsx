@@ -16,7 +16,8 @@ const mocks = vi.hoisted(() => {
     user: null as unknown,
     access: {} as Record<string, unknown>,
     createOrg: vi.fn(),
-    logout: vi.fn()
+    logout: vi.fn(),
+    cacheCreatedOrg: vi.fn()
   }
 })
 
@@ -31,7 +32,10 @@ vi.mock('@/lib/api', () => ({
   getMyAccess: () => Promise.resolve(mocks.access),
   createOrg: mocks.createOrg
 }))
-vi.mock('@/lib/org-context', () => ({ orgUrlPrefix: () => 'console.example.test/' }))
+vi.mock('@/lib/org-context', () => ({
+  cacheCreatedOrg: mocks.cacheCreatedOrg,
+  orgUrlPrefix: () => 'console.example.test/'
+}))
 
 import OrgOnboarding from './OrgOnboarding'
 
@@ -60,6 +64,7 @@ const type = async (el: HTMLInputElement, value: string) => {
 beforeEach(() => {
   mocks.replace.mockReset()
   mocks.createOrg.mockReset()
+  mocks.cacheCreatedOrg.mockReset()
   mocks.authConfigured = true
   mocks.user = { sub: 'u1' }
   mocks.access = { waitlistMode: false, status: 'active', activated: true, orgCount: 0, email: null }
@@ -106,6 +111,9 @@ describe('org onboarding — who belongs here', () => {
 
     expect(mocks.createOrg).toHaveBeenCalledWith({ slug: 'acme', name: undefined })
     expect(mocks.replace).toHaveBeenCalledWith('/acme/onboarding')
+    // The console must know the org before it resolves the wizard URL, or it falls back to the previous one.
+    expect(mocks.cacheCreatedOrg).toHaveBeenCalledWith({ id: 'org_1', slug: 'acme' })
+    expect(mocks.cacheCreatedOrg.mock.invocationCallOrder[0]).toBeLessThan(mocks.replace.mock.invocationCallOrder[0]!)
   })
 
   it('?new=1 lets someone who already has orgs create another instead of bouncing', async () => {
