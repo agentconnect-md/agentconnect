@@ -218,7 +218,8 @@ import {
   parseSessionFileName,
   sessionFileName,
   SessionFileArea,
-  SESSION_FILES_FEATURE
+  SESSION_FILES_FEATURE,
+  parseOrgRefusal
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, realpathSync } from 'node:fs'
@@ -21094,9 +21095,10 @@ export class Daemon {
   ): Promise<void> {
     // Unwrap ACP error data so quota and authentication failures retain their actionable cause.
     const reason = this.maskAgentSecrets(ctx.agentId, turnFailureReason(err))
-    // A refused new session is not the agent failing: its notice is the refusal alone.
+    // A refused new session or organization is not the agent failing: its notice is the refusal alone.
     const admissionRefused = err instanceof SessionAdmissionRefusedError
-    const plainNotice = admissionRefused ? `⚠️ ${reason}` : `⚠️ Agent failed to respond: ${reason}`
+    const plainNotice =
+      admissionRefused || parseOrgRefusal(reason) ? `⚠️ ${reason}` : `⚠️ Agent failed to respond: ${reason}`
     if (ctx.webchat) {
       ctx.webchat.doneSent = true
       ctx.webchat.sink.done({
@@ -22789,7 +22791,11 @@ export class Daemon {
           if (!this.retainsInboxRow(entry, true)) await this.removeInbox(entry)
           if (isSubsessionCoordinate(sessionThreadOf(entry.msg))) await this.settleSubsessionTurn(entry, key, 'failed')
           else if (this.cfg.features.autoSessionMode) await this.settleThreadedTaskTurn(entry, key, 'failed')
-          await this.settleCoordinatorTurn(entry, key, 'failed', null, { replayed: this.retainsInboxRow(entry, true) })
+          // A refused organization's task would be refused alike, so its undecided messages fall back to none (§4.5).
+          const coordinatorEnded = parseOrgRefusal(turnFailureReason(err)) ? 'stopped' : 'failed'
+          await this.settleCoordinatorTurn(entry, key, coordinatorEnded, null, {
+            replayed: this.retainsInboxRow(entry, true)
+          })
           entry.reject(err)
           // A coordinator's queue holds separate people's messages, never follow-ups of the failed one: they still run (§4.3).
           if (isCoordinatorCoordinate(sessionThreadOf(entry.msg))) {
