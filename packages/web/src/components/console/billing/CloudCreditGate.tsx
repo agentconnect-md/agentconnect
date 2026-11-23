@@ -5,11 +5,12 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import { fetchBillingAccount } from '@/lib/billing-api'
 import { cloudCreditGate } from '@/lib/billing-banner'
+import { billingPathWithReturn } from '@/lib/billing-return'
 import { useConsoleData } from '@/lib/data-context'
 import { isPoolPlacementKind, type Agent } from '@/lib/data'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -24,6 +25,7 @@ export function CloudCreditGate({ agent, agentName }: { agent: Agent | undefined
   const { activeOrg, myRole, orgPath } = useOrgs()
   const { orgSetIds } = useConsoleData()
   const pathname = usePathname()
+  const search = useSearchParams().toString()
   const orgId = activeOrg?.id ?? null
   // Only managed Cloud runs on credit: a self-hosted cluster and an org's own group are someone's machines.
   const onCloud =
@@ -88,7 +90,8 @@ export function CloudCreditGate({ agent, agentName }: { agent: Agent | undefined
             className={
               gate === 'add-card' ? 'dsbtn sm dsbtn-secondary no-underline' : 'dsbtn sm dsbtn-primary no-underline'
             }
-            href={billingHref}
+            // Billing takes the reader back to this conversation once the credits land.
+            href={billingPathWithReturn(billingHref, search ? `${pathname}?${search}` : pathname)}
           >
             {t('addCredits')}
           </Link>

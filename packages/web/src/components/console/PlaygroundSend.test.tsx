@@ -932,6 +932,75 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  it('puts an unprocessed message back in the composer when its turn fails before any output', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+    act(() => setPgInput('s1', 'a second thought'))
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'done',
+          done: { turnId, agentId: 'agent-1', lastIndex: 0, error: 'Out of credits — this message was not processed.' }
+        })
+      })
+    })
+    act(runFrame)
+
+    expect(getPgInput('s1')).toBe('hello\n\na second thought')
+  })
+
+  it('leaves the composer alone when a turn fails after the agent answered', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'message', text: 'half an answer' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0, error: 'boom' } })
+      })
+    })
+    act(runFrame)
+
+    expect(getPgInput('s1')).toBe('')
+  })
+
+  it('never puts a conversation notice in the composer when its turn fails', async () => {
+    CapturingDeltaSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', CapturingDeltaSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgNotice('s1', 'agent-1', 'Approved: run the migration', 'c1')
+    })
+    const socket = CapturingDeltaSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+      socket.onmessage?.({ data: JSON.stringify({ type: 'ready' }) })
+    })
+    const { turnId } = JSON.parse(String(socket.send.mock.calls.at(-1)?.[0])) as { turnId: string }
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0, error: 'boom' } })
+      })
+    })
+
+    expect(getPgInput('s1')).toBe('')
+  })
+
   it('shows no failure for a turn a person cancelled, whose cancellation the transcript records', async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()

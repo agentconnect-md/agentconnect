@@ -27,6 +27,8 @@ export class AhpConversation {
   readonly notices: SessionStep[] = []
   // Turn ids this tab sent, so their prompts render as the viewer's own.
   readonly sent = new Set<string>()
+  // Composer turns in flight, so one that ends with nothing but an error returns its text to the composer.
+  private readonly composerTurns = new Map<string, QueuedTurn>()
   queue: QueuedTurn[] = []
   pending = false
   conversationId?: string
@@ -131,6 +133,7 @@ export class AhpConversation {
             peer.subscribe((view) => {
               if (this.closed) return
               if (view.error) this.warn(new Error(view.error), true)
+              this.refillUnprocessed()
               this.changed()
               if (!view.connected && this.attached && !this.connecting) this.reconnect()
             })
@@ -295,6 +298,7 @@ export class AhpConversation {
         if (peer.remainingActionBytes(action) < 0) throw new AhpMessageTooLargeError()
       dispatched = true
       this.sent.add(turn.queueId)
+      if (turn.composer) this.composerTurns.set(turn.queueId, turn)
       await Promise.all(deliveries.map(({ peer, action }) => peer.dispatch(action)))
     } catch (error) {
       if (this.closed) return
@@ -310,6 +314,17 @@ export class AhpConversation {
       this.pending = false
       this.changed()
       this.refresh()
+    }
+  }
+  private refillUnprocessed(): void {
+    for (const [turnId, turn] of this.composerTurns) {
+      const chats = [...this.peers.values()].flatMap((peer) => (peer.snapshot.chat ? [peer.snapshot.chat] : []))
+      if (chats.some((chat) => chat.activeTurn?.id === turnId)) continue
+      const ended = chats.flatMap((chat) => chat.turns.filter((t) => t.id === turnId))
+      if (!ended.length) continue
+      this.composerTurns.delete(turnId)
+      const parts = ended.flatMap((t) => t.responseParts)
+      if (parts.length && parts.every((part) => part.kind === 'error')) this.onRefused(turn)
     }
   }
   private async steer(peer: AhpAttachment, turn: QueuedTurn): Promise<void> {

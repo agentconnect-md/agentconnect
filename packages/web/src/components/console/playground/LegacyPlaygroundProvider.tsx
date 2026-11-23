@@ -352,6 +352,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // where the relay applied the all-participants default) create its stream
   // lane lazily instead of dropping the reply.
   const pendingTurnIds = useRef<Map<string, string>>(new Map())
+  // A composer send's text by `${id}\n${turnId}`, put back in the composer when its turn fails without any output.
+  const composerTurns = useRef<Map<string, string>>(new Map())
+  // Turns (`${id}\n${turnId}`) that streamed anything, so a failure after real work does not refill the composer.
+  const answeredTurns = useRef<Set<string>>(new Set())
   // Messages sent INTO a running turn (#1847), per session id → turnId. Their ack and terminal
   // `done` settle here instead of opening a lane: the running turn's own lane carries the reply.
   const steerTurns = useRef<Map<string, Map<string, PendingSteer>>>(new Map())
@@ -1223,6 +1227,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         if (output.status) applyStatus(id, output.status, agentId)
         const event = output.event
         if (event) {
+          if (event.kind !== 'session_info' && event.kind !== 'notice')
+            answeredTurns.current.add(`${id}\n${output.turnId}`)
           if (event.kind === 'message' || event.kind === 'thinking') {
             deltaBuffer.enqueue(cursorKey, id, output.turnId, event)
           } else {
@@ -1288,7 +1294,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         const name = participantName(id, agentId)
         const thread = streamThreads.current.get(`${id}\n${result.done.turnId}`)
         // A person's cancel is no failure: the daemon records it in the transcript ("🛑 Turn cancelled.").
-        if (result.done.error !== 'cancel')
+        if (result.done.error !== 'cancel') {
           pushStep(id, {
             kind: 'done',
             turnId: result.done.turnId,
@@ -1297,11 +1303,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             ...(thread ? { thread } : {}),
             text: `⚠️ ${result.done.error}`
           })
+          // A turn that failed before any output was never processed: its text returns to the composer for a resend.
+          const key = `${id}\n${result.done.turnId}`
+          const sent = composerTurns.current.get(key)
+          if (sent !== undefined && !answeredTurns.current.has(key)) {
+            const current = pgDrafts.current[id] ?? ''
+            setPgInput(id, current.trim() ? `${sent}\n\n${current}` : sent)
+          }
+        }
       } else {
         // A lane can end having streamed nothing at all — a silent AC_NO_RESPONSE decline holds
         // every chunk back — so a clean end is the last chance to retire the wait it announced.
         retireWaitNotice(id, agentId, result.done.turnId)
       }
+      composerTurns.current.delete(`${id}\n${result.done.turnId}`)
+      answeredTurns.current.delete(`${id}\n${result.done.turnId}`)
       // The turn stays busy until every targeted participant's lane finished — unless a steer the
       // daemon already admitted as its own turn was waiting for exactly this lane to retire.
       if (lanesOf(id).length === 0 && !openAcceptedSteerLane(id)) setBusy(id, false)
@@ -1319,6 +1335,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       pushStep,
       retireWaitNotice,
       setBusy,
+      setPgInput,
       settleLiveElicits
     ]
   )
@@ -2161,9 +2178,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
       commandPick?: { agentId: string; name: string },
       files?: WebchatFileAttachment[],
-      thread?: string
+      thread?: string,
+      composer?: boolean
     ): void => {
       const requestedTurnId = randomUuid()
+      if (composer) composerTurns.current.set(`${id}\n${requestedTurnId}`, text)
       // The files' marker is what the reloaded transcript row shows, so the optimistic step reads the same.
       const marker = filesMarker(files ?? [])
       const shown = marker ? (text ? `${text}\n${marker}` : marker) : text
@@ -2459,7 +2478,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       knownParticipants?: Array<{ agentId: string; name: string; primary?: boolean }>,
       commandPick?: { agentId: string; name: string },
       files?: WebchatFileAttachment[],
-      thread?: string
+      thread?: string,
+      composer?: boolean
     ) => {
       // Queue while a turn streams (Claude Code-style) — and also while older
       // queued messages are still waiting for the dispatcher, so a send landing
@@ -2494,13 +2514,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(commandPick ? { commandPick } : {}),
           ...(conversationId ? { conversationId } : {}),
           ...(knownParticipants ? { participants: knownParticipants } : {}),
-          ...(thread ? { thread } : {})
+          ...(thread ? { thread } : {}),
+          ...(composer ? { composer } : {})
         }
         pgQueueRef.current[id] = [...(pgQueueRef.current[id] ?? NO_QUEUE), queued]
         setPgQueueBy((cur) => ({ ...cur, [id]: [...(cur[id] ?? NO_QUEUE), queued] }))
         return true
       }
-      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files, thread)
+      sendTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files, thread, composer)
       return true
     },
     [sendSteer, sendTurn]
@@ -2528,7 +2549,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setPgImage(id)
       setPgFiles(id, () => NO_FILES)
       setSuggestion(id)
-      return submitTurn(id, agentForId, text, image, conversationId, knownParticipants, commandPick, files)
+      return submitTurn(
+        id,
+        agentForId,
+        text,
+        image,
+        conversationId,
+        knownParticipants,
+        commandPick,
+        files,
+        undefined,
+        true
+      )
     },
     [pgImageBy, pgFilesBy, setPgFiles, setPgImage, setPgInput, setSuggestion, submitTurn]
   )
@@ -2598,7 +2630,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         next.participants,
         next.commandPick,
         next.files,
-        next.thread
+        next.thread,
+        next.composer
       )
     }
   }, [pgQueueBy, pgBusyBy, sendTurn])

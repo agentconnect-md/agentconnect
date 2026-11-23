@@ -191,6 +191,8 @@ export interface QueuedTurn {
   seq?: number
   /** The thread it is sent in, a root's postId. */
   thread?: string
+  /** Typed in the conversation's composer, so a turn that fails unprocessed puts it back there. */
+  composer?: boolean
 }
 
 export type WebchatRuntimeConfig = {

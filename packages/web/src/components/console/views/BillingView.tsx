@@ -8,6 +8,7 @@
 // itself is never treated as proof of payment.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import useSWR, { useSWRConfig } from 'swr'
@@ -49,6 +50,7 @@ import { byAmountDesc, scaleAmount, sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
 import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
+import { billingPathWithReturn, billingReturnTarget } from '@/lib/billing-return'
 import { AgentIconView, LoadingState, MarkSlot, ModelMark, modelProviderSlug } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AddCardDialog, CardReturnBanner, PaymentMethodCard } from '@/components/console/billing/CardBinding'
@@ -522,21 +524,9 @@ const BALANCE_TONE = {
   blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#fff' }
 } as const
 
-function BalanceBannerCard({
-  acct,
-  hasHistory,
-  canPay,
-  onAddCredits
-}: {
-  acct: BillingAccount
-  hasHistory: boolean | null
-  canPay: boolean
-  onAddCredits: () => void
-}) {
+function BalanceBannerCard({ acct, hasHistory }: { acct: BillingAccount; hasHistory: boolean | null }) {
   const rawT = useTranslations('Billing.banners')
-  // `banner.titleKey`/`textKey`/`ctaKey` are plain strings (the point of returning keys
-  // instead of text, per `balanceBanner`'s doc comment) — narrower than the translator's
-  // literal-union key type, so resolve them through an untyped call.
+  // The banner's keys are plain strings, narrower than the translator's literal-union key type, so resolve them untyped.
   const t = rawT as unknown as (key: string, values?: Record<string, unknown>) => string
   const banner = balanceBanner(acct, { hasHistory })
   if (!banner) return null
@@ -553,12 +543,6 @@ function BalanceBannerCard({
         <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
           {t(banner.textKey, banner.textValues)}
         </div>
-        {/* Only owners move money — the service enforces it; this just doesn't offer a refused form. */}
-        {banner.ctaKey && canPay && (
-          <Button size="sm" className="mt-2.5" onClick={onAddCredits}>
-            {t(banner.ctaKey)}
-          </Button>
-        )}
       </div>
     </div>
   )
@@ -1141,7 +1125,7 @@ function MembersDontPayCard() {
 
 export default function BillingView() {
   const t = useTranslations('Billing')
-  const { activeOrg, myRole, loading: orgLoading } = useOrgs()
+  const { activeOrg, myRole, loading: orgLoading, orgPath } = useOrgs()
   // The viewer's OWN roster, for the name and icon of an agent this row may name. Read on the
   // console data provider's own SWR key so it shares that cache instead of fetching twice.
   //
@@ -1162,6 +1146,9 @@ export default function BillingView() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  // The page that sent the reader here to add credits: every hosted page comes back carrying it, and a landed purchase returns there.
+  const returnTo = billingReturnTarget(searchParams.get('return'), orgPath(''))
+  const returnPath = billingPathWithReturn(pathname, returnTo)
   // Hooks run before any early return, so the flag has to gate the KEYS, not just
   // the render: a null key is what stops SWR from fetching. Checking it only below
   // would let a deep link on a console without billing still call the service —
@@ -1236,8 +1223,11 @@ export default function BillingView() {
     if (result === 'success' && purchaseId) setCheckout({ phase: 'confirming', purchaseId, attempt: 1 })
     else if (result === 'success' && changeId && plansOffered) setPlanDialog({ changeId })
     else if (result === 'cancel') setCheckout({ phase: 'canceled' })
-    router.replace(pathname)
-  }, [offered, plansOffered, searchParams, router, pathname])
+    router.replace(returnPath)
+  }, [offered, plansOffered, searchParams, router, returnPath])
+  useEffect(() => {
+    if (checkout?.phase === 'completed' && returnTo) router.push(returnTo)
+  }, [checkout?.phase, returnTo, router])
 
   // Poll until the service reports a terminal status. Each poll also makes the
   // service reconcile against Stripe directly, so a lost webhook delays nothing.
@@ -1420,6 +1410,15 @@ export default function BillingView() {
     <div className="wrap">
       <div className="mb-4 flex min-h-[34px] items-center gap-4">
         <p className="psub mt-0 flex-1">{t('description')}</p>
+        {returnTo && (
+          <Link
+            className="lnk inline-flex items-center gap-1.5 font-sans text-[13px] font-medium leading-normal"
+            href={returnTo}
+          >
+            <Icon name="arrow-left" size={14} />
+            {t('backToConversation')}
+          </Link>
+        )}
       </div>
 
       {cardReturn.state && (
@@ -1463,13 +1462,8 @@ export default function BillingView() {
           <MonthSettlingNote />
           <BalanceBannerCard
             acct={acct}
-            // The UNFILTERED read, like "last deduction" below: whether this account has ever
-            // moved money is a fact about the account, and reading it off the table's current
-            // side told a suspended org with usage and no top-ups that it had never been
-            // funded the moment someone pressed Top-ups.
+            // The unfiltered ledger read: whether the account ever moved money must not depend on the table's current tab.
             hasHistory={ledgerHistory(ledger.data)}
-            canPay={myRole === 'owner'}
-            onAddCredits={focusAddCredits}
           />
           {plansOffered && (
             <PlanBanners
@@ -1548,7 +1542,7 @@ export default function BillingView() {
                   sub={plan.subscription.data}
                   catalog={catalog}
                   start={planDialog}
-                  returnPath={pathname}
+                  returnPath={returnPath}
                   onClose={() => setPlanDialog(null)}
                   onChanged={() => {
                     void plan.subscription.mutate()
@@ -1559,7 +1553,7 @@ export default function BillingView() {
                 />
               )}
               {purchaseOpen && myRole === 'owner' && (
-                <AddCreditsDialog orgId={orgId} returnPath={pathname} onClose={() => setPurchaseOpen(false)} />
+                <AddCreditsDialog orgId={orgId} returnPath={returnPath} onClose={() => setPurchaseOpen(false)} />
               )}
             </div>
           ) : (
@@ -1591,7 +1585,7 @@ export default function BillingView() {
               </div>
               {/* Only owners move money (the service answers 403); members get no form it would refuse. */}
               {myRole === 'owner' ? (
-                <AddCreditsCard orgId={orgId} returnPath={pathname} />
+                <AddCreditsCard orgId={orgId} returnPath={returnPath} />
               ) : myRole ? (
                 <MembersDontPayCard />
               ) : null}
@@ -1609,7 +1603,7 @@ export default function BillingView() {
             <AddCardDialog
               orgId={orgId}
               orgName={activeOrg?.name ?? activeOrg?.slug ?? ''}
-              returnPath={pathname}
+              returnPath={returnPath}
               promoAvailable={acct.cardPromoAvailable === true}
               replacing={acct.card != null}
               onClose={() => setCardDialog(false)}

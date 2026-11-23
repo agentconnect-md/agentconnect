@@ -5213,6 +5213,7 @@
       "title": "Billing · AgentConnect"
     },
     "description": "Prepaid balance and credit history for this organization.",
+    "backToConversation": "Back to the conversation",
     "notOffered": {
       "title": "Billing applies to AgentConnect Cloud",
       "body": "This deployment is self-hosted, so billing doesn't apply. View usage and cost for your runtimes on the Analytics page."
@@ -5244,8 +5245,7 @@
       "unconfirmedTitle": "Confirming access status",
       "unconfirmedText": "A recent change to this organization's billing status is still propagating. This should resolve on its own shortly.",
       "settlingTitle": "{month} usage is still settling",
-      "settlingText": "Usage from the end of {month} can take up to an hour to post. Totals for {month} are final after 01:00 UTC.",
-      "addCredits": "Add credits"
+      "settlingText": "Usage from the end of {month} can take up to an hour to post. Totals for {month} are final after 01:00 UTC."
     },
     "checkout": {
       "confirmingTitle": "Confirming your payment",

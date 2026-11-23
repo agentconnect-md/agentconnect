@@ -32,12 +32,13 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ activeOrg: { id: 'org-1' }, myRole: 'owner', orgPath: (p: string) => p, loading: false })
+  useOrgs: () => ({ activeOrg: { id: 'org-1' }, myRole: 'owner', orgPath: (p: string) => `/acme${p}`, loading: false })
 }))
+const nav = vi.hoisted(() => ({ search: '', replace: vi.fn(), push: vi.fn() }))
 vi.mock('next/navigation', () => ({
   usePathname: () => '/acme/billing',
-  useRouter: () => ({ replace: vi.fn() }),
-  useSearchParams: () => new URLSearchParams('checkout=success&purchase=pur_1')
+  useRouter: () => ({ replace: nav.replace, push: nav.push }),
+  useSearchParams: () => new URLSearchParams(nav.search)
 }))
 vi.mock('@/lib/billing-api', async () => {
   const real = await vi.importActual<typeof import('@/lib/billing-api')>('@/lib/billing-api')
@@ -82,6 +83,9 @@ beforeEach(() => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'billing' }
   mocks.fetchPurchase.mockReset()
   mocks.fetchTransactions.mockClear()
+  nav.search = 'checkout=success&purchase=pur_1'
+  nav.replace.mockClear()
+  nav.push.mockClear()
 })
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -133,6 +137,28 @@ describe('checkout return: what settlement invalidates', () => {
     await tick(0)
     expect(host.innerHTML).toContain('$50.00 added')
     expect(unfiltered()).toBeGreaterThan(before)
+  })
+})
+
+describe('checkout return: the page that sent the reader', () => {
+  it('keeps the return target through the claim and goes back once the purchase lands', async () => {
+    nav.search = 'return=%2Facme%2Fsessions%2Fpg_agent-1_u1&checkout=success&purchase=pur_1'
+    mocks.fetchPurchase.mockResolvedValue(purchase('completed'))
+    await render()
+    expect(nav.replace).toHaveBeenCalledWith('/acme/billing?return=%2Facme%2Fsessions%2Fpg_agent-1_u1')
+    expect(host.querySelector('a[href="/acme/sessions/pg_agent-1_u1"]')).not.toBeNull()
+
+    await tick(0)
+    expect(nav.push).toHaveBeenCalledWith('/acme/sessions/pg_agent-1_u1')
+  })
+
+  it('ignores a return target outside the org and stays on Billing', async () => {
+    nav.search = 'return=https%3A%2F%2Fevil.example.test%2F&checkout=success&purchase=pur_1'
+    mocks.fetchPurchase.mockResolvedValue(purchase('completed'))
+    await render()
+    await tick(0)
+    expect(nav.replace).toHaveBeenCalledWith('/acme/billing')
+    expect(nav.push).not.toHaveBeenCalled()
   })
 })
 

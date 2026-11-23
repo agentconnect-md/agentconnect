@@ -188,6 +188,7 @@ import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
+import { moveComposerDraft, readComposerDraft, writeComposerDraft } from '@/lib/composer-draft'
 import { RootThreadFooter, TaskThreadFooter } from '@/components/console/ThreadFooter'
 import {
   firstWords,
@@ -354,6 +355,22 @@ function ComposerTextarea({
 }) {
   const draft = usePgDraft(sessionId)
   const { setPgInput, getPgSuggestion } = usePlayground()
+  // A full-page round trip (a hosted checkout) empties memory, so the draft is restored from this tab's storage once per session.
+  const restoredFor = useRef<string | null>(null)
+  const restoring = useRef(false)
+  useEffect(() => {
+    if (restoredFor.current === sessionId) return
+    restoredFor.current = sessionId
+    const stored = readComposerDraft(sessionId)
+    restoring.current = !!stored && !draft
+    if (restoring.current) setPgInput(sessionId, stored)
+  }, [sessionId, draft, setPgInput])
+  useEffect(() => {
+    // This render's empty draft predates the restore above, so it must not erase what is being restored.
+    if (restoring.current && !draft) return
+    restoring.current = false
+    if (restoredFor.current === sessionId) writeComposerDraft(sessionId, draft)
+  }, [sessionId, draft])
   // A phone has no Tab to take the runtime's predicted prompt, so it keeps the plain placeholder.
   const suggestion = useIsMobile() ? undefined : getPgSuggestion(sessionId)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -1341,7 +1358,11 @@ export default function SessionDetailView() {
       coordinator: opensCoordinator(reopenAgent, daemons, memberSets),
       prewarm: prewarmsOnOpen(reopenAgent, orgSetIds),
       openPlayground
-    }).then((next) => router.replace(orgPath(`/sessions/${next}`)))
+    }).then((next) => {
+      // The draft and a hosted page's return parameters (`?cardSetup=`) follow the page to the session it reopened as.
+      moveComposerDraft(id, next)
+      router.replace(`${orgPath(`/sessions/${next}`)}${window.location.search}`)
+    })
   }, [id, reopenAgent, activeOrg?.id, daemons, memberSets, orgSetIds, openPlayground, router, orgPath])
   const decisionCatalog = useOptionalDecisionsPrototype()
   const agentRuntime = runtimeSelections[session?.id ?? '']?.runtime || session?.runtime || owner?.runtime || ''
