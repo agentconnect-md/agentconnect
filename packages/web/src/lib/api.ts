@@ -5969,6 +5969,11 @@ export async function fetchMembers(orgId?: string): Promise<MemberDto[]> {
   return apiGet<MemberDto[]>(`${orgBase(orgId)}/members`)
 }
 
+// The org's service accounts in member shape, for naming one in a Selected audience.
+export async function fetchServiceAccountMembers(orgId?: string): Promise<MemberDto[]> {
+  return apiGet<MemberDto[]>(`${orgBase(orgId)}/members/service-accounts`)
+}
+
 // Change one member's role (PATCH /members/:id, owner-only). Multiple owners are
 // allowed; demoting the last owner is refused (409).
 export async function updateMemberRole(userId: string, role: MemberRole): Promise<MemberDto> {

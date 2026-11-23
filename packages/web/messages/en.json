@@ -100,6 +100,7 @@
       "noOtherMembers": "No other members to share with yet",
       "everyoneSelected": "Everyone is already selected",
       "noMembersMatch": "No members match “{query}”",
+      "serviceAccount": "Service account",
       "canAccess": "{members} can access this restricted resource.",
       "restrictedResource": "Selected members and organization owners can access this resource.",
       "agentsLabel": "Agents",

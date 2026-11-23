@@ -150,6 +150,13 @@ the submitted IDs with current organization members, deduplicates them, and
 rejects the write if the resulting audience is empty. A database CHECK
 constraint also prevents a persisted Selected row with an empty array.
 
+A service account is an organization member for this purpose: an audience may
+name one, so automation that manages a Selected resource can keep itself in
+the audience it sets. The Console lists service accounts beside members in the
+audience picker through `GET /members/service-accounts`, which any member may
+read; managing them stays owner-only. Lists of approvers, such as a managed
+computer's `allowedMembers`, still accept people only.
+
 After the schema change, run
 `pnpm --filter @agentconnect.md/control-plane prisma:generate` to regenerate the
 committed client.

@@ -114,6 +114,7 @@ import {
   fetchCrons,
   fetchUsage,
   fetchMembers,
+  fetchServiceAccountMembers,
   setMemberDirectory,
   type MemberDto,
   type UsageDto,
@@ -220,6 +221,8 @@ interface ConsoleData {
   members: MemberDto[]
   /** Whether the member directory has returned successfully at least once. */
   membersLoaded: boolean
+  /** Org service accounts, which a Selected audience may name beside members. Empty until loaded. */
+  serviceAccounts: MemberDto[]
   /** Forget a free bot (record + stored tokens; the CP 409s while installed), then re-pull. */
   deleteBot: (id: string) => Promise<void>
   /** Last-24h usage rollup (GET /usage?range=d1); null until loaded / on failure. */
@@ -956,6 +959,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     isLoading: membersIsLoading,
     mutate: mutateMembers
   } = useSWR<MemberDto[]>(MOCK_MODE ? null : consoleKeys.members(orgKey), ([, orgId]) => fetchMembers(orgId as string))
+  const { data: fetchedServiceAccounts } = useSWR<MemberDto[]>(
+    MOCK_MODE ? null : consoleKeys.serviceAccountMembers(orgKey),
+    ([, orgId]) => fetchServiceAccountMembers(orgId as string)
+  )
   // No interval: the SSE `session-state` event and the reconnect revalidation are the only triggers.
   const { data: pendingApprovalSessionsData, mutate: mutatePendingApprovals } = useSWR<PendingApprovalSession[]>(
     MOCK_MODE ? null : consoleKeys.pendingApprovals(orgKey),
@@ -1117,6 +1124,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
 
   const members = MOCK_MODE ? MOCK_MEMBERS : (fetchedMembers ?? [])
   const membersLoaded = MOCK_MODE || fetchedMembers !== undefined
+  const serviceAccounts = useMemo(() => fetchedServiceAccounts ?? [], [fetchedServiceAccounts])
   const usage24h = usage24hData ?? null
   const usageAccessSnapshot = useMemo(
     () =>
@@ -1856,6 +1864,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       reconnectConnectorConnection,
       members,
       membersLoaded,
+      serviceAccounts,
       usage24h,
       sessionAccessSnapshot,
       usageAccessSnapshot,
@@ -1950,6 +1959,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       reconnectConnectorConnection,
       members,
       membersLoaded,
+      serviceAccounts,
       usage24h,
       sessionAccessSnapshot,
       usageAccessSnapshot,

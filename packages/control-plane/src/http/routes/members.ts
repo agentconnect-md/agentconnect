@@ -3,6 +3,8 @@
  * console ops, §3.2).
  *
  *   GET    /members      → list the org's members (membership + user)
+ *   GET    /members/service-accounts
+ *                        → the org's service accounts, for Selected audiences
  *   POST   /members      → add a member by email (owner-only; no email sent —
  *                          unknown addresses become invited rows, claimed on
  *                          first SSO sign-in)
@@ -65,6 +67,32 @@ export function memberRoutes(deps: HttpDeps) {
       async (req) => {
         const rows = await deps.repos.user.listMembers(req.orgCtx!.orgId)
         return rows.map((row) => toDto(row, req.orgCtx!.userId, deps))
+      }
+    )
+
+    r.get(
+      '/members/service-accounts',
+      {
+        schema: {
+          tags: [Tag.Members],
+          summary: 'List service accounts as audience members',
+          description:
+            'The active org’s service accounts in member shape, so any member can name one in a Selected audience. Managing them stays owner-only under `/service-accounts`.',
+          operationId: 'listServiceAccountMembers',
+          response: { 200: MemberListDto }
+        }
+      },
+      async (req) => {
+        const rows = await deps.repos.user.listServiceAccounts(req.orgCtx!.orgId)
+        return rows.map((a) => ({
+          userId: a.userId,
+          email: a.email,
+          name: a.displayName,
+          picture: null,
+          role: a.role,
+          isCurrentUser: a.userId === req.orgCtx!.userId,
+          joinedAt: a.createdAt.toISOString()
+        }))
       }
     )
 
