@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { hasOwnMachine, isOutOfCreditsFailure, outOfCreditsOffer, type OutOfCreditsContext } from './out-of-credits'
+import {
+  creditRefusalCode,
+  hasOwnMachine,
+  isOutOfCreditsFailure,
+  outOfCreditsOffer,
+  type OutOfCreditsContext
+} from './out-of-credits'
 
 const TAG = '[ERR:out_of_credits] Out of AgentConnect credits'
-const CLOUD: OutOfCreditsContext = { onCloud: true, owner: true, canEdit: true, ownMachine: true }
+const CLOUD: OutOfCreditsContext = { onCloud: true, owner: true, canEdit: true }
 
 describe('isOutOfCreditsFailure', () => {
   it.each([
@@ -32,7 +38,7 @@ describe('outOfCreditsOffer', () => {
     )
   })
 
-  it('offers both fixes to an owner who can edit and has a machine', () => {
+  it('offers both fixes to an owner who can edit', () => {
     expect(outOfCreditsOffer({ text: TAG, errorPart: true }, CLOUD)).toEqual({
       code: 'out_of_credits',
       addCredits: 'link',
@@ -44,11 +50,10 @@ describe('outOfCreditsOffer', () => {
     expect(outOfCreditsOffer({ text: TAG, errorPart: true }, { ...CLOUD, owner: false })?.addCredits).toBe('ask-owner')
   })
 
-  it.each([
-    ['without a machine of its own', { ownMachine: false }],
-    ['to a viewer who cannot edit the agent', { canEdit: false }]
-  ])('offers no move %s', (_name, over) => {
-    expect(outOfCreditsOffer({ text: TAG, errorPart: true }, { ...CLOUD, ...over })?.moveToOwnMachine).toBe(false)
+  it('offers no move to a viewer who cannot edit the agent', () => {
+    expect(outOfCreditsOffer({ text: TAG, errorPart: true }, { ...CLOUD, canEdit: false })?.moveToOwnMachine).toBe(
+      false
+    )
   })
 
   it('renders an agent off Cloud as text, tag or not', () => {
@@ -67,5 +72,14 @@ describe('hasOwnMachine', () => {
     expect(hasOwnMachine([{ pool: false, approval: { status: 'pending' } as never }])).toBe(false)
     expect(hasOwnMachine([{ pool: false, approval: { status: 'revoked' } as never }])).toBe(false)
     expect(hasOwnMachine([])).toBe(false)
+  })
+})
+
+describe('creditRefusalCode', () => {
+  it('reads a chat link code and treats anything else as spent out', () => {
+    expect(creditRefusalCode('never_funded')).toBe('never_funded')
+    expect(creditRefusalCode('out_of_credits')).toBe('out_of_credits')
+    expect(creditRefusalCode('<script>')).toBe('out_of_credits')
+    expect(creditRefusalCode(null)).toBe('out_of_credits')
   })
 })

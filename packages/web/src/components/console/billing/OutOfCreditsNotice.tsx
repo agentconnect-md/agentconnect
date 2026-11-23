@@ -6,27 +6,29 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
+import useSWR from 'swr'
+import { fetchDaemons } from '@/lib/api'
 import { billingPathWithReturn } from '@/lib/billing-return'
 import { useConsoleData } from '@/lib/data-context'
 import { isPoolPlacementKind, MOCK_PREFIX, type Agent } from '@/lib/data'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useOrgs } from '@/lib/org-context'
 import { hasOwnMachine, type OutOfCreditsContext, type OutOfCreditsOffer } from '@/lib/out-of-credits'
+import { consoleKeys } from '@/lib/swr-keys'
 import { useOptionalModal } from '@/components/console/ModalProvider'
 import { Button, Icon } from '@/components/ui'
 
 /** What a turn's out-of-credits failure can offer this viewer, by CloudCreditGate's Cloud test. */
 export function useOutOfCreditsContext(agent: Agent | undefined): OutOfCreditsContext {
   const { myRole } = useOrgs()
-  const { daemons, orgSetIds } = useConsoleData()
+  const { orgSetIds } = useConsoleData()
   return {
     onCloud:
       featureFlagEnabled('billing') &&
       featureFlagEnabled('managed') &&
       isPoolPlacementKind(agent?.placementKind, agent?.setId, orgSetIds),
     owner: myRole === 'owner',
-    canEdit: !!agent?.canEdit && !agent.name.startsWith(MOCK_PREFIX),
-    ownMachine: hasOwnMachine(daemons ?? [])
+    canEdit: !!agent?.canEdit && !agent.name.startsWith(MOCK_PREFIX)
   }
 }
 
@@ -40,16 +42,20 @@ export function OutOfCreditsNotice({
   offer: OutOfCreditsOffer
 }) {
   const t = useTranslations('Billing.outOfCredits')
-  const { orgPath } = useOrgs()
+  const { orgPath, activeOrg } = useOrgs()
   const modal = useOptionalModal()
+  const orgId = activeOrg?.id ?? null
+  // The card asks for the fleet itself: Move stays greyed out until the org shows a machine of its own.
+  const fleet = useSWR(offer.moveToOwnMachine ? consoleKeys.daemons(orgId) : null, ([, id]) => fetchDaemons(id))
+  const machineReady = !!fleet.data && hasOwnMachine(fleet.data)
   const pathname = usePathname()
   const search = useSearchParams().toString()
   const [copied, setCopied] = useState(false)
   const billingHref = orgPath('/billing')
-  const move =
-    offer.moveToOwnMachine && agent && modal
-      ? () => modal.openModal('editAgent', agent, { focusSection: 'basics' })
-      : null
+  const move = offer.moveToOwnMachine && agent && modal
+  const openMove = () => {
+    if (agent) modal?.openModal('editAgent', agent, { focusSection: 'basics' })
+  }
   const owner = offer.addCredits === 'link'
   const neverFunded = offer.code === 'never_funded'
 
@@ -97,12 +103,15 @@ export function OutOfCreditsNotice({
           </Button>
         )}
         {move && (
-          <Button size="sm" variant="secondary" onClick={move}>
+          <Button size="sm" variant="secondary" disabled={!machineReady} onClick={openMove}>
             <Icon name="server" size={14} />
             {t('moveToOwnMachine')}
           </Button>
         )}
       </div>
+      {move && fleet.data && !machineReady && (
+        <span className="pl-9 text-[12px] text-(--text-tertiary)">{t('noOwnMachine')}</span>
+      )}
     </div>
   )
 }

@@ -27259,15 +27259,12 @@ export class Daemon {
     }
   }
 
-  /** The chat notice for a failed turn; an out-of-credits refusal links Billing and the agent's machine picker. */
+  /** The chat notice for a failed turn; a lack-of-credit refusal links the console page that offers its fixes. */
   private turnFailureNotice(agentId: string, agentName: string, reason: string): string {
     return turnFailureNotice(reason, {
       readsOrgRefusals: this.modelSessions.enabled,
       agentName,
-      links: () => ({
-        billing: `${this.webAppBase()}${this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''}/billing`,
-        agentPlacement: `${this.agentLink(agentId)}?tab=config&edit=placement`
-      })
+      fixLink: (code) => `${this.agentLink(agentId)}/out-of-credits?code=${code}`
     })
   }
 

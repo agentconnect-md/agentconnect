@@ -5458,7 +5458,9 @@
       "addCredits": "Add credits",
       "moveToOwnMachine": "Move to your own machine",
       "copyBillingLink": "Copy billing link",
-      "copied": "Copied"
+      "copied": "Copied",
+      "noOwnMachine": "No machine of your own is connected yet, so there is nowhere to move it.",
+      "notFound": "This agent no longer exists, or you can't see it."
     },
     "plan": {
       "title": "Plan",

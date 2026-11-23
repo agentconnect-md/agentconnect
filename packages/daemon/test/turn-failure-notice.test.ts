@@ -3,10 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { turnFailureReason, undecorateRuntimeError } from '../src/acp/acp-host.js'
 import { outOfCredits, turnFailureCodeWithRefusal, turnFailureNotice } from '../src/daemon/turn-failure-notice.js'
 
-const links = () => ({
-  billing: 'https://console.example.test/acme/billing',
-  agentPlacement: 'https://console.example.test/acme/agents/agent-1?tab=config&edit=placement'
-})
+const fixLink = (code: string) => `https://console.example.test/acme/agents/agent-1/out-of-credits?code=${code}`
 
 // What each measured runtime hands up for a tagged gateway refusal (org-refusal-tag.md §4.2).
 const RUNTIME_TEXTS = [
@@ -19,12 +16,11 @@ const RUNTIME_TEXTS = [
 describe('turnFailureNotice', () => {
   it.each(RUNTIME_TEXTS)('links Billing and the machine picker for %s', (text) => {
     const reason = turnFailureReason(new Error(text))
-    const notice = turnFailureNotice(reason, { readsOrgRefusals: true, agentName: 'Helper', links })
+    const notice = turnFailureNotice(reason, { readsOrgRefusals: true, agentName: 'Helper', fixLink })
     expect(notice).toBe(
       [
         "⚠️ Your organization is out of credits, so Helper couldn't respond.",
-        '• Add credits: https://console.example.test/acme/billing',
-        '• Or move Helper to your own machine in its settings: https://console.example.test/acme/agents/agent-1?tab=config&edit=placement'
+        'Add credits, or move Helper to your own machine: https://console.example.test/acme/agents/agent-1/out-of-credits?code=out_of_credits'
       ].join('\n')
     )
   })
@@ -33,22 +29,22 @@ describe('turnFailureNotice', () => {
     const notice = turnFailureNotice('[ERR:never_funded] No credit yet', {
       readsOrgRefusals: true,
       agentName: 'Helper',
-      links
+      fixLink
     })
     expect(notice.split('\n')[0]).toBe("⚠️ Your organization hasn't added any credits yet, so Helper couldn't respond.")
-    expect(notice).toContain('• Add credits: https://console.example.test/acme/billing')
+    expect(notice).toContain('/agents/agent-1/out-of-credits?code=never_funded')
   })
 
   it('shows the text as before on a daemon that does not read refusals', () => {
     const reason = undecorateRuntimeError(RUNTIME_TEXTS[0]!)
-    expect(turnFailureNotice(reason, { readsOrgRefusals: false, agentName: 'Helper', links })).toBe(
+    expect(turnFailureNotice(reason, { readsOrgRefusals: false, agentName: 'Helper', fixLink })).toBe(
       '⚠️ Agent failed to respond: [ERR:out_of_credits] Out of credits'
     )
   })
 
   it('shows unknown codes and untagged text as before', () => {
     for (const reason of ['[ERR:standing_lapsed] Standing lapsed', '[ERR:future_code] Refused', 'rate limited'])
-      expect(turnFailureNotice(reason, { readsOrgRefusals: true, agentName: 'Helper', links })).toBe(
+      expect(turnFailureNotice(reason, { readsOrgRefusals: true, agentName: 'Helper', fixLink })).toBe(
         `⚠️ Agent failed to respond: ${reason}`
       )
   })
