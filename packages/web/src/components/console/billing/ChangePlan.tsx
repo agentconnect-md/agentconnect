@@ -65,7 +65,7 @@ export function changePath(sub: BillingSubscription, to: BillingPlanOption): Cha
   const retentionKept =
     to.retentionDays === null || (sub.retentionDays !== null && to.retentionDays >= sub.retentionDays)
   const nothingLost = to.grantMicro >= sub.grantMicro && to.sessionLimit >= sub.sessionLimit && retentionKept
-  return (to.priceCents ?? 0) > sub.priceCents && nothingLost ? 'immediate' : 'scheduled'
+  return (to.priceCents ?? 0) > (sub.priceCents ?? 0) && nothingLost ? 'immediate' : 'scheduled'
 }
 
 const isCurrent = (sub: BillingSubscription, o: BillingPlanOption) =>

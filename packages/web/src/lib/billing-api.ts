@@ -236,8 +236,8 @@ export interface BillingRetention {
 
 export interface BillingSubscription extends BillingPlanRef {
   sessionLimit: number
-  /** Monthly price, USD cents. */
-  priceCents: number
+  /** Monthly price, USD cents; null on a contract, which is priced outside the console. */
+  priceCents: number | null
   /** Credit granted per paid period, microUSD. */
   grantMicro: number
   /** Null ⇒ unlimited. */
@@ -517,7 +517,7 @@ export function assertSubscription(body: unknown): asserts body is BillingSubscr
   if (
     !isPlanRef(b) ||
     !isFiniteNumber(b.sessionLimit) ||
-    !isFiniteNumber(b.priceCents) ||
+    !isNullableFinite(b.priceCents) ||
     !isFiniteNumber(b.grantMicro) ||
     !isNullableFinite(b.retentionDays) ||
     !isNullableString(b.paidThrough) ||
