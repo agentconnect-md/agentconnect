@@ -4,6 +4,8 @@ import {
   IntegrationTelegramConfig,
   IntegrationDiscordConfig,
   IntegrationFeishuConfig,
+  IntegrationMattermostConfig,
+  MATTERMOST_PLATFORM,
   AuthReq,
   ControlExt,
   isFrame,
@@ -652,6 +654,34 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(cfg.region).toBe('feishu') // zod default — China gateway
   })
 
+  it('integration/upsert carries the mattermost config (http/https serverUrl, botToken, optional botUserId/botUsername)', () => {
+    const r = decodeEnvelope(
+      envelope('integration/upsert', {
+        integrationId: INTEGRATION_ID,
+        agentId: AGENT_ID,
+        platform: MATTERMOST_PLATFORM,
+        core: CORE,
+        config: {
+          serverUrl: 'http://192.168.10.25:8065/mm',
+          botToken: 'mm-token-xyz',
+          botUserId: 'botuser1234567890123456789',
+          botUsername: 'ac-bot'
+        }
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/upsert')(r.frame)) throw new Error('expected integration/upsert')
+    expect(r.frame.payload.platform).toBe('mattermost')
+    const cfg = IntegrationMattermostConfig.parse(r.frame.payload.config)
+    expect(cfg.serverUrl).toBe('http://192.168.10.25:8065/mm')
+    expect(cfg.botToken).toBe('mm-token-xyz')
+    expect(cfg.botUserId).toBe('botuser1234567890123456789')
+    expect(cfg.botUsername).toBe('ac-bot')
+    expect(IntegrationMattermostConfig.safeParse({ serverUrl: 'ftp://bad.example', botToken: 'tok' }).success).toBe(
+      false
+    )
+  })
+
   it('integration/upsert carries feishu SHARED mode on the core envelope (send-only API access)', () => {
     const r = decodeEnvelope(
       envelope('integration/upsert', {
@@ -837,7 +867,17 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.frame.payload.channels[1]).toEqual({ id: 'C123', name: 'deploys' })
   })
 
-  it('integration/channels refuses an over-long key and a link that is not https', () => {
+  it('integration/channels accepts http/https links and refuses over-long keys or non-http(s) schemes', () => {
+    const okHttp = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [
+          { id: 'team-1', url: 'http://192.168.10.25:8065/engineering/channels/town-square' },
+          { id: 'team-2', url: 'https://mm.example.test/engineering/channels/deploys' }
+        ]
+      })
+    )
+    expect(okHttp.ok).toBe(true)
     const long = decodeEnvelope(
       envelope('integration/channels', {
         integrationId: INTEGRATION_ID,
@@ -845,7 +885,12 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
       })
     )
     expect(long.ok).toBe(false)
-    for (const url of ['javascript:alert(1)', 'http://linear.app/example-workspace/team/ENG', 'not a url']) {
+    for (const url of [
+      'javascript:alert(1)',
+      'ftp://linear.app/example-workspace/team/ENG',
+      'data:text/html,hi',
+      'not a url'
+    ]) {
       const bad = decodeEnvelope(
         envelope('integration/channels', { integrationId: INTEGRATION_ID, channels: [{ id: 'team-1', url }] })
       )

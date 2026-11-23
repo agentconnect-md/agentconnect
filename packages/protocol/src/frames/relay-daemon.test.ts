@@ -10,6 +10,9 @@ import {
   WireMsTeamsCardAction,
   WireMsTeamsCardActionResponse,
   MSTEAMS_CARD_NOTE_MAX,
+  WireMattermostCardAction,
+  WireMattermostCardActionResponse,
+  MATTERMOST_CARD_NOTE_MAX,
   WireNormalizedMessage,
   RdMsg,
   RdMsgWebchat,
@@ -805,6 +808,49 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     })
     expect(WireMsTeamsCardActionResponse.safeParse({ note: '' }).success).toBe(false)
     expect(WireMsTeamsCardActionResponse.safeParse({ note: 'x'.repeat(MSTEAMS_CARD_NOTE_MAX + 1) }).success).toBe(false)
+  })
+
+  it('decodes Mattermost card clicks and bounds ephemeral responses', () => {
+    const click = {
+      postId: 'p1234567890123456789012345',
+      channelId: 'c1234567890123456789012345',
+      userId: 'u1234567890123456789012345',
+      userName: 'alice',
+      kind: 'approval' as const,
+      requestId: 'req-mm-1',
+      option: 0
+    }
+    const action: RdMsg = {
+      source: 'platform_action',
+      platformId: 'mattermost',
+      agentId: AGENT_ID,
+      sessionKey: `mattermost-action:${click.postId}`,
+      msgId: 'mattermost-action:abc123',
+      botId: DAEMON_ID,
+      integrationId: CONV_ID,
+      userId: click.userId,
+      payload: click
+    }
+    const decoded = decodeRelayDaemonFrame(envelope('rd/msg', action))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rd/msg' || decoded.frame.payload.source !== 'platform_action') {
+      throw new Error('expected platform action')
+    }
+    expect(WireMattermostCardAction.parse(decoded.frame.payload.payload)).toEqual(click)
+    expect(
+      WireMattermostCardAction.parse({
+        postId: 'p1234567890123456789012345',
+        channelId: 'c1234567890123456789012345',
+        userId: 'u1234567890123456789012345',
+        kind: 'draft',
+        requestId: 'draft-1',
+        token: 'approve'
+      })
+    ).toMatchObject({ kind: 'draft', requestId: 'draft-1', token: 'approve' })
+    expect(WireMattermostCardActionResponse.parse({ ephemeralText: 'Refused' })).toEqual({ ephemeralText: 'Refused' })
+    expect(
+      WireMattermostCardActionResponse.safeParse({ ephemeralText: 'x'.repeat(MATTERMOST_CARD_NOTE_MAX + 1) }).success
+    ).toBe(false)
   })
 
   it('decodes an rd/msg hook fire (B-github) and enforces its required fields', () => {

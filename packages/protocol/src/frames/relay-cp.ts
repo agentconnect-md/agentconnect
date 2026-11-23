@@ -164,7 +164,9 @@ export const RcAuthOk = z.object({
   serverTime: z.string().datetime(),
   deploymentConfig: RcDeploymentConfig.optional(),
   // The secret the CP mints viewer TURN credentials from, so a relay serving TURN can check them; secret, never logged.
-  computerTurnSecret: z.string().min(32).max(256).optional()
+  computerTurnSecret: z.string().min(32).max(256).optional(),
+  // CP-derived HMAC secret for verifying Mattermost interactive action button callbacks; secret, never logged.
+  mattermostActionSecret: z.string().min(32).max(256).optional()
 })
 export type RcAuthOk = z.infer<typeof RcAuthOk>
 

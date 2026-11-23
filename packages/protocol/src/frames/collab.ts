@@ -46,6 +46,10 @@ export const CollabAgentPlacement = z.object({
    *  exact address to post, and resolving an inbound mention back to an agent.
    *  Public metadata, never a credential. */
   botUserId: z.string().optional(),
+  /** Public bot username handle without leading `@` (e.g. `acbot` on Mattermost).
+   *  Used to render and resolve `@handle` mentions across daemons. Public metadata,
+   *  never a credential. */
+  botUsername: z.string().optional(),
   /** True when {@link botUserId} backs MORE THAN ONE agent (a shared bot). The bot user
    *  id alone then cannot identify an agent, so its address carries the agent slug too
    *  (`<@U_SHARED> reviewer`) and a BARE mention of it addresses no specific agent —

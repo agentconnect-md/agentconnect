@@ -130,6 +130,9 @@ export const WECOM_PLATFORM = 'wecom'
 // Email's platform id (email-integration.md), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
 export const EMAIL_PLATFORM = 'email'
 
+// Mattermost's platform id (self-hosted API v4 over WebSocket + REST), registered in `KNOWN_PLATFORMS` with its Control Plane provider.
+export const MATTERMOST_PLATFORM = 'mattermost'
+
 /** The fixed thread key every group message of QQ and WeCom carries, which names the group's root (auto-session-mode.md §6.10); their normalizers read it from here. */
 export const THREADLESS_GROUP_ROOT = 'group'
 
@@ -325,6 +328,19 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       dmChannelPattern: /^dm:/,
       // The module admits each sender by the member question, which applies the agent's visibility, so no conversation is listed or gated (email-integration.md §3.1).
       listsConversations: false
+    }
+  ],
+  [
+    MATTERMOST_PLATFORM,
+    {
+      ...DEFAULT_MANIFEST,
+      consoleContinuation: true,
+      membershipEnumeration: 'authoritative',
+      // Mattermost delivers every post in the bot's channels, marks bot posts with `props.from_bot === 'true'`,
+      // and carries `props.agentconnect_thread_event` so verified agent authorship and explicit @-mentions route like Slack.
+      botSenderRouting: true,
+      // A 1:1 DM is one continuous session already, while rooms and group DMs (`G`, `mpim`) take `append`.
+      appendKinds: ['channel', 'mpim']
     }
   ]
 ])
