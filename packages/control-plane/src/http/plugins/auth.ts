@@ -41,6 +41,9 @@ export interface HumanPrincipal {
 
 const ADMIN_ROLE = 'ADMIN'
 
+/** How long a deleted account's sign-in cutoff is kept: far beyond any access-token lifetime. */
+export const DELETED_ACCOUNT_CUTOFF_TTL_SECONDS = 24 * 60 * 60
+
 function hasAdminRole(claim: unknown): boolean {
   if (Array.isArray(claim)) return claim.some((role) => role === ADMIN_ROLE)
   if (typeof claim === 'string') return claim.split(/[\s,]+/).includes(ADMIN_ROLE)
@@ -329,7 +332,7 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // account with nothing inherited — and whether that is allowed at all is the
   // deleting application's policy, not this plane's.
   const tombstoned = new Map<string, number>()
-  const TOMBSTONE_TTL_SECONDS = 24 * 60 * 60
+  const TOMBSTONE_TTL_SECONDS = DELETED_ACCOUNT_CUTOFF_TTL_SECONDS
   async function tombstone(
     sub: string,
     issuedAt: number | undefined,

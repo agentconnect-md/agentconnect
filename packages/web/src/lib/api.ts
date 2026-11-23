@@ -6525,6 +6525,19 @@ export async function deleteOrg(orgId: string): Promise<void> {
   await apiDelete<void>(`/orgs/${encodeURIComponent(orgId)}`)
 }
 
+// The organizations a refused account deletion names: the caller is the only owner of each.
+export const ACCOUNT_OWNS_ORGANIZATIONS = 'ACCOUNT_OWNS_ORGANIZATIONS'
+export interface SoleOwnedOrgDto {
+  id: string
+  slug: string
+  name: string | null
+}
+
+// Delete the caller's account (DELETE /me): leaves every org, then removes the sign-in identity.
+export async function deleteMyAccount(): Promise<void> {
+  await apiDelete<void>('/me')
+}
+
 // ── bots ──────────────────────────────────────────────────────────────────────
 // The durable bot identities (freed + in-use) — the Add-integration picker and
 // the Settings "Bots" card both read this roster.

@@ -4,11 +4,21 @@
 // PATCH /me. Email stays provider-owned, while profile photos use the CP's
 // validated image upload and fall back to the sign-in-provider photo when removed.
 // Without a CP /me record (mock mode / CP down) the dialog stays display-only.
+// With sign-in configured it also hosts the delete-account danger zone.
 
 import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Avatar, Button, Icon } from '@/components/ui'
-import { deleteMyProfilePicture, updateMe, uploadMyProfilePicture } from '@/lib/api'
+import {
+  ACCOUNT_OWNS_ORGANIZATIONS,
+  ApiError,
+  deleteMyAccount,
+  deleteMyProfilePicture,
+  updateMe,
+  uploadMyProfilePicture,
+  type SoleOwnedOrgDto
+} from '@/lib/api'
+import { isAuthConfigured, signOutDeletedAccount } from '@/lib/auth'
 import { resizeImageToIconBlob } from '@/lib/icon-upload'
 import { applyMe, useProfile } from '@/lib/profile'
 
@@ -31,6 +41,9 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
   const [removePicture, setRemovePicture] = useState(false)
   const pictureInput = useRef<HTMLInputElement>(null)
   const canEditPicture = !!me?.pictureUploadEnabled
+  const [deleteArmed, setDeleteArmed] = useState(false)
+  // No-auth installs have one fixed account; deleting it would lock the console out.
+  const canDeleteAccount = !!me && isAuthConfigured()
 
   useEffect(() => {
     if (!pictureFile) {
@@ -68,6 +81,26 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  const removeAccount = async () => {
+    if (busy) return
+    if (!deleteArmed) return setDeleteArmed(true) // first click arms
+    setBusy(true)
+    setErr(null)
+    try {
+      await deleteMyAccount()
+      await signOutDeletedAccount()
+    } catch (e) {
+      if (e instanceof ApiError && e.code === ACCOUNT_OWNS_ORGANIZATIONS) {
+        const orgs = ((e.details?.details as { organizations?: SoleOwnedOrgDto[] } | undefined)?.organizations ?? [])
+          .map((o) => o.name ?? o.slug)
+          .join(', ')
+        setErr(t('editProfileForm.ownsOrganizations', { orgs }))
+      } else setErr(e instanceof Error ? e.message : String(e))
+      setDeleteArmed(false)
       setBusy(false)
     }
   }
@@ -168,6 +201,27 @@ export default function EditProfileModal({ onClose }: { onClose: () => void }) {
           <Icon name="info" size={14} />
           {t('editProfileForm.emailProvider')}
         </div>
+        {canDeleteAccount && (
+          <div className="mt-[18px] flex items-center gap-[11px] rounded-[9px] border border-[rgba(220,75,75,.28)] bg-(--status-error-soft) px-[13px] py-3">
+            <Icon name="trash" size={16} color="var(--status-error)" className="flex-none" />
+            <div className="flex-1">
+              <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+                {t('editProfileForm.deleteAccount')}
+              </div>
+              <div className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                {t('editProfileForm.deleteAccountHint')}
+              </div>
+            </div>
+            <button
+              onClick={() => void removeAccount()}
+              className={`flex-none cursor-pointer rounded-[7px] border border-[rgba(220,75,75,.4)] px-[11px] py-[6px] font-sans text-[12px] font-semibold leading-normal ${
+                deleteArmed ? 'bg-(--status-error) text-white' : 'bg-(--surface-card) text-(--status-error)'
+              }`}
+            >
+              {deleteArmed ? t('editProfileForm.confirmDelete') : t('editProfileForm.delete')}
+            </button>
+          </div>
+        )}
         {err && (
           <div className="mt-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</div>
         )}

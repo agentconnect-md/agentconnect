@@ -1,8 +1,11 @@
 // The caller's profile keeps email immutable and supports replacing or restoring profile photos.
+import { randomUUID } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
-import { DEFAULT_OWNER_ID, DEFAULT_OWNER_EMAIL } from '../../prisma/seed.js'
+import { seedAgent } from '../fixtures/seed.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID, DEFAULT_OWNER_EMAIL } from '../../prisma/seed.js'
 import type { IconStore } from '../../src/icons/icon-store.js'
 
 interface MeBody {
@@ -132,6 +135,81 @@ describe('PATCH /me', () => {
       expect(res.statusCode).toBe(400)
     } finally {
       await close()
+    }
+  })
+})
+
+describe('DELETE /me', () => {
+  const signup = (oidcSubject: string, email: string) =>
+    new PgUserRepo(prisma).provisionOidcUser({ oidcSubject, email, emailVerified: true })
+
+  it('refuses the only owner of an organization and lists it, deleting nothing', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'DELETE', url: '/api/v1/me' })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({
+        code: 'ACCOUNT_OWNS_ORGANIZATIONS',
+        details: { organizations: [{ id: DEFAULT_ORG_ID }] }
+      })
+      expect(await prisma.user.findUnique({ where: { id: DEFAULT_OWNER_ID } })).not.toBeNull()
+      expect(
+        await prisma.membership.findUnique({
+          where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: DEFAULT_OWNER_ID } }
+        })
+      ).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('leaves each org like a member leaving, then deletes the row and records the sign-in cutoff', async () => {
+    const dana = await signup('sub-delete-dana', 'delete-dana@acme.dev')
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'delete-dana@acme.dev', 'collaborator')
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      visibility: 'restricted',
+      createdByUserId: dana.userId,
+      sharedWith: [dana.userId]
+    })
+    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
+    try {
+      const res = await app.inject({ method: 'DELETE', url: '/api/v1/me' })
+      expect(res.statusCode).toBe(204)
+
+      expect(await prisma.user.findUnique({ where: { id: dana.userId } })).toBeNull()
+      expect(await prisma.membership.count({ where: { userId: dana.userId } })).toBe(0)
+      // The emptied Selected audience fell to the remaining owner, as a leave does.
+      expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).sharedWith).toEqual([DEFAULT_OWNER_ID])
+      expect(
+        await prisma.deletedIdentityCutoff.findUnique({ where: { oidcSubject: 'sub-delete-dana' } })
+      ).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('deletes an owner while another owner remains, and lets a suspended member go too', async () => {
+    const repo = new PgUserRepo(prisma)
+    const erin = await signup('sub-delete-erin', 'delete-erin@acme.dev')
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'delete-erin@acme.dev', 'owner')
+    const fay = await signup('sub-delete-fay', 'delete-fay@acme.dev')
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'delete-fay@acme.dev', 'viewer')
+    await prisma.membership.update({
+      where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: fay.userId } },
+      data: { suspendedAt: new Date() }
+    })
+    const asErin = buildHttpApp(prisma, { DEFAULT_OWNER_ID: erin.userId })
+    const asFay = buildHttpApp(prisma, { DEFAULT_OWNER_ID: fay.userId })
+    try {
+      expect((await asErin.app.inject({ method: 'DELETE', url: '/api/v1/me' })).statusCode).toBe(204)
+      expect((await asFay.app.inject({ method: 'DELETE', url: '/api/v1/me' })).statusCode).toBe(204)
+      expect(await prisma.user.count({ where: { id: { in: [erin.userId, fay.userId] } } })).toBe(0)
+      const owners = await prisma.membership.findMany({ where: { orgId: DEFAULT_ORG_ID, role: 'owner' } })
+      expect(owners.map((m) => m.userId)).toEqual([DEFAULT_OWNER_ID])
+    } finally {
+      await asErin.close()
+      await asFay.close()
     }
   })
 })
