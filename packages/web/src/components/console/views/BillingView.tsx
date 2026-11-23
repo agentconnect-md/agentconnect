@@ -24,6 +24,7 @@ import {
   fetchBillingTransactionsSince,
   fmtDecimalUsd,
   fmtMicroUsd,
+  revokeBillingScheduledChange,
   type BillingAccount,
   type BillingDebit,
   type BillingDebitAgent,
@@ -58,6 +59,12 @@ import {
   ScheduledChangeStrip,
   usePlanReads
 } from '@/components/console/billing/Plan'
+import {
+  ChangePlanDialog,
+  useIncreaseLimit,
+  usePlanCatalog,
+  type ChangePlanStart
+} from '@/components/console/billing/ChangePlan'
 import { useCardSetupReturn } from '@/lib/use-card-setup-return'
 
 // Fixed tracks keep each `.row` grid aligned with its header; mobile scrolls the card sideways.
@@ -1165,6 +1172,11 @@ export default function BillingView() {
   const plansOffered = offered && featureFlagEnabled('subscriptions')
   const plan = usePlanReads(plansOffered ? orgId : null)
   const [purchaseOpen, setPurchaseOpen] = useState(false)
+  // Plan changes are the owner's: the catalog and the Increase-limit quote are read for owners only.
+  const planOwner = plansOffered && myRole === 'owner' ? orgId : null
+  const catalog = usePlanCatalog(planOwner)
+  const increase = useIncreaseLimit(planOwner, plan.subscription.data, catalog.data)
+  const [planDialog, setPlanDialog] = useState<ChangePlanStart | null>(null)
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
@@ -1217,12 +1229,15 @@ export default function BillingView() {
     if (claimed.current || !offered) return
     const result = searchParams.get('checkout')
     const purchaseId = searchParams.get('purchase')
+    // A plan checkout returns with its change id instead; the Change plan dialog confirms it.
+    const changeId = searchParams.get('subscriptionChange')
     if (!result) return
     claimed.current = true
     if (result === 'success' && purchaseId) setCheckout({ phase: 'confirming', purchaseId, attempt: 1 })
+    else if (result === 'success' && changeId && plansOffered) setPlanDialog({ changeId })
     else if (result === 'cancel') setCheckout({ phase: 'canceled' })
     router.replace(pathname)
-  }, [offered, searchParams, router, pathname])
+  }, [offered, plansOffered, searchParams, router, pathname])
 
   // Poll until the service reports a terminal status. Each poll also makes the
   // service reconcile against Stripe directly, so a lost webhook delays nothing.
@@ -1456,7 +1471,16 @@ export default function BillingView() {
             canPay={myRole === 'owner'}
             onAddCredits={focusAddCredits}
           />
-          {plansOffered && <PlanBanners reads={plan} />}
+          {plansOffered && (
+            <PlanBanners
+              reads={plan}
+              limitAction={
+                increase?.bannerLabel
+                  ? { label: increase.bannerLabel, onClick: () => setPlanDialog({ target: increase.open }) }
+                  : undefined
+              }
+            />
+          )}
           {plansOffered ? (
             // Design: Balance and Plan side by side, a scheduled change under them; purchases open a dialog.
             <div className="mb-[18px]">
@@ -1487,9 +1511,53 @@ export default function BillingView() {
                     <PlanCreditStrip sub={plan.subscription.data} balanceMicro={acct.balanceMicro} />
                   )}
                 </div>
-                <PlanCard reads={plan} role={myRole} />
+                <PlanCard
+                  reads={plan}
+                  role={myRole}
+                  onChangePlan={() =>
+                    plan.subscription.data &&
+                    setPlanDialog({
+                      target: { tierId: plan.subscription.data.tierId, optionId: plan.subscription.data.optionId }
+                    })
+                  }
+                  increase={
+                    increase
+                      ? {
+                          title: increase.title,
+                          sub: increase.sub,
+                          onClick: () => setPlanDialog({ target: increase.open })
+                        }
+                      : undefined
+                  }
+                />
               </div>
-              <ScheduledChangeStrip sub={plan.subscription.data} />
+              <ScheduledChangeStrip
+                sub={plan.subscription.data}
+                onCancel={
+                  myRole === 'owner'
+                    ? async () => {
+                        await revokeBillingScheduledChange(orgId)
+                        await Promise.all([plan.subscription.mutate(), catalog.mutate()])
+                      }
+                    : undefined
+                }
+              />
+              {planDialog && myRole === 'owner' && plan.subscription.data && (
+                <ChangePlanDialog
+                  orgId={orgId}
+                  sub={plan.subscription.data}
+                  catalog={catalog}
+                  start={planDialog}
+                  returnPath={pathname}
+                  onClose={() => setPlanDialog(null)}
+                  onChanged={() => {
+                    void plan.subscription.mutate()
+                    void plan.usage.mutate()
+                    void catalog.mutate()
+                    refreshMoney()
+                  }}
+                />
+              )}
               {purchaseOpen && myRole === 'owner' && (
                 <AddCreditsDialog orgId={orgId} returnPath={pathname} onClose={() => setPurchaseOpen(false)} />
               )}

@@ -12,6 +12,12 @@ export function helpDocsBase(): string {
   return src.HELP_DOCS_URL || process.env.NEXT_PUBLIC_HELP_DOCS_URL || HELP_LINK_DEFAULTS.docs
 }
 
+// The deployment's support link (mailto: or https:), read at render like the docs root.
+export function helpSupportUrl(): string {
+  const src = typeof window === 'undefined' ? process.env : (window.__AC_ENV ?? {})
+  return src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support
+}
+
 // One page under the docs root; Chinese readers get the site's /zh copy, which falls back to English per page.
 export function docsPageUrl(path: string, locale: string): string {
   const base = helpDocsBase().replace(/\/+$/, '')

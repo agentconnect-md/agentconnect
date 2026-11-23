@@ -62,7 +62,7 @@ import { useScheduleNotifier } from '@/lib/schedule-notifier'
 import { EscapeLayer } from './Scrim'
 import { localeList } from '@/i18n/config'
 import { NAV_GROUPS, NAV_LABEL_KEYS, SECTIONS, navVisible } from './nav'
-import { HELP_LINK_DEFAULTS, helpDocsBase } from '@/lib/help-links'
+import { HELP_LINK_DEFAULTS, helpDocsBase, helpSupportUrl } from '@/lib/help-links'
 import { DaemonApprovalCount } from './DaemonApproval'
 
 // A section's own page owns the list app bar (menu button, no back) on mobile; anything
@@ -122,7 +122,7 @@ function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS & { version: string } {
     mcp: src.HELP_MCP_URL || process.env.NEXT_PUBLIC_HELP_MCP_URL || HELP_LINK_DEFAULTS.mcp,
     docs: helpDocsBase(),
     releases,
-    support: src.HELP_SUPPORT_URL || process.env.NEXT_PUBLIC_HELP_SUPPORT_URL || HELP_LINK_DEFAULTS.support,
+    support: helpSupportUrl(),
     version
   }
 }

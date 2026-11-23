@@ -186,11 +186,11 @@ describe('BillingView plan layout', () => {
     expect(q('[data-plan-banner]')).toBeNull()
   })
 
-  it('gives owners Add credits as a dialog and leaves the Change plan slot empty', async () => {
+  it('gives owners Add credits as a dialog and Change plan in the Plan card', async () => {
     await render()
     expect(text()).not.toContain('Owners add credits')
     expect(text()).not.toContain('Owners change the plan')
-    expect(planCard().querySelector('button')).toBeNull()
+    expect(buttonIn(planCard(), 'Change plan')).toBeDefined()
     await act(async () => buttonIn(balanceCard(), 'Add credits')!.click())
     const dialog = q('[role="dialog"]')!
     expect(dialog.getAttribute('aria-label')).toBe('Add credits')
@@ -203,6 +203,7 @@ describe('BillingView plan layout', () => {
     expect(balanceCard().textContent).toContain('Owners add credits')
     expect(buttonIn(balanceCard(), 'Add credits')).toBeUndefined()
     expect(planCard().textContent).toContain('Owners change the plan')
+    expect(buttonIn(planCard(), 'Change plan')).toBeUndefined()
     expect(text()).not.toContain('Ask an org owner to top up')
   })
 
@@ -210,10 +211,11 @@ describe('BillingView plan layout', () => {
     mocks.subscription.mockResolvedValue({ ...SUB, scheduled: FREE })
     await render()
     expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · ends Dec 4')
-    expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4')
+    expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
   })
 
-  it('names a scheduled change to another plan under the row', async () => {
+  it('names a scheduled change to another plan under the row, with no Cancel for a member', async () => {
+    mocks.role = 'member'
     mocks.subscription.mockResolvedValue({ ...SUB, scheduled: TEAM })
     await render()
     expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
@@ -297,7 +299,8 @@ describe('BillingView session meter and limit', () => {
     expect(q('[data-plan-meter]')!.getAttribute('data-plan-meter')).toBe(tone)
   })
 
-  it('raises the limit-reached banner at the limit, with no action of its own yet', async () => {
+  it('raises the limit-reached banner at the limit, with no action for a member', async () => {
+    mocks.role = 'member'
     mocks.sessions.mockResolvedValue({ ...USAGE, used: 500 })
     await render()
     const banner = q('[data-plan-banner="session-limit"]')!

@@ -1,6 +1,6 @@
 'use client'
 
-// The org's plan on the Billing page, read-only: the Plan card, the balance's plan-credit strip and its dialog, and the plan banners.
+// The org's plan on the Billing page: the Plan card, the balance's plan-credit strip and its dialog, and the plan banners; owners' actions arrive as props.
 
 import { useEffect, useState, type ReactNode } from 'react'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -94,7 +94,7 @@ export function meterTone(used: number, limit: number | null): 'brand' | 'amber'
 }
 
 // Cycle boundaries and the session reset are UTC instants, so they render in UTC.
-function useUtcDates() {
+export function useUtcDates() {
   const format = useFormatter()
   const at = (iso: string, withTime: boolean) => {
     const d = new Date(iso)
@@ -128,7 +128,14 @@ function LoadError({ text, onRetry }: { text: string; onRetry: () => void }) {
 
 const METER_FILL = { brand: 'bg-(--brand)', amber: 'bg-(--amber-500)', red: 'bg-(--red-500)' } as const
 
-function SessionsMeter({ usage }: { usage: SessionMonthUsageDto }) {
+/** The owner's Increase-limit link under the meter, with its preview line. */
+export interface IncreaseLink {
+  title: string
+  sub: string | null
+  onClick: () => void
+}
+
+function SessionsMeter({ usage, increase }: { usage: SessionMonthUsageDto; increase?: IncreaseLink }) {
   const t = useTranslations('Billing.plan')
   const { day, number } = useUtcDates()
   const tone = meterTone(usage.used, usage.limit)
@@ -154,15 +161,34 @@ function SessionsMeter({ usage }: { usage: SessionMonthUsageDto }) {
           />
         </div>
       )}
-      <div className="mt-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-        {t('resets', { date: day(usage.resetsAt) })}
+      <div className="mt-2 flex items-center justify-between gap-3 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+        <span>{t('resets', { date: day(usage.resetsAt) })}</span>
+        {increase && (
+          <span className="inline-flex min-w-0 items-center gap-2" data-plan-increase="true">
+            <button type="button" className="lnk text-[12px]" onClick={increase.onClick}>
+              {increase.title}
+              <Icon name="chevron-right" size={12} />
+            </button>
+            {increase.sub && <span className="truncate">{increase.sub}</span>}
+          </span>
+        )}
       </div>
     </div>
   )
 }
 
-/** The Plan card beside the balance. Owners will find Change plan in its header; members are told who can. */
-export function PlanCard({ reads, role }: { reads: PlanReads; role: string | null }) {
+/** The Plan card beside the balance. Owners get Change plan in its header and Increase limit under the meter; members are told who can. */
+export function PlanCard({
+  reads,
+  role,
+  onChangePlan,
+  increase
+}: {
+  reads: PlanReads
+  role: string | null
+  onChangePlan?: () => void
+  increase?: IncreaseLink
+}) {
   const t = useTranslations('Billing.plan')
   const { day } = useUtcDates()
   const { subscription } = reads
@@ -195,6 +221,11 @@ export function PlanCard({ reads, role }: { reads: PlanReads; role: string | nul
             {t('ownersChange')}
           </span>
         )}
+        {role === 'owner' && sub && onChangePlan && (
+          <Button size="sm" variant="secondary" onClick={onChangePlan}>
+            {t('change.title')}
+          </Button>
+        )}
       </div>
       {subscription.error ? (
         <LoadError
@@ -223,25 +254,54 @@ export function PlanCard({ reads, role }: { reads: PlanReads; role: string | nul
           </span>
         </div>
       )}
-      {usage && <SessionsMeter usage={usage} />}
+      {usage && <SessionsMeter usage={usage} increase={role === 'owner' ? increase : undefined} />}
     </div>
   )
 }
 
-/** A scheduled renewal change, under the Balance and Plan row. */
-export function ScheduledChangeStrip({ sub }: { sub: BillingSubscription | null | undefined }) {
+/** A scheduled renewal change, under the Balance and Plan row; owners can revoke it. */
+export function ScheduledChangeStrip({
+  sub,
+  onCancel
+}: {
+  sub: BillingSubscription | null | undefined
+  onCancel?: () => Promise<void>
+}) {
   const t = useTranslations('Billing.plan')
   const { day } = useUtcDates()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   if (!sub?.scheduled) return null
+  const cancel = async () => {
+    if (!onCancel || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onCancel()
+    } catch (e) {
+      setError(t('cancelScheduledError', { error: (e as Error).message }))
+    }
+    setBusy(false)
+  }
   const plan = planLabel(sub.scheduled)
   return (
     <div
       data-plan-scheduled="true"
       className="mt-3 flex items-center gap-2.5 rounded-[10px] border border-(--status-info) bg-(--status-info-soft) px-[18px] py-2.5"
     >
-      <span className="flex-1 font-sans text-[12.5px] font-medium leading-normal">
+      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-normal">
         {sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan })}
+        {error && (
+          <span role="alert" className="mt-1 block font-normal text-(--status-error)">
+            {error}
+          </span>
+        )}
       </span>
+      {onCancel && (
+        <button type="button" className="lnk" disabled={busy} onClick={() => void cancel()}>
+          {t('cancelScheduled')}
+        </button>
+      )}
     </div>
   )
 }
@@ -251,11 +311,13 @@ function AmberBanner({
   data,
   icon,
   title,
+  action,
   children
 }: {
   data: string
   icon: string
   title: string
+  action?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -270,6 +332,7 @@ function AmberBanner({
         <div className="font-sans text-[13px] font-semibold leading-normal">{title}</div>
         {children}
       </div>
+      {action}
     </div>
   )
 }
@@ -291,8 +354,14 @@ function PendingPaymentBanner({ change }: { change: BillingPendingChange }) {
   )
 }
 
-/** The plan's page banners: a payment still owed for a plan change, and a spent session limit. */
-export function PlanBanners({ reads }: { reads: PlanReads }) {
+/** The plan's page banners: a payment still owed for a plan change, and a spent session limit whose CTA is the Increase-limit entry. */
+export function PlanBanners({
+  reads,
+  limitAction
+}: {
+  reads: PlanReads
+  limitAction?: { label: string; onClick: () => void }
+}) {
   const t = useTranslations('Billing.plan.limitReached')
   const { day } = useUtcDates()
   const change = reads.subscription.data?.pendingChange
@@ -302,7 +371,18 @@ export function PlanBanners({ reads }: { reads: PlanReads }) {
     <>
       {change && <PendingPaymentBanner change={change} />}
       {atLimit && (
-        <AmberBanner data="session-limit" icon="triangle-exclamation-point" title={t('title')}>
+        <AmberBanner
+          data="session-limit"
+          icon="triangle-exclamation-point"
+          title={t('title')}
+          action={
+            limitAction && (
+              <Button size="sm" className="flex-none self-center" onClick={limitAction.onClick}>
+                {limitAction.label}
+              </Button>
+            )
+          }
+        >
           <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
             {t('text', { date: day(usage.resetsAt) })}
           </div>
