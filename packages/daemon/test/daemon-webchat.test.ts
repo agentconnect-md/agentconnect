@@ -26,7 +26,7 @@ function scaffold(limits?: Record<string, number>, agentExtra?: Record<string, u
       runtimes: {
         claude: { command: 'node', args: ['unused'] },
         'test-runtime': { command: 'node', args: ['codex-acp'] },
-        'agy-runtime': { command: '/opt/antigravity/bin/agy', args: ['acp'] }
+        'agy-runtime': { command: join(root, 'bin', 'agy'), args: ['acp'] }
       },
       ...(limits ? { limits } : {})
     })
@@ -711,7 +711,11 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       model: 'gemini-4-hydrogen',
       usage: { totalTokens: 310_000, inputTokens: 100_000, cachedReadTokens: 200_000, outputTokens: 10_000 }
     })
-    const daemon = new Daemon({ root: scaffold(undefined, { runtime: 'agy-runtime' }), hostFactory: factory })
+    const root = scaffold(undefined, { runtime: 'agy-runtime' })
+    // A runtime is listed only when its binary exists; the host factory never spawns it.
+    mkdirSync(join(root, 'bin'))
+    writeFileSync(join(root, 'bin', process.platform === 'win32' ? 'agy.exe' : 'agy'), '', { mode: 0o755 })
+    const daemon = new Daemon({ root, hostFactory: factory })
     await daemon.start()
     const cp = fakeCpClient()
     ;(daemon as any).cpClient = cp
