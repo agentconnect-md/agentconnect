@@ -112,6 +112,38 @@ describe('Mattermost normalization', () => {
     expect(gm.mentionedBots).toEqual([BOT_USER_ID])
   })
 
+  it('does not treat a broadcast mention as addressing the bot, though the server lists it as mentioned', () => {
+    const withText = (message: string): MattermostPostedEvent => ({
+      event: 'posted',
+      data: {
+        channel_type: 'O',
+        sender_name: '@alice',
+        mentions: JSON.stringify([BOT_USER_ID, BOB_USER_ID]),
+        post: JSON.stringify({
+          id: ROOT_POST_ID,
+          create_at: 1767225600123,
+          user_id: ALICE_USER_ID,
+          channel_id: PUBLIC_CHANNEL_ID,
+          root_id: '',
+          message,
+          type: '',
+          props: {}
+        })
+      }
+    })
+    for (const text of ['@channel lunch is here', 'heads up @all', '@here: standup']) {
+      expect(messageOf(withText(text)).mentionedBots, text).toEqual([BOB_USER_ID])
+    }
+    // Naming the bot beside the broadcast, or a handle that merely starts like one, still addresses it.
+    for (const text of [
+      `@channel and @${BOT_USERNAME} please look`,
+      '@channelops can you check',
+      'plain mention list'
+    ]) {
+      expect(messageOf(withText(text)).mentionedBots, text).toContain(BOT_USER_ID)
+    }
+  })
+
   it('matches @botUsername fallback strictly on username boundaries and strips leading mentions for commands', () => {
     expect(mattermostMentionsBot('ping @acbot.', 'acbot')).toBe(true)
     expect(mattermostMentionsBot('ping @AcBot, help', 'acbot')).toBe(true)

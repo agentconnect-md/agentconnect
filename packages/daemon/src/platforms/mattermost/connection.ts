@@ -622,11 +622,12 @@ export class MattermostConnection implements PlatformConnection {
         .getMyChannels()
         .then((channels) => {
           const at = this.now()
+          const serverAt = this.client.serverNow()
           for (const ch of channels) {
             if (!ch.delete_at) {
               setBounded(this.channels, ch.id, { value: ch, at }, CHANNEL_CACHE_MAX)
               if (!this.channelWatermarks.has(ch.id)) {
-                setBounded(this.channelWatermarks, ch.id, at, WATERMARK_CACHE_MAX)
+                setBounded(this.channelWatermarks, ch.id, serverAt, WATERMARK_CACHE_MAX)
               }
             }
           }
@@ -634,7 +635,7 @@ export class MattermostConnection implements PlatformConnection {
         .catch(() => undefined)
     ])
 
-    this.lastConnectedAt = this.now()
+    this.lastConnectedAt = this.client.serverNow()
     await this.client.start()
     this.deps.log.info(`mattermost: connected as @${this._botUsername}`)
   }
@@ -714,7 +715,7 @@ export class MattermostConnection implements PlatformConnection {
   private freezeRecoveryWatermarks(): void {
     const initialFreeze = this.recoveryFallbackSince === undefined
     if (initialFreeze) {
-      this.recoveryFallbackSince = this.lastConnectedAt || this.now()
+      this.recoveryFallbackSince = this.lastConnectedAt || this.client.serverNow()
       this.recoveryCompletedChannels.clear()
     }
     for (const [channelId, wm] of this.channelWatermarks) {
@@ -866,7 +867,7 @@ export class MattermostConnection implements PlatformConnection {
 
   private async catchUpOnce(): Promise<void> {
     if (this.stopped || this.wsDisconnected) return
-    const passStartedAt = this.now()
+    const passStartedAt = this.client.serverNow()
     const passEpoch = this.recoveryEpoch
     let listed: MattermostChannel[] = []
     let channelsListComplete = true
@@ -920,7 +921,7 @@ export class MattermostConnection implements PlatformConnection {
         if (this.recoveryCompletedChannels.has(ch.id)) continue
         const watermark = this.recoveryWatermarks.get(ch.id) ?? fallbackSince
         const since = Math.max(1, watermark - 1_000)
-        const passAt = this.now()
+        const passAt = this.client.serverNow()
         try {
           const { posts: fetchedPosts, maxPostAt, complete } = await this.fetchChannelPostsSince(ch.id, since)
           const posts = fetchedPosts
@@ -956,7 +957,10 @@ export class MattermostConnection implements PlatformConnection {
           let lastRun: Promise<void> | undefined
           for (const p of posts) {
             if (this.stopped || this.wsDisconnected || this.recoveryEpoch !== passEpoch || !p.id) break
-            const dedupKey = `posted:${p.id}`
+            // A post created before the outage and only touched during it is an edit: replay it as one, and only when it closes a response.
+            const type = (p.create_at ?? 0) >= since ? 'posted' : 'post_edited'
+            if (type === 'post_edited' && readMattermostAgentAuthorshipClaim(p)?.deliveryState !== 'final') continue
+            const dedupKey = `${type}:${p.id}`
             if (this.seen.has(dedupKey)) continue
             this.seen.add(dedupKey)
             while (this.seen.size > SEEN_LIMIT) {
@@ -965,7 +969,7 @@ export class MattermostConnection implements PlatformConnection {
               this.seen.delete(oldest)
             }
             const syntheticEvent: MattermostPostedEvent = {
-              event: 'posted',
+              event: type,
               data: {
                 post: p,
                 channel_type: resolvedChannel.type,
@@ -977,9 +981,11 @@ export class MattermostConnection implements PlatformConnection {
             }
             const prev = this.inboundChains.get(ch.id) ?? Promise.resolve()
             const run = prev
-              .then(() => this.processPostEvent('posted', syntheticEvent, p))
+              .then(() => this.processPostEvent(type, syntheticEvent, p))
               .catch((error: unknown) => {
                 hadError = true
+                // Forget the post so the retry pass delivers it instead of skipping it as already seen.
+                this.seen.delete(dedupKey)
                 this.deps.log.warn(
                   `mattermost: catch-up process failed (${error instanceof Error ? error.message : 'unknown error'})`
                 )
@@ -1117,7 +1123,7 @@ export class MattermostConnection implements PlatformConnection {
     if (this._botUserId && post.user_id === this._botUserId) {
       const claim = readMattermostAgentAuthorshipClaim(post)
       if (!claim || claim.deliveryState !== 'final' || post.props?.agentconnect_chrome === true) {
-        this.advanceChannelWatermark(post.channel_id, post.create_at ?? this.now())
+        this.advanceChannelWatermark(post.channel_id, post.create_at ?? this.client.serverNow())
         return
       }
     }
@@ -1125,7 +1131,7 @@ export class MattermostConnection implements PlatformConnection {
     if (type === 'post_edited') {
       const claim = readMattermostAgentAuthorshipClaim(post)
       if (claim?.deliveryState !== 'final') {
-        this.advanceChannelWatermark(post.channel_id, post.create_at ?? this.now())
+        this.advanceChannelWatermark(post.channel_id, post.create_at ?? this.client.serverNow())
         return
       }
     }
@@ -1191,12 +1197,21 @@ export class MattermostConnection implements PlatformConnection {
 
     let senderIsBot = post.props?.from_bot === 'true' || post.props?.from_bot === true
     let senderName = typeof event.data?.sender_name === 'string' ? event.data.sender_name : undefined
-    if (!senderIsBot || !senderName) {
+    let profileIsBot = false
+    if (!senderIsBot || !senderName || type === 'post_edited') {
       const user = await this.getUserCached(userId).catch(() => undefined)
       if (user) {
-        if (user.is_bot) senderIsBot = true
+        if (user.is_bot) {
+          senderIsBot = true
+          profileIsBot = true
+        }
         senderName ??= user.username
       }
+    }
+    // Anyone can set props on their own post, so a response-final claim counts only from an account the server says is a bot.
+    if (type === 'post_edited' && !profileIsBot) {
+      this.advanceChannelWatermark(channelId, post.create_at ?? this.client.serverNow())
+      return
     }
 
     const context = {
@@ -1216,7 +1231,7 @@ export class MattermostConnection implements PlatformConnection {
         : normalizeMattermostResponseFinalization(event, context)
     if (!normalized) return
 
-    this.advanceChannelWatermark(channelId, post.create_at ?? this.now())
+    this.advanceChannelWatermark(channelId, post.create_at ?? this.client.serverNow())
 
     const msg = normalized as NormalizedMessage
     for (const attachment of msg.attachments ?? []) {

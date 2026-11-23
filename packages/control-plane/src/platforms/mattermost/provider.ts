@@ -87,7 +87,8 @@ function interpretMeResponse(serverUrl: string, status: number, body: unknown): 
   const user = body && typeof body === 'object' ? (body as { id?: unknown; username?: unknown }) : null
   const botUserId = text(user?.id)
   const botUsername = text(user?.username)
-  if (!botUserId || !botUsername) {
+  // The id becomes `externalTenantId` inside colon-split identity keys, so accept only Mattermost's 26-char id shape.
+  if (!botUserId || !/^[a-z0-9]{26}$/.test(botUserId) || !botUsername) {
     return invalidServerUrl('The server did not return a valid Mattermost user profile at /api/v4/users/me.')
   }
 

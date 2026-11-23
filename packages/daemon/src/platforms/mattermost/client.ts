@@ -225,6 +225,7 @@ export class MattermostClient {
   private seq = 1
   private attempt = 0
   private upSince = 0
+  private clockOffsetMs = 0
   private missedPongs = 0
   private heartbeat?: ReturnType<typeof setInterval>
   private retryTimer?: ReturnType<typeof setTimeout>
@@ -239,6 +240,18 @@ export class MattermostClient {
     this.timing = { ...DEFAULT_TIMING, ...deps.timing }
     this.rateLimiter = deps.rateLimiter ?? new MattermostRateLimiter(this.now, deps.sleep)
     this.fetcher = mattermostFetch(deps.fetchImpl)
+  }
+
+  /** Server wall clock estimated from REST `Date` headers; watermarks compare against server `create_at`, never the daemon clock. */
+  serverNow(): number {
+    return this.now() + this.clockOffsetMs
+  }
+
+  private noteServerDate(headers: Headers): void {
+    const raw = headers.get('date')
+    const serverMs = raw ? Date.parse(raw) : Number.NaN
+    // `Date` is truncated to the second, so the estimate trails the server by under a second; a low watermark only refetches.
+    if (Number.isFinite(serverMs)) this.clockOffsetMs = serverMs - this.now()
   }
 
   get connected(): boolean {
@@ -560,6 +573,7 @@ export class MattermostClient {
         throw new MattermostTransportError(`mattermost: ${reason}`, method !== 'GET' && !this.abort.signal.aborted)
       }
 
+      this.noteServerDate(response.headers)
       if (response.status === 429) {
         const retryAfterMs = parseRetryAfterMs(response.headers, this.now()) ?? MATTERMOST_DEFAULT_RETRY_AFTER_MS
         const errPayload = await readErrorPayload(response)

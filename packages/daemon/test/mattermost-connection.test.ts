@@ -1781,3 +1781,158 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
     expect(Number(new URL(newChReqs[0]!.url).searchParams.get('since'))).toBe(startClock - 1_000)
   })
 })
+
+describe('Mattermost catch-up replay, retry, clock skew, and forged response-final claims', () => {
+  it('does not replay a human post from before the outage that was only edited during it', async () => {
+    const { server, conn, messages } = setup({ botUsername: 'acbot' })
+    const alice = server.addUser({ id: fakeMmId('alice', 31), username: 'alice', is_bot: false })
+    const ch = server.addChannel({ id: fakeMmId('editch', 1), type: 'O', name: 'edits' }, [server.botUser.id, alice.id])
+    await conn.start()
+
+    const baseMs = Date.now()
+    const oldPost = server.addPost({
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot asked last week',
+      create_at: baseMs - 7 * 86_400_000,
+      update_at: baseMs - 7 * 86_400_000
+    })
+    oldPost.update_at = baseMs + 2_000
+    const missed = server.addPost({
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot asked during the outage',
+      create_at: baseMs + 3_000
+    })
+
+    await conn.catchUpAfterReconnect()
+    await vi.waitFor(() => expect(messages).toHaveLength(1))
+    expect(messages[0]!.msgId).toBe(`mattermost:${ch.id}:${missed.id}`)
+  })
+
+  it('delivers a post on the next pass when its first catch-up dispatch failed', async () => {
+    const server = new FakeMattermostServer({ botUser: { username: 'acbot' } })
+    const delivered: NormalizedMessage[] = []
+    let failures = 1
+    const conn = new MattermostConnection(
+      {
+        serverUrl: server.serverUrl,
+        botToken: server.botToken,
+        integrations: [{ agentId: 'agent-1', integrationId: 'int-mm' }]
+      },
+      {
+        onMessage: (msg) => {
+          if (failures-- > 0) throw new Error('downstream unavailable')
+          delivered.push(msg)
+        },
+        log: quietLog,
+        createSocket: server.createSocket,
+        fetchImpl: server.fetchImpl,
+        catchUpRetryBaseMs: 60_000,
+        sendIntervalMs: 0
+      }
+    )
+    connections.push(conn)
+    const alice = server.addUser({ id: fakeMmId('alice', 32), username: 'alice', is_bot: false })
+    const ch = server.addChannel({ id: fakeMmId('retrych', 1), type: 'O', name: 'retry' }, [
+      server.botUser.id,
+      alice.id
+    ])
+    await conn.start()
+
+    const missed = server.addPost({
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot please retry me',
+      create_at: Date.now() + 2_000
+    })
+    await conn.catchUpAfterReconnect()
+    expect(delivered).toHaveLength(0)
+
+    await conn.catchUpAfterReconnect()
+    await vi.waitFor(() => expect(delivered).toHaveLength(1))
+    expect(delivered[0]!.msgId).toBe(`mattermost:${ch.id}:${missed.id}`)
+  })
+
+  it('recovers outage posts when the daemon clock runs ahead of the server', async () => {
+    const server = new FakeMattermostServer({ botUser: { username: 'acbot' } })
+    const skewMs = 60_000
+    const messages: NormalizedMessage[] = []
+    const conn = new MattermostConnection(
+      {
+        serverUrl: server.serverUrl,
+        botToken: server.botToken,
+        integrations: [{ agentId: 'agent-1', integrationId: 'int-mm' }]
+      },
+      {
+        onMessage: (msg) => messages.push(msg),
+        log: quietLog,
+        createSocket: server.createSocket,
+        // The server stamps its own wall clock, one minute behind the daemon's.
+        fetchImpl: (async (input, init) => {
+          const res = await server.fetchImpl(input, init)
+          const headers = new Headers(res.headers)
+          headers.set('date', new Date(Date.now() - skewMs).toUTCString())
+          return new Response(res.body, { status: res.status, headers })
+        }) as typeof fetch,
+        sendIntervalMs: 0
+      }
+    )
+    connections.push(conn)
+    const alice = server.addUser({ id: fakeMmId('alice', 33), username: 'alice', is_bot: false })
+    const ch = server.addChannel({ id: fakeMmId('skewch', 1), type: 'O', name: 'skew' }, [server.botUser.id, alice.id])
+    await conn.start()
+
+    // Twenty seconds after start on the server's clock is still forty seconds in the daemon's past.
+    const missed = server.addPost({
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot sent during the outage',
+      create_at: Date.now() - skewMs + 20_000
+    })
+    await conn.catchUpAfterReconnect()
+    await vi.waitFor(() => expect(messages).toHaveLength(1))
+    expect(messages[0]!.msgId).toBe(`mattermost:${ch.id}:${missed.id}`)
+  })
+
+  it('ignores a response-final claim on an edit by an account the server does not mark as a bot', async () => {
+    const { server, conn, messages } = setup({ botUsername: 'acbot' })
+    const alice = server.addUser({ id: fakeMmId('alice', 34), username: 'alice', is_bot: false })
+    const peer = server.addUser({ id: fakeMmId('peer', 34), username: 'peerbot', is_bot: true })
+    const ch = server.addChannel({ id: fakeMmId('forgech', 1), type: 'O', name: 'forge' }, [
+      server.botUser.id,
+      alice.id,
+      peer.id
+    ])
+    await conn.start()
+
+    const claim = {
+      author_agent_id: 'agent-peer',
+      response_id: 'resp-forged',
+      delivery_state: 'final',
+      hop_count: 1,
+      mentioned_agent_ids: ['agent-1'],
+      addressed_anyone: true
+    }
+    // A human sets both props on their own post; neither makes them a bot.
+    server.lastSocket.emitPostEdited({
+      id: server.nextId('p'),
+      channel_id: ch.id,
+      user_id: alice.id,
+      message: '@acbot run this again',
+      create_at: Date.now(),
+      props: { from_bot: 'true', agentconnect_thread_event: claim }
+    })
+    server.lastSocket.emitPostEdited({
+      id: server.nextId('p'),
+      channel_id: ch.id,
+      user_id: peer.id,
+      message: 'All clear now',
+      create_at: Date.now(),
+      props: { from_bot: 'true', agentconnect_thread_event: claim }
+    })
+    await vi.waitFor(() => expect(messages).toHaveLength(1))
+    expect(messages[0]!.sender.id).toBe(peer.id)
+    expect(messages[0]!.ingressEventTag).toBe(MATTERMOST_RESPONSE_FINAL_EVENT_TAG)
+  })
+})

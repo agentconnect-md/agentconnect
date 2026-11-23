@@ -109,7 +109,6 @@ services:
     ports:
       - 127.0.0.1:8091:8091
     networks:
-      - default
       - admin
     restart: unless-stopped
 

@@ -18501,10 +18501,12 @@ export class Daemon {
     if (msg.platformId === MATTERMOST_PLATFORM && decoded.actor && decoded.actor.isBot === undefined) {
       const conn = this.anyConnForIntegration(msg.integrationId) as
         { getUserProfile?: (userId: string) => Promise<{ isBot?: boolean }> } | undefined
-      if (conn && typeof conn.getUserProfile === 'function') {
-        const profile = await conn.getUserProfile(decoded.actor.userId).catch(() => undefined)
-        click = { ...decoded, actor: { ...decoded.actor, isBot: profile?.isBot !== false } }
-      }
+      // No connection or a failed lookup leaves the clicker unverified, so treat them as a bot and refuse.
+      const profile =
+        conn && typeof conn.getUserProfile === 'function'
+          ? await conn.getUserProfile(decoded.actor.userId).catch(() => undefined)
+          : undefined
+      click = { ...decoded, actor: { ...decoded.actor, isBot: profile?.isBot !== false } }
     }
     const told = await this.answerCardClick(click, msg.agentId, msg.integrationId)
     return { msgId: msg.msgId, accepted: true, ...(told ? { response: cards.response(told) } : {}) }

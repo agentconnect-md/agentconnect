@@ -324,4 +324,31 @@ describe('MattermostClient WebSocket & REST v4', () => {
     expect(wireText).toContain('# Mattermost Badge')
     expect(wireText).not.toContain('[object FormData]')
   })
+
+  it('estimates the server clock from REST Date headers and stays on the daemon clock without one', async () => {
+    const server = new FakeMattermostServer({ botToken: TOKEN })
+    const serverClock: { ms?: number } = {}
+    const client = new MattermostClient({
+      serverUrl: server.serverUrl,
+      botToken: TOKEN,
+      onEvent: () => undefined,
+      log: quietLog,
+      createSocket: server.createSocket,
+      now: () => 1_000_000_000_000,
+      fetchImpl: (async (input, init) => {
+        const res = await server.fetchImpl(input, init)
+        const headers = new Headers(res.headers)
+        if (serverClock.ms !== undefined) headers.set('date', new Date(serverClock.ms).toUTCString())
+        return new Response(res.body, { status: res.status, headers })
+      }) as typeof fetch
+    })
+    clients.push(client)
+
+    await client.getMe()
+    expect(client.serverNow()).toBe(1_000_000_000_000)
+
+    serverClock.ms = 1_000_000_000_000 - 90_000
+    await client.getMe()
+    expect(client.serverNow()).toBe(1_000_000_000_000 - 90_000)
+  })
 })

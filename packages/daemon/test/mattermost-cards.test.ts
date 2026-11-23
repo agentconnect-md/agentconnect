@@ -1196,5 +1196,35 @@ describe('Mattermost Fill cards and Assistant Draft cards', () => {
       AGENT_ID,
       INT_ID
     )
+
+    // With no connection to look the clicker up, the click is treated as a bot's rather than a person's.
+    daemon.mattermostConnByIntegration.delete(INT_ID)
+    answerSpy.mockClear()
+    await daemon.handleRelayCardClick(
+      {
+        source: 'platform_action',
+        platformId: MATTERMOST_PLATFORM,
+        agentId: AGENT_ID,
+        sessionKey: 'mm:ch',
+        integrationId: INT_ID,
+        botId: INT_ID,
+        msgId: 'mm-unverified-click',
+        payload: {
+          postId: 'post1',
+          channelId: ch.id,
+          userId: 'someuser',
+          userName: 'someone',
+          kind: 'approval',
+          requestId: 'req-1',
+          option: 0
+        }
+      },
+      mattermostCardClicks
+    )
+    expect(answerSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ actor: { userId: 'someuser', name: 'someone', isBot: true } }),
+      AGENT_ID,
+      INT_ID
+    )
   })
 })

@@ -364,6 +364,12 @@ export function mattermostTextAddressesAnyone(text: string): boolean {
   return Boolean(visible && /(?<![A-Za-z0-9._-])@(?:[A-Za-z0-9._-]+|channel|all|here)\b/i.test(visible))
 }
 
+/** True when visible text carries `@channel`/`@all`/`@here`, for which the server lists every member as mentioned. */
+export function mattermostTextBroadcasts(text: string): boolean {
+  const visible = stripMattermostNonMentionSpans(text)
+  return Boolean(visible && /(?<![A-Za-z0-9._-])@(?:channel|all|here)(?![A-Za-z0-9_-]|\.[A-Za-z0-9_-])/i.test(visible))
+}
+
 /** Case-insensitive `@botUsername` check bounded against email addresses, code spans, markdown link targets, and longer username prefixes. */
 export function mattermostMentionsBot(text: string, botUsername?: string): boolean {
   const visible = stripMattermostNonMentionSpans(text)
@@ -554,8 +560,10 @@ function normalizePostEvent(
   const attachments = collectAttachments(post, context.serverUrl)
   if (!text.trim() && attachments.length === 0) return null
 
-  const mentionIds = parseMattermostMentions(data.mentions)
   const textMentionsBot = Boolean(context.botUsername && mattermostMentionsBot(text, context.botUsername))
+  // A broadcast puts every member in `data.mentions`; that alone does not address this bot.
+  const broadcastOnly = !textMentionsBot && mattermostTextBroadcasts(text)
+  const mentionIds = parseMattermostMentions(data.mentions).filter((id) => !(broadcastOnly && id === context.botUserId))
   const mentionedBots = [
     ...new Set([...mentionIds, ...(textMentionsBot && context.botUserId ? [context.botUserId] : [])])
   ]

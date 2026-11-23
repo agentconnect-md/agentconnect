@@ -15,7 +15,7 @@ import type { BotRecord, IntegrationRecord } from '../../persistence/ports.js'
 
 const SERVER_URL = 'https://chat.example.com/team'
 const BOT_TOKEN = 'mm-bot-token-placeholder'
-const BOT_USER_ID = 'botuser1234567890abcdef12'
+const BOT_USER_ID = 'botuser1234567890abcdef123'
 const BOT_USERNAME = 'agentbot'
 
 const EXPECTED_APP_ID = `mm-${createHash('sha256').update(SERVER_URL).digest('hex').slice(0, 16)}`
@@ -161,6 +161,14 @@ describe('Mattermost credential check', () => {
     expect(
       await verifyMattermostBot({ serverUrl: SERVER_URL, botToken: BOT_TOKEN }, { fetch: notFound })
     ).toMatchObject({ ok: false, status: 400, code: 'MATTERMOST_SERVER_URL_INVALID' })
+
+    for (const id of ['mm:bot:1', 'A'.repeat(26), 'x'.repeat(200)]) {
+      const oddId = vi.fn(async () => Response.json({ id, username: BOT_USERNAME, is_bot: true }))
+      expect(
+        await verifyMattermostBot({ serverUrl: SERVER_URL, botToken: BOT_TOKEN }, { fetch: oddId }),
+        id
+      ).toMatchObject({ ok: false, status: 400, code: 'MATTERMOST_SERVER_URL_INVALID' })
+    }
 
     const nonMattermost = vi.fn(async () => new Response('<html>Login</html>', { status: 200 }))
     expect(

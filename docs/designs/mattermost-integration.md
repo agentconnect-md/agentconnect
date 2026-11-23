@@ -136,7 +136,7 @@ A Mattermost bot connection is defined by `(serverUrl, botToken)` (`IntegrationM
 - **Colon-free tenant realm (`mattermostExternalAppId`):** Computes `mm-${sha256(normalizedServerUrl).slice(0, 16)}`. Because `ownerIdentity`, `approvalRoute`, and `SessionAccessViewer` split identity strings on `:`, hashing the URL prevents scheme/port colons from corrupting tenant keys.
 - **D6 bot uniqueness (`Bot` table):** `MattermostCpProvider.buildNewBotInstall` writes `externalIdentity: { externalAppId, externalTenantId: botUserId }`, `secrets: { botToken, appToken: null, signingSecret: null }`, `platformConfig: { serverUrl, botUserId, botUsername }`, and `workspaceName: new URL(serverUrl).host`. Postgres's `@@unique([platform, externalAppId, externalTenantId])` index prevents installing the same Mattermost bot account twice on the same server while permitting multiple distinct bots per server.
 - **Token verification (`verifyMattermostBot`):** Calls `GET <serverUrl>/api/v4/users/me` with `Bearer <botToken>` (`MATTERMOST_CHECK_TIMEOUT_MS = 10_000`) and classifies failures deterministically:
-  - `400 MATTERMOST_SERVER_URL_INVALID`: bad URL shape, SSRF block, `404` API root missing, or malformed `/users/me` payload.
+  - `400 MATTERMOST_SERVER_URL_INVALID`: bad URL shape, SSRF block, `404` API root missing, or malformed `/users/me` payload — including an `id` that is not a 26-char `^[a-z0-9]{26}$` Mattermost ID, since the server is tenant-supplied and the ID becomes `externalTenantId` inside colon-split identity keys.
   - `400 MATTERMOST_CREDENTIALS_INVALID`: `401`, `403`, or other non-404 `4xx`.
   - `503 MATTERMOST_CHECK_UNAVAILABLE`: `408`, `429`, `5xx`, `3xx`, or transport failure.
   - `409 MATTERMOST_BOT_ALREADY_INSTALLED`: duplicate `(mattermost, externalAppId, botUserId)` bot row.
@@ -159,6 +159,14 @@ disables HTTP redirects while keeping internal allowlists isolated from Relay MC
 Relay (`POST /mattermost/actions`) makes **no** outbound HTTP requests to Mattermost; outbound
 SSRF checks live exclusively on Setup, Control Plane, and Daemon.
 
+Two properties of the Control Plane allowlists are worth knowing before adding a host. They match
+the URL **hostname only**, so every port on an allowlisted host is reachable. And they are shared
+rather than Mattermost-specific: Mattermost checks honor `CP_ALLOWED_OUTBOUND_HOSTS` as well as
+`AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`, and the Control Plane's MCP OAuth egress honors
+`AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` too. Only the Relay's `RELAY_MCP_ALLOWED_UPSTREAMS` stays
+separate. On a multi-tenant install, a host added for one purpose is therefore dialable through
+the other.
+
 ## 4. WebSocket v4 transport, revocation, and reconnect recovery
 
 ### 4.1 Connection pooling, authentication quirk, and revocation probe
@@ -173,6 +181,10 @@ updates, and retries failed connections every `30_000 ms`.
   2. Calls `getClientCapabilities()` (`GET /api/v4/config/client?format=old`) to read `MaxPostSize` (falling back safely to `MATTERMOST_DEFAULT_MAX_POST_SIZE = 4_000`), `EnablePostUsernameOverride`, and `EnablePostIconOverride`.
   3. Seeds teams (`GET /api/v4/users/me/teams`) and active non-deleted channels (`GET /api/v4/users/me/channels?include_deleted=false`) into `channels` (`CHANNEL_CACHE_MAX = 2_000`) and `channelWatermarks` (`WATERMARK_CACHE_MAX = 50_000`).
   4. Sets `lastConnectedAt` and opens the WebSocket via `MattermostClient.start()`.
+- **Server clock:** Recovery watermarks are compared against server `create_at` values, so they are
+  taken from `MattermostClient.serverNow()` — the daemon clock corrected by the `Date` header of
+  the latest REST response — never from the daemon clock alone. `Date` is truncated to the second,
+  so the estimate trails the server by under a second, which only widens a refetch.
 - **Post-open `authentication_challenge` quirk:** `MattermostClient` dials `ws(s)://<host><basePath>/api/v4/websocket`
   and authenticates strictly with a post-open `{ seq, action: 'authentication_challenge', data: { token } }` frame.
   Sending an HTTP `Authorization` header during the WebSocket Upgrade pre-authenticates Mattermost's
@@ -194,8 +206,9 @@ updates, and retries failed connections every `30_000 ms`.
 ### 4.2 Hardened full-channel reconnect catch-up
 
 WebSocket drops or Mattermost server restarts can occur while users continue posting across any
-channel. `MattermostConnection` guarantees zero silent post loss through four invariants in
-`freezeRecoveryWatermarks()`, `fetchChannelPostsSince()`, and `catchUpOnce()`:
+channel. `MattermostConnection` recovers the posts of an outage through four invariants in
+`freezeRecoveryWatermarks()`, `fetchChannelPostsSince()`, and `catchUpOnce()`. Recovery is
+at-least-once within the limits listed after them, not a guarantee against every loss:
 
 1. **Frozen pre-disconnect watermarks (`WATERMARK_CACHE_MAX = 50_000`):** `onWsDisconnect()`,
    `onWsReconnect()`, and `catchUpAfterReconnect()` snapshot each channel's pre-outage `channelWatermarks`
@@ -225,9 +238,13 @@ channel. `MattermostConnection` guarantees zero silent post loss through four in
    - Backward pages: `?before=<oldestId>&per_page=60` up to `MAX_CATCH_UP_PAGES = 200` whenever
      `prev_post_id` or page-cap heuristics indicate older posts exist.
    - Posts are filtered, sorted oldest-first, deduplicated (`seen`, `SEEN_LIMIT = 2_000`), and
-     dispatched serially per channel (`inboundChains`). Only when every page finishes without
-     dispatch errors in the same active `recoveryEpoch` does the channel mark `recoveryCompletedChannels.add(ch.id)`
-     and advance both watermarks.
+     dispatched serially per channel (`inboundChains`). A post created at or after `since` is
+     replayed as `posted`. A post created before it, which matched only because it was touched
+     during the outage, is an edit: it is replayed as `post_edited` when it closes an AgentConnect
+     response and dropped otherwise, exactly as a live edit is. Only when every page finishes
+     without dispatch errors in the same active `recoveryEpoch` does the channel mark
+     `recoveryCompletedChannels.add(ch.id)` and advance both watermarks. A post whose dispatch
+     failed leaves `seen`, so the retry pass delivers it.
 4. **Two-phase catch-up retry & clean reset:** `recoveryWatermarks`, `recoveryFallbackSince`,
    `recoveryCompletedChannels`, and `lastConnectedAt = Math.max(lastConnectedAt, passStartedAt)` clear
    **only** on a fully clean pass (`allChannelsClean === true` with an active socket and no queued pass).
@@ -241,6 +258,21 @@ channel. `MattermostConnection` guarantees zero silent post loss through four in
      logs a single warning and continues retrying every `CATCH_UP_STEADY_RETRY_MS = 60_000 ms`
      (overridable via `catchUpSteadyRetryMs`) with frozen `recoveryWatermarks` until catch-up completes
      cleanly, the WebSocket drops/reconnects (resetting `catchUpRetryCount = 0`), or `stop()` is called.
+
+**Known limits of recovery.** All of them trade a duplicate or a late delivery for not losing a
+post, except the first:
+
+- Posts created between channel seeding and the WebSocket coming up at first start are not
+  caught up; there is no earlier watermark to recover from.
+- Deduplication is in memory (`SEEN_LIMIT = 2_000` keys across all channels). Each pass refetches
+  the last second before a channel's watermark, so once more than 2,000 keys have passed, the
+  post that set the watermark can be delivered a second time.
+- A channel that hits `MAX_CATCH_UP_PAGES = 200` keeps its watermark and is retried, and each
+  retry replays whatever has left `seen`.
+- A live post that arrives after reconnect is processed ahead of older outage posts in the same
+  channel; the two share a per-channel chain, so neither is duplicated.
+- Every reconnect issues at least one `since` request per joined channel, and a channel that
+  fails permanently (`403`/`404`) keeps the steady retry alive until the next disconnect.
 
 ## 5. Conversations, normalization, streaming, and media
 
@@ -273,16 +305,23 @@ In `packages/message/src/mattermost-message.ts` and `mattermost-mention-address.
   (`stripLinkDestinationsInParagraph`) in `O(N)` linear time with zero catastrophic regex
   backtracking (mitigating CVE-2023-48732). `mattermostMentionsBot`, `extractMattermostUsernameMentions`,
   and `mattermostTextAddressesAnyone` scan only the remaining visible text while ignoring `@channel`,
-  `@all`, and `@here` and rejecting email addresses such as `user@bot`.
+  `@all`, and `@here` and rejecting email addresses such as `user@bot`. Indented code blocks are
+  not stripped. For a broadcast the server lists every channel member in `data.mentions`, so when
+  the text broadcasts without naming the bot (`mattermostTextBroadcasts`), the bot's own ID is
+  removed from the server's list and the broadcast does not wake it.
 - **Sender identity & spoofing guard:** For non-webhook posts, `normalizePostEvent` prefers verified
   `data.sender_name ?? context.senderName` over spoofable `props.override_username`. Bot classification
   sets `isBot = props.from_bot === 'true' | true || isWebhook || context.senderIsBot === true`.
 - **Authorship claims & `response-final`:** `readMattermostAgentAuthorshipClaim` parses
   `props.agentconnect_thread_event`, and `normalizeMattermostResponseFinalization` unwraps
   `post_edited` frames **only** when `claim?.deliveryState === 'final'` (`ingressEventTag = 'response-final'`).
-  `MattermostConnection.onWsEvent` drops unfinalized own-bot streaming edits and UI chrome posts
-  (`props.agentconnect_chrome === true`) while allowing finalized bot posts through so peer bots can
-  collaborate across daemons.
+  Any user can set props on their own post, so `MattermostConnection.processPostEvent` accepts
+  that claim only from an account whose server profile says `is_bot`; `props.from_bot` is not
+  enough, and a failed profile lookup drops the edit. `MattermostConnection.onWsEvent` drops
+  own-bot posts that carry no final claim — streaming edits and chrome posts alike — while
+  allowing finalized bot posts through so peer bots can collaborate across daemons. The
+  `props.agentconnect_chrome` marker is read in those filters but no post sets it yet, so chrome
+  posts are told apart only by the missing claim.
 - **Cross-daemon `@botUsername` collaboration:** `CollabAgentPlacement.botUsername` carries each
   agent's handle without `@`; `resolveMattermostMentionedAgents` maps `@handle` mentions (with
   trailing-slug disambiguation when multiple agents share a handle) into `mentionedAgentIds` on
@@ -346,6 +385,14 @@ AgentConnect therefore authenticates clicks using an HMAC-signed `mm1` token emb
 `integration.context.token` and maintains a pure-WebSocket numbered-reply fallback for NAT/intranet
 deployments where `PUBLIC_RELAY_URL` (or the callback secret) is unconfigured.
 
+**Trust root.** The token authenticates the card, not the person. Its claims name no user, and
+Relay takes `user_id` from the request body, so whoever holds a button's token can submit a click
+as any user ID. The scheme is sound only while the token stays between the daemon and the
+Mattermost server: it relies on the server withholding `integration.context` from the posts it
+serves to clients, which nothing here verifies and no minimum server version enforces. Server
+administrators, plugins, and exports can read it. The pure-WebSocket fallback does not share this
+dependency, because the reply arrives as that user's own authenticated post.
+
 ```mermaid
 sequenceDiagram
     participant U as Mattermost User
@@ -384,7 +431,10 @@ sequenceDiagram
   (`organizationMode: 'connection'`) receive `AuthOk.mattermostActionSecret = deriveMattermostOrgActionSecret(secret, orgId)`,
   whereas multi-tenant cluster pool daemons (`organizationMode: 'frame'`) receive the master secret
   and derive per-org secrets dynamically in `Daemon.mattermostActionCallback(agentId)`. Relay receives
-  the master secret in `RcAuthOk.mattermostActionSecret`.
+  the master secret in `RcAuthOk.mattermostActionSecret`. A pool daemon therefore holds a secret
+  that can sign a token for any organization, and Relay's `orgForAgent` check does not catch one
+  it signed for the matching org: per-org isolation of the callback holds against self-hosted
+  daemons, not against a compromised pool daemon. There is no key ID or rotation path in v1.
 - **Wire token (`packages/protocol/src/mattermost-action-token.ts`):**
   - Org-scoped: `mm1.<orgIdB64>.<payloadB64>.<sig>`, HMAC-SHA256 signed over `mm-action-v2:<orgIdB64>.<payloadB64>` using `deriveMattermostOrgActionSecret(masterSecret, orgId)`. `verifyMattermostActionTokenWithMaster` extracts and validates `orgId` (`SAFE_ID_RE`) **before** parsing untrusted JSON payload bytes.
   - Standalone fallback (tests/single-secret): `<payloadB64>.<sig>` signed over `mm-action-v1:<payloadB64>`.
@@ -405,7 +455,7 @@ sequenceDiagram
    bounded by `settleWithin(..., MATTERMOST_ACTION_DEADLINE_MS = 4_000)`.
 4. **Daemon fail-closed guards & settlement:** `Daemon.handleRelayCardClick` verifies the agent and
    integration, looks up `conn.getUserProfile(userId)` when `isBot === undefined` (failing closed as
-   `isBot: true` if lookup fails), invokes `answerCardClick`, patches settled posts with
+   `isBot: true` if the lookup fails or the integration has no connection), invokes `answerCardClick`, patches settled posts with
    `{ props: { attachments: [] } }` to strip buttons, and caps refusal notices at `MATTERMOST_CARD_NOTE_MAX = 400`.
 
 ### 6.3 Card facets and pure-WS numbered reply fallback
@@ -429,7 +479,7 @@ scope (`QUESTION_TAG_LIMIT = 500`), posting refusals privately via `postEphemera
 
 - **Instance probe (`packages/setup/src/mattermost-probe.ts`):** `POST /api/v1/check/mattermost`
   runs `probeMattermostInstance` (`GET <serverUrl>/api/v4/system/ping`, `5_000 ms` timeout, `64 KiB`
-  response cap, DNS-pinned manual redirect). Returns `'ok'` (`200` JSON ping or `401`/`403` JSON behind
+  response cap, DNS-pinned, redirects not followed). Returns `'ok'` (`200` JSON ping or `401`/`403` JSON behind
   an auth gateway), `'invalid_url'`, `'unreachable'`, `'tls_untrusted'` (`TLS_FAILURE_CODES` hinting
   `NODE_EXTRA_CA_CERTS`), or `'not_a_mattermost_api_root'`. Only `invalid_url` sets `blocksSave: true`.
 - **Logto connector (`packages/setup/src/server/logto-management.ts`):** Provisions Logto's built-in
@@ -454,7 +504,9 @@ When resolving visibility in `MattermostSessionAccessService` (`packages/control
 `addViewerIdentities` reads `user.identities.mattermost.userId` (`^[a-z0-9]{26}$`) under
 `tenant: mattermostOauthRealmKey`. For each matching conversation scope (`CHECK_CONCURRENCY = 4`,
 `CHECK_BUDGET_MS = 5_000`, `LRUCache` `fetchMethod` signals decoupled from caller deadlines; TTLs
-`120_000 ms` allow / `30_000 ms` deny / `5_000 ms` unknown):
+`120_000 ms` allow / `30_000 ms` deny / `5_000 ms` unknown; the user-state and team-membership
+caches behind a decision hold `120_000 ms` of their own, so a deactivated user can keep access for
+about four minutes):
 
 1. **Direct channel membership (`GET /api/v4/channels/{channelId}/members/{mmUserId}`):**
    - On `200` (with matching `channel_id` and `user_id`), verifies `GET /api/v4/users/{mmUserId}`
@@ -479,7 +531,10 @@ Mattermost onboarding tiles in the Console wizard are gated by `FEATURE_FLAGS=ma
 (`packages/web/src/lib/feature-flags.ts`, `charts/agentconnect/values.yaml` `features.mattermost: false`
 by default; existing configured bots remain manageable in Settings). Gateway `HTTPRoute`
 (`charts/agentconnect/templates/httproute.yaml`) explicitly routes `/mattermost/actions` to the
-Relay pool so interactive card clicks never 404 at the ingress gateway.
+Relay pool so interactive card clicks never 404 at the ingress gateway. The chart has no values
+for the other knobs below: on Kubernetes they are set through `extraEnv`, separately on the
+Control Plane and on the daemon pool, and the network and allowlist knobs must agree on both or
+a bot installs but its daemon refuses to dial (or the reverse).
 
 | Knob / setting                                           | Component(s)                                | Default / value                                   | Purpose                                                                                          |
 | -------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
