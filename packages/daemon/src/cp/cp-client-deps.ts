@@ -110,6 +110,8 @@ export interface CpClientConnectionHost {
   setOrgSlug(orgSlug: string | undefined): void
   /** Settles the promise `startCpClient` returns, on the first register/ok. */
   resolveInitialRegistry(): void
+  /** The CP link closed: per-org history retention is unsynced until the next register/ok. */
+  cpLinkLost?(): void
 }
 
 /** What the register frame, the runtime/MCP facts and the heartbeat report about this daemon. */
@@ -303,6 +305,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // Only ever called on the identity path (client.ts states why); the diagnosis is logged there.
     // Non-zero: a failure, not a planned lifecycle exit, so no supervisor treats it as a clean stop.
     onAuthFatal: () => host.exitFatal(1),
+    onLinkLost: () => host.cpLinkLost?.(),
     onRegisterRejected: (err) => host.autoUpgrade()?.onRegisterRejected(err),
     ...(host.bootstrapUpgradeCapable()
       ? {

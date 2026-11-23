@@ -88,6 +88,19 @@ describe('CpClient reconnect', () => {
     expect(connect).toHaveBeenCalledTimes(2)
   })
 
+  it('reports the lost link so what it delivered stops counting as current', async () => {
+    const clock = new FakeClock()
+    const connect = vi.fn(async () => new FakeTransport())
+    const onLinkLost = vi.fn()
+    const client = new CpClient({ ...deps(connect, clock), onLinkLost })
+    client.start()
+    await tick()
+    const t1 = (await connect.mock.results[0]!.value) as FakeTransport
+    expect(onLinkLost).not.toHaveBeenCalled()
+    t1.simulateClose(1012, 'restarting')
+    expect(onLinkLost).toHaveBeenCalledTimes(1)
+  })
+
   it('authenticates without an organization after a frame-scoped connection drops', async () => {
     const clock = new FakeClock()
     const transports: FakeTransport[] = []

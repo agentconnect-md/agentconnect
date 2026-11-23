@@ -75,6 +75,7 @@ import { COMPUTER_BROWSER_FEATURE } from '@agentconnect.md/protocol/computer-bro
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
 import { clearAwaitingApprovals } from '../approval-waits.js'
+import { orgHistoryRetentionSnapshot, readsOrgHistoryRetention } from '../../registry/orgHistoryRetention.js'
 
 export const handleRegister: Handler = async (frame, conn, deps) => {
   if (!isFrame('register')(frame)) return
@@ -130,6 +131,18 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   const [relays, gitCommitIdentity] = approved
     ? await Promise.all([deps.relayRoster(), deps.github?.getGitCommitIdentity()])
     : [[], undefined]
+  // org-session-policy.md, History retention: a failed read omits the field, which the daemon reads as not synced.
+  let orgHistoryRetention: Awaited<ReturnType<typeof orgHistoryRetentionSnapshot>> | undefined
+  if (deps.orgHistoryRetention && readsOrgHistoryRetention(req.capabilities.features)) {
+    try {
+      orgHistoryRetention = await orgHistoryRetentionSnapshot(deps.orgHistoryRetention, [
+        ...snap.agents.map((agent) => agent.orgId),
+        conn.orgId
+      ])
+    } catch (err) {
+      deps.log.error({ err, daemonId: conn.daemonId }, 'register: org history retention read failed')
+    }
+  }
 
   // register/ok grows with the daemon's agents and the org's conversations, so it is the first frame that may need fragments.
   if (req.capabilities.features.includes(FRAME_FRAGMENTS_FEATURE)) conn.enableFrameFragments()
@@ -141,6 +154,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     // daemon-auto-upgrade.md §4.1: re-announces the release a dropped push may have missed.
     ...(release ? { release } : {}),
     ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
+    ...(orgHistoryRetention ? { orgHistoryRetention } : {}),
     // A shared image picks its original's home at publication, before any signing (webchat-generated-images.md §5).
     ...(deps.fileTransfer ? { fileTransfer: { maxBytes: deps.fileTransfer.maxBytes } } : {}),
     // `agent-directory-org-scope-v1`: this CP accepts a `channel/agents` REQ with NO

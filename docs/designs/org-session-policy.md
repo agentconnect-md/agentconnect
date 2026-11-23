@@ -1,7 +1,8 @@
 # Organization Session Policy
 
 **Status:** storage, delivery, monthly session counting, admission, and
-[enforcement](#enforcement) implemented; see [Not yet](#not-yet).
+[enforcement](#enforcement) implemented; history retention is delivered to daemons and
+[counted in a dry run](#history-retention-dry-run) only; see [Not yet](#not-yet).
 
 ## What it is
 
@@ -269,9 +270,92 @@ hook run ends `failed` with the reason as its completion reason; a scheduled tas
 any other caller of the turn receive the turn's failure with the same text. A memory dream skips
 the run ([memory-dreaming.md](memory-dreaming.md)).
 
+## History retention (dry run)
+
+Today a daemon deletes a finished session's row, transcript and workspace when it has been idle
+longer than the daemon's own window, `sessions.retention` (the console's "Expire sessions",
+delivered as `register/ok.sessionRetention` and `config/push`). A pool member serves many
+organizations, so one window per daemon cannot carry each organization's `historyRetentionDays`.
+This stage delivers the per-organization window to the daemons and has their retention sweep count
+what it would decide. **Nothing is deleted by it**: the deletion path is still exactly the
+daemon-wide rule.
+
+### Delivery
+
+A daemon that advertises `org-history-retention-v1` receives, in `register/ok`,
+`orgHistoryRetention: { orgIds, entries }`:
+
+| Field     | Meaning                                                                                                  |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| `orgIds`  | Every organization the snapshot speaks for: the orgs of the agents in it and the connection's own org.   |
+| `entries` | `{ orgId, revision, historyRetentionDays }` for each listed org with a policy; `null` days is unlimited. |
+
+A listed org without an entry has no policy. When the [delivery route](#delivery-contract) applies
+a revision, the Control Plane pushes that org's stored entry as `config/push` key
+`sessions.orgHistoryRetention` to every READY daemon on the same replica that serves one of the
+org's agents and advertises the feature. A stale delivery pushes nothing, and a failed push never
+fails the delivery. A daemon on another replica, or offline, converges at its next `register/ok`.
+An older daemon receives neither the field nor the key and keeps its daemon-wide window; an older
+Control Plane sends neither, which the daemon reads as not synced.
+
+### The daemon's table
+
+The daemon keeps the delivered entries in memory, never on disk, and reads an org as:
+
+| Reading  | When                                                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| policy   | An entry is held: the window is its days, or unlimited for `null`.                                                              |
+| missing  | The org is listed without an entry, or the session's agent has no org (a local agent): today's daemon-wide window applies.      |
+| unsynced | No `register/ok` carrying the field since the link last dropped, including after an older Control Plane's `register/ok`.        |
+| stale    | A `register/ok` carried a revision below one already seen for the org, or omitted a policy seen before; a newer push clears it. |
+| unknown  | No delivery since the link came up named the org, for example an org first served through a duty grant after `register/ok`.     |
+
+The highest revision seen per org survives reconnects but not restarts. A push older than the held
+entry changes nothing. Unsynced, stale and unknown are **paused**: the org has no window to act on.
+
+### The dry run
+
+Each retention sweep, once a Control Plane has answered a `register`, runs the dry run before any
+pass that deletes, on the rows those passes are about to judge. It lists the finished sessions
+older than the shortest window in play (the daemon-wide one and every delivered one), and for each
+session this member judges compares today's decision (idle past the daemon-wide window) with the
+org's: its policy window, today's window when missing, or paused. When either would delete, it
+first applies the guards the real pass applies before deleting anything: its backoff after a kept
+workspace, a conversation's current append session, and the active-turn exclusions (a live or
+queued turn, pending inbox work, background tasks, an agent not yet loaded or draining). A guarded
+session is **protected** under both rules. The dirty-workspace check is not run, since judging a
+workspace can wake a pod, so `wouldDelete` is an upper bound. One info line per sweep:
+
+```text
+retention dry run: org history retention candidates=… currentDeletes=… wouldDelete=… wouldKeep=…
+  differs=… orgDeletesMore=… orgKeepsMore=… policyMissing=… paused=… pausedUnsynced=…
+  pausedStale=… pausedUnknown=… protected=…
+```
+
+`candidates` is `wouldDelete + wouldKeep + paused + protected`; `differs` splits into
+`orgDeletesMore` (the org window is shorter) and `orgKeepsMore` (longer or unlimited). A debug line
+per session names its key, org, both decisions and the basis. The same counts are the gauge
+`agentconnect.session.retention.dry_run.sessions`, by `outcome`. A failed dry run logs a warning
+and the sweep continues.
+
+### What reclaim adds next
+
+- The org window replaces the daemon-wide one in the session purge and in the workspace pass's
+  cross-check, which leaves a row past its window to the purge, behind an install switch that is
+  off by default.
+- Before deleting, the daemon re-confirms the org's authoritative revision, the session's last
+  activity and its own duty for the agent; a paused org is never reclaimed.
+- A barrier for an org whose window lengthens: deletions authorized under the shorter window stop
+  before the longer one is reported in effect.
+- A notice to the organization before its window first shortens, and a floor of 30 days after that
+  notice succeeded before the shorter window deletes anything.
+- Delivery to an org a member first serves through a duty grant, and to daemons on other Control
+  Plane replicas without waiting for their next `register/ok`.
+
 ## Not yet
 
 - A session that started fail-open and whose organization has reached its limit by its first
   milestone runs unrecorded: the [milestone guard](#enforcement) refuses its metadata, and the
   daemon's outbox keeps the snapshot and retries it, so it is recorded once the month resets.
-- Applying `historyRetentionDays` to hosted session history is later work.
+- `historyRetentionDays` deletes nothing yet: it is delivered and [dry-run](#history-retention-dry-run)
+  only.

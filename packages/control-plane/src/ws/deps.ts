@@ -137,6 +137,8 @@ export interface DaemonWsDeps {
   session: SessionRepo
   /** Admits a new session for its org and gates session grants under an enforced limit (org-session-policy.md); absent ⇒ `session/admit` is neither advertised nor answered. */
   sessionAdmission?: Pick<OrgSessionPolicyRepo, 'admit' | 'sessionMayAct'>
+  /** Reads the served orgs' history retention for `register/ok` (org-session-policy.md, History retention); absent ⇒ the field is never sent. */
+  orgHistoryRetention?: Pick<OrgSessionPolicyRepo, 'historyRetention'>
   /** Resolves a webchat conversation's owning user for session-visibility ingest
    *  (session-visibility.md §4.2); absent ⇒ webchat sessions record no owner
    *  (null — visible to no one until a repair/backfill). */

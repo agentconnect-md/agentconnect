@@ -15,6 +15,7 @@ import type {
   OrgSessionAdmission,
   OrgSessionMaintenance,
   OrgSessionMonthUsage,
+  OrgHistoryRetentionRow,
   OrgSessionPolicyInput,
   OrgSessionPolicyRepo
 } from '../ports.js'
@@ -120,6 +121,13 @@ export class PgOrgSessionPolicyRepo implements OrgSessionPolicyRepo {
 
   async sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean> {
     return sessionStandsForAgent(this.db, orgId, agentId, sessionId, this.enforcement)
+  }
+
+  async historyRetention(orgIds: readonly string[]): Promise<OrgHistoryRetentionRow[]> {
+    if (orgIds.length === 0) return []
+    return this.db.$queryRaw<OrgHistoryRetentionRow[]>`
+      SELECT "orgId", "revision", "historyRetentionDays" FROM "org_session_policy"
+      WHERE "orgId" = ANY(${[...new Set(orgIds)]}::text[]) ORDER BY "orgId"`
   }
 }
 

@@ -6,6 +6,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { ErrorDto } from '../dto/index.js'
 import { bearerOf, matchesSecret } from './internal-usage.js'
+import { pushOrgHistoryRetention } from '../../registry/orgHistoryRetention.js'
 
 // The columns are int4, so a larger value is refused as a bad body rather than failing the write.
 const INT4_MAX = 2_147_483_647
@@ -64,6 +65,20 @@ export function internalSessionPolicyRoutes(deps: HttpDeps) {
         const appliedRevision = await policies.apply(req.params.orgId, req.body)
         if (appliedRevision === null) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'organization not found' })
+        }
+        // An applied revision reaches the serving daemons now; a failed push only waits for their next register/ok.
+        if (appliedRevision === req.body.revision) {
+          await pushOrgHistoryRetention(
+            {
+              policies,
+              agents: deps.repos.agent,
+              placement: deps.placementResolver,
+              daemonConns: deps.daemonConns,
+              control: deps.control,
+              log: req.log
+            },
+            req.params.orgId
+          ).catch((err: unknown) => req.log.warn({ err }, 'session policy: history retention push failed'))
         }
         return { appliedRevision }
       }

@@ -395,6 +395,8 @@ export interface CpClientDeps
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
   onReady?: () => void | Promise<void>
+  /** Called when the current link closes, whether or not it reached READY; what it delivered is no longer current. */
+  onLinkLost?: () => void
   /** The CP authenticated this daemon but refused `register` with a non-retryable error (auto-upgrade trial rollback). */
   onRegisterRejected?: (err: WireError) => void
 }
@@ -2362,6 +2364,7 @@ export class CpClient {
     this.transport = undefined
     if (this.registerControlBarrier?.transport === source) this.registerControlBarrier = undefined
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
+    this.deps.onLinkLost?.()
     // The fence needs nothing here: it has been running off the last confirmed renewal since that
     // renewal arrived, and a closed socket is simply one more way for the next one not to.
     if (code === 4401) {
