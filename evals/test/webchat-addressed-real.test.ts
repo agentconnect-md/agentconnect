@@ -117,7 +117,8 @@ describe.skipIf(!configured)('webchat addressing — real players', () => {
         async () => {
           const record = await runTrial(scenario, trial)
           results.push(record)
-          // Apparatus only: the conversation must settle, or the trial measured a stall, not a choice.
+          // Apparatus only: a failed turn or an unsettled conversation measured the runtime, not the model's choice.
+          expect(record.invalidReason).toBeUndefined()
           expect(record.settled).toBe(true)
         },
         TRIAL_BUDGET_MS + 120_000
