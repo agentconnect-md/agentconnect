@@ -5,6 +5,7 @@ import {
   countSessionStart,
   countSessionStartWithin,
   enforcedLimit,
+  insertAdmission,
   MONTH_START_SQL,
   monthCount,
   sessionStandsForAgent,
@@ -120,19 +121,6 @@ export class PgOrgSessionPolicyRepo implements OrgSessionPolicyRepo {
   async sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean> {
     return sessionStandsForAgent(this.db, orgId, agentId, sessionId, this.enforcement)
   }
-}
-
-function insertAdmission(
-  tx: PrismaLike,
-  sessionId: string,
-  orgId: string,
-  agentId: string,
-  counted: boolean,
-  maintenance: OrgSessionMaintenance | null
-): Promise<number> {
-  return tx.$executeRaw`
-    INSERT INTO "org_session_admission" ("sessionId", "orgId", "agentId", "monthStart", "counted", "maintenance")
-    VALUES (${sessionId}, ${orgId}, ${agentId}::uuid, ${MONTH_START_SQL}, ${counted}, ${maintenance})`
 }
 
 /** Whether the agent has exempt admissions left today by the database clock, serialized per agent until commit. */

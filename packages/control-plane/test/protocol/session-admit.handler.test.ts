@@ -4,8 +4,7 @@ import {
   isFrame,
   SESSION_ADMIT_FEATURE,
   SESSION_ADMIT_REFUSAL_FEATURE,
-  SESSION_LIMIT_REACHED,
-  SESSION_NOT_ADMITTED
+  SESSION_LIMIT_REACHED
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness, type WsHarness } from '../fakes/build-ws.js'
@@ -240,9 +239,9 @@ describe('session/admit under an enforced monthly session limit', () => {
     expect(await prisma.orgSessionAdmission.count()).toBe(1)
   })
 
-  it('refuses a durable snapshot of a never-admitted id, drops the one-way one, and records an admitted id', async () => {
+  it('admits a never-admitted snapshot under the limit, and refuses one at it or drops the one-way frame', async () => {
     await seedPlaced()
-    await enforce(5)
+    await enforce(1)
     const h = buildWsHarness(prisma)
     const { stub } = await ready(h, DAEMON, [SESSION_ADMIT_REFUSAL_FEATURE])
     const snapshot = (sessionId: string) => ({
@@ -255,21 +254,25 @@ describe('session/admit under an enforced monthly session limit', () => {
       ts: new Date().toISOString()
     })
 
-    const syncId = stub.inject('event/session-sync', snapshot('s-skip'))
+    const lateId = stub.inject('event/session-sync', snapshot('s-late'))
     await stub.settled()
-    expect(stub.sent.find((f) => f.corr === syncId)).toMatchObject({
+    expect(stub.sent.find((f) => f.corr === lateId)).toMatchObject({ type: 'ack', payload: { ok: true } })
+    expect(await prisma.sessionMeta.count({ where: { id: 's-late' } })).toBe(1)
+    expect(await used()).toBe(1)
+
+    const fullId = stub.inject('event/session-sync', snapshot('s-full'))
+    await stub.settled()
+    expect(stub.sent.find((f) => f.corr === fullId)).toMatchObject({
       type: 'error',
-      payload: { code: 'RATE_LIMITED', retryable: false, details: { reason: SESSION_NOT_ADMITTED } }
+      payload: {
+        code: 'RATE_LIMITED',
+        retryable: false,
+        details: { reason: SESSION_LIMIT_REACHED, limit: 1, used: 1, resetsAt: expect.any(String) }
+      }
     })
     stub.inject('event/session', snapshot('s-legacy'))
     await stub.settled()
-    expect(await prisma.sessionMeta.count()).toBe(0)
-
-    await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-ok' }))
-    const okId = stub.inject('event/session-sync', snapshot('s-ok'))
-    await stub.settled()
-    expect(stub.sent.find((f) => f.corr === okId)).toMatchObject({ type: 'ack', payload: { ok: true } })
-    expect(await prisma.sessionMeta.count({ where: { id: 's-ok' } })).toBe(1)
+    expect(await prisma.sessionMeta.count()).toBe(1)
     expect(await used()).toBe(1)
   })
 })

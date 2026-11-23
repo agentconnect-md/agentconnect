@@ -1,6 +1,7 @@
 // The monthly session count's writes and enforcement reads, shared by the first milestone, the admission and session grants (org-session-policy.md).
 import { Prisma } from '../generated/prisma/client.js'
 import type { PrismaLike } from './prisma.js'
+import type { MilestoneAdmissionRefusal } from './ports.js'
 
 /** Install-level session policy options; `enforcement: false` makes every organization count only. */
 export interface SessionPolicyEnforcementOptions {
@@ -70,6 +71,48 @@ export async function sessionStandsForAgent(
     LIMIT 1
   `)
   return rows.length > 0
+}
+
+/** Record one session id's admission under the database clock's month; `counted` says whether it consumed the count. */
+export function insertAdmission(
+  tx: PrismaLike,
+  sessionId: string,
+  orgId: string,
+  agentId: string,
+  counted: boolean,
+  maintenance: string | null
+): Promise<number> {
+  return tx.$executeRaw(Prisma.sql`
+    INSERT INTO "org_session_admission" ("sessionId", "orgId", "agentId", "monthStart", "counted", "maintenance")
+    VALUES (${sessionId}, ${orgId}, ${agentId}::uuid, ${MONTH_START_SQL}, ${counted}, ${maintenance})
+  `)
+}
+
+/** Admit a milestone's id as `session/admit` would, minus maintenance, under the caller's lineage fence; undefined lets it record. */
+export async function admitAtMilestone(
+  tx: PrismaLike,
+  orgId: string,
+  agentId: string,
+  sessionId: string,
+  enforcement: boolean
+): Promise<MilestoneAdmissionRefusal | undefined> {
+  const limit = await enforcedLimit(tx, orgId, enforcement)
+  if (limit === null) return undefined
+  const rows = await tx.$queryRaw<Array<{ admittedBy: string | null; recordedBy: string | null }>>(Prisma.sql`
+    SELECT
+      (SELECT a."agentId"::text FROM "org_session_admission" a WHERE a."sessionId" = ${sessionId}) AS "admittedBy",
+      (SELECT s."agentId"::text FROM "session_meta" s WHERE s."id" = ${sessionId}) AS "recordedBy"
+  `)
+  const { admittedBy, recordedBy } = rows[0]!
+  if (admittedBy !== null) return admittedBy === agentId ? undefined : { reason: 'other_agent' }
+  // A recorded id was counted then, or predates counting; another agent's row is refused by the upsert itself.
+  if (recordedBy !== null) return undefined
+  // A session that started fail-open is admitted here, against the same conditional count.
+  if (!(await countSessionStartWithin(tx, orgId, limit))) {
+    return { reason: 'session_limit_reached', limit, ...(await monthCount(tx, orgId)) }
+  }
+  await insertAdmission(tx, sessionId, orgId, agentId, true, null)
+  return undefined
 }
 
 /** Whether a daemon admitted this session id, which settled its count at admission, counted or exempt. */

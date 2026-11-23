@@ -12,9 +12,6 @@ export type SessionAdmitRequest = z.infer<typeof SessionAdmitRequest>
 /** Why an admission was refused; a definite answer for that attempt, never retried under the same policy. */
 export const SESSION_LIMIT_REACHED = 'session_limit_reached'
 
-/** `details.reason` of the error refusing `event/session-sync` for an id never admitted while its organization enforces. */
-export const SESSION_NOT_ADMITTED = 'session_not_admitted'
-
 // Discriminated on `admitted`; `enforcing` says whether the organization refuses past its limit now, absent from an older CP.
 export const SessionAdmitResult = z.discriminatedUnion('admitted', [
   // `counted` is false for a session the CP already knew or exempted.

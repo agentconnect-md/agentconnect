@@ -23,7 +23,7 @@ import {
 } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
-import { countSessionStart, sessionAdmitted, sessionStandsForAgent } from '../org-session-count.js'
+import { admitAtMilestone, countSessionStart, sessionAdmitted } from '../org-session-count.js'
 import type { SessionPolicyEnforcementOptions } from '../org-session-count.js'
 import { fromDbHookKind, isStoredHookKind } from '../hook-kind.js'
 import type {
@@ -938,10 +938,9 @@ export class PgSessionRepo implements SessionRepo {
     const agent = await tx.agent.findUnique({ where: { id: ev.agentId }, select: { orgId: true } })
     if (!agent) return { recorded: false, session: null, settled: [] }
     const orgId = OrgId(agent.orgId)
-    // Under an enforced session limit only an admitted or already recorded id may write; the lineage fence orders this after its admit.
-    if (!(await sessionStandsForAgent(tx, orgId, ev.agentId, ev.sessionId, this.sessionPolicyEnforcement))) {
-      return { recorded: false, session: null, settled: [], refused: 'not_admitted' }
-    }
+    // Under an enforced limit a never-admitted id is admitted here first, as `session/admit` would; the lineage fence orders the two.
+    const refused = await admitAtMilestone(tx, orgId, ev.agentId, ev.sessionId, this.sessionPolicyEnforcement)
+    if (refused) return { recorded: false, session: null, settled: [], refused }
     const cls = await this.resolveClassification(tx, ev, orgId)
     // A legacy daemon row has no durable source binding. The migration marks
     // its Slack shape `pending`; a later trusted milestone may bind or settle it

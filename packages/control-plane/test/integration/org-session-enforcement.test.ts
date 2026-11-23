@@ -161,17 +161,53 @@ describe('admission under an enforced monthly session limit', () => {
 })
 
 describe('milestones under an enforced monthly session limit', () => {
-  it('refuses a new id no daemon admitted, writing and counting nothing', async () => {
+  it('admits a never-admitted id below the limit at its first milestone, counting it once', async () => {
     await seedAgent(prisma, AGENT)
     await policy(10, true)
+    expect((await sessions().recordMilestone(ev('s-late'))).recorded).toBe(true)
+    expect(await prisma.orgSessionAdmission.findUniqueOrThrow({ where: { sessionId: 's-late' } })).toMatchObject({
+      agentId: AGENT,
+      counted: true,
+      maintenance: null
+    })
+    expect((await sessions().recordMilestone({ ...ev('s-late'), phase: 'end' })).recorded).toBe(true)
+    // A re-sent admit of an id its milestone admitted replays that admission.
+    expect(await admit('s-late')).toEqual({ admitted: true, counted: true, enforcing: true })
+    expect(await used()).toBe(1)
+  })
+
+  it('refuses a never-admitted id at the limit, writing and counting nothing', async () => {
+    await seedAgent(prisma, AGENT)
+    await policy(1, true)
+    await admit('s-1')
     expect(await sessions().recordMilestone(ev('s-skip'))).toEqual({
       recorded: false,
       session: null,
       settled: [],
-      refused: 'not_admitted'
+      refused: { reason: 'session_limit_reached', limit: 1, used: 1, resetsAt: await nextMonthStart() }
     })
     expect(await prisma.sessionMeta.count({ where: { id: 's-skip' } })).toBe(0)
-    expect(await used()).toBe(0)
+    expect(await prisma.orgSessionAdmission.count({ where: { sessionId: 's-skip' } })).toBe(0)
+    expect(await used()).toBe(1)
+  })
+
+  it('counts once when an admit and the first milestone of one id race', async () => {
+    await seedAgent(prisma, AGENT)
+    await policy(5, true)
+    const [admitted, recorded] = await Promise.all([admit('s-race'), sessions().recordMilestone(ev('s-race'))])
+    expect(admitted).toMatchObject({ admitted: true })
+    expect(recorded.recorded).toBe(true)
+    expect(await used()).toBe(1)
+    expect(await prisma.orgSessionAdmission.count()).toBe(1)
+  })
+
+  it('admits exactly one of concurrent never-admitted milestones racing for the last slot', async () => {
+    await seedAgent(prisma, AGENT)
+    await policy(1, true)
+    const results = await Promise.all(['m-a', 'm-b', 'm-c'].map((id) => sessions().recordMilestone(ev(id))))
+    expect(results.filter((r) => r.recorded)).toHaveLength(1)
+    expect(results.filter((r) => r.refused?.reason === 'session_limit_reached')).toHaveLength(2)
+    expect(await used()).toBe(1)
   })
 
   it('records an admitted id, and keeps recording a session that existed before enforcement', async () => {
@@ -189,7 +225,7 @@ describe('milestones under an enforced monthly session limit', () => {
     await seedAgent(prisma, OTHER_AGENT)
     await policy(10, true)
     await admit('s-1')
-    expect((await sessions().recordMilestone(ev('s-1', OTHER_AGENT))).refused).toBe('not_admitted')
+    expect((await sessions().recordMilestone(ev('s-1', OTHER_AGENT))).refused).toEqual({ reason: 'other_agent' })
     expect(await prisma.sessionMeta.count({ where: { id: 's-1' } })).toBe(0)
   })
 

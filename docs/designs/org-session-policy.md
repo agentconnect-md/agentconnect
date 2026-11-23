@@ -210,18 +210,32 @@ enforcing: true }` goes only to a daemon that advertises `session-admit-refusal-
 older daemon strips the unknown key.
 
 **Milestone guard.** While an organization is enforcing, an `event/session` or
-`event/session-sync` milestone for a session id that this agent never admitted, and that the
-Control Plane has never recorded for it, writes nothing: no `session_meta` row and no count. The
-check runs inside the milestone's transaction after the same lineage fence admission takes, so it
-cannot race the admission of that id. `event/session-sync` is answered with a non-retryable
-`RATE_LIMITED` error whose `details.reason` is `session_not_admitted`; the one-way `event/session`
-has no reply, so the Control Plane drops it and logs why. A session already recorded, whether it
-started before enforcement or on a daemon that never admits, keeps syncing, so an older daemon's
-existing sessions stay visible and can continue; only its new sessions are refused once the
-organization enforces, until it is upgraded to one that admits them.
+`event/session-sync` milestone for a session id that no agent admitted and the Control Plane never
+recorded is admitted at that milestone, inside the milestone's transaction and after the same
+lineage fence admission takes: the same conditional increment `session/admit` runs, without the
+maintenance exemption since a milestone carries no purpose. This covers a session that started
+while the daemon failed open, for example because its organization's last answer said it was not
+enforcing or the 2-second attempt timed out.
+
+- **Below the limit.** The admission row is inserted as counted and the milestone is recorded as
+  usual; later milestones and a re-sent `session/admit` of the id replay that admission, so the
+  session counts once, whichever of the admit and the first milestone runs first.
+- **At the limit.** Nothing is written: no admission, no `session_meta` row, no count.
+  `event/session-sync` is answered with a non-retryable `RATE_LIMITED` error whose `details` carry
+  `reason: 'session_limit_reached'`, `limit`, `used`, and `resetsAt`, so a daemon may deliver the
+  snapshot again once the month resets; the one-way `event/session` has no reply, so the Control
+  Plane drops it and logs why.
+- **Another agent's admission.** An id admitted under a different agent is never recorded for this
+  one. `event/session-sync` is acknowledged, as for an id another agent recorded, so the daemon
+  collects a row that can never be accepted.
+
+A session already recorded, whether it started before enforcement or on a daemon that never admits,
+keeps syncing without a check, so an older daemon's existing sessions stay visible and can continue;
+its new sessions are admitted at their first milestone while the organization is below its limit.
 
 **Session grants.** While an organization is enforcing, the daemon-wire grants that hand a session
-authority of its own refuse a session id the agent never admitted or recorded, with their own
+authority of its own refuse a session id the agent never admitted or recorded, without admitting it
+there, with their own
 `denied` result: `computer-channel/grant` (the channel token to a Computer),
 `computer-pool/acquire` (a managed computer), and `computer-lease/acquire` (a Computer's control
 lease). Model credentials come from the key server, which the daemon asks directly, so the Control

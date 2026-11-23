@@ -1831,12 +1831,16 @@ export type SessionClassification =
  *  id is already bound to a different agent (nothing was written). `settled`
  *  carries the A2A children this milestone resolved out of `inherited_pending`
  *  (§4.5) — the CP owes each of them a §5.1 gate push. */
+/** Why a milestone of a never-recorded id may not record it while its org enforces (org-session-policy.md, Enforcement). */
+export type MilestoneAdmissionRefusal =
+  { reason: 'session_limit_reached'; limit: number; used: number; resetsAt: Date } | { reason: 'other_agent' }
+
 export interface SessionMilestoneResult {
   recorded: boolean
   session: SessionMetaRecord | null
   settled: SessionMetaRecord[]
-  /** Nothing was written: the org enforces its session limit and this agent never admitted or recorded the id (org-session-policy.md). */
-  refused?: 'not_admitted'
+  /** Nothing was written: the org enforces its limit and a never-admitted id met it, or another agent admitted the id (org-session-policy.md). */
+  refused?: MilestoneAdmissionRefusal
 }
 
 /** Outcome of a §4.3 visibility change: the target row plus every descendant a

@@ -16,9 +16,10 @@
  */
 import { chatAuthorityOf } from '../../orchestrator/placement.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
-import { isFrame, SESSION_NOT_ADMITTED, type EventSession } from '@agentconnect.md/protocol'
+import { isFrame, SESSION_LIMIT_REACHED, type EventSession } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 import { classifySession } from '../../domain/session-visibility.js'
+import type { MilestoneAdmissionRefusal } from '../../persistence/ports.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
@@ -305,7 +306,7 @@ async function recordEventSession(
   warmer?: DaemonWsDeps['sessionAccessWarmer'],
   /** Lifecycle snapshots may capture only their own session's PR. */
   pullRequestFeedback?: DaemonWsDeps['pullRequestFeedback']
-): Promise<'not_admitted' | undefined> {
+): Promise<MilestoneAdmissionRefusal | undefined> {
   const [classification, candidate] = await Promise.all([
     classifyMilestone(p, orgId, agentId, deps),
     externalCandidate(p, orgId, agentId, deps)
@@ -404,11 +405,11 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
       deps.pullRequestFeedback
     )
     // A one-way frame has no reply to refuse with, so the drop is only logged.
-    if (refused) deps.log.warn?.({ daemonId, agentId, sessionId: p.sessionId }, NOT_ADMITTED_LOG)
+    if (refused) deps.log.warn?.({ daemonId, agentId, sessionId: p.sessionId, reason: refused.reason }, REFUSED_LOG)
   })
 }
 
-const NOT_ADMITTED_LOG = 'event/session: dropped a new session never admitted under its organization session limit'
+const REFUSED_LOG = 'event/session: dropped a new session its organization session limit refused'
 
 /** Durable variant. Lease contention is retryable; a deleted/moved agent is a
  * permanent rejection and is ACKed so the old daemon can collect its outbox. */
@@ -430,15 +431,16 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
   try {
     const agent = await deps.agent.get(orgId, agentId)
     if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, daemonId))) {
-      if (await recordEventSession(p, orgId, agentId, daemonId, deps, undefined, deps.pullRequestFeedback)) {
-        deps.log.warn?.({ daemonId, agentId, sessionId: p.sessionId }, NOT_ADMITTED_LOG)
-        conn.sendError(
-          frame.id,
-          'RATE_LIMITED',
-          'the session was never admitted and its organization enforces a monthly session limit; admit it with session/admit first',
-          false,
-          { reason: SESSION_NOT_ADMITTED }
-        )
+      const refused = await recordEventSession(p, orgId, agentId, daemonId, deps, undefined, deps.pullRequestFeedback)
+      if (refused) deps.log.warn?.({ daemonId, agentId, sessionId: p.sessionId, reason: refused.reason }, REFUSED_LOG)
+      // At the limit the row may be accepted next month, so it is refused rather than collected; another agent's id never is.
+      if (refused?.reason === 'session_limit_reached') {
+        conn.sendError(frame.id, 'RATE_LIMITED', 'the organization reached its monthly session limit', false, {
+          reason: SESSION_LIMIT_REACHED,
+          limit: refused.limit,
+          used: refused.used,
+          resetsAt: refused.resetsAt.toISOString()
+        })
         return
       }
     }

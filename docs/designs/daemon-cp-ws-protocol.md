@@ -1029,10 +1029,10 @@ have dedicated schemas under `packages/protocol/src/frames/`.
 `enforcing`, or, only to a daemon that lists `session-admit-refusal-v1` in
 `register.capabilities.features`, `{ admitted: false, reason: 'session_limit_reached', limit,
 used, resetsAt, enforcing: true }`. A daemon without that feature gets the refusal as a
-non-retryable `RATE_LIMITED` error. While an organization enforces its limit, `event/session-sync`
-for a session id never admitted is refused with `RATE_LIMITED` and `details.reason:
-'session_not_admitted'`, and `event/session` for one is dropped
-([org-session-policy.md](org-session-policy.md#enforcement)).
+non-retryable `RATE_LIMITED` error. While an organization enforces its limit, the first milestone
+of a session id never admitted admits it; at the limit `event/session-sync` is refused with
+`RATE_LIMITED` and `details` `{ reason: 'session_limit_reached', limit, used, resetsAt }`, and
+`event/session` is dropped ([org-session-policy.md](org-session-policy.md#enforcement)).
 
 ---
 
