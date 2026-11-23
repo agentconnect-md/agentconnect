@@ -215,6 +215,8 @@ export interface SuiteRun {
   suite: SuiteId
   /** The suite wrote a readable result file. */
   results: boolean
+  /** A scenario entry exited on an apparatus error, so its summary may be missing scenarios. */
+  apparatusFailed?: boolean
 }
 
 export interface NightlyRun {
@@ -232,7 +234,7 @@ export interface NightlyRun {
 /** Someone should look: a suite measured nothing, a cell has no valid trial, or a cell failed for an unknown reason. */
 export function needsAttention(run: NightlyRun): boolean {
   return (
-    run.suites.some((suite) => !suite.results) ||
+    run.suites.some((suite) => !suite.results || suite.apparatusFailed) ||
     run.cells.some(
       (cell) => cell.mark === 'safety' || cell.mark === 'no-valid' || (cell.mark === 'below' && !cell.knownCause)
     )
@@ -266,11 +268,12 @@ export function pairedEffects(cells: readonly Cell[]): { caseId: string; core?: 
 export function renderMarkdown(run: NightlyRun): string {
   const count = (mark: Mark) => run.cells.filter((cell) => cell.mark === mark).length
   const missingSuites = run.suites.filter((suite) => !suite.results).map((suite) => suite.suite)
+  const brokenSuites = run.suites.filter((suite) => suite.results && suite.apparatusFailed).map((suite) => suite.suite)
   const below = count('below')
   const header =
-    below + count('safety') + count('no-valid') + missingSuites.length === 0
+    below + count('safety') + count('no-valid') + missingSuites.length + brokenSuites.length === 0
       ? `✅ all ${run.cells.length} cells on target`
-      : `❌ ${below} of ${run.cells.length} cells below target · 🛑 ${count('safety')} safety · ⚠️ ${count('no-valid') + missingSuites.length} without a valid trial`
+      : `❌ ${below} of ${run.cells.length} cells below target · 🛑 ${count('safety')} safety · ⚠️ ${count('no-valid') + missingSuites.length + brokenSuites.length} without a valid trial`
   const minutes = Math.round(run.durationMs / 60_000)
   const lines = [
     `*AgentConnect eval nightly* · ${header}`,
@@ -279,8 +282,10 @@ export function renderMarkdown(run: NightlyRun): string {
   ]
   const flagged = run.cells.filter((cell) => cell.mark !== 'on-target')
   lines.push('', '*Below target*')
-  if (flagged.length === 0 && missingSuites.length === 0) lines.push('none')
+  if (flagged.length === 0 && missingSuites.length === 0 && brokenSuites.length === 0) lines.push('none')
   for (const suite of missingSuites) lines.push(`⚠️ ${suite}: no result file`)
+  for (const suite of brokenSuites)
+    lines.push(`⚠️ ${suite}: a scenario failed to run, so its results may be incomplete`)
   for (const cell of flagged) {
     const actual =
       cell.valid > 0

@@ -72,7 +72,7 @@ function readJson(path) {
 }
 
 function run(command, args, env) {
-  spawnSync(command, args, { cwd: repositoryRoot, env, stdio: ['ignore', 2, 2] })
+  return spawnSync(command, args, { cwd: repositoryRoot, env, stdio: ['ignore', 2, 2] }).status
 }
 
 const options = parseArgs(process.argv.slice(2))
@@ -113,10 +113,16 @@ const promptfoo = (script, output, args, extraEnv = {}) => {
   run(process.execPath, [script, '--output', output, ...args], { ...env, ...extraEnv })
   return readJson(output)
 }
-// Vitest entries write a fixed summary under .artifacts; delete it first so a stale file is never read as tonight's.
+// Vitest entries fail only on apparatus errors, so a non-zero exit means a scenario may be missing from the summary.
+const apparatusFailures = new Set()
+// They write a fixed summary under .artifacts; delete it first so a stale file is never read as tonight's.
 const vitest = (file, summaryPath, name) => {
   rmSync(summaryPath, { force: true })
-  run('pnpm', ['exec', 'vitest', 'run', file], { ...env, AGENTCONNECT_EVAL_TRIALS: String(options.repeat) })
+  const status = run('pnpm', ['exec', 'vitest', 'run', file], {
+    ...env,
+    AGENTCONNECT_EVAL_TRIALS: String(options.repeat)
+  })
+  if (status !== 0) apparatusFailures.add(name)
   if (existsSync(summaryPath)) copyFileSync(summaryPath, join(runDir, `${name}.json`))
   return readJson(summaryPath)
 }
@@ -203,7 +209,11 @@ const trials = []
 for (const name of options.suites) {
   console.error(`eval:nightly: running ${name}`)
   const suiteTrials = SUITE_RUNNERS[name]()
-  suites.push({ suite: name, results: suiteTrials.length > 0 })
+  suites.push({
+    suite: name,
+    results: suiteTrials.length > 0,
+    ...(apparatusFailures.has(name) ? { apparatusFailed: true } : {})
+  })
   trials.push(...suiteTrials)
 }
 

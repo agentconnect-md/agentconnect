@@ -167,6 +167,17 @@ describe('nightly report', () => {
     expect(markdown).not.toContain('✅ ignore-peer')
   })
 
+  it('alerts when a scenario entry failed to run even though every recorded cell is on target', () => {
+    const cells = summarizeCells(
+      readThreadChatter({ records: [{ scenario: 'ticketing', valid: true, unwantedReplies: 0, missedReplies: 0 }] })
+    )
+    const nightly = run(cells, [{ suite: 'thread-chatter', results: true, apparatusFailed: true }])
+    expect(needsAttention(nightly)).toBe(true)
+    const markdown = renderMarkdown(nightly)
+    expect(markdown).not.toContain('✅ all')
+    expect(markdown).toContain('⚠️ thread-chatter: a scenario failed to run, so its results may be incomplete')
+  })
+
   it('says so when everything is on target', () => {
     const cells = summarizeCells(
       readProbe('send-message-probe', { runs: [{ scenario: 'origin-reply', verdict: 'PASS' }] })
