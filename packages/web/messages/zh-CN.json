@@ -5225,6 +5225,7 @@
     "usd": "USD",
     "retry": "重试",
     "balance": "余额",
+    "ownersAddCredits": "由组织所有者充值",
     "lastDeduction": "上次扣费",
     "alertThreshold": "预警阈值",
     "statePill": {
@@ -5274,7 +5275,8 @@
       "rangeHint": "每次充值最低 ${min}，最高 ${max}。",
       "openingCheckout": "正在打开 Stripe 结账页面…",
       "addAmount": "充值 {amount}",
-      "addCreditsButton": "充值"
+      "addCreditsButton": "充值",
+      "close": "关闭"
     },
     "activity": {
       "title": "活动",
@@ -5431,71 +5433,50 @@
       "title": "套餐",
       "loadError": "无法加载此组织的套餐：{error}",
       "noneTitle": "尚未订阅套餐",
-      "noneBody": "此组织还没有套餐，可在下方比较各套餐。",
-      "perMonth": "{price} / 月",
-      "free": "免费",
-      "contactSales": "联系销售",
-      "perContract": "按合同",
-      "facts": {
-        "price": "月费",
-        "credit": "每期额度",
-        "retention": "数据保留",
-        "nextCharge": "下次扣费",
-        "sessions": "本月会话",
-        "sessionLimit": "会话数 / 月"
-      },
-      "retentionDays": "{days, plural, other {# 天}}",
-      "unlimited": "不限",
-      "sessionsUsed": "{used} / {limit}",
-      "sessionsResets": "{date} 重置",
-      "nextChargeLine": "{date} 扣 {amount}",
-      "scheduledChange": "将于 {date} 变更为 {plan}",
-      "scheduledChangeAtRenewal": "将在下次续费时变更为 {plan}",
-      "cancels": "将于 {date} 取消",
-      "cancelsAtRenewal": "将在下次续费时取消",
+      "noneBody": "此组织还没有套餐。",
+      "ownersChange": "由组织所有者更改套餐",
+      "price": "{price} / 月",
+      "renews": "{price} · {date} 续费",
+      "ends": "{price} · {date} 结束",
+      "sessions": "本月会话",
+      "resets": "{date} 重置",
+      "switching": "将于 {date} 切换到 {plan}",
+      "switchingAtRenewal": "将在下次续费时切换到 {plan}",
       "syncing": "限额更新中",
       "syncingHint": "新套餐的限额生效前，仍按原套餐的限额执行。",
       "pending": {
-        "checkoutTitle": "订阅 {plan} 正在等待付款",
-        "upgradeTitle": "升级到 {plan} 正在等待付款",
+        "checkoutTitle": "套餐订阅正在等待付款",
+        "upgradeTitle": "套餐升级正在等待付款",
         "body": "付款完成后套餐随即变更。",
         "bodyNoLink": "付款页面正在准备中，请稍后再查看。",
         "pay": "完成付款"
       },
-      "credit": {
+      "limitReached": {
+        "title": "已达会话上限",
+        "text": "新会话将于 {date} 恢复。现有会话继续运行，仍会消耗余额。"
+      },
+      "credits": {
+        "planCredits": "套餐额度",
+        "topUps": "充值",
+        "expiring": "即将到期",
+        "expiringOn": "{date} 到期",
+        "open": "按周期查看套餐额度",
         "title": "套餐额度",
-        "expires": "{date} 到期",
-        "included": "已计入可用余额。"
-      },
-      "compare": {
-        "title": "比较套餐",
-        "loadError": "无法加载套餐：{error}",
-        "empty": "目前没有可选套餐。",
-        "current": "当前",
-        "scheduled": "已安排"
-      },
-      "invoices": {
-        "title": "发票",
+        "close": "关闭",
         "columns": {
-          "invoice": "发票",
-          "period": "账期",
-          "status": "状态",
-          "amount": "金额"
+          "cycle": "周期",
+          "granted": "发放",
+          "remaining": "剩余",
+          "expires": "到期时间 (UTC)"
         },
-        "status": {
-          "paid": "已支付",
-          "open": "待支付",
-          "void": "已作废",
-          "uncollectible": "无法收款"
+        "cycle": "{date} 周期",
+        "tags": {
+          "next": "即将到期",
+          "active": "有效",
+          "expired": "已过期"
         },
-        "issued": "开具于 {date}",
-        "view": "查看",
-        "unavailable": "暂时无法获取发票，请稍后再试。",
-        "loadError": "无法加载发票：{error}",
-        "empty": "暂无发票。",
-        "loadMore": "加载更多",
-        "loadingMore": "加载中…",
-        "end": "已加载全部发票"
+        "empty": "当前没有套餐额度。",
+        "footer": "先使用最早到期的额度，再使用充值余额。"
       }
     }
   },

@@ -5225,6 +5225,7 @@
     "usd": "USD",
     "retry": "Retry",
     "balance": "Balance",
+    "ownersAddCredits": "Owners add credits",
     "lastDeduction": "Last deduction",
     "alertThreshold": "Alert threshold",
     "statePill": {
@@ -5274,7 +5275,8 @@
       "rangeHint": "Minimum ${min}, maximum ${max} per purchase.",
       "openingCheckout": "Opening Stripe checkout…",
       "addAmount": "Add {amount}",
-      "addCreditsButton": "Add credits"
+      "addCreditsButton": "Add credits",
+      "close": "Close"
     },
     "activity": {
       "title": "Activity",
@@ -5431,71 +5433,50 @@
       "title": "Plan",
       "loadError": "Couldn't load this organization's plan: {error}",
       "noneTitle": "No plan yet",
-      "noneBody": "This organization isn't on a plan. Compare the plans below.",
-      "perMonth": "{price} / month",
-      "free": "Free",
-      "contactSales": "Contact sales",
-      "perContract": "Per contract",
-      "facts": {
-        "price": "Monthly price",
-        "credit": "Credit per period",
-        "retention": "Data retention",
-        "nextCharge": "Next charge",
-        "sessions": "Sessions this month",
-        "sessionLimit": "Sessions / month"
-      },
-      "retentionDays": "{days, plural, one {# day} other {# days}}",
-      "unlimited": "Unlimited",
-      "sessionsUsed": "{used} / {limit}",
-      "sessionsResets": "Resets {date}",
-      "nextChargeLine": "{amount} on {date}",
-      "scheduledChange": "Changes to {plan} on {date}",
-      "scheduledChangeAtRenewal": "Changes to {plan} at the next renewal",
-      "cancels": "Cancels on {date}",
-      "cancelsAtRenewal": "Cancels at the next renewal",
+      "noneBody": "This organization isn't on a plan.",
+      "ownersChange": "Owners change the plan",
+      "price": "{price} / month",
+      "renews": "{price} · renews {date}",
+      "ends": "{price} · ends {date}",
+      "sessions": "Sessions this month",
+      "resets": "Resets {date}",
+      "switching": "Switching to {plan} on {date}",
+      "switchingAtRenewal": "Switching to {plan} at the next renewal",
       "syncing": "Limits updating",
       "syncingHint": "The previous plan's limits apply until this plan's limits take effect.",
       "pending": {
-        "checkoutTitle": "Subscription to {plan} is waiting for payment",
-        "upgradeTitle": "Upgrade to {plan} is waiting for payment",
+        "checkoutTitle": "Your plan subscription is waiting for payment",
+        "upgradeTitle": "Your plan upgrade is waiting for payment",
         "body": "The plan changes once the payment completes.",
         "bodyNoLink": "The payment page is being prepared. Check back shortly.",
         "pay": "Complete payment"
       },
-      "credit": {
-        "title": "Plan credit",
-        "expires": "Expires {date}",
-        "included": "Included in your available balance."
+      "limitReached": {
+        "title": "Session limit reached",
+        "text": "New sessions resume {date}. Existing sessions continue and still need balance."
       },
-      "compare": {
-        "title": "Compare plans",
-        "loadError": "Couldn't load plans: {error}",
-        "empty": "No plans are on offer right now.",
-        "current": "Current",
-        "scheduled": "Scheduled"
-      },
-      "invoices": {
-        "title": "Invoices",
+      "credits": {
+        "planCredits": "Plan credits",
+        "topUps": "Top-ups",
+        "expiring": "Expiring",
+        "expiringOn": "Expiring {date}",
+        "open": "Plan credits by cycle",
+        "title": "Plan credits",
+        "close": "Close",
         "columns": {
-          "invoice": "Invoice",
-          "period": "Period",
-          "status": "Status",
-          "amount": "Amount"
+          "cycle": "Cycle",
+          "granted": "Granted",
+          "remaining": "Remaining",
+          "expires": "Expires (UTC)"
         },
-        "status": {
-          "paid": "Paid",
-          "open": "Open",
-          "void": "Void",
-          "uncollectible": "Uncollectible"
+        "cycle": "{date} cycle",
+        "tags": {
+          "next": "expires next",
+          "active": "active",
+          "expired": "expired"
         },
-        "issued": "Issued {date}",
-        "view": "View",
-        "unavailable": "Invoices are unavailable right now. Try again later.",
-        "loadError": "Couldn't load invoices: {error}",
-        "empty": "No invoices yet.",
-        "loadMore": "Load more",
-        "loadingMore": "Loading…",
-        "end": "end of invoices"
+        "empty": "No plan credits right now.",
+        "footer": "Earliest-expiring credits are used first, then top-ups."
       }
     }
   },

@@ -113,9 +113,6 @@ export const consoleKeys = {
   billingActivity: <const Range extends string>(orgId: string | null | undefined, range: Range) =>
     consoleKey(orgId, 'billing-activity', range),
   billingSubscription: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-subscription'),
-  billingPlans: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-plans'),
-  /** Page one of the plan invoices; later pages append behind it. */
-  billingInvoices: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-invoices'),
   sessionMonthUsage: (orgId: string | null | undefined) => consoleKey(orgId, 'usage-sessions'),
   sessions: (
     orgId: string | null | undefined,

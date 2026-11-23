@@ -197,6 +197,15 @@ export interface BillingPlanGrant {
   remainingMicro: number
 }
 
+/** One plan-credit grant, live or expired; already part of the account's `balanceMicro` while live. */
+export interface BillingPlanBatch {
+  grantedAt: string
+  grantedMicro: number
+  remainingMicro: number
+  expiresAt: string
+  expired: boolean
+}
+
 export interface BillingPendingChange {
   id: string
   kind: 'checkout' | 'upgrade'
@@ -224,54 +233,12 @@ export interface BillingSubscription extends BillingPlanRef {
   pendingChange?: BillingPendingChange | null
   /** `syncing` ⇒ the previous plan's limits still apply. Absent ⇒ an older service. */
   entitlementSync?: 'synced' | 'syncing'
-}
-
-export interface BillingPlanOption extends BillingPlanRef {
-  salesMode: 'self_serve' | 'contact_sales'
-  /** Monthly price, USD cents; null for a contact-sales tier. */
-  priceCents: number | null
-  /** Credit granted per paid period, microUSD. */
-  grantMicro: number
-  sessionLimit: number
-  /** The "×N" label; null for an option shown without one. */
-  multiplier: number | null
-  /** Null ⇒ unlimited. */
-  retentionDays: number | null
-  /** Checkout, upgrade or scheduling can sell it now. */
-  purchasable: boolean
-  /** The org is on exactly this published option. */
-  current: boolean
-  /** The org has exactly this option scheduled for its renewal. */
-  scheduled: boolean
-}
-
-export interface BillingPlans {
-  /** Every published tier's on-sale options, by tier then session limit. */
-  options: BillingPlanOption[]
-}
-
-export type BillingInvoiceStatus = 'paid' | 'open' | 'void' | 'uncollectible'
-
-export interface BillingInvoice {
-  id: string
-  number: string | null
-  /** Checked as a string: an unfamiliar status renders as its raw value. */
-  status: BillingInvoiceStatus
-  amountDueCents: number
-  amountPaidCents: number
-  /** ISO 4217, lowercase as the provider reports it. */
-  currency: string
-  periodStart: string
-  periodEnd: string
-  createdAt: string
-  /** Hosted invoice page; only `https:` survives the boundary. */
-  hostedUrl: string | null
-}
-
-export interface BillingInvoicesPage {
-  /** Newest first; a page may hold fewer than asked, so follow `nextCursor`. */
-  items: BillingInvoice[]
-  nextCursor: string | null
+  /** Unexpired plan credit inside `balanceMicro`, microUSD. Absent ⇒ an older service. */
+  planCreditMicro?: number
+  /** Plan credit that expired unused this UTC month, microUSD. Absent ⇒ an older service. */
+  expiredThisMonthMicro?: number
+  /** Every grant by expiry, expired ones included. Absent ⇒ an older service. */
+  batches?: BillingPlanBatch[]
 }
 
 /** Billing base URL, or null when this deployment has no billing service. */
@@ -468,7 +435,7 @@ function isPlanRef(v: unknown): v is BillingPlanRef {
 const isNullableFinite = (v: unknown) => v === null || isFiniteNumber(v)
 const isNullableString = (v: unknown) => v === null || typeof v === 'string'
 
-// The plan fields are the fact and refuse the read; the three newer fields are garnish, so absent is the older contract and malformed drops.
+// The plan fields are the fact and refuse the read; the newer fields are garnish, so absent is the older contract and malformed drops.
 export function assertSubscription(body: unknown): asserts body is BillingSubscription {
   const b = body as (Partial<BillingSubscription> & Record<string, unknown>) | null
   if (
@@ -505,51 +472,24 @@ export function assertSubscription(body: unknown): asserts body is BillingSubscr
     delete b.pendingChange
   if (b.entitlementSync !== undefined && b.entitlementSync !== 'synced' && b.entitlementSync !== 'syncing')
     delete b.entitlementSync
-}
-
-export function assertPlans(body: unknown): asserts body is BillingPlans {
-  const b = body as { options?: unknown } | null
-  if (!b || !Array.isArray(b.options)) throw new BillingShapeError('plan catalog')
-  for (const raw of b.options as unknown[]) {
-    const o = raw as Partial<BillingPlanOption> | null
-    if (
-      !o ||
-      !isPlanRef(raw) ||
-      (o.salesMode !== 'self_serve' && o.salesMode !== 'contact_sales') ||
-      !isNullableFinite(o.priceCents) ||
-      !isFiniteNumber(o.grantMicro) ||
-      !isFiniteNumber(o.sessionLimit) ||
-      !isNullableFinite(o.multiplier) ||
-      !isNullableFinite(o.retentionDays) ||
-      typeof o.purchasable !== 'boolean' ||
-      typeof o.current !== 'boolean' ||
-      typeof o.scheduled !== 'boolean'
-    ) {
-      throw new BillingShapeError('plan catalog')
-    }
-  }
-}
-
-export function assertInvoicesPage(body: unknown): asserts body is BillingInvoicesPage {
-  const b = body as { items?: unknown; nextCursor?: unknown } | null
-  if (!b || !Array.isArray(b.items) || !isNullableString(b.nextCursor)) throw new BillingShapeError('invoice page')
-  for (const i of b.items as Partial<BillingInvoice>[]) {
-    if (
-      !i ||
-      typeof i.id !== 'string' ||
-      !isNullableString(i.number) ||
-      typeof i.status !== 'string' ||
-      !isFiniteNumber(i.amountDueCents) ||
-      !isFiniteNumber(i.amountPaidCents) ||
-      typeof i.currency !== 'string' ||
-      typeof i.periodStart !== 'string' ||
-      typeof i.periodEnd !== 'string' ||
-      typeof i.createdAt !== 'string' ||
-      !isNullableString(i.hostedUrl)
-    ) {
-      throw new BillingShapeError('invoice')
-    }
-  }
+  if (b.planCreditMicro !== undefined && !isFiniteNumber(b.planCreditMicro)) delete b.planCreditMicro
+  if (b.expiredThisMonthMicro !== undefined && !isFiniteNumber(b.expiredThisMonthMicro)) delete b.expiredThisMonthMicro
+  if (
+    b.batches !== undefined &&
+    !(
+      Array.isArray(b.batches) &&
+      b.batches.every(
+        (x) =>
+          !!x &&
+          typeof x.grantedAt === 'string' &&
+          isFiniteNumber(x.grantedMicro) &&
+          isFiniteNumber(x.remainingMicro) &&
+          typeof x.expiresAt === 'string' &&
+          typeof x.expired === 'boolean'
+      )
+    )
+  )
+    delete b.batches
 }
 
 // Remote input becomes an `href` only as `https:`.
@@ -683,20 +623,6 @@ export async function fetchBillingSubscription(orgId: string): Promise<BillingSu
   return pending ? { ...body, pendingChange: { ...pending, payUrl: httpsOnly(pending.payUrl) } } : body
 }
 
-export async function fetchBillingPlans(orgId: string): Promise<BillingPlans> {
-  const body = await request<unknown>(`${orgPath(orgId)}/plans`)
-  assertPlans(body)
-  return body
-}
-
-/** One page of the org's finalized plan invoices, newest first. A 503 means the payment provider is unavailable. */
-export async function fetchBillingInvoices(orgId: string, cursor?: string): Promise<BillingInvoicesPage> {
-  const query = cursor ? `?${new URLSearchParams({ cursor })}` : ''
-  const body = await request<unknown>(`${orgPath(orgId)}/subscription/invoices${query}`)
-  assertInvoicesPage(body)
-  return { items: body.items.map((i) => ({ ...i, hostedUrl: httpsOnly(i.hostedUrl) })), nextCursor: body.nextCursor }
-}
-
 const MICRO_PER_USD = 1_000_000
 
 /** A decimal-string amount, for display only. `Number` is fine HERE and only here: the
@@ -724,13 +650,15 @@ export function fmtMicroUsd(micro: number): string {
   return `${sign}$${(Math.abs(micro) / MICRO_PER_USD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-/** Render integer cents in their currency (lowercase ISO 4217, as the provider sends it). Display only. */
-export function fmtCents(cents: number, currency = 'usd'): string {
-  try {
-    return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: currency.toUpperCase() })
-  } catch {
-    return `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`
-  }
+/** A plan price in USD cents, whole dollars without decimals (`$40`, `$19.99`). Display only. */
+export function fmtCents(cents: number): string {
+  const digits = cents % 100 === 0 ? 0 : 2
+  return (cents / 100).toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  })
 }
 
 /** Every transaction posted at or after `sinceMs`, newest first. The window goes to the

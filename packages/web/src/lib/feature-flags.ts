@@ -7,7 +7,7 @@ export type FeatureFlagId =
   | 'managed'
   // Offers billing where a billing service exists; BILLING_URL separately identifies its endpoint.
   | 'billing'
-  // Shows the org's plan, the plan catalog and plan invoices on the billing page; needs `billing` too.
+  // Shows the org's plan, session limit and plan credits on the billing page; needs `billing` too.
   | 'subscriptions'
   // Offers Git URL workspaces where clone origins allow them; existing Git URL workspaces remain visible.
   | 'git-url'
