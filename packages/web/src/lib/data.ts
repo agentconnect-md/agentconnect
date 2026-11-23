@@ -1030,6 +1030,24 @@ export function runtimeWarning(
   return profile.authRequired === true ? 'auth-required' : null
 }
 
+/** Usable only once a probe completed ACP initialize and no install or login issue is reported; a pending probe is not ready. */
+export function runtimeUsable(
+  profile: Pick<DaemonRow['runtimeModels'][number], 'authRequired' | 'unavailableReason' | 'acpProtocolVersion'>
+): boolean {
+  return runtimeWarning(profile) === null && profile.acpProtocolVersion != null
+}
+
+/** Online, and every reported runtime has an install or login issue: not ready, with a fix to show. */
+export function daemonRuntimesBlocked(daemon: Pick<DaemonRow, 'status' | 'runtimeModels'>): boolean {
+  const rts = daemon.runtimeModels
+  return daemon.status === 'online' && rts.length > 0 && rts.every((r) => runtimeWarning(r) !== null)
+}
+
+/** A heartbeat was ever recorded; an offline daemon that once connected still counts. */
+export function daemonEverConnected(daemon: Pick<DaemonRow, 'status' | 'lastSeenAt'>): boolean {
+  return daemon.lastSeenAt != null || daemon.status === 'online'
+}
+
 export function imageBinaryMissingRuntimeIds(daemon: Pick<DaemonRow, 'runtimeModels'> | undefined): string[] {
   return (daemon?.runtimeModels ?? [])
     .filter((r) => r.unavailableReason === 'image-binary-missing')
@@ -2578,6 +2596,10 @@ export interface DaemonRow {
   hostedSessions: number | null
   conns: string
   uptime: string
+  /** ISO time of the last heartbeat; null when the daemon has never connected. */
+  lastSeenAt: string | null
+  /** ISO creation time; `createdAt` is its display form. */
+  createdAtIso: string
   /** Creator's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
   createdBy: string
   createdAt: string

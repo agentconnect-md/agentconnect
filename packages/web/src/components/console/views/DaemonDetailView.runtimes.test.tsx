@@ -71,6 +71,8 @@ beforeEach(() => {
     conns: '4',
     activeSessions: '0',
     uptime: '1m',
+    lastSeenAt: '2026-01-01T00:00:00.000Z',
+    createdAtIso: '2026-01-01T00:00:00.000Z',
     availableVersions: [],
     createdBy: '',
     lastModifiedBy: '',

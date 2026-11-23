@@ -1792,7 +1792,18 @@
       "daemon": {
         "label": "连接 Daemon",
         "description": "在要运行 Agent 的机器上执行一条命令。它会保持连接，并通过 ACP 在本地运行 Agent。",
-        "action": "添加 Daemon"
+        "action": "添加 Daemon",
+        "waiting": "正在等待 Daemon 连接。如果还没在主机上运行命令，可以重新获取。",
+        "notConnected": "Daemon 已创建但从未连接。常见原因：主机上没有运行连接命令、进程已退出，或主机无法访问本控制台。请获取新的命令并在主机上运行。",
+        "reconnectAction": "获取连接命令"
+      },
+      "runtime": {
+        "label": "准备好一个 Runtime",
+        "description": "Agent 运行在 Claude Code、Codex 等编程 Runtime 上，需要在 Daemon 所在主机上安装并登录。",
+        "action": "查看 Runtime",
+        "checking": "Daemon 还没有确认任何可用的 Runtime，检查可能仍在进行；打开 Daemon 查看每个 Runtime 的状态。",
+        "login": "Daemon 上有 Runtime 需要登录。请在 Daemon 所在主机上运行登录命令。",
+        "loginAction": "显示登录命令"
       },
       "slack": {
         "label": "连接 Slack",
@@ -4624,6 +4635,12 @@
     "rename": "重命名",
     "restart": "重启",
     "reconnect": "重新连接",
+    "runtimeBlocked": {
+      "login": "Runtime 需要登录",
+      "loginHint": "在主机上登录之前，此 Daemon 上没有可运行 Agent 的 Runtime。点击显示登录命令。",
+      "missing": "未安装 Runtime",
+      "missingHint": "此 Daemon 所在主机上没有安装受支持的 Runtime，因此无法运行 Agent。"
+    },
     "reconnectModal": {
       "title": "重新连接 Daemon",
       "runOnHost": "请在 {daemon} 所在主机上运行此命令以重新连接，现有 Agent 会保留。",

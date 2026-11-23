@@ -55,6 +55,8 @@ const mockDaemon = (id: string, name: string, op?: DaemonRow['lifecycleOp']): Da
   hostedSessions: null,
   conns: '1',
   uptime: '1d',
+  lastSeenAt: '2026-01-01T00:00:00.000Z',
+  createdAtIso: '2026-01-01T00:00:00.000Z',
   createdBy: 'user1',
   createdAt: new Date().toISOString(),
   lastModifiedBy: 'user1',

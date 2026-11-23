@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeGettingStarted } from './getting-started'
+import { DAEMON_CONNECT_GRACE_MS, computeGettingStarted } from './getting-started'
 import type { Agent, DaemonRow, IntegrationRow, Session } from '@/lib/data'
 import type { MemberDto } from '@/lib/api'
 
@@ -13,23 +13,38 @@ const agent = (over: Partial<Agent> = {}): Agent =>
     workspace: { mode: 'scratch' },
     ...over
   }) as Agent
-const daemon = (status: DaemonRow['status']): DaemonRow => ({ daemonId: 'd1', status }) as DaemonRow
+const NOW = Date.parse('2026-06-01T12:00:00.000Z')
+type Rt = DaemonRow['runtimeModels'][number]
+const READY: Partial<Rt> = { runtime: 'claude', acpProtocolVersion: 1 }
+const daemon = (status: DaemonRow['status'], over: Partial<DaemonRow> = {}): DaemonRow =>
+  ({
+    daemonId: 'd1',
+    status,
+    lastSeenAt: '2026-06-01T11:59:00.000Z',
+    createdAtIso: '2026-05-01T00:00:00.000Z',
+    runtimeModels: [READY as Rt],
+    ...over
+  }) as DaemonRow
+// Provisioned by AddDaemon but never heartbeated.
+const unconnected = (createdAtIso: string, id = 'd1'): DaemonRow =>
+  daemon('offline', { daemonId: id, lastSeenAt: null, createdAtIso, runtimeModels: [] })
+const item = (key: string, over: Partial<Parameters<typeof computeGettingStarted>[0]>) =>
+  computeGettingStarted({ ...empty, now: NOW, ...over }).items.find((i) => i.key === key)!
 const empty = { agents: [], daemons: [], integrations: [], sessions: [], members: [], authOn: true }
 
 describe('computeGettingStarted', () => {
   it('starts all-incomplete for a fresh org and reports progress', () => {
     const gs = computeGettingStarted(empty)
     expect(gs.done).toBe(0)
-    expect(gs.total).toBe(6) // 4 core + invite + session-access (auth mode)
+    expect(gs.total).toBe(7) // 5 core + invite + session-access (auth mode)
     expect(gs.fraction).toBe(0)
     expect(gs.allDone).toBe(false)
   })
 
-  it('orders the steps per the design: daemon, slack, github, conversation, invite, session-access', () => {
-    // The "Runtime signed in" step is deferred until the explicit probe-status
-    // signal ships (neither authRequired nor advertised models encode readiness).
+  it('orders the steps per the design: daemon, runtime, slack, github, conversation, invite, session-access', () => {
     expect(computeGettingStarted(empty).items.map((i) => i.key)).toEqual([
       'daemon',
+      'runtime',
       'slack',
       'github',
       'conversation',
@@ -43,21 +58,22 @@ describe('computeGettingStarted', () => {
   it('does not tick the daemon step from a pool member Pod', () => {
     const done = (rows: DaemonRow[]) =>
       computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done
-    expect(done([{ daemonId: 'pool-1', status: 'online', pool: true } as DaemonRow])).toBe(false)
-    expect(done([{ daemonId: 'd1', status: 'online' } as DaemonRow])).toBe(true)
+    expect(done([daemon('online', { daemonId: 'pool-1', pool: true })])).toBe(false)
+    expect(done([daemon('online')])).toBe(true)
   })
 
   // Cloud pool on: agents run there, so there is no daemon to connect and the step goes.
-  it('drops the daemon step where the deployment offers the cloud pool', () => {
-    const pooled = computeGettingStarted({ ...empty, poolEnabled: true })
+  it('drops the daemon and runtime steps where the deployment offers the cloud pool', () => {
+    const pooled = computeGettingStarted({ ...empty, poolEnabled: true, daemons: [daemon('online')] })
     expect(pooled.items.map((i) => i.key)).not.toContain('daemon')
+    expect(pooled.items.map((i) => i.key)).not.toContain('runtime')
     expect(pooled.total).toBe(5)
     // off (a self-hosted install) it is still the first step
     expect(computeGettingStarted(empty).items[0]!.key).toBe('daemon')
   })
 
   it('drops the invite AND session-access items in no-auth mode (no /settings there)', () => {
-    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(4)
+    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(5)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'invite')).toBe(false)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'session-access')).toBe(false)
   })
@@ -79,12 +95,71 @@ describe('computeGettingStarted', () => {
     expect(has(true)).toBe(true)
   })
 
-  it('marks daemon done for any registered daemon, connected or not', () => {
-    const done = (rows: DaemonRow[]) =>
-      computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done
-    expect(done([])).toBe(false)
-    expect(done([daemon('offline')])).toBe(true)
-    expect(done([daemon('online')])).toBe(true)
+  it('leaves the daemon step at the default "add" CTA when there is no daemon', () => {
+    expect(item('daemon', {})).toMatchObject({ done: false, action: { kind: 'daemon' } })
+    expect(item('daemon', {}).variant).toBeUndefined()
+  })
+
+  it('keeps a created-but-never-connected daemon incomplete and points at a fresh connect command', () => {
+    const fresh = item('daemon', { daemons: [unconnected(new Date(NOW - 60_000).toISOString())] })
+    expect(fresh).toMatchObject({
+      done: false,
+      variant: 'waiting',
+      action: { kind: 'daemon-reconnect', daemonId: 'd1' }
+    })
+    // past the grace the copy names causes instead of waiting
+    const stale = item('daemon', { daemons: [unconnected(new Date(NOW - DAEMON_CONNECT_GRACE_MS).toISOString())] })
+    expect(stale).toMatchObject({ done: false, variant: 'not-connected' })
+    // no creation time to judge by ⇒ the neutral wording
+    expect(item('daemon', { daemons: [unconnected('')] }).variant).toBe('waiting')
+    // several unconnected rows ⇒ the newest one
+    const rows = [unconnected('2026-05-01T00:00:00.000Z', 'old'), unconnected('2026-05-20T00:00:00.000Z', 'new')]
+    expect(item('daemon', { daemons: rows }).action).toEqual({ kind: 'daemon-reconnect', daemonId: 'new' })
+  })
+
+  it('keeps the daemon step done for a daemon that connected once and is now offline', () => {
+    expect(item('daemon', { daemons: [daemon('offline')] }).done).toBe(true)
+    expect(item('daemon', { daemons: [daemon('online')] }).done).toBe(true)
+    // one connected machine is enough even beside a never-connected row
+    expect(item('daemon', { daemons: [unconnected('2026-05-01T00:00:00.000Z', 'x'), daemon('offline')] }).done).toBe(
+      true
+    )
+  })
+
+  it('ticks the runtime step only for a probe-confirmed runtime with no install or login issue', () => {
+    const rt = (r: Partial<Rt>[]) => item('runtime', { daemons: [daemon('online', { runtimeModels: r as Rt[] })] })
+    expect(rt([READY]).done).toBe(true)
+    // an offline machine keeps what it last reported
+    expect(item('runtime', { daemons: [daemon('offline')] }).done).toBe(true)
+    // probe pending: no warning yet, but nothing confirmed either
+    expect(rt([{ runtime: 'claude' }])).toMatchObject({ done: false, variant: 'checking' })
+    expect(rt([])).toMatchObject({ done: false, variant: 'checking' })
+    // a confirmed probe that later needed a login is not ready
+    expect(rt([{ ...READY, authRequired: true }]).done).toBe(false)
+    expect(rt([{ runtime: 'codex', unavailableReason: 'host-binary-missing' }]).done).toBe(false)
+    // pool Pods never count
+    expect(item('runtime', { daemons: [daemon('online', { pool: true })] }).done).toBe(false)
+  })
+
+  it('points an online daemon with no usable runtime at the fix', () => {
+    const rt = (r: Partial<Rt>[]) => item('runtime', { daemons: [daemon('online', { runtimeModels: r as Rt[] })] })
+    // a login wins over a probe that has not settled
+    expect(
+      rt([{ runtime: 'claude' }, { runtime: 'codex', authRequired: true, credentialsConfigured: false }])
+    ).toMatchObject({
+      done: false,
+      variant: 'login',
+      action: { kind: 'runtime-login', daemonId: 'd1', runtimeId: 'codex' }
+    })
+    // only missing installs: the default copy and the daemon page
+    const missing = rt([{ runtime: 'claude', unavailableReason: 'host-binary-missing' }])
+    expect(missing).toMatchObject({ done: false, action: { kind: 'daemon-detail', daemonId: 'd1' } })
+    expect(missing.variant).toBeUndefined()
+  })
+
+  it('keeps the runtime step on its default copy until a daemon has connected', () => {
+    expect(item('runtime', {})).toMatchObject({ done: false, action: { kind: 'daemon-detail', daemonId: null } })
+    expect(item('runtime', { daemons: [unconnected('2026-05-01T00:00:00.000Z')] }).variant).toBeUndefined()
   })
 
   it('merges GitHub + repository into one step, done when a repo is attached', () => {

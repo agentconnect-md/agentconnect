@@ -4,17 +4,14 @@
 // item is incomplete and vanishes for good once the list is complete — there is no
 // manual dismiss, so the only state this module owns is the pure derivation.
 //
-// Steps in the design's order: daemon → Slack → GitHub+repo (one merged step) →
-// first conversation → invite → session-access review. The daemon step is dropped where the
-// deployment offers the cloud pool (`poolEnabled`) — there is nothing to connect. Still not derivable client-side (left
-// out rather than faked, preset-agents.md §6.2): the "Runtime signed in"
-// needs-attention item — neither `authRequired` (absence also means probe
-// pending/failed) nor advertised models (a usable runtime may legitimately have no
-// model selector) encode readiness; add it when the explicit
-// pending|ready|auth_required|failed probe status ships. Same for the per-item
-// "Ask agentconnect" automation (§6.3/§6.4 delegated writes).
+// Steps in the design's order: daemon → runtime → Slack → GitHub+repo (one merged step) →
+// first conversation → invite → session-access review. The daemon and runtime steps are dropped
+// where the deployment offers the cloud pool (`poolEnabled`) — there is nothing to connect.
+// The runtime step ticks only on a probe-confirmed runtime (`runtimeUsable`): `authRequired`
+// absent alone also covers a pending or failed probe, so it never counts as ready by itself.
+// Still not derivable client-side: the per-item "Ask agentconnect" automation (§6.3/§6.4).
 
-import { localDaemons } from './data'
+import { daemonEverConnected, localDaemons, runtimeUsable, runtimeWarning } from './data'
 import type { Agent, DaemonRow, IntegrationRow, Session } from './data'
 import type { MemberDto } from './api'
 
@@ -22,6 +19,9 @@ import type { MemberDto } from './api'
 // (open a modal, route to a page) so this stays pure and testable.
 export type GsAction =
   | { kind: 'daemon' }
+  | { kind: 'daemon-reconnect'; daemonId: string }
+  | { kind: 'daemon-detail'; daemonId: string | null }
+  | { kind: 'runtime-login'; daemonId: string; runtimeId: string }
   | { kind: 'slack'; agentId: string | null }
   | { kind: 'github'; agentId: string | null }
   | { kind: 'github-profile' }
@@ -37,6 +37,8 @@ export interface GsItem {
   done: boolean
   ctaLabel: string
   action: GsAction
+  /** Selects state-specific copy for the item (e.g. a daemon created but never connected); absent ⇒ the default. */
+  variant?: string
 }
 
 export interface GettingStarted {
@@ -50,12 +52,81 @@ export interface GettingStarted {
   allDone: boolean
 }
 
+// How long a never-connected daemon reads as "waiting" before the copy names likely causes.
+export const DAEMON_CONNECT_GRACE_MS = 10 * 60_000
+
 // r=10.5 matches every ring svg in the design (pill, drawer header, rail).
 const RING_CIRCUMFERENCE = 2 * Math.PI * 10.5
 
 /** `stroke-dasharray` for the r=10.5 progress ring at `fraction` (0..1) complete. */
 export function ringDash(fraction: number): string {
   return `${(fraction * RING_CIRCUMFERENCE).toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`
+}
+
+// Pool Pods never count: these steps are about a machine the org connected, and the pool hides them anyway.
+function daemonItem(local: DaemonRow[], now: number): GsItem {
+  const base = {
+    key: 'daemon',
+    label: 'Connect a daemon',
+    expl: 'Run one command on the host where your agents should live. It stays connected and runs agents locally over ACP.',
+    // Ever connected is enough: a laptop that's merely asleep must not un-tick a step the user already completed.
+    done: local.some(daemonEverConnected),
+    ctaLabel: 'Add a daemon',
+    action: { kind: 'daemon' } as GsAction
+  }
+  if (base.done || local.length === 0) return base
+  // Created but never connected: point at the newest row, the one the user most likely just added.
+  const newest = local.reduce((a, b) => (Date.parse(b.createdAtIso) > Date.parse(a.createdAtIso) ? b : a))
+  const age = now - Date.parse(newest.createdAtIso)
+  const late = Number.isFinite(age) && age >= DAEMON_CONNECT_GRACE_MS
+  return {
+    ...base,
+    expl: late
+      ? 'A daemon was created but has never connected. Usually the command was not run on the host, the process stopped, or the host cannot reach this console. Get a fresh command and run it there.'
+      : 'Waiting for the daemon to connect. If you have not run the command on the host yet, get it again.',
+    ctaLabel: 'Get the connect command',
+    action: { kind: 'daemon-reconnect', daemonId: newest.daemonId },
+    variant: late ? 'not-connected' : 'waiting'
+  }
+}
+
+function runtimeItem(local: DaemonRow[]): GsItem {
+  const connected = local.filter(daemonEverConnected)
+  const base = {
+    key: 'runtime',
+    label: 'Get a runtime ready',
+    expl: "Agents run on a coding runtime such as Claude Code or Codex, installed and signed in on the daemon's host.",
+    done: connected.some((d) => d.runtimeModels.some(runtimeUsable)),
+    ctaLabel: 'Check runtimes',
+    action: { kind: 'daemon-detail', daemonId: connected[0]?.daemonId ?? null } as GsAction
+  }
+  if (base.done || connected.length === 0) return base
+  // A login is a concrete fix, so it wins over a runtime whose probe has not settled.
+  for (const d of connected) {
+    const login = d.runtimeModels.find((r) => runtimeWarning(r) === 'auth-required')
+    if (login) {
+      return {
+        ...base,
+        expl: "A runtime on your daemon needs a login. Run the login command on the daemon's host.",
+        ctaLabel: 'Show login command',
+        action: { kind: 'runtime-login', daemonId: d.daemonId, runtimeId: login.runtime },
+        variant: 'login'
+      }
+    }
+  }
+  // Online with no reported issue yet: the probe may still be running, so no fix is asked for.
+  const checking = connected.find(
+    (d) => d.status === 'online' && (d.runtimeModels.length === 0 || d.runtimeModels.some((r) => !runtimeWarning(r)))
+  )
+  if (checking) {
+    return {
+      ...base,
+      expl: "Your daemon hasn't confirmed a working runtime yet. Its check may still be running; open the daemon to see each runtime.",
+      action: { kind: 'daemon-detail', daemonId: checking.daemonId },
+      variant: 'checking'
+    }
+  }
+  return base
 }
 
 export function computeGettingStarted(input: {
@@ -89,10 +160,10 @@ export function computeGettingStarted(input: {
    *  has no signal for a look-don't-touch review, so the caller records the click
    *  client-side (localStorage) and feeds it back here. */
   sessionAccessReviewed?: boolean
-  /** Is the `daemon-pool` flag on for this deployment? On, agents run on the cloud pool, so
-   *  "Connect a daemon" is dropped — the console offers no daemon to connect. Off (a self-hosted
-   *  install) keeps it as the first step. */
+  /** The `daemon-pool` flag: on, agents run on the cloud pool and the daemon and runtime steps are dropped. */
   poolEnabled?: boolean
+  /** Clock for the never-connected grace; tests pin it. */
+  now?: number
 }): GettingStarted {
   const {
     agents,
@@ -106,30 +177,19 @@ export function computeGettingStarted(input: {
     githubEnabled,
     sessionAccessAvailable,
     sessionAccessReviewed,
-    poolEnabled
+    poolEnabled,
+    now = Date.now()
   } = input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
   const firstAgent = (builtin ?? agents[0])?.id ?? null
 
+  const local = localDaemons(daemons)
+
   const items: GsItem[] = [
     // Cloud pool on ⇒ no daemon to connect; the pool hosts the agents.
-    ...(poolEnabled
-      ? []
-      : [
-          {
-            key: 'daemon',
-            label: 'Connect a daemon',
-            expl: 'Run one command on the host where your agents should live. It stays connected and runs agents locally over ACP.',
-            // Registered is enough — an offline daemon has still been set up, and a laptop
-            // that's merely asleep shouldn't un-tick a step the user already completed. Pool
-            // Pods don't count: this step is about a machine, and they are hidden here anyway.
-            done: localDaemons(daemons).length > 0,
-            ctaLabel: 'Add a daemon',
-            action: { kind: 'daemon' } as const
-          }
-        ]),
+    ...(poolEnabled ? [] : [daemonItem(local, now), runtimeItem(local)]),
     {
       key: 'slack',
       label: 'Connect Slack',

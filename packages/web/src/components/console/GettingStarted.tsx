@@ -6,10 +6,7 @@
 // step persists server-side (`org.gettingStartedStep`, best-effort — the PATCH is
 // owner-only). Once every step is passed the slide closes itself and the pill goes.
 //
-// Not built yet (no shipped backing — added when their signals land, preset-agents.md
-// §3/§6): the "runtime signed in" needs-attention item (probe status, §6.2) and the
-// per-item "Ask Assistant" automation (the assistant preset + delegated MCP writes,
-// §6.3/§6.4).
+// Not built yet: the per-item "Ask Assistant" automation (preset-agents.md §6.3/§6.4).
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePathname } from 'next/navigation'
@@ -17,7 +14,7 @@ import { useTranslations } from 'next-intl'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { isAuthConfigured } from '@/lib/auth'
-import { computeGettingStarted, ringDash, type GsAction } from '@/lib/getting-started'
+import { computeGettingStarted, ringDash, type GsAction, type GsItem } from '@/lib/getting-started'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   SlackSlideBody,
@@ -77,6 +74,31 @@ export default function GettingStarted() {
       description: t('items.daemon.description'),
       action: t('items.daemon.action')
     },
+    'daemon.waiting': {
+      label: t('items.daemon.label'),
+      description: t('items.daemon.waiting'),
+      action: t('items.daemon.reconnectAction')
+    },
+    'daemon.not-connected': {
+      label: t('items.daemon.label'),
+      description: t('items.daemon.notConnected'),
+      action: t('items.daemon.reconnectAction')
+    },
+    runtime: {
+      label: t('items.runtime.label'),
+      description: t('items.runtime.description'),
+      action: t('items.runtime.action')
+    },
+    'runtime.checking': {
+      label: t('items.runtime.label'),
+      description: t('items.runtime.checking'),
+      action: t('items.runtime.action')
+    },
+    'runtime.login': {
+      label: t('items.runtime.label'),
+      description: t('items.runtime.login'),
+      action: t('items.runtime.loginAction')
+    },
     slack: {
       label: t('items.slack.label'),
       description: t('items.slack.description'),
@@ -108,6 +130,7 @@ export default function GettingStarted() {
       action: t('items.session-access.action')
     }
   }
+  const copyFor = (it: GsItem) => itemCopy[it.variant ? `${it.key}.${it.variant}` : it.key]
   const { agents, daemons, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
   const { activeOrg, updateOrg } = useOrgs()
   const { runAction } = useGsActions()
@@ -164,7 +187,7 @@ export default function GettingStarted() {
         githubEnabled,
         sessionAccessAvailable,
         sessionAccessReviewed,
-        // Cloud pool on ⇒ the "Connect a daemon" step is dropped (lib/getting-started.ts).
+        // Cloud pool on ⇒ the daemon and runtime steps are dropped (lib/getting-started.ts).
         poolEnabled: featureFlagEnabled('daemon-pool')
       }),
     [
@@ -271,6 +294,7 @@ export default function GettingStarted() {
       setSaReviewed({ orgId, on: true })
     }
     const navigates =
+      action.kind === 'daemon-detail' ||
       action.kind === 'github' ||
       action.kind === 'github-profile' ||
       action.kind === 'chat' ||
@@ -382,7 +406,7 @@ export default function GettingStarted() {
                             : 'font-medium text-(--text-primary)'
                         }`}
                       >
-                        {itemCopy[it.key]?.label ?? it.label}
+                        {copyFor(it)?.label ?? it.label}
                       </span>
                       {open &&
                         (it.key === 'slack' && slackOneClick ? (
@@ -392,12 +416,12 @@ export default function GettingStarted() {
                         ) : (
                           <>
                             <div className="mt-[5px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                              {itemCopy[it.key]?.description ?? it.expl}
+                              {copyFor(it)?.description ?? it.expl}
                             </div>
                             {!it.done && (
                               <div className="mt-[11px]" onClick={(e) => e.stopPropagation()}>
                                 <Button size="sm" onClick={() => runFromDrawer(it.action)}>
-                                  {itemCopy[it.key]?.action ?? it.ctaLabel}
+                                  {copyFor(it)?.action ?? it.ctaLabel}
                                 </Button>
                               </div>
                             )}

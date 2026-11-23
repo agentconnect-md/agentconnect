@@ -15,7 +15,7 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useModal } from './ModalProvider'
 import type { GsAction } from '@/lib/getting-started'
-import { agentIsPlaced } from '@/lib/data'
+import { agentIsPlaced, runtimeLabel } from '@/lib/data'
 import { isAuthConfigured } from '@/lib/auth'
 import {
   fetchGithubInstallations,
@@ -32,7 +32,7 @@ import { Button, Icon } from '@/components/ui'
 
 /** The checklist's action-runner, wired to the live console surfaces. */
 export function useGsActions() {
-  const { agents } = useConsoleData()
+  const { agents, daemons } = useConsoleData()
   const { orgPath } = useOrgs()
   const { openModal } = useModal()
   const router = useRouter()
@@ -46,6 +46,21 @@ export function useGsActions() {
       switch (action.kind) {
         case 'daemon':
           return openModal('daemon')
+        case 'daemon-reconnect': {
+          // Reconnect needs a replacement credential; without that right the detail page is the next stop.
+          const d = daemons.find((x) => x.daemonId === action.daemonId)
+          return d?.canIssueKey ? openModal('reconnectDaemon', d) : router.push(orgPath(`/daemons/${action.daemonId}`))
+        }
+        case 'daemon-detail':
+          return router.push(orgPath(action.daemonId ? `/daemons/${action.daemonId}` : '/daemons'))
+        case 'runtime-login': {
+          const d = daemons.find((x) => x.daemonId === action.daemonId)
+          return openModal('runtimeLogin', {
+            runtimeId: action.runtimeId,
+            runtimeLabel: runtimeLabel(action.runtimeId),
+            ...(d ? { daemonName: d.name } : {})
+          })
+        }
         case 'slack': {
           // The action targets the built-in preset; honor it — agents[0] is commonly an
           // older custom agent in backfilled orgs, and the manual fallback must not
@@ -76,7 +91,7 @@ export function useGsActions() {
           return router.push(orgPath('/settings#session-access'))
       }
     },
-    [openModal, router, orgPath, builtinAgent, agents]
+    [openModal, router, orgPath, builtinAgent, agents, daemons]
   )
 
   return { runAction }
