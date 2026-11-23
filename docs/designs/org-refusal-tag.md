@@ -35,8 +35,9 @@ reader can find in any of them.
 - `<code>` is lower snake_case, `[a-z][a-z0-9_]{0,63}`, and names **why** the organization was refused
   (§3). It is the only part a reader branches on.
 - Exactly one space follows the tag.
-- `<sentence>` is a plain statement of what happened, for a reader that knows no better. It carries no
-  links and no instructions: what to do next is the reader's to say, for its own surface.
+- `<sentence>` is a plain statement of what happened, for a reader that knows no better. In the steady
+  state it carries no links and no instructions: what to do next is the reader's to say, for its own
+  surface. During the rollout an issuer may keep links after the tag for readers that predate it (§6).
 - The tag **leads** the message. Runtimes put their own text before the message and some put text
   after it (§4.2), so a leading tag sits right after the runtime's prefix in every case, while a
   trailing one would not end the text either.
@@ -54,9 +55,10 @@ they do today (§5).
 | `out_of_credits`  | The organization's prepaid credit is used up. Adding credit lets it run again.                                                                                                                                              |
 | `standing_lapsed` | The organization's standing expired and nothing renewed it. The refuser fails closed: until whatever decides standing renews it, the organization may not run. Adding credit does not help; it clears when renewal resumes. |
 
-**`standing_lapsed` is a refusal, not `unavailable`.** Every code here rides inside `org_suspended`,
-the organization-wide verdict "may not run", with its consequences: the session stops and its key is
-revoked, and the Control Plane answers 402. `unavailable` is the key server unable to answer at all, and
+**`standing_lapsed` is a refusal, not `unavailable`.** On the two key-server channels every code here
+rides inside `org_suspended`, the organization-wide verdict "may not run", with its consequences: the
+session stops and its key is revoked, and the Control Plane answers 402. On the gateway channel there is
+no verdict, only a refused request; the code chooses wording there and changes no state (§5). `unavailable` is the key server unable to answer at all, and
 keeps the degradation window. A lapse is an answer: the issuer's own rule says an organization whose
 standing was not renewed may not run, much as a lease that ran out is not an unknown lease. An issuer
 that would rather keep organizations running through a renewal gap does not refuse them, and sends no
