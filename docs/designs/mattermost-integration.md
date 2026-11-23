@@ -149,23 +149,22 @@ Because administrators supply `serverUrl`, every outbound Mattermost caller pins
 disables HTTP redirects while keeping internal allowlists isolated from Relay MCP egress
 (`RELAY_MCP_ALLOWED_UPSTREAMS`):
 
-| Host / component                                                                         | Always-blocked targets (`isLinkLocalOrUnspecifiedAddress`)                                                                                                                                                                                                                                       | Private / loopback policy (`RFC 1918`, `127.0.0.0/8`, `::1`, `fc00::/7`, `100.64.0.0/10`)                                                                                                                                               | DNS pinning & redirect guard                                                                                                                                                                | Custom PKI                                                      |
-| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| **Setup Server** (`probeMattermostInstance`)                                             | `0.0.0.0/8`, `169.254.0.0/16`, `100.100.100.200`, `192.0.0.0/24` (Oracle IMDS `192.0.0.192`), `198.18.0.0/15`, `224.0.0.0/4+`, `::`, `fe80::/10`, `ff00::/8`, `fd00:ec2::254`, and IPv4 embedded in `::ffff:0:0/96`, `::ffff:0:0:0/96` (SIIT), `::/96`, NAT64 `64:ff9b::/96` / `64:ff9b:1::/48`. | Permits self-hosted private/loopback URLs so admins can probe intranet hosts during setup; only `invalid_url` stops saving (`probeMattermostBlocksSave`).                                                                               | `nodePinnedProbeGet` (`makePinnedLookup` with `options.all` Happy Eyeballs), `5_000 ms` timeout, `64 KiB` body cap, no redirects followed.                                                  | `NODE_EXTRA_CA_CERTS` (`tls_untrusted` surfaced as diagnostic). |
-| **Control Plane** (`verifyMattermostBot`, `MattermostSessionAccessService`)              | Enforced unconditionally via `guardedRequest` (`isLinkLocalOrUnspecifiedAddress`).                                                                                                                                                                                                               | `MATTERMOST_ALLOW_PRIVATE_NETWORK` defaults to `false` when `NODE_ENV === 'production'`, `true` otherwise; explicit hostnames allowed via `CP_ALLOWED_OUTBOUND_HOSTS`, `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`, or configured OAuth host. | `guardedRequest` (`makeGuardedLookup` reject-if-any, `GUARDED_TIMEOUT_MS = 10_000`, `GUARDED_MAX_BYTES = 1 MiB`), `node:http`/`https` without redirects.                                    | `NODE_EXTRA_CA_CERTS`                                           |
-| **Daemon** (`MattermostClient`, `validateMattermostServerUrl`, `downloadMattermostFile`) | Enforced unconditionally via `validateMattermostServerUrl` + `makeMattermostLookup`.                                                                                                                                                                                                             | `allowMattermostPrivateNetwork()` defaults to `true` except when `AGENTCONNECT_SUPERVISOR === 'k8s'`, overridable via `MATTERMOST_ALLOW_PRIVATE_NETWORK`, `MATTERMOST_ALLOWED_HOSTS`, or `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`.         | Undici `Agent` (`makeMattermostLookup`) + `WsWebSocket` `lookup`; REST/media pass `redirect: 'error'`; `resolveMattermostFileUrl` pins origin + subpath (`/api/v4/files/<id>[/thumbnail]`). | `NODE_EXTRA_CA_CERTS`                                           |
-| **Logto** (OAuth 2.0 server)                                                             | Logto SSRF protection blocks private hosts by default.                                                                                                                                                                                                                                           | Configured via `LOGTO_SSRF_ALLOWED_ADDRESSES` (defaults in `compose.logto.yaml` to `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`).                                                                                                              | Handled by Logto container runtime.                                                                                                                                                         | `NODE_EXTRA_CA_CERTS`                                           |
+| Host / component                                                                         | Always-blocked targets (`isLinkLocalOrUnspecifiedAddress`)                                                                                                                                                                                                                                       | Private / loopback policy (`RFC 1918`, `127.0.0.0/8`, `::1`, `fc00::/7`, `100.64.0.0/10`)                                                                                                                                       | DNS pinning & redirect guard                                                                                                                                                                | Custom PKI                                                      |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Setup Server** (`probeMattermostInstance`)                                             | `0.0.0.0/8`, `169.254.0.0/16`, `100.100.100.200`, `192.0.0.0/24` (Oracle IMDS `192.0.0.192`), `198.18.0.0/15`, `224.0.0.0/4+`, `::`, `fe80::/10`, `ff00::/8`, `fd00:ec2::254`, and IPv4 embedded in `::ffff:0:0/96`, `::ffff:0:0:0/96` (SIIT), `::/96`, NAT64 `64:ff9b::/96` / `64:ff9b:1::/48`. | Permits self-hosted private/loopback URLs so admins can probe intranet hosts during setup; only `invalid_url` stops saving (`probeMattermostBlocksSave`).                                                                       | `nodePinnedProbeGet` (`makePinnedLookup` with `options.all` Happy Eyeballs), `5_000 ms` timeout, `64 KiB` body cap, no redirects followed.                                                  | `NODE_EXTRA_CA_CERTS` (`tls_untrusted` surfaced as diagnostic). |
+| **Control Plane** (`verifyMattermostBot`, `MattermostSessionAccessService`)              | Enforced unconditionally via `guardedRequest` (`isLinkLocalOrUnspecifiedAddress`).                                                                                                                                                                                                               | `MATTERMOST_ALLOW_PRIVATE_NETWORK` defaults to `false` when `NODE_ENV === 'production'`, `true` otherwise; explicit hostnames allowed via `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` or the configured OAuth host.                   | `guardedRequest` (`makeGuardedLookup` reject-if-any, `GUARDED_TIMEOUT_MS = 10_000`, `GUARDED_MAX_BYTES = 1 MiB`), `node:http`/`https` without redirects.                                    | `NODE_EXTRA_CA_CERTS`                                           |
+| **Daemon** (`MattermostClient`, `validateMattermostServerUrl`, `downloadMattermostFile`) | Enforced unconditionally via `validateMattermostServerUrl` + `makeMattermostLookup`.                                                                                                                                                                                                             | `allowMattermostPrivateNetwork()` defaults to `true` except when `AGENTCONNECT_SUPERVISOR === 'k8s'`, overridable via `MATTERMOST_ALLOW_PRIVATE_NETWORK`, `MATTERMOST_ALLOWED_HOSTS`, or `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`. | Undici `Agent` (`makeMattermostLookup`) + `WsWebSocket` `lookup`; REST/media pass `redirect: 'error'`; `resolveMattermostFileUrl` pins origin + subpath (`/api/v4/files/<id>[/thumbnail]`). | `NODE_EXTRA_CA_CERTS`                                           |
+| **Logto** (OAuth 2.0 server)                                                             | Logto SSRF protection blocks private hosts by default.                                                                                                                                                                                                                                           | Configured via `LOGTO_SSRF_ALLOWED_ADDRESSES` (defaults in `compose.logto.yaml` to `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`).                                                                                                      | Handled by Logto container runtime.                                                                                                                                                         | `NODE_EXTRA_CA_CERTS`                                           |
 
 Relay (`POST /mattermost/actions`) makes **no** outbound HTTP requests to Mattermost; outbound
 SSRF checks live exclusively on Setup, Control Plane, and Daemon.
 
 Two properties of the Control Plane allowlists are worth knowing before adding a host. They match
-the URL **hostname only**, so every port on an allowlisted host is reachable. And they are shared
-rather than Mattermost-specific: Mattermost checks honor `CP_ALLOWED_OUTBOUND_HOSTS` as well as
-`AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`, and the Control Plane's MCP OAuth egress honors
-`AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` too. Only the Relay's `RELAY_MCP_ALLOWED_UPSTREAMS` stays
-separate. On a multi-tenant install, a host added for one purpose is therefore dialable through
-the other.
+the URL **hostname only**, so every port on an allowlisted host is reachable. And
+`AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` is the deliberately shared list: both Mattermost checks and
+the Control Plane's MCP OAuth egress honor it, so on a multi-tenant install any organization's
+`serverUrl` can reach a host placed there. The MCP-specific `CP_ALLOWED_OUTBOUND_HOSTS` is **not**
+honored for Mattermost, and the Relay's `RELAY_MCP_ALLOWED_UPSTREAMS` stays separate from both.
 
 ## 4. WebSocket v4 transport, revocation, and reconnect recovery
 
@@ -221,7 +220,11 @@ at-least-once within the limits listed after them, not a guarantee against every
 2. **Full sweep of all non-deleted joined channels:** `catchUpOnce()` calls unpaginated
    `GET /api/v4/users/me/channels?include_deleted=false`, deduplicates by channel ID, drops deleted
    channels (`delete_at` truthy), and sorts **every** non-deleted channel (`O`, `P`, `G`, `D`) in
-   `last_post_at ?? update_at` descending order (no channel count truncation). If `getMyChannels`
+   `last_post_at ?? update_at` descending order (no channel count truncation). A channel whose
+   fresh `last_post_at` is more than `CATCH_UP_QUIET_MARGIN_MS = 10 min` older than its `since` is
+   marked complete without a request, so a reconnect costs requests in proportion to the channels
+   that were active, not the channels joined. The margin exists because an edit that finalizes a
+   response does not move `last_post_at`. If `getMyChannels`
    fails (`channelsListComplete = false`), it merges cached `this.channels` with any non-deleted
    channel IDs present in `recoveryWatermarks` and resolves missing `channel.type` metadata via
    `getChannelCached(ch.id)` before dispatching posts.
@@ -230,9 +233,10 @@ at-least-once within the limits listed after them, not a guarantee against every
    mid-pass disconnect increments `recoveryEpoch`, clears `recoveryCompletedChannels`, and aborts
    the active worker loop (`allChannelsClean = false`) without marking in-flight channels completed.
    For each pending channel, `fetchChannelPostsSince(ch.id, Math.max(1, watermark - 1_000))` executes:
-   - Initial query: `GET /api/v4/channels/{id}/posts?since=<since>&per_page=60`. Because Mattermost's
-     `since` filter matches both `create_at` and `update_at` and caps at `MATTERMOST_SINCE_SERVER_CAP = 1_000`
-     posts, `fetchChannelPostsSince` anchors the `before` cursor on the oldest post whose
+   - Initial query: `GET /api/v4/channels/{id}/posts?since=<since>&per_page=60`. A `since` query
+     ignores paging and returns no cursors, so reaching `MATTERMOST_SINCE_SERVER_CAP = 1_000` posts
+     is the only sign that older ones remain. Because the filter matches both `create_at` and
+     `update_at`, `fetchChannelPostsSince` anchors the `before` cursor on the oldest post whose
      `create_at >= since` — preventing an older post edited during the outage from pulling `?before=`
      past unseen outage messages.
    - Backward pages: `?before=<oldestId>&per_page=60` up to `MAX_CATCH_UP_PAGES = 200` whenever
@@ -271,8 +275,10 @@ post, except the first:
   retry replays whatever has left `seen`.
 - A live post that arrives after reconnect is processed ahead of older outage posts in the same
   channel; the two share a per-channel chain, so neither is duplicated.
-- Every reconnect issues at least one `since` request per joined channel, and a channel that
-  fails permanently (`403`/`404`) keeps the steady retry alive until the next disconnect.
+- A response that started streaming more than `CATCH_UP_QUIET_MARGIN_MS` before the outage, in
+  a channel with no other post since, and was finalized during it, is not replayed to peer agents.
+- A channel that fails permanently (`403`/`404`) keeps the steady retry alive until the next
+  disconnect.
 
 ## 5. Conversations, normalization, streaming, and media
 
@@ -429,12 +435,12 @@ sequenceDiagram
   `deriveMattermostActionSecret(API_KEY_PEPPER)` (`HMAC-SHA256(pepper, 'agentconnect:mattermost-action:v1')`)
   unless `MATTERMOST_ACTION_SECRET` (min 32 chars) is set. In `AuthService`, single-org daemons
   (`organizationMode: 'connection'`) receive `AuthOk.mattermostActionSecret = deriveMattermostOrgActionSecret(secret, orgId)`,
-  whereas multi-tenant cluster pool daemons (`organizationMode: 'frame'`) receive the master secret
-  and derive per-org secrets dynamically in `Daemon.mattermostActionCallback(agentId)`. Relay receives
-  the master secret in `RcAuthOk.mattermostActionSecret`. A pool daemon therefore holds a secret
-  that can sign a token for any organization, and Relay's `orgForAgent` check does not catch one
-  it signed for the matching org: per-org isolation of the callback holds against self-hosted
-  daemons, not against a compromised pool daemon. There is no key ID or rotation path in v1.
+  whereas multi-tenant cluster pool daemons (`organizationMode: 'frame'`) receive none at auth.
+  Every daemon is instead sent the same org-scoped derivation on each integration it serves, as
+  `IntegrationMattermostConfig.actionSecret`, and `Daemon.mattermostActionCallback(agentId)` signs
+  with that. Only the Control Plane and Relay (`RcAuthOk.mattermostActionSecret`) hold the master
+  secret, so a compromised daemon can sign only for the organizations whose integrations it
+  serves. There is no key ID or rotation path in v1.
 - **Wire token (`packages/protocol/src/mattermost-action-token.ts`):**
   - Org-scoped: `mm1.<orgIdB64>.<payloadB64>.<sig>`, HMAC-SHA256 signed over `mm-action-v2:<orgIdB64>.<payloadB64>` using `deriveMattermostOrgActionSecret(masterSecret, orgId)`. `verifyMattermostActionTokenWithMaster` extracts and validates `orgId` (`SAFE_ID_RE`) **before** parsing untrusted JSON payload bytes.
   - Standalone fallback (tests/single-secret): `<payloadB64>.<sig>` signed over `mm-action-v1:<payloadB64>`.
@@ -531,22 +537,23 @@ Mattermost onboarding tiles in the Console wizard are gated by `FEATURE_FLAGS=ma
 (`packages/web/src/lib/feature-flags.ts`, `charts/agentconnect/values.yaml` `features.mattermost: false`
 by default; existing configured bots remain manageable in Settings). Gateway `HTTPRoute`
 (`charts/agentconnect/templates/httproute.yaml`) explicitly routes `/mattermost/actions` to the
-Relay pool so interactive card clicks never 404 at the ingress gateway. The chart has no values
-for the other knobs below: on Kubernetes they are set through `extraEnv`, separately on the
-Control Plane and on the daemon pool, and the network and allowlist knobs must agree on both or
-a bot installs but its daemon refuses to dial (or the reverse).
+Relay pool so interactive card clicks never 404 at the ingress gateway. The dial policy is one
+`mattermost` values block (`allowPrivateNetwork`, `internalAllowedHosts`) that the chart renders
+into both the Control Plane and the daemon pool, because a bot installs through one and connects
+through the other; stating either variable in `extraEnv` is refused. The remaining knobs below
+have no chart values and go through `extraEnv`.
 
-| Knob / setting                                           | Component(s)                                | Default / value                                   | Purpose                                                                                          |
-| -------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `FEATURE_FLAGS` / `features.mattermost`                  | `web`, Helm `web.yaml`                      | `false` (off)                                     | Enables Mattermost install entry points in the Console.                                          |
-| `/mattermost/actions` (`MATTERMOST_ACTION_PATH`)         | `relay`, Helm `httproute.yaml`              | Mounted on Relay HTTP server                      | Receives Mattermost interactive attachment button callbacks.                                     |
-| `MATTERMOST_ACTION_SECRET`                               | `control-plane`, `relay`, `daemon`          | Derived from `API_KEY_PEPPER`                     | Master HMAC secret for `mm1` button callback tokens (`>= 32` chars).                             |
-| `MATTERMOST_ALLOW_PRIVATE_NETWORK`                       | `control-plane`, `daemon`, `compose.yaml`   | `false` in prod / `k8s`; `true` in dev / Compose  | Allows dialing private/loopback `serverUrl` targets (link-local/IMDS remain blocked).            |
-| `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`                    | `control-plane`, `daemon`, `compose.yaml`   | Empty                                             | Comma-separated internal Mattermost/OAuth hostnames allowed when private networks are off.       |
-| `CP_ALLOWED_OUTBOUND_HOSTS` / `MATTERMOST_ALLOWED_HOSTS` | `control-plane` / `daemon`                  | Empty                                             | Host-specific outbound allowlists for Mattermost without touching `RELAY_MCP_ALLOWED_UPSTREAMS`. |
-| `MATTERMOST_OAUTH_SERVER_URL`                            | `control-plane`, `compose.yaml`             | From Setup `logto.mattermostConnector.serverUrl`  | Binds the Mattermost OAuth realm key (`mm-<16-hex>`) for `MattermostSessionAccessService`.       |
-| `LOGTO_SSRF_ALLOWED_ADDRESSES`                           | `compose.logto.yaml` / Logto                | Defaults to `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` | Permits Logto container to reach intranet Mattermost OAuth/user endpoints.                       |
-| `NODE_EXTRA_CA_CERTS`                                    | `setup`, `control-plane`, `daemon`, `logto` | Unset                                             | Custom internal CA bundle path for self-signed Mattermost HTTPS certificates.                    |
+| Knob / setting                                   | Component(s)                                | Default / value                                   | Purpose                                                                                    |
+| ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `FEATURE_FLAGS` / `features.mattermost`          | `web`, Helm `web.yaml`                      | `false` (off)                                     | Enables Mattermost install entry points in the Console.                                    |
+| `/mattermost/actions` (`MATTERMOST_ACTION_PATH`) | `relay`, Helm `httproute.yaml`              | Mounted on Relay HTTP server                      | Receives Mattermost interactive attachment button callbacks.                               |
+| `MATTERMOST_ACTION_SECRET`                       | `control-plane`, `relay`, `daemon`          | Derived from `API_KEY_PEPPER`                     | Master HMAC secret for `mm1` button callback tokens (`>= 32` chars).                       |
+| `MATTERMOST_ALLOW_PRIVATE_NETWORK`               | `control-plane`, `daemon`, `compose.yaml`   | `false` in prod / `k8s`; `true` in dev / Compose  | Allows dialing private/loopback `serverUrl` targets (link-local/IMDS remain blocked).      |
+| `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`            | `control-plane`, `daemon`, `compose.yaml`   | Empty                                             | Comma-separated internal Mattermost/OAuth hostnames allowed when private networks are off. |
+| `MATTERMOST_ALLOWED_HOSTS`                       | `daemon`                                    | Empty                                             | Daemon-only additions to the internal host list for Mattermost servers.                    |
+| `MATTERMOST_OAUTH_SERVER_URL`                    | `control-plane`, `compose.yaml`             | From Setup `logto.mattermostConnector.serverUrl`  | Binds the Mattermost OAuth realm key (`mm-<16-hex>`) for `MattermostSessionAccessService`. |
+| `LOGTO_SSRF_ALLOWED_ADDRESSES`                   | `compose.logto.yaml` / Logto                | Defaults to `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS` | Permits Logto container to reach intranet Mattermost OAuth/user endpoints.                 |
+| `NODE_EXTRA_CA_CERTS`                            | `setup`, `control-plane`, `daemon`, `logto` | Unset                                             | Custom internal CA bundle path for self-signed Mattermost HTTPS certificates.              |
 
 ## 9. Validation and test matrix
 

@@ -973,7 +973,7 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
     expect(Number(new URL(catchUpPostReqs[0]!.url).searchParams.get('since'))).toBe(baseMs)
   })
 
-  it('pages through >60 outage posts using before cursors before advancing catch-up watermarks', async () => {
+  it('pages through >1000 outage posts using before cursors before advancing catch-up watermarks', async () => {
     const { server, conn, messages } = setup({ botUsername: 'acbot' })
     const alice = server.addUser({ id: fakeMmId('alice', 13), username: 'alice', is_bot: false })
     const ch = server.addChannel({ id: fakeMmId('bigch', 1), type: 'O', name: 'high-traffic' }, [
@@ -1000,9 +1000,9 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
     server.lastSocket.emitPosted(seenPost)
     await vi.waitFor(() => expect(messages).toHaveLength(1))
 
-    // Add 135 outage posts (spanning 3 pages at 60/page) plus touch oldPost.update_at after outage start.
+    // Add 1135 outage posts: `since` returns only the newest 1000, so the oldest 135 need `before` pages.
     const missed: Array<ReturnType<typeof server.addPost>> = []
-    for (let i = 1; i <= 135; i++) {
+    for (let i = 1; i <= 1_135; i++) {
       missed.push(
         server.addPost({
           channel_id: ch.id,
@@ -1012,11 +1012,11 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
         })
       )
     }
-    oldPost.update_at = baseMs + 140_000
+    oldPost.update_at = baseMs + 1_140_000
 
     const reqBefore = server.requests.length
     await conn.catchUpAfterReconnect()
-    await vi.waitFor(() => expect(messages).toHaveLength(136), { timeout: 3_000 })
+    await vi.waitFor(() => expect(messages).toHaveLength(1_136), { timeout: 10_000 })
 
     expect(messages[0]!.msgId).toBe(`mattermost:${ch.id}:${seenPost.id}`)
     expect(messages.slice(1).map((m) => m.text)).toEqual(missed.map((p) => p.message))
@@ -1024,12 +1024,11 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
     const postReqs = server.requests
       .slice(reqBefore)
       .filter((r) => r.path.startsWith(`/api/v4/channels/${ch.id}/posts`))
-    expect(postReqs).toHaveLength(3)
+    expect(postReqs).toHaveLength(4)
     expect(new URL(postReqs[0]!.url).searchParams.get('since')).toBe(String(baseMs))
-    expect(new URL(postReqs[1]!.url).searchParams.get('before')).toBeTruthy()
-    expect(new URL(postReqs[2]!.url).searchParams.get('before')).toBeTruthy()
+    for (const req of postReqs.slice(1)) expect(new URL(req.url).searchParams.get('before')).toBeTruthy()
 
-    // Now that all pages settled, a follow-up catch-up must advance past oldPost.update_at (baseMs + 140_000).
+    // Now that all pages settled, a follow-up catch-up must advance past oldPost.update_at (baseMs + 1_140_000).
     const reqSecond = server.requests.length
     await conn.catchUpAfterReconnect()
     const nextPostReqs = server.requests
@@ -1037,7 +1036,7 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
       .filter((r) => r.path.startsWith(`/api/v4/channels/${ch.id}/posts`))
     expect(nextPostReqs).toHaveLength(1)
     expect(Number(new URL(nextPostReqs[0]!.url).searchParams.get('since'))).toBeGreaterThanOrEqual(
-      baseMs + 140_000 - 1_000
+      baseMs + 1_140_000 - 1_000
     )
   })
 
@@ -1123,7 +1122,9 @@ describe('Mattermost P0 lifecycle, leave/ephemeral, reconnect catch-up, and 401 
       .map((r) => /^\/api\/v4\/channels\/([^/]+)\/posts/.exec(r.path)?.[1])
       .filter((id): id is string => Boolean(id))
     expect(new Set(sweptChannelIds)).toEqual(new Set(channels.map((c) => c.id)))
-    expect(sweptChannelIds.indexOf(channels[0]!.id)).toBeLessThan(sweptChannelIds.indexOf(channels[124]!.id))
+    // Channels are swept most recently active first, and the outage posts made the last 21 the most recent.
+    expect(sweptChannelIds.indexOf(channels[124]!.id)).toBeLessThan(sweptChannelIds.indexOf(channels[0]!.id))
+    expect(sweptChannelIds.indexOf(channels[0]!.id)).toBeLessThan(sweptChannelIds.indexOf(channels[103]!.id))
   })
 
   it('schedules exponential retry on transient 503 catch-up failure, skips clean channels, preserves frozen watermark, and clears pending timer on stop', async () => {
@@ -1852,6 +1853,46 @@ describe('Mattermost catch-up replay, retry, clock skew, and forged response-fin
     await conn.catchUpAfterReconnect()
     await vi.waitFor(() => expect(delivered).toHaveLength(1))
     expect(delivered[0]!.msgId).toBe(`mattermost:${ch.id}:${missed.id}`)
+  })
+
+  it('skips channels the fresh listing shows were quiet since long before the watermark', async () => {
+    const { server, conn, messages } = setup({ botUsername: 'acbot' })
+    const alice = server.addUser({ id: fakeMmId('alice', 35), username: 'alice', is_bot: false })
+    const startedAt = Date.now()
+    const quiet = server.addChannel(
+      { id: fakeMmId('quietch', 1), type: 'O', name: 'quiet', last_post_at: startedAt - 3_600_000 },
+      [server.botUser.id, alice.id]
+    )
+    const recent = server.addChannel(
+      { id: fakeMmId('quietch', 2), type: 'O', name: 'recent', last_post_at: startedAt - 60_000 },
+      [server.botUser.id, alice.id]
+    )
+    const active = server.addChannel(
+      { id: fakeMmId('quietch', 3), type: 'O', name: 'active', last_post_at: startedAt - 3_600_000 },
+      [server.botUser.id, alice.id]
+    )
+    await conn.start()
+
+    const missed = server.addPost({
+      channel_id: active.id,
+      user_id: alice.id,
+      message: '@acbot sent during the outage',
+      create_at: Date.now() + 2_000
+    })
+    const reqBefore = server.requests.length
+    await conn.catchUpAfterReconnect()
+    await vi.waitFor(() => expect(messages).toHaveLength(1))
+    expect(messages[0]!.msgId).toBe(`mattermost:${active.id}:${missed.id}`)
+
+    const fetched = new Set(
+      server.requests
+        .slice(reqBefore)
+        .map((r) => /^\/api\/v4\/channels\/([^/]+)\/posts/.exec(r.path)?.[1])
+        .filter((id): id is string => Boolean(id))
+    )
+    // An edit can finalize a response without moving last_post_at, so a channel inside the margin is still fetched.
+    expect(fetched).toEqual(new Set([active.id, recent.id]))
+    expect(fetched.has(quiet.id)).toBe(false)
   })
 
   it('recovers outage posts when the daemon clock runs ahead of the server', async () => {

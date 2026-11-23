@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
-import { IntegrationMattermostConfig, type IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
+import {
+  IntegrationMattermostConfig,
+  deriveMattermostOrgActionSecret,
+  type IntegrationCoreEnvelope
+} from '@agentconnect.md/protocol'
 import {
   createMattermostCpProvider,
   deriveMattermostActionSecret,
@@ -324,6 +328,25 @@ describe('Mattermost provider validation and installation', () => {
       botUserId: BOT_USER_ID,
       botUsername: BOT_USERNAME
     })
+
+    // With a master secret, each integration carries its own organization's derivation and never the master.
+    const master = 'm'.repeat(43)
+    const bot = {
+      botUserId: BOT_USER_ID,
+      platformConfig: { serverUrl: SERVER_URL, botUserId: BOT_USER_ID, botUsername: BOT_USERNAME }
+    } as unknown as BotRecord
+    const secretFor = async (orgId: string) =>
+      IntegrationMattermostConfig.parse(
+        await createMattermostCpProvider({ actionSecret: master }).projectIntegrationConfig(
+          { orgId } as IntegrationRecord,
+          bot,
+          {} as IntegrationCoreEnvelope,
+          { botToken: BOT_TOKEN, appToken: null, signingSecret: null }
+        )
+      ).actionSecret
+    expect(await secretFor('org_a')).toBe(deriveMattermostOrgActionSecret(master, 'org_a'))
+    expect(await secretFor('org_b')).not.toBe(await secretFor('org_a'))
+    expect(await secretFor('org_a')).not.toBe(master)
 
     expect(
       await provider.projectIntegrationConfig(

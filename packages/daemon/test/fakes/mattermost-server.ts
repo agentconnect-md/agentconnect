@@ -297,6 +297,11 @@ export class FakeMattermostServer {
     }
     this.posts.set(id, created)
     if (!this.postOrder.includes(id)) this.postOrder.push(id)
+    // A channel that tracks last_post_at moves it with each post, as the real server does.
+    const channel = this.channels.get(post.channel_id)
+    if (channel && typeof channel.last_post_at === 'number' && createAt > channel.last_post_at) {
+      channel.last_post_at = createAt
+    }
     return created
   }
 
@@ -512,14 +517,16 @@ export class FakeMattermostServer {
       } else if (since !== undefined && Number.isFinite(since)) {
         windowPosts = sorted.filter((p) => (p.create_at ?? 0) >= since || (p.update_at ?? 0) >= since)
       }
-      const slice = windowPosts.slice(start, start + perPage)
+      // Like the real server, a `since` query ignores paging, returns at most the newest 1000 posts, and carries no cursors.
+      const sinceQuery = !before && !after && since !== undefined && Number.isFinite(since)
+      const slice = sinceQuery ? windowPosts.slice(0, 1_000) : windowPosts.slice(start, start + perPage)
       const posts: Record<string, MattermostPost> = {}
       const order: string[] = []
       for (const p of slice) {
         posts[p.id] = p
         order.push(p.id)
       }
-      const hasMore = !after && start + perPage < windowPosts.length
+      const hasMore = !after && !sinceQuery && start + perPage < windowPosts.length
       return jsonResponse(200, {
         order,
         posts,

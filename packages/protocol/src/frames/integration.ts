@@ -100,7 +100,8 @@ export const IntegrationMattermostConfig = z.object({
   serverUrl: z.string().url({ protocol: /^https?$/ }), // normalized base URL without trailing slash (http or https for self-hosted)
   botToken: z.string().min(1), // Bot Account token or PAT (plaintext — never log)
   botUserId: z.string().min(1).optional(), // resolved via GET /api/v4/users/me; seeded by CP
-  botUsername: z.string().min(1).optional() // resolved via GET /api/v4/users/me; seeded by CP for @username mentions
+  botUsername: z.string().min(1).optional(), // resolved via GET /api/v4/users/me; seeded by CP for @username mentions
+  actionSecret: z.string().min(32).max(256).optional() // this organization's card-callback HMAC secret (plaintext — never log)
 })
 export type IntegrationMattermostConfig = z.infer<typeof IntegrationMattermostConfig>
 

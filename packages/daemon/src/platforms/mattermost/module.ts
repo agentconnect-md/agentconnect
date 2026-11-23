@@ -200,6 +200,7 @@ export function decodeMattermostCardClick(msg: Pick<RdMsgPlatformAction, 'payloa
 
 export const mattermostCardClicks: RelayCardClicks = {
   decode: decodeMattermostCardClick,
+  verifiesActor: true,
   response: (privateText) =>
     ({
       ephemeralText: privateText.slice(0, clampSliceBeforeSurrogate(privateText, MATTERMOST_CARD_NOTE_MAX))

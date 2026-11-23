@@ -76,6 +76,8 @@ const USER_IDS_BATCH_SIZE = 200
 const CATCH_UP_PER_PAGE = 60
 const MATTERMOST_SINCE_SERVER_CAP = 1_000
 const MAX_CATCH_UP_PAGES = 200
+// A response can be finalized by an edit, which does not move a channel's last_post_at, so look this far behind it.
+const CATCH_UP_QUIET_MARGIN_MS = 10 * 60_000
 const CATCH_UP_RETRY_BASE_MS = 1_000
 const MAX_CATCH_UP_RETRY_BACKOFF_MS = 30_000
 const CATCH_UP_FAST_RETRIES = 8
@@ -921,6 +923,16 @@ export class MattermostConnection implements PlatformConnection {
         if (this.recoveryCompletedChannels.has(ch.id)) continue
         const watermark = this.recoveryWatermarks.get(ch.id) ?? fallbackSince
         const since = Math.max(1, watermark - 1_000)
+        // The fresh listing says nothing was posted here since well before the watermark, so there is nothing to fetch.
+        if (
+          channelsListComplete &&
+          typeof ch.last_post_at === 'number' &&
+          ch.last_post_at > 0 &&
+          ch.last_post_at < since - CATCH_UP_QUIET_MARGIN_MS
+        ) {
+          this.recoveryCompletedChannels.add(ch.id)
+          continue
+        }
         const passAt = this.client.serverNow()
         try {
           const { posts: fetchedPosts, maxPostAt, complete } = await this.fetchChannelPostsSince(ch.id, since)

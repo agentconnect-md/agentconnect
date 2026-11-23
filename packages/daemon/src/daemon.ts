@@ -222,7 +222,6 @@ import {
   parseOrgRefusal,
   MATTERMOST_PLATFORM,
   MATTERMOST_ACTION_PATH,
-  deriveMattermostOrgActionSecret,
   type RegisterReq,
   type RelayRosterEntry,
   type CronReport,
@@ -18498,7 +18497,7 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
     }
     let click = decoded
-    if (msg.platformId === MATTERMOST_PLATFORM && decoded.actor && decoded.actor.isBot === undefined) {
+    if (cards.verifiesActor && decoded.actor && decoded.actor.isBot === undefined) {
       const conn = this.anyConnForIntegration(msg.integrationId) as
         { getUserProfile?: (userId: string) => Promise<{ isBot?: boolean }> } | undefined
       // No connection or a failed lookup leaves the clicker unverified, so treat them as a bot and refuse.
@@ -27038,14 +27037,21 @@ export class Daemon {
 
   private mattermostActionCallback(agentId?: string): MattermostActionCallbackConfig | undefined {
     if (this.opts?.mattermostActionCallback) return this.opts.mattermostActionCallback
-    if (!this.cpPublicRelayUrl || !this.cpMattermostActionSecret || !this.cfg.daemonId) return undefined
+    if (!this.cpPublicRelayUrl || !this.cfg.daemonId) return undefined
     const orgId =
       this.cpOrgId ??
       (agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined)
     if (!orgId) return undefined
-    const secret = this.cpOrgId
-      ? this.cpMattermostActionSecret
-      : deriveMattermostOrgActionSecret(this.cpMattermostActionSecret, orgId)
+    // The secret is always one organization's: sent with the integration, or at auth to a daemon that serves a single org.
+    const specSecret = agentId
+      ? this.agents
+          .get(agentId)
+          ?.integrations.map((i) => (i.platform === MATTERMOST_PLATFORM ? integrationConfig(i) : undefined))
+          .map((config) => (config && 'actionSecret' in config ? config.actionSecret : undefined))
+          .find((value): value is string => typeof value === 'string')
+      : undefined
+    const secret = specSecret ?? (this.cpOrgId ? this.cpMattermostActionSecret : undefined)
+    if (!secret) return undefined
     const base = this.cpPublicRelayUrl.replace(/\/+$/, '')
     return {
       url: `${base}${MATTERMOST_ACTION_PATH}`,

@@ -261,6 +261,7 @@ spec:
             - name: WAITLIST_FROM_EMAIL
               value: {{ . | quote }}
             {{- end }}
+            {{- include "agentconnect.mattermostEnv" (dict "root" $ "extraEnv" .Values.controlPlane.extraEnv "owner" "controlPlane") | nindent 12 }}
             {{- range $k, $v := .Values.controlPlane.extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}

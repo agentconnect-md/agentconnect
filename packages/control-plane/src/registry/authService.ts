@@ -176,12 +176,9 @@ export class DaemonAuthService implements DaemonAuth {
       ...(orgId ? { orgId } : {}),
       ...(this.config.WEB_APP_URL ? { webAppUrl: this.config.WEB_APP_URL } : {}),
       ...(this.config.PUBLIC_RELAY_URL ? { publicRelayUrl: this.config.PUBLIC_RELAY_URL } : {}),
-      ...(this.config.MATTERMOST_ACTION_SECRET
-        ? {
-            mattermostActionSecret: orgId
-              ? deriveMattermostOrgActionSecret(this.config.MATTERMOST_ACTION_SECRET, orgId)
-              : this.config.MATTERMOST_ACTION_SECRET
-          }
+      // Only an org-scoped daemon is told a secret here, and only its own org's; a pool daemon reads one per integration.
+      ...(this.config.MATTERMOST_ACTION_SECRET && orgId
+        ? { mattermostActionSecret: deriveMattermostOrgActionSecret(this.config.MATTERMOST_ACTION_SECRET, orgId) }
         : {}),
       ...(orgSlug ? { orgSlug } : {}),
       ...(memberSet ? { memberSet: { setId: memberSet.id, name: memberSet.name } } : {}),

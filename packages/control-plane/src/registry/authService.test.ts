@@ -353,7 +353,8 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(r.okFrame.organizationMode).toBe('frame')
     expect(r.okFrame.orgSlug).toBeUndefined()
     expect(r.okFrame.orgId).toBeUndefined()
-    expect(r.okFrame.mattermostActionSecret).toBe(masterSecret)
+    // A pool daemon serves many organizations, so it is never handed the master secret.
+    expect(r.okFrame.mattermostActionSecret).toBeUndefined()
     // No key was presented, so nothing may be looked up or touched.
     expect(repo.findByHash).not.toHaveBeenCalled()
     expect(repo.touchLastUsed).not.toHaveBeenCalled()

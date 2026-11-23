@@ -2,7 +2,11 @@
 import { createHmac } from 'node:crypto'
 import type { FastifyPluginAsync } from 'fastify'
 import { z, type ZodRawShape } from 'zod'
-import { MATTERMOST_PLATFORM, type IntegrationMattermostConfig } from '@agentconnect.md/protocol'
+import {
+  MATTERMOST_PLATFORM,
+  deriveMattermostOrgActionSecret,
+  type IntegrationMattermostConfig
+} from '@agentconnect.md/protocol'
 import { guardedRequest, isLinkLocalOrUnspecifiedAddress } from '../../net/guarded-fetch.js'
 import type { BotRecord } from '../../persistence/ports.js'
 import type { CpConfigRefusal, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
@@ -174,6 +178,8 @@ export interface MattermostCpProviderDeps {
   allowPrivateNetwork?: boolean
   /** Deployment-level outbound host allowlist passed through to guardedRequest. */
   allowlist?: ReadonlySet<string>
+  /** Master card-callback secret; each integration is sent only its own organization's derivation of it. */
+  actionSecret?: string
   /** Whether a bot row already holds `(externalAppId, botUserId)`. */
   isInstalled?: (externalAppId: string, botUserId: string) => Promise<boolean>
   /** Credential routes, pre-bound by the composition root. */
@@ -257,12 +263,7 @@ export function createMattermostCpProvider(
       httpAssignRequires: []
     },
 
-    async projectIntegrationConfig(
-      _integration,
-      bot,
-      _core,
-      secrets
-    ): Promise<IntegrationMattermostConfig | undefined> {
+    async projectIntegrationConfig(integration, bot, _core, secrets): Promise<IntegrationMattermostConfig | undefined> {
       const serverUrl = text(bot.platformConfig?.serverUrl)
       if (!serverUrl || !secrets.botToken) return undefined
       const botUserId = text(bot.platformConfig?.botUserId) ?? text(bot.botUserId)
@@ -271,7 +272,10 @@ export function createMattermostCpProvider(
         serverUrl,
         botToken: secrets.botToken,
         ...(botUserId ? { botUserId } : {}),
-        ...(botUsername ? { botUsername } : {})
+        ...(botUsername ? { botUsername } : {}),
+        ...(deps.actionSecret && integration.orgId
+          ? { actionSecret: deriveMattermostOrgActionSecret(deps.actionSecret, integration.orgId) }
+          : {})
       }
     },
 

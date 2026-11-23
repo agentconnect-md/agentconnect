@@ -11,7 +11,8 @@
  */
 import type { CollabRoutesSnapshot, CollabAgentPlacement, CollabOrgAgent } from '@agentconnect.md/protocol'
 import { originKindOf } from '@agentconnect.md/protocol'
-import { mattermostMentionAddress, slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
+import type { AgentMentionIdentity } from '@agentconnect.md/message'
+import { mentionAddressFor } from '../platforms/mention-address.js'
 
 export interface CollabResolved extends CollabAgentPlacement {
   orgId: string
@@ -345,7 +346,7 @@ export class CpCollabRoutes {
   mentionAddress(orgId: string, platform: string, channelId: string, agentId: string): string | undefined {
     const identity = this.mentionDirectory(orgId, platform, channelId).find((agent) => agent.agentId === agentId)
     if (!identity) return undefined
-    return platform === 'mattermost' ? mattermostMentionAddress(identity) : slackMentionAddress(identity)
+    return mentionAddressFor(platform, identity)
   }
 
   /** The agents whose bot is this platform user anywhere in the org; empty for a person or an unplaced bot. */

@@ -161,6 +161,33 @@ end
     feature_flags.call(YAML.load_stream(rendered_flag).compact).include?(flag)
 end
 
+# Mattermost dial policy is one mattermost block read by both the Control Plane and the pool, so they cannot disagree.
+mattermost_env = lambda do |docs, name|
+  workload = docs.find { |doc| %w[Deployment StatefulSet].include?(doc['kind']) && doc.dig('metadata', 'name') == name } ||
+             abort("#{name} must render")
+  workload.dig('spec', 'template', 'spec', 'containers').flat_map { |item| item.fetch('env', []) }
+          .select { |item| %w[MATTERMOST_ALLOW_PRIVATE_NETWORK AGENTCONNECT_INTERNAL_ALLOWED_HOSTS].include?(item['name']) }
+          .to_h { |item| [item['name'], item['value']] }
+end
+mattermost_workloads = %w[example-agentconnect-control-plane example-agentconnect-daemon-pool]
+mattermost_workloads.each do |name|
+  abort("#{name} must not set Mattermost dial policy by default") unless mattermost_env.call(documents, name).empty?
+end
+rendered_mm, error_mm, status_mm = Open3.capture3(
+  *command, '--set', 'mattermost.allowPrivateNetwork=true',
+  '--set-json', 'mattermost.internalAllowedHosts=["chat.corp.example","10.0.0.7"]'
+)
+abort("helm template with mattermost values failed:\n#{error_mm}") unless status_mm.success?
+mattermost_workloads.each do |name|
+  expected = { 'MATTERMOST_ALLOW_PRIVATE_NETWORK' => 'true', 'AGENTCONNECT_INTERNAL_ALLOWED_HOSTS' => 'chat.corp.example,10.0.0.7' }
+  abort("#{name} must carry the mattermost values") unless mattermost_env.call(YAML.load_stream(rendered_mm).compact, name) == expected
+end
+%w[controlPlane.extraEnv.MATTERMOST_ALLOW_PRIVATE_NETWORK=true daemonPool.extraEnv.AGENTCONNECT_INTERNAL_ALLOWED_HOSTS=chat.corp.example].each do |setting|
+  _, refused_mm, refused_mm_status = Open3.capture3(*command, '--set', setting)
+  abort("#{setting} must be refused") if refused_mm_status.success?
+  abort("refusal for #{setting} must say why:\n#{refused_mm}") unless refused_mm.include?('collides with the chart-owned mattermost values')
+end
+
 # One source per install. An entry the Secret omits is a supported shape, so a second source
 # filling that same variable assembles a pair out of two halves — a provider key aimed at a
 # gateway base URL, or a gateway key at a provider's. The chart cannot see inside the Secret, so

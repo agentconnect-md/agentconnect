@@ -1227,4 +1227,34 @@ describe('Mattermost Fill cards and Assistant Draft cards', () => {
       INT_ID
     )
   })
+
+  it('signs card callbacks with the organization secret sent on the integration, never a connection-wide one on a pool daemon', () => {
+    const daemon: any = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    daemons.push(daemon)
+    const orgSecret = 'o'.repeat(43)
+    daemon.cfg = { ...daemon.cfg, daemonId: 'daemon-1' }
+    daemon.cpPublicRelayUrl = 'https://relay.example/'
+    daemon.cpMattermostActionSecret = 'x'.repeat(43)
+    vi.spyOn(daemon.cpCollab, 'orgForAgent').mockReturnValue('org_a')
+    const integration = (config: Record<string, unknown>) => ({
+      id: INT_ID,
+      platform: MATTERMOST_PLATFORM,
+      config: { serverUrl: 'https://chat.example.com', botToken: 'token', ...config }
+    })
+
+    // A pool daemon names no organization of its own, so only the integration's secret can sign.
+    daemon.agents.set(AGENT_ID, { id: AGENT_ID, name: 'Agent', integrations: [integration({})] })
+    expect(daemon.mattermostActionCallback(AGENT_ID)).toBeUndefined()
+    daemon.agents.set(AGENT_ID, {
+      id: AGENT_ID,
+      name: 'Agent',
+      integrations: [integration({ actionSecret: orgSecret })]
+    })
+    expect(daemon.mattermostActionCallback(AGENT_ID)).toEqual({
+      url: 'https://relay.example/mattermost/actions',
+      secret: orgSecret,
+      daemonId: 'daemon-1',
+      orgId: 'org_a'
+    })
+  })
 })

@@ -36,6 +36,16 @@ const compoundReader =
       .map((entry) => render(entry))
       .filter((address): address is string => address !== undefined)
 
+const ADDRESSES = new Map<string, (entry: AgentMentionIdentity) => string | undefined>([
+  ['slack', slackMentionAddress],
+  ['mattermost', mattermostMentionAddress]
+])
+
+/** How one agent is addressed on a platform; a platform with no entry of its own is addressed the Slack way, as before. */
+export function mentionAddressFor(platform: string, identity: AgentMentionIdentity): string | undefined {
+  return (ADDRESSES.get(platform) ?? slackMentionAddress)(identity)
+}
+
 const READERS = new Map<string, CompoundMentionAddressReader>([
   ['slack', compoundReader(slackMentionAddress)],
   ['mattermost', compoundReader(mattermostMentionAddress)]

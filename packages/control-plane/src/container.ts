@@ -2714,8 +2714,8 @@ export function buildContainer(
       mattermostOauthHost = undefined
     }
   }
+  // A tenant supplies serverUrl, so hosts allowlisted for MCP OAuth (CP_ALLOWED_OUTBOUND_HOSTS) stay out of its reach.
   const mattermostOutboundAllowlist = new Set([
-    ...parseHostList(config.CP_ALLOWED_OUTBOUND_HOSTS),
     ...internalAllowedHosts,
     ...(mattermostOauthHost ? [mattermostOauthHost] : [])
   ])
@@ -3636,6 +3636,7 @@ export function buildContainer(
       ...(opts.mattermostFetch ? { fetch: opts.mattermostFetch } : {}),
       allowPrivateNetwork: mattermostAllowPrivateNetwork,
       allowlist: mattermostOutboundAllowlist,
+      actionSecret: mattermostActionSecret,
       installRoutes: [
         mattermostCredentialRoutes(httpDeps, opts.mattermostFetch, {
           allowPrivateNetwork: mattermostAllowPrivateNetwork,
