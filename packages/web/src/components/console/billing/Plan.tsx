@@ -195,9 +195,9 @@ export function PlanCard({
   const sub = subscription.data
   // A failed read hides only the sessions block; nothing else on the card depends on it.
   const usage = reads.usage.error ? undefined : reads.usage.data
-  const price = sub ? t('price', { price: fmtCents(sub.priceCents) }) : ''
+  const price = !sub ? '' : sub.priceCents === null ? t('contract') : t('price', { price: fmtCents(sub.priceCents) })
   const priceLine =
-    sub && sub.priceCents > 0 && sub.paidThrough
+    sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
       ? t(sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', { price, date: day(sub.paidThrough) })
       : price
   // The window in force; an older service sends only the plan's.

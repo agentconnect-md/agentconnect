@@ -5470,6 +5470,7 @@
       "noneBody": "This organization isn't on a plan.",
       "ownersChange": "Owners change the plan",
       "price": "{price} / month",
+      "contract": "Contract pricing",
       "renews": "{price} · renews {date}",
       "ends": "{price} · ends {date}",
       "sessions": "Sessions this month",

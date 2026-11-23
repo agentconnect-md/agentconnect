@@ -55,6 +55,10 @@ describe('assertSubscription', () => {
     expect(() => assertSubscription({ ...SUBSCRIPTION_OLD })).not.toThrow()
   })
 
+  it('accepts a contract, which has no console price', () => {
+    expect(() => assertSubscription({ ...SUBSCRIPTION, priceCents: null })).not.toThrow()
+  })
+
   it('accepts a scheduled plan, an unpaid plan and unlimited retention', () => {
     const scheduled = { tierId: 'free', tierName: 'Free', optionId: 'standard', optionName: 'Standard' }
     expect(() =>

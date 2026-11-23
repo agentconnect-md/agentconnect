@@ -5470,6 +5470,7 @@
       "noneBody": "此组织还没有套餐。",
       "ownersChange": "由组织所有者更改套餐",
       "price": "{price} / 月",
+      "contract": "按合同定价",
       "renews": "{price} · {date} 续费",
       "ends": "{price} · {date} 结束",
       "sessions": "本月会话",
