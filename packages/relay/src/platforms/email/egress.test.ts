@@ -263,6 +263,18 @@ describe('email relay egress', () => {
     })
   })
 
+  it("hands a started mail's files to the provider as attachments", async () => {
+    const content = Buffer.from('<html><body>report</body></html>').toString('base64')
+    await egress().start(
+      EMAIL_CONFIG,
+      SENDER,
+      startCall({ attachments: [{ name: 'report.html', type: 'text/html', content }] })
+    )
+    expect(received[0]!.body.attachments).toEqual([
+      { content, filename: 'report.html', type: 'text/html', disposition: 'attachment' }
+    ])
+  })
+
   it('refuses a started mail to more than a send carries, or to the deployment’s own mail domain, calling nobody', async () => {
     const e = egress()
     const many = Array.from({ length: 30 }, (_, index) => `p${index}@corp.example.test`)

@@ -98,6 +98,16 @@ export function emailStartRequest(
     html: call.html,
     // The provider refuses `Reply-To` among the headers and takes it only as this field.
     reply_to: replyTo,
+    ...(call.attachments?.length
+      ? {
+          attachments: call.attachments.map((file) => ({
+            content: file.content,
+            filename: file.name,
+            type: file.type,
+            disposition: 'attachment'
+          }))
+        }
+      : {}),
     headers: {
       // RFC 3834: a mail nobody answered is `auto-generated`, so other automatic responders stay silent too.
       'Auto-Submitted': 'auto-generated'

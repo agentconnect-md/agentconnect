@@ -6,7 +6,12 @@ import {
   type RdAhpMessage,
   type RdAhpClose,
   decodeRelayDaemonFrame,
+  FRAME_FRAGMENTS_FEATURE,
+  FrameAssembler,
+  MAX_ASSEMBLED_FRAME_BYTES,
+  type FrameFragment,
   RD_CODEHOST_REPLY_TARGET_V1,
+  RD_EMAIL_ATTACHMENTS_V1,
   RD_DECISION_ROUTE_V1,
   RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
@@ -109,6 +114,8 @@ export class RelayDaemonConnection {
   private capabilities: ReadonlySet<string> = new Set()
 
   private readonly correlator: ReqRep<RelayDaemonFrame>
+  /** Reassembles this daemon's `rd/fragment` streams. */
+  private readonly fragments = new FrameAssembler()
   private readonly ahpListeners = new Map<string, (event: RdAhpMessage | RdAhpClose) => void>()
   private readonly closeListeners = new Set<() => void>()
 
@@ -209,9 +216,9 @@ export class RelayDaemonConnection {
     this.write(text)
   }
 
-  private async onText(text: string): Promise<void> {
+  private async onText(text: string, assembled = false): Promise<void> {
     if (this.state === 'CLOSED') return
-    const decoded = decodeRelayDaemonFrame(text)
+    const decoded = decodeRelayDaemonFrame(text, assembled ? { maxBytes: MAX_ASSEMBLED_FRAME_BYTES } : {})
     if (!decoded.ok) {
       const code = this.decodeErrorCode(decoded.msg)
       this.sendError(decoded.id, code, decoded.msg)
@@ -229,6 +236,13 @@ export class RelayDaemonConnection {
     }
     try {
       switch (frame.type) {
+        case 'rd/fragment': {
+          if (assembled) return this.sendError(frame.id, 'PROTOCOL_STATE', 'rd/fragment nested in a reassembled frame')
+          const result = this.fragments.push(frame.payload as FrameFragment)
+          if ('error' in result) return this.sendError(frame.id, 'BAD_PAYLOAD', result.error)
+          if (result.done) await this.onText(result.text, true)
+          return
+        }
         case 'rd/ahp/message':
         case 'rd/ahp/close':
           this.ahpListeners.get(frame.payload.attachmentId)?.(frame.payload)
@@ -311,6 +325,7 @@ export class RelayDaemonConnection {
       case 'READY':
         // rd/ack + rd/agentmsg/ack settle above
         return (
+          type === 'rd/fragment' ||
           type === 'rd/ahp/message' ||
           type === 'rd/ahp/close' ||
           type === 'rd/chat' ||
@@ -398,6 +413,8 @@ export class RelayDaemonConnection {
       capabilities: [
         RD_CODEHOST_REPLY_TARGET_V1,
         RD_DECISION_ROUTE_V1,
+        RD_EMAIL_ATTACHMENTS_V1,
+        FRAME_FRAGMENTS_FEATURE,
         RD_PLATFORM_REQUEST_V1,
         RD_WEBCHAT_IMAGES_V1,
         RD_WEBCHAT_PROMPT_SUGGESTION_V1

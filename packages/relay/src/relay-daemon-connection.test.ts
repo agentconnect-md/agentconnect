@@ -7,6 +7,10 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RD_CODEHOST_REPLY_TARGET_V1,
   RD_DECISION_ROUTE_V1,
+  RD_EMAIL_ATTACHMENTS_V1,
+  FRAME_FRAGMENTS_FEATURE,
+  MAX_FRAME_BYTES,
+  fragmentFrame,
   RD_PLATFORM_REQUEST_V1,
   RD_WEBCHAT_IMAGES_V1,
   RD_WEBCHAT_PROMPT_SUGGESTION_V1,
@@ -168,6 +172,8 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
       capabilities: [
         RD_CODEHOST_REPLY_TARGET_V1,
         RD_DECISION_ROUTE_V1,
+        RD_EMAIL_ATTACHMENTS_V1,
+        FRAME_FRAGMENTS_FEATURE,
         RD_PLATFORM_REQUEST_V1,
         RD_WEBCHAT_IMAGES_V1,
         RD_WEBCHAT_PROMPT_SUGGESTION_V1
@@ -461,6 +467,22 @@ describe('RelayDaemonConnection (rd/* accept FSM)', () => {
     bare.transport.feed('rd/platform/request', { platformId: 'msteams', botId: RELAY_ID, payload: {} })
     await vi.waitFor(() => expect(bare.transport.lastRep('rd/platform/reply')).toBeDefined())
     expect(bare.transport.lastRep('rd/platform/reply')!.payload).toEqual({ outcome: 'refused', reason: 'unsupported' })
+  })
+
+  it('reassembles a request the daemon sent in fragments and handles it as one frame', async () => {
+    const onPlatformRequest = vi.fn(async () => ({ outcome: 'ok' as const }))
+    const { transport } = build({ onPlatformRequest })
+    transport.feed('rd/hello', { apiKey: 'k', daemonId: DAEMON_ID })
+    await Promise.resolve()
+    await Promise.resolve()
+    const payload = { op: 'start', blob: 'x'.repeat(MAX_FRAME_BYTES) }
+    const frame = buildRelayDaemonFrame('rd/platform/request', { platformId: 'email', botId: RELAY_ID, payload })
+    const parts = fragmentFrame(JSON.stringify(frame), 'rd/fragment')!
+    expect(parts.length).toBeGreaterThan(1)
+    for (const part of parts) transport.feedRaw(part)
+    await vi.waitFor(() => expect(transport.lastRep('rd/platform/reply')).toBeDefined())
+    expect(onPlatformRequest).toHaveBeenCalledWith(DAEMON_ID, { platformId: 'email', botId: RELAY_ID, payload })
+    expect(transport.lastRep('rd/platform/reply')!.corr).toBe(frame.id)
   })
 
   it('answers a handler failure with an error, never a reply that says nothing was sent', async () => {

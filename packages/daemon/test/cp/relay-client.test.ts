@@ -7,6 +7,10 @@ import {
   HOOK_DECISION_ROUTING_V2_FEATURE,
   RD_DECISION_ROUTE_V1,
   RD_PLATFORM_REQUEST_V1,
+  FRAME_FRAGMENTS_FEATURE,
+  FrameAssembler,
+  MAX_FRAME_BYTES,
+  type FrameFragment,
   GITEA_V1_FEATURE,
   RD_HOOK_NOTICE_V1,
   RD_HOOK_INSTRUCTIONS_V1,
@@ -560,5 +564,31 @@ describe('RelayClient — an inbound frame that fails to decode', () => {
     t.inject(buildRelayDaemonFrame('rd/platform/reply', { outcome: 'refused', reason: 'ticket' }, { corr: req.id }))
     expect(await pending).toEqual({ outcome: 'refused', reason: 'ticket' })
     expect(t.sent.filter((f) => f.type === 'rd/platform/request')).toHaveLength(1)
+  })
+
+  it('slices a request past the frame limit into fragments for a relay that reassembles them, and refuses it to one that does not', async () => {
+    const payload = { op: 'start', blob: 'x'.repeat(MAX_FRAME_BYTES) }
+    const plain = make()
+    await toReady(plain.client, plain.transports, RELAY_ID, [RD_PLATFORM_REQUEST_V1])
+    await expect(plain.client.sendPlatformRequest({ platformId: 'email', botId: RELAY_ID, payload })).rejects.toThrow(
+      'MAX_FRAME_BYTES'
+    )
+
+    const { client, transports } = make()
+    const t = await toReady(client, transports, RELAY_ID, [RD_PLATFORM_REQUEST_V1, FRAME_FRAGMENTS_FEATURE])
+    expect(client.supports(FRAME_FRAGMENTS_FEATURE)).toBe(true)
+    const pending = client.sendPlatformRequest({ platformId: 'email', botId: RELAY_ID, payload })
+    await flush()
+    const fragments = t.sent.filter((f) => f.type === 'rd/fragment')
+    expect(fragments.length).toBeGreaterThan(1)
+    const assembler = new FrameAssembler()
+    let whole: RelayDaemonFrame | undefined
+    for (const f of fragments) {
+      const result = assembler.push(f.payload as FrameFragment)
+      if (result.done) whole = JSON.parse(result.text) as RelayDaemonFrame
+    }
+    expect(whole).toMatchObject({ type: 'rd/platform/request', payload: { platformId: 'email', payload } })
+    t.inject(buildRelayDaemonFrame('rd/platform/reply', { outcome: 'ok' }, { corr: whole!.id }))
+    expect(await pending).toEqual({ outcome: 'ok' })
   })
 })

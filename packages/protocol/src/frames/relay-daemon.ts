@@ -39,6 +39,7 @@ import { WEBCHAT_FILES_MAX, WebchatFileAttachment, chatAttachmentsWithinBudget }
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
+import { FrameFragment } from './fragment.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { CodeHostRoutingFamily, DecisionAnswer, DecisionQuestion } from '../decision.js'
 import { AgentApiProtocolName } from '../agent-api.js'
@@ -146,6 +147,9 @@ export const RD_CODEHOST_RELEASE_V1 = 'codehost-release-v1'
 
 /** `platform-request-v1`: this relay answers `rd/platform/request`, a provider call a platform module makes for a daemon with credentials the daemon never holds. */
 export const RD_PLATFORM_REQUEST_V1 = 'platform-request-v1'
+
+/** `email-attachments-v1`: this relay reassembles `rd/fragment` streams and sends a started mail's `attachments`; an older one would drop them and send the mail bare. */
+export const RD_EMAIL_ATTACHMENTS_V1 = 'email-attachments-v1'
 
 /** The fixed-text posts a relay can ask for; each is a daemon-authored constant, never wire text. */
 export const RdHookNotice = z.enum(['actor_not_trusted'])
@@ -1095,6 +1099,11 @@ export const EMAIL_ATTACHMENTS_MAX = 50
 /** The most characters of a reply's plain text and of its HTML; the frame limit still bounds the whole request. */
 export const EMAIL_SEND_TEXT_MAX = 40_000
 export const EMAIL_SEND_HTML_MAX = 120_000
+/** The most files one started mail carries (§6.4). */
+export const EMAIL_SEND_ATTACHMENTS_MAX = 10
+/** Their decoded bytes together, so the mail stays under the provider's 5 MiB message limit with its bodies and base64's growth. */
+export const EMAIL_SEND_ATTACHMENT_BYTES_MAX = 3 * 1024 * 1024
+const EMAIL_SEND_ATTACHMENT_BASE64_MAX = Math.ceil(EMAIL_SEND_ATTACHMENT_BYTES_MAX / 3) * 4
 
 /** A canonical address: lower-cased ASCII `local@domain` with no display name and no quoting, so it can key a conversation. */
 export const EMAIL_ADDRESS_PATTERN = /^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/
@@ -1109,6 +1118,18 @@ const emailHeaderText = (max: number) =>
     .string()
     .max(max)
     .regex(/^[^\r\n]*$/)
+
+/** One file of a started mail, its bytes in standard base64; the relay hands it to the provider as an attachment. */
+export const WireEmailAttachment = z.object({
+  name: emailHeaderText(256).min(1),
+  type: emailHeaderText(128).min(1),
+  content: z
+    .string()
+    .min(1)
+    .max(EMAIL_SEND_ATTACHMENT_BASE64_MAX)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/)
+})
+export type WireEmailAttachment = z.infer<typeof WireEmailAttachment>
 
 /** The relay's ticket for one mail thread (§6.2): `e1.<thread key, base64url>.<issue time, epoch milliseconds>.<MAC, base64url>`; only the relay mints and verifies one. */
 export const WireEmailTicket = z
@@ -1187,7 +1208,17 @@ export const WireEmailCall = z.discriminatedUnion('op', [
     fromName: emailHeaderText(256).optional(),
     subject: emailHeaderText(998).min(1),
     text: z.string().min(1).max(EMAIL_SEND_TEXT_MAX),
-    html: z.string().min(1).max(EMAIL_SEND_HTML_MAX)
+    html: z.string().min(1).max(EMAIL_SEND_HTML_MAX),
+    /** Sent only to a relay that advertised `email-attachments-v1`. */
+    attachments: z
+      .array(WireEmailAttachment)
+      .min(1)
+      .max(EMAIL_SEND_ATTACHMENTS_MAX)
+      .refine(
+        (files) => files.reduce((sum, file) => sum + file.content.length, 0) <= EMAIL_SEND_ATTACHMENT_BASE64_MAX,
+        'the attachments exceed the size limit'
+      )
+      .optional()
   })
 ])
 export type WireEmailCall = z.infer<typeof WireEmailCall>
@@ -1852,6 +1883,8 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/webchat-post': RdWebchatPost,
   'rd/webchat-image-update': RdWebchatImageUpdate,
   'rd/webchat-prompt-suggestion': RdWebchatPromptSuggestion,
+  // D→R: one slice of a frame past MAX_FRAME_BYTES, sent only to a relay that advertised `frame-fragments-v1`.
+  'rd/fragment': FrameFragment,
   error: ErrorFrame
 } as const
 
@@ -1887,6 +1920,7 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
   frameSchema('rd/webchat-image-update', RELAY_DAEMON_SCHEMAS['rd/webchat-image-update']),
   frameSchema('rd/webchat-prompt-suggestion', RELAY_DAEMON_SCHEMAS['rd/webchat-prompt-suggestion']),
+  frameSchema('rd/fragment', RELAY_DAEMON_SCHEMAS['rd/fragment']),
   frameSchema('error', RELAY_DAEMON_SCHEMAS['error'])
 ])
 export type RelayDaemonFrame = z.infer<typeof RelayDaemonFrame>
@@ -1897,8 +1931,11 @@ export function isRelayDaemonFrameType(t: string): t is RelayDaemonFrameType {
 }
 
 /** Decode one relay↔daemon wire frame (envelope + typed payload). */
-export function decodeRelayDaemonFrame(text: string): DecodeResultOf<RelayDaemonFrame> {
-  return decodeEnvelopeWith<RelayDaemonFrame>(RELAY_DAEMON_SCHEMAS, text)
+export function decodeRelayDaemonFrame(
+  text: string,
+  opts: { maxBytes?: number } = {}
+): DecodeResultOf<RelayDaemonFrame> {
+  return decodeEnvelopeWith<RelayDaemonFrame>(RELAY_DAEMON_SCHEMAS, text, opts)
 }
 
 /** Build a relay↔daemon frame with a compile-time-typed payload. */

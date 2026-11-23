@@ -93,6 +93,11 @@ describe('rendering', () => {
     expect(emailHtml('**Hi** <b>x</b>\n\n- [a](https://example.test)\n- [b](javascript:alert(1))')).toBe(
       '<p><strong>Hi</strong> &lt;b&gt;x&lt;/b&gt;</p>\n<ul>\n<li><a href="https://example.test">a</a></li>\n<li>b</li>\n</ul>'
     )
+    expect(emailHtml('| Model | Price |\n| :-- | --: |\n| A1 | **¥3** |')).toBe(
+      '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">\n' +
+        '<thead><tr><th align="left">Model</th><th align="right">Price</th></tr></thead>\n' +
+        '<tbody>\n<tr><td align="left">A1</td><td align="right"><strong>¥3</strong></td></tr>\n</tbody>\n</table>'
+    )
     const bodies = emailReplyBodies('  Hello  ')
     expect(bodies).toEqual({ text: 'Hello', html: '<p>Hello</p>', cut: false })
   })

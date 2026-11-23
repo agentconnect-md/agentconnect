@@ -23,7 +23,7 @@ import type {
   WebchatImageUpdate,
   WebchatPromptSuggestion
 } from '@agentconnect.md/protocol'
-import { PlatformRelayUnsent, type PlatformRelay } from '../platforms/platform-relay.js'
+import { PlatformRelayUnsent, type PlatformRelay, type PlatformRequestOptions } from '../platforms/platform-relay.js'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
 export class RelayManager implements PlatformRelay {
@@ -113,10 +113,11 @@ export class RelayManager implements PlatformRelay {
   }
 
   /** A platform module's provider call over a READY relay that serves it; each relay checks the daemon on its own, so one that answered without calling the provider is followed by the next. */
-  async request(req: RdPlatformRequest): Promise<RdPlatformReply> {
+  async request(req: RdPlatformRequest, opts: PlatformRequestOptions = {}): Promise<RdPlatformReply> {
     let declined: RdPlatformReply | undefined
     for (const client of this.clients.values()) {
       if (!client.supportsPlatformRequest()) continue
+      if (opts.requires?.some((feature) => !client.supports(feature))) continue
       // A request with no answer may have reached the provider, so its rejection ends the walk.
       const reply = await client.sendPlatformRequest(req)
       if (reply.outcome === 'ok') return reply

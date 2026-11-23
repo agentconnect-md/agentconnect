@@ -4,6 +4,7 @@ import {
   EMAIL_MESSAGE_ID_MAX,
   EMAIL_MESSAGE_ID_PATTERN,
   EMAIL_PLATFORM,
+  RD_EMAIL_ATTACHMENTS_V1,
   EMAIL_STARTED_TAG_PATTERN,
   WireEmailAdapterExt,
   type IntegrationEmailConfig,
@@ -423,14 +424,21 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
     if (!relay) return { outcome: 'unsent', reason: 'no relay is configured to send mail' }
     const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
     let last: EmailSendResult = { outcome: 'unsent', reason: 'no relay is reachable' }
+    const attached = call.op === 'start' && !!call.attachments?.length
     for (let attempt = 0; attempt <= SEND_ATTEMPT_WAITS_MS.length; attempt++) {
       if (attempt > 0) await sleep(SEND_ATTEMPT_WAITS_MS[attempt - 1]!)
       let reply: RdPlatformReply
       try {
-        reply = await relay.request({ platformId: EMAIL_PLATFORM, botId: this.botId, payload: call })
+        reply = await relay.request(
+          { platformId: EMAIL_PLATFORM, botId: this.botId, payload: call },
+          attached ? { requires: [RD_EMAIL_ATTACHMENTS_V1] } : {}
+        )
       } catch (err) {
         if (err instanceof PlatformRelayUnsent) {
-          last = { outcome: 'unsent', reason: 'no relay is reachable' }
+          last = {
+            outcome: 'unsent',
+            reason: attached ? 'no reachable relay can send attachments' : 'no relay is reachable'
+          }
           continue
         }
         return { outcome: 'unknown', reason: 'the relay did not answer, so it may have been sent' }

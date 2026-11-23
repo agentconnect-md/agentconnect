@@ -2,6 +2,8 @@
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../../messages/attribution.js'
 import type { Definition, Nodes, Parents, RootContent } from 'mdast'
 import { fromMarkdown } from 'mdast-util-from-markdown'
+import { gfmTableFromMarkdown } from 'mdast-util-gfm-table'
+import { gfmTable } from 'micromark-extension-gfm-table'
 import {
   EMAIL_REFERENCES_MAX,
   EMAIL_SEND_HTML_MAX,
@@ -122,6 +124,18 @@ function block(node: RootContent, ctx: Ctx): string {
     }
     case 'html':
       return `<p>${escapeHtml(node.value)}</p>`
+    case 'table': {
+      const rows = node.children.map((row, r) => {
+        const tag = r === 0 ? 'th' : 'td'
+        const cells = row.children.map((cell, c) => {
+          const align = node.align?.[c]
+          return `<${tag}${align ? ` align="${align}"` : ''}>${inline(cell.children, ctx)}</${tag}>`
+        })
+        return `<tr>${cells.join('')}</tr>`
+      })
+      const [head, ...body] = rows
+      return `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">\n<thead>${head ?? ''}</thead>\n<tbody>\n${body.join('\n')}\n</tbody>\n</table>`
+    }
     default:
       return 'children' in node
         ? `<p>${inline((node as Parents).children as Nodes[], ctx)}</p>`
@@ -137,9 +151,9 @@ function collectDefinitions(node: Nodes, into: Map<string, string>): void {
   if ('children' in node) for (const child of node.children) collectDefinitions(child, into)
 }
 
-/** The answer's Markdown as simple HTML: paragraphs, headings, lists, quotes, code and links, with everything else escaped. */
+/** The answer's Markdown as simple HTML: paragraphs, headings, lists, quotes, code, tables and links, with everything else escaped. */
 export function emailHtml(markdown: string): string {
-  const tree = fromMarkdown(markdown)
+  const tree = fromMarkdown(markdown, { extensions: [gfmTable()], mdastExtensions: [gfmTableFromMarkdown()] })
   const definitions = new Map<string, string>()
   collectDefinitions(tree, definitions)
   return blocks(tree.children, { source: markdown, definitions })

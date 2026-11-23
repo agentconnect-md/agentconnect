@@ -57,6 +57,9 @@ import {
   type RdRouteReportAck,
   RD_PLATFORM_REQUEST_BUDGET_MS,
   RD_PLATFORM_REQUEST_V1,
+  FRAME_FRAGMENTS_FEATURE,
+  MAX_FRAME_BYTES,
+  fragmentFrame,
   type RdPlatformRequest,
   type RdPlatformReply
 } from '@agentconnect.md/protocol'
@@ -278,7 +281,12 @@ export class RelayClient {
 
   /** Did this relay advertise `rd/platform/request`? */
   supportsPlatformRequest(): boolean {
-    return this.isReady() && this.relayCapabilities?.has(RD_PLATFORM_REQUEST_V1) === true
+    return this.supports(RD_PLATFORM_REQUEST_V1)
+  }
+
+  /** Did this READY relay advertise `feature`? */
+  supports(feature: string): boolean {
+    return this.isReady() && this.relayCapabilities?.has(feature) === true
   }
 
   /** One platform module's provider call through this relay, single-shot: a provider write must never be sent twice by a retransmit. */
@@ -286,12 +294,21 @@ export class RelayClient {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
     const rep = await this.correlator.request(
       buildRelayDaemonFrame('rd/platform/request', payload),
-      (e) => this.transport!.send(e),
+      (e) => this.sendFragmented(e),
       { maxTries: 1, ackTimeoutMs: PLATFORM_REQUEST_TIMEOUT_MS }
     )
     if (rep.type !== 'rd/platform/reply')
       throw new WireError('INTERNAL', `expected rd/platform/reply, got ${rep.type}`, false)
     return rep.payload
+  }
+
+  // A frame past MAX_FRAME_BYTES goes out as `rd/fragment` slices to a relay that reassembles them, and fails the send otherwise.
+  private sendFragmented(encoded: string): void {
+    const parts = this.supports(FRAME_FRAGMENTS_FEATURE) ? fragmentFrame(encoded, 'rd/fragment') : [encoded]
+    if (!parts) throw new Error('frame exceeds the assembled frame cap')
+    if (parts.length === 1 && Buffer.byteLength(encoded) > MAX_FRAME_BYTES)
+      throw new Error('frame exceeds MAX_FRAME_BYTES')
+    for (const part of parts) this.transport!.send(part)
   }
 
   private async attemptConnect(): Promise<void> {

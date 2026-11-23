@@ -27,14 +27,14 @@ on Cloud and on a self-hosted deployment alike (§7).
 | Starting   | The agent starts a mail to any address with a tool, from any session, and a reply continues it as a thread of its own (§6.4).                                                                     |
 | Sessions   | One mail thread is one session: a member's own thread in that member's direct conversation, a thread with several people in a group conversation of its own (§5).                                 |
 | Replies    | One reply per turn, sent when the turn ends, to the sender and the thread's other eligible members (§6).                                                                                          |
-| Content    | Text and HTML bodies as text, up to a size cap. Attachments are named but not delivered (§5.4).                                                                                                   |
+| Content    | Text and HTML bodies as text, up to a size cap. Received attachments are named but not delivered (§5.4); a mail the agent starts may attach files (§6.4).                                         |
 | History    | Earlier mail is read in full with the existing history tools, served from the daemon's session records; there is no second store (§5.6).                                                          |
 | Approvals  | In the Console, as on a platform with no approval card.                                                                                                                                           |
 | Setup      | Operator: one mail domain, one Worker, one API token (§7). Organization: pick the address in the agent's Integrations (§3.1).                                                                     |
 
 Outside the first step, each with what it needs in §10: mail through the
-coordinator, an organization's own domain, attachments, and mail between
-agents. Drafts,
+coordinator, an organization's own domain, received attachments and a reply's,
+and mail between agents. Drafts,
 labels, read state and a mailbox view in the Console are not planned: the
 Console shows mail as sessions.
 
@@ -633,7 +633,8 @@ the thread.
 - **In-Reply-To** is the answered message's ID, and **References** is its chain
   with that ID appended, cut from the front past 50 entries.
 - **Auto-Submitted** is `auto-replied`, so automatic responders stay silent.
-- The body is the agent's Markdown as plain text and as simple HTML. When the
+- The body is the agent's Markdown as plain text and as simple HTML, tables
+  included; raw HTML in the Markdown is sent as text. When the
   agent's output settings show a footer and every recipient is a member, the
   body ends with it under a rule: the agent's name linked to its page, its
   runtime and model, and a link to the session. A mail that reaches anyone
@@ -699,7 +700,7 @@ turn.
 ### 6.4 Mail the agent starts
 
 An agent with an address has a `sendEmail` tool: `to`, optional `cc`, a
-subject and a Markdown body. It can be called from any session the agent runs:
+subject, a Markdown body and optional `attachments`. It can be called from any session the agent runs:
 a webchat, a chat thread, a schedule's run, a mail thread. Every agent with an
 address is also told it, in the instructions of every session that offers the
 tool (a coordinator, a follow-up's check and research offer none), so it can
@@ -736,6 +737,16 @@ name it to people and does not look for another way to send.
   still counts toward the deployment's own figure of §6.3. Like §6.3's counters these are
   per relay instance and lost on a restart, so they bound a burst, not a total;
   the provider's quota remains the hard stop.
+- **Attachments** are workspace-relative paths or `files:` names, read as
+  `shareFile` reads them and named and typed the same way: at most 10 files and
+  3 MiB together, which keeps the mail under the provider's 5 MiB message limit
+  with its bodies and base64. A file that cannot be read, or a set past the
+  limit, refuses the whole send. The bytes cross to the relay inside the
+  `start` request, which the daemon sends as `rd/fragment` slices
+  ([shared-bot-relay.md §7.2](shared-bot-relay.md#72-relay-and-daemon-rd)), and
+  only to a relay that advertised `email-attachments-v1`: an older relay would
+  drop the field and send the mail bare. The started thread's first record
+  names each file. A reply carries no attachment.
 - **Headers**: `From` is the agent's address and name, as for a reply.
   `Reply-To` is the same address with a subaddress tag the daemon mints for the
   new thread (`<name>+<tag>@<domain>`, 20 lower-case base32 characters, which
@@ -933,8 +944,8 @@ organization.
   send call are provider-specific.
 - **Attachments.** Inbound over the chunked path the Console upload uses, into
   the session files directory's `uploads/`
-  ([inbound-file-attachments.md](inbound-file-attachments.md) §2.4); outbound from
-  agent-authored files.
+  ([inbound-file-attachments.md](inbound-file-attachments.md) §2.4); on a reply,
+  from agent-authored files, as a started mail already attaches them (§6.4).
 - **Mail between agents.** Excluded today by §4 step 1, which is also what
   prevents a loop.
 - **Delivery events.** Reading the provider's bounce and complaint Queue to

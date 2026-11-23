@@ -180,6 +180,7 @@ describe('sending and the record (§6.4)', () => {
       ask?: EmailMembersDeps['ask']
       attribution?: ReplyAttributionInfo
       sessionUrl?: string
+      files?: Record<string, Buffer>
     } = {}
   ) {
     const sends: WireEmailCall[] = []
@@ -198,7 +199,13 @@ describe('sending and the record (§6.4)', () => {
         memberTurn: async () => opts.turn,
         startConversation: async (seed) => void seeds.push(seed),
         attribution: async () => opts.attribution,
-        callingSessionUrl: async () => opts.sessionUrl
+        callingSessionUrl: async () => opts.sessionUrl,
+        readWorkspaceFile: async (path) => {
+          const bytes = opts.files?.[path]
+          return bytes
+            ? { ok: true, bytes, name: path.split('/').pop()!, mimeType: 'application/octet-stream' }
+            : { ok: false, reason: 'not-found' }
+        }
       },
       agentName: 'Helper',
       mintTag: () => TAG,
@@ -281,6 +288,30 @@ describe('sending and the record (§6.4)', () => {
     const outside = harness({ turn: ['user-alice'], attribution })
     await startEmail(outside.deps, args)
     expect(outside.sends[0]!.text).toBe('Hello **there**.')
+  })
+
+  it('attaches the named workspace files and names them under the thread’s first record', async () => {
+    const report = Buffer.from('<html><body>report</body></html>')
+    const h = harness({ turn: ['user-alice'], files: { 'out/report.html': report } })
+    await startEmail(h.deps, { ...args, attachments: ['out/report.html'] })
+    expect(h.sends[0]!).toMatchObject({
+      op: 'start',
+      attachments: [{ name: 'report.html', type: 'application/octet-stream', content: report.toString('base64') }]
+    })
+    expect(h.seeds[0]!.text).toBe('Hello **there**.\n\n[Attached: report.html (application/octet-stream)]')
+  })
+
+  it('refuses, sending nothing, a file it cannot read or attachments past the size limit', async () => {
+    const missing = harness({ turn: ['user-alice'] })
+    await expect(startEmail(missing.deps, { ...args, attachments: ['nope.pdf'] })).rejects.toThrow(
+      'the attachment "nope.pdf" cannot be read (not-found). Nothing was sent.'
+    )
+    const big = Buffer.alloc(2 * 1024 * 1024, 1)
+    const over = harness({ turn: ['user-alice'], files: { 'a.bin': big, 'b.bin': big } })
+    await expect(startEmail(over.deps, { ...args, attachments: ['a.bin', 'b.bin'] })).rejects.toThrow(
+      'the attachments exceed 3 MiB together. Nothing was sent.'
+    )
+    expect([...missing.sends, ...over.sends]).toEqual([])
   })
 
   it('keeps, unmailed under the thread’s first record, the conversation that asked and the agent’s purpose', async () => {
