@@ -17,7 +17,7 @@ import { Button, Icon } from '@/components/ui'
 import { LogoMark, Spinner } from '@/components/marks'
 import { ApiError, createOrg, getMyAccess } from '@/lib/api'
 import { getUser, isAuthConfigured, logout, type AuthUser } from '@/lib/auth'
-import { orgUrlPrefix } from '@/lib/org-context'
+import { cacheCreatedOrg, orgUrlPrefix } from '@/lib/org-context'
 
 /** Lowercase letters/digits/hyphens — mirrors the CP's OrgSlug shape. */
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
@@ -85,6 +85,8 @@ export default function OrgOnboarding() {
     setErr(null)
     try {
       const org = await createOrg({ name: name.trim() || undefined, slug })
+      // The console resolves the URL against its cached org list, which predates this org.
+      await cacheCreatedOrg(org)
       // Step 1 done — the org-scoped wizard continues from step 2 (where to run).
       router.replace(`/${org.slug}/onboarding`)
     } catch (e) {

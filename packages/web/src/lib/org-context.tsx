@@ -14,7 +14,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams, usePathname, useRouter } from 'next/navigation'
-import useSWR from 'swr'
+import useSWR, { mutate as mutateCache } from 'swr'
 import {
   fetchOrgs,
   setApiOrgId,
@@ -122,6 +122,15 @@ export function resolveOrgTarget(
   return orgs.find((o) => o.slug === lastSlug) ?? orgs[0]
 }
 
+const ORGS_KEY = 'console:orgs'
+
+/** Adds a just-created org to the cached list, so a stale copy cannot send its first page to another org. */
+export function cacheCreatedOrg(org: OrgDto): Promise<OrgDto[] | undefined> {
+  return mutateCache<OrgDto[]>(ORGS_KEY, (prev = []) => (prev.some((o) => o.id === org.id) ? prev : [...prev, org]), {
+    revalidate: false
+  })
+}
+
 interface OrgContextValue {
   /** Every org the user belongs to (empty until loaded / when the CP is down). */
   orgs: OrgDto[]
@@ -176,7 +185,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     error: cause,
     isLoading: loading,
     mutate
-  } = useSWR('console:orgs', fetchOrgs, {
+  } = useSWR(ORGS_KEY, fetchOrgs, {
     onSuccess: (next) => setRememberedOrgId(next[0]?.id ?? null)
   })
   const orgs = data ?? EMPTY_ORGS
@@ -269,16 +278,14 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     async (input: { name?: string; slug: string }) => {
       const org = await apiCreateOrg(input)
       // Append optimistically BEFORE switching so activeOrg never goes null.
-      await mutate((prev = EMPTY_ORGS) => (prev.some((candidate) => candidate.id === org.id) ? prev : [...prev, org]), {
-        revalidate: false
-      })
+      await cacheCreatedOrg(org)
       // A new org has no matching detail IDs, so switchOrgTarget chooses a portable destination.
       writeLastSlug(org.slug)
       router.push(switchOrgTarget(org, undefined, pathname, slug)!)
       await refreshOrgs()
       return org
     },
-    [pathname, slug, refreshOrgs, router, mutate]
+    [pathname, slug, refreshOrgs, router]
   )
 
   const updateOrg = useCallback(
