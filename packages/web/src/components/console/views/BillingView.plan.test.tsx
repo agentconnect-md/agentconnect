@@ -286,6 +286,75 @@ describe('BillingView plan layout', () => {
   })
 })
 
+describe('BillingView history retention', () => {
+  const retention = (days: number | null, next: unknown = null) => ({ days, next, shortenHoldDays: 7 })
+  const DATED = { days: 7, from: '2026-12-11T00:00:00.000Z', awaitingNotice: false }
+  const AWAITING = { days: 7, from: null, awaitingNotice: true }
+
+  it('shows the window in force beside the price, with no notice when nothing is pending', async () => {
+    mocks.subscription.mockResolvedValue({ ...SUB, retentionDays: null, retention: retention(null) })
+    await render()
+    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
+    expect(q('[data-plan-retention]')!.textContent).toBe(' · Unlimited history')
+    expect(q('[data-plan-retention-next]')).toBeNull()
+  })
+
+  it('reads the window in force, not the plan’s, while a shorter one waits', async () => {
+    mocks.subscription.mockResolvedValue({
+      ...SUB,
+      ...FREE,
+      priceCents: 0,
+      grantMicro: 0,
+      paidThrough: null,
+      retentionDays: 7,
+      retention: retention(null, DATED)
+    })
+    await render()
+    expect(q('[data-plan-retention]')!.textContent).toBe(' · Unlimited history')
+  })
+
+  it('dates the deletion in amber and points an owner at Change plan', async () => {
+    mocks.subscription.mockResolvedValue({ ...SUB, scheduled: FREE, retention: retention(null, DATED) })
+    await render()
+    const strip = q('[data-plan-retention-next]')!
+    expect(strip.getAttribute('data-plan-retention-next')).toBe('dated')
+    expect(strip.className).toContain('border-(--amber-500)')
+    expect(strip.textContent).toBe(
+      'History older than 7 days will be deleted from Dec 11.Upgrading keeps your history.Change plan'
+    )
+    // The scheduled change keeps its own strip above.
+    expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
+  })
+
+  it('tells a member the date with no plan action', async () => {
+    mocks.role = 'member'
+    mocks.subscription.mockResolvedValue({ ...SUB, retention: retention(null, DATED) })
+    await render()
+    const strip = q('[data-plan-retention-next]')!
+    expect(strip.textContent).toBe('History older than 7 days will be deleted from Dec 11.')
+    expect(strip.querySelector('button')).toBeNull()
+  })
+
+  it('promises an email first while the service is still to send the notice', async () => {
+    mocks.subscription.mockResolvedValue({ ...SUB, retention: retention(30, AWAITING) })
+    await render()
+    const strip = q('[data-plan-retention-next]')!
+    expect(strip.getAttribute('data-plan-retention-next')).toBe('awaiting')
+    expect(strip.textContent).toContain(
+      "History retention will shorten to 7 days; you'll be emailed at least 30 days before."
+    )
+    expect(strip.className).not.toContain('amber')
+    expect(q('[data-plan-retention]')!.textContent).toBe(' · 30-day history')
+  })
+
+  it('falls back to the plan’s window on an older service and shows no notice', async () => {
+    mocks.subscription.mockResolvedValue(SUB_OLD)
+    await render()
+    expect(q('[data-plan-retention]')!.textContent).toBe(' · 30-day history')
+    expect(q('[data-plan-retention-next]')).toBeNull()
+  })
+})
+
 describe('BillingView session meter and limit', () => {
   it.each([
     [399, 'brand'],

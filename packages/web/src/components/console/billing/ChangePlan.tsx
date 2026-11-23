@@ -550,12 +550,14 @@ export function ChangePlanDialog({
         sessions,
         ...(option.tierId === FREE_TIER_ID ? [] : [{ k: t('review.then'), v: t('optionMeta', { price: usd(price) }) }])
       ]
-    // History past the shorter retention goes once the change takes effect: the renewal plus the new window.
+    // A shorter window starts the service's hold after the renewal; an older service sends no hold, so the new window stands in.
+    const keptDays = sub.retention ? sub.retention.days : sub.retentionDays
     const shrinks =
       !now &&
       option.retentionDays !== null &&
-      (sub.retentionDays === null || option.retentionDays < sub.retentionDays) &&
+      (keptDays === null || option.retentionDays < keptDays) &&
       sub.paidThrough !== null
+    const holdDays = sub.retention?.shortenHoldDays ?? option.retentionDays
     const retry = path === 'immediate' && !quote && !!error
     const cta =
       path === 'scheduled'
@@ -609,7 +611,7 @@ export function ChangePlanDialog({
             <Note warn>
               {t('review.historyWarning', {
                 days: option.retentionDays!,
-                date: day(new Date(Date.parse(sub.paidThrough!) + option.retentionDays! * DAY_MS).toISOString())
+                date: day(new Date(Date.parse(sub.paidThrough!) + holdDays! * DAY_MS).toISOString())
               })}
             </Note>
           )}

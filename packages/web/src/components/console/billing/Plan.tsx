@@ -200,6 +200,8 @@ export function PlanCard({
     sub && sub.priceCents > 0 && sub.paidThrough
       ? t(sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', { price, date: day(sub.paidThrough) })
       : price
+  // The window in force; an older service sends only the plan's.
+  const keptDays = sub ? (sub.retention ? sub.retention.days : sub.retentionDays) : null
   return (
     <div className="card flex flex-col" data-plan-card="true">
       <div className="cardhead h-[60px] justify-between gap-2 border-b-0">
@@ -249,8 +251,12 @@ export function PlanCard({
               <span className="ml-2.5 text-[20px] tracking-[-0.01em] text-(--text-secondary)">{sub.optionName}</span>
             )}
           </span>
-          <span className="mono pb-[5px] text-[12px] text-(--text-tertiary)" data-plan-price="true">
-            {priceLine}
+          <span className="mono pb-[5px] text-[12px] text-(--text-tertiary)">
+            <span data-plan-price="true">{priceLine}</span>
+            <span data-plan-retention="true">
+              {' · '}
+              {keptDays === null ? t('change.historyUnlimited') : t('change.historyDays', { days: keptDays })}
+            </span>
           </span>
         </div>
       )}
@@ -300,6 +306,45 @@ export function ScheduledChangeStrip({
       {onCancel && (
         <button type="button" className="lnk" disabled={busy} onClick={() => void cancel()}>
           {t('cancelScheduled')}
+        </button>
+      )}
+    </div>
+  )
+}
+
+const RETENTION_STRIP = {
+  dated:
+    'mt-3 flex items-center gap-2.5 rounded-[10px] border border-(--amber-500) bg-(--status-paused-soft) px-[18px] py-2.5',
+  awaiting:
+    'mt-3 flex items-center gap-2.5 rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-2.5'
+} as const
+
+/** A shorter history window on its way in, dated once the service has set the day; owners are pointed at Change plan. */
+export function RetentionStrip({
+  sub,
+  onChangePlan
+}: {
+  sub: BillingSubscription | null | undefined
+  onChangePlan?: () => void
+}) {
+  const t = useTranslations('Billing.plan')
+  const { day } = useUtcDates()
+  const next = sub?.retention?.next
+  if (!next || next.days === null || (!next.from && !next.awaitingNotice)) return null
+  const kind = next.from ? 'dated' : 'awaiting'
+  return (
+    <div data-plan-retention-next={kind} className={RETENTION_STRIP[kind]}>
+      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-normal">
+        {next.from
+          ? t('retention.deletes', { days: next.days, date: day(next.from) })
+          : t('retention.awaiting', { days: next.days })}
+        {onChangePlan && (
+          <span className="ml-[0.3em] font-normal text-(--text-secondary)">{t('retention.upgradeKeeps')}</span>
+        )}
+      </span>
+      {onChangePlan && (
+        <button type="button" className="lnk" onClick={onChangePlan}>
+          {t('change.title')}
         </button>
       )}
     </div>

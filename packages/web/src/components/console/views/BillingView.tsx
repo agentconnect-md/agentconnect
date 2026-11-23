@@ -58,6 +58,7 @@ import {
   PlanBanners,
   PlanCard,
   PlanCreditStrip,
+  RetentionStrip,
   ScheduledChangeStrip,
   usePlanReads
 } from '@/components/console/billing/Plan'
@@ -1164,6 +1165,10 @@ export default function BillingView() {
   const catalog = usePlanCatalog(planOwner)
   const increase = useIncreaseLimit(planOwner, plan.subscription.data, catalog.data)
   const [planDialog, setPlanDialog] = useState<ChangePlanStart | null>(null)
+  const openChangePlan = () => {
+    const sub = plan.subscription.data
+    if (sub) setPlanDialog({ target: { tierId: sub.tierId, optionId: sub.optionId } })
+  }
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
@@ -1508,12 +1513,7 @@ export default function BillingView() {
                 <PlanCard
                   reads={plan}
                   role={myRole}
-                  onChangePlan={() =>
-                    plan.subscription.data &&
-                    setPlanDialog({
-                      target: { tierId: plan.subscription.data.tierId, optionId: plan.subscription.data.optionId }
-                    })
-                  }
+                  onChangePlan={openChangePlan}
                   increase={
                     increase
                       ? {
@@ -1535,6 +1535,10 @@ export default function BillingView() {
                       }
                     : undefined
                 }
+              />
+              <RetentionStrip
+                sub={plan.subscription.data}
+                onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
               />
               {planDialog && myRole === 'owner' && plan.subscription.data && (
                 <ChangePlanDialog
