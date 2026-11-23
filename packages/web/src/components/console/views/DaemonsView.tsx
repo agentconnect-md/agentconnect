@@ -26,6 +26,7 @@ import { DaemonLifecycleBadge } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonApprovalBadge, DaemonApprovalAction } from '@/components/console/DaemonApproval'
 import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
+import { autoUpgradeBlockedKey } from '@/lib/daemon-auto-upgrade'
 import { useOrgs } from '@/lib/org-context'
 import { ComputersSection } from '../ComputersSection'
 import { FLEET_GRID, FLEET_ROW } from '../fleet-grid'
@@ -569,6 +570,8 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   const pending = m.lifecycleOp?.status === 'pending'
   const canRestart = online && !pending && m.canManageLifecycle
   const canUpgrade = canRestart && m.upgradeAvailable
+  // Auto-upgrade is on and a release is out, but this daemon said it cannot install it.
+  const autoBlocked = autoUpgradeBlockedKey(m)
   const hasActions = m.canEdit || canRestart
   // Online but no runtime can take work: a login is fixable from here, a missing install only on the host.
   const blocked = daemonRuntimesBlocked(m)
@@ -678,6 +681,15 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               latest={m.latestVersion}
               onClick={canUpgrade ? () => openModal('upgradeDaemon', m) : undefined}
             />
+            {!pending && autoBlocked && (
+              <span
+                title={autoBlocked === 'cliNotFound' ? t('detail.autoUpgrade.blockedCliHint') : undefined}
+                className="inline-flex min-w-0 max-w-full items-center gap-1 font-sans text-[10.5px] font-medium leading-normal text-(--amber-500)"
+              >
+                <Icon name="triangle-exclamation-point" size={11} className="flex-none" />
+                <span className="truncate">{t(`detail.autoUpgrade.blocked.${autoBlocked}`)}</span>
+              </span>
+            )}
             {m.lifecycleOp?.phase === 'preparing' && <DaemonLifecycleBadge op={m.lifecycleOp} />}
             {loginRt ? (
               <button

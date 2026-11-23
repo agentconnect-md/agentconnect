@@ -4,6 +4,20 @@ import { z } from 'zod'
 /** Daemon-advertised: it can install and relaunch onto a CP-announced release unattended. */
 export const DAEMON_AUTO_UPGRADE_FEATURE = 'daemon-auto-upgrade-v1'
 
+/** Why a daemon does not advertise the feature, reported as `capabilities.autoUpgradeBlocked`; the CP and console pass unknown codes through. */
+export const AUTO_UPGRADE_BLOCKED = {
+  /** A k8s daemon's version is its image. */
+  imageManaged: 'image-managed',
+  /** Started by a bare `run`: nothing would relaunch it. */
+  noSupervisor: 'no-supervisor',
+  /** `<root>/cli-entry` is missing, empty, or names a file that is gone. */
+  cliNotFound: 'cli-not-found'
+} as const
+export type AutoUpgradeBlocked = (typeof AUTO_UPGRADE_BLOCKED)[keyof typeof AUTO_UPGRADE_BLOCKED]
+
+/** Env var the CLI run shell sets to its own entry, so the daemon can restore a lost `<root>/cli-entry`. */
+export const CLI_ENTRY_ENV = 'AGENTCONNECT_CLI_ENTRY'
+
 /** CP-advertised in `register/ok.serverFeatures`: it accepts `daemon/lifecycle/begin`. */
 export const DAEMON_LIFECYCLE_BEGIN_FEATURE = 'daemon-lifecycle-begin-v1'
 

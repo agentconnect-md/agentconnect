@@ -105,6 +105,8 @@ import {
   READ_ACCESS_LINKED_V1_FEATURE,
   READ_ACCESS_BATCH_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  AUTO_UPGRADE_BLOCKED,
+  type AutoUpgradeBlocked,
   DAEMON_AUTO_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITEA_V1_FEATURE,
@@ -3180,10 +3182,11 @@ export class Daemon {
       root: () => this.root,
       daemonId: () => this.cfg.daemonId,
       version: () => DAEMON_VERSION,
-      eligible: () => this.bootstrapUpgradeCapable(),
+      blocked: () => this.autoUpgradeBlocked(),
+      eligibilityChanged: () => this.cpClient?.updateCapabilities(),
       quiescence: () => this.quiescence,
       runCli: async (args) => {
-        const cliEntry = readCliEntry(this.root)
+        const cliEntry = readCliEntry(this.root, this.log)
         if (!cliEntry) return { ok: false, stderr: 'cannot locate the CLI (cli-entry missing)' }
         return await (this.opts.autoUpgradeCli ?? runCliCommand)(cliEntry, args, this.root)
       },
@@ -10522,14 +10525,15 @@ export class Daemon {
   }
 
   private bootstrapUpgradeCapable(): boolean {
-    // A k8s daemon's version is its image, and self-installing would exit the pod for
-    // a version the cluster never asked for. Refuse on the mode, not on the absence of a
-    // supervisor marker or cli-entry pointer: a stale pointer on the root volume, or an
-    // inherited AGENTCONNECT_SUPERVISOR, would otherwise re-enable the whole path.
-    if (this.k8s) return false
-    return (
-      (this.opts.supervisor === 'cli' || this.opts.supervisor === 'service') && readCliEntry(this.root) !== undefined
-    )
+    return this.autoUpgradeBlocked() === undefined
+  }
+
+  /** Why this daemon cannot upgrade itself unattended; undefined when it can. */
+  private autoUpgradeBlocked(): AutoUpgradeBlocked | undefined {
+    // Refused on the mode, not the marker or pointer: an inherited AGENTCONNECT_SUPERVISOR or a stale cli-entry must not re-enable self-install in a pod.
+    if (this.k8s) return AUTO_UPGRADE_BLOCKED.imageManaged
+    if (this.opts.supervisor !== 'cli' && this.opts.supervisor !== 'service') return AUTO_UPGRADE_BLOCKED.noSupervisor
+    return readCliEntry(this.root, this.log) === undefined ? AUTO_UPGRADE_BLOCKED.cliNotFound : undefined
   }
 
   private selectedOrdinaryTurnHost(key: HostKey, host: AcpHost): SelectedTurnHost {
@@ -33499,6 +33503,7 @@ export class Daemon {
       hostCount: () => new Set([...this.hosts.keys()].map(hostKeyAgentId)).size,
       activeSessions: () => this.pending.size,
       bootstrapUpgradeCapable: () => this.bootstrapUpgradeCapable(),
+      autoUpgradeBlocked: () => this.autoUpgradeBlocked(),
       runBootstrapFleetUpgrade: (targetVersion, operationId) =>
         this.fleetUpgrade.runBootstrapFleetUpgrade(targetVersion, operationId),
       readiness: () => this.readiness,

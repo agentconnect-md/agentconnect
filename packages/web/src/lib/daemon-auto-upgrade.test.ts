@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { daemonFromDto, type DaemonFleetDto } from '@/lib/api'
-import { autoUpgradeNotes } from '@/lib/daemon-auto-upgrade'
+import { autoUpgradeBlockedKey, autoUpgradeNotes } from '@/lib/daemon-auto-upgrade'
 import { daemonLifecycleLabel } from '@/components/console/DaemonLifecycleBadge'
 import type { DaemonAutoUpgradeResult, DaemonLifecycleOp } from '@/lib/data'
 
@@ -96,11 +96,28 @@ describe('daemonLifecycleLabel', () => {
 describe('autoUpgradeNotes', () => {
   const base = {
     autoUpgrade: true,
+    autoUpgradeSupported: true,
+    autoUpgradeBlocked: null,
     upgradeAvailable: true,
     latestVersion: '1.41.0',
     lifecycleOp: null,
     lastAutoUpgrade: null
   }
+
+  it('says a switched-on daemon cannot upgrade itself, with its reason, instead of waiting', () => {
+    const stuck = { ...base, autoUpgradeSupported: false }
+    expect(autoUpgradeNotes({ ...stuck, autoUpgradeBlocked: 'cli-not-found' })).toEqual([
+      { kind: 'unavailable', reason: 'cliNotFound' }
+    ])
+    // An older daemon gives no reason, and a newer one may give a code this console does not know.
+    expect(autoUpgradeBlockedKey(stuck)).toBe('unknown')
+    expect(autoUpgradeBlockedKey({ ...stuck, autoUpgradeBlocked: 'some-future-code' })).toBe('unknown')
+    expect(autoUpgradeBlockedKey({ ...stuck, autoUpgradeBlocked: 'no-supervisor' })).toBe('noSupervisor')
+    // Nothing is stuck while the switch is off, the daemon is current, or it can upgrade.
+    expect(autoUpgradeBlockedKey({ ...stuck, autoUpgrade: false })).toBeNull()
+    expect(autoUpgradeBlockedKey({ ...stuck, upgradeAvailable: false })).toBeNull()
+    expect(autoUpgradeBlockedKey({ ...base, autoUpgradeBlocked: 'cli-not-found' })).toBeNull()
+  })
 
   it('waits for an idle window while the switch is on and a release is newer', () => {
     expect(autoUpgradeNotes(base)).toEqual([{ kind: 'waiting', version: '1.41.0' }])

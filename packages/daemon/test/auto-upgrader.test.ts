@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FakeClock, WireError } from '@agentconnect.md/connection'
-import { LIFECYCLE_DEFERRED_REASON, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
+import { AUTO_UPGRADE_BLOCKED, LIFECYCLE_DEFERRED_REASON, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
 import {
   AUTO_UPGRADE_IDLE_WAIT_MS,
   AUTO_UPGRADE_QUIET_MS,
@@ -74,14 +74,17 @@ function harness(over: { version?: string; root?: string } = {}) {
     beginLifecycle: vi.fn(async () => ({ operationId: 'op-1' })),
     reportProgress: vi.fn(async () => {})
   }
-  let eligible = true
+  let blocked: string | undefined
+  const log = { ...silent, info: vi.fn(), warn: vi.fn() }
+  const eligibilityChanged = vi.fn()
   const host: AutoUpgradeHost = {
-    log: () => silent,
+    log: () => log,
     clock: () => clock,
     root: () => root,
     daemonId: () => 'daemon-1',
     version: () => over.version ?? '1.0.0',
-    eligible: () => eligible,
+    blocked: () => blocked,
+    eligibilityChanged,
     quiescence: () => quiescence,
     runCli: cli,
     lifecycle: () => lifecycle,
@@ -101,7 +104,10 @@ function harness(over: { version?: string; root?: string } = {}) {
     host,
     activity,
     exitArrival,
-    setEligible: (v: boolean) => (eligible = v),
+    eligibilityChanged,
+    log,
+    setEligible: (v: boolean) => (blocked = v ? undefined : 'no-supervisor'),
+    setBlocked: (v: string | undefined) => (blocked = v),
     installs: () => cli.mock.calls.filter(([a]) => a[0] === 'version' && a[1] === 'install').map(([a]) => a[2])
   }
 }
@@ -130,6 +136,31 @@ describe('AutoUpgrader', () => {
     await h.upgrader.evaluate()
     expect(h.cli).not.toHaveBeenCalled()
     expect(h.lifecycle.reserve).not.toHaveBeenCalled()
+  })
+
+  it('says once why a switched-on daemon cannot upgrade, and tells the CP when that changes', async () => {
+    const h = harness()
+    const unavailable = () => h.log.warn.mock.calls.filter(([m]) => String(m).startsWith('auto-upgrade: unavailable'))
+    h.upgrader.setRelease(rc('1.1.0'), false)
+    h.setBlocked(AUTO_UPGRADE_BLOCKED.cliNotFound)
+    await h.upgrader.evaluate()
+    // Switched off, an ineligible daemon is not worth a warning, but the CP still learns of it.
+    expect(unavailable()).toEqual([])
+    expect(h.eligibilityChanged).toHaveBeenCalledTimes(1)
+
+    h.upgrader.setEnabled(true, false)
+    await h.upgrader.evaluate()
+    await h.upgrader.evaluate()
+    expect(unavailable()).toHaveLength(1)
+    expect(unavailable()[0]![0]).toContain(join(h.root, 'cli-entry'))
+    expect(h.eligibilityChanged).toHaveBeenCalledTimes(1)
+    expect(h.cli).not.toHaveBeenCalled()
+
+    h.setBlocked(undefined)
+    await h.upgrader.evaluate()
+    expect(h.log.info).toHaveBeenCalledWith('auto-upgrade: available again')
+    expect(h.eligibilityChanged).toHaveBeenCalledTimes(2)
+    expect(h.installs()).toEqual(['1.1.0'])
   })
 
   it('stages, reserves, prepares and exits when idle', async () => {

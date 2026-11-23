@@ -4857,7 +4857,14 @@
         "upgradedAgo": "Upgraded to {version} · {ago}",
         "failed": "Auto-upgrade to {version} failed: {outcome}",
         "failedNoReason": "Auto-upgrade to {version} failed",
-        "waiting": "Waiting for an idle window to upgrade to {version}"
+        "waiting": "Waiting for an idle window to upgrade to {version}",
+        "blocked": {
+          "cliNotFound": "Auto-upgrade unavailable: CLI not found",
+          "noSupervisor": "Auto-upgrade unavailable: not started by the agentconnect CLI or service",
+          "imageManaged": "Auto-upgrade unavailable: the version is set by the container image",
+          "unknown": "Auto-upgrade unavailable"
+        },
+        "blockedCliHint": "Run any agentconnect command on the daemon's host (for example, agentconnect status) to restore it."
       }
     }
   },

@@ -1398,6 +1398,8 @@ export interface DaemonViewDto {
   autoUpgrade?: boolean
   /** The daemon advertised auto-upgrade support; absent on an older CP ⇒ unsupported. */
   autoUpgradeSupported?: boolean
+  /** Why the daemon cannot upgrade itself; absent on an older CP or daemon ⇒ unknown. */
+  autoUpgradeBlocked?: string | null
   /** The most recent automatic upgrade; absent on an older CP ⇒ none. */
   lastAutoUpgrade?: DaemonAutoUpgradeResultDto | null
 }
@@ -2599,6 +2601,7 @@ export function daemonFromDto(
     sessionEpoch: d.sessionEpoch,
     autoUpgrade: d.autoUpgrade ?? false,
     autoUpgradeSupported: d.autoUpgradeSupported ?? false,
+    autoUpgradeBlocked: d.autoUpgradeBlocked ?? null,
     lastAutoUpgrade: d.lastAutoUpgrade ?? null,
     // Flag an available upgrade only when both versions parse and latest > running.
     upgradeAvailable: isUpgradeAvailable(d.agentVersion, d.latestVersion),

@@ -13,19 +13,22 @@ const NOTE_ICON: Record<AutoUpgradeNote['kind'], string> = {
   upgrading: 'circle-fading-arrow-up',
   upgraded: 'circle-check',
   failed: 'triangle-exclamation-point',
-  waiting: 'clock'
+  waiting: 'clock',
+  unavailable: 'triangle-exclamation-point'
 }
 const NOTE_COLOR: Record<AutoUpgradeNote['kind'], string> = {
   upgrading: 'var(--brand)',
   upgraded: 'var(--text-tertiary)',
   failed: 'var(--status-error)',
-  waiting: 'var(--text-tertiary)'
+  waiting: 'var(--text-tertiary)',
+  unavailable: 'var(--amber-500)'
 }
 const NOTE_TEXT: Record<AutoUpgradeNote['kind'], string> = {
   upgrading: 'text-(--brand)',
   upgraded: 'text-(--text-secondary)',
   failed: 'text-(--status-error)',
-  waiting: 'text-(--text-tertiary)'
+  waiting: 'text-(--text-tertiary)',
+  unavailable: 'text-(--amber-500)'
 }
 
 // The header's Auto-upgrade switch beside the version, applied on change; its label opens the help and status notes.
@@ -91,6 +94,10 @@ export function DaemonAutoUpgradeSetting({ daemon }: { daemon: DaemonRow }) {
           : t('failedNoReason', { version: named(note.version) })
       case 'waiting':
         return t('waiting', { version: vTag(note.version) })
+      case 'unavailable':
+        return note.reason === 'cliNotFound'
+          ? `${t('blocked.cliNotFound')} ${t('blockedCliHint')}`
+          : t(`blocked.${note.reason}`)
     }
   }
   const notes = autoUpgradeNotes(daemon)

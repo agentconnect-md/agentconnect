@@ -40,6 +40,7 @@ const mockDaemon = (id: string, name: string, op?: DaemonRow['lifecycleOp']): Da
   canIssueKey: false,
   autoUpgrade: false,
   autoUpgradeSupported: false,
+  autoUpgradeBlocked: null,
   lastAutoUpgrade: null,
   status: 'online',
   pool: false,

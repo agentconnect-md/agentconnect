@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { DEFAULT_KEEP_VERSIONS, DeferredVersionPrune, VERSION_PRUNE_DEFERRED_FILE } from '@agentconnect.md/protocol'
+import {
+  CLI_ENTRY_ENV,
+  DEFAULT_KEEP_VERSIONS,
+  DeferredVersionPrune,
+  VERSION_PRUNE_DEFERRED_FILE
+} from '@agentconnect.md/protocol'
 import { cliEntryPointer } from '../paths.js'
 import { MICROSANDBOX_IN_USE_ENV } from '../microsandbox/prepull.js'
 
@@ -10,14 +15,30 @@ export interface UpgradeLog {
   error(message: string): void
 }
 
-/** Resolve the stable CLI entry that owns the daemon version store. */
-export function readCliEntry(root: string): string | undefined {
+/** Resolve the stable CLI entry that owns the daemon version store; a missing or invalid pointer is restored from the run shell's own entry. */
+export function readCliEntry(
+  root: string,
+  log?: Pick<UpgradeLog, 'info'>,
+  fallback: string | undefined = process.env[CLI_ENTRY_ENV]
+): string | undefined {
+  const pointer = cliEntryPointer(root)
   try {
-    const entry = readFileSync(cliEntryPointer(root), 'utf8').trim()
-    return entry && existsSync(entry) ? entry : undefined
+    const entry = readFileSync(pointer, 'utf8').trim()
+    if (entry && existsSync(entry)) return entry
   } catch {
-    return undefined
+    // fall through to the run shell's entry
   }
+  if (!fallback || !existsSync(fallback)) return undefined
+  // Rename, never truncate in place: a full disk must not leave an empty pointer behind.
+  const tmp = `${pointer}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmp, fallback + '\n')
+    renameSync(tmp, pointer)
+    log?.info(`cli-entry: ${pointer} was missing or invalid — restored to ${fallback}`)
+  } catch {
+    rmSync(tmp, { force: true })
+  }
+  return fallback
 }
 
 /** The version `<root>/current` selects, or undefined without a version store. */

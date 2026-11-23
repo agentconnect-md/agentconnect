@@ -118,6 +118,8 @@ export interface CpClientConnectionHost {
 export interface CpClientRegistrationHost {
   registrationPlatforms(): string[]
   registrationFeatures(): string[]
+  /** Why `daemon-auto-upgrade-v1` is not among the features (an AUTO_UPGRADE_BLOCKED code); undefined when it is. */
+  autoUpgradeBlocked(): string | undefined
   /** The machine's effective strategy table (session-executors.md §5): each unavailable entry carries its probe's reason. */
   ownStrategies(): ExecutorStrategyTable
   /** The id of the shared PostgreSQL store this daemon writes to; unset on a private local store. */
@@ -327,6 +329,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     capabilities: () => {
       const executor = host.executorFacet()?.facts()
       const contentStore = host.contentStore()
+      const autoUpgradeBlocked = host.autoUpgradeBlocked()
       return {
         platforms: host.registrationPlatforms(),
         // Report the human-facing tool name (e.g. "Claude Agent"), not the
@@ -337,7 +340,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
         features: host.registrationFeatures(),
         ...(executor ? { executor } : {}),
         strategies: host.ownStrategies(),
-        ...(contentStore ? { contentStore } : {})
+        ...(contentStore ? { contentStore } : {}),
+        ...(autoUpgradeBlocked ? { autoUpgradeBlocked } : {})
       }
     },
     // Observed runtime profiles, sent as one `facts/daemon-runtimes` snapshot on

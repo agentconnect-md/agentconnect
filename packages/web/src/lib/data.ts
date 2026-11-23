@@ -2538,6 +2538,8 @@ export interface DaemonRow {
   autoUpgrade: boolean
   /** The daemon advertised auto-upgrade: supervised by the service or CLI, and not a pool member. */
   autoUpgradeSupported: boolean
+  /** The daemon's own reason for not advertising auto-upgrade (`cli-not-found`, …); null when it gave none. */
+  autoUpgradeBlocked: string | null
   /** The most recent automatic upgrade, or null when there has been none. */
   lastAutoUpgrade: DaemonAutoUpgradeResult | null
   /** Actual daemon connection/readiness. Never replaced by a presentation-only lifecycle state. */

@@ -1738,11 +1738,13 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const setDaemonAutoUpgrade = useCallback(
     async (daemonId: string, enabled: boolean) => {
       const updated = await apiUpdateDaemonAutoUpgrade(daemonId, enabled)
-      const { autoUpgrade, autoUpgradeSupported, lastAutoUpgrade } = updated
+      const { autoUpgrade, autoUpgradeSupported, autoUpgradeBlocked, lastAutoUpgrade } = updated
       await mutateDaemonLiveness(
         (rows) =>
           rows?.map((row) =>
-            row.daemonId === daemonId ? { ...row, autoUpgrade, autoUpgradeSupported, lastAutoUpgrade } : row
+            row.daemonId === daemonId
+              ? { ...row, autoUpgrade, autoUpgradeSupported, autoUpgradeBlocked, lastAutoUpgrade }
+              : row
           ),
         { revalidate: false }
       )

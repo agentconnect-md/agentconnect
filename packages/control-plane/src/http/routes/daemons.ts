@@ -166,6 +166,9 @@ function toDto(
       : null,
     autoUpgrade: view.autoUpgrade,
     autoUpgradeSupported: orgOwned && view.capabilities.features.includes(DAEMON_AUTO_UPGRADE_FEATURE),
+    autoUpgradeBlocked: view.capabilities.features.includes(DAEMON_AUTO_UPGRADE_FEATURE)
+      ? null
+      : (view.capabilities.autoUpgradeBlocked ?? null),
     lastAutoUpgrade: latestAutoOp
       ? {
           id: latestAutoOp.id,

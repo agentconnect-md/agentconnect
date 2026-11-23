@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url'
 import { Command, Option } from 'commander'
-import { selfHealCliEntry } from './self-heal.js'
+import { exportCliEntry, selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
 import { runComputer } from './computer/commands.js'
 import { runShell } from './run-shell.js'
@@ -95,6 +95,7 @@ async function main(): Promise<void> {
   if (instance !== undefined) argv = withResolvedRoot(argv, root)
   const cliEntry = fileURLToPath(import.meta.url)
   selfHealCliEntry(root, cliEntry)
+  exportCliEntry(cliEntry)
   // Elevated, PATH is sudo's secure_path; the pre-sudo snapshot is what the operator's shell resolves.
   setInvocation({ cliEntry, path: servicePath ?? process.env.PATH, platform: process.platform })
 

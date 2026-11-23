@@ -6,11 +6,35 @@ export type AutoUpgradeNote =
   | { kind: 'upgraded'; version: string | null; settledAt: string | null }
   | { kind: 'failed'; version: string | null; outcome: string | null }
   | { kind: 'waiting'; version: string }
+  | { kind: 'unavailable'; reason: AutoUpgradeBlockedKey }
 
 type AutoUpgradeFacts = Pick<
   DaemonRow,
-  'autoUpgrade' | 'upgradeAvailable' | 'latestVersion' | 'lifecycleOp' | 'lastAutoUpgrade'
+  | 'autoUpgrade'
+  | 'autoUpgradeSupported'
+  | 'autoUpgradeBlocked'
+  | 'upgradeAvailable'
+  | 'latestVersion'
+  | 'lifecycleOp'
+  | 'lastAutoUpgrade'
 >
+
+/** The message key for a daemon's reported reason; a code this console does not know reads as `unknown`. */
+export type AutoUpgradeBlockedKey = 'cliNotFound' | 'noSupervisor' | 'imageManaged' | 'unknown'
+
+const BLOCKED_KEYS: Record<string, AutoUpgradeBlockedKey> = {
+  'cli-not-found': 'cliNotFound',
+  'no-supervisor': 'noSupervisor',
+  'image-managed': 'imageManaged'
+}
+
+/** Switched on with a newer release out, yet the daemon cannot carry the upgrade out: why, or null when nothing is stuck. */
+export function autoUpgradeBlockedKey(
+  d: Pick<AutoUpgradeFacts, 'autoUpgrade' | 'autoUpgradeSupported' | 'autoUpgradeBlocked' | 'upgradeAvailable'>
+): AutoUpgradeBlockedKey | null {
+  if (!d.autoUpgrade || d.autoUpgradeSupported || !d.upgradeAvailable) return null
+  return (d.autoUpgradeBlocked && BLOCKED_KEYS[d.autoUpgradeBlocked]) || 'unknown'
+}
 
 /** The last automatic outcome, then whether a switched-on daemon is still waiting for an idle window. */
 export function autoUpgradeNotes(d: AutoUpgradeFacts): AutoUpgradeNote[] {
@@ -28,7 +52,10 @@ export function autoUpgradeNotes(d: AutoUpgradeFacts): AutoUpgradeNote[] {
   }
   // A failed target is skipped by the daemon until a newer release supersedes it, so it is not waiting on it.
   const skipped = last?.status === 'failed' && last.targetVersion === d.latestVersion
-  if (d.autoUpgrade && d.upgradeAvailable && d.latestVersion && !pendingOp && !autoPending && !skipped) {
+  const blocked = autoUpgradeBlockedKey(d)
+  // A daemon that cannot upgrade itself is not waiting for an idle window.
+  if (blocked) notes.push({ kind: 'unavailable', reason: blocked })
+  else if (d.autoUpgrade && d.upgradeAvailable && d.latestVersion && !pendingOp && !autoPending && !skipped) {
     notes.push({ kind: 'waiting', version: d.latestVersion })
   }
   return notes
