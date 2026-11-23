@@ -4636,9 +4636,9 @@
     "restart": "重启",
     "reconnect": "重新连接",
     "runtimeBlocked": {
-      "login": "Runtime 需要登录",
+      "login": "需要登录",
       "loginHint": "在主机上登录之前，此 Daemon 上没有可运行 Agent 的 Runtime。点击显示登录命令。",
-      "missing": "未安装 Runtime",
+      "missing": "无 Runtime",
       "missingHint": "此 Daemon 所在主机上没有安装受支持的 Runtime，因此无法运行 Agent。"
     },
     "reconnectModal": {

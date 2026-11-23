@@ -101,7 +101,7 @@ describe('DaemonsView runtime readiness', () => {
       })
     ]
     const { host, unmount } = mount()
-    const badge = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Runtime login required')
+    const badge = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Login required')
     expect(badge).toBeDefined()
     act(() => badge!.click())
     unmount()
@@ -120,8 +120,8 @@ describe('DaemonsView runtime readiness', () => {
     const html = host.innerHTML
     unmount()
 
-    expect(html).toContain('No runtime installed')
-    expect(html).not.toContain('Runtime login required')
+    expect(html).toContain('>No runtime<')
+    expect(html).not.toContain('>Login required<')
   })
 
   it('stays quiet while any runtime is usable or still being checked, and for offline machines', () => {
@@ -139,7 +139,7 @@ describe('DaemonsView runtime readiness', () => {
     const html = host.innerHTML
     unmount()
 
-    expect(html).not.toContain('Runtime login required')
-    expect(html).not.toContain('No runtime installed')
+    expect(html).not.toContain('>Login required<')
+    expect(html).not.toContain('>No runtime<')
   })
 })

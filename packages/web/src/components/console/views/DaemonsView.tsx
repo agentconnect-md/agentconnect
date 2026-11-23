@@ -691,19 +691,19 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                     daemonName: m.name
                   })
                 }}
-                className="inline-flex flex-none cursor-pointer items-center gap-1 rounded-full border border-(--amber-500) bg-(--status-paused-soft) py-[1px] pr-[7px] pl-[5px] font-sans text-[10.5px] font-semibold leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
+                className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-full border border-(--amber-500) bg-(--status-paused-soft) py-[1px] pr-[7px] pl-[5px] font-sans text-[10.5px] font-semibold leading-normal text-(--amber-500) transition-opacity hover:opacity-80"
               >
-                <Icon name="triangle-exclamation-point" size={11} />
-                {t('runtimeBlocked.login')}
+                <Icon name="triangle-exclamation-point" size={11} className="flex-none" />
+                <span className="truncate">{t('runtimeBlocked.login')}</span>
               </button>
             ) : (
               blocked && (
                 <span
                   title={t('runtimeBlocked.missingHint')}
-                  className="inline-flex flex-none items-center gap-1 rounded-full border border-(--amber-500) bg-(--status-paused-soft) py-[1px] pr-[7px] pl-[5px] font-sans text-[10.5px] font-semibold leading-normal text-(--amber-500)"
+                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-(--amber-500) bg-(--status-paused-soft) py-[1px] pr-[7px] pl-[5px] font-sans text-[10.5px] font-semibold leading-normal text-(--amber-500)"
                 >
-                  <Icon name="triangle-exclamation-point" size={11} />
-                  {t('runtimeBlocked.missing')}
+                  <Icon name="triangle-exclamation-point" size={11} className="flex-none" />
+                  <span className="truncate">{t('runtimeBlocked.missing')}</span>
                 </span>
               )
             )}

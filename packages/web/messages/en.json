@@ -4636,9 +4636,9 @@
     "restart": "Restart",
     "reconnect": "Reconnect",
     "runtimeBlocked": {
-      "login": "Runtime login required",
+      "login": "Login required",
       "loginHint": "No runtime on this daemon can run agents until you sign in on its host. Show the login command.",
-      "missing": "No runtime installed",
+      "missing": "No runtime",
       "missingHint": "No supported runtime is installed on this daemon's host, so it cannot run agents."
     },
     "reconnectModal": {
