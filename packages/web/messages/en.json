@@ -5343,7 +5343,8 @@
       "adjustment": "Adjustment",
       "promo": "Promotional credit",
       "refund": "Refund",
-      "subscription": "Plan credit"
+      "subscription": "Plan credit",
+      "grant_expiry": "Plan credit expired"
     },
     "transactions": {
       "title": "Transactions",

@@ -211,7 +211,7 @@ const TX_SIDES = [
 ] as const
 type TxSide = (typeof TX_SIDES)[number]['key']
 
-const KNOWN_KINDS = ['purchase', 'adjustment', 'promo', 'refund', 'subscription'] as const
+const KNOWN_KINDS = ['purchase', 'adjustment', 'promo', 'refund', 'subscription', 'grant_expiry'] as const
 
 // The gateway's own call, as the design's balance-card status pill color. No `state` ⇒ no pill.
 const STATE_COLOR: Record<NonNullable<BillingAccount['state']>, string> = {
