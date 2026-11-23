@@ -9,8 +9,24 @@ export const SessionAdmitRequest = z.object({
 })
 export type SessionAdmitRequest = z.infer<typeof SessionAdmitRequest>
 
-// Discriminated on `admitted`, so a refusal variant joins as a new member; `counted` is false for a session the CP already knew.
+/** Why an admission was refused; a definite answer for that attempt, never retried under the same policy. */
+export const SESSION_LIMIT_REACHED = 'session_limit_reached'
+
+/** `details.reason` of the error refusing `event/session-sync` for an id never admitted while its organization enforces. */
+export const SESSION_NOT_ADMITTED = 'session_not_admitted'
+
+// Discriminated on `admitted`; `enforcing` says whether the organization refuses past its limit now, absent from an older CP.
 export const SessionAdmitResult = z.discriminatedUnion('admitted', [
-  z.object({ admitted: z.literal(true), counted: z.boolean() })
+  // `counted` is false for a session the CP already knew or exempted.
+  z.object({ admitted: z.literal(true), counted: z.boolean(), enforcing: z.boolean().optional() }),
+  // Sent only to a daemon advertising SESSION_ADMIT_REFUSAL_FEATURE; `resetsAt` starts the next UTC month.
+  z.object({
+    admitted: z.literal(false),
+    reason: z.literal(SESSION_LIMIT_REACHED),
+    limit: z.number().int().min(0),
+    used: z.number().int().min(0),
+    resetsAt: z.string().datetime(),
+    enforcing: z.boolean()
+  })
 ])
 export type SessionAdmitResult = z.infer<typeof SessionAdmitResult>

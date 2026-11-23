@@ -597,6 +597,8 @@ export function buildContainer(
   // (and ping/disconnect) stays on the root client.
   const rootPrisma = prisma
   prisma = withSharedTxRouting(prisma)
+  // The install-level switch every session policy read honors: off counts sessions only, for every organization.
+  const sessionPolicyOptions = { enforcement: config.SESSION_POLICY_ENFORCEMENT === 'on' }
 
   // The single value-reading seam for organization secrets. Named before the repo
   // map because both the registry repo's resolver and the assembler share ONE
@@ -642,12 +644,12 @@ export function buildContainer(
     relay: new PgRelayRepo(prisma),
     agent: new PgAgentRepo(prisma),
     assignment: new PgAssignmentRepo(prisma),
-    session: new PgSessionRepo(prisma),
+    session: new PgSessionRepo(prisma, sessionPolicyOptions),
     sessionPullRequestFeedback: new PgSessionPullRequestFeedbackRepo(prisma),
     followUpWatch: new PgFollowUpWatchRepo(prisma),
     capabilityRequest: new PgCapabilityRequestRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
-    orgSessionPolicy: new PgOrgSessionPolicyRepo(prisma),
+    orgSessionPolicy: new PgOrgSessionPolicyRepo(prisma, sessionPolicyOptions),
     agentApiEntry: new PgAgentApiEntryRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     ahpSessionBinding: new PgAhpSessionBindingRepo(prisma),

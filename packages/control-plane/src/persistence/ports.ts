@@ -1835,6 +1835,8 @@ export interface SessionMilestoneResult {
   recorded: boolean
   session: SessionMetaRecord | null
   settled: SessionMetaRecord[]
+  /** Nothing was written: the org enforces its session limit and this agent never admitted or recorded the id (org-session-policy.md). */
+  refused?: 'not_admitted'
 }
 
 /** Outcome of a §4.3 visibility change: the target row plus every descendant a
@@ -3074,13 +3076,18 @@ export interface OrgSessionMonthUsage {
   used: number
   limit: number | null
   policyRevision: number | null
+  /** Whether new sessions past `limit` are refused now: the policy enforces a limit and the install does not count only. */
+  enforcing: boolean
   monthStart: Date
   resetsAt: Date
   asOf: Date
 }
 
-/** A session admission's outcome: admitted, counted only when the CP first learned of the id here, or the id is another agent's. */
-export type OrgSessionAdmission = { admitted: true; counted: boolean } | { admitted: false; conflict: 'other_agent' }
+/** A session admission's outcome; `enforcing` is the org's enforcement read in the same transaction. */
+export type OrgSessionAdmission =
+  | { admitted: true; counted: boolean; enforcing: boolean }
+  | { admitted: false; conflict: 'other_agent' }
+  | { admitted: false; conflict: 'session_limit_reached'; limit: number; used: number; resetsAt: Date }
 
 /** A maintenance purpose the caller verified against the agent's own configuration, which the admission may exempt from the count. */
 export type OrgSessionMaintenance = 'memory-dream'
@@ -3090,13 +3097,15 @@ export interface OrgSessionPolicyRepo {
   apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null>
   /** This UTC month's session count by the database clock with the policy's limit; null when the org does not exist. */
   monthUsage(orgId: string): Promise<OrgSessionMonthUsage | null>
-  /** Admit a session id for the agent's org, idempotently, exempting allowed maintenance under its daily cap; never refuses on policy (org-session-policy.md, Admission). */
+  /** Admit a session id for the agent's org, idempotently, exempting allowed maintenance under its daily cap and refusing past an enforced limit (org-session-policy.md, Admission). */
   admit(
     orgId: string,
     agentId: string,
     sessionId: string,
     maintenance?: OrgSessionMaintenance
   ): Promise<OrgSessionAdmission>
+  /** Whether a session-level grant may name this session: the org does not enforce, or the agent's session is admitted or recorded. */
+  sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean>
 }
 
 export interface SessionUsageRepo {

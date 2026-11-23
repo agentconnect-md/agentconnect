@@ -5446,6 +5446,8 @@ export const SessionMonthUsageDto = z.object({
   limit: z.number().int().nullable(),
   /** The stored policy revision; null when the organization has no policy. */
   policyRevision: z.number().int().nullable(),
+  /** Whether new sessions past `limit` are refused now; false without an enforced limit or while the install counts only. */
+  enforcing: z.boolean(),
   monthStart: z.string().datetime(),
   resetsAt: z.string().datetime(),
   asOf: z.string().datetime()

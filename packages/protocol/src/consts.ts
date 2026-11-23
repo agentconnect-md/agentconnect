@@ -252,6 +252,9 @@ export const SESSION_METADATA_ACK_FEATURE = 'session-metadata-ack-v1'
 /** CP answers `session/admit`, admitting a new session for its organization; a daemon must not send it to a CP that does not advertise it, since a new request type is frame-fatal to an older CP. */
 export const SESSION_ADMIT_FEATURE = 'session-admit-v1'
 
+/** Daemon reads the `session/admit/result` refusal variant; a CP answers a daemon without it with a non-retryable `RATE_LIMITED` error instead. */
+export const SESSION_ADMIT_REFUSAL_FEATURE = 'session-admit-refusal-v1'
+
 /** CP accepts `integration/revoked`, a daemon socket's explicit credential-lifecycle report; an older CP rejects the frame, so the daemon keeps its reports instead. */
 export const INTEGRATION_REVOKED_FEATURE = 'integration-revoked-v1'
 

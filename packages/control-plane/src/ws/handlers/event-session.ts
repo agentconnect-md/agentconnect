@@ -16,7 +16,7 @@
  */
 import { chatAuthorityOf } from '../../orchestrator/placement.js'
 import { PLACEMENT_ONLY } from '../../orchestrator/placementResolver.js'
-import { isFrame, type EventSession } from '@agentconnect.md/protocol'
+import { isFrame, SESSION_NOT_ADMITTED, type EventSession } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, HookId, IntegrationId, LaunchId, OrgId, SessionId } from '../../domain/ids.js'
 import { classifySession } from '../../domain/session-visibility.js'
 import type { DaemonWsDeps } from '../deps.js'
@@ -305,12 +305,12 @@ async function recordEventSession(
   warmer?: DaemonWsDeps['sessionAccessWarmer'],
   /** Lifecycle snapshots may capture only their own session's PR. */
   pullRequestFeedback?: DaemonWsDeps['pullRequestFeedback']
-): Promise<void> {
+): Promise<'not_admitted' | undefined> {
   const [classification, candidate] = await Promise.all([
     classifyMilestone(p, orgId, agentId, deps),
     externalCandidate(p, orgId, agentId, deps)
   ])
-  const { recorded, session, settled } = await deps.session.recordMilestone({
+  const { recorded, session, settled, refused } = await deps.session.recordMilestone({
     sessionId: SessionId(p.sessionId),
     ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
     ...(p.taskParentSessionId !== undefined
@@ -354,6 +354,7 @@ async function recordEventSession(
     daemonId,
     at: new Date(p.ts)
   })
+  if (refused) return refused
   if (!recorded) return
   await recordReportedExecutor(p, agentId, deps)
   // Confirm the capture gate for the rows whose privacy the daemon cannot
@@ -392,10 +393,22 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
-  await runForReportingAgent(orgId, agentId, daemonId, deps, () =>
-    recordEventSession(p, orgId, agentId, daemonId, deps, deps.sessionAccessWarmer, deps.pullRequestFeedback)
-  )
+  await runForReportingAgent(orgId, agentId, daemonId, deps, async () => {
+    const refused = await recordEventSession(
+      p,
+      orgId,
+      agentId,
+      daemonId,
+      deps,
+      deps.sessionAccessWarmer,
+      deps.pullRequestFeedback
+    )
+    // A one-way frame has no reply to refuse with, so the drop is only logged.
+    if (refused) deps.log.warn?.({ daemonId, agentId, sessionId: p.sessionId }, NOT_ADMITTED_LOG)
+  })
 }
+
+const NOT_ADMITTED_LOG = 'event/session: dropped a new session never admitted under its organization session limit'
 
 /** Durable variant. Lease contention is retryable; a deleted/moved agent is a
  * permanent rejection and is ACKed so the old daemon can collect its outbox. */
@@ -416,8 +429,19 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
   }
   try {
     const agent = await deps.agent.get(orgId, agentId)
-    if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, daemonId)))
-      await recordEventSession(p, orgId, agentId, daemonId, deps, undefined, deps.pullRequestFeedback)
+    if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, daemonId))) {
+      if (await recordEventSession(p, orgId, agentId, daemonId, deps, undefined, deps.pullRequestFeedback)) {
+        deps.log.warn?.({ daemonId, agentId, sessionId: p.sessionId }, NOT_ADMITTED_LOG)
+        conn.sendError(
+          frame.id,
+          'RATE_LIMITED',
+          'the session was never admitted and its organization enforces a monthly session limit; admit it with session/admit first',
+          false,
+          { reason: SESSION_NOT_ADMITTED }
+        )
+        return
+      }
+    }
     // ACK only after recordEventSession's transaction has committed. An agent
     // placed elsewhere (or deleted) can never accept this daemon's stale row, so
     // retaining it forever would be worse than collecting it.

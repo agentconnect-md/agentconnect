@@ -1,11 +1,18 @@
 // `session/admit` over the real daemon WS edge and real Postgres (org-session-policy.md, Admission).
 import { describe, it, expect } from 'vitest'
-import { isFrame, SESSION_ADMIT_FEATURE } from '@agentconnect.md/protocol'
+import {
+  isFrame,
+  SESSION_ADMIT_FEATURE,
+  SESSION_ADMIT_REFUSAL_FEATURE,
+  SESSION_LIMIT_REACHED,
+  SESSION_NOT_ADMITTED
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness, type WsHarness } from '../fakes/build-ws.js'
 import { InMemoryDaemonStub } from '../fakes/daemon-stub.js'
 import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
+import { PgOrgSessionPolicyRepo } from '../../src/persistence/repositories/org-session-policy.repo.js'
 
 const DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddd01'
 const OTHER_DAEMON = 'dddddddd-dddd-4ddd-8ddd-dddddddddd02'
@@ -15,7 +22,7 @@ const UNKNOWN_AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03'
 const FOREIGN_ORG = 'example-foreign-org'
 const FOREIGN_AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04'
 
-async function ready(h: WsHarness, daemonId: string) {
+async function ready(h: WsHarness, daemonId: string, features: string[] = []) {
   const token = await h.mintToken(daemonId, { approved: true })
   const stub = new InMemoryDaemonStub()
   h.connect(stub)
@@ -23,7 +30,7 @@ async function ready(h: WsHarness, daemonId: string) {
   await stub.expectFrame('auth/ok')
   stub.inject('register', {
     host: 'daemon-1',
-    capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] },
+    capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features },
     maxAgents: 4,
     localState: { assignments: [], crons: [], leases: [], agents: [], integrations: [], stagedAgents: [] }
   })
@@ -60,9 +67,9 @@ describe('session/admit over the daemon WS edge', () => {
     expect(serverFeatures).toContain(SESSION_ADMIT_FEATURE)
 
     const first = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-1' }))
-    expect(first).toEqual({ reply: { admitted: true, counted: true }, error: undefined })
+    expect(first).toEqual({ reply: { admitted: true, counted: true, enforcing: false }, error: undefined })
     const again = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-1' }))
-    expect(again).toEqual({ reply: { admitted: true, counted: true }, error: undefined })
+    expect(again).toEqual({ reply: { admitted: true, counted: true, enforcing: false }, error: undefined })
     expect(await used()).toBe(1)
   })
 
@@ -81,10 +88,13 @@ describe('session/admit over the daemon WS edge', () => {
     const dream = (agentId: string, sessionId: string) =>
       answerTo(stub, stub.inject('session/admit', { agentId, sessionId, purpose: 'memory-dream' }))
 
-    expect(await dream(AGENT, 'd-1')).toEqual({ reply: { admitted: true, counted: false }, error: undefined })
+    expect(await dream(AGENT, 'd-1')).toEqual({
+      reply: { admitted: true, counted: false, enforcing: false },
+      error: undefined
+    })
     expect(await used()).toBe(0)
-    expect((await dream(disabled, 'd-2')).reply).toEqual({ admitted: true, counted: true })
-    expect((await dream(unmanaged, 'd-3')).reply).toEqual({ admitted: true, counted: true })
+    expect((await dream(disabled, 'd-2')).reply).toEqual({ admitted: true, counted: true, enforcing: false })
+    expect((await dream(unmanaged, 'd-3')).reply).toEqual({ admitted: true, counted: true, enforcing: false })
     expect(await used()).toBe(2)
     const rows = await prisma.orgSessionAdmission.findMany({ orderBy: { sessionId: 'asc' } })
     expect(rows.map((r) => [r.sessionId, r.maintenance])).toEqual([
@@ -152,7 +162,7 @@ describe('session/admit over the daemon WS edge', () => {
     expect(held.error).toMatchObject({ code: 'INTERNAL', retryable: true })
     releaseMove!()
     const after = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-1' }))
-    expect(after.reply).toEqual({ admitted: true, counted: true })
+    expect(after.reply).toEqual({ admitted: true, counted: true, enforcing: false })
   })
 
   it('neither advertises nor answers without an admission store', async () => {
@@ -164,5 +174,102 @@ describe('session/admit over the daemon WS edge', () => {
 
     const { error } = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-1' }))
     expect(error).toMatchObject({ code: 'SCOPE_DENIED', retryable: false })
+  })
+})
+
+describe('session/admit under an enforced monthly session limit', () => {
+  const enforce = (monthlySessionLimit: number) =>
+    new PgOrgSessionPolicyRepo(prisma).apply(DEF_ORG, {
+      revision: 1,
+      monthlySessionLimit,
+      historyRetentionDays: null,
+      enforce: true
+    })
+
+  it('refuses at the limit with the refusal variant to a daemon that reads it', async () => {
+    await seedPlaced()
+    await enforce(1)
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, DAEMON, [SESSION_ADMIT_REFUSAL_FEATURE])
+
+    const first = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-1' }))
+    expect(first.reply).toEqual({ admitted: true, counted: true, enforcing: true })
+    const refused = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-2' }))
+    expect(refused.reply).toEqual({
+      admitted: false,
+      reason: SESSION_LIMIT_REACHED,
+      limit: 1,
+      used: 1,
+      resetsAt: expect.any(String),
+      enforcing: true
+    })
+    expect(Date.parse((refused.reply as { resetsAt: string }).resetsAt)).toBeGreaterThan(Date.now())
+    expect(await used()).toBe(1)
+  })
+
+  it('answers an older daemon with a definite error instead of a variant it cannot decode', async () => {
+    await seedPlaced()
+    await enforce(0)
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, DAEMON)
+
+    const { reply, error } = await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-1' }))
+    expect(reply).toBeUndefined()
+    expect(error).toMatchObject({
+      code: 'RATE_LIMITED',
+      retryable: false,
+      details: { reason: SESSION_LIMIT_REACHED, limit: 0, used: 0 }
+    })
+  })
+
+  it('admits exactly one of two daemons on two Control Plane replicas racing for the last slot', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedAgent(prisma, OTHER_AGENT, { daemonId: OTHER_DAEMON })
+    await enforce(1)
+    const a = await ready(buildWsHarness(prisma), DAEMON, [SESSION_ADMIT_REFUSAL_FEATURE])
+    const b = await ready(buildWsHarness(prisma), OTHER_DAEMON, [SESSION_ADMIT_REFUSAL_FEATURE])
+
+    const idA = a.stub.inject('session/admit', { agentId: AGENT, sessionId: 's-a' })
+    const idB = b.stub.inject('session/admit', { agentId: OTHER_AGENT, sessionId: 's-b' })
+    const answers = await Promise.all([answerTo(a.stub, idA), answerTo(b.stub, idB)])
+    expect(answers.filter((x) => x.reply?.admitted === true)).toHaveLength(1)
+    expect(answers.filter((x) => x.reply?.admitted === false)).toHaveLength(1)
+    expect(await used()).toBe(1)
+    expect(await prisma.orgSessionAdmission.count()).toBe(1)
+  })
+
+  it('refuses a durable snapshot of a never-admitted id, drops the one-way one, and records an admitted id', async () => {
+    await seedPlaced()
+    await enforce(5)
+    const h = buildWsHarness(prisma)
+    const { stub } = await ready(h, DAEMON, [SESSION_ADMIT_REFUSAL_FEATURE])
+    const snapshot = (sessionId: string) => ({
+      sessionId,
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'C1',
+      thread: sessionId,
+      ts: new Date().toISOString()
+    })
+
+    const syncId = stub.inject('event/session-sync', snapshot('s-skip'))
+    await stub.settled()
+    expect(stub.sent.find((f) => f.corr === syncId)).toMatchObject({
+      type: 'error',
+      payload: { code: 'RATE_LIMITED', retryable: false, details: { reason: SESSION_NOT_ADMITTED } }
+    })
+    stub.inject('event/session', snapshot('s-legacy'))
+    await stub.settled()
+    expect(await prisma.sessionMeta.count()).toBe(0)
+
+    await answerTo(stub, stub.inject('session/admit', { agentId: AGENT, sessionId: 's-ok' }))
+    const okId = stub.inject('event/session-sync', snapshot('s-ok'))
+    await stub.settled()
+    expect(stub.sent.find((f) => f.corr === okId)).toMatchObject({ type: 'ack', payload: { ok: true } })
+    expect(await prisma.sessionMeta.count({ where: { id: 's-ok' } })).toBe(1)
+    expect(await used()).toBe(1)
   })
 })

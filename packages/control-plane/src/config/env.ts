@@ -178,6 +178,8 @@ const CoreConfigShape = {
   USAGE_INGEST_TOKEN: z.string().min(32).optional(),
   // Secret for the session-policy delivery route (org-session-policy.md); unset with no cluster identity ⇒ the route is not mounted.
   SESSION_POLICY_TOKEN: z.string().min(32).optional(),
+  // `off` makes every organization count sessions only, whatever its policy's `enforce` says (org-session-policy.md, Enforcement).
+  SESSION_POLICY_ENFORCEMENT: z.enum(['on', 'off']).default('on'),
   // Key server asked for an org's standing before Cloud compute starts (key-server.md §2.3); unset ⇒ no standing gate.
   KEY_SERVER_URL: KeyServerUrlSchema.optional(),
   // Bearer file re-read per standing request; unset ⇒ requests carry no Authorization header.

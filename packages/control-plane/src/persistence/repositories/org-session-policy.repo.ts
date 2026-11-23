@@ -1,7 +1,15 @@
 // PgOrgSessionPolicyRepo — per-organization session policies by revision, their monthly session counts, and session admissions (org-session-policy.md).
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
-import { countSessionStart, MONTH_START_SQL } from '../org-session-count.js'
+import {
+  countSessionStart,
+  countSessionStartWithin,
+  enforcedLimit,
+  MONTH_START_SQL,
+  monthCount,
+  sessionStandsForAgent,
+  type SessionPolicyEnforcementOptions
+} from '../org-session-count.js'
 import type {
   OrgSessionAdmission,
   OrgSessionMaintenance,
@@ -16,7 +24,14 @@ const OTHER_AGENT: OrgSessionAdmission = { admitted: false, conflict: 'other_age
 export const MAINTENANCE_ADMISSIONS_PER_AGENT_PER_DAY = 24
 
 export class PgOrgSessionPolicyRepo implements OrgSessionPolicyRepo {
-  constructor(private readonly db: PrismaLike) {}
+  private readonly enforcement: boolean
+
+  constructor(
+    private readonly db: PrismaLike,
+    options: SessionPolicyEnforcementOptions = {}
+  ) {
+    this.enforcement = options.enforcement ?? true
+  }
 
   async apply(orgId: string, policy: OrgSessionPolicyInput): Promise<number | null> {
     // One statement under the row lock: a higher revision replaces every field, any other keeps the row; no org row ⇒ no insert.
@@ -45,6 +60,7 @@ export class PgOrgSessionPolicyRepo implements OrgSessionPolicyRepo {
         COALESCE(m."used", 0) AS "used",
         p."monthlySessionLimit" AS "limit",
         p."revision" AS "policyRevision",
+        COALESCE(p."enforce" AND p."monthlySessionLimit" IS NOT NULL AND ${this.enforcement}::boolean, false) AS "enforcing",
         t."monthStart",
         (t."monthStart" AT TIME ZONE 'UTC' + interval '1 month') AT TIME ZONE 'UTC' AS "resetsAt",
         t."asOf"
@@ -65,27 +81,44 @@ export class PgOrgSessionPolicyRepo implements OrgSessionPolicyRepo {
     return withAmbientTx(this.db, async (tx) => {
       // The fence a first milestone takes on this id before it inserts, so the two serialize and count once between them.
       await lockSessionLineage(tx, [sessionId])
+      const limit = await enforcedLimit(tx, orgId, this.enforcement)
+      const enforcing = limit !== null
       const admitted = await tx.$queryRaw<Array<{ sameAgent: boolean; counted: boolean }>>`
         SELECT ("agentId" = ${agentId}::uuid) AS "sameAgent", "counted"
         FROM "org_session_admission" WHERE "sessionId" = ${sessionId}`
-      if (admitted[0]) return admitted[0].sameAgent ? { admitted: true, counted: admitted[0].counted } : OTHER_AGENT
+      if (admitted[0]) {
+        return admitted[0].sameAgent ? { admitted: true, counted: admitted[0].counted, enforcing } : OTHER_AGENT
+      }
       const known = await tx.$queryRaw<Array<{ sameAgent: boolean }>>`
         SELECT ("agentId" = ${agentId}::uuid) AS "sameAgent" FROM "session_meta" WHERE "id" = ${sessionId}`
       if (known[0] && !known[0].sameAgent) return OTHER_AGENT
-      // A session the CP already recorded was counted then, or predates counting; either way not again.
+      // A session the CP already recorded was counted then, or predates counting; either way not again, nor refused.
       if (known[0]) {
         await insertAdmission(tx, sessionId, orgId, agentId, false, null)
-        return { admitted: true, counted: false }
+        return { admitted: true, counted: false, enforcing }
       }
       if (maintenance && (await maintenanceExemptable(tx, agentId))) {
         await insertAdmission(tx, sessionId, orgId, agentId, false, maintenance)
-        return { admitted: true, counted: false }
+        return { admitted: true, counted: false, enforcing }
+      }
+      if (limit === null) {
+        await insertAdmission(tx, sessionId, orgId, agentId, true, null)
+        // Last statement, so the org's month row stays locked only until commit.
+        await countSessionStart(tx, orgId)
+        return { admitted: true, counted: true, enforcing }
+      }
+      // Enforced: count only below the limit, and record the admission only when that count landed.
+      if (!(await countSessionStartWithin(tx, orgId, limit))) {
+        const { used, resetsAt } = await monthCount(tx, orgId)
+        return { admitted: false, conflict: 'session_limit_reached', limit, used, resetsAt }
       }
       await insertAdmission(tx, sessionId, orgId, agentId, true, null)
-      // Last statement, so the org's month row stays locked only until commit.
-      await countSessionStart(tx, orgId)
-      return { admitted: true, counted: true }
+      return { admitted: true, counted: true, enforcing }
     })
+  }
+
+  async sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean> {
+    return sessionStandsForAgent(this.db, orgId, agentId, sessionId, this.enforcement)
   }
 }
 

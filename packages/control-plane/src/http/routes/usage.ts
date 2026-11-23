@@ -126,7 +126,7 @@ export function usageRoutes(deps: HttpDeps) {
             tags: [Tag.Usage],
             summary: 'Get monthly session usage',
             description:
-              'Counts the sessions the organization started in the current UTC month, by the database clock: a session counts once, when the Control Plane first records it, and sessions recorded before counting began are not counted. `limit` and `policyRevision` come from the organization session policy and are null without one. `resetsAt` is the start of the next UTC month and `asOf` the instant every field was read at.',
+              'Counts the sessions the organization started in the current UTC month, by the database clock: a session counts once, when the Control Plane first admits or records it, and sessions recorded before counting began are not counted. `limit` and `policyRevision` come from the organization session policy and are null without one; `enforcing` says whether a new session past `limit` is refused now, false without an enforced limit or while the install counts only. `resetsAt` is the start of the next UTC month and `asOf` the instant every field was read at.',
             operationId: 'getSessionMonthUsage',
             response: { 200: SessionMonthUsageDto, 404: ErrorDto }
           }
