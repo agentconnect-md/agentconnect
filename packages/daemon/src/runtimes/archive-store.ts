@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
@@ -14,9 +14,11 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Unzip, UnzipInflate } from 'fflate'
+import type { Clock } from '@agentconnect.md/connection'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { runtimeStoreDir } from '../paths.js'
 import type { ResolvedRuntimeEntry } from './registry.js'
+import { InstallMemo, runtimeStagingDir } from './store-install.js'
 
 // Some ACP agents ship as a signed vendor binary in a ZIP rather than an npm package, and the
 // registry's `cmd` for those (`./agy_acp_server.par`) only means anything to a client that fetched
@@ -129,26 +131,23 @@ export interface ArchiveStoreOptions {
   root: string
   fetchImpl?: ArchiveFetch
   log?: { info(message: string): void; warn(message: string): void }
+  /** Times the retry backoff after a failed install. */
+  clock?: Clock
 }
 
 /** Installs archive-distributed ACP agents under the daemon root and reports where to launch them. */
 export class ArchiveStore {
-  private readonly inFlight = new Map<string, Promise<StoredRuntimeArchive>>()
+  private readonly installs: InstallMemo<StoredRuntimeArchive>
   private readonly fetchImpl: ArchiveFetch
 
   constructor(private readonly opts: ArchiveStoreOptions) {
     this.fetchImpl = opts.fetchImpl ?? ((url, init) => fetch(url, init))
+    this.installs = new InstallMemo(opts.clock, opts.log)
   }
 
-  /** One install per archive for this daemon's lifetime: two hosts starting at once share this promise. */
+  /** One install per archive for this daemon's lifetime; concurrent callers share it and a failure is retried. */
   ensure(launch: ArchiveLaunch): Promise<StoredRuntimeArchive> {
-    const key = `${launch.id}@${launch.version}:${launch.bin}`
-    const existing = this.inFlight.get(key)
-    if (existing) return existing
-    const run = this.install(launch)
-    this.inFlight.set(key, run)
-    void run.catch(() => {})
-    return run
+    return this.installs.run(`${launch.id}@${launch.version}:${launch.bin}`, () => this.install(launch))
   }
 
   private async install(launch: ArchiveLaunch): Promise<StoredRuntimeArchive> {
@@ -156,7 +155,7 @@ export class ArchiveStore {
     const present = installedArchiveBin(tree, launch)
     if (present) return { tree, version: launch.version, bin: present }
     // Extract into staging and rename, so a partial tree is never visible as an install.
-    const staging = join(runtimeStoreDir(this.opts.root), `.staging-${randomUUID().slice(0, 8)}`)
+    const staging = runtimeStagingDir(this.opts.root)
     mkdirSync(staging, { recursive: true })
     try {
       this.opts.log?.info(`runtimes: fetching "${launch.id}" archive ${launch.url}`)

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { FakeClock } from '@agentconnect.md/connection'
 import {
   RuntimeStore,
   installedRuntimeVersions,
@@ -12,6 +13,7 @@ import {
   type NpmCommandRunner
 } from '../src/runtimes/runtime-store.js'
 import { runtimeStoreDir } from '../src/paths.js'
+import { INSTALL_RETRY_BASE_MS } from '../src/runtimes/store-install.js'
 import { trustedRuntimeReadRoots } from '../src/runtimes/read-roots.js'
 import { MANAGED_RUNTIME_CATALOG } from '../src/runtimes/managed.js'
 import { CURATED_RUNTIME_CATALOG } from '../src/runtimes/curated.js'
@@ -143,6 +145,36 @@ describe('RuntimeStore', () => {
     const { run } = fakeNpm('1.4.2', name, { 'codex-acp': 'dist/index.js' })
     await new RuntimeStore({ root: dir, run }).ensure(parseNpxLaunch(CODEX)!)
     expect(installedRuntimeVersions(dir, name)).toEqual(['1.4.2'])
+  })
+
+  it('retries a failed install once its backoff passes, and leaves no staging tree from the failure', async () => {
+    const dir = root()
+    const clock = new FakeClock()
+    const name = '@agentconnect.md/codex-acp'
+    const healthy = fakeNpm('1.4.2', name, { 'codex-acp': 'dist/index.js' })
+    let diskFull = true
+    const run: NpmCommandRunner = async (args, opts) => {
+      if (args[0] !== 'install' || !diskFull) return healthy.run(args, opts)
+      // npm got partway through the tarball before the disk filled.
+      healthy.calls.push(args)
+      writeFileSync(join(opts!.cwd!, 'partial.tgz'), 'x')
+      throw new Error('npm install failed: npm warn tar TAR_ENTRY_ERROR ENOSPC: no space left on device')
+    }
+    const store = new RuntimeStore({ root: dir, run, clock })
+    const launch = parseNpxLaunch(CODEX)!
+    const installs = () => healthy.calls.filter((args) => args[0] === 'install').length
+
+    await expect(store.ensure(launch)).rejects.toThrow('ENOSPC')
+    expect(readdirSync(runtimeStoreDir(dir))).toEqual([])
+    // Inside the backoff every caller gets the failure without another npm run.
+    await expect(store.ensure(launch)).rejects.toThrow('ENOSPC')
+    expect(installs()).toBe(1)
+
+    diskFull = false
+    clock.advance(INSTALL_RETRY_BASE_MS)
+    const installed = await store.ensure(launch)
+    expect(installed.tree).toBe(runtimePackageTree(dir, name, '1.4.2'))
+    expect(installs()).toBe(2)
   })
 
   it('hands npm an allowlist, so no daemon secret is left for an .npmrc to interpolate', () => {

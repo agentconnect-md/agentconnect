@@ -862,7 +862,12 @@ import {
   type HookQueueCandidate,
   type RevisionAdmissionPlan
 } from './codehost/hook-admission.js'
-import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog, type RuntimeSource } from './runtimes/registry.js'
+import {
+  resolveRuntimeCatalog,
+  type ResolvedRuntimeCatalog,
+  type ResolvedRuntimeEntry,
+  type RuntimeSource
+} from './runtimes/registry.js'
 import {
   internalPassSlot,
   InternalPassSessions,
@@ -947,6 +952,7 @@ import { showsMcpImages } from './runtimes/mcp-image-content.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
+import { sweepRuntimeStaging } from './runtimes/store-install.js'
 import {
   applyCodexSessionFloor,
   applyClaudeModelAliases,
@@ -1671,6 +1677,15 @@ function acpUpdateChainKey(owner: HostKey, sessionId: string): string {
   return `${owner}\u001f${sessionId}`
 }
 
+/** `catalog` with `id` set to `entry`, leaving the original untouched. */
+function withRuntimeEntry(
+  catalog: ResolvedRuntimeCatalog,
+  id: string,
+  entry: ResolvedRuntimeEntry
+): ResolvedRuntimeCatalog {
+  return { entries: { ...catalog.entries, [id]: entry }, runtimes: { ...catalog.runtimes, [id]: entry.runtime } }
+}
+
 // One agent-discovery pass: what this daemon will serve, plus the whole active fleet on disk.
 type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
@@ -1959,8 +1974,8 @@ export class Daemon {
     string,
     { agentDir: string; childEnv?: Record<string, string | undefined>; materialized: boolean }
   >()
-  // Why a daemon-supplied adapter has no install in the runtime store, so a refusal can name its tree.
-  private runtimeStoreFailures = new Map<string, string>()
+  // Why a daemon-supplied adapter has no store install (a refusal names its tree), and the entry a retry starts from.
+  private runtimeStoreFailures = new Map<string, { detail: string; entry: ResolvedRuntimeEntry }>()
   private runtimeStore?: Pick<RuntimeStore, 'ensure'>
   private archiveStore?: Pick<ArchiveStore, 'ensure'>
   // Terminal ACP start failure per agent, so a later refusal can say the runtime did not start
@@ -5045,7 +5060,11 @@ export class Daemon {
    *  sandbox pod and an injected host factory never spawns a runtime child, so neither gets one. */
   private adapterStore(root: string): Pick<RuntimeStore, 'ensure'> | undefined {
     if (this.k8s || this.opts.hostFactory) return undefined
-    this.runtimeStore ??= this.opts.runtimeStore ?? new RuntimeStore({ root, log: this.log })
+    if (!this.runtimeStore) {
+      // Opened before either store installs anything, so every staging tree left here belongs to a dead process.
+      sweepRuntimeStaging(root, this.log)
+      this.runtimeStore = this.opts.runtimeStore ?? new RuntimeStore({ root, log: this.log, clock: this.clock })
+    }
     return this.runtimeStore
   }
 
@@ -5053,7 +5072,7 @@ export class Daemon {
    *  factory get none for the same reasons {@link adapterStore} does. */
   private vendorArchiveStore(root: string): Pick<ArchiveStore, 'ensure'> | undefined {
     if (this.k8s || this.opts.hostFactory) return undefined
-    this.archiveStore ??= this.opts.archiveStore ?? new ArchiveStore({ root, log: this.log })
+    this.archiveStore ??= this.opts.archiveStore ?? new ArchiveStore({ root, log: this.log, clock: this.clock })
     return this.archiveStore
   }
 
@@ -5092,10 +5111,12 @@ export class Daemon {
         this.log.info(`runtimes: "${id}" launches ${label}`)
       } catch (err) {
         delete entries[id]
-        // This detail reaches a console reader through the refusal, so it is the bounded, path-free
-        // line the convention requires; the full diagnostic stays in the daemon log beside it.
-        this.runtimeStoreFailures.set(id, startFailureDetail(err))
-        this.log.warn(`runtimes: "${id}" has no daemon-owned install — ${formatErr(err)}`)
+        // The refusal shows this bounded, path-free detail to a console reader; the full diagnostic stays in the log.
+        const detail = startFailureDetail(err)
+        const repeated = this.runtimeStoreFailures.get(id)?.detail === detail
+        this.runtimeStoreFailures.set(id, { detail, entry })
+        // The store answers every call inside its retry backoff with the same failure, so log it once.
+        if (!repeated) this.log.warn(`runtimes: "${id}" has no daemon-owned install — ${formatErr(err)}`)
       }
     }
     return {
@@ -5104,13 +5125,18 @@ export class Daemon {
     }
   }
 
-  /** Install the adapter for a runtime the start-time sweep did not cover — an agent the CP assigned
-   *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
+  /** Install a runtime's adapter before it launches; the store keeps a success and retries a failure later. */
   private async ensureRuntimeInstalled(runtimeId: string, local = false): Promise<void> {
     if (local && this.localRuntimeCatalog) {
-      const installed = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
-      if (!installed.entries[runtimeId]) throw new Error(this.runtimeUnavailableMessage(runtimeId))
-      this.localRuntimeCatalog = installed
+      // A failed install dropped its entry from the catalog; offer it again so the store decides whether to retry.
+      const failed = this.localRuntimeCatalog.entries[runtimeId] ? undefined : this.runtimeStoreFailures.get(runtimeId)
+      const catalog = failed
+        ? withRuntimeEntry(this.localRuntimeCatalog, runtimeId, failed.entry)
+        : this.localRuntimeCatalog
+      const installed = (await this.installManagedRuntimePackages(catalog, [runtimeId])).entries[runtimeId]
+      if (!installed) throw new Error(this.runtimeUnavailableMessage(runtimeId))
+      // Merged into the current catalog, so an install that finished meanwhile for another runtime is kept.
+      this.localRuntimeCatalog = withRuntimeEntry(this.localRuntimeCatalog, runtimeId, installed)
       return
     }
     const entry = this.runtimeCatalog.entries[runtimeId]
@@ -5123,7 +5149,7 @@ export class Daemon {
   /** Why a runtime cannot launch: a failed daemon-owned install names its tree, else it is simply absent. */
   private runtimeUnavailableMessage(id: string): string {
     const failure = this.runtimeStoreFailures.get(id)
-    if (failure) return `runtime "${id}" has no daemon-owned install: ${failure}`
+    if (failure) return `runtime "${id}" has no daemon-owned install: ${failure.detail}`
     return `runtime "${id}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
   }
 
