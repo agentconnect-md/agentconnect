@@ -27,10 +27,12 @@ import { createGoogleChatCpProvider } from './googlechat/provider.js'
 import { createWeChatCpProvider } from './wechat/provider.js'
 import { createMsTeamsCpProvider } from './msteams/provider.js'
 import { createEmailCpProvider } from './email/provider.js'
+import { createMattermostCpProvider } from './mattermost/provider.js'
 
 /** Every supported deployment key. */
 const EXPECTED_KEYS = [
   'ACK_TIMEOUT_MS',
+  'AGENTCONNECT_INTERNAL_ALLOWED_HOSTS',
   'AHP_MODE',
   'AHP_PUBLIC_ACCESS',
   'AHP_TEST_KEY_IDS',
@@ -97,6 +99,9 @@ const EXPECTED_KEYS = [
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_ENDPOINT',
   'LOGTO_MGMT_RESOURCE',
+  'MATTERMOST_ACTION_SECRET',
+  'MATTERMOST_ALLOW_PRIVATE_NETWORK',
+  'MATTERMOST_OAUTH_SERVER_URL',
   'MISSED_BEATS',
   'NODE_ENV',
   'OIDC_AUDIENCE',
@@ -197,7 +202,8 @@ describe('composed AppConfigSchema', () => {
         'dingtalk_mcp',
         'microsoft_teams',
         'microsoft_teams_bot',
-        'weixin_bot'
+        'weixin_bot',
+        'mattermost'
       ])
     )
     for (const provider of CODE_HOST_PROVIDERS) expect(blocklist, provider).toContain(provider)
@@ -260,7 +266,8 @@ describe('platform env declarations', () => {
       createGoogleChatCpProvider(),
       createMsTeamsCpProvider(),
       createWeChatCpProvider({}),
-      createEmailCpProvider()
+      createEmailCpProvider(),
+      createMattermostCpProvider()
     ])
     const fromProviders = registry
       .all()

@@ -56,11 +56,10 @@ describe('F9 — Forget needs a durable suppression', () => {
 })
 
 describe('F9 — the authoritative channel-snapshot gate', () => {
-  it('is the authoritative-membership arm, for every id, with no exception', () => {
+  it('is the authoritative-membership arm for Slack and Mattermost', () => {
     for (const p of ALL) {
-      // `orchestrator/httpBot.ts` spelled this `bot.platform !== 'slack'`.
-      const retired = p !== 'slack'
-      expect(manifestFor(p).membershipEnumeration !== 'authoritative', p).toBe(retired)
+      const authoritative = p === 'slack' || p === 'mattermost'
+      expect(manifestFor(p).membershipEnumeration === 'authoritative', p).toBe(authoritative)
     }
   })
 })
@@ -133,5 +132,10 @@ describe('the multi-agent-bot capability', () => {
     // only", which a second admitted row makes false the moment it lands.
     expect(multiAgentUnsupportedMessage('feishu')).toContain('feishu')
     expect(multiAgentUnsupportedMessage('feishu')).not.toMatch(/slack|linear/i)
+  })
+
+  it('keeps Mattermost non-shareable while allowing group DMs (mpim) to append', () => {
+    expect(manifestFor('mattermost').multiAgentShareable).toBe(false)
+    expect(manifestFor('mattermost').appendKinds).toEqual(['channel', 'mpim'])
   })
 })

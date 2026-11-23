@@ -227,4 +227,41 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.agents[0]).toMatchObject({ agentId: AGENT_3, orgId: DEFAULT_ORG_ID })
     expect(snap.agents[0]).not.toHaveProperty('daemonId')
   })
+
+  it('forwards botUsername onto channel placements while omitting it from the flat org directory', () => {
+    const snap = buildCollabSnapshot(
+      DEFAULT_ORG_ID,
+      [
+        rec({
+          platform: 'mattermost',
+          channelId: 'mmchan1234567890abcdefghij',
+          agentId: AGENT_1,
+          daemonId: DAEMON_1,
+          botAppId: 'mm-0123456789abcdef',
+          botUserId: 'mmuser1234567890abcdefghij',
+          botUsername: 'alpha_bot',
+          name: 'alpha'
+        }),
+        rec({
+          platform: 'mattermost',
+          channelId: 'mmchan1234567890abcdefghij',
+          agentId: AGENT_2,
+          daemonId: DAEMON_2,
+          botAppId: 'mm-0123456789abcdef',
+          botUserId: 'mmuser9999999999abcdefghij',
+          botUsername: 'beta_bot',
+          name: 'beta'
+        })
+      ],
+      4,
+      [orgAgent({ agentId: AGENT_1, daemonId: DAEMON_1 }), orgAgent({ agentId: AGENT_2, daemonId: DAEMON_2 })]
+    )
+    expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
+    const byAgent = new Map(snap.channels[0]!.agents.map((a) => [a.agentId, a]))
+    expect(byAgent.get(AGENT_1)).toMatchObject({ botUsername: 'alpha_bot' })
+    expect(byAgent.get(AGENT_2)).toMatchObject({ botUsername: 'beta_bot' })
+    expect(byAgent.get(AGENT_1)!.botShared).toBeUndefined()
+    expect(snap.agents[0]!.botUsername).toBeUndefined()
+    expect(snap.agents[1]!.botUsername).toBeUndefined()
+  })
 })

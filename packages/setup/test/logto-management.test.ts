@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { LogtoAdminClaimClient, LogtoManagementError } from '../src/server/logto-management.js'
+import { desiredConnector, LogtoAdminClaimClient, LogtoManagementError } from '../src/server/logto-management.js'
+import { LOGTO_MATTERMOST_CONNECTOR_ID } from '../src/logto-connectors.js'
 import { ACCESS_TOKEN_CLAIMS_SCRIPT } from '@agentconnect.md/control-plane/org-sso-token-claims'
 
 const config = {
@@ -525,6 +526,248 @@ describe('Logto setup reconciliation', () => {
     ).rejects.toMatchObject({ code: 'SOCIAL_CONNECTOR_UNSUPPORTED' })
     // Setup cannot create a Feishu connector, so it must not delete the one occupying the target.
     expect(connectors).toHaveLength(1)
+  })
+
+  it('builds desiredConnector for mattermost with stock oauth2 connector and reconciles idempotently', async () => {
+    const baseDesired = {
+      applicationName: 'AgentConnect',
+      redirectUris: ['http://localhost:3000/auth/callback'],
+      postLogoutRedirectUris: ['http://localhost:3000/login'],
+      socialProviders: ['mattermost'],
+      mattermost: {
+        clientId: 'mm-oauth-client',
+        clientSecret: 'mm-oauth-secret',
+        serverUrl: 'https://chat.example.test/team/'
+      }
+    }
+
+    expect(desiredConnector('mattermost', { ...baseDesired, mattermost: undefined })).toBeUndefined()
+    expect(desiredConnector('mattermost', baseDesired)).toEqual({
+      id: LOGTO_MATTERMOST_CONNECTOR_ID,
+      connectorId: 'oauth2',
+      metadata: { target: 'mattermost', name: { en: 'Mattermost' } },
+      config: {
+        clientId: 'mm-oauth-client',
+        clientSecret: 'mm-oauth-secret',
+        authorizationEndpoint: 'https://chat.example.test/team/oauth/authorize',
+        tokenEndpoint: 'https://chat.example.test/team/oauth/access_token',
+        userInfoEndpoint: 'https://chat.example.test/team/api/v4/users/me',
+        tokenEndpointResponseType: 'json',
+        profileMap: { id: 'id', name: 'username', email: '__disabled_unverified_email__' }
+      }
+    })
+
+    let application: Record<string, unknown> | undefined
+    const connectors: Record<string, unknown>[] = []
+    let signInExperience: Record<string, unknown> = {
+      signIn: { methods: [] },
+      signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
+      socialSignInConnectorTargets: [],
+      signInMode: 'SignInAndRegister'
+    }
+    let role: Record<string, unknown> | undefined
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oidc/token') return response({ access_token: 'management-token', expires_in: 3600 })
+      if (url.pathname === '/api/applications' && init?.method === 'POST') {
+        application = { id: 'browser-app', ...JSON.parse(String(init.body)) }
+        return response(application)
+      }
+      if (url.pathname === '/api/applications') return response(application ? [application] : [])
+      if (url.pathname === '/api/connectors' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>
+        const metadata = body.metadata as { target?: string } | undefined
+        const connector = { ...body, target: metadata?.target ?? 'unknown' }
+        connectors.push(connector)
+        return response(connector)
+      }
+      if (url.pathname.startsWith('/api/connectors/') && init?.method === 'PATCH') {
+        const connector = connectors.find((item) => item.id === url.pathname.split('/').at(-1))!
+        Object.assign(connector, JSON.parse(String(init.body)))
+        return response(connector)
+      }
+      if (url.pathname === '/api/connectors') return response(connectors)
+      if (url.pathname === '/api/sign-in-exp' && init?.method === 'PATCH') {
+        signInExperience = { ...signInExperience, ...JSON.parse(String(init.body)) }
+        return response(signInExperience)
+      }
+      if (url.pathname === '/api/sign-in-exp') return response(signInExperience)
+      if (url.pathname === '/api/roles' && url.search) return response(role ? [role] : [])
+      if (url.pathname === '/api/roles') {
+        role = { id: 'admin-role', ...JSON.parse(String(init?.body)) }
+        return response(role)
+      }
+      return response({}, 404)
+    }
+
+    const client = new LogtoAdminClaimClient(config, fetcher)
+    await expect(client.reconcileSetup(baseDesired)).resolves.toMatchObject({
+      changed: true,
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', created: true, changed: true }]
+    })
+    expect(connectors).toHaveLength(1)
+    expect(connectors[0]).toMatchObject({
+      id: 'agentconnect-mattermost',
+      connectorId: 'oauth2',
+      metadata: { target: 'mattermost', name: { en: 'Mattermost' } },
+      config: {
+        clientId: 'mm-oauth-client',
+        clientSecret: 'mm-oauth-secret',
+        authorizationEndpoint: 'https://chat.example.test/team/oauth/authorize',
+        tokenEndpoint: 'https://chat.example.test/team/oauth/access_token',
+        userInfoEndpoint: 'https://chat.example.test/team/api/v4/users/me',
+        tokenEndpointResponseType: 'json',
+        profileMap: { id: 'id', name: 'username', email: '__disabled_unverified_email__' }
+      }
+    })
+    expect(connectors[0]!.config).not.toHaveProperty('scope')
+
+    await expect(client.reconcileSetup(baseDesired)).resolves.toMatchObject({
+      changed: false,
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', created: false, changed: false }]
+    })
+    await expect(client.inspectSetup(baseDesired)).resolves.toMatchObject({
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', exists: true, matches: true, diff: [] }]
+    })
+
+    // Config drift (e.g. scope, endpoint, or partial profileMap mismatch) is detected by inspectSetup and fixed by reconcileSetup.
+    ;(connectors[0]!.config as Record<string, unknown>).scope = 'openid'
+    await expect(client.inspectSetup(baseDesired)).resolves.toMatchObject({
+      connectors: [{ target: 'mattermost', matches: false }]
+    })
+    await expect(client.reconcileSetup(baseDesired)).resolves.toMatchObject({
+      changed: true,
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', created: false, changed: true }]
+    })
+    expect(connectors[0]!.config).not.toHaveProperty('scope')
+
+    // Legacy empty-string scope (`scope: ''`) and partial profileMap drift are detected and repaired.
+    ;(connectors[0]!.config as Record<string, unknown>).scope = ''
+    await expect(client.inspectSetup(baseDesired)).resolves.toMatchObject({
+      connectors: [{ target: 'mattermost', matches: false }]
+    })
+    await expect(client.reconcileSetup(baseDesired)).resolves.toMatchObject({
+      changed: true,
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', created: false, changed: true }]
+    })
+    expect(connectors[0]!.config).not.toHaveProperty('scope')
+    ;(connectors[0]!.config as Record<string, unknown>).profileMap = { id: 'id', email: 'email', name: 'username' }
+    await expect(client.inspectSetup(baseDesired)).resolves.toMatchObject({
+      connectors: [{ target: 'mattermost', matches: false }]
+    })
+    await expect(client.reconcileSetup(baseDesired)).resolves.toMatchObject({
+      changed: true,
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', created: false, changed: true }]
+    })
+    expect((connectors[0]!.config as Record<string, unknown>).profileMap).toEqual({
+      id: 'id',
+      name: 'username',
+      email: '__disabled_unverified_email__'
+    })
+
+    // Changing Mattermost serverUrl updates userInfoEndpoint/authorization/token endpoints cleanly in place.
+    const movedServer = {
+      ...baseDesired,
+      mattermost: { ...baseDesired.mattermost, serverUrl: 'https://mm2.example.test/' }
+    }
+    await expect(client.inspectSetup(movedServer)).resolves.toMatchObject({
+      connectors: [{ target: 'mattermost', matches: false }]
+    })
+    await expect(client.reconcileSetup(movedServer)).resolves.toMatchObject({
+      changed: true,
+      connectors: [{ target: 'mattermost', id: 'agentconnect-mattermost', created: false, changed: true }]
+    })
+    expect((connectors[0]!.config as Record<string, unknown>).userInfoEndpoint).toBe(
+      'https://mm2.example.test/api/v4/users/me'
+    )
+    await expect(client.reconcileSetup(baseDesired)).resolves.toMatchObject({ changed: true })
+
+    // Secret refresh updates clientSecret even when non-secret config already matches.
+    await client.reconcileSetup(
+      { ...baseDesired, mattermost: { ...baseDesired.mattermost, clientSecret: 'rotated-mm-secret' } },
+      { refreshConnectorSecrets: true }
+    )
+    expect((connectors[0]!.config as Record<string, unknown>).clientSecret).toBe('rotated-mm-secret')
+  })
+
+  it('keeps mattermost oauth2 connector matching when Logto returns defaulted oauth2 fields', async () => {
+    const serverUrl = 'https://chat.example.test/team'
+    const desired = {
+      applicationName: 'AgentConnect',
+      redirectUris: ['http://localhost:3000/auth/callback'],
+      postLogoutRedirectUris: ['http://localhost:3000/login'],
+      socialProviders: ['mattermost'],
+      mattermost: {
+        clientId: 'mm-oauth-client',
+        clientSecret: 'mm-oauth-secret',
+        serverUrl
+      }
+    }
+    const application = {
+      id: 'browser-app',
+      name: 'AgentConnect',
+      type: 'SPA',
+      oidcClientMetadata: {
+        redirectUris: desired.redirectUris,
+        postLogoutRedirectUris: desired.postLogoutRedirectUris
+      },
+      customData: { agentconnectSetup: { version: 1, resource: 'browser' } }
+    }
+    const signInExperience = {
+      signIn: { methods: [] },
+      signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
+      socialSignInConnectorTargets: ['mattermost'],
+      singleSignOnEnabled: false,
+      signInMode: 'SignInAndRegister'
+    }
+    const connectors = [
+      {
+        id: LOGTO_MATTERMOST_CONNECTOR_ID,
+        connectorId: 'oauth2',
+        target: 'mattermost',
+        metadata: { target: 'mattermost', name: { en: 'Mattermost' } },
+        config: {
+          clientId: 'mm-oauth-client',
+          clientSecret: '**********',
+          responseType: 'code',
+          grantType: 'authorization_code',
+          tokenEndpointAuthMethod: 'client_secret_post',
+          clientSecretJwtSigningAlgorithm: 'HS256',
+          authorizationEndpoint: `${serverUrl}/oauth/authorize`,
+          tokenEndpoint: `${serverUrl}/oauth/access_token`,
+          userInfoEndpoint: `${serverUrl}/api/v4/users/me`,
+          tokenEndpointResponseType: 'json',
+          customConfig: {},
+          profileMap: { id: 'id', name: 'username', email: '__disabled_unverified_email__' }
+        }
+      }
+    ]
+    let patched = false
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oidc/token') return response({ access_token: 'management-token', expires_in: 3600 })
+      if (url.pathname === '/api/applications') return response([application])
+      if (url.pathname === '/api/connectors' && !init?.method) return response(connectors)
+      if (url.pathname.startsWith('/api/connectors/') && init?.method === 'PATCH') {
+        patched = true
+        return response(connectors[0])
+      }
+      if (url.pathname === '/api/sign-in-exp') return response(signInExperience)
+      if (url.pathname === '/api/roles') {
+        return response([{ id: 'admin-role', name: 'ADMIN', type: 'User', isDefault: false }])
+      }
+      return response({}, 404)
+    }
+
+    const client = new LogtoAdminClaimClient(config, fetcher)
+    await expect(client.inspectSetup(desired)).resolves.toMatchObject({
+      connectors: [{ target: 'mattermost', id: LOGTO_MATTERMOST_CONNECTOR_ID, exists: true, matches: true, diff: [] }]
+    })
+    await expect(client.reconcileSetup(desired)).resolves.toMatchObject({
+      changed: false,
+      connectors: [{ target: 'mattermost', id: LOGTO_MATTERMOST_CONNECTOR_ID, created: false, changed: false }]
+    })
+    expect(patched).toBe(false)
   })
 })
 

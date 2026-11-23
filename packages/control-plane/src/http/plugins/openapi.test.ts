@@ -27,6 +27,8 @@ import type { MsTeamsConnectSeams } from '../../platforms/msteams/connect-routes
 import { weComCredentialRoutes } from '../../platforms/wecom/routes.js'
 import { createEmailCpProvider } from '../../platforms/email/provider.js'
 import { emailAddressRoutes } from '../../platforms/email/routes.js'
+import { createMattermostCpProvider } from '../../platforms/mattermost/provider.js'
+import { mattermostCredentialRoutes } from '../../platforms/mattermost/routes.js'
 
 /** Minimal stub deps: `config` plus the platform registry, which the create
  *  route folds into its documented request body at registration time. Repos
@@ -58,7 +60,8 @@ function stubDeps(): HttpDeps {
       createMsTeamsCpProvider({ installRoutes: [msTeamsRecoveryRoutes({} as HttpDeps, {} as MsTeamsConnectSeams)] }),
       createWeChatCpProvider({ routes: [weChatLoginRoutes({} as HttpDeps, {} as WeChatLoginService)] }),
       createWeComCpProvider({ installRoutes: [weComCredentialRoutes({} as HttpDeps)] }),
-      createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] })
+      createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] }),
+      createMattermostCpProvider({ installRoutes: [mattermostCredentialRoutes({} as HttpDeps)] })
     ])
   } as unknown as HttpDeps
 }
@@ -353,6 +356,7 @@ describe('openapi plane', () => {
           'GET /api/v1/orgs/:orgId/integrations/wechat/login/:id',
           'POST /api/v1/orgs/:orgId/integrations/wechat/login',
           'PUT /api/v1/orgs/:orgId/bots/:id/wecom/credentials',
+          'PUT /api/v1/orgs/:orgId/bots/:id/mattermost/credentials',
           'DELETE /api/v1/orgs/:orgId/daemons/:id/keys/:keyId',
           'GET /api/v1/orgs/:orgId/daemons/:id/keys',
           'POST /api/v1/orgs/:orgId/daemons/:id/keys',
@@ -427,6 +431,12 @@ describe('openapi plane', () => {
         expect(doc.paths?.[path]?.[method.toLowerCase()], entry).toBeUndefined()
       }
       expect(doc.paths?.['/api/v1/orgs']?.get?.operationId).toBe('listOrganizations')
+      expect(doc.paths?.['/api/v1/orgs/{orgId}/session-access/mattermost']?.get?.operationId).toBe(
+        'getMattermostSessionAccess'
+      )
+      expect(doc.paths?.['/api/v1/orgs/{orgId}/session-access/mattermost']?.put?.operationId).toBe(
+        'setMattermostSessionAccess'
+      )
       const tags = doc.tags.map((t: { name: string }) => t.name)
       expect(tags).not.toContain('API keys')
       expect(tags).not.toContain('Daemon keys')

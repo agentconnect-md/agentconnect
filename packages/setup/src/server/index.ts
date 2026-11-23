@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import type { lookup as dnsLookup } from 'node:dns'
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -37,6 +38,7 @@ import {
   LOGTO_GITHUB_CONNECTOR_ID,
   LOGTO_GITLAB_CONNECTOR_ID,
   LOGTO_GOOGLE_CONNECTOR_ID,
+  LOGTO_MATTERMOST_CONNECTOR_ID,
   LOGTO_SLACK_CONNECTOR_ID,
   LOGTO_LOGIN_APPS
 } from '../logto-connectors.js'
@@ -68,6 +70,7 @@ import { gitlabConfiguredUrls } from '../gitlab-app.js'
 import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '@agentconnect.md/control-plane/gitlab-config'
 import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import { probeBlocksSave as giteaProbeBlocksSave, probeGiteaInstance } from '../gitea-probe.js'
+import { probeMattermostBlocksSave, probeMattermostInstance } from '../mattermost-probe.js'
 import { linearConfiguredUrls } from '../linear-app.js'
 import { googleChatConfiguredUrls } from '../google-chat-app.js'
 import { msTeamsConfiguredUrls } from '../msteams-app.js'
@@ -328,6 +331,10 @@ const CheckSlackBody = z.strictObject({
   configToken: z.string().trim().min(1).max(10_000)
 })
 
+const CheckMattermostBody = z.strictObject({
+  serverUrl: z.string().trim().min(1).max(2_000).optional()
+})
+
 const ReconcileLogtoBody = z.strictObject({
   refreshConnectorSecrets: z.boolean().optional().default(false)
 })
@@ -343,6 +350,8 @@ export interface SetupServerDeps {
   organizations?: DeploymentOrganizations
   publicUrl: string
   fetch?: typeof fetch
+  /** Optional DNS lookup override for testing default SSRF-pinned Mattermost probing without deps.fetch. */
+  mattermostLookup?: typeof dnsLookup
   /** The wait between tries while a new blueprint settles; tests pass one that does not sleep. */
   msTeamsBlueprintWait?: (ms: number) => Promise<void>
   verifyOidcToken?: VerifyOidcToken
@@ -582,6 +591,7 @@ function logtoSetup(
   const githubSecret = record.secrets['logto.githubConnectorClientSecret']
   const googleSecret = record.secrets['logto.googleConnectorClientSecret']
   const slackSecret = record.secrets['slack.clientSecret']
+  const mattermostSecret = record.secrets['logto.mattermostConnectorClientSecret']
   const applicationId = auth.mode === 'oidc' ? auth.browserClient.appId : undefined
   const webOrigin = new URL(services.web).origin
   const setupOrigin = new URL(setupUrl).origin
@@ -631,6 +641,15 @@ function logtoSetup(
               clientId: logto.slackConnector.clientId,
               clientSecret: slackSecret,
               scope: 'openid profile email'
+            }
+          }
+        : {}),
+      ...(logto.mattermostConnector && mattermostSecret
+        ? {
+            mattermost: {
+              clientId: logto.mattermostConnector.clientId,
+              clientSecret: mattermostSecret,
+              serverUrl: logto.mattermostConnector.serverUrl
             }
           }
         : {}),
@@ -701,7 +720,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
   }
 
   type ManagedConnectorIds = Partial<
-    Record<'github' | 'gitlab' | 'google' | 'slack' | z.infer<typeof LoginAppProvider>, string>
+    Record<'github' | 'gitlab' | 'google' | 'slack' | 'mattermost' | z.infer<typeof LoginAppProvider>, string>
   >
 
   const resolveLogtoConnectorIds = async (): Promise<ManagedConnectorIds> => {
@@ -713,6 +732,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       'gitlab',
       'google',
       'slack',
+      'mattermost',
       ...LoginAppProvider.options
     ])
   }
@@ -822,6 +842,15 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
             )
           : [],
         scopes: ['openid', 'profile', 'email']
+      },
+      mattermostSignIn: {
+        redirects: values.logto?.browser
+          ? socialRedirectUris(
+              logtoEndpoint,
+              connectorIds.mattermost ?? LOGTO_MATTERMOST_CONNECTOR_ID,
+              localAuthBootstrap.services.web
+            )
+          : []
       },
       slack,
       linear,
@@ -1978,6 +2007,16 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     }
   })
 
+  app.post('/api/v1/check/mattermost', { preHandler: requireDiagnosticAccess }, async (request, reply) => {
+    const parsed = CheckMattermostBody.safeParse(request.body ?? {})
+    if (!parsed.success) return problem(reply, 400, 'a valid Mattermost server URL is required')
+    const serverUrl =
+      parsed.data.serverUrl ?? (await deps.store.getAdmin())?.values.logto?.mattermostConnector?.serverUrl
+    if (!serverUrl) return problem(reply, 400, 'a Mattermost server URL is required')
+    const probe = await probeMattermostInstance(serverUrl, deps.fetch, deps.mattermostLookup)
+    return { ...probe, ok: probe.status === 'ok', blocksSave: probeMattermostBlocksSave(probe) }
+  })
+
   // The deployment app's manifest is the one thing `check/slack` can see but not fix: `SLACK_BOT_SCOPES`
   // grows with releases while the app on Slack keeps the set it was created with, and a Slack-side
   // reinstall then grants only that stale set. This applies the same diff the check reports.
@@ -2123,6 +2162,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
         'logto.telegramConnectorClientSecret',
         'logto.discordConnectorClientSecret',
         'logto.azureadConnectorClientSecret',
+        'logto.mattermostConnectorClientSecret',
         'logto.ssoConnectorClientSecret',
         'slack.clientSecret',
         'github.clientSecret',
@@ -2222,6 +2262,7 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       'logto.telegramConnectorClientSecret',
       'logto.discordConnectorClientSecret',
       'logto.azureadConnectorClientSecret',
+      'logto.mattermostConnectorClientSecret',
       'logto.ssoConnectorClientSecret',
       'gitlab.clientSecret',
       'slack.clientSecret'

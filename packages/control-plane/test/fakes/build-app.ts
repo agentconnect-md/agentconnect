@@ -49,6 +49,7 @@ import { createMsTeamsCpProvider } from '../../src/platforms/msteams/provider.js
 import { createWeChatCpProvider } from '../../src/platforms/wechat/provider.js'
 import { createWeComCpProvider } from '../../src/platforms/wecom/provider.js'
 import { createEmailCpProvider } from '../../src/platforms/email/provider.js'
+import { createMattermostCpProvider } from '../../src/platforms/mattermost/provider.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -89,7 +90,8 @@ const PLATFORMS = buildCpPlatformRegistry([
   createMsTeamsCpProvider(),
   createWeChatCpProvider({}),
   createWeComCpProvider(),
-  createEmailCpProvider()
+  createEmailCpProvider(),
+  createMattermostCpProvider()
 ])
 
 export function buildDaemonApp(prisma: PrismaClient, opts: { wsConfig?: Partial<WsConfig> } = {}): DaemonApp {

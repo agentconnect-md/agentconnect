@@ -184,6 +184,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#email-section">Email</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>
+      <a href="#mattermost-section">Mattermost</a>
       <a href="#options-section">Options</a>
     </nav>
     <div class="setup-content">
@@ -623,6 +624,35 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <button id="check-lark-login-app" hidden>Check setup</button>
           <button id="clear-lark" class="danger" hidden>Clear configuration</button>
           <a id="lark-settings" class="button" target="_blank" rel="noopener" hidden>Open Lark settings</a>
+        </div>
+      </section>
+
+      <section id="mattermost-section" class="panel setup-section" aria-labelledby="mattermost-heading">
+        <div class="provider-head">
+          <div><h3 id="mattermost-heading">Mattermost</h3><p class="muted">Self-hosted OAuth 2.0 application used by the Logto Mattermost sign-in connector and conversation access checks.</p></div>
+          <span id="mattermost-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Server URL</dt><dd class="value-line"><code id="mattermost-server-url">Not configured</code><button class="edit-configuration" data-provider="mattermost">Edit</button></dd>
+          <dt>Client ID</dt><dd class="value-line"><code id="mattermost-client-id">Not configured</code><button class="edit-configuration" data-provider="mattermost">Edit</button></dd>
+          <dt>Client secret</dt><dd class="secret-line"><span id="mattermost-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="logto.mattermostConnectorClientSecret" data-secret-display="mattermost-client-secret-display">Edit</button></dd>
+        </dl>
+        <p id="mattermost-status" class="muted"></p>
+        <div id="mattermost-probe" class="notice" hidden></div>
+        <div id="mattermost-drift" class="notice" hidden></div>
+        <p>Redirect URIs:</p><ul id="mattermost-redirects" class="uris"></ul>
+        <p class="muted">Create an OAuth 2.0 application in Mattermost (System Console &rarr; Integrations &rarr; OAuth 2.0 Applications) with trusted client enabled and the redirect URIs above.</p>
+        <div id="mattermost-config-controls" class="subsection">
+          <label class="field">Server URL<input id="mattermost-server-url-input" autocomplete="off" placeholder="https://mattermost.example.com"></label>
+          <label class="field">Client ID<input id="mattermost-id" autocomplete="off"></label>
+          <label id="mattermost-initial-secret-field" class="field">Client secret<input id="mattermost-secret" type="password" autocomplete="new-password" placeholder="Required when Server URL or Client ID changes"></label>
+        </div>
+        <div class="row">
+          <button id="probe-mattermost">Check Server URL</button>
+          <button id="save-mattermost">Save and configure sign-in</button>
+          <button id="cancel-mattermost-configuration" hidden>Cancel</button>
+          <button id="check-mattermost" hidden>Check Logto</button>
+          <button id="clear-mattermost" class="danger" hidden>Clear configuration</button>
         </div>
       </section>
     </div>
@@ -1283,6 +1313,28 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('lark-settings').hidden = !values.lark;
       if (values.feishu) el('feishu-settings').href = 'https://open.feishu.cn/app/' + encodeURIComponent(values.feishu.loginAppId);
       if (values.lark) el('lark-settings').href = 'https://open.larksuite.com/app/' + encodeURIComponent(values.lark.loginAppId);
+
+      const mattermost = values.logto && values.logto.mattermostConnector;
+      const mattermostSecret = configured(byKey, 'logto.mattermostConnectorClientSecret');
+      const expectedMattermost = expected.mattermostSignIn;
+      renderUriList('mattermost-redirects', expectedMattermost ? expectedMattermost.redirects : []);
+      text('mattermost-server-url', mattermost && mattermost.serverUrl);
+      text('mattermost-client-id', mattermost && mattermost.clientId);
+      secretText('mattermost-client-secret-display', byKey, 'logto.mattermostConnectorClientSecret', Boolean(mattermost));
+      showIdentityEditors('mattermost', Boolean(mattermost));
+      el('mattermost-server-url-input').value = mattermost ? mattermost.serverUrl : '';
+      el('mattermost-id').value = mattermost ? mattermost.clientId : '';
+      el('mattermost-status').hidden = !mattermost;
+      el('mattermost-status').textContent = mattermost ? 'Mattermost sign-in OAuth application is saved.' : '';
+      showDiff('mattermost-drift', []);
+      match('mattermost-match', mattermost ? 'warn' : '', !mattermost ? 'Not configured' : !mattermostSecret ? 'Missing secret' : 'Not checked');
+      el('mattermost-initial-secret-field').hidden = Boolean(mattermost) && mattermostSecret;
+      el('mattermost-config-controls').hidden = Boolean(mattermost);
+      el('save-mattermost').hidden = Boolean(mattermost);
+      el('save-mattermost').disabled = !values.logto || !values.logto.browser;
+      el('cancel-mattermost-configuration').hidden = true;
+      el('check-mattermost').hidden = !mattermost || !mattermostSecret;
+      el('clear-mattermost').hidden = !mattermost;
     }
 
     function requiredInput(id, label) {
@@ -1411,6 +1463,18 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('cancel-' + provider + '-configuration').hidden = false;
         el('clear-' + provider).hidden = true;
         el(provider + '-id').focus();
+      } else if (provider === 'mattermost') {
+        const mattermost = values.logto && values.logto.mattermostConnector;
+        if (!mattermost) return;
+        el('mattermost-server-url-input').value = mattermost.serverUrl;
+        el('mattermost-id').value = mattermost.clientId;
+        el('mattermost-secret').value = '';
+        el('mattermost-config-controls').hidden = false;
+        el('mattermost-initial-secret-field').hidden = false;
+        el('save-mattermost').hidden = false;
+        el('cancel-mattermost-configuration').hidden = false;
+        el('clear-mattermost').hidden = true;
+        el('mattermost-server-url-input').focus();
       } else if (provider === 'feishu' || provider === 'lark') {
         el(provider + '-config-controls').hidden = false;
         el(provider + '-create-name-field').hidden = true;
@@ -1546,7 +1610,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function clearProvider(provider) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
-      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'googlechat' ? 'Google Chat' : provider === 'email' ? 'Email' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
+      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'gitea' ? 'Gitea' : provider === 'slack' ? 'Slack' : provider === 'googlechat' ? 'Google Chat' : provider === 'email' ? 'Email' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'mattermost' ? 'Mattermost' : provider === 'feishu' ? 'Feishu' : 'Lark';
       if (!window.confirm('Clear the saved ' + label + ' configuration and secrets?')) return;
       const values = currentStatus.values;
       let next = values;
@@ -1612,11 +1676,30 @@ export const SETUP_HTML = String.raw`<!doctype html>
           }
         };
         secrets = { 'logto.googleConnectorClientSecret': null };
+      } else if (provider === 'mattermost') {
+        if (!values.logto || !values.logto.browser) return;
+        const socialProviders = values.logto.browser.socialProviders.filter((item) => item !== 'mattermost');
+        if (socialProviders.length === 0 && (!values.logto.ssoConnector || (!values.logto.ssoConnector.oidc && !values.logto.ssoConnector.saml))) {
+          throw new Error('Keep at least one sign-in provider configured');
+        }
+        next = {
+          ...values,
+          logto: {
+            ...values.logto,
+            browser: { ...values.logto.browser, socialProviders },
+            mattermostConnector: null
+          }
+        };
+        secrets = { 'logto.mattermostConnectorClientSecret': null };
       } else if (provider === 'feishu' || provider === 'lark') {
         next = { ...values, [provider]: null };
         secrets = { [provider + '.loginAppSecret']: null };
       }
       await replaceConfiguration(next, secrets, label + ' configuration cleared. Its setup controls are available again.');
+      if (provider === 'mattermost') {
+        try { await reconcileLogto(false); } finally { await load(); }
+        showMattermostProbe(null);
+      }
       if (provider === 'gitea') el('gitea-probe').hidden = true;
       if (provider === 'email') showEmailIngressSecret('');
     }
@@ -2000,6 +2083,69 @@ export const SETUP_HTML = String.raw`<!doctype html>
       message('Linear OAuth application saved. Restart AgentConnect to apply it.');
     }
 
+    function showMattermostProbe(probe) {
+      const line = el('mattermost-probe');
+      line.hidden = !probe;
+      line.textContent = probe ? probe.message : '';
+    }
+
+    async function probeMattermost() {
+      const serverUrl = el('mattermost-server-url-input').value.trim();
+      const probe = await json(await fetch(api + '/check/mattermost', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify(serverUrl ? { serverUrl } : {})
+      }));
+      showMattermostProbe(probe);
+      message(probe.ok ? 'Mattermost instance reachable.' : probe.message, !probe.ok);
+      return probe;
+    }
+
+    async function saveMattermost() {
+      if (!currentStatus) throw new Error('Deployment configuration is not loaded');
+      const values = currentStatus.values;
+      if (!values.logto || !values.logto.browser) throw new Error('Save Logto configuration before Mattermost sign-in');
+      const serverUrl = requiredInput('mattermost-server-url-input', 'the Mattermost server URL').replace(/\/+$/, '');
+      const clientId = requiredInput('mattermost-id', 'the Mattermost Client ID');
+      const clientSecret = el('mattermost-secret').value;
+      const probe = await json(await fetch(api + '/check/mattermost', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ serverUrl })
+      }));
+      showMattermostProbe(probe);
+      if (probe.blocksSave) throw new Error(probe.message);
+      const normalizedUrl = probe.serverUrl || serverUrl;
+      const existing = values.logto.mattermostConnector;
+      const existingUrl = existing && existing.serverUrl ? existing.serverUrl.replace(/\/+$/, '') : undefined;
+      if (!clientSecret && (!existing || existing.clientId !== clientId || existingUrl !== normalizedUrl)) {
+        throw new Error('Enter the Mattermost OAuth client secret');
+      }
+      el('mattermost-secret').value = '';
+      await replaceConfiguration(
+        {
+          ...values,
+          logto: {
+            ...values.logto,
+            browser: {
+              ...values.logto.browser,
+              socialProviders: [...new Set([...values.logto.browser.socialProviders, 'mattermost'])]
+            },
+            mattermostConnector: { serverUrl: normalizedUrl, clientId }
+          }
+        },
+        clientSecret ? { 'logto.mattermostConnectorClientSecret': clientSecret } : undefined,
+        'Mattermost OAuth configuration saved. Restart AgentConnect to apply it.'
+      );
+      try {
+        await reconcileLogto(Boolean(clientSecret));
+      } finally {
+        await load();
+        showMattermostProbe(probe);
+      }
+      message('Mattermost sign-in and Logto connector configured. Restart AgentConnect to apply the saved settings.');
+    }
+
     async function saveGoogle() {
       const secret = el('google-secret').value;
       await json(await fetch(api + '/configure/google', {
@@ -2096,6 +2242,15 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el(provider + '-status').textContent = passed
           ? app.name + ' connector matches. Confirm the redirect URLs in the provider settings.'
           : app.name + ' connector could not be verified. Review the Logto check above.';
+      }
+      if (currentStatus?.values.logto?.mattermostConnector) {
+        const diff = connectors?.diff?.filter((item) => item.field.toLowerCase().startsWith('mattermost')) || [];
+        const passed = Boolean(connectors && diff.length === 0 && (connectors.status === 'pass' || connectors.diff?.length));
+        showDiff('mattermost-drift', diff);
+        match('mattermost-match', passed ? 'pass' : 'warn', passed ? 'Logto matches' : 'Could not verify');
+        el('mattermost-status').textContent = passed
+          ? 'Mattermost connector matches. Confirm the redirect URIs in Mattermost OAuth settings.'
+          : 'Mattermost connector could not be verified. Review the Logto check above.';
       }
     }
 
@@ -2418,6 +2573,11 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-lark-configuration').onclick = cancelConfigurationEdit;
     el('clear-lark').onclick = () => clearProvider('lark').catch((error) => message(error.message, true));
     el('check-lark-login-app').onclick = () => checkRegionalLoginApp('lark').catch((error) => message(error.message, true));
+    el('probe-mattermost').onclick = () => probeMattermost().catch((error) => message(error.message, true));
+    el('save-mattermost').onclick = () => saveMattermost().catch((error) => message(error.message, true));
+    el('cancel-mattermost-configuration').onclick = cancelConfigurationEdit;
+    el('clear-mattermost').onclick = () => clearProvider('mattermost').catch((error) => message(error.message, true));
+    el('check-mattermost').onclick = () => checkLogto().catch((error) => message(error.message, true));
     el('check-logto').onclick = () => checkLogto().catch((error) => message(error.message, true));
     el('reconcile-logto').onclick = () => reconcileLogto().then(load).catch((error) => message(error.message, true));
     el('logout').onclick = () => { sessionStorage.removeItem(tokenKey); load().catch((error) => message(error.message, true)); };

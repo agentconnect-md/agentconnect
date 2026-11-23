@@ -732,4 +732,33 @@ describe('subjectsLinkedTo — a chat identity looked up from the chat side', ()
       retryable: true
     })
   })
+
+  it('scopes Logto oauth2 Mattermost identities strictly to mattermostOauthRealmKey', async () => {
+    const mmUser = 'mmuser1234567890abcdefghij'
+    const realmA = 'mm-0123456789abcdef'
+    const realmB = 'mm-fedcba9876543210'
+    const users = {
+      'sub-mm': { identities: { mattermost: { userId: mmUser } } },
+      'sub-bad': { identities: { mattermost: { userId: 'not-a-26-char-mm-id' } } }
+    }
+    const { fetchImpl, lists } = directory(users)
+
+    const unbound = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl)
+    expect(await unbound.chatIdentitiesFor('sub-mm')).toEqual([])
+    expect(await unbound.subjectsLinkedTo({ platform: 'mattermost', tenant: realmA, memberId: mmUser })).toEqual([])
+
+    const bound = new LogtoIdentityService(MGMT, new FakeClock(0), MUTATIONS, fetchImpl, undefined, {
+      mattermostOauthRealmKey: realmA
+    })
+    expect(await bound.chatIdentitiesFor('sub-mm')).toEqual([
+      { platform: 'mattermost', tenant: realmA, memberId: mmUser }
+    ])
+    expect(await bound.chatIdentitiesFor('sub-bad')).toEqual([])
+    expect(await bound.subjectsLinkedTo({ platform: 'mattermost', tenant: realmA, memberId: mmUser })).toEqual([
+      'sub-mm'
+    ])
+    expect(lists.at(-1)?.get('identityProvider')).toBe('mattermost')
+    expect(lists.at(-1)?.get('identityId')).toBe(mmUser)
+    expect(await bound.subjectsLinkedTo({ platform: 'mattermost', tenant: realmB, memberId: mmUser })).toEqual([])
+  })
 })

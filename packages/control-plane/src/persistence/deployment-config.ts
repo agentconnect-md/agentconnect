@@ -16,6 +16,7 @@ import type { SecretCipher } from '../secrets/cipher.js'
 import { DEPLOYMENT_SCOPE } from '../secrets/scope.js'
 import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '../gitlab/config.js'
 import { GITEA_DEFAULT_BASE_URL, normalizeGiteaBaseUrl } from '../gitea/config.js'
+import { normalizeMattermostServerUrl } from '../platforms/mattermost/server-url.js'
 
 export const DEPLOYMENT_CONFIG_SCHEMA_VERSION = 1 as const
 
@@ -108,6 +109,24 @@ const LogtoSlackConnectorSchema = z.preprocess(
     clientId: z.string().trim().min(1)
   })
 )
+
+const MattermostServerUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .transform((value, ctx) => {
+    const normalized = normalizeMattermostServerUrl(value)
+    if (!normalized.ok) {
+      ctx.addIssue({ code: 'custom', message: normalized.reason })
+      return z.NEVER
+    }
+    return normalized.serverUrl
+  })
+
+const LogtoMattermostConnectorSchema = z.strictObject({
+  serverUrl: MattermostServerUrlSchema,
+  clientId: z.string().trim().min(1)
+})
 
 export const SsoDomainSchema = z
   .string()
@@ -330,6 +349,8 @@ export const DeploymentConfigValuesV1Schema = z
           .optional(),
         /** Deployment Slack App identity reused for Slack social sign-in. */
         slackConnector: LogtoSlackConnectorSchema.nullable().optional(),
+        /** Self-hosted Mattermost OAuth 2.0 application for Mattermost social sign-in. Its secret stays write-only. */
+        mattermostConnector: LogtoMattermostConnectorSchema.nullable().optional(),
         /** SSO (OIDC or SAML) connector. */
         ssoConnector: LogtoSsoConnectorSchema.nullable().optional()
       })
@@ -454,6 +475,7 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'logto.telegramConnectorClientSecret',
   'logto.discordConnectorClientSecret',
   'logto.azureadConnectorClientSecret',
+  'logto.mattermostConnectorClientSecret',
   'logto.ssoConnectorClientSecret',
   'msTeams.blueprintClientSecret'
 ] as const
@@ -680,6 +702,19 @@ export function deploymentSecretsRequiringRefresh(
   const logtoSsoClientChanged =
     nextSsoOidc &&
     (previousSsoOidc?.issuer !== nextSsoOidc.issuer || previousSsoOidc?.clientId !== nextSsoOidc.clientId)
+  // A Mattermost OAuth client belongs to one Mattermost server and client ID; changing either requires its secret again.
+  const nextMattermostConnector = next.logto?.mattermostConnector
+  const previousMattermostConnector = previous?.logto?.mattermostConnector
+  const normalizedMattermostUrl = (raw: string | undefined): string | undefined => {
+    if (!raw) return undefined
+    const parsed = normalizeMattermostServerUrl(raw)
+    return parsed.ok ? parsed.serverUrl : raw
+  }
+  const logtoMattermostConnectorChanged =
+    nextMattermostConnector &&
+    (previousMattermostConnector?.clientId !== nextMattermostConnector.clientId ||
+      normalizedMattermostUrl(previousMattermostConnector?.serverUrl) !==
+        normalizedMattermostUrl(nextMattermostConnector.serverUrl))
   // A token belongs to one account, so another account needs its own; the ingress secret is the deployment's and stays.
   const emailAccountChanged = next.email && previous?.email?.accountId !== next.email.accountId
   // A secret belongs to one blueprint, so another blueprint needs its own.
@@ -700,6 +735,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
     ...(logtoGithubConnectorChanged ? (['logto.githubConnectorClientSecret'] as const) : []),
     ...(logtoGoogleConnectorChanged ? (['logto.googleConnectorClientSecret'] as const) : []),
+    ...(logtoMattermostConnectorChanged ? (['logto.mattermostConnectorClientSecret'] as const) : []),
     ...(logtoSsoClientChanged ? (['logto.ssoConnectorClientSecret'] as const) : []),
     ...(['telegram', 'discord', 'azuread'] as const).flatMap((provider) => {
       const key = `${provider}Connector` as const
@@ -726,6 +762,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),
     ...(values.logto?.githubConnector ? (['logto.githubConnectorClientSecret'] as const) : []),
     ...(values.logto?.googleConnector ? (['logto.googleConnectorClientSecret'] as const) : []),
+    ...(values.logto?.mattermostConnector ? (['logto.mattermostConnectorClientSecret'] as const) : []),
     ...(values.logto?.ssoConnector?.oidc ? (['logto.ssoConnectorClientSecret'] as const) : []),
     ...(['telegram', 'discord', 'azuread'] as const).flatMap((provider) =>
       values.logto?.[`${provider}Connector`] ? ([`logto.${provider}ConnectorClientSecret`] as const) : []

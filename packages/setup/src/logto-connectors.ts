@@ -2,6 +2,7 @@ export const LOGTO_GITHUB_CONNECTOR_ID = 'agentconnect-github'
 export const LOGTO_GITLAB_CONNECTOR_ID = 'agentconnect-gitlab'
 export const LOGTO_GOOGLE_CONNECTOR_ID = 'agentconnect-google'
 export const LOGTO_SLACK_CONNECTOR_ID = 'agentconnect-slack'
+export const LOGTO_MATTERMOST_CONNECTOR_ID = 'agentconnect-mattermost'
 export const LOGTO_LOGIN_APPS = {
   telegram: {
     name: 'Telegram',

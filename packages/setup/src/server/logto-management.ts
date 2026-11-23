@@ -4,6 +4,7 @@ import {
   LOGTO_GITHUB_CONNECTOR_ID,
   LOGTO_GITLAB_CONNECTOR_ID,
   LOGTO_GOOGLE_CONNECTOR_ID,
+  LOGTO_MATTERMOST_CONNECTOR_ID,
   LOGTO_SLACK_CONNECTOR_ID,
   LOGTO_LOGIN_APPS
 } from '../logto-connectors.js'
@@ -44,6 +45,7 @@ export interface LogtoSetupDesired {
   telegram?: { clientId: string; clientSecret: string }
   discord?: { clientId: string; clientSecret: string }
   azuread?: { clientId: string; clientSecret: string }
+  mattermost?: { clientId: string; clientSecret: string; serverUrl: string }
   /** Set once the connector has its IdP details; until then sign-in leaves single sign-on off. */
   sso?: LogtoSsoDesired
   /** Organizations own SSO connectors the Control Plane manages, so single sign-on stays on without a deployment connector. */
@@ -117,7 +119,7 @@ interface LogtoSignInExperience {
   signInMode: unknown
 }
 
-interface DesiredConnector {
+export interface DesiredConnector {
   id: string
   connectorId: string
   config: Record<string, unknown>
@@ -299,7 +301,7 @@ function parseConnector(value: unknown): LogtoConnector | null {
   }
 }
 
-function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredConnector | undefined {
+export function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredConnector | undefined {
   if (target === 'github') {
     if (!desired.github) {
       throw new LogtoManagementError(
@@ -393,15 +395,37 @@ function desiredConnector(target: string, desired: LogtoSetupDesired): DesiredCo
       }
     }
   }
+  if (target === 'mattermost' && desired.mattermost) {
+    const { clientId, clientSecret } = desired.mattermost
+    const serverUrl = desired.mattermost.serverUrl.replace(/\/+$/, '')
+    return {
+      id: LOGTO_MATTERMOST_CONNECTOR_ID,
+      connectorId: 'oauth2',
+      metadata: { target: 'mattermost', name: { en: 'Mattermost' } },
+      config: {
+        clientId,
+        clientSecret,
+        authorizationEndpoint: `${serverUrl}/oauth/authorize`,
+        tokenEndpoint: `${serverUrl}/oauth/access_token`,
+        userInfoEndpoint: `${serverUrl}/api/v4/users/me`,
+        tokenEndpointResponseType: 'json',
+        profileMap: { id: 'id', name: 'username', email: '__disabled_unverified_email__' }
+      }
+    }
+  }
   return undefined
 }
 
 function connectorMatches(connector: LogtoConnector, desired: DesiredConnector): boolean {
   return (
     connector.connectorId === desired.connectorId &&
-    Object.entries(desired.config).every(
-      ([key, value]) => key === 'clientSecret' || isDeepStrictEqual(connector.config[key] ?? {}, value)
-    )
+    !(desired.connectorId === 'oauth2' && !('scope' in desired.config) && connector.config.scope !== undefined) &&
+    (desired.connectorId !== 'oauth2' || connector.config.userInfoEndpoint === desired.config.userInfoEndpoint) &&
+    Object.entries(desired.config).every(([key, value]) => {
+      if (key === 'clientSecret') return true
+      if (value === undefined) return connector.config[key] === undefined
+      return isDeepStrictEqual(connector.config[key] ?? {}, value)
+    })
   )
 }
 

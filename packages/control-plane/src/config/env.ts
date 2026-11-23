@@ -244,6 +244,8 @@ const CoreConfigShape = {
   // (mcp-provider-oauth.md). Comma-separated. Deliberately NOT the relay's
   // RELAY_MCP_ALLOWED_UPSTREAMS: CP egress and relay egress are separate permissions.
   CP_ALLOWED_OUTBOUND_HOSTS: z.string().optional(),
+  // Unified pure-intranet hostname allowlist merged into CP outbound checks (GitLab CE, Mattermost, etc.).
+  AGENTCONNECT_INTERNAL_ALLOWED_HOSTS: z.string().optional(),
   // ── Preset agents (docs/designs/preset-agents.md §3) — default ON ──
   // Every org is born with the `agentconnect` general preset (org-creation seam)
   // and existing orgs are backfilled once at boot. 'false' turns BOTH off for
@@ -356,7 +358,7 @@ const CoreConfigShape = {
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default(
-      'github,gitlab,gitea,azure-devops,linear,slack,slackbot,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot,googlechat,dingtalk_bot,dingtalk_mcp,microsoft_teams,microsoft_teams_bot,weixin_bot'
+      'github,gitlab,gitea,azure-devops,linear,slack,slackbot,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot,googlechat,dingtalk_bot,dingtalk_mcp,microsoft_teams,microsoft_teams_bot,weixin_bot,mattermost'
     ),
   // ── in-cluster Kubernetes access — opt-in by running a daemon pool ──
   // THE switch for the cluster surface, and the only access knob: turning it on asserts this

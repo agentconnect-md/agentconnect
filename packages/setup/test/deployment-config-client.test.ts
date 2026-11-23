@@ -4,7 +4,8 @@ import {
   gitlabDeploymentPut,
   googleChatDeploymentPut,
   linearDeploymentPut,
-  localAuthLogtoPut
+  localAuthLogtoPut,
+  logtoMattermostConnectorPut
 } from '../src/deployment-config-client.js'
 
 describe('localAuthLogtoPut', () => {
@@ -156,5 +157,59 @@ describe('googleChatDeploymentPut', () => {
 
     expect(result.values.googleChat).toBeNull()
     expect(result.secrets).toEqual({ 'googleChat.serviceAccountKey': null })
+  })
+})
+
+describe('logtoMattermostConnectorPut', () => {
+  const withLogto = {
+    values: {
+      ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+      logto: {
+        managementAppId: 'mgmt',
+        managementResource: 'https://login.example.test/api',
+        browser: { applicationName: 'AgentConnect', apiResource: null, socialProviders: ['google'] },
+        githubConnector: null,
+        googleConnector: { clientId: 'google-client' }
+      }
+    }
+  }
+
+  it('adds mattermost connector, normalizes serverUrl, updates socialProviders, and writes secret', () => {
+    const result = logtoMattermostConnectorPut(withLogto, {
+      serverUrl: 'https://chat.example.test/team/',
+      clientId: 'mm-oauth-client',
+      clientSecret: 'mm-oauth-secret'
+    })
+    expect(result.values.logto?.mattermostConnector).toEqual({
+      serverUrl: 'https://chat.example.test/team',
+      clientId: 'mm-oauth-client'
+    })
+    expect(result.values.logto?.browser?.socialProviders).toEqual(['google', 'mattermost'])
+    expect(result.secrets).toEqual({ 'logto.mattermostConnectorClientSecret': 'mm-oauth-secret' })
+  })
+
+  it('requires secret when serverUrl or clientId changes, allows omitting for same pair, and clears cleanly', () => {
+    const saved = {
+      values: {
+        ...withLogto.values,
+        logto: {
+          ...withLogto.values.logto,
+          browser: { applicationName: 'AgentConnect', apiResource: null, socialProviders: ['google', 'mattermost'] },
+          mattermostConnector: { serverUrl: 'https://chat.example.test/team', clientId: 'mm-oauth-client' }
+        }
+      }
+    }
+    expect(() =>
+      logtoMattermostConnectorPut(saved, { serverUrl: 'https://mm2.example.test', clientId: 'mm-oauth-client' })
+    ).toThrow(/secret is required/)
+    expect(
+      logtoMattermostConnectorPut(saved, { serverUrl: 'https://chat.example.test/team/', clientId: 'mm-oauth-client' })
+        .secrets
+    ).toBeUndefined()
+
+    const cleared = logtoMattermostConnectorPut(saved, null)
+    expect(cleared.values.logto?.mattermostConnector).toBeNull()
+    expect(cleared.values.logto?.browser?.socialProviders).toEqual(['google'])
+    expect(cleared.secrets).toEqual({ 'logto.mattermostConnectorClientSecret': null })
   })
 })

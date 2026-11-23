@@ -586,3 +586,57 @@ export function logtoGoogleConnectorPut(
     ...(credentials.clientSecret ? { secrets: { 'logto.googleConnectorClientSecret': credentials.clientSecret } } : {})
   })
 }
+
+export interface LogtoMattermostConnectorInput {
+  serverUrl: string
+  clientId: string
+  clientSecret?: string
+}
+
+/** Add, update, or clear Logto's Mattermost oauth2 sign-in connector and `socialProviders` entry. */
+export function logtoMattermostConnectorPut(
+  current: CurrentDeploymentConfig,
+  mattermost: LogtoMattermostConnectorInput | null
+): DeploymentConfigPut {
+  const logto = current.values.logto
+  if (!logto?.browser) throw new Error('save Logto browser configuration first')
+  if (mattermost) {
+    const serverUrl = mattermost.serverUrl.trim().replace(/\/+$/, '')
+    const clientId = mattermost.clientId.trim()
+    const existing = logto.mattermostConnector
+    const existingUrl = existing?.serverUrl.replace(/\/+$/, '')
+    const identityChanged = existing?.clientId !== clientId || existingUrl !== serverUrl
+    if (!mattermost.clientSecret && identityChanged) {
+      throw new Error('Mattermost OAuth client secret is required when server URL or client ID changes')
+    }
+    const socialProviders = [...new Set([...logto.browser.socialProviders, 'mattermost'])]
+    return DeploymentConfigPutSchema.parse({
+      values: {
+        ...current.values,
+        logto: {
+          ...logto,
+          browser: { ...logto.browser, socialProviders },
+          mattermostConnector: { serverUrl, clientId }
+        }
+      },
+      ...(mattermost.clientSecret
+        ? { secrets: { 'logto.mattermostConnectorClientSecret': mattermost.clientSecret } }
+        : {})
+    })
+  }
+  const socialProviders = logto.browser.socialProviders.filter((target) => target !== 'mattermost')
+  if (socialProviders.length === 0 && !ssoReady(logto)) {
+    throw new Error('keep at least one sign-in provider configured')
+  }
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      logto: {
+        ...logto,
+        browser: { ...logto.browser, socialProviders },
+        mattermostConnector: null
+      }
+    },
+    secrets: { 'logto.mattermostConnectorClientSecret': null }
+  })
+}

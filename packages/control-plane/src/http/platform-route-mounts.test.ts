@@ -55,6 +55,8 @@ import { createWeComCpProvider } from '../platforms/wecom/provider.js'
 import { weComCredentialRoutes } from '../platforms/wecom/routes.js'
 import { createEmailCpProvider } from '../platforms/email/provider.js'
 import { emailAddressRoutes } from '../platforms/email/routes.js'
+import { createMattermostCpProvider } from '../platforms/mattermost/provider.js'
+import { mattermostCredentialRoutes } from '../platforms/mattermost/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
@@ -107,6 +109,7 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     dingTalkCredentialRoutesPlugin: ['PUT /bots/:id/dingtalk/credentials'],
     weChatLoginRoutesPlugin: ['POST /integrations/wechat/login', 'GET /integrations/wechat/login/:id'],
     weComCredentialRoutesPlugin: ['PUT /bots/:id/wecom/credentials'],
+    mattermostCredentialRoutesPlugin: ['PUT /bots/:id/mattermost/credentials'],
     emailAddressRoutesPlugin: ['GET /integrations/email/address'],
     msTeamsRoutesPlugin: [
       'PUT /bots/:id/msteams/credentials',
@@ -219,7 +222,8 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
     createMsTeamsCpProvider({ installRoutes: [msTeamsRoutes(deps)] }),
     createWeChatCpProvider({ routes: [weChatLoginRoutes(deps, {} as WeChatLoginService)] }),
     createWeComCpProvider({ installRoutes: [weComCredentialRoutes(deps)] }),
-    createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] })
+    createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] }),
+    createMattermostCpProvider({ installRoutes: [mattermostCredentialRoutes(deps)] })
   ])
 }
 
@@ -259,7 +263,8 @@ async function builtServer(): Promise<{ app: FastifyInstance; routes: string[]; 
 const INTERACTIVE_ONLY_MOUNTS = new Set([
   'POST /integrations/wechat/login',
   'GET /integrations/wechat/login/:id',
-  'PUT /bots/:id/wecom/credentials'
+  'PUT /bots/:id/wecom/credentials',
+  'PUT /bots/:id/mattermost/credentials'
 ])
 
 describe('platform route mounts', () => {
