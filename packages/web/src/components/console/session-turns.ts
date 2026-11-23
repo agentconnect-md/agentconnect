@@ -10,6 +10,7 @@ import {
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
+import { dropPersistedFailures } from '@/lib/session-transcript'
 import { senderIdentity } from '@/lib/session-trigger'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { parseUserTurnBody } from '@/lib/user-turn-body'
@@ -148,7 +149,7 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
   const {
     session,
     rows,
-    liveSteps,
+    liveSteps: liveInput,
     source,
     threadsView,
     threadShape,
@@ -163,6 +164,8 @@ export function buildTurns(input: BuildTurnsInput): { turns: Turn[]; speakers: M
     sourceLabel,
     unnamedLabel
   } = input
+  // A live failure the rows already hold would draw twice: once live, once from its saved row.
+  const liveSteps = rows ? dropPersistedFailures(liveInput, rows, session.agentId ?? '') : liveInput
   // A sender with no name of their own: the platform's localized placeholder, else its plain fallback.
   const senderFallback = (platform: string, sender?: string | null): string | undefined =>
     (sender ? unnamedLabel?.(platform, { kind: 'person', id: sender }) : undefined) ??
