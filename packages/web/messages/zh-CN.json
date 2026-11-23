@@ -100,6 +100,7 @@
       "noOtherMembers": "暂无其他可共享成员",
       "everyoneSelected": "已选择所有成员",
       "noMembersMatch": "没有成员匹配“{query}”",
+      "serviceAccount": "服务账号",
       "canAccess": "{members} 可以访问此受限资源。",
       "restrictedResource": "指定成员及组织所有者可以访问此资源。",
       "agentsLabel": "Agent",

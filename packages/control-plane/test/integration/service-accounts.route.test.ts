@@ -219,4 +219,64 @@ describe('service accounts', () => {
       await close()
     }
   })
+
+  it('manages a Selected object it shares with itself, and any member can name it in an audience', async () => {
+    const email = `audience-${randomUUID()}@example.test`
+    const { userId: person } = await new PgUserRepo(prisma).provisionOidcUser({
+      oidcSubject: email,
+      email,
+      emailVerified: true
+    })
+    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, email, 'collaborator')
+    const { app, close } = buildHttpApp(prisma)
+    const asPerson = buildHttpApp(prisma, { DEFAULT_OWNER_ID: person })
+    try {
+      const account = await createAccount(app, { name: 'sync-bot', role: 'collaborator' })
+      const headers = bearer(await mintKey(app, account.userId))
+
+      const created = await app.inject({
+        method: 'POST',
+        url: `${ORG}/mcp-providers`,
+        headers,
+        payload: {
+          name: 'sa-owned',
+          url: 'https://mcp.example.com/mcp',
+          visibility: 'restricted',
+          sharedWith: [account.userId, person]
+        }
+      })
+      expect(created.statusCode).toBe(201)
+      const { id, sharedWith } = created.json() as { id: string; sharedWith: string[] }
+      expect(sharedWith).toEqual([account.userId, person])
+
+      const url = `${ORG}/mcp-providers/${id}`
+      expect((await app.inject({ method: 'GET', url, headers })).statusCode).toBe(200)
+      const patched = await app.inject({
+        method: 'PATCH',
+        url,
+        headers,
+        payload: { url: 'https://mcp.example.com/v2' }
+      })
+      expect(patched.statusCode).toBe(200)
+      const narrowed = await app.inject({
+        method: 'PUT',
+        url: `${url}/sharing`,
+        headers,
+        payload: { visibility: 'restricted', sharedWith: [account.userId] }
+      })
+      expect(narrowed.statusCode).toBe(200)
+      expect((narrowed.json() as { sharedWith: string[] }).sharedWith).toEqual([account.userId])
+
+      const listed = await asPerson.app.inject({ method: 'GET', url: `${ORG}/members/service-accounts` })
+      expect(listed.statusCode).toBe(200)
+      expect(listed.json()).toEqual([
+        expect.objectContaining({ userId: account.userId, name: 'sync-bot', role: 'collaborator', picture: null })
+      ])
+
+      expect((await app.inject({ method: 'DELETE', url, headers })).statusCode).toBe(204)
+    } finally {
+      await asPerson.close()
+      await close()
+    }
+  })
 })
