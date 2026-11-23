@@ -1,7 +1,8 @@
 # Org Refusal Tag — Why an Organization Was Refused
 
-**Status:** proposed. The format and codes are declared by `@agentconnect.md/protocol`
-`org-refusal.ts`; no reader acts on a tag yet. This document records what the schema cannot carry.
+**Status:** proposed, together with the key-server §6 line that points here. The format and codes are
+declared by `@agentconnect.md/protocol` `org-refusal.ts`; no reader acts on a tag yet, so no issuer may
+send one yet (§6). This document records what the schema cannot carry.
 
 ## 1. Why a tag
 
@@ -39,16 +40,27 @@ reader can find in any of them.
 - The tag **leads** the message. Runtimes put their own text before the message and some put text
   after it (§4.2), so a leading tag sits right after the runtime's prefix in every case, while a
   trailing one would not end the text either.
+- The `[ERR:` prefix is reserved for organization refusals. Nothing else AgentConnect reads may use it,
+  so a well-formed tag with an unregistered code is still an organization refusal, just one whose reason
+  this version does not know.
 
 A message without a tag is not wrong; it is a refusal that names no reason, and readers treat it as
 they do today (§5).
 
 ## 3. Codes
 
-| Code                   | Meaning                                                                                                                                                                |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `out_of_credits`       | The organization's prepaid credit is used up. Adding credit lets it run again.                                                                                         |
-| `standing_unconfirmed` | The refuser cannot confirm the organization may run: whatever decides its standing has not renewed it. Not a decision about the organization; it may clear on its own. |
+| Code              | Meaning                                                                                                                                                                                                                     |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `out_of_credits`  | The organization's prepaid credit is used up. Adding credit lets it run again.                                                                                                                                              |
+| `standing_lapsed` | The organization's standing expired and nothing renewed it. The refuser fails closed: until whatever decides standing renews it, the organization may not run. Adding credit does not help; it clears when renewal resumes. |
+
+**`standing_lapsed` is a refusal, not `unavailable`.** Every code here rides inside `org_suspended`,
+the organization-wide verdict "may not run", with its consequences: the session stops and its key is
+revoked, and the Control Plane answers 402. `unavailable` is the key server unable to answer at all, and
+keeps the degradation window. A lapse is an answer: the issuer's own rule says an organization whose
+standing was not renewed may not run, much as a lease that ran out is not an unknown lease. An issuer
+that would rather keep organizations running through a renewal gap does not refuse them, and sends no
+code at all.
 
 - A code names one reason for good. It is never reused for another meaning.
 - Adding a reason is a row here and a member of `OrgRefusalCode`, then the refusers that send it.
@@ -92,6 +104,11 @@ either way, and the same holds at 423.
 | DeepSeek Harness | `turn failed: [ERR:402] Out of AgentConnect credits`                                    |
 | OpenCode         | `[ERR:402] Out of AgentConnect credits`                                                 |
 
+The measurement is a one-off probe outside this repository, against four runtimes at pinned versions;
+the catalog has more, and an adapter bump can change its decoration without notice. The reader PR adds
+these four texts as fixtures, and a runtime's row is measured again when its adapter changes how it
+reports a provider error.
+
 The gateway is the deployment's, not AgentConnect's, so this section is what a gateway does if it wants
 its refusals read; nothing here requires a deployment to run one.
 
@@ -105,13 +122,51 @@ its refusals read; nothing here requires a deployment to run one.
   decoration first (the daemon already does, `undecorateRuntimeError`), since Codex appends text after
   the message.
 - With no tag, show the text as before.
+- **On the gateway channel, look for a tag only in a session whose credential the key server issued.**
+  On an install with no key server, provider or proxy text that happens to contain a tag would otherwise
+  produce an "add credit" notice for a billing page that does not exist.
+- **Parse once, at the boundary AgentConnect owns.** In-band text is needed only where a runtime or the
+  strict `KeyServerErrorBody` stands in between. Past that point the code travels as a field: the
+  Control Plane's 402 body, the acquire `failed` answer and the daemon's hook report carry the parsed
+  code, so the tag stays out of the public REST surface and out of every other reader's parser.
+- **Map codes to the turn failure classification by code, not by wording.** The daemon already
+  classifies failed turns from provider-authored text (`turnFailureCode`, hook reason
+  `provider_quota_exhausted`); an `out_of_credits` refusal is classified from its code, whatever the
+  sentence says. The mapping for each code is the reader PR's to state.
 
 **A tag is presentation, never authority.** Gateway text reaches the daemon through a runtime and a
 provider endpoint the daemon does not control, so a reader may choose wording from a tag but must not
 change state because of one: no marking an organization suspended, no revoking, no stopping other
 sessions. Those follow the key server's `org_suspended` verdict, as they do today.
 
-## 6. Out of scope
+## 6. Rollout
+
+Readers ship first, and issuers tag only after them.
+
+1. **Readers.** The daemon's failure notice, the Control Plane and the console learn the tag (§5). A
+   reader that meets an untagged message keeps showing it as written, so this step changes nothing until
+   an issuer tags.
+2. **Issuers.** An issuer starts tagging once the readers it serves read the tag, and only then drops
+   links and instructions from its sentence.
+
+A reader that predates the tag shows a tagged message as written: `[ERR:out_of_credits] Out of
+AgentConnect credits`, with no pointer to where credit is added. Not every such reader is one an issuer
+can wait for: `computer-pool/acquire` hands the message to whichever daemon the agent runs on, and a
+self-hosted daemon upgrades on its own schedule. An issuer therefore accepts that degradation for old
+readers when it switches: the text still says what happened, and the tag is short enough to read past.
+An issuer that cannot accept it keeps its links in the sentence after the tag until it can; the tag
+leads either way.
+
+## 7. Alternatives considered
+
+**A structured field instead of a tag.** `KeyServerErrorBody` is strict: a new field such as
+`error.reason` is rejected by every reader that predates it, and the refusal would surface as an
+unattributable error, which §6 of the key-server design exists to prevent. The gateway channel has no
+field to add at all: the runtime lifts the provider's message and nothing else. In-band text is the one
+carrier every channel and every reader version already passes through. Where AgentConnect owns both
+ends (§5), the code does travel as a field.
+
+## 8. Out of scope
 
 - Which reasons a deployment stops organizations for. The registry names reasons once a refuser sends
   them; it does not ask any deployment to.

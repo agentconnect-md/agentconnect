@@ -3,7 +3,7 @@ import { z } from 'zod'
 // Why an organization was refused, as `[ERR:<code>] <sentence>` inside any refusal's message (docs/designs/org-refusal-tag.md).
 
 /** Registered reasons; a reader treats any other well-formed code as a refusal with no known reason. */
-export const OrgRefusalCode = z.enum(['out_of_credits', 'standing_unconfirmed'])
+export const OrgRefusalCode = z.enum(['out_of_credits', 'standing_lapsed'])
 export type OrgRefusalCode = z.infer<typeof OrgRefusalCode>
 
 /** A whole message in the format: the tag leads, then one space and a sentence. */
