@@ -181,7 +181,8 @@ export class AhpPlaygroundStore {
     participants?: QueuedTurn['participants'],
     image?: SessionImage,
     commandPick?: QueuedTurn['commandPick'],
-    files?: QueuedTurn['files']
+    files?: QueuedTurn['files'],
+    composer?: boolean
   ): boolean {
     const entry = this.entry(id, agentId, conversationId)
     if (participants?.length) entry.connection.roster = participants
@@ -193,7 +194,8 @@ export class AhpPlaygroundStore {
       participants,
       image,
       commandPick,
-      files
+      files,
+      ...(composer ? { composer } : {})
     })
   }
   private updateConfig(id: string, agentId: string, config: WebchatRuntimeConfig, conversationId?: string): void {
@@ -275,7 +277,8 @@ export class AhpPlaygroundStore {
           participants,
           image ?? this.images.get(id),
           commandPick,
-          files ?? staged.flatMap((file) => (file.attachment ? [file.attachment] : []))
+          files ?? staged.flatMap((file) => (file.attachment ? [file.attachment] : [])),
+          true
         )
         if (accepted) {
           this.drafts.delete(id)

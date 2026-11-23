@@ -5213,6 +5213,7 @@
       "title": "账单 · AgentConnect"
     },
     "description": "此组织的预付余额与充值记录。",
+    "backToConversation": "返回会话",
     "notOffered": {
       "title": "账单功能适用于 AgentConnect Cloud",
       "body": "此部署为自托管模式，不会产生账单。你可以在“分析”页面查看自有 Runtime 的用量与花费。"
@@ -5244,8 +5245,7 @@
       "unconfirmedTitle": "正在确认访问状态",
       "unconfirmedText": "此组织的计费状态变更正在同步中，稍后会自动恢复正常。",
       "settlingTitle": "{month}的用量仍在结算",
-      "settlingText": "{month}月末产生的用量可能需要最多 1 小时才能入账，{month}的总计将在 UTC 01:00 后最终确定。",
-      "addCredits": "充值"
+      "settlingText": "{month}月末产生的用量可能需要最多 1 小时才能入账，{month}的总计将在 UTC 01:00 后最终确定。"
     },
     "checkout": {
       "confirmingTitle": "正在确认你的付款",

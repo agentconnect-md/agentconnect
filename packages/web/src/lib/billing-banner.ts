@@ -22,7 +22,6 @@ export type BalanceBanner = {
   titleValues?: Record<string, unknown>
   textKey: string
   textValues?: Record<string, unknown>
-  ctaKey?: string
 }
 
 export function balanceBanner(
@@ -44,8 +43,7 @@ export function balanceBanner(
       tone: 'brand',
       icon: 'sparkles',
       titleKey: 'neverFundedTitle',
-      textKey: 'neverFundedText',
-      ctaKey: 'addCredits'
+      textKey: 'neverFundedText'
     }
   }
   // Spent out, or history unknown.
@@ -54,8 +52,7 @@ export function balanceBanner(
       tone: 'red',
       icon: 'circle-slash',
       titleKey: 'spentOutTitle',
-      textKey: 'spentOutText',
-      ctaKey: 'addCredits'
+      textKey: 'spentOutText'
     }
   }
   // Hoisted to a plain number so nothing below needs narrowing, and `> 0` covers absent, null,
@@ -71,8 +68,7 @@ export function balanceBanner(
       titleKey: 'lowBalanceTitle',
       titleValues: { balance: fmtMicroUsd(acct.balanceMicro) },
       textKey: 'lowBalanceText',
-      textValues: { threshold: fmtMicroUsd(threshold) },
-      ctaKey: 'addCredits'
+      textValues: { threshold: fmtMicroUsd(threshold) }
     }
   }
   // The design's blue slot is "we treat it as unconfirmed until we are told otherwise", which is

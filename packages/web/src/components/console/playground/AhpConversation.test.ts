@@ -158,6 +158,51 @@ describe('AHP conversation engine', () => {
     entry.enqueue(turn('Continue'))
     expect(entry.queue).toHaveLength(1)
   })
+  it('returns a composer turn that ended with nothing but an error to the composer, once', async () => {
+    const refused = vi.fn()
+    const entry = open(refused)
+    await entry.connect()
+    const peer = attachments[0]!
+    entry.enqueue({ ...turn('Say hello'), composer: true })
+    await vi.waitFor(() => expect(peer.actions).toHaveLength(1))
+    const failed = {
+      turns: [
+        {
+          id: 'Say hello',
+          message: { text: 'Say hello' },
+          responseParts: [{ kind: 'error', error: { message: 'Out of credits' } }]
+        }
+      ]
+    } as unknown as ChatState
+    peer.emit({ chat: failed })
+    peer.emit({ chat: failed })
+    expect(refused).toHaveBeenCalledTimes(1)
+    expect(refused).toHaveBeenCalledWith(expect.objectContaining({ text: 'Say hello' }))
+  })
+  it('keeps the composer empty when a failed turn had output, or did not come from the composer', async () => {
+    const refused = vi.fn()
+    const entry = open(refused)
+    await entry.connect()
+    const peer = attachments[0]!
+    entry.enqueue({ ...turn('Answered'), composer: true })
+    await vi.waitFor(() => expect(peer.actions).toHaveLength(1))
+    entry.enqueue(turn('Notice'))
+    await vi.waitFor(() => expect(peer.actions).toHaveLength(2))
+    const error = { kind: 'error', error: { message: 'boom' } }
+    peer.emit({
+      chat: {
+        turns: [
+          {
+            id: 'Answered',
+            message: { text: 'Answered' },
+            responseParts: [{ kind: 'markdown', content: 'Half' }, error]
+          },
+          { id: 'Notice', message: { text: 'Notice' }, responseParts: [error] }
+        ]
+      } as unknown as ChatState
+    })
+    expect(refused).not.toHaveBeenCalled()
+  })
   it('requeues only explicit busy steering refusal and never retries unknown delivery', async () => {
     const entry = open()
     await entry.connect()

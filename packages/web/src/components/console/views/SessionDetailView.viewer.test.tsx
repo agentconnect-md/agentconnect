@@ -589,6 +589,15 @@ describe('the composer recalls earlier prompts', () => {
     expect(container?.querySelector('[data-testid="composer-history"]')).toBeNull()
   })
 
+  it('restores a draft a full-page round trip left in this tab, and keeps the next one there', async () => {
+    wire.playground = true
+    sessionStorage.setItem('ac.composerDraft.s:session-1', 'Say hello')
+    await render()
+    expect(wire.drafts).toEqual(['Say hello'])
+    expect(sessionStorage.getItem('ac.composerDraft.s:session-1')).toBe('Say hello')
+    sessionStorage.removeItem('ac.composerDraft.s:session-1')
+  })
+
   it('recalls nothing from another person’s prompts', async () => {
     wire.playground = true
     wire.steps = [{ kind: 'msg', who: 'sam', turnId: 't1', text: 'TRANSCRIPT MARKER' }]
