@@ -2,6 +2,7 @@
 // A Cloud turn that failed for lack of credit draws the out-of-credits card in place of its text, on all three paths a failure reaches the transcript by.
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { SWRConfig } from 'swr'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@/lib/data'
 import type { FmtStep } from '@/components/console/transcript-steps'
@@ -11,7 +12,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   role: 'owner',
   flags: new Set(['billing', 'managed']),
-  daemons: [] as unknown[],
+  daemons: [] as unknown[] | Error,
   openModal: vi.fn()
 }))
 
@@ -31,8 +32,14 @@ vi.mock('@/lib/feature-flags', () => ({ featureFlagEnabled: (id: string) => mock
 vi.mock('@/lib/org-context', () => ({
   useOrgs: () => ({ activeOrg: { id: 'org-1' }, myRole: mocks.role, orgPath: (path: string) => `/acme${path}` })
 }))
-vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ daemons: mocks.daemons, orgSetIds: new Set<string>() })
+vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ orgSetIds: new Set<string>() }) }))
+// The card asks for the fleet itself, so the API read is what each case varies.
+vi.mock('@/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api')>()),
+  fetchDaemons: vi.fn(async () => {
+    if (mocks.daemons instanceof Error) throw mocks.daemons
+    return mocks.daemons
+  })
 }))
 vi.mock('@/components/console/ModalProvider', () => ({
   useOptionalModal: () => ({ openModal: mocks.openModal })
@@ -63,19 +70,22 @@ async function render(steps: FmtStep[], agent: Agent = CLOUD_AGENT): Promise<HTM
   root = createRoot(host)
   await act(async () =>
     root!.render(
-      <BotTurnView
-        turn={{ kind: 'bot', key: 't1', agentName: 'Pilot', agentId: agent.id, model: '', time: '', steps }}
-        agentById={new Map([[agent.id, agent]])}
-        owner={agent}
-        ownerRuntime="claude"
-        sessionId="s1"
-        streaming={false}
-        workOpen={false}
-        onToggleWork={() => undefined}
-        promptMs={undefined}
-      />
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+        <BotTurnView
+          turn={{ kind: 'bot', key: 't1', agentName: 'Pilot', agentId: agent.id, model: '', time: '', steps }}
+          agentById={new Map([[agent.id, agent]])}
+          owner={agent}
+          ownerRuntime="claude"
+          sessionId="s1"
+          streaming={false}
+          workOpen={false}
+          onToggleWork={() => undefined}
+          promptMs={undefined}
+        />
+      </SWRConfig>
     )
   )
+  await act(async () => undefined)
   return host
 }
 
@@ -122,25 +132,38 @@ describe('BotTurnView, out-of-credits failure', () => {
     await render([plainStep(`⚠️ ${TAG}`)])
     expect(host!.querySelector('a.dsbtn')).toBeNull()
     expect(buttonNamed('Copy billing link')).toBeTruthy()
-    expect(card()?.textContent).toContain('Ask an owner to add credits.')
+    expect(card()?.textContent).toContain('Ask an owner to add credits')
   })
 
   it('opens Edit at Runs on when the org has a machine of its own and the viewer can edit', async () => {
     mocks.daemons = [MACHINE]
     await render([plainStep(`⚠️ ${TAG}`)])
     const move = buttonNamed('Move to your own machine')
-    expect(move).toBeTruthy()
+    expect(move?.disabled).toBe(false)
     await act(async () => move!.click())
     expect(mocks.openModal).toHaveBeenCalledWith('editAgent', CLOUD_AGENT, { focusSection: 'basics' })
   })
 
   it.each([
-    ['without a machine of its own', [{ ...MACHINE, pool: true }], CLOUD_AGENT],
-    ['with only a machine awaiting approval', [{ ...MACHINE, approval: { status: 'pending' } }], CLOUD_AGENT],
-    ['to a viewer who cannot edit the agent', [MACHINE], { ...CLOUD_AGENT, canEdit: false } as Agent]
-  ])('offers no move %s', async (_name, daemons, agent) => {
+    ['without a machine of its own', [{ ...MACHINE, pool: true }]],
+    ['with only a machine awaiting approval', [{ ...MACHINE, approval: { status: 'pending' } }]]
+  ])('greys the move out %s', async (_name, daemons) => {
     mocks.daemons = daemons
-    await render([plainStep(`⚠️ ${TAG}`)], agent)
+    await render([plainStep(`⚠️ ${TAG}`)])
+    expect(buttonNamed('Move to your own machine')?.disabled).toBe(true)
+    expect(card()?.textContent).toContain('No machine of your own is connected yet')
+  })
+
+  it('greys the move out while the fleet cannot be read', async () => {
+    mocks.daemons = new Error('offline')
+    await render([plainStep(`⚠️ ${TAG}`)])
+    expect(buttonNamed('Move to your own machine')?.disabled).toBe(true)
+    expect(card()?.textContent).toContain("Couldn't check your machines")
+  })
+
+  it('offers no move to a viewer who cannot edit the agent', async () => {
+    mocks.daemons = [MACHINE]
+    await render([plainStep(`⚠️ ${TAG}`)], { ...CLOUD_AGENT, canEdit: false } as Agent)
     expect(card()).toBeTruthy()
     expect(buttonNamed('Move to your own machine')).toBeUndefined()
   })

@@ -246,10 +246,13 @@ agent on the organization's own machine.
 - **Webchat** shows the notice as a card. **Add credits** opens Billing and returns to the
   conversation once the credits land; someone who cannot buy credits is pointed to an
   Owner instead. **Move to your own machine** opens the agent's settings on its machine
-  picker, and appears only when the organization has a self-hosted daemon and the reader
-  may edit the agent.
-- **Chat apps** have no buttons, so the notice carries two links: Billing, and the agent's
-  settings, which open on the same machine picker for someone who may edit it.
+  picker. It is shown to anyone who may edit the agent, and the card reads the
+  organization's machines as it renders: the button is enabled only when a self-hosted
+  daemon is connected, and is greyed out with a short reason otherwise, including while
+  the machines cannot be read.
+- **Chat apps** have no buttons, so the notice links one console page that shows the same
+  card for that agent. Which fixes are open is decided there, for whoever opens the link,
+  not by the chat message.
 
 Only a daemon whose model credentials the key server issues reads the reason; elsewhere
 the failure text is shown as written. Other refusal reasons keep the generic failure notice.
