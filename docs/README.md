@@ -122,6 +122,7 @@ the picture it draws.
 - [per-org-secret-encryption.md](designs/per-org-secret-encryption.md) — Per-org key derivation and crypto-shredding.
 - [organization-secrets-and-variables.md](designs/organization-secrets-and-variables.md) — Organization-level secrets, variables, and environments.
 - [key-server.md](designs/key-server.md) — Dynamic provider-credential issuance for cloud daemons.
+- **(proposal)** [org-refusal-tag.md](designs/org-refusal-tag.md) — Why an organization was refused: an `[ERR:<code>]` tag inside the key server's and the model gateway's refusal messages.
 
 ### Agents and collaboration
 
