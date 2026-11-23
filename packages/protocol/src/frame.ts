@@ -136,6 +136,7 @@ import {
 } from './frames/provider-credentials.js'
 import { RepoCandidatesRequest, RepoCandidatesReply } from './frames/repo-candidates.js'
 import { SessionAdmitRequest, SessionAdmitResult } from './frames/session-admit.js'
+import { HistoryRetentionConfirm, HistoryRetentionConfirmResult } from './frames/history-retention-confirm.js'
 import {
   DecisionListRequest,
   DecisionListReply,
@@ -574,6 +575,9 @@ export const FRAME_SCHEMAS = {
   // Admit a new session for its organization before it starts (org-session-policy.md, Admission) — D→C REQ.
   'session/admit': SessionAdmitRequest,
   'session/admit/result': SessionAdmitResult,
+  // Re-confirm the served orgs' history retention before a sweep reclaims under it (org-session-policy.md, Reclaim) — D→C REQ.
+  'history-retention/confirm': HistoryRetentionConfirm,
+  'history-retention/confirm/result': HistoryRetentionConfirmResult,
   'usage/report': UsageReport,
   'facts/runtime-profile': FactsRuntimeProfile,
   'facts/daemon-runtimes': DaemonRuntimes,
@@ -994,6 +998,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('event/session-purged', FRAME_SCHEMAS['event/session-purged']),
   frame('session/admit', FRAME_SCHEMAS['session/admit']),
   frame('session/admit/result', FRAME_SCHEMAS['session/admit/result']),
+  frame('history-retention/confirm', FRAME_SCHEMAS['history-retention/confirm']),
+  frame('history-retention/confirm/result', FRAME_SCHEMAS['history-retention/confirm/result']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),
   frame('facts/runtime-profile', FRAME_SCHEMAS['facts/runtime-profile']),
   frame('facts/daemon-runtimes', FRAME_SCHEMAS['facts/daemon-runtimes']),

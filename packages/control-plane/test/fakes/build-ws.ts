@@ -147,6 +147,8 @@ export interface HarnessOpts {
   emailMailDomain?: string
   /** The handshake gate every connection shares, as the gateway passes one; absent ⇒ ungated. */
   handshakes?: HandshakeGate
+  /** The install's org history reclaim switch; absent ⇒ off. */
+  orgHistoryReclaim?: boolean
 }
 
 /** One compiled hook rule as the relay would receive it — the routing projection under test. */
@@ -395,6 +397,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     usageWriter: new SessionUsageWriter(repos.sessionUsage),
     sessionAdmission: new PgOrgSessionPolicyRepo(prisma),
     orgHistoryRetention: new PgOrgSessionPolicyRepo(prisma),
+    ...(opts.orgHistoryReclaim !== undefined ? { orgHistoryReclaim: opts.orgHistoryReclaim } : {}),
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
     bot: repos.bot,

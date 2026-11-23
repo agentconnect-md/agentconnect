@@ -139,6 +139,8 @@ export interface DaemonWsDeps {
   sessionAdmission?: Pick<OrgSessionPolicyRepo, 'admit' | 'sessionMayAct'>
   /** Reads the served orgs' history retention for `register/ok` (org-session-policy.md, History retention); absent ⇒ the field is never sent. */
   orgHistoryRetention?: Pick<OrgSessionPolicyRepo, 'historyRetention'>
+  /** The install's reclaim switch, sent beside that snapshot to a daemon that reads it (org-session-policy.md, Reclaim); absent ⇒ off. */
+  orgHistoryReclaim?: boolean
   /** Resolves a webchat conversation's owning user for session-visibility ingest
    *  (session-visibility.md §4.2); absent ⇒ webchat sessions record no owner
    *  (null — visible to no one until a repair/backfill). */

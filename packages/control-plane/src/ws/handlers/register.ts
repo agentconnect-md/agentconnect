@@ -67,6 +67,8 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_ADMIT_FEATURE,
+  HISTORY_RETENTION_CONFIRM_FEATURE,
+  ORG_HISTORY_RECLAIM_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   DAEMON_LIFECYCLE_BEGIN_FEATURE
@@ -139,6 +141,10 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
         ...snap.agents.map((agent) => agent.orgId),
         conn.orgId
       ])
+      // The reclaim switch rides only to a daemon that acts on it; an older one keeps its daemon-wide window.
+      if (req.capabilities.features.includes(ORG_HISTORY_RECLAIM_FEATURE)) {
+        orgHistoryRetention.reclaim = deps.orgHistoryReclaim === true
+      }
     } catch (err) {
       deps.log.error({ err, daemonId: conn.daemonId }, 'register: org history retention read failed')
     }
@@ -201,6 +207,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_METADATA_ACK_FEATURE,
       // org-session-policy.md, Admission: this CP admits a new session for its org; it counts and refuses none.
       ...(deps.sessionAdmission ? [SESSION_ADMIT_FEATURE] : []),
+      // org-session-policy.md, Reclaim: this CP re-confirms a sweep's orgs before it deletes under their windows.
+      ...(deps.orgHistoryRetention ? [HISTORY_RETENTION_CONFIRM_FEATURE] : []),
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
       // high-availability.md: this CP ACKs a terminal cron outcome, so the daemon keeps it until then.

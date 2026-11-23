@@ -261,6 +261,12 @@ export const ORG_HISTORY_RETENTION_FEATURE = 'org-history-retention-v1'
 /** `config/push` key carrying one organization's `OrgHistoryRetention` after its session policy changed. */
 export const CONFIG_KEY_ORG_HISTORY_RETENTION = 'sessions.orgHistoryRetention'
 
+/** Daemon reads the reclaim switch `register/ok.orgHistoryRetention.reclaim`; a CP sends the switch only to a daemon advertising it. */
+export const ORG_HISTORY_RECLAIM_FEATURE = 'org-history-reclaim-v1'
+
+/** CP answers `history-retention/confirm`; a daemon must not send it to a CP that does not advertise it, since a new request type is frame-fatal to an older CP. */
+export const HISTORY_RETENTION_CONFIRM_FEATURE = 'history-retention-confirm-v1'
+
 /** CP accepts `integration/revoked`, a daemon socket's explicit credential-lifecycle report; an older CP rejects the frame, so the daemon keeps its reports instead. */
 export const INTEGRATION_REVOKED_FEATURE = 'integration-revoked-v1'
 
