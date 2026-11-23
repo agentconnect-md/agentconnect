@@ -1652,6 +1652,31 @@ describe('auto conversations route to the coordinator', () => {
     expect(host.prompt).toHaveBeenCalledTimes(3)
     await daemon.stop()
   })
+
+  it('opens no task for a mention when the turn fails on an organization refusal', async () => {
+    const prompts: string[] = []
+    const { daemon, d } = await boot(async (_id, blocks) => {
+      prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+      throw new Error('[ERR:never_funded] This organization has no credits yet')
+    })
+    const scope = d.transportScopeForIntegrationIds(['int-bot-a'])
+    const coordinator = await d.store.resolveAppendCoordinate('bot-a', 'C1', scope, 1, 'coordinator')
+    const msg = { ...slack('1.1', { trigger: 'mention', text: 'fix the build' }), transportScope: scope }
+    await expect(d.dispatch('bot-a', { ...msg, sessionThread: coordinator }, 'int-bot-a')).rejects.toThrow(
+      'never_funded'
+    )
+    // The task would be refused alike, so the person sees the refusal once.
+    expect(
+      await d.store.assistantSubsessions.taskOfThread('bot-a', {
+        platform: 'slack',
+        channel: 'C1',
+        transportScope: scope,
+        thread: '1.1'
+      })
+    ).toBeUndefined()
+    expect(prompts).toHaveLength(1)
+    await daemon.stop()
+  })
 })
 
 describe('a coordinator driven through every outcome (auto-session-mode.md §4.2, §4.5)', () => {
