@@ -290,6 +290,37 @@ describe('sending and the record (§6.4)', () => {
     expect(outside.sends[0]!.text).toBe('Hello **there**.')
   })
 
+  it('sends the agent’s own HTML, cleaned and with the footer under it, beside the Markdown as the text part', async () => {
+    const attribution = {
+      botName: 'Helper',
+      botUrl: 'https://console.example.test/agents/a1',
+      runtime: 'Claude Code',
+      model: 'opus',
+      sessionUrl: 'https://console.example.test/sessions/s1'
+    }
+    const h = harness({ turn: ['user-alice'], attribution })
+    await startEmail(h.deps, {
+      to: [BOB],
+      subject: 'Report',
+      body: 'Report attached.',
+      html: '<h1 style="color:#123">Report</h1><img src="https://t.test/p.gif"><script>x()</script>'
+    })
+    expect(h.sends[0]!.html).toBe(
+      '<!doctype html><html><head><meta charset="utf-8"></head><body><h1 style="color:#123">Report</h1><hr>' +
+        '<p>sent by <a href="https://console.example.test/agents/a1">Helper</a> (Claude Code · opus) · ' +
+        '<a href="https://console.example.test/sessions/s1">open in session</a></p></body></html>'
+    )
+    expect(h.sends[0]!.text).toBe(
+      'Report attached.\n\n---\n\nsent by [Helper](https://console.example.test/agents/a1) (Claude Code · opus) · ' +
+        '[open in session](https://console.example.test/sessions/s1)'
+    )
+    const huge = harness({ turn: ['user-alice'] })
+    await expect(startEmail(huge.deps, { ...args, html: `<p>${'x'.repeat(130_000)}</p>` })).rejects.toThrow(
+      'the html is over 120000 characters once cleaned. Nothing was sent.'
+    )
+    expect(huge.sends).toEqual([])
+  })
+
   it('attaches the named workspace files and names them under the thread’s first record', async () => {
     const report = Buffer.from('<html><body>report</body></html>')
     const h = harness({ turn: ['user-alice'], files: { 'out/report.html': report } })

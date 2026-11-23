@@ -456,6 +456,9 @@ importers:
       micromark-extension-gfm-table:
         specifier: ^2.1.1
         version: 2.1.1
+      parse5:
+        specifier: ^8.0.1
+        version: 8.0.1
       pg:
         specifier: ^8.23.1
         version: 8.23.1

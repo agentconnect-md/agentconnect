@@ -321,15 +321,6 @@ frame ceiling. The relay forwards those bytes without storing them. `rd/chat`
 is used only to return webchat output to the browser connection held by that
 relay.
 
-A relay that lists `frame-fragments-v1` in `rd/hello/ok` capabilities
-reassembles daemon frames past 256 KiB sent as `rd/fragment` runs, in the
-format and with the limits of
-[daemon-cp-ws-protocol.md §1.2](daemon-cp-ws-protocol.md#12-fragments). The
-daemon fragments only `rd/platform/request`, for a started mail's attachments
-([email-integration.md §6.4](email-integration.md#64-mail-the-agent-starts)),
-and fails a larger request to a relay without the feature instead of sending
-it.
-
 An `im` ack from a daemon advertising `im-admission-v1` also carries
 `routeAdmission` and `recoverable` beside the unchanged `accepted`/`reason`
 pair when the delivery went through a platform strategy with an admission

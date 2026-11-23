@@ -39,7 +39,6 @@ import { WEBCHAT_FILES_MAX, WebchatFileAttachment, chatAttachmentsWithinBudget }
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
-import { FrameFragment } from './fragment.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 import { CodeHostRoutingFamily, DecisionAnswer, DecisionQuestion } from '../decision.js'
 import { AgentApiProtocolName } from '../agent-api.js'
@@ -148,7 +147,7 @@ export const RD_CODEHOST_RELEASE_V1 = 'codehost-release-v1'
 /** `platform-request-v1`: this relay answers `rd/platform/request`, a provider call a platform module makes for a daemon with credentials the daemon never holds. */
 export const RD_PLATFORM_REQUEST_V1 = 'platform-request-v1'
 
-/** `email-attachments-v1`: this relay reassembles `rd/fragment` streams and sends a started mail's `attachments`; an older one would drop them and send the mail bare. */
+/** `email-attachments-v1`: this relay signs `send-ticket` and takes a started mail with `attachments` at `EMAIL_SEND_PATH`; an older one would drop them and send the mail bare. */
 export const RD_EMAIL_ATTACHMENTS_V1 = 'email-attachments-v1'
 
 /** The fixed-text posts a relay can ask for; each is a daemon-authored constant, never wire text. */
@@ -1209,7 +1208,7 @@ export const WireEmailCall = z.discriminatedUnion('op', [
     subject: emailHeaderText(998).min(1),
     text: z.string().min(1).max(EMAIL_SEND_TEXT_MAX),
     html: z.string().min(1).max(EMAIL_SEND_HTML_MAX),
-    /** Sent only to a relay that advertised `email-attachments-v1`. */
+    /** Only in a body posted to `EMAIL_SEND_PATH`, never in a frame. */
     attachments: z
       .array(WireEmailAttachment)
       .min(1)
@@ -1222,6 +1221,18 @@ export const WireEmailCall = z.discriminatedUnion('op', [
   })
 ])
 export type WireEmailCall = z.infer<typeof WireEmailCall>
+
+/** A daemon's ask for a ticket to post one started mail with attachments over HTTP (§6.4), since its files do not fit a frame. */
+export const WireEmailSendTicketCall = z.object({
+  op: z.literal('send-ticket'),
+  /** The started mail's tag; the ticket admits a post of that mail alone. */
+  tag: WireEmailStartedTag
+})
+export type WireEmailSendTicketCall = z.infer<typeof WireEmailSendTicketCall>
+
+/** The relay's answer to `send-ticket`: the URL to post the `start` call to, which answers with the `rd/platform/reply` a frame would have carried. */
+export const WireEmailSendTicketResult = z.object({ url: z.string().url().max(8192) })
+export type WireEmailSendTicketResult = z.infer<typeof WireEmailSendTicketResult>
 
 /** The longest note a Teams card click's ack may hand the relay to show the clicker. */
 export const MSTEAMS_CARD_NOTE_MAX = 500
@@ -1883,8 +1894,6 @@ export const RELAY_DAEMON_SCHEMAS = {
   'rd/webchat-post': RdWebchatPost,
   'rd/webchat-image-update': RdWebchatImageUpdate,
   'rd/webchat-prompt-suggestion': RdWebchatPromptSuggestion,
-  // D→R: one slice of a frame past MAX_FRAME_BYTES, sent only to a relay that advertised `frame-fragments-v1`.
-  'rd/fragment': FrameFragment,
   error: ErrorFrame
 } as const
 
@@ -1920,7 +1929,6 @@ export const RelayDaemonFrame = z.discriminatedUnion('type', [
   frameSchema('rd/webchat-post', RELAY_DAEMON_SCHEMAS['rd/webchat-post']),
   frameSchema('rd/webchat-image-update', RELAY_DAEMON_SCHEMAS['rd/webchat-image-update']),
   frameSchema('rd/webchat-prompt-suggestion', RELAY_DAEMON_SCHEMAS['rd/webchat-prompt-suggestion']),
-  frameSchema('rd/fragment', RELAY_DAEMON_SCHEMAS['rd/fragment']),
   frameSchema('error', RELAY_DAEMON_SCHEMAS['error'])
 ])
 export type RelayDaemonFrame = z.infer<typeof RelayDaemonFrame>
@@ -1931,11 +1939,8 @@ export function isRelayDaemonFrameType(t: string): t is RelayDaemonFrameType {
 }
 
 /** Decode one relay↔daemon wire frame (envelope + typed payload). */
-export function decodeRelayDaemonFrame(
-  text: string,
-  opts: { maxBytes?: number } = {}
-): DecodeResultOf<RelayDaemonFrame> {
-  return decodeEnvelopeWith<RelayDaemonFrame>(RELAY_DAEMON_SCHEMAS, text, opts)
+export function decodeRelayDaemonFrame(text: string): DecodeResultOf<RelayDaemonFrame> {
+  return decodeEnvelopeWith<RelayDaemonFrame>(RELAY_DAEMON_SCHEMAS, text)
 }
 
 /** Build a relay↔daemon frame with a compile-time-typed payload. */

@@ -7,6 +7,7 @@ import {
   EMAIL_RECIPIENTS_MAX,
   EMAIL_SEND_ATTACHMENT_BYTES_MAX,
   EMAIL_SEND_ATTACHMENTS_MAX,
+  EMAIL_SEND_HTML_MAX,
   EMAIL_STARTED_OWNER_PREFIX,
   type WireEmailAttachment,
   type WireEmailCall
@@ -19,7 +20,8 @@ import { platformIntegrationConfig } from '../integration-config.js'
 import type { PlatformAgentToolEnv, PlatformAgentTools, PlatformConversationSeed } from '../read-ports.js'
 import type { EmailConnection, EmailStoredSent } from './connection.js'
 import type { EmailMemberVerdict } from './members.js'
-import { emailFromName, emailReplyBodies, emailWithFooter } from './render.js'
+import { sanitizeEmailHtml } from './html.js'
+import { emailAttributionFooter, emailFromName, emailHtml, emailReplyBodies, emailWithFooter } from './render.js'
 import { emailStartedReplyConversation, emailStartedReplyThread } from './threading.js'
 
 const TAG_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
@@ -42,6 +44,10 @@ export const SEND_EMAIL_ARGS = z.object({
     .transform((value) => value ?? undefined),
   subject: requiredString('subject'),
   body: requiredString('body'),
+  html: z
+    .string()
+    .nullish()
+    .transform((value) => value?.trim() || undefined),
   attachments: z
     .array(requiredString('attachments'), 'argument attachments must be an array of file paths')
     .max(EMAIL_SEND_ATTACHMENTS_MAX, `at most ${EMAIL_SEND_ATTACHMENTS_MAX} attachments`)
@@ -67,7 +73,17 @@ export const SEND_EMAIL_TOOL: ToolDescriptor = {
       to: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Email addresses to send to.' },
       cc: { type: 'array', items: { type: 'string' }, description: 'Email addresses to copy.' },
       subject: { type: 'string', minLength: 1, description: 'The subject line.' },
-      body: { type: 'string', minLength: 1, description: 'The mail body in Markdown.' },
+      body: {
+        type: 'string',
+        minLength: 1,
+        description: 'The mail body in Markdown; with html, the plain-text part for readers that show no HTML.'
+      },
+      html: {
+        type: 'string',
+        description:
+          'Optional HTML for the mail’s rich part, in place of the Markdown’s rendering. Scripts, forms, images and ' +
+          'anything that loads a resource are removed; inline styles and <style> sheets that load nothing are kept.'
+      },
       attachments: {
         type: 'array',
         items: { type: 'string' },
@@ -189,6 +205,7 @@ export async function startEmail(
     cc?: readonly string[] | undefined
     subject: string
     body: string
+    html?: string | undefined
     attachments?: readonly string[] | undefined
     purpose?: string | undefined
   }
@@ -211,6 +228,12 @@ export async function startEmail(
   // The agent's footer goes under a mail to members only; the session keeps the body alone.
   const attribution = await deps.env.attribution().catch(() => undefined)
   const bodies = emailReplyBodies(emailWithFooter(args.body, attribution, outside.length > 0))
+  if (args.html) {
+    const footer = attribution && !outside.length ? emailHtml(emailAttributionFooter(attribution)) : undefined
+    bodies.html = sanitizeEmailHtml(args.html, footer)
+    if (bodies.html.length > EMAIL_SEND_HTML_MAX)
+      throw refused(`the html is over ${EMAIL_SEND_HTML_MAX} characters once cleaned`)
+  }
   const fromName = emailFromName(deps.agentName)
   const subject = args.subject.replace(/[\r\n]+/g, ' ').trim()
   if (!subject) throw refused('the subject is empty')

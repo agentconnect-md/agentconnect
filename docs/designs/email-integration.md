@@ -634,7 +634,8 @@ the thread.
   with that ID appended, cut from the front past 50 entries.
 - **Auto-Submitted** is `auto-replied`, so automatic responders stay silent.
 - The body is the agent's Markdown as plain text and as simple HTML, tables
-  included; raw HTML in the Markdown is sent as text. When the
+  included; raw HTML in the Markdown is sent as text (a started mail may bring
+  HTML of its own, §6.4). When the
   agent's output settings show a footer and every recipient is a member, the
   body ends with it under a rule: the agent's name linked to its page, its
   runtime and model, and a link to the session. A mail that reaches anyone
@@ -700,7 +701,7 @@ turn.
 ### 6.4 Mail the agent starts
 
 An agent with an address has a `sendEmail` tool: `to`, optional `cc`, a
-subject, a Markdown body and optional `attachments`. It can be called from any session the agent runs:
+subject, a Markdown body, and optional `html` and `attachments`. It can be called from any session the agent runs:
 a webchat, a chat thread, a schedule's run, a mail thread. Every agent with an
 address is also told it, in the instructions of every session that offers the
 tool (a coordinator, a follow-up's check and research offer none), so it can
@@ -741,12 +742,30 @@ name it to people and does not look for another way to send.
   `shareFile` reads them and named and typed the same way: at most 10 files and
   3 MiB together, which keeps the mail under the provider's 5 MiB message limit
   with its bodies and base64. A file that cannot be read, or a set past the
-  limit, refuses the whole send. The bytes cross to the relay inside the
-  `start` request, which the daemon sends as `rd/fragment` slices
-  ([shared-bot-relay.md §7.2](shared-bot-relay.md#72-relay-and-daemon-rd)), and
-  only to a relay that advertised `email-attachments-v1`: an older relay would
-  drop the field and send the mail bare. The started thread's first record
-  names each file. A reply carries no attachment.
+  limit, refuses the whole send. Files do not fit a relay frame, so the daemon
+  first asks its relay for a ticket (`rd/platform/request`, op `send-ticket`,
+  with the mail's tag), sent only to a relay that advertised
+  `email-attachments-v1`: an older relay would drop the field and send the
+  mail bare. The relay checks the daemon serves the bot and answers a URL under
+  its public origin, `/email/send/<ticket>`. The ticket binds the bot, its
+  address and organization, the tag and an expiry one minute out; it is an
+  HMAC keyed from the deployment's ticket key, so any relay of the pool redeems
+  it and a key rotation voids it. The daemon posts the whole `start` call there
+  and follows no other URL; the relay checks the tag against the ticket, then
+  applies the same recipient rules and budgets as a framed start, and answers
+  the reply a frame would have carried. A ticket or body it refuses sent
+  nothing; a post that fails otherwise may have sent the mail and is never
+  repeated. A frame never carries attachments. The started thread's first
+  record names each file. A reply carries no attachment.
+- **HTML**: an optional `html` replaces the Markdown's rendering as the mail's
+  HTML part, and `body` stays the plain-text part. The daemon keeps formatting
+  and table elements, `style` and layout attributes, and links to `http`,
+  `https` and `mailto`; it drops scripts, forms, images, frames, media and
+  event handlers, and any inline style or style sheet that loads something
+  (a resource function, an import or a font, or an escape that could spell
+  one). Images stay out for the reason a Markdown image is sent as its link: a
+  remote image tells its server who opened the mail and when. The footer goes
+  under the HTML as under the Markdown.
 - **Headers**: `From` is the agent's address and name, as for a reply.
   `Reply-To` is the same address with a subaddress tag the daemon mints for the
   new thread (`<name>+<tag>@<domain>`, 20 lower-case base32 characters, which

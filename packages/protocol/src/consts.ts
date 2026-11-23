@@ -75,6 +75,12 @@ export const GOOGLE_CHAT_RELAY_EGRESS_V1_FEATURE = 'googlechat-relay-egress-v1'
 /** The relay route the ingress Worker posts each inbound mail to (email-integration.md §7). */
 export const EMAIL_INBOUND_PATH = '/email/inbound'
 
+/** The relay route a daemon posts a started mail with attachments to, with a relay-signed ticket as the last path segment (email-integration.md §6.4). */
+export const EMAIL_SEND_PATH = '/email/send'
+
+/** The largest body that route takes: a started mail's bodies and its base64 attachments. */
+export const EMAIL_SEND_BODY_MAX_BYTES = 6 * 1024 * 1024
+
 /** The inbound route under a relay's public origin, which the operator configures the ingress Worker with (§7). */
 export function emailInboundUrl(publicRelayUrl: string): string {
   return `${publicRelayUrl.replace(/\/+$/, '')}${EMAIL_INBOUND_PATH}`
