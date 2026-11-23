@@ -162,6 +162,7 @@ import {
   CRON_RUN_SKIPPED_FEATURE,
   COMPUTER_POOL_QUOTA_FEATURE,
   SESSION_ADMIT_REFUSAL_FEATURE,
+  ORG_HISTORY_RETENTION_FEATURE,
   type ComputerManagedMode,
   PULL_REQUEST_FEEDBACK_FEATURE,
   CODEHOST_FEEDBACK_FEATURE,
@@ -1571,6 +1572,15 @@ import {
 } from './daemon/constants.js'
 import { nextRetentionRecheck, retentionRecheckPending, workspaceReclaimed } from './daemon/retention-recheck.js'
 import {
+  OrgHistoryRetentionState,
+  countDryRun,
+  emptyDryRunSummary,
+  formatDryRunSummary,
+  judgeOrgRetention,
+  recordDryRunMetrics,
+  type OrgRetentionDryRunSummary
+} from './daemon/org-history-retention.js'
+import {
   observeStartup,
   withStartupPhase,
   shareStartup,
@@ -2781,6 +2791,8 @@ export class Daemon {
   // Single-flight for the retention pass — a slow git cleanup must not overlap
   // the next sweep's pass (the sweep itself is synchronous, the GC is not).
   private sessionRetentionSweepInFlight = false
+  // Each served org's history retention as the CP delivered it; read only by the dry run until reclaim uses it.
+  private readonly orgHistoryRetention = new OrgHistoryRetentionState()
   // Single-flight for the purge-receipt drain (#485): the sweep and a CP reconnect
   // can both trigger it, and each batch awaits a correlated ACK.
   private sessionPurgeDrainInFlight = false
@@ -10482,6 +10494,8 @@ export class Daemon {
       COMPUTER_POOL_QUOTA_FEATURE,
       // org-session-policy.md: this daemon reads the `session/admit/result` refusal variant. Static.
       SESSION_ADMIT_REFUSAL_FEATURE,
+      // org-session-policy.md, History retention: this daemon reads each served org's retention. Static.
+      ORG_HISTORY_RETENTION_FEATURE,
       // What each platform module declares for itself (§7.4).
       ...this.platformModules.registrationFeatures()
     ]
@@ -30997,6 +31011,8 @@ export class Daemon {
     if (this.sessionRetentionSweepInFlight) return
     this.sessionRetentionSweepInFlight = true
     try {
+      // First, on the rows the passes below are about to judge: it records and never acts.
+      await this.dryRunOrgHistoryRetention()
       // Orphans too, whatever the window: a VM whose row is gone serves nothing and still pins its image.
       const discarded =
         (await this.sweepExpiredSessions()) +
@@ -31020,6 +31036,49 @@ export class Daemon {
       await this.sweepRetiredWorkspaceRoots()
     } finally {
       this.sessionRetentionSweepInFlight = false
+    }
+  }
+
+  /** Count what each served org's history window would decide beside today's daemon-wide rule (org-session-policy.md, History retention); never deletes. */
+  private async dryRunOrgHistoryRetention(): Promise<void> {
+    // Only once a Control Plane has answered a register: a daemon without one has no org policy to compare.
+    if (!this.orgHistoryRetention.engaged()) return
+    try {
+      const now = this.clock.now()
+      const currentWindowMs = sessionRetentionMs(this.cfg.sessions.retention)
+      const windows = [...this.orgHistoryRetention.windowsMs(), ...(currentWindowMs === null ? [] : [currentWindowMs])]
+      if (windows.length === 0) return
+      const summary: OrgRetentionDryRunSummary = emptyDryRunSummary()
+      for (const rec of await this.store.listExpiredSessions(now - Math.min(...windows))) {
+        if (this.draining) return
+        // Holder-only on a shared store, exactly as the real pass judges rows.
+        if (!this.judgesStoredSessions(rec.agentId)) continue
+        const orgId = this.orgForAgent(rec.agentId)
+        const verdict = this.orgHistoryRetention.verdict(orgId)
+        const unguarded = judgeOrgRetention(
+          { updatedAt: rec.updatedAt, protected: false, verdict },
+          currentWindowMs,
+          now
+        )
+        // The guards the real pass applies before deleting, asked only when a rule would delete; a dirty workspace is not judged, since that can wake a pod.
+        const guarded =
+          (unguarded.current === 'delete' || unguarded.org === 'delete') &&
+          (retentionRecheckPending(rec, now) ||
+            (await this.keepsAppendSession(rec)) ||
+            (await this.sessionRetentionActive(rec)))
+        const decision = guarded
+          ? judgeOrgRetention({ updatedAt: rec.updatedAt, protected: true, verdict }, currentWindowMs, now)
+          : unguarded
+        countDryRun(summary, verdict, decision)
+        const basis = verdict.kind === 'paused' ? `paused:${verdict.reason}` : verdict.kind
+        this.log.debug(
+          `retention dry run: session ${rec.key} org=${orgId ?? '-'} current=${decision.current} org=${decision.org} basis=${basis}`
+        )
+      }
+      recordDryRunMetrics(summary)
+      this.log.info(formatDryRunSummary(summary))
+    } catch (err) {
+      this.log.warn(`retention dry run: failed (${formatErr(err)})`)
     }
   }
 
@@ -33214,7 +33273,8 @@ export class Daemon {
       runDrain: (drain, onProgress) => this.runDrain(drain, onProgress),
       scheduleFleetExit: (kind, targetVersion, operationId) =>
         this.fleetUpgrade.scheduleFleetExit(kind, targetVersion, operationId),
-      autoUpgrade: () => this.autoUpgrader
+      autoUpgrade: () => this.autoUpgrader,
+      orgHistoryRetention: () => this.orgHistoryRetention
     }
   }
 
@@ -33252,6 +33312,7 @@ export class Daemon {
         this.cpOrgSlug = orgSlug
       },
       resolveInitialRegistry,
+      cpLinkLost: () => this.orgHistoryRetention.linkLost(),
       registrationPlatforms: () => this.registrationPlatforms(),
       registrationFeatures: () => this.registrationFeatures(),
       ownStrategies: () => this.strategyTable(),

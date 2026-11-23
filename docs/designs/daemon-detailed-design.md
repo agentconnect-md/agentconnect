@@ -667,7 +667,10 @@ allowlisted nonsensitive keys (`logging.level`, `limits.maxAgents`,
 the live in-memory configuration and applies them immediately, rebuilding the
 logger for level changes. It does not persist or ACK; nonallowlisted keys are ignored and logged. Desired agent and integration
 state is delivered through the dedicated upsert frames and the authoritative
-`register/ok` roster.
+`register/ok` roster. The key `sessions.orgHistoryRetention` is not configuration: it carries one
+organization's history retention into the daemon's in-memory per-org table
+([org-session-policy.md](org-session-policy.md#history-retention-dry-run)), and leaves
+`sessions.retention` untouched.
 
 ### 5.2 Reconciler: Desired State -> Actual State
 

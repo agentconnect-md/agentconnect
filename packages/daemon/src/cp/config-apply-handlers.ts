@@ -38,8 +38,10 @@ import type {
   DutyRevoke,
   GitCommitIdentity
 } from '@agentconnect.md/protocol'
+import { CONFIG_KEY_ORG_HISTORY_RETENTION } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import { mergeConfigPush, type ConfigApply } from './config-apply.js'
+import type { OrgHistoryRetentionState } from '../daemon/org-history-retention.js'
 import { splitAutoUpgradeKeys, type AutoUpgradeConfigSink } from '../lifecycle/auto-upgrader.js'
 import { makeLogger, type Logger } from '../log.js'
 import { formatErr } from '../daemon/text.js'
@@ -87,6 +89,8 @@ export interface ConfigApplyCoreHost {
   flushReconcile(): Promise<void>
   /** Where the auto-upgrade switch and announced release go instead of `cfg`. */
   autoUpgrade?(): AutoUpgradeConfigSink | undefined
+  /** Where each served org's history retention goes (org-session-policy.md, History retention). */
+  orgHistoryRetention?(): OrgHistoryRetentionState | undefined
 }
 
 /** The CP-owned in-memory definition registries this daemon converges. */
@@ -204,12 +208,17 @@ export interface ConfigApplyHost
     ConfigApplyControlHost {}
 
 export function applyConfigPush(host: ConfigApplyCoreHost, keys: Record<string, unknown>): void {
-  const { upgrade, rest } = splitAutoUpgradeKeys(keys)
+  const { [CONFIG_KEY_ORG_HISTORY_RETENTION]: orgRetention, ...others } = keys
+  const { upgrade, rest } = splitAutoUpgradeKeys(others)
   const sink = host.autoUpgrade?.()
   const routed = sink ? sink.applyConfigKeys(upgrade) : { applied: [], ignored: Object.keys(upgrade) }
   const merged = mergeConfigPush(host.cfg(), rest)
   const applied = [...merged.applied, ...routed.applied]
   const ignored = [...merged.ignored, ...routed.ignored]
+  if (CONFIG_KEY_ORG_HISTORY_RETENTION in keys) {
+    const state = host.orgHistoryRetention?.()
+    ;(state?.applyUpdate(orgRetention) ? applied : ignored).push(CONFIG_KEY_ORG_HISTORY_RETENTION)
+  }
   if (applied.includes('logging.level')) host.setLog(makeLogger(host.cfg().logging.level))
   if (applied.length) host.log().info(`cp: applied config keys: ${applied.join(', ')}`)
   if (ignored.length) host.log().warn(`cp: ignored config keys: ${ignored.join(', ')}`)
@@ -222,6 +231,7 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
   // `config/push` hot update. Absent (older CP) ⇒ keep the local config value.
   if (snap.sessionRetention) host.cfg().sessions.retention = snap.sessionRetention
   if (snap.workspaceRetention) host.cfg().sessions.workspaceRetention = snap.workspaceRetention
+  host.orgHistoryRetention?.()?.applySnapshot(snap.orgHistoryRetention)
   host.autoUpgrade?.()?.applyRegisterOk(snap)
   // Reserve every agent drop before ANY fallible snapshot convergence.
   // Otherwise an unrelated integration/memory write could abort the frame
