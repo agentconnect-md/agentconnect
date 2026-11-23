@@ -226,12 +226,14 @@ const COLD_ACTIVATE_ACK_TIMEOUT_MS = 60_000
 const ASSISTANT_DRAFT_DECISION_ACK_TIMEOUT_MS = 30_000
 const COLD_ACTIVATE_MAX_TRIES = 5
 const COLD_ACTIVATE_MAX_CONNECTIONS = 5
+// A daemon still registering refuses control, so a request waits this long for READY before it counts as offline.
+const REGISTERING_READY_WAIT_MS = 5_000
 
-/** Raised when no live/READY connection exists for a daemon. */
 // A detail asks for its reached chain steps only from a daemon that parses includeSteps.
 const chainSteps = (features: readonly string[]) =>
   features.includes(DECISION_EVALUATION_STEPS_V1_FEATURE) ? { includeSteps: true as const } : {}
 
+/** Raised when no live/READY connection exists for a daemon. */
 export class NoConnection extends Error {
   constructor(readonly daemonId: string) {
     super(`no live connection for daemon ${daemonId}`)
@@ -273,11 +275,31 @@ export class ControlSender {
     return this.registry.get(daemonId)?.state === 'READY'
   }
 
-  /** The live connection state for a daemon, or throw {@link NoConnection}. */
+  /** A daemon's connection in any state, or throw {@link NoConnection}; EVTs use it directly, requests go through {@link ready}. */
   private must(daemonId: string): DaemonConnState {
     const c = this.registry.get(daemonId)
     if (!c) throw new NoConnection(daemonId)
     return c
+  }
+
+  /** A connection that accepts control now (READY or DRAINING), undefined while it registers, or throw {@link NoConnection}. */
+  private ready(daemonId: string): DaemonConnState | undefined {
+    const c = this.must(daemonId)
+    return c.state === 'READY' || c.state === 'DRAINING' ? c : undefined
+  }
+
+  /** A registering daemon refuses control, so wait for it to reach READY; past the wait it counts as offline. */
+  private async untilReady(daemonId: string): Promise<DaemonConnState> {
+    const c = this.must(daemonId)
+    const wait = new AbortController()
+    const timer = setTimeout(() => wait.abort(), REGISTERING_READY_WAIT_MS)
+    try {
+      return await this.registry.waitForReadyAfter(daemonId, c.sessionEpoch - 1, wait.signal)
+    } catch {
+      throw new NoConnection(daemonId)
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**
@@ -311,7 +333,7 @@ export class ControlSender {
 
   /** Assign a session to a daemon (epoch-fenced REQ → ack). */
   async routeAssign(daemonId: string, a: RouteAssign): Promise<RouteAssignAck> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<RouteAssignAck>('route/assign', a, { epoch: c.sessionEpoch })
   }
 
@@ -320,7 +342,7 @@ export class ControlSender {
    * `launchId` fence baseline in C6 and the live index.
    */
   async agentLaunch(daemonId: string, l: AgentLaunch): Promise<AgentLaunched> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     const r = await c.conn.request<AgentLaunched>('agent/launch', l, { epoch: c.sessionEpoch })
     await this.launches.record({
       launchId: LaunchId(r.launchId),
@@ -340,7 +362,7 @@ export class ControlSender {
 
   /** Drain a scope on a daemon (epoch-fenced REQ → `drain/done`). */
   async drain(daemonId: string, scope: Drain['scope'], deadline: string): Promise<DrainDone> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.state = 'DRAINING'
     return c.conn.request<DrainDone>('daemon/drain', { scope, deadline }, { epoch: c.sessionEpoch })
   }
@@ -356,7 +378,7 @@ export class ControlSender {
 
   /** Ask a cluster member to re-probe its runtime image (REQ → ack); the result arrives later as `facts/daemon-runtimes`. */
   async runtimeProbe(daemonId: string): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('daemon/runtimes/probe', {}, { epoch: c.sessionEpoch })
   }
 
@@ -380,7 +402,7 @@ export class ControlSender {
   ): Promise<LifecycleSendResult> {
     let c: DaemonConnState
     try {
-      c = this.must(daemonId)
+      c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     } catch (err) {
       if (err instanceof NoConnection) return { kind: 'unsent' }
       throw err
@@ -410,7 +432,7 @@ export class ControlSender {
 
   /** Push an edited agent spec and wait until the daemon's live reconcile applies it. */
   async agentUpsert(daemonId: string, u: AgentUpsert, orgId?: string): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (!daemonSupportsAgent(u.spec, c.capabilities?.features))
       throw new Error(`daemon ${daemonId} lacks a feature required by agent ${u.agentId}'s spec`)
     const ack = await c.conn.request<Ack>(
@@ -427,7 +449,7 @@ export class ControlSender {
 
   /** Tell a running daemon an agent was deleted (live CRUD, epoch-fenced EVT). */
   async agentRemove(daemonId: string, r: AgentRemove, orgId?: string): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.conn.send('agent/remove', r, { epoch: c.sessionEpoch, agentId: r.agentId }, orgId)
   }
 
@@ -445,7 +467,7 @@ export class ControlSender {
 
   /** Fence and archive an agent before a daemon move or workspace edit (REQ → ack). */
   async agentDetach(daemonId: string, d: AgentDetach, orgId?: string): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('agent/detach', d, { epoch: c.sessionEpoch, agentId: d.agentId }, undefined, orgId)
   }
 
@@ -508,7 +530,7 @@ export class ControlSender {
     daemonId: string,
     req: AgentPermissionRequestList
   ): Promise<AgentPermissionRequestPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<AgentPermissionRequestPage>('agent/permission-requests', req, {
       epoch: c.sessionEpoch,
       agentId: req.agentId
@@ -517,7 +539,7 @@ export class ControlSender {
 
   /** Resolve a live ACP approval request on the owning daemon. */
   async agentPermissionDecision(daemonId: string, req: AgentPermissionDecision): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('agent/permission-decision', req, {
       epoch: c.sessionEpoch,
       agentId: req.agentId
@@ -526,7 +548,7 @@ export class ControlSender {
 
   /** Full-replace one daemon's bot-agnostic collaboration routing snapshot. */
   async collaborationRoutes(daemonId: string, snapshot: CollabRoutesSnapshot): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.conn.send('collaboration/routes', snapshot, { epoch: c.sessionEpoch })
   }
 
@@ -535,7 +557,7 @@ export class ControlSender {
    * epoch-fenced EVT). Token-bearing payload — NEVER log it.
    */
   async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     // A daemon lacking a required feature would ignore the spec and keep its last one, so it is told to remove it.
     if (!integrationDeliverableToPeer(u, c.capabilities?.features)) {
       c.conn.send('integration/remove', { integrationId: u.integrationId }, { epoch: c.sessionEpoch }, u.orgId)
@@ -551,7 +573,7 @@ export class ControlSender {
    *  from — and a duty holder that acquired the integration through `duty/fetch`
    *  never registered it, so the connection's id→org map has nothing either. */
   async integrationRemove(daemonId: string, r: IntegrationRemove, orgId?: string): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.conn.send('integration/remove', r, { epoch: c.sessionEpoch }, orgId)
   }
 
@@ -561,7 +583,7 @@ export class ControlSender {
    *  so this is awaited, and an undeliverable suppression is the caller's problem to
    *  surface rather than a silent future resurrection. */
   async integrationForget(daemonId: string, f: IntegrationForget): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('integration/forget', f, { epoch: c.sessionEpoch })
   }
 
@@ -569,7 +591,7 @@ export class ControlSender {
    *  (REQ → verdict). Unlike its EVT siblings this one is awaited: it changes the
    *  outside world, and the operator is shown what the platform actually said. */
   async integrationLeave(daemonId: string, l: IntegrationLeave): Promise<IntegrationLeaveOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<IntegrationLeaveOk>('integration/leave', l, { epoch: c.sessionEpoch })
   }
 
@@ -579,27 +601,27 @@ export class ControlSender {
    * relay proxy URL + the plaintext grant key — NEVER log it.
    */
   async mcpServerUpsert(daemonId: string, spec: McpServerSpec): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.conn.send('mcpserver/upsert', spec, { epoch: c.sessionEpoch })
   }
 
   /** Drop a proxied MCP server def by name from a daemon (live CRUD, epoch-fenced EVT). */
   async mcpServerRemove(daemonId: string, orgId: string, name: string): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.conn.send('mcpserver/remove', { orgId, name }, { epoch: c.sessionEpoch })
   }
 
   /** Push one daemon-private external-memory connection definition. Relay grants
    * and local secret leases are secret-bearing; never log. */
   async memoryConnectionUpsert(daemonId: string, spec: MemoryConnectionSpec): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     const ack = await c.conn.request<Ack>('memoryconnection/upsert', spec, { epoch: c.sessionEpoch })
     if (!ack.ok) throw new Error(`memory connection probe rejected${ack.reason ? `: ${ack.reason}` : ''}`)
   }
 
   /** Drop a daemon-private connection definition no placed agent references. */
   async memoryConnectionRemove(daemonId: string, connectionId: string): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     c.conn.send('memoryconnection/remove', { connectionId }, { epoch: c.sessionEpoch })
   }
 
@@ -613,20 +635,20 @@ export class ControlSender {
    * anything this connection never delivered.
    */
   async sessionVisibility(daemonId: string, orgId: string, p: SessionVisibilityPush): Promise<SessionVisibilityOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionVisibilityOk>('session/visibility', p, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Replay the whole gate set to a (re)connecting daemon (§5.1) — a snapshot,
    *  not a diff, so a change made while it was offline cannot stay unapplied. */
   async sessionVisibilitySnapshot(daemonId: string, orgId: string, entries: SessionVisibilityPush[]): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('session/visibility/snapshot', { entries }, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Sink a cron def to a running daemon (live CRUD, epoch-fenced REQ → ack, §5.4). */
   async cronUpsert(daemonId: string, u: CronUpsert): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('cron/upsert', u, { epoch: c.sessionEpoch })
   }
 
@@ -634,14 +656,14 @@ export class ControlSender {
    *  Explicit orgId for the same reason as `integrationRemove`: the payload is a
    *  bare cronId, and a duty holder never registered the cron. */
   async cronRemove(daemonId: string, r: CronRemove, orgId?: string): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('cron/remove', r, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Fire a cron immediately on its daemon (console "Run now"; REQ → ack — the
    *  ack only confirms the daemon holds the cron; outcome arrives via cron/report). */
   async cronRun(daemonId: string, r: CronRunNow): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('cron/run', r, { epoch: c.sessionEpoch })
   }
 
@@ -654,20 +676,20 @@ export class ControlSender {
    * suspended pod is held rather than woken.
    */
   async sandboxKeepAlive(daemonId: string, orgId: string, req: SandboxKeepAliveReq): Promise<SandboxKeepAlive> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SandboxKeepAlive>('sandbox/keepalive', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Arm or disarm the EDGE's merge-when-ready watcher (REQ → `automerge/set/result`) — a relay that stores nothing; explicit orgId because a pool member resolves the org from the agents it was told about. */
   async autoMergeSet(daemonId: string, orgId: string, req: AutoMergeSetReq): Promise<AutoMergeState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<AutoMergeState>('automerge/set', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Read that same watcher's live state (REQ → `automerge/state/result`) — armed, what it is
    *  waiting on, and where it runs. Read-only and stored nowhere. */
   async autoMergeState(daemonId: string, orgId: string, req: AutoMergeStateReq): Promise<AutoMergeState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<AutoMergeState>('automerge/state', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
@@ -675,7 +697,7 @@ export class ControlSender {
    * Read-only; current console list is served from CP-stored metadata snapshots,
    * while this frame remains useful for daemon read-back/debugging. */
   async sessionList(daemonId: string, req: SessionListReq): Promise<SessionListPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionListPage>('session/list', req, { epoch: c.sessionEpoch })
   }
 
@@ -690,19 +712,19 @@ export class ControlSender {
    * none of them — so a bare agent id is SCOPE_DENIED before the frame leaves the CP.
    */
   async sessionHistory(daemonId: string, orgId: string, req: SessionHistoryReq): Promise<SessionHistoryPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionHistoryPage>('session/history', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Pull one page of a thread's record through a session that received its root (REQ → `session/thread/page`); org explicit as for history. */
   async sessionThread(daemonId: string, orgId: string, req: SessionThreadReq): Promise<SessionThreadPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionThreadPage>('session/thread', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
   /** Resolve one shared image's original on a daemon holding the session (REQ → `image/original/resolve/ok`); org explicit as for history. */
   async sharedImageResolve(daemonId: string, orgId: string, req: SharedImageResolveReq): Promise<SharedImageResolveOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SharedImageResolveOk>(
       'image/original/resolve',
       req,
@@ -721,7 +743,7 @@ export class ControlSender {
    * concatenates and JSON.parses the assembled string.
    */
   async sessionToolBody(daemonId: string, orgId: string, req: SessionToolBodyReq): Promise<SessionToolBodyChunk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionToolBodyChunk>('session/tool-body', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
@@ -731,7 +753,7 @@ export class ControlSender {
     orgId: string,
     req: SessionPullRequestFeedback
   ): Promise<SessionPullRequestFeedbackResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionPullRequestFeedbackResult>(
       'session/pull-request-feedback',
       req,
@@ -747,7 +769,7 @@ export class ControlSender {
     orgId: string,
     req: AssistantFollowUpWake
   ): Promise<AssistantFollowUpWakeResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<AssistantFollowUpWakeResult>(
       'assistant/follow-up-wake',
       req,
@@ -763,7 +785,7 @@ export class ControlSender {
     orgId: string,
     req: SessionCapabilitySettled
   ): Promise<SessionCapabilitySettledResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<SessionCapabilitySettledResult>(
       'session/capability-settled',
       req,
@@ -775,7 +797,7 @@ export class ControlSender {
 
   /** A reopened request: the daemon puts its cards back to the open form (capability-requests.md §4.5). */
   async capabilityReopened(daemonId: string, orgId: string, req: CapabilityReopened): Promise<void> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     const ack = await c.conn.request<Ack>(
       'capability/reopened',
       req,
@@ -788,7 +810,7 @@ export class ControlSender {
 
   /** Forward a request to someone who can act on it, through the agent's linked DM (capability-requests.md §4.5). */
   async capabilityForward(daemonId: string, orgId: string, req: CapabilityForward): Promise<CapabilityForwardResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<CapabilityForwardResult>(
       'capability/forward',
       req,
@@ -810,7 +832,7 @@ export class ControlSender {
    * the entries to the UI live and never stores them (body-locality, §1/§12).
    */
   async workspaceList(daemonId: string, req: WorkspaceListReq): Promise<WorkspaceListPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceListPage>('workspace/list', req, { epoch: c.sessionEpoch })
   }
 
@@ -820,13 +842,13 @@ export class ControlSender {
    * bytes to the UI live and never stores them (body-locality, §1/§12).
    */
   async workspaceRead(daemonId: string, req: WorkspaceReadReq): Promise<WorkspaceReadContent> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceReadContent>('workspace/read', req, { epoch: c.sessionEpoch })
   }
 
   /** Have the owning daemon snapshot one workspace file and PUT it on CP-signed URLs (REQ → `workspace/upload/ok`); single-shot, as the upload may run long. */
   async workspaceUpload(daemonId: string, req: WorkspaceUploadReq): Promise<WorkspaceUploadOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceUploadOk>(
       'workspace/upload',
       req,
@@ -837,25 +859,25 @@ export class ControlSender {
 
   /** Start that upload in the background (REQ → `workspace/upload/begin/ok`); the daemon reports its outcome with `transfer/settle`. */
   async workspaceUploadBegin(daemonId: string, req: WorkspaceUploadReq): Promise<WorkspaceUploadBeginOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceUploadBeginOk>('workspace/upload/begin', req, { epoch: c.sessionEpoch })
   }
 
   /** Create or replace one scratch-workspace text file on the owning daemon. */
   async workspaceWrite(daemonId: string, req: WorkspaceWriteReq): Promise<WorkspaceWriteOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceWriteOk>('workspace/write', req, { epoch: c.sessionEpoch })
   }
 
   /** Delete one unchanged scratch-workspace file on the owning daemon. */
   async workspaceDelete(daemonId: string, req: WorkspaceDeleteReq): Promise<WorkspaceDeleteOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceDeleteOk>('workspace/delete', req, { epoch: c.sessionEpoch })
   }
 
   /** Create one empty scratch-workspace directory on the owning daemon. */
   async workspaceMkdir(daemonId: string, req: WorkspaceMkdirReq): Promise<WorkspaceMkdirOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceMkdirOk>('workspace/mkdir', req, { epoch: c.sessionEpoch })
   }
 
@@ -865,7 +887,7 @@ export class ControlSender {
    * never stores it (body-locality, §1/§12).
    */
   async memoryList(daemonId: string, req: MemoryListReq): Promise<MemoryListPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryListPage>('memory/list', req, { epoch: c.sessionEpoch })
   }
 
@@ -874,13 +896,13 @@ export class ControlSender {
    * console channel selector (REQ → `memory/channels/page`). Read-only proxy.
    */
   async memoryChannels(daemonId: string, req: MemoryChannelsReq): Promise<MemoryChannelsPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryChannelsPage>('memory/channels', req, { epoch: c.sessionEpoch })
   }
 
   /** Delete one place layer whole on the owning daemon; the reply carries no content. */
   async memoryChannelClear(daemonId: string, req: MemoryChannelClearReq): Promise<MemoryChannelClearOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryChannelClearOk>('memory/channel/clear', req, { epoch: c.sessionEpoch })
   }
 
@@ -890,7 +912,7 @@ export class ControlSender {
    * the UI live and never stores them (body-locality, §1/§12).
    */
   async memoryRead(daemonId: string, req: MemoryReadReq): Promise<MemoryReadContent> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryReadContent>('memory/read', req, { epoch: c.sessionEpoch })
   }
 
@@ -899,29 +921,29 @@ export class ControlSender {
    * new content is written on the daemon; the CP stores nothing.
    */
   async memoryWrite(daemonId: string, req: MemoryWriteReq): Promise<MemoryWriteOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryWriteOk>('memory/write', req, { epoch: c.sessionEpoch })
   }
 
   /** Page a managed memory file's provenance log without persisting its bodies. */
   async memoryHistory(daemonId: string, req: MemoryHistoryReq): Promise<MemoryHistoryPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryHistoryPage>('memory/history', req, { epoch: c.sessionEpoch })
   }
 
   /** Discover the provider-neutral memory administration shape/capabilities. */
   async memorySurface(daemonId: string, req: MemorySurfaceReq): Promise<MemorySurfaceInfo> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemorySurfaceInfo>('memory/surface', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordSearch(daemonId: string, req: MemoryRecordSearchReq): Promise<MemoryRecordSearchPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordSearchPage>('memory/record/search', req, { epoch: c.sessionEpoch })
   }
 
   async memoryEntriesWrite(daemonId: string, req: MemoryEntriesWriteReq): Promise<MemoryEntriesWriteResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (!c.capabilities?.features?.includes(MEMORY_ENTRIES_WRITE_V1_FEATURE))
       return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory writes' }
     if (!memoryEntryMutationFits(req))
@@ -944,7 +966,7 @@ export class ControlSender {
   }
 
   async memoryEntriesRead(daemonId: string, req: MemoryEntriesReadReq): Promise<MemoryEntriesReadResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (!c.capabilities?.features?.includes(MEMORY_ENTRIES_V1_FEATURE)) {
       return { operation: 'error', code: 'UNSUPPORTED', message: 'this daemon does not support unified memory reads' }
     }
@@ -958,32 +980,32 @@ export class ControlSender {
   }
 
   async memoryRecordList(daemonId: string, req: MemoryRecordListReq): Promise<MemoryRecordListPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordListPage>('memory/record/list', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordGet(daemonId: string, req: MemoryRecordGetReq): Promise<MemoryRecordGetResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordGetResult>('memory/record/get', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordCreate(daemonId: string, req: MemoryRecordCreateReq): Promise<MemoryRecordCreateResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordCreateResult>('memory/record/create', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordUpdate(daemonId: string, req: MemoryRecordUpdateReq): Promise<MemoryRecordUpdateResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordUpdateResult>('memory/record/update', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordDelete(daemonId: string, req: MemoryRecordDeleteReq): Promise<MemoryRecordDeleteResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordDeleteResult>('memory/record/delete', req, { epoch: c.sessionEpoch })
   }
 
   async memoryRecordHistory(daemonId: string, req: MemoryRecordHistoryReq): Promise<MemoryRecordHistoryPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<MemoryRecordHistoryPage>('memory/record/history', req, { epoch: c.sessionEpoch })
   }
 
@@ -993,43 +1015,43 @@ export class ControlSender {
   //    byte-sliced correlated replies, exactly like memory/read.
 
   async dreamStart(daemonId: string, req: DreamStartReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/start', req, { epoch: c.sessionEpoch })
   }
 
   async dreamCancel(daemonId: string, req: DreamCancelReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/cancel', req, { epoch: c.sessionEpoch })
   }
 
   async dreamList(daemonId: string, req: DreamListReq): Promise<DreamListPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamListPage>('memory/dream/list', req, { epoch: c.sessionEpoch })
   }
 
   async dreamGet(daemonId: string, req: DreamGetReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/get', req, { epoch: c.sessionEpoch })
   }
 
   async dreamAdopt(daemonId: string, req: DreamAdoptReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/adopt', req, { epoch: c.sessionEpoch })
   }
 
   async dreamDiscard(daemonId: string, req: DreamDiscardReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/discard', req, { epoch: c.sessionEpoch })
   }
 
   async dreamFiles(daemonId: string, req: DreamFilesReq): Promise<DreamFilesPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamFilesPage>('memory/dream/files', req, { epoch: c.sessionEpoch })
   }
 
   /** A dream's checked revisions log, proxied and never stored; a daemon without the frame has none to show. */
   async dreamRevisions(daemonId: string, req: DreamRevisionsReq): Promise<DreamRevisionsPage> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (!c.capabilities?.features?.includes(MEMORY_DREAM_REVISIONS_FEATURE))
       return { agentId: req.agentId, dreamId: req.dreamId, exists: false, revisions: [] }
     return c.conn.request<DreamRevisionsPage>('memory/dream/revisions', req, { epoch: c.sessionEpoch })
@@ -1037,12 +1059,12 @@ export class ControlSender {
 
   /** Full staged body of one candidate, so a reviewer sees what accepting installs. */
   async dreamSkillRead(daemonId: string, req: DreamSkillReadReq): Promise<DreamSkillContent> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamSkillContent>('memory/dream/skill/read', req, { epoch: c.sessionEpoch })
   }
 
   async decisionCatalog(daemonId: string, orgId: string): Promise<DecisionCatalogReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE))
       throw new NoConnection(daemonId)
     return DecisionCatalogReply.parse(
@@ -1057,7 +1079,7 @@ export class ControlSender {
   }
 
   async decisionPreview(daemonId: string, orgId: string, req: DecisionPreviewRequest): Promise<DecisionPreviewReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_PREVIEW_V1_FEATURE))
       throw new NoConnection(daemonId)
     return DecisionPreviewReply.parse(
@@ -1077,7 +1099,7 @@ export class ControlSender {
     orgId: string,
     req: DecisionEvaluationsRequest
   ): Promise<DecisionEvaluationsReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (
       c.state !== 'READY' ||
       !c.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE) ||
@@ -1101,7 +1123,7 @@ export class ControlSender {
     orgId: string,
     req: DecisionEvaluationRequest
   ): Promise<DecisionEvaluationReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return DecisionEvaluationReply.parse(
@@ -1127,7 +1149,7 @@ export class ControlSender {
     orgId: string,
     req: DecisionModelEvaluationsRequestInput
   ): Promise<DecisionModelEvaluationsReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (
       c.state !== 'READY' ||
       !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE) ||
@@ -1151,7 +1173,7 @@ export class ControlSender {
     orgId: string,
     req: DecisionModelEvaluationRequest
   ): Promise<DecisionModelEvaluationReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_MODEL_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return DecisionModelEvaluationReply.parse(
@@ -1171,7 +1193,7 @@ export class ControlSender {
     orgId: string,
     req: ApiGateEvaluationsRequestInput
   ): Promise<ApiGateEvaluationsReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(API_GATE_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return ApiGateEvaluationsReply.parse(
@@ -1190,7 +1212,7 @@ export class ControlSender {
     orgId: string,
     req: ApiGateEvaluationRequest
   ): Promise<ApiGateEvaluationReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(API_GATE_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return ApiGateEvaluationReply.parse(
@@ -1210,7 +1232,7 @@ export class ControlSender {
     orgId: string,
     req: CoordinatorFilterEvaluationsRequestInput
   ): Promise<CoordinatorFilterEvaluationsReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return CoordinatorFilterEvaluationsReply.parse(
@@ -1229,7 +1251,7 @@ export class ControlSender {
     orgId: string,
     req: CoordinatorFilterEvaluationRequest
   ): Promise<CoordinatorFilterEvaluationReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(COORDINATOR_FILTER_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return CoordinatorFilterEvaluationReply.parse(
@@ -1249,7 +1271,7 @@ export class ControlSender {
     orgId: string,
     req: DecisionRoutingEvaluationsRequestInput
   ): Promise<DecisionRoutingEvaluationsReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (
       c.state !== 'READY' ||
       !c.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE) ||
@@ -1273,7 +1295,7 @@ export class ControlSender {
     orgId: string,
     req: DecisionRoutingEvaluationRequest
   ): Promise<DecisionRoutingEvaluationReply> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     if (c.state !== 'READY' || !c.capabilities?.features.includes(DECISION_ROUTING_EVALUATIONS_V1_FEATURE))
       throw new NoConnection(daemonId)
     return DecisionRoutingEvaluationReply.parse(
@@ -1296,30 +1318,30 @@ export class ControlSender {
 
   /** Read-only inventory of the skills an agent's workspace can load, tagged by origin. */
   async listLocalSkills(daemonId: string, req: LocalSkillsReq): Promise<LocalSkillsList> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<LocalSkillsList>('skills/local', req, { epoch: c.sessionEpoch })
   }
 
   /** The slash commands the agent's runtime advertised over ACP — what it can be asked to run. */
   async listRuntimeCommands(daemonId: string, req: RuntimeCommandsReq): Promise<RuntimeCommandsList> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<RuntimeCommandsList>('runtime/commands', req, { epoch: c.sessionEpoch })
   }
 
   /** Accept one mined skill candidate — installs it for the agent (design §7). */
   async dreamSkillAccept(daemonId: string, req: DreamSkillReviewReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/skill/accept', req, { epoch: c.sessionEpoch })
   }
 
   /** Dismiss one mined skill candidate — drops its staging, records the decision. */
   async dreamSkillDismiss(daemonId: string, req: DreamSkillReviewReq): Promise<DreamState> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamState>('memory/dream/skill/dismiss', req, { epoch: c.sessionEpoch })
   }
 
   async dreamFileRead(daemonId: string, req: DreamFileReadReq): Promise<DreamFileReadContent> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<DreamFileReadContent>('memory/dream/file/read', req, { epoch: c.sessionEpoch })
   }
 
@@ -1330,7 +1352,7 @@ export class ControlSender {
     req: Omit<OrganizationSuggestionReadReq, 'offset' | 'limit'>,
     orgId?: string
   ): Promise<OrganizationSuggestionContent> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     const chunks: Buffer[] = []
     let offset = 0
     let size: number | undefined
@@ -1417,7 +1439,7 @@ export class ControlSender {
     req: OrganizationSuggestionReviewReq,
     orgId?: string
   ): Promise<Ack> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<Ack>('knowledge/suggestion/review', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 
@@ -1427,7 +1449,7 @@ export class ControlSender {
    * non-repo workspace is DATA, not an error.
    */
   async workspaceGitStatus(daemonId: string, req: WorkspaceGitStatusReq): Promise<WorkspaceGitStatus> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitStatus>('workspace/gitstatus', req, { epoch: c.sessionEpoch })
   }
 
@@ -1438,7 +1460,7 @@ export class ControlSender {
    * binary path, an unchanged path and a non-repo workspace are all DATA.
    */
   async workspaceGitDiff(daemonId: string, req: WorkspaceGitDiffReq): Promise<WorkspaceGitDiffResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitDiffResult>('workspace/gitdiff', req, { epoch: c.sessionEpoch })
   }
 
@@ -1448,7 +1470,7 @@ export class ControlSender {
    * empty repo comes back as `commits: []` (DATA), not an error.
    */
   async workspaceGitLog(daemonId: string, req: WorkspaceGitLogReq): Promise<WorkspaceGitLog> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitLog>('workspace/gitlog', req, { epoch: c.sessionEpoch })
   }
 
@@ -1458,7 +1480,7 @@ export class ControlSender {
    * fast-forward comes back as `ok:false` (DATA), not an error frame.
    */
   async workspaceGitPull(daemonId: string, req: WorkspaceGitPullReq): Promise<WorkspaceGitPullResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitPullResult>('workspace/gitpull', req, { epoch: c.sessionEpoch })
   }
 
@@ -1470,20 +1492,20 @@ export class ControlSender {
    * non-repo workspace are all DATA.
    */
   async workspaceGitStage(daemonId: string, req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitStatus>('workspace/gitstage', req, { epoch: c.sessionEpoch })
   }
 
   /** Unstage exactly these paths (REQ → `workspace/gitunstage/result`), answering with
    *  the fresh status like {@link workspaceGitStage}. */
   async workspaceGitUnstage(daemonId: string, req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitStatus>('workspace/gitunstage', req, { epoch: c.sessionEpoch })
   }
 
   /** Commit an agent's staged changes on its daemon as its commit identity; refusals are `ok:false` + `reason` data, and the CP stores no message. */
   async workspaceGitCommit(daemonId: string, req: WorkspaceGitCommitReq): Promise<WorkspaceGitCommitResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitCommitResult>('workspace/gitcommit', req, { epoch: c.sessionEpoch })
   }
 
@@ -1494,7 +1516,7 @@ export class ControlSender {
    * rejection are all `ok:false` + `reason` (DATA), not error frames.
    */
   async workspaceGitPush(daemonId: string, req: WorkspaceGitPushReq): Promise<WorkspaceGitPushResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitPushResult>('workspace/gitpush', req, { epoch: c.sessionEpoch })
   }
 
@@ -1506,7 +1528,7 @@ export class ControlSender {
    * budget would retransmit an in-flight model pass and then fail a request whose answer was coming.
    */
   async workspaceGitMessage(daemonId: string, req: WorkspaceGitMessageReq): Promise<WorkspaceGitMessageResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<WorkspaceGitMessageResult>(
       'workspace/gitmessage',
       req,
@@ -1525,13 +1547,13 @@ export class ControlSender {
    * from memory, so there is no in-flight pass a retransmit could duplicate.
    */
   async taskList(daemonId: string, req: TaskListReq): Promise<TaskList> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<TaskList>('task/list', req, { epoch: c.sessionEpoch })
   }
 
   /** Read one section of an assistant-mode agent's Activity view from the daemon's store; proxied, never stored. */
   async assistantActivityRead(daemonId: string, req: AssistantActivityReadReq): Promise<AssistantActivityReadResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<AssistantActivityReadResult>('assistant/activity/read', req, {
       epoch: c.sessionEpoch,
       agentId: req.agentId
@@ -1543,7 +1565,7 @@ export class ControlSender {
     daemonId: string,
     req: AssistantActivityWriteReq
   ): Promise<AssistantActivityWriteResult> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     // A decision waits on the post itself and is sent once, so no retransmit can answer "already decided" to it.
     const opts =
       req.operation === 'decide-draft' ? { maxTries: 1, ackTimeoutMs: ASSISTANT_DRAFT_DECISION_ACK_TIMEOUT_MS } : {}
@@ -1559,7 +1581,7 @@ export class ControlSender {
   // DISPATCH daemon, which may not hold the agent yet (it claims on receipt like a trigger), so the org
   // is passed explicitly rather than read from the connection's agent index, where it is absent.
   async agentWake(daemonId: string, req: AgentWakeReq, orgId: string): Promise<AgentWakeOk> {
-    const c = this.must(daemonId)
+    const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
     return c.conn.request<AgentWakeOk>('agent/wake', req, { epoch: c.sessionEpoch }, undefined, orgId)
   }
 }
