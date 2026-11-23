@@ -215,6 +215,25 @@ export interface BillingPendingChange {
   payUrl: string | null
 }
 
+/** A shorter history window on its way in. */
+export interface BillingRetentionNext {
+  /** Null ⇒ unlimited. */
+  days: number | null
+  /** ISO instant history older than `days` starts being deleted; null while `awaitingNotice`. */
+  from: string | null
+  /** The owner must be emailed first; the window starts at least 30 days after that. */
+  awaitingNotice: boolean
+}
+
+/** The history window in force and any shorter one pending. */
+export interface BillingRetention {
+  /** In force now; null ⇒ unlimited. */
+  days: number | null
+  next: BillingRetentionNext | null
+  /** Days between a downgrade taking effect and its shorter window applying. */
+  shortenHoldDays: number
+}
+
 export interface BillingSubscription extends BillingPlanRef {
   sessionLimit: number
   /** Monthly price, USD cents. */
@@ -239,6 +258,8 @@ export interface BillingSubscription extends BillingPlanRef {
   expiredThisMonthMicro?: number
   /** Every grant by expiry, expired ones included. Absent ⇒ an older service. */
   batches?: BillingPlanBatch[]
+  /** Absent ⇒ an older service. */
+  retention?: BillingRetention
 }
 
 export interface BillingPlanOption extends BillingPlanRef {
@@ -545,6 +566,21 @@ export function assertSubscription(body: unknown): asserts body is BillingSubscr
     )
   )
     delete b.batches
+  if (b.retention !== undefined && !isRetention(b.retention)) delete b.retention
+}
+
+function isRetention(v: unknown): v is BillingRetention {
+  const r = v as Partial<BillingRetention> | null
+  if (!r || typeof r !== 'object' || !isNullableFinite(r.days) || !isFiniteNumber(r.shortenHoldDays)) return false
+  const n = r.next as Partial<BillingRetentionNext> | null | undefined
+  if (n === null) return true
+  return (
+    !!n &&
+    typeof n === 'object' &&
+    isNullableFinite(n.days) &&
+    typeof n.awaitingNotice === 'boolean' &&
+    (n.from === null || (typeof n.from === 'string' && !Number.isNaN(Date.parse(n.from))))
+  )
 }
 
 export function assertPlans(body: unknown): asserts body is BillingPlans {

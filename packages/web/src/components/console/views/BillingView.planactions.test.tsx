@@ -411,7 +411,35 @@ describe('Change plan: changes at renewal', () => {
     expect(dialog()!.textContent).toContain('Pro Standard · 5,000 sessions')
   })
 
-  it('cancels to Free with the earliest history deletion date', async () => {
+  it('dates the history deletion from the service’s hold after the renewal, not the new window', async () => {
+    mocks.subscription.mockResolvedValue({ ...PRO, retention: { days: null, next: null, shortenHoldDays: 14 } })
+    await render()
+    await openChangePlan()
+    await click(dialog()!.querySelector('[data-plan-tier="free"]'))
+    await click(buttonIn(dialog()!, 'Review change'))
+    expect(notes()).toEqual(['History older than 7 days is deleted from Dec 18.', 'Cancel anytime before Dec 4.'])
+  })
+
+  it('warns of no deletion when the window in force is already that short', async () => {
+    const pro7 = { ...PRO_DOUBLE, retention: { days: 7, next: null, shortenHoldDays: 14 } }
+    mocks.subscription.mockResolvedValue(pro7)
+    mocks.plans.mockImplementation(async () => catalogOn('pro', 'double'))
+    await render()
+    await openChangePlan()
+    await click(dialog()!.querySelector('[data-plan-tier="free"]'))
+    await click(buttonIn(dialog()!, 'Review change'))
+    expect(notes()).toEqual(['Cancel anytime before Dec 4.'])
+  })
+
+  it('opens Change plan from the retention notice', async () => {
+    const next = { days: 7, from: '2026-12-18T00:00:00.000Z', awaitingNotice: false }
+    mocks.subscription.mockResolvedValue({ ...PRO, retention: { days: null, next, shortenHoldDays: 14 } })
+    await render()
+    await click(buttonIn(q('[data-plan-retention-next]')!, 'Change plan'))
+    expect(step()).toBe('choose')
+  })
+
+  it('falls back to the new window after the renewal on an older service', async () => {
     await render()
     await openChangePlan()
     await click(dialog()!.querySelector('[data-plan-tier="free"]'))

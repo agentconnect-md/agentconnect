@@ -5511,6 +5511,11 @@
       },
       "cancelScheduled": "Cancel",
       "cancelScheduledError": "Couldn't cancel the scheduled change: {error}",
+      "retention": {
+        "deletes": "History older than {days, plural, one {# day} other {# days}} will be deleted from {date}.",
+        "awaiting": "History retention will shorten to {days, plural, one {# day} other {# days}}; you'll be emailed at least 30 days before.",
+        "upgradeKeeps": "Upgrading keeps your history."
+      },
       "increase": {
         "title": "Increase limit",
         "more": "Need more?",

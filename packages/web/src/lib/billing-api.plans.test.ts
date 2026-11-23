@@ -97,6 +97,39 @@ describe('assertSubscription', () => {
     expect(body.batches).toHaveLength(2)
     expect(body.planCreditMicro).toBe(4_000_000)
   })
+
+  it('keeps a well-formed retention: none pending, a dated window, and one awaiting its notice', () => {
+    const shapes = [
+      { days: null, next: null, shortenHoldDays: 7 },
+      { days: null, next: { days: 7, from: '2026-12-08T00:00:00.000Z', awaitingNotice: false }, shortenHoldDays: 7 },
+      { days: 30, next: { days: 7, from: null, awaitingNotice: true }, shortenHoldDays: 0 }
+    ]
+    for (const retention of shapes) {
+      const body: Record<string, unknown> = { ...SUBSCRIPTION, retention }
+      assertSubscription(body)
+      expect(body.retention).toEqual(retention)
+    }
+  })
+
+  it('drops a malformed retention and keeps the plan', () => {
+    const next = { days: 7, from: '2026-12-08T00:00:00.000Z', awaitingNotice: false }
+    for (const retention of [
+      null,
+      'unlimited',
+      { days: '30', next: null, shortenHoldDays: 7 },
+      { days: null, next: null },
+      { days: null, shortenHoldDays: 7 },
+      { days: null, next: { ...next, from: 'soon' }, shortenHoldDays: 7 },
+      { days: null, next: { ...next, from: 1 }, shortenHoldDays: 7 },
+      { days: null, next: { ...next, awaitingNotice: 'yes' }, shortenHoldDays: 7 },
+      { days: null, next: { from: null, awaitingNotice: true }, shortenHoldDays: 7 }
+    ]) {
+      const body: Record<string, unknown> = { ...SUBSCRIPTION, retention }
+      expect(() => assertSubscription(body)).not.toThrow()
+      expect(body).not.toHaveProperty('retention')
+      expect(body.retentionDays).toBe(30)
+    }
+  })
 })
 
 describe('plan reads', () => {

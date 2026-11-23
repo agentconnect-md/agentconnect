@@ -5511,6 +5511,11 @@
       },
       "cancelScheduled": "取消",
       "cancelScheduledError": "无法取消已安排的变更：{error}",
+      "retention": {
+        "deletes": "超过 {days, plural, other {# 天}}的历史记录将从 {date} 起删除。",
+        "awaiting": "历史记录保留期将缩短为 {days, plural, other {# 天}}；我们会至少提前 30 天发邮件通知你。",
+        "upgradeKeeps": "升级套餐可保留历史记录。"
+      },
       "increase": {
         "title": "提高上限",
         "more": "需要更多？",
