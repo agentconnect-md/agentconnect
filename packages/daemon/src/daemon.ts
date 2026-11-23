@@ -980,6 +980,7 @@ import {
   type SessionAdmissionRefusal,
   type SessionAdmissionVerdict
 } from './session-admission.js'
+import { outOfCredits, turnFailureCodeWithRefusal, turnFailureNotice } from './daemon/turn-failure-notice.js'
 import { DecisionEvaluator, type DecisionEvaluationInput } from './decisions/evaluator.js'
 import { DecisionEvaluationReader } from './decisions/evaluations.js'
 import { DecisionModelEvaluationReader } from './decisions/model-evaluations.js'
@@ -21060,8 +21061,8 @@ export class Daemon {
     // Unwrap ACP error data so quota and authentication failures retain their actionable cause.
     const reason = this.maskAgentSecrets(ctx.agentId, turnFailureReason(err))
     // A refused new session is not the agent failing: its notice is the refusal alone.
-    const notice =
-      err instanceof SessionAdmissionRefusedError ? `⚠️ ${reason}` : `⚠️ Agent failed to respond: ${reason}`
+    const admissionRefused = err instanceof SessionAdmissionRefusedError
+    const plainNotice = admissionRefused ? `⚠️ ${reason}` : `⚠️ Agent failed to respond: ${reason}`
     if (ctx.webchat) {
       ctx.webchat.doneSent = true
       ctx.webchat.sink.done({
@@ -21071,12 +21072,14 @@ export class Daemon {
       })
       // A task with no browser turn needs a durable post; its stream sink has no listener.
       if (ctx.webchat.initiator === 'agent' && !ctx.webchat.continuation)
-        await this.postWebchatAgentMessage(ctx.agentId, ctx.message, notice).catch((postError: unknown) =>
+        // The console reads the tag itself and offers its own next steps, so webchat keeps the plain notice.
+        await this.postWebchatAgentMessage(ctx.agentId, ctx.message, plainNotice).catch((postError: unknown) =>
           this.log.warn(`webchat: failure notice failed: ${formatErr(postError)}`)
         )
       // A continuation turn also surfaces the failure on the origin platform (§5.2).
       if (!ctx.webchat.continuation) return
     }
+    const notice = admissionRefused ? plainNotice : this.turnFailureNotice(ctx.agentId, ctx.agentName, reason)
     // A showing acknowledgement becomes the notice, so it is not posted a second time.
     const replaced = (await ctx.acknowledgement?.replace(notice).catch(() => false)) === true
     if (ctx.replyConn) {
@@ -21093,7 +21096,14 @@ export class Daemon {
     // A platform with no free-text reply transport surfaces the failure through its own sink.
     if (!replaced)
       await this.platformFailureSinks
-        .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
+        .get(ctx.platform)?.({
+          reason,
+          notice,
+          outOfCredits: outOfCredits(reason, this.modelSessions.enabled),
+          integrationId: ctx.integrationId,
+          thread: ctx.thread,
+          channel: ctx.channel
+        })
         .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
     // Direct posts bypass the recorded apply path, so persist the notice for console readers too.
     if (ctx.statusThread) {
@@ -21138,7 +21148,15 @@ export class Daemon {
 
   private readonly platformFailureSinks = new Map<
     string,
-    (ctx: { reason: string; integrationId?: string; thread?: string; channel: string }) => Promise<void>
+    (ctx: {
+      reason: string
+      /** The chat notice core built for `reason`; a refusal's carries its next steps. */
+      notice: string
+      outOfCredits: boolean
+      integrationId?: string
+      thread?: string
+      channel: string
+    }) => Promise<void>
   >([
     [
       'linear',
@@ -21150,7 +21168,10 @@ export class Daemon {
         if (!conn || !session) return
         // `error`, not `response`: it is what drives the Linear session to `error` rather than
         // leaving it active, and it is the same row the warm converger would have emitted.
-        await conn.postActivity(session, { type: 'error', body: linearFailureBody(ctx.reason) })
+        await conn.postActivity(session, {
+          type: 'error',
+          body: linearFailureBody(ctx.outOfCredits ? ctx.notice : ctx.reason)
+        })
       }
     ],
     [
@@ -21160,7 +21181,7 @@ export class Daemon {
         if (!conn) return
         // A DM's thread coordinate is the Space itself, and a DM create carries no thread option (§5).
         const thread = ctx.thread && ctx.thread !== ctx.channel ? ctx.thread : undefined
-        await conn.postChrome(ctx.channel, thread, `⚠️ Agent failed to respond: ${ctx.reason}`)
+        await conn.postChrome(ctx.channel, thread, ctx.notice)
       }
     ],
     [
@@ -21168,21 +21189,21 @@ export class Daemon {
       async (ctx) => {
         const conn = ctx.integrationId ? this.msTeamsConnByIntegration.get(ctx.integrationId) : undefined
         const target = conn?.targetFor(ctx.channel, ctx.thread)
-        if (conn && target) await conn.postText(target, `⚠️ Agent failed to respond: ${ctx.reason}`)
+        if (conn && target) await conn.postText(target, ctx.notice)
       }
     ],
     [
       'wechat',
       async (ctx) => {
         const conn = ctx.integrationId ? this.weChatConnByIntegration.get(ctx.integrationId) : undefined
-        if (conn) await conn.sendText(ctx.channel, `⚠️ Agent failed to respond: ${ctx.reason}`)
+        if (conn) await conn.sendText(ctx.channel, ctx.notice)
       }
     ],
     [
       'wecom',
       async (ctx) => {
         const conn = ctx.integrationId ? this.weComConnByIntegration.get(ctx.integrationId) : undefined
-        if (conn) await conn.sendText(ctx.channel, `⚠️ Agent failed to respond: ${ctx.reason}`)
+        if (conn) await conn.sendText(ctx.channel, ctx.notice)
       }
     ],
     [
@@ -21203,7 +21224,7 @@ export class Daemon {
           this.emailTurnHost() as unknown as EmailTurnHost<{ plan: typeof plan }>,
           { plan },
           { conn, message },
-          `⚠️ Agent failed to respond: ${ctx.reason}`
+          ctx.notice
         )
       }
     ]
@@ -25466,35 +25487,27 @@ export class Daemon {
       // as a `post` so it lands after the flushed body and is recorded into the
       // transcript either way.
       const reason = turnFailureReason(err)
+      const refused = outOfCredits(reason, this.modelSessions.enabled)
+      const notice = this.turnFailureNotice(agentId, plan.agentName, reason)
       if (p.conv instanceof FeishuConverger) {
         const attribution = plan.showFooter ? await currentAttributionInfo() : undefined
-        for (const action of p.conv.onFailure(reason, attribution)) this.enqueueApply(p, action)
+        for (const action of p.conv.onFailure(reason, attribution, refused ? notice : undefined))
+          this.enqueueApply(p, action)
       } else if (p.conv instanceof LinearConverger) {
-        // The settling `error` is what moves the Linear session out of `active` (§15-2), so it
-        // cannot fall through to the Slack-shaped `post` notice below — `applyLinearAction`
-        // has no arm for that kind and would silently drop it, leaving the session busy
-        // forever. The converger flushes its own buffer and de-duplicates a runtime that
-        // already narrated the same reason.
-        for (const action of p.conv.onFailure(linearFailureBody(reason))) this.enqueueApply(p, action)
+        // Only the settling `error` moves the Linear session out of `active` (§15-2); a `post` would be dropped.
+        for (const action of p.conv.onFailure(linearFailureBody(refused ? notice : reason)))
+          this.enqueueApply(p, action)
       } else {
         let covered = false
         for (const action of p.conv.flushTerminal()) {
           if (action.kind === 'post') {
-            // A runtime that narrated its terminal error narrated it WRAPPED — Claude Code's "Failed
-            // to authenticate. API Error: 401 …" — while `reason` is the unwrapped sentence. When the
-            // narration is exactly that wrapper, post the sentence instead: it is the same message,
-            // minus the runtime's guess at what it means.
-            if (undecorateRuntimeError(action.text) === reason) action.text = reason
-            covered ||= action.text.includes(reason)
+            // A runtime's wrapped narration of the reason becomes the bare sentence, or for an out-of-credits refusal the notice.
+            if (undecorateRuntimeError(action.text) === reason) action.text = refused ? notice : reason
+            covered ||= action.text.includes(refused ? notice : reason)
           }
           this.enqueueApply(p, action)
         }
-        if (!covered)
-          this.enqueueApply(p, {
-            kind: 'post',
-            text: `⚠️ Agent failed to respond: ${reason}`,
-            attributed: false
-          })
+        if (!covered) this.enqueueApply(p, { kind: 'post', text: notice, attributed: false })
       }
       this.clearTurnActivity(run) // clear "is thinking…"
       try {
@@ -25513,7 +25526,8 @@ export class Daemon {
       }
     }
     if (hookContext && this.reportsHookOutcome(entry)) {
-      await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason: turnFailureCode(err) }, entry)
+      const reason = turnFailureCodeWithRefusal(err, turnFailureReason(err), this.modelSessions.enabled)
+      await this.emitHookCompletion(hookContext, 'failed', { sessionId, reason }, entry)
     }
     return 'failed'
   }
@@ -27211,6 +27225,18 @@ export class Daemon {
       if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
       this.openingOutwardSessionIds.set(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId), outward)
     }
+  }
+
+  /** The chat notice for a failed turn; an out-of-credits refusal links Billing and the agent's machine picker. */
+  private turnFailureNotice(agentId: string, agentName: string, reason: string): string {
+    return turnFailureNotice(reason, {
+      readsOrgRefusals: this.modelSessions.enabled,
+      agentName,
+      links: () => ({
+        billing: `${this.webAppBase()}${this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''}/billing`,
+        agentPlacement: `${this.agentLink(agentId)}?tab=config&edit=placement`
+      })
+    })
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same

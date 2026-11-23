@@ -119,6 +119,12 @@
       "import": "./dist/mcp-app.js",
       "default": "./dist/mcp-app.js"
     },
+    "./org-refusal": {
+      "development": "./src/org-refusal.ts",
+      "types": "./dist/org-refusal.d.ts",
+      "import": "./dist/org-refusal.js",
+      "default": "./dist/org-refusal.js"
+    },
     "./package.json": "./package.json",
     "./runtime-command": {
       "development": "./src/frames/runtime-command.ts",

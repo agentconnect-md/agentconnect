@@ -651,7 +651,7 @@ export class FeishuConverger {
 
   /** Prompt failure after the card has started: preserve any useful runtime-authored
    * error text, otherwise append one concise failure line, then close the card. */
-  onFailure(reason: string, attribution?: ReplyAttributionInfo): FeishuAction[] {
+  onFailure(reason: string, attribution?: ReplyAttributionInfo, refusalNotice?: string): FeishuAction[] {
     this.cardText = flattenUnsafeLinks(this.cardText, { resolveFileLink: this.resolveFileLink })
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
@@ -660,8 +660,9 @@ export class FeishuConverger {
       this.recordDirty = false
       return this.mode === 'none' ? [] : [{ kind: 'card-cancel' }]
     }
-    const notice = `⚠️ Agent failed to respond: ${reason}`
-    const covered = display.includes(reason)
+    // A refusal's notice carries next steps the runtime's own narration of it lacks, so it is always added.
+    const notice = refusalNotice ?? `⚠️ Agent failed to respond: ${reason}`
+    const covered = display.includes(refusalNotice ?? reason)
     const finalText = covered ? this.cardText : display ? `${this.cardText}\n\n${notice}` : notice
     const actions =
       this.mode === 'minimal' ? this.closeSegment(false) : [...this.drainReasoning(), ...this.flush(true, false)]
