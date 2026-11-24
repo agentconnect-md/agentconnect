@@ -197,14 +197,12 @@ export function PlanCard({
   const sub = subscription.data
   // A failed read hides only the sessions block; nothing else on the card depends on it.
   const usage = reads.usage.error ? undefined : reads.usage.data
-  const price = !sub ? '' : sub.priceCents === null ? t('contract') : t('price', { price: fmtCents(sub.priceCents) })
-  const priceLine =
+  const billingDate =
     sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
       ? t(sub.priceCents === null || sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', {
-          price,
           date: day(sub.paidThrough)
         })
-      : price
+      : null
   // The window in force; an older service sends only the plan's.
   const keptDays = sub ? (sub.retention ? sub.retention.days : sub.retentionDays) : null
   return (
@@ -249,28 +247,59 @@ export function PlanCard({
           </div>
         </div>
       ) : (
-        <div className="flex flex-1 flex-wrap items-end gap-x-3 gap-y-1 px-[18px] py-6">
-          <span className="font-sans text-[44px] font-semibold leading-none tracking-[-0.03em]" data-plan-name="true">
-            {sub.tierName}
-            {sub.tierId !== FREE_TIER_ID && sub.optionName !== sub.tierName && (
-              <span className="ml-2.5 text-[20px] tracking-[-0.01em] text-(--text-secondary)">{sub.optionName}</span>
+        <div className="flex flex-1 flex-col justify-end gap-1 px-[18px] pt-3 pb-1">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span
+              className="min-w-0 font-sans text-[32px] font-semibold leading-none tracking-[-0.03em] wrap-anywhere desktop:text-[44px]"
+              data-plan-name="true"
+            >
+              {sub.tierName}
+              {sub.tierId !== FREE_TIER_ID && sub.optionName !== sub.tierName && (
+                <span className="ml-2.5 text-[16px] tracking-[-0.01em] text-(--text-secondary) desktop:text-[20px]">
+                  {sub.optionName}
+                </span>
+              )}
+            </span>
+            <span
+              className="ms-auto font-sans text-[12px] leading-normal whitespace-nowrap text-(--text-tertiary)"
+              data-plan-price="true"
+            >
+              {sub.priceCents === null
+                ? t('contract')
+                : t.rich('price', {
+                    price: fmtCents(sub.priceCents),
+                    amount: (value) => (
+                      <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary) tabular-nums">
+                        {value}
+                      </strong>
+                    )
+                  })}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 font-sans text-[12px] leading-4 text-(--text-secondary)">
+            {billingDate && (
+              <span className="inline-flex items-center gap-1.5" data-plan-billing-date="true">
+                <Icon name="calendar-days" size={13} className="flex-none" />
+                {billingDate}
+              </span>
             )}
-          </span>
-          <span className="mono pb-[5px] text-[12px] text-(--text-tertiary)">
-            <span data-plan-price="true">{priceLine}</span>
-            <span data-plan-retention="true">
-              {' · '}
+            <span className="inline-flex items-center gap-1.5" data-plan-retention="true">
+              <Icon name="clock" size={13} className="flex-none" />
               {keptDays === null ? t('change.historyUnlimited') : t('change.historyDays', { days: keptDays })}
             </span>
-          </span>
+          </div>
         </div>
       )}
-      {sub?.scheduled && (
-        <ScheduledChange
-          sub={sub}
-          scheduled={sub.scheduled}
-          onCancel={role === 'owner' ? onCancelScheduled : undefined}
-        />
+      {sub && (
+        <div className="min-h-[52px] px-[18px] py-1 max-desktop:@min-[382px]:min-h-9 desktop:row-start-3 desktop:@min-[782px]:min-h-9">
+          {sub.scheduled && (
+            <ScheduledChange
+              sub={sub}
+              scheduled={sub.scheduled}
+              onCancel={role === 'owner' ? onCancelScheduled : undefined}
+            />
+          )}
+        </div>
       )}
       {usage && <SessionsMeter usage={usage} increase={role === 'owner' ? increase : undefined} />}
     </div>
@@ -306,10 +335,15 @@ function ScheduledChange({
   return (
     <div
       data-plan-scheduled="true"
-      className="mx-[18px] mb-1 flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-2 desktop:row-start-3"
+      className="flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-1.5 desktop:@max-[540px]:gap-1.5 desktop:@max-[540px]:px-2"
     >
-      <Icon name="calendar-clock" size={14} color="var(--status-info)" />
-      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-normal">
+      <Icon
+        name="calendar-clock"
+        size={14}
+        color="var(--status-info)"
+        className="flex-none desktop:@max-[540px]:hidden"
+      />
+      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-4 wrap-anywhere">
         {sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan })}
         {error && (
           <span role="alert" className="mt-1 block font-normal text-(--status-error)">
