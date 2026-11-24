@@ -1406,9 +1406,8 @@ export default function BillingView() {
 
   return (
     <div className="wrap">
-      <div className="mb-4 flex min-h-[34px] items-center gap-4">
-        <p className="psub mt-0 flex-1">{t('description')}</p>
-        {returnTo && (
+      {returnTo && (
+        <div className="mb-4 flex min-h-[34px] items-center justify-end">
           <Link
             className="lnk inline-flex items-center gap-1.5 font-sans text-[13px] font-medium leading-normal"
             href={returnTo}
@@ -1416,8 +1415,8 @@ export default function BillingView() {
             <Icon name="arrow-left" size={14} />
             {t('backToConversation')}
           </Link>
-        )}
-      </div>
+        </div>
+      )}
 
       {cardReturn.state && (
         <CardReturnBanner
@@ -1480,8 +1479,12 @@ export default function BillingView() {
                 sub={plan.subscription.data}
                 onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
               />
-              <div className="grid items-stretch gap-[18px] desktop:grid-cols-2">
-                <div className="card flex flex-col" data-balance-card="true">
+              {/* Shared subgrid rows (head, figure, notice, foot) keep both cards' figures and feet level. */}
+              <div className="grid items-stretch gap-[18px] desktop:grid-cols-2 desktop:grid-rows-[auto_1fr_auto_auto] desktop:gap-y-0">
+                <div
+                  className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
+                  data-balance-card="true"
+                >
                   <div className="cardhead h-[60px] justify-between gap-3 border-b-0">
                     <span className="inline-flex items-center gap-3">
                       <span className="cardtitle">{t('balance')}</span>

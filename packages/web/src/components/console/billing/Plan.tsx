@@ -142,7 +142,7 @@ function SessionsMeter({ usage, increase }: { usage: SessionMonthUsageDto; incre
   // Width is data, so it rides an inline style.
   const pct = usage.limit ? Math.min(100, (usage.used / usage.limit) * 100) : 100
   return (
-    <div data-plan-sessions="true" className="flex h-[76px] flex-col justify-center px-[18px]">
+    <div data-plan-sessions="true" className="flex h-[76px] flex-col justify-center px-[18px] desktop:row-start-4">
       <div className="flex items-baseline justify-between gap-3">
         <span className="eyebrow">{t('sessions')}</span>
         <span className="mono text-[12.5px] text-(--text-tertiary)">
@@ -208,7 +208,7 @@ export function PlanCard({
   // The window in force; an older service sends only the plan's.
   const keptDays = sub ? (sub.retention ? sub.retention.days : sub.retentionDays) : null
   return (
-    <div className="card flex flex-col" data-plan-card="true">
+    <div className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid" data-plan-card="true">
       <div className="cardhead h-[60px] justify-between gap-2 border-b-0">
         <span className="inline-flex min-w-0 items-center gap-2">
           <span className="cardtitle">{t('title')}</span>
@@ -252,7 +252,7 @@ export function PlanCard({
         <div className="flex flex-1 flex-wrap items-end gap-x-3 gap-y-1 px-[18px] py-6">
           <span className="font-sans text-[44px] font-semibold leading-none tracking-[-0.03em]" data-plan-name="true">
             {sub.tierName}
-            {sub.tierId !== FREE_TIER_ID && (
+            {sub.tierId !== FREE_TIER_ID && sub.optionName !== sub.tierName && (
               <span className="ml-2.5 text-[20px] tracking-[-0.01em] text-(--text-secondary)">{sub.optionName}</span>
             )}
           </span>
@@ -306,7 +306,7 @@ function ScheduledChange({
   return (
     <div
       data-plan-scheduled="true"
-      className="mx-[18px] mb-1 flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-2"
+      className="mx-[18px] mb-1 flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-2 desktop:row-start-3"
     >
       <Icon name="calendar-clock" size={14} color="var(--status-info)" />
       <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-normal">
@@ -563,7 +563,7 @@ export function PlanCreditStrip({ sub, balanceMicro }: { sub: BillingSubscriptio
         title={t('open')}
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
-        className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-center gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] text-left transition-colors hover:bg-(--surface-hover)"
+        className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-center desktop:row-start-4 gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] text-left transition-colors hover:bg-(--surface-hover)"
       >
         <Stat label={t('planCredits')} value={fmtMicroUsd(split.planMicro)} />
         <Stat label={t('topUps')} value={fmtMicroUsd(split.topUpMicro)} />
