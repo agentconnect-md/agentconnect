@@ -1717,6 +1717,8 @@ type HostRetirement = {
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
+/** An agent config watcher that stayed armed this long resets its out-of-watch-capacity backoff. */
+const WATCHER_STABLE_MS = 60 * 60_000
 
 /** Hook refusals that admitted nothing and may pass: the relay retries them, so the ack is never replayed from cache. */
 const HOOK_REFUSALS_FOR_NOW = new Set<string>(['draining', RD_ACK_NOT_HOLDER, 'busy', 'queue_full'])
@@ -2463,6 +2465,8 @@ export class Daemon {
   // Spaces re-arms of an agent config watcher the OS ran out of watch capacity for.
   private readonly watcherBackoff = new Backoff({ baseMs: 30_000, capMs: 600_000 })
   private watcherRetryTimer?: TimerHandle
+  // When the current agent config watcher was armed; one that outlived WATCHER_STABLE_MS starts the backoff over.
+  private watcherArmedAt = 0
   private agentsDir = ''
   private removalObligationsDir = ''
   private cfg!: ReturnType<typeof loadConfig>
@@ -6810,6 +6814,7 @@ export class Daemon {
       ignored: (path, stats) => ignoreAgentWatchPath(this.agentsDir, path, stats)
     })
     this.watcher = watcher
+    this.watcherArmedAt = this.clock.now()
     const debounced = () => {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = setTimeout(() => {
@@ -6834,6 +6839,8 @@ export class Daemon {
     }
     this.watcher = undefined
     void watcher.close().catch(() => {})
+    // A watcher that held long enough is a new episode, not the same one escalating toward the cap.
+    if (this.clock.now() - this.watcherArmedAt >= WATCHER_STABLE_MS) this.watcherBackoff.reset()
     const delayMs = this.watcherBackoff.next()
     this.log.warn(
       `agent config watcher: ${code}, out of file-watch capacity; re-arming in ${Math.round(delayMs / 1000)}s`
