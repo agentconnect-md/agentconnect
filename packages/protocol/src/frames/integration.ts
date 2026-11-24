@@ -97,6 +97,7 @@ export type IntegrationWeComConfig = z.infer<typeof IntegrationWeComConfig>
 
 // The Mattermost payload (self-hosted API v4): WebSocket + REST authenticated by a Bot Account token or PAT.
 export const IntegrationMattermostConfig = z.object({
+  websocketRepliesOnly: z.boolean().optional(),
   serverUrl: z.string().url({ protocol: /^https?$/ }), // normalized base URL without trailing slash (http or https for self-hosted)
   botToken: z.string().min(1), // Bot Account token or PAT (plaintext — never log)
   botUserId: z.string().min(1).optional(), // resolved via GET /api/v4/users/me; seeded by CP

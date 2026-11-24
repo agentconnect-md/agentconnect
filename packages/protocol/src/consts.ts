@@ -125,6 +125,8 @@ export const EMAIL_AUTHSERV_ID_DEFAULT = 'mx.cloudflare.net'
 /** The daemon serves an Email integration, with mail forwarded by the relay and replies sent through it (email-integration.md §8); a spec names it in `requires`. */
 export const EMAIL_V1_FEATURE = 'email-v1'
 
+export const MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE = 'mattermost-websocket-replies-v1'
+
 /** CP answers `agent/email-members`: which addresses are members who may write to an agent (email-integration.md §4). A daemon must not send that REQ before seeing this: a new request type is frame-fatal to an older CP. */
 export const EMAIL_MEMBERS_V1_FEATURE = 'email-members-v1'
 

@@ -94,7 +94,7 @@ export function mattermostApprovalTag(): string {
 export interface MattermostApprovalPort {
   readonly maxPostSize?: number
   workspaceId?(): string
-  actionCallback?(agentId?: string): MattermostActionCallbackConfig | undefined
+  actionCallback?(agentId?: string, integrationId?: string): MattermostActionCallbackConfig | undefined
   createPost(
     channel: string,
     text: string,
@@ -235,7 +235,7 @@ export const mattermostApprovalCards: ApprovalCardFacet = {
       .map((o, i) => `${i + 1}. ${md(clampMattermostText(o.name, MATTERMOST_LABEL_CAP))}`)
       .join('\n')
     const buildLimit = Math.max(1, port.maxPostSize ?? MATTERMOST_DEFAULT_POST_SIZE)
-    const initialCallback = port.actionCallback?.(ask.via?.agentId)
+    const initialCallback = port.actionCallback?.(ask.via?.agentId, ask.via?.integrationId)
     if (initialCallback) {
       const totalLen = body.length + (attachmentText ? attachmentText.length + 2 : 0)
       if (totalLen > buildLimit || body.length > buildLimit || attachmentText.length > buildLimit) return null
@@ -250,7 +250,7 @@ export const mattermostApprovalCards: ApprovalCardFacet = {
         const maxPostSize = Math.max(1, renderPort?.maxPostSize ?? port.maxPostSize ?? MATTERMOST_DEFAULT_POST_SIZE)
         const resolvedAgentId = ask.via?.agentId ?? agentId
         const resolvedIntegrationId = ask.via?.integrationId ?? integrationId
-        const callback = renderPort?.actionCallback?.(resolvedAgentId)
+        const callback = renderPort?.actionCallback?.(resolvedAgentId, resolvedIntegrationId)
         if (callback) {
           if (!resolvedAgentId || !resolvedIntegrationId) return null
           const totalLen = body.length + (attachmentText ? attachmentText.length + 2 : 0)

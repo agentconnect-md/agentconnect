@@ -109,7 +109,11 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     dingTalkCredentialRoutesPlugin: ['PUT /bots/:id/dingtalk/credentials'],
     weChatLoginRoutesPlugin: ['POST /integrations/wechat/login', 'GET /integrations/wechat/login/:id'],
     weComCredentialRoutesPlugin: ['PUT /bots/:id/wecom/credentials'],
-    mattermostCredentialRoutesPlugin: ['PUT /bots/:id/mattermost/credentials'],
+    mattermostCredentialRoutesPlugin: [
+      'GET /integrations/:id/mattermost/reply-settings',
+      'PUT /integrations/:id/mattermost/reply-settings',
+      'PUT /bots/:id/mattermost/credentials'
+    ],
     emailAddressRoutesPlugin: ['GET /integrations/email/address'],
     msTeamsRoutesPlugin: [
       'PUT /bots/:id/msteams/credentials',

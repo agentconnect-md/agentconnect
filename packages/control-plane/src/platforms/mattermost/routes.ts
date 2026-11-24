@@ -10,6 +10,7 @@ import { toBotDto } from '../../http/routes/bots.js'
 import { pushBotConfig } from '../../http/bot-config-push.js'
 import { BotId } from '../../domain/ids.js'
 import { MattermostCreateCredentials, verifyMattermostBot, type MattermostCheckOptions } from './provider.js'
+import { registerMattermostReplySettings } from './reply-settings.js'
 
 const ReplaceMattermostTokenBody = MattermostCreateCredentials.pick({ botToken: true })
 
@@ -19,6 +20,7 @@ export function mattermostCredentialRoutes(
   checkOpts?: Pick<MattermostCheckOptions, 'allowPrivateNetwork' | 'allowlist'>
 ) {
   return async function mattermostCredentialRoutesPlugin(app: FastifyInstance): Promise<void> {
+    registerMattermostReplySettings(app, deps)
     app.withTypeProvider<ZodTypeProvider>().put(
       '/bots/:id/mattermost/credentials',
       {

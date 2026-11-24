@@ -389,6 +389,11 @@ In `packages/message/src/mattermost-message.ts` and `mattermost-mention-address.
 
 ## 6. Interactive cards: org-scoped Relay callbacks and pure-WS fallback
 
+An agent editor can enable **Use numbered replies over WebSocket** on a Mattermost integration card.
+The setting takes effect for new cards on that installation, including when a public callback URL is configured.
+Members can reply with the displayed number in the original thread or DM; the existing actor and thread checks still apply.
+The default is automatic callback selection. Turning the option off restores that default.
+
 Mattermost Interactive Message Attachment button callbacks include **no** cryptographic request
 signature or verification token in HTTP headers, and Mattermost buttons cannot open external URLs.
 AgentConnect therefore authenticates clicks using an HMAC-signed `mm1` token embedded inside

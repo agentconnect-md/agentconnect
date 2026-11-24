@@ -1723,7 +1723,7 @@ async function authenticatedFetch(
   return retried
 }
 
-async function apiGet<T>(path: string, init?: Omit<RequestInit, 'headers'>): Promise<T> {
+export async function apiGet<T>(path: string, init?: Omit<RequestInit, 'headers'>): Promise<T> {
   const res = await authenticatedFetch(path, { cache: 'no-store', ...init })
   // Parse the denial body like the write helpers do: reads carry machine-readable
   // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a

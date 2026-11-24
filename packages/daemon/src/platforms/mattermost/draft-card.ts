@@ -72,7 +72,7 @@ export function mattermostDraftTag(): string {
 /** Structural Mattermost port used by assistant draft cards; satisfied by {@link MattermostConnection}. */
 export interface MattermostDraftPort {
   workspaceId(): string
-  actionCallback?(agentId?: string): MattermostActionCallbackConfig | undefined
+  actionCallback?(agentId?: string, integrationId?: string): MattermostActionCallbackConfig | undefined
   openDirectMessage(user: string): Promise<string>
   isFullMember(user: string): Promise<boolean>
   getChannelInfo(channel: string): Promise<{ isIm?: boolean; user?: string }>
@@ -225,7 +225,7 @@ export function mattermostDraftCardPort(conn: MattermostDraftPort, integrationId
     postCard: async (channel, card, thread) => {
       if (!('draftId' in card)) return undefined
       const rootId = thread && thread !== MATTERMOST_DM_THREAD ? thread : undefined
-      const callback = conn.actionCallback?.(card.agentId)
+      const callback = conn.actionCallback?.(card.agentId, integrationId)
       if (callback) {
         const props = buildPendingProps(callback, integrationId, channel, card)
         if (!props) return undefined
@@ -264,7 +264,7 @@ export function mattermostDraftCardPort(conn: MattermostDraftPort, integrationId
           () => false
         )
       }
-      const callback = conn.actionCallback?.(card.agentId)
+      const callback = conn.actionCallback?.(card.agentId, integrationId)
       if (callback) {
         const props = buildPendingProps(callback, integrationId, channel, card) ?? { attachments: [] }
         return await conn.patchPost(ts, renderDraftHeaderAndBody(card), { props }).then(

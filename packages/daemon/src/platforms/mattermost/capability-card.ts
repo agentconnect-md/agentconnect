@@ -30,7 +30,7 @@ import type { MattermostTurnState } from './turn-output.js'
 /** Structural Mattermost port used by capability cards; satisfied by {@link MattermostConnection}. */
 export interface MattermostCapabilityPort {
   workspaceId?(): string
-  actionCallback?(agentId?: string): MattermostActionCallbackConfig | undefined
+  actionCallback?(agentId?: string, integrationId?: string): MattermostActionCallbackConfig | undefined
   createPost(
     channel: string,
     text: string,
@@ -164,22 +164,25 @@ export const mattermostCapabilityCards: CapabilityCardFacet = {
     return {
       render: ({ conn, channel, tag }) => {
         const port = conn as Partial<MattermostCapabilityPort> | undefined
-        const actions = buildMattermostAttachmentActions(port?.actionCallback?.(model.via.agentId), [
-          {
-            id: 'decline',
-            name: 'Decline',
-            style: 'danger',
-            claims: {
-              agentId: model.via.agentId,
-              integrationId: model.via.integrationId,
-              channelId: channel,
-              kind: 'capability',
-              requestId: model.requestId,
-              cardId: model.cardId,
-              generation: model.generation
+        const actions = buildMattermostAttachmentActions(
+          port?.actionCallback?.(model.via.agentId, model.via.integrationId),
+          [
+            {
+              id: 'decline',
+              name: 'Decline',
+              style: 'danger',
+              claims: {
+                agentId: model.via.agentId,
+                integrationId: model.via.integrationId,
+                channelId: channel,
+                kind: 'capability',
+                requestId: model.requestId,
+                cardId: model.cardId,
+                generation: model.generation
+              }
             }
-          }
-        ])
+          ]
+        )
         if (actions) {
           return {
             text: baseLines.join('\n\n'),

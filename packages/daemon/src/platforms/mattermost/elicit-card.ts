@@ -52,7 +52,7 @@ const MATTERMOST_ELICIT_MARK: Record<ElicitCardMark, string> = {
 /** Structural Mattermost port used by elicitation cards; satisfied by {@link MattermostConnection}. */
 export interface MattermostElicitPort {
   workspaceId?(): string
-  actionCallback?(agentId?: string): MattermostActionCallbackConfig | undefined
+  actionCallback?(agentId?: string, integrationId?: string): MattermostActionCallbackConfig | undefined
   createPost(
     channel: string,
     text: string,
@@ -290,7 +290,7 @@ export const mattermostElicitCards: ElicitCardFacet = {
           : []
         const actions =
           specs.length > 0
-            ? buildMattermostAttachmentActions(port.actionCallback?.(turn.plan.agentId), specs)
+            ? buildMattermostAttachmentActions(port.actionCallback?.(turn.plan.agentId, turn.plan.integrationId), specs)
             : undefined
         const props = actions
           ? mattermostAttachmentProps({

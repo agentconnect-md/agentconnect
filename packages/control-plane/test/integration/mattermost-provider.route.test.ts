@@ -110,6 +110,27 @@ const install = (
   })
 
 describe('a Mattermost bot from POST /integrations', () => {
+  it('sets and clears numbered replies on an existing installation without replacing its bot', async () => {
+    const agentId = await placedAgent()
+    const { app, control } = harness()
+    const installed = await install(app, agentId)
+    expect(installed.statusCode).toBe(201)
+    const id = installed.json().id
+    const url = `${ORG}/integrations/${id}/mattermost/reply-settings`
+    expect((await app.app.inject({ method: 'GET', url })).json()).toEqual({ websocketRepliesOnly: false })
+    for (const enabled of [true, false]) {
+      const payload = { websocketRepliesOnly: enabled }
+      const result = await app.app.inject({ method: 'PUT', url, payload })
+      expect(result.statusCode).toBe(200)
+      expect(result.json()).toEqual(payload)
+      expect((await app.app.inject({ method: 'GET', url })).json()).toEqual(payload)
+      expect(control.upserts.at(-1)?.integrationId).toBe(id)
+      expect((control.upserts.at(-1)?.config as { websocketRepliesOnly?: boolean }).websocketRepliesOnly ?? false).toBe(
+        enabled
+      )
+    }
+  })
+
   it('verifies /api/v4/users/me, normalizes serverUrl, stores the token write-only, and pushes daemon config', async () => {
     const agentId = await placedAgent()
     const { app, control, calls } = harness()

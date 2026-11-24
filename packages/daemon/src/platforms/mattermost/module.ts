@@ -4,6 +4,7 @@ import { nativeMessageId } from '@agentconnect.md/message'
 import {
   MATTERMOST_CARD_NOTE_MAX,
   MATTERMOST_PLATFORM,
+  MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE,
   WireMattermostCardAction,
   type RdMsgPlatformAction,
   type WireMattermostCardActionResponse
@@ -236,6 +237,7 @@ export const mattermostCardClicks: RelayCardClicks = {
 
 export const mattermostPlatformModule: DaemonPlatformModule = {
   platformId: MATTERMOST_PLATFORM,
+  registrationFeatures: [MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE],
   cardClicks: mattermostCardClicks,
   canonicalizeThread: async (_host, msg: NormalizedMessage) => {
     if (msg.platform !== MATTERMOST_PLATFORM) return
