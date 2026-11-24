@@ -118,7 +118,7 @@ export function useIncreaseLimit(
   const option = next?.optionId
     ? plans?.options.find((o) => o.tierId === next.tierId && o.optionId === next.optionId)
     : undefined
-  // A quote is refused while a change is scheduled or in flight, so only an immediate upgrade from a settled plan asks.
+  // A quote past a schedule moves the provider subscription and back, so this passive preview asks only with nothing scheduled or in flight.
   const quotable =
     !!orgId && !!sub && !!option && !sub.scheduled && !sub.pendingChange && changePath(sub, option) === 'immediate'
   const quote = useSWR(
@@ -613,6 +613,13 @@ export function ChangePlanDialog({
                 days: option.retentionDays!,
                 date: day(new Date(Date.parse(sub.paidThrough!) + holdDays! * DAY_MS).toISOString())
               })}
+            </Note>
+          )}
+          {path === 'immediate' && sub.scheduled && (
+            <Note warn>
+              {sub.scheduled.tierId === FREE_TIER_ID
+                ? t('review.replacesCancel', { date: when })
+                : t('review.replacesScheduled', { plan: planLabel(sub.scheduled), date: when })}
             </Note>
           )}
           {!now && <Note>{t('review.cancelBefore', { date: when })}</Note>}
