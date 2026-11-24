@@ -177,16 +177,18 @@ function SessionsMeter({ usage, increase }: { usage: SessionMonthUsageDto; incre
   )
 }
 
-/** The Plan card beside the balance. Owners get Change plan in its header and Increase limit under the meter; members are told who can. */
+/** The Plan card beside the balance. Owners get Change plan in its header, Cancel on a scheduled change and Increase limit under the meter; members are told who can. */
 export function PlanCard({
   reads,
   role,
   onChangePlan,
+  onCancelScheduled,
   increase
 }: {
   reads: PlanReads
   role: string | null
   onChangePlan?: () => void
+  onCancelScheduled?: () => Promise<void>
   increase?: IncreaseLink
 }) {
   const t = useTranslations('Billing.plan')
@@ -263,24 +265,32 @@ export function PlanCard({
           </span>
         </div>
       )}
+      {sub?.scheduled && (
+        <ScheduledChange
+          sub={sub}
+          scheduled={sub.scheduled}
+          onCancel={role === 'owner' ? onCancelScheduled : undefined}
+        />
+      )}
       {usage && <SessionsMeter usage={usage} increase={role === 'owner' ? increase : undefined} />}
     </div>
   )
 }
 
-/** A scheduled renewal change, under the Balance and Plan row; owners can revoke it. */
-export function ScheduledChangeStrip({
+/** A scheduled renewal change, inside the Plan card under the plan's name; owners can revoke it. */
+function ScheduledChange({
   sub,
+  scheduled,
   onCancel
 }: {
-  sub: BillingSubscription | null | undefined
+  sub: BillingSubscription
+  scheduled: BillingPlanRef
   onCancel?: () => Promise<void>
 }) {
   const t = useTranslations('Billing.plan')
   const { day } = useUtcDates()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  if (!sub?.scheduled) return null
   const cancel = async () => {
     if (!onCancel || busy) return
     setBusy(true)
@@ -292,12 +302,13 @@ export function ScheduledChangeStrip({
     }
     setBusy(false)
   }
-  const plan = planLabel(sub.scheduled)
+  const plan = planLabel(scheduled)
   return (
     <div
       data-plan-scheduled="true"
-      className="mt-3 flex items-center gap-2.5 rounded-[10px] border border-(--status-info) bg-(--status-info-soft) px-[18px] py-2.5"
+      className="mx-[18px] mb-1 flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-2"
     >
+      <Icon name="calendar-clock" size={14} color="var(--status-info)" />
       <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-normal">
         {sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan })}
         {error && (

@@ -214,12 +214,12 @@ describe('BillingView plan layout', () => {
     expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
   })
 
-  it('names a scheduled change to another plan under the row, with no Cancel for a member', async () => {
+  it('names a scheduled change to another plan inside the Plan card, with no Cancel for a member', async () => {
     mocks.role = 'member'
     mocks.subscription.mockResolvedValue({ ...SUB, scheduled: TEAM })
     await render()
     expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
-    expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Team ×2 on Dec 4')
+    expect(planCard().querySelector('[data-plan-scheduled]')!.textContent).toBe('Switching to Team ×2 on Dec 4')
     expect(q('[data-plan-scheduled] button')).toBeNull()
   })
 
@@ -328,7 +328,7 @@ describe('BillingView history retention', () => {
     expect(strip.textContent).toBe(
       'History older than 7 days will be deleted from Dec 11.Upgrading keeps your history.Change plan'
     )
-    // The scheduled change keeps its own strip above.
+    // The scheduled change stays in the Plan card above.
     expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
   })
 

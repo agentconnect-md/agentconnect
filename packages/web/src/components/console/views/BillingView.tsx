@@ -54,14 +54,7 @@ import { billingPathWithReturn, billingReturnTarget } from '@/lib/billing-return
 import { AgentIconView, LoadingState, MarkSlot, ModelMark, modelProviderSlug } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { AddCardDialog, CardReturnBanner, PaymentMethodCard } from '@/components/console/billing/CardBinding'
-import {
-  PlanBanners,
-  PlanCard,
-  PlanCreditStrip,
-  RetentionStrip,
-  ScheduledChangeStrip,
-  usePlanReads
-} from '@/components/console/billing/Plan'
+import { PlanBanners, PlanCard, PlanCreditStrip, RetentionStrip, usePlanReads } from '@/components/console/billing/Plan'
 import {
   ChangePlanDialog,
   useIncreaseLimit,
@@ -1514,6 +1507,10 @@ export default function BillingView() {
                   reads={plan}
                   role={myRole}
                   onChangePlan={openChangePlan}
+                  onCancelScheduled={async () => {
+                    await revokeBillingScheduledChange(orgId)
+                    await Promise.all([plan.subscription.mutate(), catalog.mutate()])
+                  }}
                   increase={
                     increase
                       ? {
@@ -1525,17 +1522,6 @@ export default function BillingView() {
                   }
                 />
               </div>
-              <ScheduledChangeStrip
-                sub={plan.subscription.data}
-                onCancel={
-                  myRole === 'owner'
-                    ? async () => {
-                        await revokeBillingScheduledChange(orgId)
-                        await Promise.all([plan.subscription.mutate(), catalog.mutate()])
-                      }
-                    : undefined
-                }
-              />
               <RetentionStrip
                 sub={plan.subscription.data}
                 onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
