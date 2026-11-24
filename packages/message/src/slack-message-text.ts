@@ -235,7 +235,7 @@ function attachmentText(value: unknown): string {
 // spells the same words plainly, so the key drops the delimiters and keeps every character they wrap.
 function canonical(value: string): string {
   return plainMrkdwn(
-    value
+    slackMarkdownPlainText(value)
       .replace(REFERENCE_RE, '$1')
       .replace(/<([@#!][^|>]+)\|[^>]*>/g, '<$1>')
       .replace(/&lt;/g, '<')
@@ -256,6 +256,25 @@ function plainMrkdwn(value: string): string {
         ? part.replace(/^`+|`+$/g, '')
         : part.replace(/(^|[^\w<|/])([*_~])(?=\S)([^\n]*?\S)\2(?=[^\w]|$)/g, '$1$3')
     )
+    .join('')
+}
+
+/** A Markdown link or image, `[label](url)`: the label stays, the URL goes. */
+const MARKDOWN_LINK_RE = /!?\[([^\]\n]*)\]\((?:[^()\s]|\([^()\s]*\))+\)/g
+
+/** Plain text of a `markdown` block for the notification fallback: Markdown delimiters go, words and Slack addresses stay. */
+export function slackMarkdownPlainText(markdown: string): string {
+  return markdown
+    .split(/(```[\s\S]*?```|`[^`\n]+`)/)
+    .map((part, i) => {
+      if (i % 2 === 1) return part.startsWith('```') ? part.replace(/^```[^\n]*\n?|\n?```$/g, '') : part.slice(1, -1)
+      return plainMrkdwn(
+        part
+          .replace(/^ {0,3}#{1,6}[ \t]+/gm, '')
+          .replace(MARKDOWN_LINK_RE, '$1')
+          .replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g, '$2')
+      )
+    })
     .join('')
 }
 
