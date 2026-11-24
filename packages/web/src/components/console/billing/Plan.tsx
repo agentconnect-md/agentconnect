@@ -198,7 +198,10 @@ export function PlanCard({
   const price = !sub ? '' : sub.priceCents === null ? t('contract') : t('price', { price: fmtCents(sub.priceCents) })
   const priceLine =
     sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
-      ? t(sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', { price, date: day(sub.paidThrough) })
+      ? t(sub.priceCents === null || sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', {
+          price,
+          date: day(sub.paidThrough)
+        })
       : price
   // The window in force; an older service sends only the plan's.
   const keptDays = sub ? (sub.retention ? sub.retention.days : sub.retentionDays) : null
