@@ -397,6 +397,8 @@ export function ChangePlanDialog({
       return min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`
     }
     const compact = (n: number) => number(n, { notation: 'compact' })
+    // A contract is priced outside the console and its tier is not in the catalog, so changes go through sales.
+    const onContract = sub.priceCents === null
     body = (
       <>
         <div className="modalhead">
@@ -404,7 +406,13 @@ export function ChangePlanDialog({
           {close}
         </div>
         <div className="modalbody">
-          {catalog.error ? (
+          {onContract ? (
+            <Note icon="mail">
+              {sub.paidThrough
+                ? t('contractEnds', { plan: planLabel(sub), date: day(sub.paidThrough) })
+                : t('contract', { plan: planLabel(sub) })}
+            </Note>
+          ) : catalog.error ? (
             <InlineError text={t('loadError', { error: (catalog.error as Error).message })} />
           ) : !plans ? (
             <div className="h-[220px] animate-pulse rounded-[10px] bg-(--surface-sunken)" />
@@ -497,12 +505,12 @@ export function ChangePlanDialog({
         </div>
         <div className="modalfoot">
           <span className="min-w-0 flex-1 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-            {option && !same ? toLabel : ''}
+            {option && !same && !onContract ? toLabel : ''}
           </span>
           <Button size="sm" variant="secondary" onClick={onClose}>
             {t('cancel')}
           </Button>
-          {contact ? (
+          {contact || onContract ? (
             <a
               className="dsbtn sm dsbtn-primary no-underline"
               href={support}
