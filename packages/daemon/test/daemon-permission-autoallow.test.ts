@@ -320,6 +320,29 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     ).toBe(true)
   })
 
+  it('auto-allows a live turn’s own tool whose approval arrives while earlier updates are still being written', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending = installPending(daemon)
+    // The per-session update chain is stuck on earlier store writes, as after a turn regeneration.
+    ;(daemon as any).onAcpUpdate = vi.fn(() => new Promise(() => {}))
+    void (daemon as any).enqueueAcpUpdate(agentHostKey('agent-1'), 's1', {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'toolu_live',
+      name: 'mcp__agentconnect__getThreadHistory',
+      title: 'agentconnect: getThreadHistory'
+    })
+    expect(pending.builtinSystemToolCallIds).toContain('toolu_live')
+    // claude-agent-acp's request carries the id and a display title only.
+    await expect(
+      (daemon as any).permissions.onAcpPermission(
+        'agent-1',
+        's1',
+        req({ toolCallId: 'toolu_live', title: 'agentconnect: getThreadHistory' })
+      )
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    expect((daemon as any).permissions.pendingApprovals.size).toBe(0)
+  })
+
   it('lets a named permission request outrank an id correlated from a nameless update', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending = installPending(daemon)
