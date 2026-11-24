@@ -180,6 +180,20 @@ describe('relay referee', () => {
     expect(f.game.verdict().outcome).toMatchObject({ completed: true, taskCompleted: true, acceptedPrefix: 3 })
   })
 
+  it('tells real agents each packet line prefix and counts only line-start markers as malformed', async () => {
+    const f = fixture()
+    expect(f.game.nextDeliveries().platformEvents[0]!.payload.text).toContain('including its "RELAY_REQUEST " prefix')
+    await f.post('bridge', f.review, JSON.stringify(f.game.fixture.task))
+    await f.post('bridge', f.origin, 'I posted the RELAY_REQUEST to the review channel.')
+    expect(f.game.verdict().metrics).toMatchObject({ requestDelivered: 0, malformedPackets: 0 })
+    await f.post('bridge', f.review, 'RELAY_REQUEST {not json')
+    expect(f.game.verdict().metrics.malformedPackets).toBe(1)
+    await f.post('bridge', f.review, `RELAY_REQUEST ${JSON.stringify(f.game.fixture.task)}`)
+    expect(f.game.nextDeliveries().platformEvents[0]!.payload.text).toContain('"RELAY_FEEDBACK " followed by')
+    await f.post('reviewer', f.review, `RELAY_FEEDBACK ${JSON.stringify(f.game.fixture.feedback)}`)
+    expect(f.game.nextDeliveries().platformEvents[0]!.payload.text).toContain('"RELAY_REPORT " followed by')
+  })
+
   it('records a delivered but incorrect report as a valid failed outcome', async () => {
     const f = fixture('conflict')
     f.game.nextDeliveries()

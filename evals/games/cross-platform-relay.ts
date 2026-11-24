@@ -130,7 +130,8 @@ export class CrossPlatformRelayGame implements CollaborationGameWorld {
       return this.delivery(
         this.origin,
         'bridge',
-        'Forward the exact request packet to the review channel using sendMessage action=postMessage with the given target. ' +
+        'Forward the request to the review channel using sendMessage action=postMessage with the RELAY_TARGET fields as the target. ' +
+          'The message must be the RELAY_REQUEST line below copied exactly, including its "RELAY_REQUEST " prefix, on a line of its own. ' +
           'Use channel-root sends; do not invent a thread. Wait for reviewer feedback before reporting completion.\n' +
           `RELAY_TARGET ${JSON.stringify(target)}\nRELAY_REQUEST ${JSON.stringify(this.fixture.task)}`
       )
@@ -145,7 +146,7 @@ export class CrossPlatformRelayGame implements CollaborationGameWorld {
       const feedback = packet(effect.text, 'RELAY_FEEDBACK')
       const report = packet(effect.text, 'RELAY_REPORT')
       if (request === undefined && feedback === undefined && report === undefined) {
-        if (/RELAY_(REQUEST|FEEDBACK|REPORT) /.test(effect.text)) this.metrics.malformedPackets += 1
+        if (/^RELAY_(REQUEST|FEEDBACK|REPORT) /m.test(effect.text)) this.metrics.malformedPackets += 1
         continue
       }
       if (this.phase === 'request' && request !== undefined && effect.agentId === this.bridgeId) {
@@ -163,7 +164,8 @@ export class CrossPlatformRelayGame implements CollaborationGameWorld {
           this.delivery(
             this.review,
             'reviewer',
-            'Review this actually delivered request. Reply with the supplied feedback packet verbatim; do not forward it yourself.\n' +
+            'Review this actually delivered request. Reply here with one line: "RELAY_FEEDBACK " followed by the ' +
+              'RELAY_REVIEW_FIXTURE JSON copied verbatim. Do not forward it yourself.\n' +
               `RELAY_REQUEST ${JSON.stringify(request)}\nRELAY_REVIEW_FIXTURE ${JSON.stringify(this.fixture.feedback)}`
           )
         )
@@ -187,7 +189,9 @@ export class CrossPlatformRelayGame implements CollaborationGameWorld {
             'The reviewer delivered the following feedback. Use the highest revision; deduplicate identical IDs. ' +
               'Conflicting highest-revision values require needs_clarification; omit quantity/format in that case. ' +
               'Otherwise report completed with the revised quantity and format. Include caseId, sourceId and all unique ' +
-              'highest-revision evidenceIds. Send RELAY_REPORT JSON to the request returnTarget using sendMessage action=postMessage. ' +
+              'highest-revision evidenceIds. Send it to the request returnTarget as a channel-root sendMessage action=postMessage ' +
+              'whose message is one line: "RELAY_REPORT " followed by JSON with keys caseId, sourceId, ' +
+              'status ("completed" or "needs_clarification"), quantity, format and evidenceIds (array). ' +
               'Never claim approval absent from the feedback.\n' +
               `RELAY_REQUEST ${JSON.stringify(this.fixture.task)}\nRELAY_FEEDBACK ${JSON.stringify(feedback)}`
           )

@@ -17,6 +17,8 @@ Duplicate and stale fixtures manipulate **feedback content**, not transport deli
 
 The report uses one line: `RELAY_REPORT {"caseId":"...","sourceId":"...","status":"completed","quantity":3,"format":"json","evidenceIds":["..."]}`. Conflict reports omit `quantity` and `format` and use `status: "needs_clarification"`.
 
+Every packet is a line that starts with its marker (`RELAY_REQUEST `, `RELAY_FEEDBACK `, `RELAY_REPORT `). The referee parses nothing else, so each ingress instruction states the exact line a real agent must send; a bare JSON body is not a packet. A real subject is never told what the scripted hosts know from code, so any wire-format requirement belongs in the instruction text.
+
 `outcome.completed` means the scenario was handled correctly. `taskCompleted` is true only for a correct, conflict-free final result; `clarificationReported` identifies correctly surfaced conflicts. Do not combine clarification success with actual user-task completion in aggregate reporting. The three-stage partial score distinguishes delivered request, delivered feedback and correct returned report. A delivered but incorrect report ends with `incorrect_report`, not an infrastructure error.
 
 Metrics include delivery at each stage, source/evidence/status correctness, requirement satisfaction, malformed packets, incorrect addressing and invalid reports. The runner also retains its standard run manifest, token accounting and latency. This v1 does not claim CCE or a calibrated semantic judge: requirements and evidence are checked deterministically. Request IDs and feedback IDs are synthetic fixture identifiers, not authenticated provider message references. No private-context canary is injected in this suite.
