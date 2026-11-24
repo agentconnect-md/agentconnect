@@ -470,7 +470,12 @@ describe('Mattermost pure-WS numbered card fallback', () => {
     expect(taskPost.message).toContain('1. Approve\n2. Deny')
     const taskTag = /`(D-[0-9A-F]{8}) 1` or `\1 2`/.exec(taskPost.message ?? '')![1]!
 
-    // Pending update with notice preserves D-XXXXXXXX tag and options.
+    // Even after callbacks become available, a busy notice keeps the original numbered card usable.
+    const callback = vi.spyOn(conn, 'actionCallback').mockReturnValue({
+      url: 'https://relay.example.com/actions',
+      secret: 'test',
+      daemonId: 'daemon-1'
+    })
     await port.updateCard(dm.id, taskPostId!, {
       draftId: 'draft-task-1',
       agentId: AGENT_ID,
@@ -480,6 +485,8 @@ describe('Mattermost pure-WS numbered card fallback', () => {
     })
     expect(server.posts.get(taskPostId!)!.message).toContain('Too many sub-sessions running')
     expect(server.posts.get(taskPostId!)!.message).toContain(taskTag)
+    expect(server.posts.get(taskPostId!)!.props?.attachments).toBeUndefined()
+    callback.mockRestore()
 
     // Reply kind renders `2. Discard` and accepts bare `approve` / `discard` / `2` in DM and explicit `D-XXXXXXXX`.
     const replyView = {

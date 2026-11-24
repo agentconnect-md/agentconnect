@@ -13,7 +13,11 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { MattermostSessionAccessService } from '../../src/platforms/mattermost/session-access.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
-import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
+import {
+  MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE,
+  type IntegrationRemove,
+  type IntegrationUpsert
+} from '@agentconnect.md/protocol'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const DAEMON = 'd4d4d4d4-dddd-4ddd-8ddd-dddddddddddd'
@@ -80,9 +84,9 @@ function harness(
   return { app, control, calls }
 }
 
-async function placedAgent(): Promise<string> {
+async function placedAgent(features: string[] = []): Promise<string> {
   await seedDaemon(prisma, DAEMON, {
-    capabilities: { platforms: ['mattermost'], runtimes: ['claude'], acp: true, features: [] }
+    capabilities: { platforms: ['mattermost'], runtimes: ['claude'], acp: true, features }
   })
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId: DAEMON })
@@ -111,7 +115,7 @@ const install = (
 
 describe('a Mattermost bot from POST /integrations', () => {
   it('sets and clears numbered replies on an existing installation without replacing its bot', async () => {
-    const agentId = await placedAgent()
+    const agentId = await placedAgent([MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE])
     const { app, control } = harness()
     const installed = await install(app, agentId)
     expect(installed.statusCode).toBe(201)
@@ -129,6 +133,20 @@ describe('a Mattermost bot from POST /integrations', () => {
         enabled
       )
     }
+  })
+
+  it('keeps the saved mode and active binding when its serving daemon needs an upgrade', async () => {
+    const agentId = await placedAgent()
+    const { app, control } = harness()
+    const installed = await install(app, agentId)
+    expect(installed.statusCode).toBe(201)
+    const url = `${ORG}/integrations/${installed.json().id}/mattermost/reply-settings`
+    const response = await app.app.inject({ method: 'PUT', url, payload: { websocketRepliesOnly: true } })
+    expect(response.statusCode).toBe(409)
+    expect(response.json().message).toMatch(/upgrade/i)
+    expect((await app.app.inject({ method: 'GET', url })).json()).toEqual({ websocketRepliesOnly: false })
+    expect(control.upserts).toHaveLength(1)
+    expect(control.removals).toHaveLength(0)
   })
 
   it('verifies /api/v4/users/me, normalizes serverUrl, stores the token write-only, and pushes daemon config', async () => {

@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import { MATTERMOST_PLATFORM } from '@agentconnect.md/protocol'
+import { MATTERMOST_PLATFORM, MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE } from '@agentconnect.md/protocol'
 import { z } from 'zod'
 import { canEdit, canView } from '../../authorization/policy.js'
-import { IntegrationId } from '../../domain/ids.js'
+import { DaemonId, IntegrationId } from '../../domain/ids.js'
 import { pushBotConfig } from '../../http/bot-config-push.js'
 import type { HttpDeps } from '../../http/deps.js'
 import { ErrorDto, IdParam } from '../../http/dto/index.js'
@@ -69,8 +69,29 @@ export function registerMattermostReplySettings(app: FastifyInstance, deps: Http
       const release = deps.agentMutations.tryBeginMutation(found.agent.id)
       if (!release) return conflict()
       try {
-        if (!(await refreshMutationAgent(deps.repos.agent, found.agent))) return conflict()
+        const agent = await refreshMutationAgent(deps.repos.agent, found.agent)
+        if (!agent) return conflict()
         const { orgId, id, botId } = found.integration
+        if (req.body.websocketRepliesOnly) {
+          const targets = await deps.placementResolver.servingDaemons(agent)
+          const supported = await Promise.all(
+            targets.map(async (target) => {
+              const live = deps.daemonConns.get(target)
+              const features =
+                live?.state === 'READY'
+                  ? live.capabilities?.features
+                  : (await deps.registry.getAvailable(orgId, DaemonId(target)))?.capabilities.features
+              return features?.includes(MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE)
+            })
+          )
+          if (supported.some((yes) => !yes)) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: 'Upgrade every daemon serving this agent before enabling WebSocket-only Mattermost replies.'
+            })
+          }
+        }
         const bot = await deps.repos.bot.get(orgId, botId)
         if (
           !bot ||
