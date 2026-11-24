@@ -290,6 +290,19 @@ describe('Change plan: choose', () => {
     expect(contact.getAttribute('href')).toBe('https://support.example.test/sales')
     expect(buttonIn(dialog()!, 'Review change')).toBeUndefined()
   })
+
+  it('tells an org on a contract that changes go through sales, with the contract’s end date', async () => {
+    mocks.subscription.mockResolvedValue({ ...PRO, tierId: 'enterprise', tierName: 'Enterprise', priceCents: null })
+    await render('billing,subscriptions', { HELP_SUPPORT_URL: 'https://support.example.test/sales' })
+    await openChangePlan()
+    expect(dialog()!.querySelector('[data-plan-tier]')).toBeNull()
+    expect(dialog()!.querySelector('[data-plan-note]')!.textContent).toBe(
+      "Enterprise Standard is a contract plan ending Dec 4, so it can't be changed here. Contact us to change or renew it."
+    )
+    const contact = [...dialog()!.querySelectorAll('a')].find((a) => a.textContent === 'Contact us')!
+    expect(contact.getAttribute('href')).toBe('https://support.example.test/sales')
+    expect(buttonIn(dialog()!, 'Review change')).toBeUndefined()
+  })
 })
 
 describe('Change plan: an immediate upgrade', () => {

@@ -5568,6 +5568,8 @@
         "optionCurrent": "{meta} · current",
         "contactNote": "Priced by contract — session limit, credits, retention and org SSO.",
         "contactUs": "Contact us",
+        "contract": "{plan} is a contract plan, so it can't be changed here. Contact us to change it.",
+        "contractEnds": "{plan} is a contract plan ending {date}, so it can't be changed here. Contact us to change or renew it.",
         "reviewChange": "Review change",
         "combo": "{plan} · {sessions} sessions",
         "review": {
