@@ -5349,7 +5349,8 @@
       "adjustment": "调整",
       "promo": "促销额度",
       "refund": "退款",
-      "subscription": "套餐额度"
+      "subscription": "套餐额度",
+      "grant_expiry": "套餐额度过期"
     },
     "transactions": {
       "title": "交易记录",

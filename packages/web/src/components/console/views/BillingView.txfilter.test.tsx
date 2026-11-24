@@ -104,6 +104,20 @@ describe('Transactions — the ledger-side filter', () => {
     expect(mocks.fetchTransactions).toHaveBeenCalledWith('org-1', undefined, { type: 'credit' })
   })
 
+  it('labels an expired plan credit row under Top-ups', async () => {
+    const expiry = {
+      type: 'credit',
+      id: 'grant_expiry:g1',
+      kind: 'grant_expiry',
+      amountMicro: -3_000_000,
+      at: '2026-08-31T00:00:00Z'
+    }
+    mocks.fetchTransactions.mockResolvedValue({ items: [expiry, DEBIT], nextCursor: null })
+    await mount()
+    await clickPill('Top-ups')
+    expect(host.innerHTML).toContain('Plan credit expired')
+  })
+
   it('cuts a stale service’s rows to the side that was asked for', async () => {
     await mount()
     // The stub answers with both sides whatever the request said, which is exactly what a
