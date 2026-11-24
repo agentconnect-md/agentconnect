@@ -47,7 +47,7 @@ export function NativeIntegrationAppCard({ step, onReport }: McpAppCardProps) {
   // and — because the transcript re-keys turns — it outlives this component instance too.
   const report = useRef<McpAppCardProps['onReport']>(undefined)
   useEffect(() => {
-    report.current = app.outcome ? undefined : onReport
+    report.current = onReport
   })
   // A sibling tab that was ALREADY open when this one submitted has its own component state, and
   // the initializer above ran long before the write. Without this it keeps its Waiting badge and

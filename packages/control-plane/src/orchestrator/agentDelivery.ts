@@ -45,6 +45,8 @@ export class AgentDelivery {
       daemonFeatures?: (daemonId: string) => readonly string[] | undefined
       /** After every spec push, with the daemons that acknowledged it; capability requests settle and wake on it. */
       upserted?: (agent: AgentRecord, ackedDaemonIds: readonly string[]) => void
+      /** After every integration push, whichever route made it; a capability request for that platform settles on it. */
+      integrationUpserted?: (agentId: string, platform: string) => void
     }
   ) {}
 
@@ -161,6 +163,7 @@ export class AgentDelivery {
     await this.fanOut(targets, onError, (daemonId) =>
       this.deps.control.integrationUpsert(daemonId, shape ? shape(daemonId) : spec)
     )
+    this.deps.integrationUpserted?.(agent.id, spec.platform)
   }
 
   /** `orgId` is REQUIRED, not derived. A removal payload is a bare id, so an

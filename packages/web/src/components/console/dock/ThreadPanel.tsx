@@ -344,6 +344,7 @@ export function ThreadPanel({
           promptMs={exchangePromptMs(list, i)}
           answerElicitation={answerElicitation}
           answerFill={answerFill}
+          appReport={appReport}
           onShare={shareMessage(turn)}
         />
       )}
@@ -440,6 +441,21 @@ export function ThreadPanel({
     ? (turnAgent: string | undefined, requestId: string, answer: FillCardAnswer) =>
         pgAnswerFill(parentSessionId ?? holderId, turnAgent ?? agentId, requestId, answer, taskConversation)
     : undefined
+  // A native dialog's outcome is a line this thread speaks, on the socket and thread its composer writes to.
+  const appReport =
+    ownThread || (canReply && holderId)
+      ? (_turnAgent: string | undefined, text: string): boolean => {
+          if (ownThread) {
+            if (ownThread.continues) markSessionTarget(ownThread.sessionId, ownThread.continues, true)
+            return pgSendThread(ownThread.sessionId, agentId, text, ownThread.rootId, ownThread.conversationId)
+          }
+          if (!holderId) return false
+          markSessionTarget(holderId)
+          return record && inThread
+            ? pgSendThread(holderId, agentId, text, record.rootId)
+            : pgNotice(holderId, agentId, text)
+        }
+      : undefined
   // A turn a person's message follows answered an earlier exchange.
   const lastExchangeAt = turns.reduce((at, turn, i) => (turn.kind === 'user' && !turn.steer ? i : at), -1)
   // Until the agent's reply streams in, which then says it is working in its header, as the session page does.

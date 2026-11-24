@@ -381,6 +381,28 @@ export function capabilityRequestRoutes(deps: HttpDeps) {
     )
 
     r.post(
+      '/capability-requests/:id/recheck',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'Check a capability request again',
+          description:
+            'Looks again at an open request and completes it when what it asked for already holds, as the change’s own save would have; the conversations that asked are then told. A request whose change is not in place stays open, and one no longer open is returned as it is. Answers 404 unless the caller can see the agent.',
+          operationId: 'recheckCapabilityRequest',
+          params: RequestParam,
+          response: { 200: CapabilityRequestDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const admitted = await admit(req, reply, req.params.id)
+        if (!admitted) return reply
+        const result = await service.recheckFromConsole(orgOf(req), req.params.id)
+        if (result === 'not_found') return send(reply, NOT_FOUND)
+        return (await fresh(req, result)) ?? send(reply, NOT_FOUND)
+      }
+    )
+
+    r.post(
       '/capability-requests/:id/decline',
       {
         // A person's own decision: no key, token or agent's delegated call may make it (§4.10).

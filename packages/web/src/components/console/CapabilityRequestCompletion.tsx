@@ -9,6 +9,7 @@ import {
   fetchAgentRepos,
   fetchGithubInstallUrl,
   saveAgentLiveSecret,
+  recheckCapabilityRequest,
   settleCapabilityRequest,
   startGitlabOauth,
   startMcpProviderOauth,
@@ -41,7 +42,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 interface CompletionProps {
   request: CapabilityRequestDto
   onSettled: (next: CapabilityRequestDto) => void
-  /** Re-read the request: a connection is settled by the server once it holds, so the page only looks again. */
+  /** Re-read the request, where the server could not be asked to look again. */
   onRefresh?: () => void
 }
 
@@ -369,7 +370,7 @@ const CONNECTION_WATCH_MS = 5 * 60_000
 const CONNECTION_POLL_MS = 3_000
 
 /** A connection: the console's own connect flow, after which the server settles the request once it holds. */
-function ConnectionCompletion({ request, onRefresh }: CompletionProps) {
+function ConnectionCompletion({ request, onSettled, onRefresh }: CompletionProps) {
   const t = useTranslations('CapabilityRequests.complete')
   const { orgPath } = useOrgs()
   const { agents } = useConsoleData()
@@ -378,13 +379,23 @@ function ConnectionCompletion({ request, onRefresh }: CompletionProps) {
   const want = request.want as CapabilityConnectionWant
   const [watching, setWatching] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const refresh = useRef(onRefresh)
-  refresh.current = onRefresh
+  // Asks the server to look again, which completes the request once the connection holds; a failed ask falls back to a plain re-read.
+  const check = async () => {
+    try {
+      const next = await recheckCapabilityRequest(request.id, request.orgId)
+      if (next.status !== 'open') return onSettled(next)
+    } catch {
+      /* The re-read below still shows what holds. */
+    }
+    onRefresh?.()
+  }
+  const refresh = useRef(check)
+  refresh.current = check
 
   // The flow finishes in another window; look again on a timer and whenever this one regains focus.
   useEffect(() => {
     if (!watching) return
-    const look = () => refresh.current?.()
+    const look = () => void refresh.current()
     const timer = window.setInterval(look, CONNECTION_POLL_MS)
     const stop = window.setTimeout(() => setWatching(false), CONNECTION_WATCH_MS)
     window.addEventListener('focus', look)
@@ -456,11 +467,9 @@ function ConnectionCompletion({ request, onRefresh }: CompletionProps) {
       <p className="text-[13px] text-(--text-secondary)">{t('connectionHint')}</p>
       <div className="flex flex-wrap items-center gap-2">
         {action}
-        {onRefresh && (
-          <Button variant="secondary" onClick={() => onRefresh()}>
-            {t('checkAgain')}
-          </Button>
-        )}
+        <Button variant="secondary" onClick={() => void check()}>
+          {t('checkAgain')}
+        </Button>
       </div>
       {watching && (
         <p role="status" className="text-[13px] text-(--text-secondary)">

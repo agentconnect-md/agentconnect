@@ -9074,6 +9074,11 @@ export async function settleCapabilityRequest(
   return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/settle`, saved ?? {})
 }
 
+/** Asks the server to look again: an open request whose change is already in place completes, anything else comes back as it is. */
+export async function recheckCapabilityRequest(id: string, orgId?: string): Promise<CapabilityRequestDto> {
+  return apiPost<CapabilityRequestDto>(`${capabilityRequestPath(id, orgId)}/recheck`, {})
+}
+
 export async function declineCapabilityRequest(
   id: string,
   note: string | undefined,

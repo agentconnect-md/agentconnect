@@ -20,6 +20,7 @@ vi.mock('@/lib/org-context', () => ({
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     bots: [],
+    members: [],
     daemons: [],
     daemonsLoading: false,
     memberSets: [],
@@ -63,7 +64,7 @@ function tileLabels(): string[] {
   return [...document.querySelectorAll<HTMLDivElement>('.ptile')].map((tile) => (tile.textContent ?? '').trim())
 }
 
-async function render(flags: string): Promise<void> {
+async function render(flags: string, initialPlatform?: string): Promise<void> {
   window.__AC_ENV = { FEATURE_FLAGS: flags }
   mocks.checkEmailAddressName.mockImplementation(async () => ({
     mailDomain: mocks.mailDomain,
@@ -77,7 +78,7 @@ async function render(flags: string): Promise<void> {
   await act(async () => {
     root?.render(
       <SWRConfig value={{ provider: () => new Map() }}>
-        <AddIntegrationModal agent={agent} onClose={() => undefined} />
+        <AddIntegrationModal agent={agent} initialPlatform={initialPlatform} onClose={() => undefined} />
       </SWRConfig>
     )
   })
@@ -107,6 +108,12 @@ describe('AddIntegrationModal, the Email tile', () => {
     await render('email')
     expect(mocks.checkEmailAddressName).toHaveBeenCalledWith('org-1')
     expect(tileLabels()).not.toContain('Email')
+  })
+
+  it('is selected when the caller asked for it, once its offer has been read', async () => {
+    mocks.mailDomain = 'mail.example.test'
+    await render('email', 'email')
+    expect((document.querySelector('.ptile.on')?.textContent ?? '').trim()).toBe('Email')
   })
 
   it('is offered where the deployment has a mail domain', async () => {

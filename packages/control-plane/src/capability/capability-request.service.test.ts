@@ -608,6 +608,42 @@ describe('CapabilityRequestService', () => {
       expect(h.rebounds).toEqual([{ daemonId: DAEMON, frame: { agentId: AGENT, server: 'Linear' } }])
     })
 
+    it('completes a chat integration request when that platform is pushed for the agent, and wakes at once', async () => {
+      const h = harness()
+      const { requestId } = await h.service.request(
+        h.agent(),
+        askOfKind('s1', { kind: 'connection', want: { type: 'chat-integration', platform: 'email' } })
+      )
+      const status = () => h.requests.rows.get(requestId!)!.status
+      // A push before the integration is active settles nothing, nor does another platform's or another agent's.
+      await h.service.integrationUpserted(AGENT, 'email')
+      h.setFacts({ integrationConnected: true })
+      await h.service.orgChanged(ORG, { kind: 'chat-integration', agentId: AGENT, platform: 'slack' }, null)
+      await h.service.orgChanged(ORG, { kind: 'chat-integration', agentId: 'another-agent', platform: 'email' }, null)
+      expect(status()).toBe('open')
+      await h.service.integrationUpserted(AGENT, 'email')
+      expect(h.requests.rows.get(requestId!)!).toMatchObject({ status: 'completed', settledRevision: null })
+      await h.pass()
+      expect(h.sent).toEqual([expect.objectContaining({ status: 'completed', reload: false })])
+      expect(h.rebounds).toEqual([])
+    })
+
+    it('completes on a console recheck only once what was asked holds', async () => {
+      const h = harness()
+      const { requestId } = await h.service.request(
+        h.agent(),
+        askOfKind('s1', { kind: 'connection', want: { type: 'chat-integration', platform: 'email' } })
+      )
+      expect(await h.service.recheckFromConsole(ORG, requestId!)).toMatchObject({ status: 'open' })
+      h.setFacts({ integrationConnected: true })
+      expect(await h.service.recheckFromConsole(ORG, requestId!)).toMatchObject({ status: 'completed' })
+      await h.pass()
+      expect(h.sent).toEqual([expect.objectContaining({ status: 'completed' })])
+      // A settled request is returned as it is, and nobody is woken twice.
+      expect(await h.service.recheckFromConsole(ORG, requestId!)).toMatchObject({ status: 'completed' })
+      expect(await h.service.recheckFromConsole(ORG, 'missing')).toBe('not_found')
+    })
+
     it('sends no rebound to a daemon without the Phase 2 feature, and leaves other requests open', async () => {
       const h = harness({ agent: { mcpServers: ['Linear'] } })
       const { requestId } = await h.service.request(

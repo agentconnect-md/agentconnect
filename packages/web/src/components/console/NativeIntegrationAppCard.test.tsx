@@ -195,13 +195,23 @@ describe('native integration UI', () => {
     expect(element.textContent).toContain('Configuration was saved, but the agent could not be notified.')
   })
 
+  // Reporting back needs no live card: a settled or superseded one still opens its dialog, and what was saved there is news to the agent.
+  it('reports a save made from a card that had already settled', async () => {
+    const value = app()
+    const report = vi.fn(() => true)
+    await act(async () => {
+      root.render(<McpAppCard step={{ app: { ...value, outcome: 'superseded' } }} onReport={report} />)
+    })
+    await act(async () => element.querySelector('button')!.click())
+    await act(async () => completionOf(0)('Created GitHub subscription.'))
+    expect(report).toHaveBeenCalledWith('Created GitHub subscription.')
+    expect(element.textContent).not.toContain('not notified')
+  })
+
   it('never calls a refused submit a save, even when the agent cannot be told', async () => {
     const value = app()
     await act(async () => {
-      root.render(<McpAppCard step={{ app: value }} onReport={() => true} />)
-    })
-    await act(async () => {
-      root.render(<McpAppCard step={{ app: { ...value, outcome: 'completed' } }} onReport={() => true} />)
+      root.render(<McpAppCard step={{ app: { ...value, outcome: 'completed' } }} />)
     })
     await act(async () => element.querySelector('button')!.click())
     await act(async () => completionOf(0)('Creating the agent failed: that name is taken', 'failed'))

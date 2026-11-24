@@ -332,8 +332,12 @@ A request is **completed when the state it asked for holds**, not when someone c
   connected; an authorization covers the repository at the tier or above; the field equals the
   wanted value; the secret exists.
 - It also settles a request that someone satisfied **without** the link. The CP re-evaluates an
-  agent's open requests whenever it re-projects that agent's spec, and when a provider's OAuth
-  connects (`onConnected`). That is a handful of rows per agent.
+  agent's open requests whenever it re-projects that agent's spec, when a provider's OAuth
+  connects (`onConnected`), and when a chat integration's spec is pushed to the agent's daemons,
+  by whichever install route. That is a handful of rows per agent.
+- A connection's page also asks the CP to look again (`POST …/recheck`, its **Check again** button
+  and its watch after the connect flow opened). That completes the request only when the predicate
+  already holds, so a trigger that was missed cannot strand it.
 - A save that does not satisfy the predicate (the person picked a different model) completes the
   request **with the outcome as saved**, and the wake says so, so the agent knows it got something
   else.

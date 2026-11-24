@@ -1251,7 +1251,12 @@ export function buildContainer(
     upserted: (agent, acked) =>
       void capabilityRequests
         .agentUpserted(agent, acked)
-        .catch((err) => http.log.warn({ err, agentId: agent.id }, 'capability request: re-evaluation failed'))
+        .catch((err) => http.log.warn({ err, agentId: agent.id }, 'capability request: re-evaluation failed')),
+    // A connected chat integration is no spec change, so its request settles on the integration's own push.
+    integrationUpserted: (agentId, platform) =>
+      void capabilityRequests
+        .integrationUpserted(agentId, platform)
+        .catch((err) => http.log.warn({ err, agentId }, 'capability request: re-evaluation failed'))
   })
 
   // Code-host routing scopes (code-host-decisions.md §3.2): host choice, the scope's rules, and the hosts' specs.
