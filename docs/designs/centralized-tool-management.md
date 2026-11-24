@@ -20,7 +20,9 @@
 >
 > **Design constraints**: (1) console visibility (`org | restricted`) is not a
 > call-side authorization boundary; per-agent isolation requires independent,
-> revocable per-agent grants at the relay and remains P3 (§6); (2) an upstream
+> revocable per-agent grants at the relay, which the proposed
+> [mcp-tool-permissions.md](mcp-tool-permissions.md) introduces for agents an
+> administrator restricts to a subset of a provider's tools (§6); (2) an upstream
 > URL is an SSRF primitive, so relay egress **must** be validated (§5.3); (3)
 > the transparent proxy supports only **Streamable HTTP** upstreams. Legacy
 > HTTP+SSE exposes a separate `endpoint` that requires rewriting, contradicting
@@ -76,13 +78,13 @@ upstream secrets **never reach a daemon or agent**.
 
 **Goals**: Make the CP the single source of truth for MCP provider definitions (organization-level plus visibility); keep upstream secrets stored only by the **CP and used only by relays**, never by daemons/agents; proxy through the relay; expose only a grant-key-authenticated proxy URL to agents; make agent moves and multiple daemons work automatically; and let relay+daemon continue serving through a CP outage (graceful degradation).
 
-**Non-goals (§10)**: call-side per-agent isolation (console visibility may still
-be restricted; see §6), per-agent/per-user upstream identities (the current
+**Non-goals (§10)**: call-side per-agent isolation for unrestricted agents
+(console visibility may still be restricted; see §6; restricted agents are
+the subject of the proposed [mcp-tool-permissions.md](mcp-tool-permissions.md)), per-agent/per-user upstream identities (the current
 implementation shares one identity per provider — OAuth-authorized providers
 share one org-level connection for the same reason, see
 [mcp-provider-oauth.md](mcp-provider-oauth.md)), private-network upstreams
-unless an operator explicitly allowlists the host (§5.3), per-tool allow/deny
-controls, **legacy HTTP+SSE upstreams** (the current proxy supports only
+unless an operator explicitly allowlists the host (§5.3), **legacy HTTP+SSE upstreams** (the current proxy supports only
 Streamable HTTP; §5.1), stdio upstreams, and adding daemon built-in bridge tools
 to the registry.
 
@@ -110,7 +112,7 @@ to the registry.
                                                 ◀──────────────── result stream ───────────────────
 ```
 
-Key point: **call data passes only through the relay and daemon, never through the CP**. The CP pushes two artifacts only when something changes and is absent from the call path. If the CP goes down, the previously pushed proxy definition on the daemon and grant binding on the relay remain active; only provider creation or updates wait for the CP to recover.
+Key point: **call data passes only through the relay and daemon, never through the CP**. The CP pushes two artifacts only when something changes and is absent from the call path. If the CP goes down, the previously pushed proxy definition on the daemon and grant binding on the relay remain active; only provider creation or updates wait for the CP to recover. The proposed [mcp-tool-permissions.md](mcp-tool-permissions.md) keeps this: a restricted agent's approvals are checked in the daemon (its §7.2).
 
 ## 4. Data Model (Control Plane)
 
@@ -185,8 +187,12 @@ GET | POST | DELETE /mcp/:providerId
 Authorization: Bearer <grantKey>
 ```
 
-For a `custom` provider, the relay does not understand MCP. It performs
-authentication, substitutes headers, and forwards bytes or response streams:
+For a `custom` provider presenting an unrestricted grant, the relay does not
+understand MCP. It performs authentication, substitutes headers, and forwards
+bytes or response streams. Under the proposed per-agent tool permissions, a
+restricted agent grant additionally passes the per-tool decision check of
+[mcp-tool-permissions.md](mcp-tool-permissions.md) §6, which parses `tools/call`
+requests and filters `tools/list` responses:
 
 1. Read the grant key from the header → hash it → **look up locally** the delivered binding (§5.2) to obtain `{ upstreamUrl, headers }`.
 2. **Replace** the agent-side `Authorization` value, inject the real upstream headers, and forward `GET`, `POST`, or `DELETE` unchanged to `upstreamUrl`. Stream the response back unchanged; do not parse JSON-RPC.
@@ -276,12 +282,13 @@ The provider `url` is arbitrary editor-supplied input that the relay calls—**a
   govern console reads and who may newly enable a registry provider. They never
   cross the wire. Tightening visibility does not revoke an already-enabled
   provider.
-- **Call-side isolation remains P3**: push filtering is **not an authorization
-  boundary** because definitions live at organization scope and a relay request does
-  not identify the calling agent. The current provider grant is shared across
-  the organization. Per-agent isolation requires an independent, revocable
-  grant per provider and agent (or narrower session scope), plus relay
-  validation on every call.
+- **Call-side isolation**: push filtering is **not an authorization
+  boundary** because definitions live at organization scope and a request with
+  the shared grant does not identify the calling agent. The proposed
+  [mcp-tool-permissions.md](mcp-tool-permissions.md) gives an agent restricted
+  to a subset of a provider's tools an independent, revocable grant per
+  provider and agent, with relay validation of its tool decisions on every
+  call. Unrestricted agents keep sharing the provider grant.
 
 ## 7. Delivery and Injection into the Daemon (Reuse Existing Mechanisms; Zero Injection Code)
 
@@ -311,7 +318,9 @@ than the upstream URL and API key:
 - **Injection requires no special path**:
   [`resolveAgentMcpServers`](../../packages/daemon/src/mcp/resolve-servers.ts)
   converts the effective HTTP definition to the shape attached to
-  `session/new`.
+  `session/new`. Under the proposed [mcp-tool-permissions.md](mcp-tool-permissions.md)
+  §7.2, a restricted definition held in `daemon` custody reaches the runtime with
+  a credential-proxy placeholder instead of the grant key.
 - **Facts describe daemon-local definitions**: organization providers already
   live in CP metadata and are not folded into an install-wide fact set. The
   daemon does not open an MCP connection when reporting facts.
@@ -335,10 +344,11 @@ The daemon retains local `config.mcpServers` entries (offline/pure-local use may
 - **Hard boundary**: the call data plane is in the relay, not the CP. The CP pushes bindings/definitions only on changes. Secrets are carried in headers, never URLs.
 - **SSRF**: the upstream `url` is user-controlled input, so relay egress must apply §5.3 validation: reject private/metadata addresses, pin IPs against rebinding, constrain redirects, and support an optional allowlist. Treating headers as secrets does not establish this boundary.
 - **Authorization boundary**: the call capability is an organization-shared
-  provider grant. Restricted console visibility does not narrow that
-  capability. Per-agent isolation **cannot** be implemented with push filtering
-  because definitions are daemon-shared and a relay request has no agent
-  identity; it requires per-agent grants and call-time validation (§6).
+  provider grant; the proposed per-agent tool permissions add an agent grant
+  bound to a per-tool decision table. Restricted console visibility does not
+  narrow either capability.
+  Per-agent isolation **cannot** be implemented with push filtering; it
+  requires the per-agent grants and call-time validation of §6.
 - **Graceful degradation**: when the CP disconnects, the relay (binding already delivered) and daemon (proxy definition already delivered) continue proxying. Only provider creation or updates are blocked.
 - Frames are ≤256 KiB; proxy definitions and bindings are tiny.
 
@@ -347,14 +357,14 @@ The daemon retains local `config.mcpServers` entries (offline/pure-local use may
 | Scope           | Capabilities                                                                                                                                                                                                                                                                                                                                        |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Current**     | Protocol (`mcpserver/*`, `RegisterOk.mcpServers[]`, `rc/mcp-assign/unassign`); CP provider, secret, and grant storage; `custom` and `open_connector` providers; `ResourceVisibility`; grant rotation; dual push; pool-wide relay bindings; `/mcp/:providerId` Streamable HTTP proxy with §5.3 SSRF validation; `CpMcpDefs`; web provider management |
-| **P3 (future)** | Independent per-agent grants with relay call-time validation and revocation; legacy HTTP+SSE termination/translation; per-agent or per-user upstream identity; per-tool allow/deny; stdio bridging; grant usage/auditing; optional private-upstream allowlists                                                                                      |
+| **P3 (future)** | Independent per-agent grants with relay call-time validation and revocation, and per-tool decisions (proposed: [mcp-tool-permissions.md](mcp-tool-permissions.md)); legacy HTTP+SSE termination/translation; per-agent or per-user upstream identity; stdio bridging; grant usage/auditing; optional private-upstream allowlists                    |
 
 **Non-goals**: the current proxy accepts only single-endpoint **Streamable
 HTTP** upstreams. Legacy HTTP+SSE (separate `endpoint`) and stdio are outside the
 current network proxy. The call path uses one shared upstream identity per
 provider; restricted console visibility is not per-agent call isolation.
-Private upstreams are rejected by default. `autoApprove` and per-tool
-granularity are also out of scope.
+Private upstreams are rejected by default. `autoApprove` is also out of scope;
+per-tool restriction is proposed in [mcp-tool-permissions.md](mcp-tool-permissions.md).
 
 **Becoming an MCP client to render a third-party server's elicitation is also a
 non-goal — and it is not needed.** §5.1 rejects parsing MCP for the legacy SSE
