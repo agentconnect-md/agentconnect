@@ -9,6 +9,7 @@ export function ConfirmationDialog({
   title,
   children,
   confirmLabel,
+  cancelLabel,
   busy = false,
   busyLabel = 'Saving…',
   error,
@@ -20,6 +21,8 @@ export function ConfirmationDialog({
   children: ReactNode
   /** Without `onConfirm` the dialog only explains, and offers no confirmation. */
   confirmLabel?: string
+  /** Replaces Cancel where the confirmed action is itself a cancellation. */
+  cancelLabel?: string
   busy?: boolean
   busyLabel?: string
   error?: string | null
@@ -65,7 +68,7 @@ export function ConfirmationDialog({
         <div className="modalfoot">
           <div className="flex-1" />
           <Button variant="ghost" disabled={busy} onClick={onClose}>
-            {t('cancel')}
+            {cancelLabel ?? t('cancel')}
           </Button>
           {onConfirm && (
             <Button variant={destructive ? 'danger' : 'primary'} disabled={busy} onClick={onConfirm}>

@@ -17,6 +17,7 @@ import {
 import { fetchSessionMonthUsage, type SessionMonthUsageDto } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
+import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 
 /** The plan reads; a null org leaves both unkeyed, so nothing is requested. */
 export function usePlanReads(orgId: string | null) {
@@ -439,15 +440,17 @@ function PendingPaymentBanner({
   onCancel?: (change: BillingPendingChange) => Promise<void>
 }) {
   const t = useTranslations('Billing.plan.pending')
+  const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const cancelable = change.kind === 'upgrade' && onCancel
   const cancel = async () => {
-    if (!cancelable || busy || !window.confirm(t('cancelConfirm'))) return
+    if (!cancelable || busy) return
     setBusy(true)
     setError(null)
     try {
       await onCancel(change)
+      setConfirming(false)
     } catch (e) {
       setError(t('cancelError', { error: (e as Error).message }))
     }
@@ -471,18 +474,30 @@ function PendingPaymentBanner({
               type="button"
               className="lnk"
               data-plan-pending-cancel="true"
-              disabled={busy}
-              onClick={() => void cancel()}
+              aria-haspopup="dialog"
+              onClick={() => setConfirming(true)}
             >
               {t('cancel')}
             </button>
           )}
         </div>
       )}
-      {error && (
-        <div role="alert" className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
-          {error}
-        </div>
+      {cancelable && confirming && (
+        <ConfirmationDialog
+          title={t('cancelTitle')}
+          confirmLabel={t('cancel')}
+          cancelLabel={t('cancelKeep')}
+          busy={busy}
+          busyLabel={t('cancelBusy')}
+          error={error}
+          onConfirm={() => void cancel()}
+          onClose={() => {
+            setConfirming(false)
+            setError(null)
+          }}
+        >
+          {t('cancelConfirm')}
+        </ConfirmationDialog>
       )}
     </AmberBanner>
   )
