@@ -198,6 +198,34 @@ describe('Daemon agent config watcher out of watch capacity', () => {
     await daemon.stop()
   })
 
+  it('escalates the re-arm delay while failures repeat, and starts over once a watcher held for an hour', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const clock = new FakeClock()
+    const { daemon } = makeStubDaemon(root, clock)
+    await daemon.start()
+    const d = daemon as any
+    vi.spyOn(d.log, 'warn').mockImplementation(() => {})
+    vi.spyOn(d, 'reconcile').mockResolvedValue(undefined)
+    const next = vi.spyOn(d.watcherBackoff, 'next')
+    const delays = () => next.mock.results.map((r) => r.value as number)
+
+    d.watcher.emit('error', emfile())
+    clock.advance(600_000)
+    // Fails again right after re-arming: the same episode, so the delay grows.
+    d.watcher.emit('error', emfile())
+    clock.advance(600_000)
+    expect(delays()[0]).toBeLessThan(60_000)
+    expect(delays()[1]).toBeGreaterThanOrEqual(60_000)
+
+    // This watcher held for an hour: a later failure is a new episode.
+    clock.advance(60 * 60_000)
+    d.watcher.emit('error', emfile())
+    expect(delays()[2]).toBeGreaterThanOrEqual(30_000)
+    expect(delays()[2]).toBeLessThan(60_000)
+    await daemon.stop()
+  })
+
   it('cancels a pending re-arm on stop()', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
