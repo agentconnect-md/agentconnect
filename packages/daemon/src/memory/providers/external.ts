@@ -32,7 +32,8 @@ import {
   type RecallPolicy,
   type RecallRequest,
   type RecordMemoryAdmin,
-  type TurnRecord
+  type TurnRecord,
+  type MemoryStandingIndex
 } from '../types.js'
 
 /** The durable capture sink. Promise-returning is allowed: the outbox writes to the store. */
@@ -102,10 +103,10 @@ export class ExternalMemoryProvider implements MemoryProvider {
 
   async ensure(): Promise<void> {}
 
-  async standingContextAtSessionStart(): Promise<string> {
+  async standingContextAtSessionStart(): Promise<MemoryStandingIndex> {
     // External recall is query-dependent and runs on every activation. It must
     // never become a leading session/title block.
-    return ''
+    return { index: '' }
   }
 
   recallPolicy(): RecallPolicy {

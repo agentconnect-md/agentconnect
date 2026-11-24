@@ -287,16 +287,22 @@ describe('what a session reads and is injected with', () => {
     const person = { agentId: AGENT, personKey: memoryPersonKey('user:user-1') }
     await mem.write(person, 'MEMORY.md', '# yours\n- [prefs](prefs.md)')
     await mem.write(person, 'prefs.md', '- likes tabs')
-    expect(await mem.standingContextAtSessionStart(person)).toBe(
-      '# shared\n- [deploys](deploys.md)\n\nOnly for this person:\n# yours\n- [prefs](prefs.md)'
-    )
+    expect(await mem.standingContextAtSessionStart(person)).toEqual({
+      index: '# shared\n- [deploys](deploys.md)',
+      own: { layer: 'person', index: '# yours\n- [prefs](prefs.md)' }
+    })
     // A channel never carries the person layer, so neither its index nor its files reach it.
     const channel = { agentId: AGENT, channelKey: memoryChannelKey('C1'), channel: 'C1', sharedPlace: true as const }
-    expect(await mem.standingContextAtSessionStart(channel)).toBe('# shared\n- [deploys](deploys.md)')
+    expect(await mem.standingContextAtSessionStart(channel)).toEqual({ index: '# shared\n- [deploys](deploys.md)' })
     expect((await mem.read(channel, 'prefs.md')).content).toBe('')
     // Each layer keeps its own index: the person's MEMORY.md never falls through to the shared one.
     const fresh = { agentId: AGENT, personKey: memoryPersonKey('user:user-2') }
     expect((await mem.read(fresh, 'MEMORY.md')).content).toBe('')
+    // A person with no index yet is still named as the layer a write without `layer` edits.
+    expect(await mem.standingContextAtSessionStart(fresh)).toEqual({
+      index: '# shared\n- [deploys](deploys.md)',
+      own: { layer: 'person', index: '' }
+    })
     expect((await mem.list(fresh)).map((f) => f.name)).toEqual([])
   })
 

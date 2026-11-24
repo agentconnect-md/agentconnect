@@ -24,6 +24,12 @@ export type MemoryRecord = CanonicalMemoryRecord
 export const MEMORY_LAYER_CHOICES = ['shared', 'person', 'here'] as const
 export type MemoryLayerChoice = (typeof MEMORY_LAYER_CHOICES)[number]
 
+/** The indexes a fresh session starts with: the shared one, and the conversation's own layer's when its writes land beside it ('' until its first write). */
+export interface MemoryStandingIndex {
+  index: string
+  own?: { layer: Exclude<MemoryLayerChoice, 'shared'>; index: string }
+}
+
 /** The provider kind an agent is configured with (protocol `memory.provider`). */
 export type MemoryProviderKind = 'none' | 'native' | 'managed' | 'external'
 
@@ -194,9 +200,8 @@ export interface MemoryProvider {
    *  target (idempotent). Called once per session handle before prompt building. */
   ensure(scope: MemoryScope, agentName: string): Promise<void>
 
-  /** The text to inject at the start of a FRESH session (the memory index, capped).
-   *  '' when there is nothing to inject. The caller owns the surrounding prompt prose. */
-  standingContextAtSessionStart(scope: MemoryScope): Promise<string>
+  /** The memory indexes to inject at the start of a FRESH session, capped; the caller owns the surrounding prompt prose. */
+  standingContextAtSessionStart(scope: MemoryScope): Promise<MemoryStandingIndex>
 
   /** Query-dependent recall for EVERY activation. Non-semantic providers return []. */
   recallForTurn(scope: MemoryScope, req: RecallRequest): Promise<MemoryRecord[]>

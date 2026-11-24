@@ -8,7 +8,8 @@ import {
   type MemoryReadResult,
   type MemoryScope,
   type MemoryWriteResult,
-  type RecallPolicy
+  type RecallPolicy,
+  type MemoryStandingIndex
 } from '../types.js'
 import { disabledRuntimeMemoryEnv } from './runtime-env.js'
 
@@ -25,8 +26,8 @@ export class NoMemoryProvider implements MemoryProvider {
 
   async ensure(): Promise<void> {}
 
-  async standingContextAtSessionStart(): Promise<string> {
-    return ''
+  async standingContextAtSessionStart(): Promise<MemoryStandingIndex> {
+    return { index: '' }
   }
 
   async recallForTurn(): Promise<MemoryRecord[]> {

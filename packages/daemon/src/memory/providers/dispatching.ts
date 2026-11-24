@@ -19,7 +19,8 @@ import {
   type MemoryWriteResult,
   type RecallPolicy,
   type RecallRequest,
-  type TurnRecord
+  type TurnRecord,
+  type MemoryStandingIndex
 } from '../types.js'
 import { ManagedMemoryProvider } from './managed.js'
 import { NativeMemoryProvider } from './native.js'
@@ -115,7 +116,7 @@ export class DispatchingMemoryProvider implements MemoryProvider {
   ensure(scope: MemoryScope, agentName: string): Promise<void> {
     return this.forAgent(scope.agentId).ensure(scope, agentName)
   }
-  standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
+  standingContextAtSessionStart(scope: MemoryScope): Promise<MemoryStandingIndex> {
     return this.forAgent(scope.agentId).standingContextAtSessionStart(scope)
   }
   recallForTurn(scope: MemoryScope, req: RecallRequest): Promise<MemoryRecord[]> {

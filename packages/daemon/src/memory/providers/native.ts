@@ -8,7 +8,8 @@ import {
   type MemoryReadResult,
   type MemoryScope,
   type MemoryWriteResult,
-  type RecallPolicy
+  type RecallPolicy,
+  type MemoryStandingIndex
 } from '../types.js'
 
 /** `native`: the runtime keeps its own memory where it already keeps its state, so the daemon adds no store, tools, or console surface. */
@@ -21,8 +22,8 @@ export class NativeMemoryProvider implements MemoryProvider {
 
   async ensure(): Promise<void> {}
 
-  async standingContextAtSessionStart(): Promise<string> {
-    return ''
+  async standingContextAtSessionStart(): Promise<MemoryStandingIndex> {
+    return { index: '' }
   }
 
   async recallForTurn(): Promise<MemoryRecord[]> {
