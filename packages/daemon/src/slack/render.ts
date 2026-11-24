@@ -186,8 +186,22 @@ const STREAM_PLAN_FAILED = 'Failed'
 const FAILED_PREFIX = '(failed) '
 
 export function clampTo(s: string, max: number): string {
+  if (max <= 0) return ''
   const t = s.trim()
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+  if (t.length <= max) return t
+  if (max === 1) return '…'
+  let cut = max - 1
+  if (
+    cut > 0 &&
+    cut < t.length &&
+    t.charCodeAt(cut - 1) >= 0xd800 &&
+    t.charCodeAt(cut - 1) <= 0xdbff &&
+    t.charCodeAt(cut) >= 0xdc00 &&
+    t.charCodeAt(cut) <= 0xdfff
+  ) {
+    cut -= 1
+  }
+  return `${t.slice(0, cut)}…`
 }
 
 /** Drop paired bold markers, keeping every other kind of markdown. Card bodies parse markdown,
@@ -523,30 +537,60 @@ export function permToolLabel(params: RequestPermissionRequest): string {
   return clampTo(label, 200)
 }
 
-/** Slack button color for a permission option: green for allow, red for reject, default
- *  (gray) for anything else the runtime might send. */
+/** Maximum length of a permission button label before collapsing into numbered body lines + compact labels. */
+export const SLACK_PERMISSION_BUTTON_LABEL_CAP = 40
+export const SLACK_PERMISSION_RULE_CAP = 300
+
+/** Slack button color for a permission option: green for one-time allow, neutral for always-allow,
+ *  red for reject, default (gray) for anything else the runtime might send. */
 function permOptionStyle(kind: string): 'primary' | 'danger' | undefined {
-  if (kind === 'allow_once' || kind === 'allow_always') return 'primary'
+  if (kind === 'allow_once') return 'primary'
   if (kind === 'reject_once' || kind === 'reject_always') return 'danger'
   return undefined
+}
+
+/** Defuse agent-authored permission labels while preserving balanced single-line inline code spans. */
+function formatSlackPermOption(raw: string): string {
+  const collapsed = raw.replace(/\s+/g, ' ').trim()
+  const backticks = (collapsed.match(/`/g) ?? []).length
+  // An unbalanced backtick inside one option would capture subsequent lines/options in Slack mrkdwn.
+  const balanced = backticks % 2 === 1 ? collapsed.replace(/`/g, "'") : collapsed
+  const defuseSegment = (text: string): string =>
+    escapeSlackMrkdwn(text)
+      .replace(/`/g, "'")
+      .replace(/(^|\s)((?:https?:\/\/|www\.)\S+)(?=\s|$)/gi, '$1`$2`')
+  let out = ''
+  let last = 0
+  for (const m of balanced.matchAll(/`([^`\n]+)`/g)) {
+    const idx = m.index ?? 0
+    if (idx > last) out += defuseSegment(balanced.slice(last, idx))
+    out += `\`${escapeSlackMrkdwn(m[1]!)}\``
+    last = idx + m[0].length
+  }
+  if (last < balanced.length) out += defuseSegment(balanced.slice(last))
+  return out
 }
 
 /** How many option buttons one permission card offers. Slack allows 25 elements in one `actions`
  *  block and wraps them across lines, and this card puts nothing else in that block — so the cap
  *  is the block's own, not a row's. The 5 this used to slice to was neither. */
 export const SLACK_PERMISSION_MAX_OPTIONS = 25
+const SLACK_PERMISSION_MAX_SECTIONS = 10
 
 /**
  * Build the interactive permission-request card: a header naming the tool the agent
  * wants to run, and an actions row of buttons — one per ACP PermissionOption, green for
- * allow / red for reject. The choice rides each button `value` (`<requestId>|<optionId>`);
- * `requestId` ties the click back to the pending ACP request.
+ * allow_once / neutral for allow_always / red for reject. The choice rides each button `value`
+ * (`<requestId>|<optionId>`); `requestId` ties the click back to the pending ACP request.
+ * When any option label exceeds {@link SLACK_PERMISSION_BUTTON_LABEL_CAP} characters (e.g.
+ * prefix command allow-rules in narrow thread sidebars), the full numbered options are placed
+ * in one or more section blocks above compact numbered buttons so buttons never clip mid-rule.
  *
- * Null ⇒ this card cannot offer the whole list (empty, or longer than the block holds), and the
- * caller must put the request somewhere that can. NEVER a card built from part of the list: the
- * reader would decide from a menu they cannot see the end of, and their pick would be reported as
- * their decision on the FULL request — the agent unable to tell it came from a truncated set
- * (#1811, the permission half of #1794's gap 7). Pure — safe to unit-test.
+ * Null ⇒ this card cannot offer the whole list (empty, more than 25 options, or exceeds 10
+ * section blocks), and the caller must put the request somewhere that can. NEVER a card built
+ * from part of the list: the reader would decide from a menu they cannot see the end of, and
+ * their pick would be reported as their decision on the FULL request — the agent unable to tell
+ * it came from a truncated set (#1811, the permission half of #1794's gap 7). Pure — safe to unit-test.
  */
 export function buildPermissionCard(
   requestId: string,
@@ -555,18 +599,50 @@ export function buildPermissionCard(
 ): unknown[] | null {
   if (!params.options.length || params.options.length > SLACK_PERMISSION_MAX_OPTIONS) return null
   const header = `:lock: *Permission requested* — ${escapeSlackMrkdwn(permToolLabel(params))}`
+  if (header.length > SLACK_SECTION_TEXT_CAP) return null
+  const collapsed = params.options.map((o, i) => o.name.replace(/\s+/g, ' ').trim() || `Option ${i + 1}`)
+  const hasLongOption = collapsed.some((label) => label.length > SLACK_PERMISSION_BUTTON_LABEL_CAP)
+
+  const sections: string[] = []
+  if (hasLongOption) {
+    const lines = collapsed.map(
+      (label, i) => `${i + 1}. ${formatSlackPermOption(clampTo(label, SLACK_PERMISSION_RULE_CAP))}`
+    )
+    let current = header
+    let firstJoin = true
+    for (const line of lines) {
+      if (line.length > SLACK_SECTION_TEXT_CAP) return null
+      const sep = current ? (firstJoin ? '\n\n' : '\n') : ''
+      if (current.length + sep.length + line.length <= SLACK_SECTION_TEXT_CAP) {
+        current += sep + line
+        firstJoin = false
+      } else {
+        if (current) sections.push(current)
+        current = line
+        firstJoin = false
+      }
+    }
+    if (current) sections.push(current)
+    if (sections.length > SLACK_PERMISSION_MAX_SECTIONS) return null
+  } else {
+    sections.push(header)
+  }
+
   const buttons = params.options.map((o, i) => {
     const style = permOptionStyle(o.kind)
+    const label = hasLongOption
+      ? clampTo(`${i + 1}. ${collapsed[i]!}`, SLACK_PERMISSION_BUTTON_LABEL_CAP)
+      : clampTo(collapsed[i]!, SLACK_PERMISSION_BUTTON_LABEL_CAP)
     return {
       type: 'button',
       action_id: `${PERMISSION_ACTION_PREFIX}:${i}`,
-      text: { type: 'plain_text', text: clampTo(o.name, 75), emoji: true },
+      text: { type: 'plain_text', text: label, emoji: true },
       value: encodePermValue(requestId, o.optionId),
       ...(style ? { style } : {})
     }
   })
   return [
-    { type: 'section', text: agentMrkdwn(header) },
+    ...sections.map((text) => ({ type: 'section', text: agentMrkdwn(text) })),
     { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements: buttons }
   ]
 }
