@@ -5,7 +5,11 @@ import { canonicalEmailAddress } from '@agentconnect.md/message'
 import {
   EMAIL_PLATFORM,
   EMAIL_RECIPIENTS_MAX,
+  EMAIL_SEND_ATTACHMENT_BYTES_MAX,
+  EMAIL_SEND_ATTACHMENTS_MAX,
+  EMAIL_SEND_HTML_MAX,
   EMAIL_STARTED_OWNER_PREFIX,
+  type WireEmailAttachment,
   type WireEmailCall
 } from '@agentconnect.md/protocol'
 import type { Integration } from '../../agents/agent-schema.js'
@@ -16,7 +20,8 @@ import { platformIntegrationConfig } from '../integration-config.js'
 import type { PlatformAgentToolEnv, PlatformAgentTools, PlatformConversationSeed } from '../read-ports.js'
 import type { EmailConnection, EmailStoredSent } from './connection.js'
 import type { EmailMemberVerdict } from './members.js'
-import { emailFromName, emailReplyBodies, emailWithFooter } from './render.js'
+import { sanitizeEmailHtml } from './html.js'
+import { emailAttributionFooter, emailFromName, emailHtml, emailReplyBodies, emailWithFooter } from './render.js'
 import { emailStartedReplyConversation, emailStartedReplyThread } from './threading.js'
 
 const TAG_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
@@ -39,6 +44,15 @@ export const SEND_EMAIL_ARGS = z.object({
     .transform((value) => value ?? undefined),
   subject: requiredString('subject'),
   body: requiredString('body'),
+  html: z
+    .string()
+    .nullish()
+    .transform((value) => value?.trim() || undefined),
+  attachments: z
+    .array(requiredString('attachments'), 'argument attachments must be an array of file paths')
+    .max(EMAIL_SEND_ATTACHMENTS_MAX, `at most ${EMAIL_SEND_ATTACHMENTS_MAX} attachments`)
+    .nullish()
+    .transform((value) => (value?.length ? value : undefined)),
   purpose: z
     .string()
     .max(EMAIL_PURPOSE_MAX, `purpose is at most ${EMAIL_PURPOSE_MAX} characters`)
@@ -59,7 +73,23 @@ export const SEND_EMAIL_TOOL: ToolDescriptor = {
       to: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Email addresses to send to.' },
       cc: { type: 'array', items: { type: 'string' }, description: 'Email addresses to copy.' },
       subject: { type: 'string', minLength: 1, description: 'The subject line.' },
-      body: { type: 'string', minLength: 1, description: 'The mail body in Markdown.' },
+      body: {
+        type: 'string',
+        minLength: 1,
+        description: 'The mail body in Markdown; with html, the plain-text part for readers that show no HTML.'
+      },
+      html: {
+        type: 'string',
+        description:
+          'Optional HTML for the mail’s rich part, in place of the Markdown’s rendering. Scripts, forms, images and ' +
+          'anything that loads a resource are removed; inline styles and <style> sheets that load nothing are kept.'
+      },
+      attachments: {
+        type: 'array',
+        items: { type: 'string' },
+        maxItems: EMAIL_SEND_ATTACHMENTS_MAX,
+        description: `Files to attach: workspace-relative paths or \`files:\` names, as shareFile takes them; at most ${EMAIL_SEND_ATTACHMENTS_MAX}, ${EMAIL_SEND_ATTACHMENT_BYTES_MAX / (1024 * 1024)} MiB together.`
+      },
       purpose: {
         type: 'string',
         description:
@@ -158,7 +188,10 @@ const MEMBERS_ONLY =
 /** What the tool acts through: the address's connection, and the daemon facts of the call. */
 export interface EmailStartDeps {
   conn: Pick<EmailConnection, 'address' | 'agentId' | 'members' | 'send' | 'recordSent'>
-  env: Pick<PlatformAgentToolEnv, 'memberTurn' | 'startConversation' | 'attribution' | 'callingSessionUrl'>
+  env: Pick<
+    PlatformAgentToolEnv,
+    'memberTurn' | 'startConversation' | 'attribution' | 'callingSessionUrl' | 'readWorkspaceFile'
+  >
   agentName?: string
   mintTag?: () => string
   now(): number
@@ -172,12 +205,15 @@ export async function startEmail(
     cc?: readonly string[] | undefined
     subject: string
     body: string
+    html?: string | undefined
+    attachments?: readonly string[] | undefined
     purpose?: string | undefined
   }
 ): Promise<unknown> {
   const { conn } = deps
   const recipients = startedRecipients(args, conn.address)
   if ('refused' in recipients) throw refused(recipients.refused)
+  const attachments = args.attachments ? await readAttachments(deps.env, args.attachments) : undefined
   const all = [...recipients.to, ...recipients.cc]
   const members = conn.members
   if (!members) throw refused('this daemon cannot check recipients')
@@ -192,6 +228,12 @@ export async function startEmail(
   // The agent's footer goes under a mail to members only; the session keeps the body alone.
   const attribution = await deps.env.attribution().catch(() => undefined)
   const bodies = emailReplyBodies(emailWithFooter(args.body, attribution, outside.length > 0))
+  if (args.html) {
+    const footer = attribution && !outside.length ? emailHtml(emailAttributionFooter(attribution)) : undefined
+    bodies.html = sanitizeEmailHtml(args.html, footer)
+    if (bodies.html.length > EMAIL_SEND_HTML_MAX)
+      throw refused(`the html is over ${EMAIL_SEND_HTML_MAX} characters once cleaned`)
+  }
   const fromName = emailFromName(deps.agentName)
   const subject = args.subject.replace(/[\r\n]+/g, ' ').trim()
   if (!subject) throw refused('the subject is empty')
@@ -203,7 +245,8 @@ export async function startEmail(
     ...(fromName ? { fromName } : {}),
     subject: subject.slice(0, 998),
     text: bodies.text,
-    html: bodies.html
+    html: bodies.html,
+    ...(attachments ? { attachments } : {})
   }
   const result = await conn.send(call)
   if (result.outcome === 'unsent') throw refused(`the mail was not sent: ${result.reason}`)
@@ -231,7 +274,8 @@ export async function startEmail(
     })
     // The thread's first record is the mail and, unmailed, where and why it was sent, so a reply finds the agent knowing.
     const origin = emailOriginNote(args.purpose, await deps.env.callingSessionUrl().catch(() => undefined))
-    await deps.env.startConversation({ ...place, thread: tag, text: origin ? `${args.body}\n\n${origin}` : args.body })
+    const record = [args.body, ...(attachments ? [attachedNotes(attachments)] : []), ...(origin ? [origin] : [])]
+    await deps.env.startConversation({ ...place, thread: tag, text: record.join('\n\n') })
   } catch {
     recorded = false
   }
@@ -251,6 +295,28 @@ export async function startEmail(
       : {})
   }
 }
+
+// Each named file read as shareFile reads it, within the started mail's count and size limits.
+async function readAttachments(
+  env: Pick<PlatformAgentToolEnv, 'readWorkspaceFile'>,
+  paths: readonly string[]
+): Promise<WireEmailAttachment[]> {
+  const files: WireEmailAttachment[] = []
+  let total = 0
+  for (const path of paths) {
+    const read = await env.readWorkspaceFile(path)
+    if (!read.ok)
+      throw refused(`the attachment "${path}" cannot be read (${read.reason}${read.detail ? `: ${read.detail}` : ''})`)
+    total += read.bytes.byteLength
+    if (total > EMAIL_SEND_ATTACHMENT_BYTES_MAX)
+      throw refused(`the attachments exceed ${EMAIL_SEND_ATTACHMENT_BYTES_MAX / (1024 * 1024)} MiB together`)
+    files.push({ name: read.name, type: read.mimeType, content: read.bytes.toString('base64') })
+  }
+  return files
+}
+
+const attachedNotes = (files: readonly WireEmailAttachment[]): string =>
+  files.map((file) => `[Attached: ${file.name} (${file.type})]`).join('\n')
 
 const isEmailConnection = (value: unknown): value is EmailConnection =>
   typeof value === 'object' && value !== null && 'address' in value && 'startedThread' in value

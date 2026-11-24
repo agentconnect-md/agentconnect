@@ -4,10 +4,13 @@ import {
   EMAIL_MESSAGE_ID_MAX,
   EMAIL_MESSAGE_ID_PATTERN,
   EMAIL_PLATFORM,
+  EMAIL_SEND_PATH,
+  RD_EMAIL_ATTACHMENTS_V1,
   EMAIL_STARTED_TAG_PATTERN,
+  RdPlatformReply,
   WireEmailAdapterExt,
+  WireEmailSendTicketResult,
   type IntegrationEmailConfig,
-  type RdPlatformReply,
   type WireEmailCall,
   type WireEmailMailbox
 } from '@agentconnect.md/protocol'
@@ -156,6 +159,9 @@ export function emailSendOutcome(reply: RdPlatformReply): EmailSendResult & { re
   return { outcome: 'unsent', reason: providerReason(status, payload?.body) }
 }
 
+/** How long a ticketed post of a mail with attachments may take, its upload and the provider call included. */
+const EMAIL_SEND_POST_TIMEOUT_MS = 30_000
+
 /** How many times a send nothing reached the provider with is tried, and the waits between. */
 const SEND_ATTEMPT_WAITS_MS = [1_000, 3_000]
 
@@ -163,6 +169,8 @@ export interface EmailConnectionDeps {
   group: EmailConnectionGroup
   /** The daemon's relays, resolved per call: they start with the Control Plane's roster. */
   relay?: PlatformRelay
+  /** The HTTP layer a mail with attachments is posted with; defaults to the global fetch. */
+  fetch?: typeof fetch
   /** The mail index and the transcript rows it names. */
   store(): {
     emailMessages: EmailMessages
@@ -423,14 +431,21 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
     if (!relay) return { outcome: 'unsent', reason: 'no relay is configured to send mail' }
     const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
     let last: EmailSendResult = { outcome: 'unsent', reason: 'no relay is reachable' }
+    const attached = call.op === 'start' && !!call.attachments?.length
     for (let attempt = 0; attempt <= SEND_ATTEMPT_WAITS_MS.length; attempt++) {
       if (attempt > 0) await sleep(SEND_ATTEMPT_WAITS_MS[attempt - 1]!)
       let reply: RdPlatformReply
       try {
-        reply = await relay.request({ platformId: EMAIL_PLATFORM, botId: this.botId, payload: call })
+        reply =
+          call.op === 'start' && attached
+            ? await this.postWithTicket(relay, call)
+            : await relay.request({ platformId: EMAIL_PLATFORM, botId: this.botId, payload: call })
       } catch (err) {
         if (err instanceof PlatformRelayUnsent) {
-          last = { outcome: 'unsent', reason: 'no relay is reachable' }
+          last = {
+            outcome: 'unsent',
+            reason: attached ? 'no reachable relay can send attachments' : 'no relay is reachable'
+          }
           continue
         }
         return { outcome: 'unknown', reason: 'the relay did not answer, so it may have been sent' }
@@ -440,5 +455,34 @@ export class EmailConnection implements PlatformConnection, EmailPlacementIndex 
       last = result
     }
     return last
+  }
+
+  // A mail with attachments, which do not fit a frame: a ticket over the frame, then the mail posted to the relay over HTTP.
+  private async postWithTicket(
+    relay: PlatformRelay,
+    call: Extract<WireEmailCall, { op: 'start' }>
+  ): Promise<RdPlatformReply> {
+    const granted = await relay.request(
+      { platformId: EMAIL_PLATFORM, botId: this.botId, payload: { op: 'send-ticket', tag: call.tag } },
+      { requires: [RD_EMAIL_ATTACHMENTS_V1] }
+    )
+    if (granted.outcome !== 'ok') return granted
+    const ticket = WireEmailSendTicketResult.safeParse(granted.payload)
+    const target = ticket.success ? new URL(ticket.data.url) : undefined
+    // The daemon posts to the relay's own send route and follows no other URL.
+    if (!target || !/^https?:$/.test(target.protocol) || !target.pathname.startsWith(`${EMAIL_SEND_PATH}/`))
+      return { outcome: 'refused', reason: 'invalid_ticket' }
+    const res = await (this.deps.fetch ?? fetch)(target, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(call),
+      redirect: 'error',
+      signal: AbortSignal.timeout(EMAIL_SEND_POST_TIMEOUT_MS)
+    })
+    // The route refuses a ticket or a body before anything is sent; any other failure may come after the provider call.
+    if (res.status === 404 || res.status === 413) return { outcome: 'refused', reason: `http_${res.status}` }
+    const answer = res.ok ? RdPlatformReply.safeParse(await res.json().catch(() => undefined)) : undefined
+    if (!answer?.success) throw new Error(`the relay answered the post with ${res.status}`)
+    return answer.data
   }
 }

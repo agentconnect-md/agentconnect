@@ -26,7 +26,7 @@ import {
   canManageSharing,
   type ViewCtx
 } from '../../authorization/policy.js'
-import { resolveShareSet } from '../sharing.js'
+import { resolvePeopleSet, resolveShareSet } from '../sharing.js'
 import { publicBaseUrl } from '../oauth/base.js'
 import { cliChannel, computerImage } from '../../package-version.js'
 import { COMPUTER_WS_PUBLIC_PATH } from '@agentconnect.md/protocol'
@@ -440,7 +440,7 @@ export function computerRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         let policy: ComputerPolicy | undefined
         if (req.body.policy) {
-          const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.policy.allowedMembers)
+          const members = await resolvePeopleSet(deps.repos.user, orgOf(req), req.body.policy.allowedMembers)
           policy = withOwnerMember({ ...req.body.policy, allowedMembers: members }, ctx.userId)
         }
         const agentAccess: ComputerAgentAccess | undefined = req.body.agentAccess
@@ -711,7 +711,7 @@ export function computerRoutes(deps: HttpDeps) {
             .send({ error: 'Forbidden', statusCode: 403, message: 'only the computer’s owner can change its policy' })
         }
         if (c.status === 'revoked') return reply.code(409).send(revokedConflict)
-        const members = await resolveShareSet(deps.repos.user, orgOf(req), req.body.allowedMembers)
+        const members = await resolvePeopleSet(deps.repos.user, orgOf(req), req.body.allowedMembers)
         const policy = withOwnerMember({ ...req.body, allowedMembers: members }, c.ownerUserId)
         const updated = await deps.computers.setPolicy(orgOf(req), c.id, policy, ctxOf(req).userId)
         if (!updated) return reply.code(409).send(revokedConflict)

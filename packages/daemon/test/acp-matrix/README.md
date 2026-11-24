@@ -90,6 +90,8 @@ AC_RUNTIME_MATRIX_ONLY=sendMessage \
 
 - `AC_RUNTIME_MATRIX_SENDMESSAGE_REPS` repeats every scenario (default 1).
 - `AC_RUNTIME_MATRIX_SENDMESSAGE_SCENARIOS` limits the run to a comma list of scenario ids.
+- `AC_RUNTIME_MATRIX_SENDMESSAGE_MODEL` runs every session on the offered model whose id contains it;
+  without it the runtime's own default runs.
 - `AC_RUNTIME_MATRIX_SENDMESSAGE_OUT` receives the JSON report — git head, descriptor
   sizes and tool names, and per run the verdict, classified operations, call counts,
   wall time, and token usage — even when cells fail. It is rewritten after every run,

@@ -5970,6 +5970,11 @@ export async function fetchMembers(orgId?: string): Promise<MemberDto[]> {
   return apiGet<MemberDto[]>(`${orgBase(orgId)}/members`)
 }
 
+// The org's service accounts in member shape, for naming one in a Selected audience.
+export async function fetchServiceAccountMembers(orgId?: string): Promise<MemberDto[]> {
+  return apiGet<MemberDto[]>(`${orgBase(orgId)}/members/service-accounts`)
+}
+
 // Change one member's role (PATCH /members/:id, owner-only). Multiple owners are
 // allowed; demoting the last owner is refused (409).
 export async function updateMemberRole(userId: string, role: MemberRole): Promise<MemberDto> {
@@ -6524,6 +6529,19 @@ export async function updateOrg(
 // has daemons; agents/crons/integrations/bots/keys/memberships cascade.
 export async function deleteOrg(orgId: string): Promise<void> {
   await apiDelete<void>(`/orgs/${encodeURIComponent(orgId)}`)
+}
+
+// The organizations a refused account deletion names: the caller is the only owner of each.
+export const ACCOUNT_OWNS_ORGANIZATIONS = 'ACCOUNT_OWNS_ORGANIZATIONS'
+export interface SoleOwnedOrgDto {
+  id: string
+  slug: string
+  name: string | null
+}
+
+// Delete the caller's account (DELETE /me): leaves every org, then removes the sign-in identity.
+export async function deleteMyAccount(): Promise<void> {
+  await apiDelete<void>('/me')
 }
 
 // ── bots ──────────────────────────────────────────────────────────────────────

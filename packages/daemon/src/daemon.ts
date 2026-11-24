@@ -3415,9 +3415,9 @@ export class Daemon {
       cpClient: () => this.cpClient,
       // Late-bound: the relays start with the CP's roster, which may come after a connection opens.
       platformRelay: () => ({
-        request: async (req) => {
+        request: async (req, opts) => {
           if (!this.relays) throw new PlatformRelayUnsent('no relay roster yet')
-          return await this.relays.request(req)
+          return await this.relays.request(req, opts)
         }
       }),
       channelSnapshots: () => this.channelSnapshots,

@@ -32,10 +32,36 @@ function memberInitials(m: Pick<MemberDto, 'name' | 'email'>): string {
   return initialsFrom(m.name ?? '', m.email ?? undefined)
 }
 
-/** Current organization members eligible for the Selected audience. */
-function useSharePool(): MemberDto[] {
-  const { members } = useConsoleData()
-  return members
+/** Current organization members and service accounts eligible for the Selected audience. */
+function useSharePool(): { pool: MemberDto[]; accountIds: ReadonlySet<string> } {
+  const { members, serviceAccounts } = useConsoleData()
+  return useMemo(
+    () => ({ pool: [...members, ...serviceAccounts], accountIds: new Set(serviceAccounts.map((a) => a.userId)) }),
+    [members, serviceAccounts]
+  )
+}
+
+/** A member's avatar, or a robot mark for a service account, which has no picture. */
+function ShareAvatar({
+  member,
+  account,
+  size,
+  fontSize
+}: {
+  member: MemberDto
+  account: boolean
+  size: number
+  fontSize: number
+}) {
+  if (!account) return <Avatar src={member.picture} initials={memberInitials(member)} size={size} fontSize={fontSize} />
+  return (
+    <span
+      style={{ width: size, height: size }}
+      className="inline-flex flex-none items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary)"
+    >
+      <Icon name="bot" size={Math.round(size * 0.6)} />
+    </span>
+  )
 }
 
 // ── the create/edit control ──────────────────────────────────────────────────
@@ -190,7 +216,7 @@ export function ChoiceTiles<T extends string>({
 
 function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (userId: string) => void }) {
   const t = useTranslations('Common.visibility')
-  const pool = useSharePool()
+  const { pool, accountIds } = useSharePool()
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -235,7 +261,7 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
             key={m.userId}
             className="inline-flex items-center gap-[5px] rounded-full bg-(--surface-active) py-[2px] pr-1 pl-[3px] font-sans text-[11.5px] font-medium leading-normal"
           >
-            <Avatar src={m.picture} initials={memberInitials(m)} size={17} fontSize={8} />
+            <ShareAvatar member={m} account={accountIds.has(m.userId)} size={17} fontSize={8} />
             {memberDisplayName(m)}
             <span
               onClick={(e) => {
@@ -279,10 +305,15 @@ function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (
                   onClick={() => onToggle(m.userId)}
                   className="flex w-full cursor-pointer items-center gap-[10px] border-0 bg-transparent px-3 py-[6px] text-left"
                 >
-                  <Avatar src={m.picture} initials={memberInitials(m)} size={26} fontSize={10} />
+                  <ShareAvatar member={m} account={accountIds.has(m.userId)} size={26} fontSize={10} />
                   <span className="flex min-w-0 flex-1 flex-col items-start">
                     <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
                       {memberDisplayName(m)}
+                      {accountIds.has(m.userId) && (
+                        <span className="ml-[6px] rounded-[4px] bg-(--surface-active) px-[5px] font-sans text-[11px] font-normal leading-normal text-(--text-secondary)">
+                          {t('serviceAccount')}
+                        </span>
+                      )}
                     </span>
                     <span className="mono text-[11px] text-(--text-tertiary)">{m.email ?? m.role}</span>
                   </span>
@@ -375,7 +406,7 @@ export function ChoicePills<T extends string>({
 
 function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: (userId: string) => void }) {
   const t = useTranslations('Common.visibility')
-  const pool = useSharePool()
+  const { pool, accountIds } = useSharePool()
 
   return (
     <>
@@ -396,7 +427,7 @@ function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: 
                   : 'inline-flex h-9 cursor-pointer items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-card) pr-[14px] pl-[6px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary) transition-[background-color,border-color,color] hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-primary)'
               }
             >
-              <Avatar src={m.picture} initials={memberInitials(m)} size={24} fontSize={9} />
+              <ShareAvatar member={m} account={accountIds.has(m.userId)} size={24} fontSize={9} />
               {memberDisplayName(m)}
             </button>
           )
@@ -419,7 +450,7 @@ function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: 
 
 export function VisibilityValue({ visibility, sharedWith }: { visibility: ResourceVisibility; sharedWith: string[] }) {
   const t = useTranslations('Common.visibility')
-  const { members } = useConsoleData()
+  const { members, serviceAccounts } = useConsoleData()
   if (visibility === 'org') {
     return (
       <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal">
@@ -428,7 +459,10 @@ export function VisibilityValue({ visibility, sharedWith }: { visibility: Resour
       </span>
     )
   }
-  const resolved = members.filter((m) => m.role === 'owner' || sharedWith.includes(m.userId))
+  const resolved = [
+    ...members.filter((m) => m.role === 'owner' || sharedWith.includes(m.userId)),
+    ...serviceAccounts.filter((a) => sharedWith.includes(a.userId))
+  ]
   const shown = resolved.slice(0, 3)
   const extra = resolved.length - shown.length
   const title =

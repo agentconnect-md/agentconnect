@@ -192,6 +192,7 @@ the relay host (relay.host, else apiHost, else the website host):
   /msteams/messages             → relay pool (Microsoft Teams activities; Bot Framework-signed JWT)
   /mattermost/actions           → relay pool (Mattermost interactive button callbacks; HMAC-signed context token)
   /email/inbound                → relay pool (inbound mail from the ingress Worker; HMAC over the raw message)
+  /email/send                   → relay pool (a started mail with attachments from a daemon; relay-signed ticket)
   /ai-sdk/agents/:agentId/chat  → relay pool (agent chat API; bearer API key)
   /ag-ui/agents/:agentId/chat   → relay pool (agent chat API over AG-UI; bearer API key)
   /ahp/agents/:agentId          → relay pool (AHP WebSocket; bearer API key or browser grant, docs/ahp-operations.md)
@@ -302,6 +303,9 @@ spec:
         - path:
             type: PathPrefix
             value: /email/inbound
+        - path:
+            type: PathPrefix
+            value: /email/send
         - path:
             type: PathPrefix
             value: /ai-sdk/agents

@@ -83,6 +83,51 @@ The exact-instruction control keeps the runner's 120-second default. The two-tur
 
 To export evaluation spans, set `AGENTCONNECT_EVAL_OTEL=true` and configure a standard traces exporter, for example `OTEL_TRACES_EXPORTER=otlp` plus `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. The evaluation flag alone is deliberately insufficient: a run fails as an infrastructure error when no recording exporter is configured, instead of silently producing non-recording spans.
 
+## Real-model scenarios
+
+Each of these replays a bad case that was fixed once, against a real subject. They report counts and never assert the model's choice; a test fails only when the apparatus does. None runs in CI.
+
+| Entry                                              | Guards                                                               | Writes                                                 |
+| -------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------ |
+| `evals/test/thread-chatter-real.test.ts`           | #4186: answering people's untagged chatter after one tag             | `.artifacts/evaluation/thread-chatter/summary.json`    |
+| `evals/test/webchat-addressed-real.test.ts`        | #2865: a second webchat agent answering a post addressed to another  | `.artifacts/evaluation/webchat-addressed/summary.json` |
+| `evals/test/webchat-night-collection-real.test.ts` | Night reports answered in prose instead of `sendMessage {sessionId}` | `.artifacts/evaluation/night-collection/summary.json`  |
+
+```bash
+pnpm --filter @agentconnect.md/daemon build
+export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
+export AGENTCONNECT_EVAL_SUBJECT_ROOT=/absolute/path/to/subject
+export AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS=<template-agent-id>
+export AGENTCONNECT_EVAL_TRIALS=3   # per scenario
+pnpm exec vitest run evals/test/thread-chatter-real.test.ts
+```
+
+The coordinator and `sendMessage` probes in [`packages/daemon/test/acp-matrix`](../packages/daemon/test/acp-matrix/README.md) cover the Auto coordinator's and the messaging tool's bad cases the same way; pin their model with `AC_RUNTIME_MATRIX_COORDINATOR_MODEL` and `AC_RUNTIME_MATRIX_SENDMESSAGE_MODEL`.
+
+## Nightly run
+
+`pnpm eval:nightly` is the one command a scheduler runs. It builds the daemon, runs every real-model suite in turn, judges each cell against its target, and prints a content-free, Slack-ready Markdown report.
+
+| Suite                                     | Runs                                                    | A cell is on target when every valid trial…     |
+| ----------------------------------------- | ------------------------------------------------------- | ----------------------------------------------- |
+| `addons`                                  | `run-addons.mjs`                                        | scores 1, or 0 for the memory-off controls      |
+| `counting`, `relay`                       | the Arena's counting cases and the 20-case relay matrix | completes its game                              |
+| `night-collection`                        | `webchat-night-collection-real.test.ts`                 | loses no child reply                            |
+| `thread-chatter`                          | `thread-chatter-real.test.ts`                           | answers no chatter and misses no addressed line |
+| `webchat-addressed`                       | `webchat-addressed-real.test.ts`                        | is answered by exactly the addressed seats      |
+| `coordinator-probe`, `send-message-probe` | the runtime-matrix probes                               | passes                                          |
+
+```bash
+pnpm eval:nightly # everything, 3 trials per cell, 1 per game
+pnpm eval:nightly -- --suites thread-chatter --repeat 5
+```
+
+With no `AGENTCONNECT_EVAL_SUBJECT_ROOT` it uses [`subjects/claude`](subjects/claude): Claude Code over ACP at the adapter release the sandbox image pins, model `sonnet`. The probes run `--probe-runtime` (default `claude-acp`) from the host's own daemon installation, pinned to `--probe-model` (default `sonnet`).
+
+A trial that hit an infrastructure, grader or case error measured nothing: it never counts for or against a target, and a cell with no valid trial is marked ⚠️. The command exits 1 when someone should look — a suite wrote no results, a cell has no valid trial, a safety failure, or a cell below target whose cause is not in `KNOWN_CAUSES` — and 0 otherwise. Each run writes the raw reports, `summary.json` and `summary.md` under `.artifacts/evaluation/nightly/<timestamp>/`.
+
+The raw-ACP add-on cell needs the Linux sandbox, so schedule the run on a Linux host.
+
 ## Evidence and privacy
 
 Each trial writes a mode-0600 `run.json`, `events.jsonl`, and ATIF v1.7 `trajectory.json` below:

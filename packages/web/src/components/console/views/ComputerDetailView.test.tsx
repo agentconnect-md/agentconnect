@@ -48,6 +48,7 @@ vi.mock('@/lib/data-context', () => ({
       { id: 'a2', name: 'peer', runtime: 'claude', icon: GLYPH, createdBy: 'u2' }
     ],
     members: [{ userId: 'u2', name: 'Dana', email: null }],
+    serviceAccounts: [],
     refresh: mocks.refresh
   })
 }))

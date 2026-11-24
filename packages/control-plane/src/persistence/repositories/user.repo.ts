@@ -24,6 +24,7 @@ import {
   type MemberChatRelease,
   type MemberRemovalPreview,
   type MemberRemovalResult,
+  type AccountMembershipRecord,
   type OrgMemberRecord,
   type OrgMemberRole,
   type VisibilityResourceKind,
@@ -320,9 +321,10 @@ async function removeMembershipTx(
     orderBy: [{ createdAt: 'asc' }, { userId: 'asc' }]
   })
   const activeSnapshot = membershipSnapshot.filter((membership) => membership.suspendedAt === null)
-  const actor = activeSnapshot.find((membership) => membership.userId === actingUserId)
-  const departing = membershipSnapshot.find((membership) => membership.userId === userId)
   const leaving = userId === actingUserId
+  // A suspended member may still leave; only acting on someone else needs an active membership.
+  const actor = (leaving ? membershipSnapshot : activeSnapshot).find((membership) => membership.userId === actingUserId)
+  const departing = membershipSnapshot.find((membership) => membership.userId === userId)
   if (!departing || !actor || (!leaving && actor.role !== 'owner')) throw new OrgMembershipMissing()
 
   const replacementUserId = chooseAudienceReplacement(activeSnapshot, userId, actingUserId)
@@ -905,6 +907,43 @@ export class PgUserRepo implements UserRepo {
       const action = userId === actingUserId ? 'member_left' : 'member_removed'
       await auditMemberChange(tx, orgId, actingUserId, action, { userId })
       return removed
+    })
+  }
+
+  async listAccountMemberships(userId: string): Promise<AccountMembershipRecord[]> {
+    const rows = await this.db.membership.findMany({
+      where: { userId },
+      include: {
+        org: {
+          select: {
+            slug: true,
+            name: true,
+            members: {
+              where: { role: 'owner', userId: { not: userId }, ...ACTIVE_MEMBERSHIP },
+              select: { userId: true }
+            }
+          }
+        }
+      },
+      orderBy: [{ createdAt: 'asc' }, { orgId: 'asc' }]
+    })
+    return rows.map((row) => ({
+      orgId: row.orgId,
+      slug: row.org.slug,
+      name: row.org.name,
+      role: row.role as OrgMemberRole,
+      soleOwner: row.org.members.length === 0
+    }))
+  }
+
+  async deleteAccount(userId: string, cutoffAt: Date, expiresAt: Date): Promise<void> {
+    await withAmbientTx(this.db, async (tx) => {
+      await assertUserKind(tx, userId, 'human')
+      const row = await tx.user.findUnique({ where: { id: userId }, select: { oidcSubject: true } })
+      if (!row) return
+      // Recorded with the delete so a still-live bearer cannot re-provision the account on another replica.
+      if (row.oidcSubject) await new PgUserRepo(tx).recordDeletedIdentity(row.oidcSubject, cutoffAt, expiresAt)
+      await tx.user.delete({ where: { id: userId } })
     })
   }
 

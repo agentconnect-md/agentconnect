@@ -1,14 +1,57 @@
 // The deployment's mail sender on the relay (email-integration.md §6.2, §6.3): a reply goes out with the deployment's token, which never reaches a daemon.
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import {
   EMAIL_RECIPIENTS_MAX,
+  EMAIL_SEND_PATH,
   RD_PLATFORM_REQUEST_BUDGET_MS,
+  WireEmailCall,
+  type WireEmailSendTicketCall,
   type RcEmailDeployment,
-  type RdPlatformReply,
-  type WireEmailCall
+  type RdPlatformReply
 } from '@agentconnect.md/protocol'
 import { EmailSendBudgets, type EmailSendReservation } from './counters.js'
 import { emailTicketAudience, openEmailTicket } from './ticket.js'
 import { retryAfterMs } from '../provider-call.js'
+
+/** How long a send ticket can be redeemed for after the relay signs it. */
+export const EMAIL_SEND_TICKET_TTL_MS = 60_000
+const SEND_TICKET_CONTEXT = 'agentconnect.email-send-ticket.v1'
+
+/** What a send ticket vouches for: the bot and its address and organization as the signing relay's assignment named them, the mail's tag, and an expiry. */
+interface SendTicketClaims {
+  b: string
+  a: string
+  o: string
+  t: string
+  e: number
+}
+
+// Keyed from the deployment's ticket key every relay holds, so any relay of the pool redeems it and a key rotation voids it.
+function sendTicketMac(config: RcEmailDeployment, payload: string): Buffer {
+  const key = createHmac('sha256', Buffer.from(config.ticketKey, 'base64url')).update(SEND_TICKET_CONTEXT).digest()
+  return createHmac('sha256', key).update(payload).digest()
+}
+
+function verifySendTicket(config: RcEmailDeployment, ticket: string): SendTicketClaims | undefined {
+  const [payload, mac, extra] = ticket.split('.')
+  if (!payload || !mac || extra !== undefined) return undefined
+  const given = Buffer.from(mac, 'base64url')
+  const expected = sendTicketMac(config, payload)
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Partial<SendTicketClaims>
+    const { b, a, o, t, e } = claims
+    return typeof b === 'string' &&
+      typeof a === 'string' &&
+      typeof o === 'string' &&
+      typeof t === 'string' &&
+      typeof e === 'number'
+      ? { b, a, o, t, e }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /** The provider's REST root; a test names a local server instead. */
 export const EMAIL_PROVIDER_API_BASE = 'https://api.cloudflare.com/client/v4'
@@ -98,6 +141,16 @@ export function emailStartRequest(
     html: call.html,
     // The provider refuses `Reply-To` among the headers and takes it only as this field.
     reply_to: replyTo,
+    ...(call.attachments?.length
+      ? {
+          attachments: call.attachments.map((file) => ({
+            content: file.content,
+            filename: file.name,
+            type: file.type,
+            disposition: 'attachment'
+          }))
+        }
+      : {}),
     headers: {
       // RFC 3834: a mail nobody answered is `auto-generated`, so other automatic responders stay silent too.
       'Auto-Submitted': 'auto-generated'
@@ -156,6 +209,37 @@ export class EmailRelayEgress {
     )
     if (typeof reservation === 'string') return refused(reservation)
     return await this.deliver(config, emailStartRequest(sender, call, recipients), reservation, started)
+  }
+
+  /** Sign a ticket for `sender` to post one started mail with attachments (§6.4); the caller has checked the daemon serves the bot. */
+  sendTicket(
+    config: RcEmailDeployment,
+    sender: EmailSender,
+    call: WireEmailSendTicketCall,
+    publicRelayUrl: string | undefined
+  ): RdPlatformReply {
+    if (!publicRelayUrl) return refused('no_public_url')
+    const claims: SendTicketClaims = {
+      b: sender.botId,
+      a: sender.address,
+      o: sender.organization,
+      t: call.tag,
+      e: this.now() + EMAIL_SEND_TICKET_TTL_MS
+    }
+    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url')
+    const ticket = `${payload}.${sendTicketMac(config, payload).toString('base64url')}`
+    return { outcome: 'ok', payload: { url: `${publicRelayUrl.replace(/\/+$/, '')}${EMAIL_SEND_PATH}/${ticket}` } }
+  }
+
+  /** Redeem a send ticket with the posted `start` call: undefined for a ticket that is not this deployment's or has expired. */
+  async redeemSend(config: RcEmailDeployment, ticket: string, body: unknown): Promise<RdPlatformReply | undefined> {
+    const claims = verifySendTicket(config, ticket)
+    if (!claims || claims.e <= this.now()) return undefined
+    // The served domain may have changed since the ticket was signed; nothing is sent from an address it no longer covers.
+    if (!claims.a.endsWith(`@${config.mailDomain}`)) return refused('not_configured')
+    const call = WireEmailCall.safeParse(body)
+    if (!call.success || call.data.op !== 'start' || call.data.tag !== claims.t) return refused('invalid')
+    return await this.start(config, { botId: claims.b, address: claims.a, organization: claims.o }, call.data)
   }
 
   // One provider call within the request's budget, retried once on a rate limit; a call that sent nothing gives its budget back.

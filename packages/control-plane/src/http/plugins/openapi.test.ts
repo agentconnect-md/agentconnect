@@ -346,6 +346,7 @@ describe('openapi plane', () => {
     try {
       expect(marked.sort()).toEqual(
         [
+          'DELETE /api/v1/me',
           'DELETE /api/v1/me/keys/:id',
           'POST /api/v1/orgs/:orgId/integrations/googlechat/recovery/start',
           'POST /api/v1/orgs/:orgId/integrations/googlechat/recovery/verify',

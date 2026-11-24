@@ -817,6 +817,8 @@ export async function runSendMessageScenarios(input: {
   reps: number
   updates: Array<{ sessionId: string; update: any }>
   support: ProbeSupport
+  /** A substring of an offered model id to run every session on, where the runtime's default is not what should run. */
+  model?: string
   /** Called after every run so a report survives a later timeout. */
   onRun?: (run: SendMessageRun) => void
 }): Promise<SendMessageRun[]> {
@@ -850,6 +852,8 @@ export async function runSendMessageScenarios(input: {
           host.newSession(cwd, [fixture.descriptor(key, scope)], undefined, usesMeta ? standing : undefined),
           `${runtime}/sendMessage ${scenario.id} session`
         )
+        const model = input.model ? host.modelOptions()?.models.find((id) => id.includes(input.model!)) : undefined
+        if (model) await host.setSessionModel(sessionId, model)
         const blocks = [
           ...(usesMeta ? [] : [{ type: 'text' as const, text: standing }]),
           { type: 'text' as const, text: scenario.prompt }

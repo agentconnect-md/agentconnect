@@ -278,7 +278,12 @@ export class RelayClient {
 
   /** Did this relay advertise `rd/platform/request`? */
   supportsPlatformRequest(): boolean {
-    return this.isReady() && this.relayCapabilities?.has(RD_PLATFORM_REQUEST_V1) === true
+    return this.supports(RD_PLATFORM_REQUEST_V1)
+  }
+
+  /** Did this READY relay advertise `feature`? */
+  supports(feature: string): boolean {
+    return this.isReady() && this.relayCapabilities?.has(feature) === true
   }
 
   /** One platform module's provider call through this relay, single-shot: a provider write must never be sent twice by a retransmit. */

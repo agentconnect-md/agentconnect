@@ -3,7 +3,13 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { WireEmailCall } from '@agentconnect.md/protocol'
 import { EMAIL_OUTSIDE_RECIPIENTS_PER_BOT_PER_DAY, EMAIL_SENDS_PER_BOT_PER_DAY } from './counters.js'
-import { EmailRelayEgress, emailSendRequest, emailStartRecipients, type EmailSender } from './egress.js'
+import {
+  EMAIL_SEND_TICKET_TTL_MS,
+  EmailRelayEgress,
+  emailSendRequest,
+  emailStartRecipients,
+  type EmailSender
+} from './egress.js'
 import { mintEmailTicket } from './ticket.js'
 import { AGENT_ADDRESS, COLLEAGUE, EMAIL_CONFIG, MEMBER, NOW } from '../../../test/fixtures/email-messages.js'
 
@@ -261,6 +267,44 @@ describe('email relay egress', () => {
       reply_to: `helper+${TAG}@${EMAIL_CONFIG.mailDomain}`,
       headers: { 'Auto-Submitted': 'auto-generated' }
     })
+  })
+
+  it("signs a send ticket any relay redeems once with the mail's own tag, and hands its files to the provider", async () => {
+    const content = Buffer.from('<html><body>report</body></html>').toString('base64')
+    const mail = startCall({ attachments: [{ name: 'report.html', type: 'text/html', content }] })
+    const granted = egress().sendTicket(
+      EMAIL_CONFIG,
+      SENDER,
+      { op: 'send-ticket', tag: TAG },
+      'https://relay.example.test/'
+    )
+    const url = (granted.payload as { url: string }).url
+    expect(url.startsWith('https://relay.example.test/email/send/')).toBe(true)
+    const ticket = url.slice(url.lastIndexOf('/') + 1)
+    // Another relay of the pool, holding the same deployment key, redeems it.
+    expect(await egress().redeemSend(EMAIL_CONFIG, ticket, mail)).toMatchObject({
+      outcome: 'ok',
+      payload: { status: 200 }
+    })
+    expect(received[0]!.body.attachments).toEqual([
+      { content, filename: 'report.html', type: 'text/html', disposition: 'attachment' }
+    ])
+    expect(received[0]!.body.from).toEqual({ address: AGENT_ADDRESS, name: 'Helper' })
+    // A mail of another tag, a forged or expired ticket, and a relay with no public URL send nothing.
+    expect(
+      await egress().redeemSend(EMAIL_CONFIG, ticket, startCall({ ...mail, tag: 'zzzzzzzzzzzzzzzzzzzz' }))
+    ).toEqual({
+      outcome: 'refused',
+      reason: 'invalid'
+    })
+    expect(await egress().redeemSend(EMAIL_CONFIG, `${ticket}x`, mail)).toBeUndefined()
+    const later = new EmailRelayEgress(fetch, base, () => NOW + EMAIL_SEND_TICKET_TTL_MS)
+    expect(await later.redeemSend(EMAIL_CONFIG, ticket, mail)).toBeUndefined()
+    expect(egress().sendTicket(EMAIL_CONFIG, SENDER, { op: 'send-ticket', tag: TAG }, undefined)).toEqual({
+      outcome: 'refused',
+      reason: 'no_public_url'
+    })
+    expect(received).toHaveLength(1)
   })
 
   it('refuses a started mail to more than a send carries, or to the deployment’s own mail domain, calling nobody', async () => {

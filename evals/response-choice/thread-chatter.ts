@@ -1,4 +1,6 @@
 // Thread chatter: after one tag in a mention-only channel, does the agent stay out of people's untagged exchange?
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   CollaborationGameRunner,
   type CollaborationGameResult,
@@ -311,7 +313,13 @@ export interface ThreadChatterRunOptions {
   scriptedPolicy?: 'always' | 'tagged'
   subject?: GameSubjectSpec
   keepSubject?: boolean
+  /** Replaces the real subject agent's description, so the case owns its role instead of the template. */
+  agentDescription?: string
 }
+
+/** The narrow ticketing role the #4186 report described; its topic overlaps the people's chatter on purpose. */
+export const TICKETING_ROLE =
+  'Ticketing assistant for this team. When someone asks you, create or update tickets in the team tracker from the thread discussion. You do not take part in general conversation.'
 
 /** Runs one thread through a real daemon; a real subject is preflighted so an unlaunchable runtime fails loudly. */
 export async function runThreadChatter(options: ThreadChatterRunOptions): Promise<CollaborationGameResult> {
@@ -331,6 +339,13 @@ export async function runThreadChatter(options: ThreadChatterRunOptions): Promis
   })
   const subject = prepareGameSubject(topology, subjectSpec)
   try {
+    if (subjectSpec.kind === 'real' && options.agentDescription !== undefined) {
+      const agentPath = join(subject.root, 'agents', topology.agents[0]!.agentId, 'agent.json')
+      const agent = JSON.parse(readFileSync(agentPath, 'utf8')) as Record<string, unknown>
+      writeFileSync(agentPath, `${JSON.stringify({ ...agent, description: options.agentDescription }, null, 2)}\n`, {
+        mode: 0o600
+      })
+    }
     if (subjectSpec.kind === 'real') await preflightRealSubject(subject.root)
     const runner = new CollaborationGameRunner({
       root: subject.root,

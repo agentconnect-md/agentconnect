@@ -1,0 +1,9 @@
+{
+  "id": "eval-root",
+  "name": "Eval Root",
+  "runtime": "claude-acp",
+  "permissionMode": "default",
+  "runtimeOverrides": { "model": "sonnet" },
+  "memory": { "provider": "managed", "autoDistill": false },
+  "workspace": { "mode": "from-scratch", "path": "workspace" }
+}

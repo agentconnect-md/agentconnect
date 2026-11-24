@@ -180,6 +180,7 @@ describe('sending and the record (§6.4)', () => {
       ask?: EmailMembersDeps['ask']
       attribution?: ReplyAttributionInfo
       sessionUrl?: string
+      files?: Record<string, Buffer>
     } = {}
   ) {
     const sends: WireEmailCall[] = []
@@ -198,7 +199,13 @@ describe('sending and the record (§6.4)', () => {
         memberTurn: async () => opts.turn,
         startConversation: async (seed) => void seeds.push(seed),
         attribution: async () => opts.attribution,
-        callingSessionUrl: async () => opts.sessionUrl
+        callingSessionUrl: async () => opts.sessionUrl,
+        readWorkspaceFile: async (path) => {
+          const bytes = opts.files?.[path]
+          return bytes
+            ? { ok: true, bytes, name: path.split('/').pop()!, mimeType: 'application/octet-stream' }
+            : { ok: false, reason: 'not-found' }
+        }
       },
       agentName: 'Helper',
       mintTag: () => TAG,
@@ -281,6 +288,61 @@ describe('sending and the record (§6.4)', () => {
     const outside = harness({ turn: ['user-alice'], attribution })
     await startEmail(outside.deps, args)
     expect(outside.sends[0]!.text).toBe('Hello **there**.')
+  })
+
+  it('sends the agent’s own HTML, cleaned and with the footer under it, beside the Markdown as the text part', async () => {
+    const attribution = {
+      botName: 'Helper',
+      botUrl: 'https://console.example.test/agents/a1',
+      runtime: 'Claude Code',
+      model: 'opus',
+      sessionUrl: 'https://console.example.test/sessions/s1'
+    }
+    const h = harness({ turn: ['user-alice'], attribution })
+    await startEmail(h.deps, {
+      to: [BOB],
+      subject: 'Report',
+      body: 'Report attached.',
+      html: '<h1 style="color:#123">Report</h1><img src="https://t.test/p.gif"><script>x()</script>'
+    })
+    expect(h.sends[0]!.html).toBe(
+      '<!doctype html><html><head><meta charset="utf-8"></head><body><h1 style="color:#123">Report</h1><hr>' +
+        '<p>sent by <a href="https://console.example.test/agents/a1">Helper</a> (Claude Code · opus) · ' +
+        '<a href="https://console.example.test/sessions/s1">open in session</a></p></body></html>'
+    )
+    expect(h.sends[0]!.text).toBe(
+      'Report attached.\n\n---\n\nsent by [Helper](https://console.example.test/agents/a1) (Claude Code · opus) · ' +
+        '[open in session](https://console.example.test/sessions/s1)'
+    )
+    const huge = harness({ turn: ['user-alice'] })
+    await expect(startEmail(huge.deps, { ...args, html: `<p>${'x'.repeat(130_000)}</p>` })).rejects.toThrow(
+      'the html is over 120000 characters once cleaned. Nothing was sent.'
+    )
+    expect(huge.sends).toEqual([])
+  })
+
+  it('attaches the named workspace files and names them under the thread’s first record', async () => {
+    const report = Buffer.from('<html><body>report</body></html>')
+    const h = harness({ turn: ['user-alice'], files: { 'out/report.html': report } })
+    await startEmail(h.deps, { ...args, attachments: ['out/report.html'] })
+    expect(h.sends[0]!).toMatchObject({
+      op: 'start',
+      attachments: [{ name: 'report.html', type: 'application/octet-stream', content: report.toString('base64') }]
+    })
+    expect(h.seeds[0]!.text).toBe('Hello **there**.\n\n[Attached: report.html (application/octet-stream)]')
+  })
+
+  it('refuses, sending nothing, a file it cannot read or attachments past the size limit', async () => {
+    const missing = harness({ turn: ['user-alice'] })
+    await expect(startEmail(missing.deps, { ...args, attachments: ['nope.pdf'] })).rejects.toThrow(
+      'the attachment "nope.pdf" cannot be read (not-found). Nothing was sent.'
+    )
+    const big = Buffer.alloc(2 * 1024 * 1024, 1)
+    const over = harness({ turn: ['user-alice'], files: { 'a.bin': big, 'b.bin': big } })
+    await expect(startEmail(over.deps, { ...args, attachments: ['a.bin', 'b.bin'] })).rejects.toThrow(
+      'the attachments exceed 3 MiB together. Nothing was sent.'
+    )
+    expect([...missing.sends, ...over.sends]).toEqual([])
   })
 
   it('keeps, unmailed under the thread’s first record, the conversation that asked and the agent’s purpose', async () => {

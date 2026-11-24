@@ -32,6 +32,7 @@ vi.mock('@/lib/data-context', () => ({
         joinedAt: '2026-01-01T00:00:00.000Z'
       }
     ],
+    serviceAccounts: [],
     provisionDaemon: mocks.provisionDaemon,
     deleteDaemon: mocks.deleteDaemon,
     renameDaemon: mocks.renameDaemon,

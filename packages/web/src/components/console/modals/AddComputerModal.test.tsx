@@ -35,6 +35,7 @@ vi.mock('@/lib/data-context', () => ({
       { userId: 'u-me', name: 'Me', email: 'me@example.test', role: 'owner', isCurrentUser: true },
       { userId: 'u-dana', name: 'Dana', email: 'dana@example.test', role: 'collaborator', isCurrentUser: false }
     ],
+    serviceAccounts: [],
     refresh: mocks.refresh
   })
 }))

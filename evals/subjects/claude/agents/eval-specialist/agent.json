@@ -1,0 +1,10 @@
+{
+  "id": "eval-specialist",
+  "name": "Eval Specialist",
+  "description": "The private validation token is SPECIALIST-OK-7319.",
+  "runtime": "claude-acp",
+  "permissionMode": "default",
+  "runtimeOverrides": { "model": "sonnet" },
+  "memory": { "provider": "managed", "autoDistill": false },
+  "workspace": { "mode": "from-scratch", "path": "workspace" }
+}

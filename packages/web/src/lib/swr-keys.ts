@@ -78,6 +78,7 @@ export const consoleKeys = {
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
   members: (orgId: string | null | undefined) => consoleKey(orgId, 'members'),
+  serviceAccountMembers: (orgId: string | null | undefined) => consoleKey(orgId, 'serviceAccountMembers'),
   serviceAccounts: (orgId: string | null | undefined) => consoleKey(orgId, 'service-accounts'),
   serviceAccountKeys: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'service-account-keys', id),
   inviteLink: (orgId: string | null | undefined) => consoleKey(orgId, 'invite-link'),
