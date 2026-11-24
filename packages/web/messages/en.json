@@ -5503,7 +5503,10 @@
         "bodyNoLink": "The payment page is being prepared. Check back shortly.",
         "pay": "Complete payment",
         "cancel": "Cancel upgrade",
-        "cancelConfirm": "Cancel this upgrade? Its invoice is voided and your plan stays as it is.",
+        "cancelTitle": "Cancel this upgrade?",
+        "cancelConfirm": "Its invoice is voided and your plan stays as it is.",
+        "cancelKeep": "Keep upgrade",
+        "cancelBusy": "Cancelling…",
         "cancelError": "Couldn't cancel the upgrade: {error}"
       },
       "limitReached": {

@@ -5503,7 +5503,10 @@
         "bodyNoLink": "付款页面正在准备中，请稍后再查看。",
         "pay": "完成付款",
         "cancel": "取消升级",
-        "cancelConfirm": "确定取消这次升级？对应账单会作废，套餐保持不变。",
+        "cancelTitle": "取消这次升级？",
+        "cancelConfirm": "对应账单会作废，套餐保持不变。",
+        "cancelKeep": "保留升级",
+        "cancelBusy": "正在取消…",
         "cancelError": "无法取消升级：{error}"
       },
       "limitReached": {

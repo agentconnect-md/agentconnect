@@ -237,7 +237,6 @@ afterEach(async () => {
   host.remove()
   vi.useRealTimers()
   vi.restoreAllMocks()
-  vi.unstubAllGlobals()
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {}
 })
 
@@ -540,17 +539,20 @@ describe('a pending upgrade', () => {
   const banner = () => q('[data-plan-banner="pending"]')
   const cancelButton = () => banner()?.querySelector<HTMLButtonElement>('[data-plan-pending-cancel]') ?? null
 
-  it('lets the owner cancel it after confirming, and drops the banner on the reread', async () => {
+  const confirmDialog = () => banner()?.querySelector('[role="dialog"]') ?? null
+
+  it('lets the owner cancel it after confirming in a dialog, and drops the banner on the reread', async () => {
     mocks.subscription.mockResolvedValue(pending('upgrade'))
     await render()
     expect(cancelButton()!.textContent).toBe('Cancel upgrade')
-    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
-    vi.stubGlobal('confirm', confirm)
     await click(cancelButton())
+    expect(confirmDialog()!.textContent).toContain('Its invoice is voided and your plan stays as it is.')
+    await click(buttonIn(confirmDialog()!, 'Keep upgrade'))
+    expect(confirmDialog()).toBeNull()
     expect(mocks.cancelChange).not.toHaveBeenCalled()
     mocks.subscription.mockResolvedValue(PRO)
     await click(cancelButton())
-    expect(confirm).toHaveBeenCalledTimes(2)
+    await click(buttonIn(confirmDialog()!, 'Cancel upgrade'))
     expect(mocks.cancelChange).toHaveBeenCalledWith('org_example', 'chg_1')
     expect(banner()).toBeNull()
   })
@@ -559,23 +561,23 @@ describe('a pending upgrade', () => {
     mocks.subscription.mockResolvedValue(pending('upgrade'))
     mocks.cancelChange.mockRejectedValue(new BillingError('the change is no longer pending', 409))
     await render()
-    vi.stubGlobal('confirm', () => true)
     mocks.subscription.mockResolvedValue(PRO_DOUBLE)
     await click(cancelButton())
+    await click(buttonIn(confirmDialog()!, 'Cancel upgrade'))
     expect(banner()).toBeNull()
     expect(q('[data-plan-name]')!.textContent).toContain('×2')
   })
 
-  it('shows a refusal inline and keeps the banner', async () => {
+  it('shows a refusal in the dialog and lets the owner try again', async () => {
     mocks.subscription.mockResolvedValue(pending('upgrade'))
     mocks.cancelChange.mockRejectedValue(new BillingError('billing is unavailable', 503))
     await render()
-    vi.stubGlobal('confirm', () => true)
     await click(cancelButton())
-    expect(banner()!.querySelector('[role="alert"]')!.textContent).toBe(
+    await click(buttonIn(confirmDialog()!, 'Cancel upgrade'))
+    expect(confirmDialog()!.querySelector('[role="alert"]')!.textContent).toBe(
       "Couldn't cancel the upgrade: billing is unavailable"
     )
-    expect(cancelButton()!.disabled).toBe(false)
+    expect(buttonIn(confirmDialog()!, 'Cancel upgrade')!.disabled).toBe(false)
   })
 
   it('offers no cancel on a pending checkout or to a member', async () => {
