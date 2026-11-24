@@ -305,6 +305,8 @@ export const DaemonViewDto = z.object({
   autoUpgrade: z.boolean(),
   /** The daemon advertises `daemon-auto-upgrade-v1`, so the switch can be turned on. */
   autoUpgradeSupported: z.boolean(),
+  /** Why the daemon cannot upgrade itself (`cli-not-found`, `no-supervisor`, `image-managed`); null when it can or did not say. */
+  autoUpgradeBlocked: z.string().nullable(),
   /** The most recent automatic upgrade that ran, or null when none has. */
   lastAutoUpgrade: DaemonLastAutoUpgradeDto.nullable(),
   /** Live connection status overlaid from the in-memory index (not the stale durable field). */

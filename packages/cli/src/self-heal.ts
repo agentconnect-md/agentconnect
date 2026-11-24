@@ -8,6 +8,7 @@
  */
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { CLI_ENTRY_ENV } from '@agentconnect.md/protocol'
 import { cliEntryPath } from './paths.js'
 
 /**
@@ -55,6 +56,11 @@ export function selfHealCliEntry(root: string, entryPath: string): void {
   } catch {
     // non-fatal: the pointer is a convenience for daemon→CLI handoff
   }
+}
+
+/** Hand every daemon this CLI spawns its own entry, so the daemon can restore a pointer that was lost while it ran. */
+export function exportCliEntry(entryPath: string, env: NodeJS.ProcessEnv = process.env): void {
+  env[CLI_ENTRY_ENV] = entryPath
 }
 
 function readExisting(p: string): string | undefined {

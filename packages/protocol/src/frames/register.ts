@@ -41,7 +41,9 @@ export const RegisterReq = z.object({
     // The machine's own effective strategy table (§5), in the executor report's shape: what its own sessions can run in, and what an agent's `execution` is checked against; each unavailable entry carries its probe's reason.
     strategies: ExecutorStrategyTable.optional(),
     // The shared PostgreSQL store's id (one per database); absent on a private local store. Members of a group that report the same id read each other's sessions.
-    contentStore: z.string().uuid().optional()
+    contentStore: z.string().uuid().optional(),
+    // Why `daemon-auto-upgrade-v1` is absent (an AUTO_UPGRADE_BLOCKED code); unset when the daemon can upgrade itself, and stripped by a CP that predates it.
+    autoUpgradeBlocked: z.string().min(1).max(64).optional()
   }),
   maxAgents: z.number().int(), // concurrency ceiling for placement (C3)
   localState: z.object({

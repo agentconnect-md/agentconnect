@@ -87,9 +87,6 @@ export async function runBootstrapUpgrade(
   const cp = bootstrapControlPlane(opts)
   if (!cp || (opts.supervisor !== 'cli' && opts.supervisor !== 'service')) return 'continue'
   const root = resolveRoot(opts.root)
-  const cliEntry = readCliEntry(root)
-  if (!cliEntry) return 'continue'
-
   const deps: BootstrapUpgradeDeps = {
     connect: (url) =>
       ClientTransport.dial(url, {
@@ -101,6 +98,8 @@ export async function runBootstrapUpgrade(
     log: { info: (message) => console.error(message), error: (message) => console.error(message) },
     ...partial
   }
+  const cliEntry = readCliEntry(root, deps.log)
+  if (!cliEntry) return 'continue'
 
   let transport: Transport | undefined
   const correlator = new ReqRep<AnyFrame>(systemClock, BOOTSTRAP_TIMEOUT_MS, 1)

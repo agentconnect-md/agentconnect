@@ -92,6 +92,18 @@ A daemon advertises `daemon-auto-upgrade-v1` only when it could carry out an upg
 unattended — the same predicate as `bootstrapUpgradeCapable()`: `AGENTCONNECT_SUPERVISOR`
 is `cli` or `service` (not `k8s`, not unset) and `<root>/cli-entry` names a CLI.
 
+A daemon that fails the predicate says why in `capabilities.autoUpgradeBlocked`:
+`image-managed`, `no-supervisor`, or `cli-not-found`. The CP serves it as the daemon
+DTO's `autoUpgradeBlocked`, and the console shows it beside the upgrade badge of a
+daemon whose switch is on while a newer release is out. With the switch on, the daemon
+also logs the reason at `warn`, once per change, and re-announces its capabilities when
+eligibility changes mid-connection.
+
+The pointer can be lost while the daemon runs — a full disk once left it empty. The CLI
+therefore exports its own entry to every daemon it spawns as `AGENTCONNECT_CLI_ENTRY`;
+a daemon that finds the pointer missing, empty, or naming a file that is gone uses that
+entry and rewrites the pointer with a rename.
+
 The console renders the switch only when the feature is present and otherwise explains
 why it is unavailable ("runs without a supervisor", "pool member"). The CP rejects
 `autoUpgrade: true` for a daemon without the feature with 409, so an API caller cannot set

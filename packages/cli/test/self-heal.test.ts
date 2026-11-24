@@ -19,7 +19,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cliEntryPath } from '../src/paths.js'
-import { selfHealCliEntry } from '../src/self-heal.js'
+import { exportCliEntry, selfHealCliEntry } from '../src/self-heal.js'
 
 const mode = (p: string) => statSync(p).mode & 0o777
 const newRoot = () => join(mkdtempSync(join(tmpdir(), 'ac-selfheal-')), 'root')
@@ -69,5 +69,13 @@ describe.skipIf(process.platform === 'win32')('selfHealCliEntry', () => {
     const asFile = join(base, 'root')
     writeFileSync(asFile, 'not a directory')
     expect(() => selfHealCliEntry(asFile, '/opt/agentconnect/cli.js')).not.toThrow()
+  })
+})
+
+describe('exportCliEntry', () => {
+  it('names this CLI in the env its daemon inherits', () => {
+    const env: NodeJS.ProcessEnv = { AGENTCONNECT_CLI_ENTRY: '/stale/cli.js' }
+    exportCliEntry('/opt/agentconnect/cli.js', env)
+    expect(env.AGENTCONNECT_CLI_ENTRY).toBe('/opt/agentconnect/cli.js')
   })
 })

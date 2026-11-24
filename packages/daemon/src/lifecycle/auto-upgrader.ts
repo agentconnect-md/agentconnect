@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  AUTO_UPGRADE_BLOCKED,
   CONFIG_KEY_UPGRADE_AUTO,
   CONFIG_KEY_UPGRADE_LATEST,
   DaemonRelease,
@@ -26,6 +27,7 @@ import {
   type AutoUpgradeState
 } from './auto-upgrade-store.js'
 import { readCurrentVersion, readDeferredPrune } from './cli-upgrade.js'
+import { cliEntryPointer } from '../paths.js'
 
 export const AUTO_UPGRADE_EVALUATE_MS = 5 * 60_000
 export const AUTO_UPGRADE_EVALUATE_JITTER_MS = 60_000
@@ -79,8 +81,10 @@ export interface AutoUpgradeHost {
   daemonId(): string | undefined
   /** The running daemon version (`DAEMON_VERSION`). */
   version(): string
-  /** The `bootstrapUpgradeCapable()` predicate: CLI/service-supervised, not k8s, a CLI entry on disk. */
-  eligible(): boolean
+  /** Why the daemon cannot upgrade unattended (an AUTO_UPGRADE_BLOCKED code); undefined when it is CLI/service-supervised, not k8s, with a CLI entry on disk. */
+  blocked(): string | undefined
+  /** `blocked()` changed since the last look: re-announce capabilities so the console sees it. */
+  eligibilityChanged(): void
   quiescence(): Quiescence
   /** Run `agentconnect <args> --root <root>` through the stable CLI entry. */
   runCli(args: string[]): Promise<CliRunResult>
@@ -169,6 +173,8 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
   private unsubscribe?: () => void
   private registerRejections = 0
   private deferredPruneChecked = false
+  private lastBlocked?: string
+  private warnedBlocked?: string
 
   constructor(private readonly host: AutoUpgradeHost) {}
 
@@ -201,7 +207,7 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
 
   /** The switch is on and this daemon could carry an upgrade out unattended. */
   active(): boolean {
-    return this.state.enabled === true && this.host.eligible()
+    return this.state.enabled === true && this.host.blocked() === undefined
   }
 
   candidate(): string | undefined {
@@ -290,7 +296,7 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
   private async runDeferredPrune(): Promise<void> {
     const root = this.host.root()
     const file = join(root, VERSION_PRUNE_DEFERRED_FILE)
-    if (!this.host.eligible() || !existsSync(file)) return
+    if (this.host.blocked() !== undefined || !existsSync(file)) return
     const log = this.host.log()
     const running = this.host.version()
     const result = await this.host.runCli(['version', 'prune', '--deferred', running])
@@ -367,7 +373,33 @@ export class AutoUpgrader implements AutoUpgradeConfigSink, AutoUpgradeCpHooks {
     return run
   }
 
+  /** Once per change: tell the CP, and say in the log why a switched-on daemon will not upgrade. */
+  private noteEligibility(): void {
+    const blocked = this.host.blocked()
+    if (blocked !== this.lastBlocked) {
+      this.lastBlocked = blocked
+      this.host.eligibilityChanged()
+    }
+    const warned = this.state.enabled === true ? blocked : undefined
+    if (warned === this.warnedBlocked) return
+    const log = this.host.log()
+    if (warned !== undefined) log.warn(`auto-upgrade: unavailable — ${this.describeBlocked(warned)}`)
+    else if (this.state.enabled === true) log.info('auto-upgrade: available again')
+    this.warnedBlocked = warned
+  }
+
+  private describeBlocked(reason: string): string {
+    const root = this.host.root()
+    if (reason === AUTO_UPGRADE_BLOCKED.cliNotFound)
+      return `cannot locate the agentconnect CLI (${cliEntryPointer(root)} is missing, empty, or names a file that is gone); run \`agentconnect status --root ${root}\` to restore it`
+    if (reason === AUTO_UPGRADE_BLOCKED.noSupervisor)
+      return 'this daemon was not started by the agentconnect CLI or service, so nothing would relaunch it'
+    if (reason === AUTO_UPGRADE_BLOCKED.imageManaged) return "this daemon's version is its image"
+    return reason
+  }
+
   private async step(): Promise<void> {
+    this.noteEligibility()
     if (!this.active() || this.exiting) return
     const candidate = this.state.candidate
     if (!candidate) return

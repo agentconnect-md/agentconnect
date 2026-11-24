@@ -52,7 +52,8 @@ function normCapabilities(raw: unknown): DaemonCapabilities {
     acp: c.acp === true,
     features: arr(c.features),
     ...(executor ? { executor } : {}),
-    ...(strategies.success ? { strategies: strategies.data } : {})
+    ...(strategies.success ? { strategies: strategies.data } : {}),
+    ...(typeof c.autoUpgradeBlocked === 'string' ? { autoUpgradeBlocked: c.autoUpgradeBlocked } : {})
   }
 }
 

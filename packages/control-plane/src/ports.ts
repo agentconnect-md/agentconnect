@@ -231,6 +231,8 @@ export interface DaemonCapabilities {
   executor?: DaemonExecutorFacts
   /** The machine's own effective strategy table (§5); absent for a daemon that predates it. */
   strategies?: ExecutorStrategyTable
+  /** Why the daemon does not advertise `daemon-auto-upgrade-v1` (an AUTO_UPGRADE_BLOCKED code); absent when it does, or predates the report. */
+  autoUpgradeBlocked?: string
 }
 
 /** What a sharing daemon offers, for the console. The endpoint is deliberately dropped here: it is topology, never configured or shown (§10). */

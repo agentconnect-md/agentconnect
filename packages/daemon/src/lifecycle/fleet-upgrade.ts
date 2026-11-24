@@ -121,7 +121,7 @@ export class FleetUpgradeCoordinator {
     const root = resolveRoot(this.host.root())
     let cliEntry: string | undefined
     if (kind === 'upgrade') {
-      cliEntry = readCliEntry(root)
+      cliEntry = readCliEntry(root, log)
       if (!cliEntry) {
         const reason = `cannot locate the CLI (${cliEntryPointer(root)} missing or invalid) to run the upgrade`
         return refuse(reason)

@@ -64,14 +64,20 @@ function liveness(
 }
 
 /** Seed a registered daemon row (status `ready`, host + capabilities + version). */
-async function seedDaemon(features = ['worktree-iso']) {
+async function seedDaemon(features = ['worktree-iso'], autoUpgradeBlocked?: string) {
   const repo = new PgDaemonRepo(prisma)
   await repo.upsertOnAuth({ daemonId: DaemonId(DAEMON), orgId: OrgId(DEFAULT_ORG_ID), agentVersion: '0.4.2' })
   await repo.applyRegister(
     DaemonId(DAEMON),
     {
       host: 'macbook-pro',
-      capabilities: { platforms: ['slack'], runtimes: ['claude', 'codex'], acp: true, features },
+      capabilities: {
+        platforms: ['slack'],
+        runtimes: ['claude', 'codex'],
+        acp: true,
+        features,
+        ...(autoUpgradeBlocked ? { autoUpgradeBlocked } : {})
+      },
       maxAgents: 3
     },
     new Date()
@@ -1580,6 +1586,7 @@ describe('POST /daemons/pool/runtime-probe', () => {
 type AutoUpgradeDto = DaemonDto & {
   autoUpgrade: boolean
   autoUpgradeSupported: boolean
+  autoUpgradeBlocked: string | null
   lifecycleOp: (LifecycleOp & { trigger: string }) | null
   lastAutoUpgrade: {
     id: string
@@ -1653,6 +1660,19 @@ describe('PATCH /daemons/:id — auto-upgrade switch', () => {
     expect(pushes).toEqual([])
     const read = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as AutoUpgradeDto
     expect(read.autoUpgradeSupported).toBe(false)
+  })
+
+  it('serves the reason a daemon reported for not upgrading itself, and none once it advertises the feature', async () => {
+    await seedDaemon(['worktree-iso'], 'cli-not-found')
+    running = buildHttpApp(prisma)
+    const read = async () =>
+      (await running!.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as AutoUpgradeDto
+    expect(await read()).toMatchObject({ autoUpgradeSupported: false, autoUpgradeBlocked: 'cli-not-found' })
+
+    await seedDaemon(['worktree-iso'])
+    expect((await read()).autoUpgradeBlocked).toBeNull()
+    await seedDaemon(['worktree-iso', DAEMON_AUTO_UPGRADE_FEATURE], 'cli-not-found')
+    expect(await read()).toMatchObject({ autoUpgradeSupported: true, autoUpgradeBlocked: null })
   })
 
   it('always allows turning it off, even once the feature is gone', async () => {

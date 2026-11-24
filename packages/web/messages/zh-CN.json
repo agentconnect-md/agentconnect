@@ -4863,7 +4863,14 @@
         "upgradedAgo": "已升级到 {version} · {ago}",
         "failed": "自动升级到 {version} 失败：{outcome}",
         "failedNoReason": "自动升级到 {version} 失败",
-        "waiting": "等待空闲后自动升级到 {version}"
+        "waiting": "等待空闲后自动升级到 {version}",
+        "blocked": {
+          "cliNotFound": "自动升级不可用：找不到 CLI",
+          "noSupervisor": "自动升级不可用：未通过 agentconnect CLI 或服务启动",
+          "imageManaged": "自动升级不可用：版本由容器镜像决定",
+          "unknown": "自动升级不可用"
+        },
+        "blockedCliHint": "在 Daemon 所在主机上运行任意 agentconnect 命令（例如 agentconnect status）即可恢复。"
       }
     }
   },
