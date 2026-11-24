@@ -328,7 +328,8 @@ describe('BillingView history retention', () => {
     expect(strip.textContent).toBe(
       'History older than 7 days will be deleted from Dec 11.Upgrading keeps your history.Change plan'
     )
-    // The scheduled change stays in the Plan card above.
+    // It leads the Balance and Plan row; the scheduled change stays in the Plan card.
+    expect(strip.compareDocumentPosition(planCard()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
   })
 

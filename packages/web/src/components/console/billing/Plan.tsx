@@ -328,9 +328,9 @@ function ScheduledChange({
 
 const RETENTION_STRIP = {
   dated:
-    'mt-3 flex items-center gap-2.5 rounded-[10px] border border-(--amber-500) bg-(--status-paused-soft) px-[18px] py-2.5',
+    'mb-[18px] flex items-center gap-2.5 rounded-[10px] border border-(--amber-500) bg-(--status-paused-soft) px-[18px] py-2.5',
   awaiting:
-    'mt-3 flex items-center gap-2.5 rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-2.5'
+    'mb-[18px] flex items-center gap-2.5 rounded-[10px] border border-(--border-subtle) bg-(--surface-sunken) px-[18px] py-2.5'
 } as const
 
 /** A shorter history window on its way in, dated once the service has set the day; owners are pointed at Change plan. */

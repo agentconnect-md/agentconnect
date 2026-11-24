@@ -1474,8 +1474,12 @@ export default function BillingView() {
             />
           )}
           {plansOffered ? (
-            // Design: Balance and Plan side by side, a scheduled change under them; purchases open a dialog.
+            // Design: a shortening history window on top, then Balance and Plan side by side; purchases open a dialog.
             <div className="mb-[18px]">
+              <RetentionStrip
+                sub={plan.subscription.data}
+                onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
+              />
               <div className="grid items-stretch gap-[18px] desktop:grid-cols-2">
                 <div className="card flex flex-col" data-balance-card="true">
                   <div className="cardhead h-[60px] justify-between gap-3 border-b-0">
@@ -1522,10 +1526,6 @@ export default function BillingView() {
                   }
                 />
               </div>
-              <RetentionStrip
-                sub={plan.subscription.data}
-                onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
-              />
               {planDialog && myRole === 'owner' && plan.subscription.data && (
                 <ChangePlanDialog
                   orgId={orgId}
