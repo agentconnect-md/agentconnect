@@ -5,6 +5,7 @@ import {
   assertSubscription,
   BillingError,
   BillingShapeError,
+  cancelBillingSubscriptionChange,
   confirmBillingUpgrade,
   fetchBillingPlans,
   fetchBillingSubscription,
@@ -253,12 +254,14 @@ describe('plan writes', () => {
     await expect(fetchBillingSubscriptionChange('org_example', 'c1')).rejects.toBeInstanceOf(BillingShapeError)
   })
 
-  it('schedules with PUT and revokes with DELETE, surfacing a refusal’s status', async () => {
+  it('schedules with PUT, revokes and cancels with DELETE, surfacing a refusal’s status', async () => {
     stub(200, {})
     await scheduleBillingChange('org_example', { tierId: 'free', optionId: 'standard' })
     expect(calls[0]).toMatchObject({ url: `${base}/subscription/scheduled`, method: 'PUT' })
     await revokeBillingScheduledChange('org_example')
     expect(calls[1]).toMatchObject({ url: `${base}/subscription/scheduled`, method: 'DELETE' })
+    await cancelBillingSubscriptionChange('org_example', 'chg/1')
+    expect(calls[2]).toMatchObject({ url: `${base}/subscription/changes/chg%2F1`, method: 'DELETE' })
     stub(409, { message: 'a plan change for this organization has not settled yet' })
     await expect(scheduleBillingChange('org_example', { tierId: 'free', optionId: 'standard' })).rejects.toEqual(
       new BillingError('a plan change for this organization has not settled yet', 409)

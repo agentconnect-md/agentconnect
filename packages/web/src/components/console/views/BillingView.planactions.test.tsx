@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// The owner's plan actions: Change plan (choose → review → paying → done), Increase limit, the limit banner's CTA and revoking a scheduled change.
+// The owner's plan actions: Change plan (choose → review → paying → done), Increase limit, the limit banner's CTA, revoking a scheduled change and cancelling an unpaid upgrade.
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { SWRConfig } from 'swr'
@@ -120,6 +120,7 @@ const mocks = vi.hoisted(() => ({
   getChange: vi.fn<() => Promise<unknown>>(),
   schedule: vi.fn<(orgId: string, args: unknown) => Promise<void>>(),
   revoke: vi.fn<() => Promise<void>>(),
+  cancelChange: vi.fn<(orgId: string, id: string) => Promise<void>>(),
   checkout: vi.fn<(orgId: string, args: Record<string, unknown>) => Promise<unknown>>(),
   assign: vi.fn()
 }))
@@ -153,6 +154,7 @@ vi.mock('@/lib/billing-api', async () => ({
   fetchBillingSubscriptionChange: mocks.getChange,
   scheduleBillingChange: mocks.schedule,
   revokeBillingScheduledChange: mocks.revoke,
+  cancelBillingSubscriptionChange: mocks.cancelChange,
   createBillingSubscriptionCheckout: mocks.checkout
 }))
 
@@ -219,6 +221,7 @@ beforeEach(() => {
   mocks.getChange.mockReset().mockResolvedValue(change('completed'))
   mocks.schedule.mockReset().mockResolvedValue(undefined)
   mocks.revoke.mockReset().mockResolvedValue(undefined)
+  mocks.cancelChange.mockReset().mockResolvedValue(undefined)
   mocks.checkout.mockReset().mockResolvedValue({ changeId: 'chg_1', url: 'https://checkout.example.test/c/1' })
   mocks.assign.mockReset()
   vi.spyOn(window.location, 'assign').mockImplementation(mocks.assign)
@@ -228,6 +231,7 @@ afterEach(async () => {
   host.remove()
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {}
 })
 
@@ -509,6 +513,67 @@ describe('Change plan: changes at renewal', () => {
     await click(buttonIn(q('[data-plan-scheduled]')!, 'Cancel'))
     expect(mocks.revoke).toHaveBeenCalledWith('org_example')
     expect(q('[data-plan-scheduled]')).toBeNull()
+  })
+})
+
+describe('a pending upgrade', () => {
+  const pending = (kind: 'upgrade' | 'checkout') => ({
+    ...PRO,
+    pendingChange: { id: 'chg_1', kind, tierId: 'pro', optionId: 'double', payUrl: 'https://pay.example.test/i/1' }
+  })
+  const banner = () => q('[data-plan-banner="pending"]')
+  const cancelButton = () => banner()?.querySelector<HTMLButtonElement>('[data-plan-pending-cancel]') ?? null
+
+  it('lets the owner cancel it after confirming, and drops the banner on the reread', async () => {
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    await render()
+    expect(cancelButton()!.textContent).toBe('Cancel upgrade')
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+    vi.stubGlobal('confirm', confirm)
+    await click(cancelButton())
+    expect(mocks.cancelChange).not.toHaveBeenCalled()
+    mocks.subscription.mockResolvedValue(PRO)
+    await click(cancelButton())
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(mocks.cancelChange).toHaveBeenCalledWith('org_example', 'chg_1')
+    expect(banner()).toBeNull()
+  })
+
+  it('just rereads when the upgrade already settled', async () => {
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    mocks.cancelChange.mockRejectedValue(new BillingError('the change is no longer pending', 409))
+    await render()
+    vi.stubGlobal('confirm', () => true)
+    mocks.subscription.mockResolvedValue(PRO_DOUBLE)
+    await click(cancelButton())
+    expect(banner()).toBeNull()
+    expect(q('[data-plan-name]')!.textContent).toContain('×2')
+  })
+
+  it('shows a refusal inline and keeps the banner', async () => {
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    mocks.cancelChange.mockRejectedValue(new BillingError('billing is unavailable', 503))
+    await render()
+    vi.stubGlobal('confirm', () => true)
+    await click(cancelButton())
+    expect(banner()!.querySelector('[role="alert"]')!.textContent).toBe(
+      "Couldn't cancel the upgrade: billing is unavailable"
+    )
+    expect(cancelButton()!.disabled).toBe(false)
+  })
+
+  it('offers no cancel on a pending checkout or to a member', async () => {
+    mocks.subscription.mockResolvedValue(pending('checkout'))
+    await render()
+    expect(banner()).not.toBeNull()
+    expect(cancelButton()).toBeNull()
+    await act(async () => root.unmount())
+    host.remove()
+    mocks.role = 'member'
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    await render()
+    expect(banner()!.querySelector('a')).not.toBeNull()
+    expect(cancelButton()).toBeNull()
   })
 })
 
