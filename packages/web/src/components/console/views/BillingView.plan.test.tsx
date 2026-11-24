@@ -186,6 +186,12 @@ describe('BillingView plan layout', () => {
     expect(q('[data-plan-banner]')).toBeNull()
   })
 
+  it('names a plan once when its option carries the tier’s name', async () => {
+    mocks.subscription.mockResolvedValue({ ...SUB, optionName: 'Pro' })
+    await render()
+    expect(q('[data-plan-name]')!.textContent).toBe('Pro')
+  })
+
   it('gives owners Add credits as a dialog and Change plan in the Plan card', async () => {
     await render()
     expect(text()).not.toContain('Owners add credits')

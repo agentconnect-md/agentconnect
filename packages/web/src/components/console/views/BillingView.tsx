@@ -1480,8 +1480,12 @@ export default function BillingView() {
                 sub={plan.subscription.data}
                 onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
               />
-              <div className="grid items-stretch gap-[18px] desktop:grid-cols-2">
-                <div className="card flex flex-col" data-balance-card="true">
+              {/* Shared subgrid rows (head, figure, notice, foot) keep both cards' figures and feet level. */}
+              <div className="grid items-stretch gap-[18px] desktop:grid-cols-2 desktop:grid-rows-[auto_1fr_auto_auto] desktop:gap-y-0">
+                <div
+                  className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
+                  data-balance-card="true"
+                >
                   <div className="cardhead h-[60px] justify-between gap-3 border-b-0">
                     <span className="inline-flex items-center gap-3">
                       <span className="cardtitle">{t('balance')}</span>
