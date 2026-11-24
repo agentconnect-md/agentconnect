@@ -2,7 +2,7 @@
 
 // The owner's plan actions: the Change plan dialog (choose → review → paying → done) and the catalog step Increase limit opens it on.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import useSWR from 'swr'
 import {
@@ -152,24 +152,22 @@ type Outcome = { kind: 'stalled' } | { kind: 'expired' } | { kind: 'error'; mess
 // Cents as dollars and cents, the way the review rows print money. Display only.
 const usd = (cents: number) => fmtMicroUsd(cents * 10_000)
 
-const TIER_CARD = {
-  on: 'flex cursor-pointer flex-col gap-[9px] rounded-[10px] border-[1.5px] border-(--brand) bg-(--brand-soft) p-3.5 text-left',
-  off: 'flex cursor-pointer flex-col gap-[9px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-3.5 text-left transition-colors hover:border-(--border-strong)'
-} as const
-const OPTION_TILE = {
-  on: 'flex-1 cursor-pointer rounded-[9px] border-[1.5px] border-(--brand) bg-(--brand-soft) px-[14px] py-[13px] text-left',
-  off: 'flex-1 cursor-pointer rounded-[9px] border border-(--border-default) bg-(--surface-card) px-[14px] py-[13px] text-left transition-colors hover:border-(--border-strong)'
-} as const
+const CHOICE =
+  'group min-w-0 cursor-pointer border border-(--border-default) bg-(--surface-card) text-left transition-colors hover:border-(--border-strong) focus-visible:shadow-(--focus-ring) focus-visible:outline-none aria-pressed:border-(--border-strong) aria-pressed:bg-(--surface-hover)'
+const DETAIL_ROW =
+  'flex items-baseline justify-between gap-3 border-b border-(--border-subtle) px-3.5 py-2.5 text-[13px] leading-5 last:border-b-0'
 const NOTE = {
   info: 'mt-2 flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2.5 font-sans text-[12px] font-normal leading-[1.6] text-(--text-secondary)',
   warn: 'mt-2 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-2.5 font-sans text-[12px] font-normal leading-[1.6] text-(--text-primary)'
 } as const
 
-function Feature({ children }: { children: string }) {
+function ChoiceMark() {
   return (
-    <span className="flex items-start gap-[7px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
-      <Icon name="check" size={12} strokeWidth={2.4} color="var(--text-tertiary)" className="mt-[3px] flex-none" />
-      <span>{children}</span>
+    <span
+      aria-hidden="true"
+      className="flex size-4 flex-none items-center justify-center rounded-full border border-(--border-strong) text-transparent group-aria-pressed:border-(--brand) group-aria-pressed:bg-(--brand) group-aria-pressed:text-white"
+    >
+      <Icon name="check" size={10} strokeWidth={2.5} />
     </span>
   )
 }
@@ -211,6 +209,7 @@ export function ChangePlanDialog({
   onChanged: () => void
 }) {
   const t = useTranslations('Billing.plan.change')
+  const titleId = useId()
   const { day, number } = useUtcDates()
   const plans = catalog.data
   const tiers = plans ? planTiers(plans) : []
@@ -228,6 +227,7 @@ export function ChangePlanDialog({
   )
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const quoteSeq = useRef(0)
+  const selectedTierCard = useRef<HTMLButtonElement>(null)
   const changed = useRef(onChanged)
   changed.current = onChanged
 
@@ -290,10 +290,14 @@ export function ChangePlanDialog({
     ? plans?.options.find((o) => o.tierId === target.tierId && o.optionId === target.optionId)
     : undefined
   const contact = tier?.salesMode === 'contact_sales'
+  const visibleTier = plans && !catalog.error ? tier?.tierId : undefined
+  useEffect(() => {
+    if (step === 'choose' && visibleTier) selectedTierCard.current?.scrollIntoView({ block: 'nearest' })
+  }, [step, visibleTier])
+
   const path = option ? changePath(sub, option) : null
   const same = !!option && isCurrent(sub, option)
   const combo = (label: string, sessions: number) => t('combo', { plan: label, sessions: number(sessions) })
-  const fromLabel = combo(planLabel(sub), sub.sessionLimit)
   const toLabel = option ? combo(planLabel(option), option.sessionLimit) : ''
   const support = helpSupportUrl()
   // A contract is priced outside the console and its tier is not in the catalog, so changes go through sales.
@@ -324,6 +328,7 @@ export function ChangePlanDialog({
   }
 
   const pickTier = (x: PlanTier) => {
+    if (x.tierId === target.tierId && (option || contact)) return
     if (x.salesMode === 'contact_sales') return setTarget({ tierId: x.tierId, optionId: null })
     const keep = x.options.find((o) => isCurrent(sub, o)) ?? x.options[0]!
     setTarget({ tierId: x.tierId, optionId: keep.optionId })
@@ -405,7 +410,9 @@ export function ChangePlanDialog({
     body = (
       <>
         <div className="modalhead">
-          <span className="cardtitle flex-1">{t('title')}</span>
+          <h2 id={titleId} className="cardtitle flex-1">
+            {t('title')}
+          </h2>
           {close}
         </div>
         <div className="modalbody" data-plan-contract="true">
@@ -441,119 +448,153 @@ export function ChangePlanDialog({
       </>
     )
   } else if (step === 'choose') {
-    const tierPrice = (x: PlanTier) => {
-      const prices = x.options.map((o) => o.priceCents ?? 0)
-      const min = Math.min(...prices)
-      return prices.every((p) => p === min) ? fmtCents(min) : t('from', { price: fmtCents(min) })
-    }
-    const span = (values: number[], fmt: (n: number) => string) => {
+    const range = (values: number[], fmt: (n: number) => string) => {
       const min = Math.min(...values)
       const max = Math.max(...values)
       return min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`
     }
     const compact = (n: number) => number(n, { notation: 'compact' })
+    const creditText = (grants: number[]) =>
+      Math.max(...grants) === 0 ? t('topUpsOnly') : t('credits', { amount: range(grants, (g) => fmtCents(g / 10_000)) })
+    const historyText = (days: number | null) => (days === null ? t('historyUnlimited') : t('historyDays', { days }))
+    const catalogReady = !!plans && !catalog.error
+
     body = (
       <>
-        <div className="modalhead">
-          <span className="cardtitle flex-1">{t('title')}</span>
+        <div className="modalhead shrink-0">
+          <h2 id={titleId} className="flex-1 text-[17px] leading-normal font-semibold">
+            {t('title')}
+          </h2>
           {close}
         </div>
-        <div className="modalbody">
+        <div className="modalbody min-h-0 overscroll-contain max-desktop:p-4">
           {catalog.error ? (
             <InlineError text={t('loadError', { error: (catalog.error as Error).message })} />
-          ) : !plans ? (
-            <div className="h-[220px] animate-pulse rounded-[10px] bg-(--surface-sunken)" />
+          ) : !catalogReady ? (
+            <div className="h-[220px] animate-pulse rounded-lg bg-(--surface-sunken)" />
           ) : (
-            <>
-              {/* 200px floor fits four tiers in the 900px dialog; a fifth scrolls sideways */}
-              <div className="grid grid-cols-2 gap-2.5 desktop:auto-cols-[minmax(200px,1fr)] desktop:grid-flow-col desktop:grid-cols-none desktop:overflow-x-auto desktop:pb-1">
-                {tiers.map((x) => {
-                  const custom = x.salesMode === 'contact_sales'
-                  const grants = x.options.map((o) => o.grantMicro)
-                  const days = x.options[0]!.retentionDays
-                  return (
-                    <button
-                      key={x.tierId}
-                      type="button"
-                      data-plan-tier={x.tierId}
-                      aria-pressed={x.tierId === target.tierId}
-                      className={x.tierId === target.tierId ? TIER_CARD.on : TIER_CARD.off}
-                      onClick={() => pickTier(x)}
-                    >
-                      <span className="flex items-center justify-between gap-1.5">
-                        <span className="font-sans text-[14px] font-semibold leading-normal">{x.tierName}</span>
+            <div role="group" aria-label={t('title')} className="grid grid-cols-2 gap-3 desktop:grid-cols-4">
+              {tiers.map((x) => {
+                const custom = x.salesMode === 'contact_sales'
+                const prices = x.options.map((o) => o.priceCents ?? 0)
+                const minimum = Math.min(...prices)
+                const price = fmtCents(minimum)
+                const amount = (value: ReactNode) => (
+                  <b className="text-[24px] leading-none font-semibold tracking-tight text-(--text-primary) tabular-nums">
+                    {value}
+                  </b>
+                )
+                return (
+                  <button
+                    key={x.tierId}
+                    type="button"
+                    data-plan-tier={x.tierId}
+                    aria-pressed={x.tierId === target.tierId}
+                    ref={x.tierId === target.tierId ? selectedTierCard : undefined}
+                    className={`${CHOICE} flex flex-col gap-3 rounded-lg p-3 desktop:p-4`}
+                    onClick={() => pickTier(x)}
+                  >
+                    <span className="flex w-full items-start justify-between gap-2">
+                      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="text-[14px] leading-4 font-semibold [overflow-wrap:anywhere]">
+                          {x.tierName}
+                        </span>
                         {x.options.some((o) => isCurrent(sub, o)) && (
-                          <span className="mono inline-flex h-[19px] items-center rounded-xs bg-(--surface-active) px-[7px] text-[10.5px] font-semibold tracking-[0.04em] text-(--text-secondary) uppercase">
+                          <span className="rounded-full bg-(--surface-active) px-1.5 text-[11px] leading-4 font-medium text-(--text-secondary)">
                             {t('current')}
                           </span>
                         )}
                       </span>
-                      <span className="flex flex-wrap items-baseline gap-x-[5px]">
-                        <span className="mono text-[21px] font-semibold tracking-[-0.02em] whitespace-nowrap">
-                          {custom ? t('custom') : tierPrice(x)}
-                        </span>
-                        <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                          {custom ? t('byContract') : t('perMonth')}
-                        </span>
+                      <ChoiceMark />
+                    </span>
+                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-[11px] leading-normal text-(--text-secondary)">
+                      {custom ? (
+                        <b className="text-[19px] leading-none font-semibold text-(--text-primary)">{t('custom')}</b>
+                      ) : prices.every((p) => p === minimum) ? (
+                        amount(price)
+                      ) : (
+                        <span className="whitespace-nowrap">{t.rich('from', { price, amount })}</span>
+                      )}
+                      <span className="whitespace-nowrap">{custom ? t('byContract') : t('perMonth')}</span>
+                    </span>
+                    <span className="mt-auto text-[12px] leading-4 font-medium text-(--text-secondary)">
+                      {custom
+                        ? t('customSessions')
+                        : t('sessions', {
+                            sessions: range(
+                              x.options.map((o) => o.sessionLimit),
+                              compact
+                            )
+                          })}
+                    </span>
+                    <span className="grid w-full gap-1 border-t border-(--border-subtle) pt-2 text-[11px] leading-4 text-(--text-secondary)">
+                      <span>{custom ? t('customCredits') : creditText(x.options.map((o) => o.grantMicro))}</span>
+                      <span>{custom ? t('orgSso') : historyText(x.options[0]!.retentionDays)}</span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        {catalogReady && contact && (
+          <div className="px-4 pb-4 desktop:px-5">
+            <Note icon="mail">{t('contactNote')}</Note>
+          </div>
+        )}
+        {catalogReady && tier && option && (
+          <div className="max-h-[30dvh] shrink-0 overflow-y-auto overscroll-contain border-t border-(--border-subtle) bg-(--surface-app) px-4 py-3 desktop:px-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <h3 className="text-[13px] leading-4 font-semibold">{t('details', { plan: tier.tierName })}</h3>
+              <span className="text-[12px] leading-4 text-(--text-secondary)">
+                {t('detailSummary', {
+                  credits: creditText([option.grantMicro]),
+                  history: historyText(option.retentionDays)
+                })}
+              </span>
+            </div>
+            {tier.options.length > 1 && (
+              <div
+                role="group"
+                aria-label={t('sessionsPerMonth')}
+                className="-mx-1 mt-1 grid grid-cols-1 gap-2 p-1 desktop:grid-cols-[repeat(auto-fit,minmax(min(100%,164px),1fr))]"
+              >
+                {tier.options.map((o) => {
+                  const meta = t('optionMeta', { price: fmtCents(o.priceCents ?? 0) })
+                  return (
+                    <button
+                      key={o.optionId}
+                      type="button"
+                      data-plan-option={o.optionId}
+                      aria-pressed={o.optionId === target.optionId}
+                      className={`${CHOICE} flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1 rounded-md px-3 py-2`}
+                      onClick={() => setTarget({ tierId: o.tierId, optionId: o.optionId })}
+                    >
+                      <ChoiceMark />
+                      <span className="text-[13px] leading-4 font-semibold tabular-nums">
+                        {t('sessions', { sessions: number(o.sessionLimit) })}
                       </span>
-                      <span className="h-px bg-(--border-subtle)" />
-                      <Feature>
-                        {custom
-                          ? t('customCredits')
-                          : Math.max(...grants) === 0
-                            ? t('topUpsOnly')
-                            : t('credits', { amount: span(grants, (g) => fmtCents(g / 10_000)) })}
-                      </Feature>
-                      <Feature>
-                        {custom
-                          ? t('customSessions')
-                          : t('sessions', {
-                              sessions: span(
-                                x.options.map((o) => o.sessionLimit),
-                                compact
-                              )
-                            })}
-                      </Feature>
-                      <Feature>
-                        {custom ? t('orgSso') : days === null ? t('historyUnlimited') : t('historyDays', { days })}
-                      </Feature>
+                      <span className="ml-auto text-[12px] leading-4 text-(--text-secondary)">
+                        {isCurrent(sub, o) ? t('optionCurrent', { meta }) : meta}
+                      </span>
                     </button>
                   )
                 })}
               </div>
-              {tier && !contact && tier.options.length > 1 && (
-                <div className="mt-4">
-                  <div className="fldlbl">{t('sessionsPerMonth')}</div>
-                  <div className="mt-2 flex gap-2.5">
-                    {tier.options.map((o) => {
-                      const meta = t('optionMeta', { price: fmtCents(o.priceCents ?? 0) })
-                      return (
-                        <button
-                          key={o.optionId}
-                          type="button"
-                          data-plan-option={o.optionId}
-                          aria-pressed={o.optionId === target.optionId}
-                          className={o.optionId === target.optionId ? OPTION_TILE.on : OPTION_TILE.off}
-                          onClick={() => setTarget({ tierId: o.tierId, optionId: o.optionId })}
-                        >
-                          <div className="mono text-[16px] font-semibold">{number(o.sessionLimit)}</div>
-                          <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                            {isCurrent(sub, o) ? t('optionCurrent', { meta }) : meta}
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
-              {contact && <Note icon="mail">{t('contactNote')}</Note>}
-            </>
+            )}
+          </div>
+        )}
+        <div className="modalfoot shrink-0 flex-wrap justify-end gap-y-2 max-desktop:px-4 max-desktop:py-3">
+          {catalogReady && (option || contact) && (
+            <div role="status" className="min-w-0 flex-1 max-desktop:basis-full">
+              <span className="block text-[11px] leading-4 text-(--text-secondary)">
+                {t(same ? 'currentPlan' : 'selectedPlan')}
+              </span>
+              <span className="block text-[13px] leading-5 font-medium [overflow-wrap:anywhere]">
+                {contact ? tier?.tierName : toLabel}
+              </span>
+            </div>
           )}
-        </div>
-        <div className="modalfoot">
-          <span className="min-w-0 flex-1 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-            {option && !same ? toLabel : ''}
-          </span>
           <Button size="sm" variant="secondary" onClick={onClose}>
             {t('cancel')}
           </Button>
@@ -562,6 +603,7 @@ export function ChangePlanDialog({
           ) : (
             <Button size="sm" disabled={!option || same || !sellable(option)} onClick={toReview}>
               {t('reviewChange')}
+              <Icon name="arrow-right" size={14} />
             </Button>
           )}
         </div>
@@ -571,33 +613,37 @@ export function ChangePlanDialog({
     const now = path !== 'scheduled'
     const paidThrough = path === 'immediate' ? (quote?.quote.paidThrough ?? sub.paidThrough) : sub.paidThrough
     const when = paidThrough ? day(paidThrough) : t('review.atRenewal')
-    const sessions = { k: t('sessionsPerMonth'), v: `${number(sub.sessionLimit)} → ${number(option.sessionLimit)}` }
+    const sessions = {
+      k: t('sessionsPerMonth'),
+      v:
+        sub.sessionLimit === option.sessionLimit
+          ? number(option.sessionLimit)
+          : `${number(sub.sessionLimit)} → ${number(option.sessionLimit)}`
+    }
     const price = option.priceCents ?? 0
+    const due = path === 'checkout' ? price : path === 'scheduled' ? 0 : quote?.quote.amountCents
+    const creditsAdded = (grant: number) => (grant > 0 ? `+${fmtMicroUsd(grant)}` : fmtMicroUsd(0))
+    const monthlyPrice = t('optionMeta', { price: usd(price) })
     let rows: { k: string; v: string }[] | null
     if (path === 'checkout')
       rows = [
-        { k: t('review.dueToday'), v: usd(price) },
-        { k: t('review.creditsAdded'), v: `+${fmtMicroUsd(option.grantMicro)}` },
-        sessions
+        { k: t('review.monthlyRenewal'), v: monthlyPrice },
+        sessions,
+        { k: t('review.creditsAdded'), v: creditsAdded(option.grantMicro) }
       ]
     else if (path === 'immediate')
       rows = quote
         ? [
-            { k: t('review.dueToday'), v: t('review.prorated', { amount: usd(quote.quote.amountCents) }) },
-            {
-              k: t('review.creditsAdded'),
-              v: quote.quote.grantMicro > 0 ? `+${fmtMicroUsd(quote.quote.grantMicro)}` : fmtMicroUsd(0)
-            },
+            { k: t('review.nextCharge'), v: t('review.nextChargeValue', { date: when, price: usd(price) }) },
             sessions,
-            { k: t('review.nextCharge'), v: t('review.nextChargeValue', { date: when, price: usd(price) }) }
+            { k: t('review.creditsAdded'), v: creditsAdded(quote.quote.grantMicro) }
           ]
         : null
     else
       rows = [
-        { k: t('review.dueToday'), v: fmtMicroUsd(0) },
         { k: t('review.takesEffect'), v: when },
         sessions,
-        ...(option.tierId === FREE_TIER_ID ? [] : [{ k: t('review.then'), v: t('optionMeta', { price: usd(price) }) }])
+        ...(option.tierId === FREE_TIER_ID ? [] : [{ k: t('review.monthlyRenewal'), v: monthlyPrice }])
       ]
     // A shorter window starts the service's hold after the renewal; an older service sends no hold, so the new window stands in.
     const keptDays = sub.retention ? sub.retention.days : sub.retentionDays
@@ -618,38 +664,45 @@ export function ChangePlanDialog({
             : t('review.quoting')
     body = (
       <>
-        <div className="modalhead">
-          <button className="iconbtn" onClick={back} title={t('back')} aria-label={t('back')}>
-            <Icon name="chevron-left" size={15} />
-          </button>
-          <span className="cardtitle flex-1">{now ? t('review.upgrade') : t('review.scheduleTitle')}</span>
+        <div className="modalhead shrink-0">
+          <h2 id={titleId} className="flex-1 text-[17px] leading-normal font-semibold">
+            {now ? t('review.upgrade') : t('review.scheduleTitle')}
+          </h2>
           {close}
         </div>
-        <div className="modalbody" data-plan-review={path}>
-          <div className="mb-3 flex items-center gap-2.5">
-            <span className="min-w-0 flex-1 rounded-md border border-(--border-subtle) bg-(--surface-app) px-3 py-2.5">
-              <span className="eyebrow block">{t('current')}</span>
-              <span className="mt-1 block font-sans text-[13px] font-semibold leading-normal">{fromLabel}</span>
-            </span>
-            <Icon name="arrow-right" size={16} color="var(--text-tertiary)" className="flex-none" />
-            <span className="min-w-0 flex-1 rounded-md border border-(--brand) bg-(--brand-soft) px-3 py-2.5">
-              <span className="eyebrow block">{now ? t('review.now') : when}</span>
-              <span className="mt-1 block font-sans text-[13px] font-semibold leading-normal">{toLabel}</span>
-            </span>
+        <div className="modalbody min-h-0 overscroll-contain max-desktop:p-4" data-plan-review={path}>
+          <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 rounded-lg border border-(--border-subtle) p-2">
+            <dl className="px-2 py-1.5">
+              <dt className="text-[12px] leading-4 text-(--text-secondary)">{t('currentPlan')}</dt>
+              <dd className="mt-1 text-[14px] leading-5 font-medium [overflow-wrap:anywhere]">{planLabel(sub)}</dd>
+            </dl>
+            <Icon name="arrow-right" size={16} color="var(--text-tertiary)" className="self-center" />
+            <dl className="rounded-sm bg-(--surface-app) px-2 py-1.5">
+              <dt className="text-[12px] leading-4 text-(--text-secondary)">{t('review.newPlan')}</dt>
+              <dd className="mt-1 text-[14px] leading-5 font-semibold [overflow-wrap:anywhere]">{planLabel(option)}</dd>
+            </dl>
           </div>
-          {rows ? (
-            <div>
+          {rows && due !== undefined ? (
+            <dl className="overflow-hidden rounded-lg border border-(--border-subtle)">
+              <div
+                data-quote-row="true"
+                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-(--border-subtle) bg-(--surface-app) px-3.5 py-3"
+              >
+                <dt className="text-[13px] leading-5 font-semibold">{t('review.dueToday')}</dt>
+                <dd className="ml-auto text-right">
+                  <span className="text-[26px] leading-none font-semibold tracking-tight tabular-nums">{usd(due)}</span>
+                  {path === 'immediate' && (
+                    <span className="block text-[11px] leading-4 text-(--text-secondary)">{t('review.prorated')}</span>
+                  )}
+                </dd>
+              </div>
               {rows.map((r) => (
-                <div
-                  key={r.k}
-                  data-quote-row="true"
-                  className="flex items-baseline justify-between gap-3 border-b border-(--border-subtle) py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) last:border-b-0"
-                >
-                  <span>{r.k}</span>
-                  <span className="mono text-right text-[12.5px] font-semibold text-(--text-primary)">{r.v}</span>
+                <div key={r.k} data-quote-row="true" className={DETAIL_ROW}>
+                  <dt className="text-(--text-secondary)">{r.k}</dt>
+                  <dd className="min-w-0 text-right font-medium tabular-nums [overflow-wrap:anywhere]">{r.v}</dd>
                 </div>
               ))}
-            </div>
+            </dl>
           ) : (
             !error && (
               <div className="h-[150px] animate-pulse rounded-md bg-(--surface-sunken)" data-plan-quoting="true" />
@@ -674,8 +727,7 @@ export function ChangePlanDialog({
           {!now && <Note>{t('review.cancelBefore', { date: when })}</Note>}
           {error && <InlineError text={error} />}
         </div>
-        <div className="modalfoot">
-          <span className="flex-1" />
+        <div className="modalfoot shrink-0 justify-end max-desktop:px-4">
           <Button size="sm" variant="secondary" onClick={back}>
             {t('back')}
           </Button>
@@ -719,7 +771,9 @@ export function ChangePlanDialog({
           ) : (
             <Icon name="loader-circle" size={26} color="var(--brand)" className="mx-auto animate-spin" />
           )}
-          <div className="mt-3.5 font-sans text-[15px] font-semibold leading-normal">{title}</div>
+          <h2 id={titleId} className="mt-3.5 font-sans text-[15px] leading-normal font-semibold">
+            {title}
+          </h2>
           {text && (
             <div className="mx-auto mt-1.5 max-w-[400px] font-sans text-[12.5px] font-normal leading-[1.65] text-(--text-secondary)">
               {text}
@@ -748,7 +802,7 @@ export function ChangePlanDialog({
       </>
     )
   } else if (step === 'done') {
-    // Done: an upgrade or checkout names what the org is on now; a scheduled change, when it lands.
+    // A completed purchase names the active plan, while a scheduled change names its effective date.
     const settled = change
       ? plans?.options.find((o) => o.tierId === change.tierId && o.optionId === change.optionId)
       : option
@@ -758,28 +812,45 @@ export function ChangePlanDialog({
       ? sub.paidThrough
         ? t('done.scheduled', { date: day(sub.paidThrough) })
         : t('done.scheduledAtRenewal')
-      : t('done.upgraded', { plan: settled ? planLabel(settled) : (change?.tierId ?? '') })
-    const sessionsLine = settled ? t('done.sessions', { sessions: number(settled.sessionLimit) }) : ''
-    const text = scheduled
-      ? toLabel
-      : credits > 0 && sessionsLine
-        ? t('done.withCredits', { line: sessionsLine, amount: fmtMicroUsd(credits) })
-        : sessionsLine
+      : t('done.upgraded')
+    const active = settled ? planLabel(settled) : change?.tierId
+    const details = [
+      ...(settled && scheduled ? [{ k: t('review.newPlan'), v: planLabel(settled) }] : []),
+      ...(settled ? [{ k: t('sessionsPerMonth'), v: number(settled.sessionLimit) }] : []),
+      ...(!scheduled && credits > 0 ? [{ k: t('review.creditsAdded'), v: `+${fmtMicroUsd(credits)}` }] : [])
+    ]
     body = (
       <>
-        <div className="modalbody px-7 py-[34px] text-center" data-plan-done="true">
-          <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--green-500) bg-(--green-50) text-(--green-500)">
-            <Icon name="check" size={21} />
-          </span>
-          <div className="mt-3.5 font-sans text-[16px] font-semibold leading-normal">{title}</div>
-          {text && (
-            <div className="mx-auto mt-1.5 max-w-[400px] font-sans text-[12.5px] font-normal leading-[1.65] text-(--text-secondary)">
-              {text}
+        <div className="modalbody min-h-0 overscroll-contain max-desktop:p-4" data-plan-done="true">
+          <div className="flex items-center gap-3">
+            <span
+              className={`flex size-10 flex-none items-center justify-center rounded-full ${scheduled ? 'bg-(--surface-active) text-(--text-primary)' : 'bg-(--green-50) text-(--green-500)'}`}
+            >
+              <Icon name={scheduled ? 'calendar-clock' : 'check'} size={19} strokeWidth={2} />
+            </span>
+            <div className="min-w-0">
+              <h2 id={titleId} className="text-[17px] leading-6 font-semibold">
+                {title}
+              </h2>
+              {!scheduled && active && (
+                <p className="text-[12px] leading-4 text-(--text-secondary) [overflow-wrap:anywhere]">
+                  {t('done.active', { plan: active })}
+                </p>
+              )}
             </div>
+          </div>
+          {details.length > 0 && (
+            <dl className="mt-4 overflow-hidden rounded-lg border border-(--border-subtle)">
+              {details.map(({ k, v }) => (
+                <div key={k} className={DETAIL_ROW}>
+                  <dt className="text-(--text-secondary)">{k}</dt>
+                  <dd className="min-w-0 text-right font-medium tabular-nums [overflow-wrap:anywhere]">{v}</dd>
+                </div>
+              ))}
+            </dl>
           )}
         </div>
-        <div className="modalfoot">
-          <span className="flex-1" />
+        <div className="modalfoot shrink-0 justify-end max-desktop:px-4">
           <Button size="sm" onClick={onClose}>
             {t('done.done')}
           </Button>
@@ -791,10 +862,16 @@ export function ChangePlanDialog({
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
-        className={step === 'choose' && !onContract ? 'modal max-w-[900px]' : 'modal max-w-[540px]'}
+        className={
+          step === 'choose' && !onContract
+            ? 'modal max-w-[900px]'
+            : step === 'done'
+              ? 'modal max-w-[420px]'
+              : 'modal max-w-[540px]'
+        }
         role="dialog"
         aria-modal="true"
-        aria-label={t('title')}
+        aria-labelledby={titleId}
         data-plan-dialog={step}
       >
         {body}
