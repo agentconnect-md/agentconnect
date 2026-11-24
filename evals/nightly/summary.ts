@@ -264,55 +264,74 @@ export function pairedEffects(cells: readonly Cell[]): { caseId: string; core?: 
   })
 }
 
+/** More misses than this in one suite collapse into a single line. */
+const COLLAPSE_AT = 5
+
+function actual(cell: Cell): string {
+  return cell.valid > 0
+    ? `${cell.met}/${cell.valid}`
+    : `no valid trial (${cell.invalidReasons.join(', ') || 'none ran'})`
+}
+
 /** A content-free Slack-ready report: ids and counts only, never prompts, outputs or local paths. */
 export function renderMarkdown(run: NightlyRun): string {
   const count = (mark: Mark) => run.cells.filter((cell) => cell.mark === mark).length
   const missingSuites = run.suites.filter((suite) => !suite.results).map((suite) => suite.suite)
   const brokenSuites = run.suites.filter((suite) => suite.results && suite.apparatusFailed).map((suite) => suite.suite)
   const below = count('below')
+  const unmeasured = count('no-valid') + missingSuites.length + brokenSuites.length
   const header =
-    below + count('safety') + count('no-valid') + missingSuites.length + brokenSuites.length === 0
+    below + count('safety') + unmeasured === 0
       ? `✅ all ${run.cells.length} cells on target`
-      : `❌ ${below} of ${run.cells.length} cells below target · 🛑 ${count('safety')} safety · ⚠️ ${count('no-valid') + missingSuites.length + brokenSuites.length} without a valid trial`
+      : `❌ ${below} of ${run.cells.length} below target · 🛑 ${count('safety')} safety · ⚠️ ${unmeasured} unmeasured`
   const minutes = Math.round(run.durationMs / 60_000)
   const lines = [
     `*AgentConnect eval nightly* · ${header}`,
-    '',
     `\`${run.commit.slice(0, 12)}\`${run.dirty ? ' (dirty)' : ''} · Node ${run.node} · \`${run.subject}\` · repeat ${run.repeat} · ${minutes} min`
   ]
-  const flagged = run.cells.filter((cell) => cell.mark !== 'on-target')
-  lines.push('', '*Below target*')
-  if (flagged.length === 0 && missingSuites.length === 0 && brokenSuites.length === 0) lines.push('none')
-  for (const suite of missingSuites) lines.push(`⚠️ ${suite}: no result file`)
-  for (const suite of brokenSuites)
-    lines.push(`⚠️ ${suite}: a scenario failed to run, so its results may be incomplete`)
-  for (const cell of flagged) {
-    const actual =
-      cell.valid > 0
-        ? `${cell.met}/${cell.valid} on target`
-        : `no valid trial (${cell.invalidReasons.join(', ') || 'none ran'})`
-    lines.push(
-      `${MARK[cell.mark]} ${cell.suite} · ${cellName(cell)}: ${actual}${cell.knownCause ? ` (known: ${cell.knownCause})` : ''}`
-    )
+
+  const attention = [
+    ...missingSuites.map((suite) => `⚠️ ${suite}: no result file`),
+    ...brokenSuites.map((suite) => `⚠️ ${suite}: a scenario failed to run, so its results may be incomplete`)
+  ]
+  for (const suite of run.suites) {
+    const cells = run.cells.filter((cell) => cell.suite === suite.suite)
+    const flagged = cells.filter((cell) => cell.mark !== 'on-target' && !cell.knownCause)
+    if (flagged.length > COLLAPSE_AT && flagged.every((cell) => cell.mark === 'below')) {
+      const scope = flagged.length === cells.length ? `all ${cells.length}` : `${flagged.length} of ${cells.length}`
+      attention.push(`❌ ${suite.suite}: ${scope} cases below target`)
+      continue
+    }
+    for (const cell of flagged) attention.push(`${MARK[cell.mark]} ${suite.suite} · ${cellName(cell)}: ${actual(cell)}`)
   }
+  lines.push('', '*Needs a look*', ...(attention.length > 0 ? attention : ['none']))
+
+  const known = new Map<string, string[]>()
+  for (const cell of run.cells.filter((entry) => entry.knownCause)) {
+    known.set(cell.knownCause!, [...(known.get(cell.knownCause!) ?? []), `${cellName(cell)} ${actual(cell)}`])
+  }
+  if (known.size > 0) {
+    lines.push('', '*Known, no alert*')
+    for (const [cause, cells] of known) lines.push(`❌ ${cells.join(', ')}: ${cause}`)
+  }
+
+  lines.push('', '*Suites*')
   for (const suite of run.suites.filter((entry) => entry.results)) {
     const cells = run.cells.filter((cell) => cell.suite === suite.suite)
     const onTarget = cells.filter((cell) => cell.mark === 'on-target').length
-    lines.push('', `*${suite.suite}* · ${onTarget}/${cells.length} on target`)
-    // Probes have dozens of scenarios: their misses are already listed above.
-    if (suite.suite.endsWith('-probe')) continue
-    for (const cell of cells) {
-      lines.push(
-        `${MARK[cell.mark]} ${cellName(cell)} — ${cell.met}/${cell.valid}${cell.invalidReasons.length ? ` · invalid ${cell.trials - cell.valid}` : ''}`
-      )
-    }
+    lines.push(
+      `${onTarget === cells.length && !suite.apparatusFailed ? '✅' : '❌'} ${suite.suite} ${onTarget}/${cells.length}`
+    )
   }
+
   const effects = pairedEffects(run.cells)
   if (effects.length > 0) {
-    const signed = (value?: number) => (value === undefined ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)}`)
-    lines.push('', '*Add-on deltas* (mean outcome)')
-    for (const effect of effects)
-      lines.push(`${effect.caseId}: core ${signed(effect.core)} · memory ${signed(effect.memory)}`)
+    const signed = (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}`
+    const deltas = effects.flatMap((effect) => [
+      ...(effect.core !== undefined ? [`core ${effect.caseId} ${signed(effect.core)}`] : []),
+      ...(effect.memory !== undefined ? [`memory ${effect.caseId} ${signed(effect.memory)}`] : [])
+    ])
+    lines.push('', `*Add-on deltas* (mean outcome): ${deltas.join(' · ')}`)
   }
   return `${lines.join('\n')}\n`
 }

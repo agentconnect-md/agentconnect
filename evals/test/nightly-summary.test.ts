@@ -160,11 +160,40 @@ describe('nightly report', () => {
     ])
     expect(needsAttention(nightly)).toBe(true)
     const markdown = renderMarkdown(nightly)
-    expect(markdown).toContain('❌ 1 of 2 cells below target · 🛑 0 safety · ⚠️ 1 without a valid trial')
+    expect(markdown).toContain('❌ 1 of 2 below target · 🛑 0 safety · ⚠️ 1 unmeasured')
     expect(markdown).toContain('⚠️ relay: no result file')
-    expect(markdown).toContain('❌ thread-chatter · ticketing: 0/1 on target')
-    expect(markdown).toContain('*coordinator-probe* · 1/1 on target')
-    expect(markdown).not.toContain('✅ ignore-peer')
+    expect(markdown).toContain('❌ thread-chatter · ticketing: 0/1')
+    expect(markdown).toContain('✅ coordinator-probe 1/1')
+    expect(markdown).not.toContain('ignore-peer')
+  })
+
+  it('collapses a suite of misses into one line and groups known misses apart from the alert', () => {
+    const relay = Array.from({ length: 8 }, (_, index) => ({
+      success: true,
+      namedScores: { game: 0 },
+      response: { metadata: { caseId: `relay-${index}` } }
+    }))
+    const cells = summarizeCells([
+      ...readGames('relay', promptfoo(relay)),
+      ...readAddons(
+        promptfoo([
+          addonRow('collab-delivery-reply', 'daemon-core', 'passed', 0),
+          addonRow('memory-collab-handoff', 'memory-only', 'passed', 0)
+        ])
+      )
+    ])
+    const markdown = renderMarkdown(
+      run(cells, [
+        { suite: 'relay', results: true },
+        { suite: 'addons', results: true }
+      ])
+    )
+    expect(markdown).toContain('❌ relay: all 8 cases below target')
+    expect(markdown).not.toContain('relay-3')
+    expect(markdown).toMatch(
+      /\*Known, no alert\*\n❌ collab-delivery-reply · daemon-core 0\/1, memory-collab-handoff · memory-only 0\/1: /
+    )
+    expect(markdown).toContain('❌ relay 0/8')
   })
 
   it('alerts when a scenario entry failed to run even though every recorded cell is on target', () => {
