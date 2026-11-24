@@ -1217,7 +1217,8 @@ Not covered yet:
   placeholder without `k` is a code host's, so ones sealed before the claim
   existed keep working. The kind is checked first: a code-host placeholder
   presented to a provider origin, or a provider placeholder to a code host, is
-  refused with 403.
+  refused with 403. The proposed [mcp-tool-permissions.md](mcp-tool-permissions.md) §7.2
+  adds a third kind, `mcp-grant`, for a restricted agent's MCP relay grant.
 - **Slots.** An agent's provider keys are slots, each with a stable source
   name (such as `org:anthropic`), its provider, and its upstream origin: host,
   port and an optional path prefix, and whether that origin is the provider's

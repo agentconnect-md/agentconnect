@@ -112,7 +112,7 @@ to the registry.
                                                 ◀──────────────── result stream ───────────────────
 ```
 
-Key point: **call data passes only through the relay and daemon, never through the CP**. The CP pushes two artifacts only when something changes and is absent from the call path. If the CP goes down, the previously pushed proxy definition on the daemon and grant binding on the relay remain active; only provider creation or updates wait for the CP to recover.
+Key point: **call data passes only through the relay and daemon, never through the CP**. The CP pushes two artifacts only when something changes and is absent from the call path. If the CP goes down, the previously pushed proxy definition on the daemon and grant binding on the relay remain active; only provider creation or updates wait for the CP to recover. The proposed [mcp-tool-permissions.md](mcp-tool-permissions.md) keeps this: a restricted agent's approvals are checked in the daemon (its §7.2).
 
 ## 4. Data Model (Control Plane)
 
@@ -318,7 +318,9 @@ than the upstream URL and API key:
 - **Injection requires no special path**:
   [`resolveAgentMcpServers`](../../packages/daemon/src/mcp/resolve-servers.ts)
   converts the effective HTTP definition to the shape attached to
-  `session/new`.
+  `session/new`. Under the proposed [mcp-tool-permissions.md](mcp-tool-permissions.md)
+  §7.2, a restricted definition held in `daemon` custody reaches the runtime with
+  a credential-proxy placeholder instead of the grant key.
 - **Facts describe daemon-local definitions**: organization providers already
   live in CP metadata and are not folded into an install-wide fact set. The
   daemon does not open an MCP connection when reporting facts.

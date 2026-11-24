@@ -210,12 +210,13 @@ model AgentMcpToolPolicy {
 }
 ```
 
-`McpGrant` gains `agentId String?`:
+`McpGrant` gains `agentId String?` and `custody String?`:
 
-- `null` is the organization-shared grant, unchanged.
-- A non-null value is the grant of one restricted `(agent, provider)` pair.
+- `agentId` `null` is the organization-shared grant, unchanged.
+- A non-null `agentId` is the grant of one restricted `(agent, provider)` pair. Its
+  `custody` is `daemon` or `runtime` and never changes (§5.6).
 
-`currentMcpGrant` selects the newest active grant **per slot**, and rotation applies per
+`currentMcpGrant` selects the newest active grant **per slot**, `(provider, agent, custody)`, and rotation applies per
 slot with the existing overlap rule. Deleting an agent or a provider cascades to its
 policies and grants and unassigns their hashes.
 
@@ -245,19 +246,19 @@ agent's access by itself.
 
 ### 5.4 Grant lifecycle and projection
 
-| Event                                      | Effect                                                                                                                                                                                        |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First policy saved for `(agent, provider)` | Mint an agent grant. Push the relay binding (§6.1) **before** the agent-scoped definition (§7.1) to the daemons serving the agent, the existing order for a new key.                          |
-| Policy changed                             | Re-push the relay binding and the definition's decision table. The key is unchanged, and the next call is judged against the new table, mid-session included.                                 |
-| Policy removed (Full access)               | Push `mcpserver/remove{agentId}` so the agent falls back to the shared definition, then revoke the grant and send `rc/mcp-unassign{providerId, grantKeyHash}`.                                |
-| Agent disables the provider                | The policy row and its grant persist, and no definition is projected while the provider is disabled. Re-enabling restores the same restriction rather than Full access.                       |
-| Agent moves                                | The target receives the agent-scoped definition through the owned activation, after placement commits and before `agent/activate` (base §7). The source's agent-scoped definition is removed. |
+| Event                                      | Effect                                                                                                                                                                                                                                                    |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First policy saved for `(agent, provider)` | Mint the agent grant of the custody each serving daemon needs (§5.6). Push the relay binding (§6.1) **before** the agent-scoped definition (§7.1) to the daemons serving the agent, the existing order for a new key.                                     |
+| Policy changed                             | Re-push the relay binding and the definition's decision table. The keys are unchanged, and the next call is judged against the new table, mid-session included. Names that become approval-gated stay Blocked for a `runtime` grant (§5.6).               |
+| Policy removed (Full access)               | Push `mcpserver/remove{agentId}` so the agent falls back to the shared definition, then revoke the grant and send `rc/mcp-unassign{providerId, grantKeyHash}`.                                                                                            |
+| Agent disables the provider                | The policy row and its grant persist, and no definition is projected while the provider is disabled. Re-enabling restores the same restriction rather than Full access.                                                                                   |
+| Agent moves                                | The target receives the agent-scoped definition through the owned activation, after placement commits and before `agent/activate` (base §7), carrying the grant whose custody matches the target (§5.6). The source's agent-scoped definition is removed. |
 
 `mcpDefsForAgents` projects, for each agent that enables a provider:
 
 - the shared definition, as today, when the agent has no policy;
-- an agent-scoped definition carrying the agent grant and its decision table, when it has
-  one.
+- an agent-scoped definition carrying the agent grant for the receiving daemon (§5.6) and
+  its decision table, when it has one.
 
 The register snapshot, `duty/fetch`, live pushes and the move path all go through this one
 projector.
@@ -283,6 +284,29 @@ Authorization:
   server or an API key could otherwise loosen its own tools, so `openapi.test.ts` gains these
   two routes.
 
+### 5.6 Grant custody
+
+The relay may accept an approval only for a grant whose key no runtime has ever held. One
+rule decides this, and every other row derives from it:
+
+- **`daemon` custody.** The CP delivers the grant only to daemons advertising
+  `mcp-tool-approval-v1`. Those daemons hand their runtimes a placeholder, never the key
+  (§7.2), and keep CP definitions in memory only. The relay's table for the grant carries
+  the approval-gated names.
+- **`runtime` custody.** Every other agent grant, including every grant minted before stage 6. A runtime may hold its key. The relay's table for the grant always has the
+  approval-gated names as Blocked, whatever the policy says.
+- **Projection.** A daemon advertising `mcp-tool-approval-v1` receives the agent's `daemon`
+  grant; any other daemon receives its `runtime` grant. The CP mints each one when it is
+  first needed. Both may be active at once, for example on two daemons or during an upgrade,
+  and the relay judges each hash by its own custody.
+- **No grant changes custody.** Serving the agent from a capable daemon for the first time
+  mints a `daemon` grant; it never promotes an existing `runtime` grant. That direction
+  needs no overlap, because the `runtime` grant never had approvals to lose. A grant of
+  either custody is revoked once no daemon serving the agent needs it.
+
+So a key delivered during stages 2–5, or to an older daemon, or kept by a runtime after the
+policy changed, can never carry an approval past the relay, even with a forged header.
+
 ## 6. Relay
 
 ### 6.1 Binding
@@ -297,8 +321,9 @@ restrictedGrants?: { grantKeyHash: string; policy: number }[]           // index
 
 - `grantKeyHashes` keeps carrying the unrestricted hashes. It stays non-empty, because the
   shared grant exists while the provider exists.
-- `approval` and `ask` are sent non-empty only to relays that also advertise
-  `mcp-tool-approval-v1`. A relay without it receives those names as Blocked (§8).
+- Each restricted grant points at the table its custody allows (§5.6). `approval` and
+  `ask` are non-empty only for a `daemon` grant, and only toward relays that also advertise
+  `mcp-tool-approval-v1`. Everywhere else those names are sent as Blocked (§8).
 - Tables are deduplicated because agents usually share a few policies. The frame relies on
   `rc/fragment` beyond the frame size limit.
 - `McpBindingTable.resolve` returns `{ upstream, policy? }`.
@@ -315,8 +340,10 @@ When it is present, the relay applies the following.
   Unparseable JSON gets a JSON-RPC parse error and is not forwarded (fail closed).
 - `tools/call` with `params.name` in `allow` is forwarded.
 - `tools/call` with a name in `approval` or `ask` must carry the daemon's approval header
-  (§7.2). For an `ask` tool, the header's source must be `person`. This is a consistency
-  check behind the daemon's own, not the approval itself: only the daemon holds the key.
+  (§7.2). For an `ask` tool, the header's source must be `person`. Such names exist only in
+  the table of a `daemon` grant, whose key only the daemon holds (§5.6), so the header is a
+  consistency check behind the daemon's own judgment, not the approval itself.
+- The relay removes `X-AC-Tool-Approval` before forwarding upstream.
 - Any other `tools/call` is refused with a tool result, so the model sees why and stops
   retrying:
   `{ content: [{ type: 'text', text: 'The tool "<name>" is blocked for this agent.' }], isError: true }`.
@@ -374,6 +401,9 @@ live in the CP, so a relay never loosens access on its own.
 - The MCP Apps host keys a connection to an agent-scoped `ui` definition on
   `(orgId, agentId)` instead of `orgId`. Otherwise a restricted agent would reach the
   provider's tools through the bridge with the shared grant.
+- The Apps host dials the relay from the daemon with the agent grant, not through the proxy.
+  It applies the same table: Always allow passes, Blocked is refused, and approval-gated
+  tools are refused, because no runtime gate stands in front of a bridge call.
 - Facts are unchanged. Agent-scoped definitions, like other CP definitions, are not folded
   into the daemon's fact set.
 
@@ -382,16 +412,24 @@ live in the CP, so a relay never loosens access on its own.
 The CP delivers an agent-scoped definition to the daemon with the grant key, as every
 definition is delivered today.
 
-- A daemon without `mcp-tool-approval-v1` hands that definition to the runtime unchanged.
-  Allow and block are then enforced by the relay alone.
-- A daemon advertising `mcp-tool-approval-v1` hands the runtime a **placeholder** in the
-  `Authorization` header instead, never the grant key:
+- A daemon without `mcp-tool-approval-v1` receives a `runtime` grant (§5.6) and hands that
+  definition to the runtime unchanged. Allow and block are then enforced by the relay alone,
+  and approval-gated tools are Blocked there.
+- A daemon advertising `mcp-tool-approval-v1` receives a `daemon` grant and hands the
+  runtime a **placeholder** in the `Authorization` header instead, never the grant key:
 
-- The credential proxy gains a third placeholder kind, `mcp`, sealed for the agent, the
-  provider and the relay origin. It joins the existing kinds, code-host tokens and provider
-  API keys.
+- The credential proxy gains a third placeholder kind, `mcp-grant`, sealed for the agent,
+  the provider and the relay origin. It joins the existing kinds, code-host tokens and
+  provider API keys. The name keeps it apart from the proxy's existing `mcp` helper channel.
 - It rides the listeners and tunnels those kinds already use in every execution strategy.
-  Executor tunnels gain an `mcp` scope.
+  Executor tunnels gain an `mcp-grant` scope.
+- Only sessions of an agent with a `daemon` grant get a route for the relay origin. The
+  proxy passes any request without its placeholder through unjudged, as it does for other
+  hosts, so agents without a policy and unrestricted grants are unaffected.
+- A `GET` stream on this route is exempt from the code-host tunnels' five-minute idle cut,
+  because MCP server streams are idle and long-lived. It is capped at four concurrent
+  streams per session instead. A cut stream is reopened by the client, as Streamable HTTP
+  allows. POSTs follow the existing request limits.
 - The proxy terminates TLS for the relay origin with the daemon CA that sessions already
   trust.
 - A runtime that bypasses the proxy reaches the relay with the placeholder and is refused
@@ -400,7 +438,8 @@ definition is delivered today.
 
 For each request to the relay origin, the proxy does the following:
 
-1. It opens the placeholder and resolves the agent's agent-scoped definition. A
+1. It drops any inbound `X-AC-Tool-Approval`, opens the placeholder, and resolves the
+   agent's agent-scoped definition. A
    placeholder for another agent, or one presented at another origin, is refused.
 2. `GET` and `DELETE` are forwarded with the grant key swapped in.
 3. A POST is parsed as JSON-RPC, and every `tools/call` is judged against the definition's
@@ -474,12 +513,13 @@ A record is `{ agentId, toolCallId, tool, argsDigest, source, expiresAt }`.
 
 Each mixed-version case fails closed:
 
-| Peer lacks the feature                | CP behavior                                                                                                                        | Effect                                                 |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Relay without `mcp-tool-policy-v1`    | Its `rc/mcp-assign` omits restricted grants, and it is never asked for a catalog                                                   | A restricted agent's call through that relay gets 401  |
-| Daemon without `mcp-agent-defs-v1`    | Drops the restricted provider from that agent's projected `AgentSpec.mcpServers`, so the shared definition is never attached to it | The restricted agent loses the provider on that daemon |
-| Relay without `mcp-tool-approval-v1`  | Sends `approval` and `ask` names as Blocked                                                                                        | Approval-gated tools are refused through that relay    |
-| Daemon without `mcp-tool-approval-v1` | Sends `approval` and `ask` names as Blocked in the definition                                                                      | Approval-gated tools are refused for that agent        |
+| Peer lacks the feature                     | CP behavior                                                                                                                                   | Effect                                                                                                                                                                           |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Relay without `mcp-tool-policy-v1`         | Its `rc/mcp-assign` omits restricted grants, and it is never asked for a catalog                                                              | A restricted agent's call through that relay gets 401                                                                                                                            |
+| Daemon without `mcp-agent-defs-v1`         | Drops the restricted provider from that agent's projected `AgentSpec.mcpServers`, so the shared definition is never attached to it            | The restricted agent loses the provider on that daemon                                                                                                                           |
+| Relay without `mcp-tool-approval-v1`       | Sends `approval` and `ask` names as Blocked                                                                                                   | Approval-gated tools are refused through that relay                                                                                                                              |
+| Daemon without `mcp-tool-approval-v1`      | Delivers the `runtime` grant, whose relay table has `approval` and `ask` names as Blocked (§5.6), and sends them as Blocked in the definition | Approval-gated tools are refused at the relay, even with a forged header                                                                                                         |
+| Runtime shim without the `mcp-grant` scope | Nothing; the daemon reads the shim's version                                                                                                  | The daemon attaches the provider to none of that shim's sessions and reports which shim needs an upgrade; a placeholder could not reach the proxy, and the key must not leave it |
 
 `mcp-tool-approval-v1` belongs to stage 6 alone (§13), so the CP and the console can tell a
 peer that enforces allow and block from one that also handles approvals.
@@ -508,7 +548,9 @@ policy row exists.
     could therefore run a call the classifier refused, with exactly the proposed arguments,
     before the refusal arrives. This is the trust the administrator chose with Needs
     approval. An administrator who wants a person chooses Always ask.
-- **Key custody.** The restricted grant key never enters the runtime.
+- **Key custody.** A `daemon` grant's key never enters a runtime, and only such a grant can
+  carry an approval past the relay (§5.6). A `runtime` grant's key may sit in a runtime, and
+  its approval-gated names are Blocked at the relay.
   - A placeholder is useful only through the daemon's proxy, for its own agent and origin,
     and within that agent's table and records.
   - On a self-hosted daemon without sandboxing, agents run under the daemon's user and share
@@ -561,6 +603,9 @@ console's responsive rules in `packages/web/STYLE.md`.
   - expansion of all four decisions with overrides and hand-typed names;
   - drift detection never altering the table;
   - per-relay and per-daemon gating for both capabilities;
+  - custody: a capable daemon receives the `daemon` grant and an older one the `runtime`
+    grant; the `runtime` table never carries approval-gated names; first service from a
+    capable daemon mints rather than promotes; revocation once unused;
   - projection of shared versus agent-scoped definitions, including the move path.
 - **CP `test:int`:**
   - policy CRUD and its RBAC;
@@ -574,6 +619,8 @@ console's responsive rules in `packages/web/STYLE.md`.
   - batches;
   - the re-serialized message forwarded instead of the original bytes;
   - the approval header required, and `person` required for `ask` tools;
+  - a `runtime` grant refused for an approval-gated tool even with the header;
+  - the header removed before the upstream;
   - `tools/list` filtering over JSON and SSE, including pagination and the 4 MiB limit;
   - an unrestricted grant on the same provider stays byte-transparent;
   - `open_connector` enforcement;
@@ -582,8 +629,11 @@ console's responsive rules in `packages/web/STYLE.md`.
 - **Daemon:**
   - `CpMcpDefs` agent-layer precedence and convergence;
   - the Apps host connection scope for agent-scoped `ui` definitions;
-  - the `mcp` placeholder kind: wrong agent, wrong origin, and a bypass with the
-    placeholder;
+  - the `mcp-grant` placeholder kind: wrong agent, wrong origin, a bypass with the
+    placeholder, and an inbound approval header dropped;
+  - a request without the placeholder passing through unjudged;
+  - the Apps host refusing approval-gated tools;
+  - a shim without the scope: the provider is not attached;
   - the proxy's judgment for each decision;
   - approval records: a mismatched tool, mismatched arguments, a reused record, expiry, a
     call without a known id, and a Claude Auto refusal deleting the record;
@@ -639,6 +689,8 @@ the `rawInput` that ACP showed for that id (Codex: `rawInput.arguments`).
 - Claude's and Codex's MCP HTTP clients honoring the proxy variables and the trust bundle,
   in every execution strategy. A client that does not still fails closed, with a 401 at the
   relay.
+- `params.arguments` equal to ACP `rawInput` (Codex: `rawInput.arguments`) for large,
+  deeply nested and non-ASCII arguments. A mismatch refuses an approved call.
 - A run on a real daemon with a chat card.
 - A Claude Auto classifier refusal: the call is never sent, and the record is deleted.
 
@@ -654,9 +706,11 @@ the `rawInput` that ACP showed for that id (Codex: `rawInput.arguments`).
 5. Console panel and public documentation. **Needs approval** and **Always ask** are
    selectable only once stage 6 has shipped.
 6. Approval, behind `mcp-tool-approval-v1`:
-   - the credential proxy's `mcp` placeholder;
+   - the credential proxy's `mcp-grant` placeholder;
    - the proxy's judgment and approval records;
    - the runtime-gate observation and settings rules;
-   - the relay's approval-header check.
+   - the relay's approval-header check and per-custody tables;
+   - folding the restricted path into base §3 and §7 and into the Phase 2 placeholder
+     kinds of github-app-git-credentials.md, which carry pointers to this document now.
 
    It ships after the checks of §12.3.
