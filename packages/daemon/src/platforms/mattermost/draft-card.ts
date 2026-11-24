@@ -20,9 +20,8 @@ const DRAFT_CARD_TEXT_CAP = 10_000
 const TRACKED_CARD_CAP = 500
 
 interface TrackedDraftCard {
-  readonly tag: string
-  readonly thread?: string
-  readonly hasActions: boolean
+  /** Numbered cards keep their tag until settlement. Button cards keep their original attachment. */
+  readonly tag: string | null
 }
 
 const trackedByConn = new WeakMap<object, Map<string, TrackedDraftCard>>()
@@ -72,7 +71,7 @@ export function mattermostDraftTag(): string {
 /** Structural Mattermost port used by assistant draft cards; satisfied by {@link MattermostConnection}. */
 export interface MattermostDraftPort {
   workspaceId(): string
-  actionCallback?(agentId?: string): MattermostActionCallbackConfig | undefined
+  actionCallback?(agentId?: string, integrationId?: string): MattermostActionCallbackConfig | undefined
   openDirectMessage(user: string): Promise<string>
   isFullMember(user: string): Promise<boolean>
   getChannelInfo(channel: string): Promise<{ isIm?: boolean; user?: string }>
@@ -225,7 +224,7 @@ export function mattermostDraftCardPort(conn: MattermostDraftPort, integrationId
     postCard: async (channel, card, thread) => {
       if (!('draftId' in card)) return undefined
       const rootId = thread && thread !== MATTERMOST_DM_THREAD ? thread : undefined
-      const callback = conn.actionCallback?.(card.agentId)
+      const callback = conn.actionCallback?.(card.agentId, integrationId)
       if (callback) {
         const props = buildPendingProps(callback, integrationId, channel, card)
         if (!props) return undefined
@@ -233,16 +232,13 @@ export function mattermostDraftCardPort(conn: MattermostDraftPort, integrationId
           ...(rootId ? { rootId } : {}),
           props
         })
+        if (post?.id) rememberTrackedDraft(conn, post.id, { tag: null })
         return post?.id
       }
       const tag = mattermostDraftTag()
       const post = await conn.createPost(channel, renderDraftFallbackText(card, tag), rootId ? { rootId } : undefined)
       if (!post?.id) return undefined
-      rememberTrackedDraft(conn, post.id, {
-        tag,
-        ...(thread ? { thread } : {}),
-        hasActions: false
-      })
+      rememberTrackedDraft(conn, post.id, { tag })
       conn.noteCardReply?.({
         tag,
         channel,
@@ -264,7 +260,15 @@ export function mattermostDraftCardPort(conn: MattermostDraftPort, integrationId
           () => false
         )
       }
-      const callback = conn.actionCallback?.(card.agentId)
+      const tracked = getTrackedDraft(conn, ts)
+      if (tracked) {
+        const text = tracked.tag ? renderDraftFallbackText(card, tracked.tag) : renderDraftHeaderAndBody(card)
+        return await conn.patchPost(ts, text).then(
+          () => true,
+          () => false
+        )
+      }
+      const callback = conn.actionCallback?.(card.agentId, integrationId)
       if (callback) {
         const props = buildPendingProps(callback, integrationId, channel, card) ?? { attachments: [] }
         return await conn.patchPost(ts, renderDraftHeaderAndBody(card), { props }).then(
@@ -272,22 +276,18 @@ export function mattermostDraftCardPort(conn: MattermostDraftPort, integrationId
           () => false
         )
       }
-      let tracked = getTrackedDraft(conn, ts)
-      if (!tracked) {
-        const tag = mattermostDraftTag()
-        tracked = { tag, hasActions: false }
-        rememberTrackedDraft(conn, ts, tracked)
-        conn.noteCardReply?.({
-          tag,
-          channel,
-          postId: ts,
-          agentId: card.agentId,
-          integrationId,
-          kind: 'draft',
-          draftId: card.draftId
-        })
-      }
-      return await conn.patchPost(ts, renderDraftFallbackText(card, tracked.tag), { props: { attachments: [] } }).then(
+      const tag = mattermostDraftTag()
+      rememberTrackedDraft(conn, ts, { tag })
+      conn.noteCardReply?.({
+        tag,
+        channel,
+        postId: ts,
+        agentId: card.agentId,
+        integrationId,
+        kind: 'draft',
+        draftId: card.draftId
+      })
+      return await conn.patchPost(ts, renderDraftFallbackText(card, tag), { props: { attachments: [] } }).then(
         () => true,
         () => false
       )

@@ -7685,6 +7685,9 @@
       "settings": {
         "replace": "Replace token",
         "hint": "AgentConnect verifies the new token against your Mattermost server without disconnecting the running bot, then reconnects it with the new token.",
+        "websocketRepliesOnly": "Use numbered replies over WebSocket",
+        "websocketRepliesHint": "New cards accept replies in the original thread or direct message, without buttons or outbound callbacks from Mattermost.",
+        "replySettingsError": "Could not save the reply setting.",
         "newToken": "New Bot Token",
         "save": "Save",
         "checking": "Checking…",

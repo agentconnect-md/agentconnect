@@ -6715,6 +6715,7 @@ export interface CreateIntegrationInput {
 
 /** Domain view of an `integration` row. NEVER carries token material. */
 export interface IntegrationRecord {
+  mattermostWebsocketRepliesOnly?: boolean
   id: IntegrationId
   orgId: OrgId
   agentId: AgentId
@@ -6731,6 +6732,7 @@ export interface IntegrationRecord {
 }
 
 export interface IntegrationRepo {
+  setMattermostWebsocketRepliesOnly(orgId: OrgId, id: IntegrationId, enabled: boolean): Promise<boolean>
   create(input: CreateIntegrationInput): Promise<IntegrationRecord>
   /**
    * Atomic bot-membership admission — EVERY multi-agent bot admission (the

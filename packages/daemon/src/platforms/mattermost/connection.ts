@@ -106,7 +106,7 @@ export interface MattermostConnectionGroup {
   botToken: string
   botUserId?: string
   botUsername?: string
-  integrations: { agentId: string; integrationId: string }[]
+  integrations: { agentId: string; integrationId: string; websocketRepliesOnly?: boolean }[]
 }
 
 /** Deterministic key for one Mattermost connection: normalized `serverUrl` + `botToken`. */
@@ -137,7 +137,11 @@ export function consolidateMattermost(agents: LoadedAgent[]): Map<string, Matter
       }
       if (!group.botUserId && config.botUserId) group.botUserId = config.botUserId
       if (!group.botUsername && config.botUsername) group.botUsername = config.botUsername
-      group.integrations.push({ agentId: agent.id, integrationId: integration.id })
+      group.integrations.push({
+        agentId: agent.id,
+        integrationId: integration.id,
+        ...(config.websocketRepliesOnly ? { websocketRepliesOnly: true } : {})
+      })
       groups.set(key, group)
     }
   }
@@ -390,7 +394,15 @@ export class MattermostConnection implements PlatformConnection {
     this._group = group
   }
 
-  actionCallback(agentId?: string): MattermostActionCallbackConfig | undefined {
+  actionCallback(agentId?: string, integrationId?: string): MattermostActionCallbackConfig | undefined {
+    if (
+      this._group.integrations.some(
+        (i) =>
+          i.websocketRepliesOnly &&
+          (integrationId ? i.integrationId === integrationId : !agentId || i.agentId === agentId)
+      )
+    )
+      return undefined
     return this.deps.actionCallback?.(agentId)
   }
 

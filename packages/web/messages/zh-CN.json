@@ -7685,6 +7685,9 @@
       "settings": {
         "replace": "更换 Token",
         "hint": "AgentConnect 会在不断开运行中机器人的情况下向你的 Mattermost 服务器校验新 Token，然后使用新 Token 重新连接。",
+        "websocketRepliesOnly": "仅通过 WebSocket 接收数字回复",
+        "websocketRepliesHint": "新卡片接受原线程或私聊中的回复，Mattermost 无需发送按钮回调。",
+        "replySettingsError": "无法保存回复设置。",
         "newToken": "新的 Bot Token",
         "save": "保存",
         "checking": "正在校验…",

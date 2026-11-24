@@ -347,6 +347,17 @@ describe('Mattermost provider validation and installation', () => {
     expect(await secretFor('org_a')).toBe(deriveMattermostOrgActionSecret(master, 'org_a'))
     expect(await secretFor('org_b')).not.toBe(await secretFor('org_a'))
     expect(await secretFor('org_a')).not.toBe(master)
+    const configured = createMattermostCpProvider({ actionSecret: master })
+    const websocketOnly = await configured.projectIntegrationConfig(
+      { orgId: 'org_a', mattermostWebsocketRepliesOnly: true } as IntegrationRecord,
+      bot,
+      {} as IntegrationCoreEnvelope,
+      { botToken: BOT_TOKEN, appToken: null, signingSecret: null }
+    )
+    expect(IntegrationMattermostConfig.parse(websocketOnly).websocketRepliesOnly).toBe(true)
+    expect(websocketOnly).not.toHaveProperty('actionSecret')
+    expect(configured.requiredDaemonFeatures?.(websocketOnly)).toEqual(['mattermost-websocket-replies-v1'])
+    expect(configured.requiredDaemonFeatures?.(projected)).toEqual([])
 
     expect(
       await provider.projectIntegrationConfig(

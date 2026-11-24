@@ -4,8 +4,9 @@ import type { FastifyPluginAsync } from 'fastify'
 import { z, type ZodRawShape } from 'zod'
 import {
   MATTERMOST_PLATFORM,
+  MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE,
   deriveMattermostOrgActionSecret,
-  type IntegrationMattermostConfig
+  IntegrationMattermostConfig
 } from '@agentconnect.md/protocol'
 import { guardedRequest, isLinkLocalOrUnspecifiedAddress } from '../../net/guarded-fetch.js'
 import type { BotRecord } from '../../persistence/ports.js'
@@ -273,12 +274,17 @@ export function createMattermostCpProvider(
         botToken: secrets.botToken,
         ...(botUserId ? { botUserId } : {}),
         ...(botUsername ? { botUsername } : {}),
-        ...(deps.actionSecret && integration.orgId
+        ...(integration.mattermostWebsocketRepliesOnly ? { websocketRepliesOnly: true } : {}),
+        ...(deps.actionSecret && integration.orgId && !integration.mattermostWebsocketRepliesOnly
           ? { actionSecret: deriveMattermostOrgActionSecret(deps.actionSecret, integration.orgId) }
           : {})
       }
     },
 
+    requiredDaemonFeatures: (config) =>
+      IntegrationMattermostConfig.safeParse(config).data?.websocketRepliesOnly
+        ? [MATTERMOST_WEBSOCKET_REPLIES_V1_FEATURE]
+        : [],
     legacySessionAudience: (channel) => MM_CHANNEL_ID_RE.test(channel),
     sessionAudienceRealm: (bot) => mattermostBotRealm(bot),
     chatMemberTenant: (bot) => (bot.revokedAt ? null : mattermostBotRealm(bot)),

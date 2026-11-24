@@ -547,6 +547,7 @@ export class PgBotSecretStore implements BotSecretStore {
 
 function toRecord(i: Integration): IntegrationRecord {
   return {
+    ...(i.mattermostWebsocketRepliesOnly ? { mattermostWebsocketRepliesOnly: true } : {}),
     id: IntegrationId(i.id),
     orgId: OrgId(i.orgId),
     agentId: AgentId(i.agentId),
@@ -628,6 +629,14 @@ export class PgIntegrationRepo implements IntegrationRepo {
       await seedExternalPlaces(tx, input.id, input.botId)
       return { outcome: 'added' as const, integration: toRecord(created) }
     })
+  }
+
+  async setMattermostWebsocketRepliesOnly(orgId: OrgId, id: IntegrationId, enabled: boolean): Promise<boolean> {
+    const { count } = await this.db.integration.updateMany({
+      where: { orgId, id, platform: 'mattermost' },
+      data: { mattermostWebsocketRepliesOnly: enabled }
+    })
+    return count === 1
   }
 
   async get(orgId: OrgId, id: IntegrationId): Promise<IntegrationRecord | null> {

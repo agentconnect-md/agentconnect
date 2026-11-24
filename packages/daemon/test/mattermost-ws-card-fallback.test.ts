@@ -470,7 +470,12 @@ describe('Mattermost pure-WS numbered card fallback', () => {
     expect(taskPost.message).toContain('1. Approve\n2. Deny')
     const taskTag = /`(D-[0-9A-F]{8}) 1` or `\1 2`/.exec(taskPost.message ?? '')![1]!
 
-    // Pending update with notice preserves D-XXXXXXXX tag and options.
+    // Even after callbacks become available, a busy notice keeps the original numbered card usable.
+    const callback = vi.spyOn(conn, 'actionCallback').mockReturnValue({
+      url: 'https://relay.example.com/actions',
+      secret: 'test',
+      daemonId: 'daemon-1'
+    })
     await port.updateCard(dm.id, taskPostId!, {
       draftId: 'draft-task-1',
       agentId: AGENT_ID,
@@ -480,6 +485,8 @@ describe('Mattermost pure-WS numbered card fallback', () => {
     })
     expect(server.posts.get(taskPostId!)!.message).toContain('Too many sub-sessions running')
     expect(server.posts.get(taskPostId!)!.message).toContain(taskTag)
+    expect(server.posts.get(taskPostId!)!.props?.attachments).toBeUndefined()
+    callback.mockRestore()
 
     // Reply kind renders `2. Discard` and accepts bare `approve` / `discard` / `2` in DM and explicit `D-XXXXXXXX`.
     const replyView = {
@@ -567,214 +574,235 @@ describe('Mattermost pure-WS numbered card fallback', () => {
     expect(clicks).toHaveLength(5)
   })
 
-  it('integrates end-to-end through Daemon, ConnectionReconciler, PermissionCoordinator, and AssistantDrafts without Relay callbacks', async () => {
-    const server = new FakeMattermostServer()
-    const alice = server.addUser({
-      id: fakeMmId('alice', 1),
-      username: 'alice',
-      first_name: 'Alice',
-      is_bot: false,
-      roles: 'system_user'
-    })
-    const bob = server.addUser({
-      id: fakeMmId('bob', 2),
-      username: 'bob',
-      first_name: 'Bob',
-      is_bot: false,
-      roles: 'system_user'
-    })
-    const ch = server.addChannel({ id: fakeMmId('ch', 1), type: 'O', name: 'eng', display_name: 'Eng' }, [
-      server.botUser.id,
-      alice.id,
-      bob.id
-    ])
-    const dm = server.addChannel({ id: fakeMmId('dm', 2), type: 'D', name: `${alice.id}__${server.botUser.id}` }, [
-      server.botUser.id,
-      alice.id
-    ])
-    const rootPost = server.addPost({ channel_id: ch.id, user_id: alice.id, message: '@acbot run check' })
+  it.each([false, true])(
+    'settles cards through the daemon when callback is absent or disabled per binding (configured: %s)',
+    async (configured) => {
+      const server = new FakeMattermostServer()
+      const alice = server.addUser({
+        id: fakeMmId('alice', 1),
+        username: 'alice',
+        first_name: 'Alice',
+        is_bot: false,
+        roles: 'system_user'
+      })
+      const bob = server.addUser({
+        id: fakeMmId('bob', 2),
+        username: 'bob',
+        first_name: 'Bob',
+        is_bot: false,
+        roles: 'system_user'
+      })
+      const ch = server.addChannel({ id: fakeMmId('ch', 1), type: 'O', name: 'eng', display_name: 'Eng' }, [
+        server.botUser.id,
+        alice.id,
+        bob.id
+      ])
+      const dm = server.addChannel({ id: fakeMmId('dm', 2), type: 'D', name: `${alice.id}__${server.botUser.id}` }, [
+        server.botUser.id,
+        alice.id
+      ])
+      const rootPost = server.addPost({ channel_id: ch.id, user_id: alice.id, message: '@acbot run check' })
 
-    const daemon: any = new Daemon({
-      slackAppFactory: fakeSlackAppFactory(),
-      sandboxMechanism: null,
-      mattermostTransport: {
-        createSocket: server.createSocket,
-        fetchImpl: server.fetchImpl,
-        sendIntervalMs: 0
-      }
-    })
-    daemon.cfg = { ...(daemon.cfg ?? {}), webAppUrl: 'https://console.example.test' }
-    daemons.push(daemon)
-    const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
-    stores.push(store)
-    daemon.store = store
-    daemon.agents.set(AGENT_ID, {
-      id: AGENT_ID,
-      name: 'Agent',
-      chatActions: 'approve',
-      integrations: [
-        {
-          id: INT_ID,
-          platform: MATTERMOST_PLATFORM,
-          config: { serverUrl: server.serverUrl, botToken: server.botToken },
-          core: {
-            mode: 'direct',
-            bindRules: [],
-            mutedChannels: [],
-            gated: false,
-            sessionModes: [],
-            externalChannels: [],
-            decisions: { bindings: [], definitions: [] }
-          }
+      const daemon: any = new Daemon({
+        slackAppFactory: fakeSlackAppFactory(),
+        sandboxMechanism: null,
+        ...(configured
+          ? {
+              mattermostActionCallback: {
+                url: 'https://relay.example.test/mattermost/actions',
+                secret: 's'.repeat(32),
+                daemonId: 'd',
+                orgId: 'o'
+              }
+            }
+          : {}),
+        mattermostTransport: {
+          createSocket: server.createSocket,
+          fetchImpl: server.fetchImpl,
+          sendIntervalMs: 0
         }
-      ]
-    })
+      })
+      daemon.cfg = { ...(daemon.cfg ?? {}), webAppUrl: 'https://console.example.test' }
+      daemons.push(daemon)
+      const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
+      stores.push(store)
+      daemon.store = store
+      daemon.agents.set(AGENT_ID, {
+        id: AGENT_ID,
+        name: 'Agent',
+        chatActions: 'approve',
+        integrations: [
+          {
+            id: INT_ID,
+            platform: MATTERMOST_PLATFORM,
+            config: { serverUrl: server.serverUrl, botToken: server.botToken, websocketRepliesOnly: configured },
+            core: {
+              mode: 'direct',
+              bindRules: [],
+              mutedChannels: [],
+              gated: false,
+              sessionModes: [],
+              externalChannels: [],
+              decisions: { bindings: [], definitions: [] }
+            }
+          }
+        ]
+      })
 
-    await daemon.connections.reconcileMattermostConnections()
-    const mmConn: MattermostConnection = daemon.mattermostConnByIntegration.get(INT_ID)
-    expect(mmConn).toBeDefined()
-    expect(mmConn.actionCallback()).toBeUndefined()
-    expect(daemon.draftCardPort(INT_ID)).toBeDefined()
+      await daemon.connections.reconcileMattermostConnections()
+      const mmConn: MattermostConnection = daemon.mattermostConnByIntegration.get(INT_ID)
+      expect(mmConn).toBeDefined()
+      expect(mmConn.actionCallback()).toBeUndefined()
+      expect(daemon.draftCardPort(INT_ID)).toBeDefined()
 
-    // 1) Approval card flow through PermissionCoordinator + Daemon.answerCardClick
-    const hostKey = agentHostKey(AGENT_ID)
-    const acpSessionId = 'acp-mm-1'
-    const sessKey = `${MATTERMOST_PLATFORM}:${ch.id}:${rootPost.id}:${AGENT_ID}`
-    await store.upsertSession({
-      key: sessKey,
-      agentId: AGENT_ID,
-      platform: MATTERMOST_PLATFORM,
-      channel: ch.id,
-      thread: rootPost.id,
-      acpSessionId,
-      sessionId: 'out-mm-1',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: Date.now()
-    })
-    const pendingTurn = {
-      hostKey,
-      acpSessionId,
-      outwardSessionId: 'out-mm-1',
-      conn: mmConn,
-      chrome: {},
-      signals: { applyChain: Promise.resolve() },
-      approval: { waitMs: 0, depth: 0 },
-      knownToolCalls: new Map(),
-      builtinSystemToolCallIds: new Set<string>(),
-      entry: {
-        msg: {
-          msgId: `${MATTERMOST_PLATFORM}:${ch.id}:${rootPost.id}`,
-          source: 'user',
+      // 1) Approval card flow through PermissionCoordinator + Daemon.answerCardClick
+      const hostKey = agentHostKey(AGENT_ID)
+      const acpSessionId = 'acp-mm-1'
+      const sessKey = `${MATTERMOST_PLATFORM}:${ch.id}:${rootPost.id}:${AGENT_ID}`
+      await store.upsertSession({
+        key: sessKey,
+        agentId: AGENT_ID,
+        platform: MATTERMOST_PLATFORM,
+        channel: ch.id,
+        thread: rootPost.id,
+        acpSessionId,
+        sessionId: 'out-mm-1',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+      const pendingTurn = {
+        hostKey,
+        acpSessionId,
+        outwardSessionId: 'out-mm-1',
+        conn: mmConn,
+        chrome: {},
+        signals: { applyChain: Promise.resolve() },
+        approval: { waitMs: 0, depth: 0 },
+        knownToolCalls: new Map(),
+        builtinSystemToolCallIds: new Set<string>(),
+        entry: {
+          msg: {
+            msgId: `${MATTERMOST_PLATFORM}:${ch.id}:${rootPost.id}`,
+            source: 'user',
+            platform: MATTERMOST_PLATFORM,
+            channel: ch.id,
+            thread: rootPost.id,
+            sender: { id: alice.id, isBot: false, name: 'alice' },
+            text: '@acbot run check',
+            externallyShared: false
+          }
+        },
+        plan: {
           platform: MATTERMOST_PLATFORM,
+          agentId: AGENT_ID,
+          integrationId: INT_ID,
+          channel: ch.id,
+          transcriptChannel: ch.id,
+          thread: rootPost.id,
+          sessionThread: rootPost.id,
+          statusThread: rootPost.id,
+          isDm: false,
+          sessionKey: sessKey,
+          agentName: 'Agent',
+          requesterId: alice.id,
+          approvalSurfaceSuppressed: false
+        }
+      } as unknown as Pending
+      daemon.pending.set(pendingTurnKey(hostKey, acpSessionId), pendingTurn)
+
+      vi.spyOn(daemon, 'chatActor').mockImplementation(async (_agentId: unknown, _intId: unknown, actor: any) =>
+        actor?.userId === alice.id ? 'allowed' : 'not-editor'
+      )
+
+      const permission = {
+        ...samplePermission,
+        options: [
+          samplePermission.options[0]!,
+          { optionId: 'always', name: 'Allow always', kind: 'allow_always' as const },
+          samplePermission.options[1]!
+        ]
+      }
+      const permPromise = daemon.permissions.onAcpPermission(hostKey, acpSessionId, permission)
+      await vi.waitFor(() => {
+        const cardPost = [...server.posts.values()].find(
+          (p) => p.user_id === server.botUser.id && p.message?.includes('1. Allow once')
+        )
+        expect(cardPost).toBeDefined()
+      })
+      const approvalPost = [...server.posts.values()].find(
+        (p) => p.user_id === server.botUser.id && p.message?.includes('1. Allow once')
+      )!
+      const approvalTag = /`(A-[0-9A-F]{8}) <number>`/.exec(approvalPost.message ?? '')![1]!
+
+      // Bob is refused via ephemeral post while the card remains active.
+      server.lastSocket.emitPosted({
+        id: server.nextId('p'),
+        channel_id: ch.id,
+        root_id: rootPost.id,
+        user_id: bob.id,
+        message: `${approvalTag} 1`
+      })
+      await vi.waitFor(() => expect(server.ephemeralPosts).toHaveLength(1))
+      expect(server.ephemeralPosts[0]!.user_id).toBe(bob.id)
+
+      // The requester's bare number resolves the real pending permission in the original thread.
+      server.lastSocket.emitPosted({
+        id: server.nextId('p'),
+        channel_id: ch.id,
+        root_id: rootPost.id,
+        user_id: alice.id,
+        message: configured ? '3' : '1'
+      })
+      const permResult = await permPromise
+      expect(permResult).toEqual({ outcome: { outcome: 'selected', optionId: configured ? 'deny' : 'allow' } })
+      await vi.waitFor(() => {
+        const updated = server.posts.get(approvalPost.id)!
+        expect(updated.message).toContain(configured ? '🚫 Deny — alice' : '✅')
+        expect(updated.message).not.toContain(approvalTag)
+      })
+
+      // 2) Assistant draft card flow through AssistantDrafts + Daemon.answerCardClick
+      const interceptRes = await daemon.drafts.interceptPost(
+        AGENT_ID,
+        {
+          platform: MATTERMOST_PLATFORM,
+          integrationId: INT_ID,
           channel: ch.id,
           thread: rootPost.id,
-          sender: { id: alice.id, isBot: false, name: 'alice' },
-          text: '@acbot run check',
-          externallyShared: false
-        }
-      },
-      plan: {
-        platform: MATTERMOST_PLATFORM,
-        agentId: AGENT_ID,
-        integrationId: INT_ID,
-        channel: ch.id,
-        transcriptChannel: ch.id,
-        thread: rootPost.id,
-        sessionThread: rootPost.id,
-        statusThread: rootPost.id,
-        isDm: false,
-        sessionKey: sessKey,
-        agentName: 'Agent',
-        requesterId: alice.id,
-        approvalSurfaceSuppressed: false
-      }
-    } as unknown as Pending
-    daemon.pending.set(pendingTurnKey(hostKey, acpSessionId), pendingTurn)
-
-    vi.spyOn(daemon, 'chatActor').mockImplementation(async (_agentId: unknown, _intId: unknown, actor: any) =>
-      actor?.userId === alice.id ? 'allowed' : 'not-editor'
-    )
-
-    const permPromise = daemon.permissions.onAcpPermission(hostKey, acpSessionId, samplePermission)
-    await vi.waitFor(() => {
-      const cardPost = [...server.posts.values()].find(
-        (p) => p.user_id === server.botUser.id && p.message?.includes('1. Allow once')
+          transportScope: null,
+          sessionKey: `${MATTERMOST_PLATFORM}:${ch.id}:${rootPost.id}:${AGENT_ID}`,
+          sessionId: 'out-mm-1',
+          place: true
+        },
+        {
+          platform: MATTERMOST_PLATFORM,
+          integrationId: INT_ID,
+          channel: ch.id,
+          text: 'Posting external status update',
+          directMessage: false
+        },
+        { integrationId: INT_ID, userId: alice.id }
       )
-      expect(cardPost).toBeDefined()
-    })
-    const approvalPost = [...server.posts.values()].find(
-      (p) => p.user_id === server.botUser.id && p.message?.includes('1. Allow once')
-    )!
-    const approvalTag = /`(A-[0-9A-F]{8}) <number>`/.exec(approvalPost.message ?? '')![1]!
+      expect(interceptRes.handled).toBe(true)
+      const draftPost = [...server.posts.values()].find(
+        (p) => p.channel_id === dm.id && p.message?.includes('1. Approve\n2. Discard')
+      )
+      expect(draftPost).toBeDefined()
+      const draftTag = /`(D-[0-9A-F]{8}) 1`/.exec(draftPost!.message ?? '')![1]!
 
-    // Bob is refused via ephemeral post while the card remains active.
-    server.lastSocket.emitPosted({
-      id: server.nextId('p'),
-      channel_id: ch.id,
-      root_id: rootPost.id,
-      user_id: bob.id,
-      message: `${approvalTag} 1`
-    })
-    await vi.waitFor(() => expect(server.ephemeralPosts).toHaveLength(1))
-    expect(server.ephemeralPosts[0]!.user_id).toBe(bob.id)
-
-    // Alice approves via bare `1` in thread -> resolves permission and settles/patches post.
-    server.lastSocket.emitPosted({
-      id: server.nextId('p'),
-      channel_id: ch.id,
-      root_id: rootPost.id,
-      user_id: alice.id,
-      message: '1'
-    })
-    const permResult = await permPromise
-    expect(permResult).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
-    await vi.waitFor(() => {
-      const updated = server.posts.get(approvalPost.id)!
-      expect(updated.message).toContain('✅')
-      expect(updated.message).not.toContain(approvalTag)
-    })
-
-    // 2) Assistant draft card flow through AssistantDrafts + Daemon.answerCardClick
-    const interceptRes = await daemon.drafts.interceptPost(
-      AGENT_ID,
-      {
-        platform: MATTERMOST_PLATFORM,
-        integrationId: INT_ID,
-        channel: ch.id,
-        thread: rootPost.id,
-        transportScope: null,
-        sessionKey: `${MATTERMOST_PLATFORM}:${ch.id}:${rootPost.id}:${AGENT_ID}`,
-        sessionId: 'out-mm-1',
-        place: true
-      },
-      {
-        platform: MATTERMOST_PLATFORM,
-        integrationId: INT_ID,
-        channel: ch.id,
-        text: 'Posting external status update',
-        directMessage: false
-      },
-      { integrationId: INT_ID, userId: alice.id }
-    )
-    expect(interceptRes.handled).toBe(true)
-    const draftPost = [...server.posts.values()].find(
-      (p) => p.channel_id === dm.id && p.message?.includes('1. Approve\n2. Discard')
-    )
-    expect(draftPost).toBeDefined()
-    const draftTag = /`(D-[0-9A-F]{8}) 1`/.exec(draftPost!.message ?? '')![1]!
-
-    // Alice discards via `D-XXXXXXXX 2` in DM -> settles draft as denied and clears D-tag.
-    server.lastSocket.emitPosted({
-      id: server.nextId('p'),
-      channel_id: dm.id,
-      user_id: alice.id,
-      message: `${draftTag} 2`
-    })
-    await vi.waitFor(() => {
-      const updated = server.posts.get(draftPost!.id)!
-      expect(updated.message).toContain('🗑️ Discarded')
-      expect(updated.message).not.toContain(draftTag)
-    })
-  })
+      // Alice discards via `D-XXXXXXXX 2` in DM -> settles draft as denied and clears D-tag.
+      server.lastSocket.emitPosted({
+        id: server.nextId('p'),
+        channel_id: dm.id,
+        user_id: alice.id,
+        message: `${draftTag} 2`
+      })
+      await vi.waitFor(() => {
+        const updated = server.posts.get(draftPost!.id)!
+        expect(updated.message).toContain('🗑️ Discarded')
+        expect(updated.message).not.toContain(draftTag)
+      })
+    }
+  )
 })

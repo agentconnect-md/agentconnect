@@ -5,6 +5,7 @@ import type { WebChannelListSemantics, WebPlatformModule } from '../contract'
 import { identityCards, inviteBotHint } from '../wizard-chrome'
 import { isValidMattermostServerUrl, MattermostWizardBody, normalizeMattermostServerUrl } from './Body'
 import { MattermostMark } from './mark'
+import { MattermostReplySettings } from './reply-settings'
 import { mattermostSettingsFragments } from './settings'
 
 /** Mattermost post ids are 26-character lowercase alphanumeric strings. */
@@ -24,6 +25,7 @@ export const mattermostModule: WebPlatformModule = {
   docsPath: 'connect-automate/chat-platforms/mattermost',
   requires: 'mattermost',
   Mark: MattermostMark,
+  agentCard: { Notice: MattermostReplySettings },
   wizard: {
     Body: MattermostWizardBody,
     // One bot serves one agent (`multiAgentShareable: false`), so any freed Mattermost bot is reusable.

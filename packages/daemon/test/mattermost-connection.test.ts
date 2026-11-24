@@ -17,7 +17,12 @@ afterEach(async () => {
   for (const conn of connections.splice(0)) await conn.stop()
 })
 
-function setup(opts?: { serverUrl?: string; maxPostSize?: number | string; botUsername?: string }) {
+function setup(opts?: {
+  serverUrl?: string
+  maxPostSize?: number | string
+  botUsername?: string
+  actionCallback?: () => { url: string; secret: string; daemonId: string }
+}) {
   const server = new FakeMattermostServer({
     ...(opts?.serverUrl ? { serverUrl: opts.serverUrl } : {}),
     ...(opts?.maxPostSize !== undefined ? { maxPostSize: opts.maxPostSize } : {}),
@@ -33,6 +38,7 @@ function setup(opts?: { serverUrl?: string; maxPostSize?: number | string; botUs
     {
       onMessage: (msg) => messages.push(msg),
       log: quietLog,
+      actionCallback: opts?.actionCallback,
       createSocket: server.createSocket,
       fetchImpl: server.fetchImpl,
       sendIntervalMs: 0
@@ -43,6 +49,23 @@ function setup(opts?: { serverUrl?: string; maxPostSize?: number | string; botUs
 }
 
 describe('Mattermost connection consolidation and identity', () => {
+  it('updates reply mode independently for integrations sharing a socket', () => {
+    const callback = { url: 'https://relay.example.com/actions', secret: 'test', daemonId: 'daemon-1' }
+    const { conn } = setup({ actionCallback: () => callback })
+    const original = conn.group
+    conn.updateGroup({
+      ...original,
+      integrations: [
+        { agentId: 'agent-1', integrationId: 'int-mm', websocketRepliesOnly: true },
+        { agentId: 'agent-1', integrationId: 'other' }
+      ]
+    })
+    expect(conn.actionCallback('agent-1', 'int-mm')).toBeUndefined()
+    expect(conn.actionCallback('agent-1', 'other')).toEqual(callback)
+    conn.updateGroup(original)
+    expect(conn.actionCallback('agent-1', 'int-mm')).toEqual(callback)
+  })
+
   it('groups integrations sharing (serverUrl, botToken) and rejects blocked serverUrls', () => {
     const agent = (id: string, config: object) =>
       ({ id, integrations: [{ id: `int-${id}`, platform: 'mattermost', config }] }) as unknown as LoadedAgent

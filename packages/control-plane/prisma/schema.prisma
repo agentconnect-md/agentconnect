@@ -3069,6 +3069,7 @@ model Integration {
   // Credential generation whose uninstall/token-revocation flipped this row.
   // Null for active rows and user-freed rows (which are deleted, not revoked).
   revokedCredentialRevision Int?
+  mattermostWebsocketRepliesOnly Boolean @default(false)
   feishuRegion              String? // Feishu/Lark open-platform gateway: 'feishu' (open.feishu.cn) | 'lark' (open.larksuite.com). NULL ⇒ 'feishu' (default / non-feishu integrations). Public config, NOT secret.
   createdByUserId           String? // WebUI user who installed it (audit)
   createdAt                 DateTime          @default(now()) @db.Timestamptz(6)

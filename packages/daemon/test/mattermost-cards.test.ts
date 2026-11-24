@@ -918,6 +918,10 @@ describe('Mattermost Fill cards and Assistant Draft cards', () => {
       actor: { userId: alice.id, name: 'Alice' }
     })
 
+    vi.spyOn(conn, 'actionCallback').mockReturnValue(undefined)
+    await port.updateCard(dm.id, cardId!, { view, draftId, agentId: AGENT_ID, sessionKey: 'mm:dm', notice: 'Busy' })
+    expect(server.posts.get(cardId!)!.message).toContain('Busy')
+    expect(server.posts.get(cardId!)!.props?.attachments).toEqual(attachments)
     const updated = await port.updateCard(dm.id, cardId!, { view, outcome: 'Approved by Alice' })
     expect(updated).toBe(true)
     expect(server.posts.get(cardId!)!.props?.attachments).toEqual([])
