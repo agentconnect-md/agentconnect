@@ -5246,7 +5246,6 @@
     "metadata": {
       "title": "账单 · AgentConnect"
     },
-    "description": "此组织的预付余额与充值记录。",
     "backToConversation": "返回会话",
     "notOffered": {
       "title": "账单功能适用于 AgentConnect Cloud",

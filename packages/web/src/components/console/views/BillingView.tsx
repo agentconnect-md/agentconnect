@@ -1406,9 +1406,8 @@ export default function BillingView() {
 
   return (
     <div className="wrap">
-      <div className="mb-4 flex min-h-[34px] items-center gap-4">
-        <p className="psub mt-0 flex-1">{t('description')}</p>
-        {returnTo && (
+      {returnTo && (
+        <div className="mb-4 flex min-h-[34px] items-center justify-end">
           <Link
             className="lnk inline-flex items-center gap-1.5 font-sans text-[13px] font-medium leading-normal"
             href={returnTo}
@@ -1416,8 +1415,8 @@ export default function BillingView() {
             <Icon name="arrow-left" size={14} />
             {t('backToConversation')}
           </Link>
-        )}
-      </div>
+        </div>
+      )}
 
       {cardReturn.state && (
         <CardReturnBanner
