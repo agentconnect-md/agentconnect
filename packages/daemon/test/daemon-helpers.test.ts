@@ -47,11 +47,43 @@ describe('ignoreAgentWatchPath', () => {
     }
   )
 
-  it('still watches agent.json at the agent root and unrelated directories', () => {
-    expect(ignoreAgentWatchPath(agentsDir, join(agent, 'agent.json'), file)).toBe(false)
+  it('still watches the tree root, the agent root, and its agent.json', () => {
+    expect(ignoreAgentWatchPath(agentsDir, agentsDir, dir)).toBe(false)
     expect(ignoreAgentWatchPath(agentsDir, agent, dir)).toBe(false)
-    expect(ignoreAgentWatchPath(agentsDir, join(agent, 'workspace'), dir)).toBe(false)
-    expect(ignoreAgentWatchPath(agentsDir, join(agent, 'workspace', 'src'), dir)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, join(agent, 'agent.json'), file)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, join(agent, 'agent.json'), undefined)).toBe(false)
+  })
+
+  it.each([
+    ['workspace', 'src'],
+    ['worktrees', 'w-1', 'packages'],
+    ['repos', 'acme', 'app', 'worktrees', 'w-1'],
+    ['clones', 'c-1', 'app'],
+    ['home', 'Library']
+  ])('ignores session checkouts and runtime state beneath an agent root: %s/…', (...segments) => {
+    // One fs.watch per directory: descending here cost one handle per checkout dir and hit EMFILE on macOS.
+    for (let i = 1; i <= segments.length; i++)
+      expect(ignoreAgentWatchPath(agentsDir, join(agent, ...segments.slice(0, i)), dir)).toBe(true)
+    expect(ignoreAgentWatchPath(agentsDir, join(agent, ...segments, 'agent.json'), file)).toBe(true)
+  })
+
+  it('ignores everything beneath a Control-Plane-managed root, which discovery never descends', () => {
+    const managed = join(agentsDir, 'cp-worker')
+    mkdirSync(managed)
+    writeFileSync(join(managed, '.cp-agent-id'), 'cp-worker')
+    expect(ignoreAgentWatchPath(agentsDir, managed, dir)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, join(managed, 'worktrees'), dir)).toBe(true)
+    expect(ignoreAgentWatchPath(agentsDir, join(managed, 'workspace', 'agent.json'), file)).toBe(true)
+  })
+
+  it('watches a new directory before its agent.json lands, so the add is seen', () => {
+    const fresh = join(agentsDir, 'group', 'fresh')
+    mkdirSync(fresh, { recursive: true })
+    expect(ignoreAgentWatchPath(agentsDir, join(agentsDir, 'group'), dir)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, fresh, dir)).toBe(false)
+    writeFileSync(join(fresh, 'agent.json'), '{}')
+    expect(ignoreAgentWatchPath(agentsDir, join(fresh, 'agent.json'), file)).toBe(false)
+    expect(ignoreAgentWatchPath(agentsDir, join(fresh, 'workspace'), dir)).toBe(true)
   })
 
   it('keeps the existing rules: node_modules, dot segments, and files other than agent.json', () => {

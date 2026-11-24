@@ -1075,7 +1075,7 @@ import { RelayManager } from './cp/relay-manager.js'
 import { PlatformRelayUnsent } from './platforms/platform-relay.js'
 import { CP_IDENTITY_TOKEN_PATH, readClusterIdentityToken } from './cp/cluster-identity.js'
 import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
-import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
+import { Backoff, ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import { z } from 'zod'
 import { OUTSIDE_HUMAN_SCOPE_REMINDER, isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { promptSuggestionOf } from './session/prompt-suggestion.js'
@@ -2460,6 +2460,9 @@ export class Daemon {
   private hostStartAborts = new Map<HostKey, AbortController>()
   private watcher?: FSWatcher
   private debounceTimer?: NodeJS.Timeout
+  // Spaces re-arms of an agent config watcher the OS ran out of watch capacity for.
+  private readonly watcherBackoff = new Backoff({ baseMs: 30_000, capMs: 600_000 })
+  private watcherRetryTimer?: TimerHandle
   private agentsDir = ''
   private removalObligationsDir = ''
   private cfg!: ReturnType<typeof loadConfig>
@@ -6800,25 +6803,47 @@ export class Daemon {
 
   /** Phase 29 — watch the discoverable agent config tree (not runtime homes/workspaces) and debounce it into reconcile. */
   private watchAgentConfigs(): void {
-    // Watch the discoverable agent config tree, not runtime homes/workspaces.
-    this.watcher = chokidarWatch(this.agentsDir, {
+    const watcher = chokidarWatch(this.agentsDir, {
       ignoreInitial: true,
       depth: 4,
       followSymlinks: false,
       ignored: (path, stats) => ignoreAgentWatchPath(this.agentsDir, path, stats)
     })
+    this.watcher = watcher
     const debounced = () => {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = setTimeout(() => {
         void this.reconcile().catch((err) => console.error('agentconnect: reconcile failed:', err))
       }, 300)
     }
-    this.watcher
-      .on('error', (err) => this.log.warn(`agent config watcher: ${formatErr(err)}`))
+    watcher
+      .on('error', (err) => this.onAgentWatcherError(watcher, err))
       .on('add', debounced)
       .on('change', debounced)
       .on('unlink', debounced)
     this.log.info(`watching ${this.agentsDir} for agent changes`)
+  }
+
+  /** Out of watch capacity, per-handle retries only feed the error storm: close, warn once, and re-arm on a backoff. */
+  private onAgentWatcherError(watcher: FSWatcher, err: unknown): void {
+    if (watcher !== this.watcher) return
+    const code = (err as NodeJS.ErrnoException | undefined)?.code
+    if (code !== 'EMFILE' && code !== 'ENFILE' && code !== 'ENOSPC') {
+      this.log.warn(`agent config watcher: ${formatErr(err)}`)
+      return
+    }
+    this.watcher = undefined
+    void watcher.close().catch(() => {})
+    const delayMs = this.watcherBackoff.next()
+    this.log.warn(
+      `agent config watcher: ${code}, out of file-watch capacity; re-arming in ${Math.round(delayMs / 1000)}s`
+    )
+    this.watcherRetryTimer = this.clock.setTimeout(() => {
+      this.watcherRetryTimer = undefined
+      this.watchAgentConfigs()
+      // Nothing observed agent.json while unwatched, so rediscover once.
+      void this.reconcile().catch((e) => console.error('agentconnect: reconcile failed:', e))
+    }, delayMs)
   }
 
   /** Phase 30 — durable inbox replay, the startup retention pass and dream crash recovery. */
@@ -34931,7 +34956,14 @@ export class Daemon {
     this.sessionMetadataOutbox.dispose()
     this.cronReportOutbox.dispose()
     this.metrics?.stop()
-    await this.watcher?.close()
+    // Detach first, so a late watcher error cannot schedule a re-arm after shutdown.
+    const watcher = this.watcher
+    this.watcher = undefined
+    if (this.watcherRetryTimer !== undefined) {
+      this.clock.clearTimeout(this.watcherRetryTimer)
+      this.watcherRetryTimer = undefined
+    }
+    await watcher?.close()
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
     // tearing the hosts down — a hard kill mid-turn loses the reply + transcript.
     // A duty-holding member releases alongside: each held group goes back to the CP, acknowledged,

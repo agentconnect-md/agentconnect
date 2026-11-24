@@ -8,6 +8,7 @@ import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { FakeClock } from './cp/fake-clock.js'
 import { WAIT } from './wait-support.js'
 
 // A SlackConnection backed by an inert fake Bolt app (no network), with a fixed
@@ -40,8 +41,8 @@ function root1(): string {
   )
   return root
 }
-function writeAgent(root: string, id: string) {
-  const adir = join(root, 'agents', id)
+function writeAgent(root: string, id: string, group = '') {
+  const adir = join(root, 'agents', group, id)
   mkdirSync(adir, { recursive: true })
   writeFileSync(
     join(adir, 'agent.json'),
@@ -116,6 +117,102 @@ describe('Daemon agent config watcher', () => {
     expect(Object.keys(watcher.getWatched()).some((path) => path.endsWith(join('home', '.tmp')))).toBe(false)
     await daemon.stop()
   })
+
+  it('watches agent roots but never the session checkouts beneath them, and still sees a new agent', async () => {
+    const root = root1()
+    const agentsDir = join(root, 'agents')
+    writeAgent(root, 'bot-a')
+    writeAgent(root, 'bot-b', 'team')
+    for (const checkout of [
+      ['bot-a', 'worktrees', 'w-1', 'src'],
+      ['bot-a', 'repos', 'acme', 'app', 'worktrees', 'w-1'],
+      ['bot-a', 'clones', 'c-1', 'app'],
+      ['team', 'bot-b', 'worktrees', 'w-1', 'src']
+    ])
+      mkdirSync(join(agentsDir, ...checkout), { recursive: true })
+
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+    const watcher = (daemon as any).watcher
+    if (!watcher.readyEmitted) await new Promise<void>((resolve) => watcher.once('ready', resolve))
+
+    const watched = Object.keys(watcher.getWatched())
+    expect(watched).toEqual(
+      expect.arrayContaining([agentsDir, join(agentsDir, 'bot-a'), join(agentsDir, 'team', 'bot-b')])
+    )
+    expect(watched.filter((path) => /[\\/](worktrees|repos|clones)([\\/]|$)/.test(path))).toEqual([])
+
+    const reconcile = vi.spyOn(daemon as any, 'reconcile')
+    writeAgent(root, 'bot-c', 'team')
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalled(), WAIT)
+    await daemon.stop()
+  })
+})
+
+describe('Daemon agent config watcher out of watch capacity', () => {
+  function emfile(): NodeJS.ErrnoException {
+    return Object.assign(new Error('EMFILE: too many open files, watch'), { code: 'EMFILE', syscall: 'watch' })
+  }
+
+  it('closes the watcher, warns once, and re-arms it on a backoff instead of retrying every handle', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const clock = new FakeClock()
+    const { daemon } = makeStubDaemon(root, clock)
+    await daemon.start()
+    const d = daemon as any
+    const first = d.watcher
+    const close = vi.spyOn(first, 'close')
+    const warn = vi.spyOn(d.log, 'warn').mockImplementation(() => {})
+    const reconcile = vi.spyOn(d, 'reconcile').mockResolvedValue(undefined)
+
+    first.emit('error', emfile())
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(d.watcher).toBeUndefined()
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0]![0]).toMatch(/EMFILE.*out of file-watch capacity; re-arming in \d+s/)
+    expect(clock.pending().some((ms) => ms >= 30_000 && ms <= 600_000)).toBe(true)
+
+    clock.advance(600_000)
+    expect(d.watcher).toBeDefined()
+    expect(d.watcher).not.toBe(first)
+    expect(reconcile).toHaveBeenCalledOnce()
+    await daemon.stop()
+  })
+
+  it('keeps the watcher on an unrelated error and only warns', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeStubDaemon(root)
+    await daemon.start()
+    const d = daemon as any
+    const watcher = d.watcher
+    const warn = vi.spyOn(d.log, 'warn').mockImplementation(() => {})
+
+    watcher.emit('error', Object.assign(new Error('EACCES: permission denied, watch'), { code: 'EACCES' }))
+
+    expect(d.watcher).toBe(watcher)
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/agent config watcher: .*EACCES/))
+    expect(d.watcherRetryTimer).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('cancels a pending re-arm on stop()', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const clock = new FakeClock()
+    const { daemon } = makeStubDaemon(root, clock)
+    await daemon.start()
+    const d = daemon as any
+    vi.spyOn(d.log, 'warn').mockImplementation(() => {})
+    d.watcher.emit('error', emfile())
+    expect(d.watcherRetryTimer).toBeDefined()
+
+    await daemon.stop()
+    clock.advance(600_000)
+    expect(d.watcher).toBeUndefined()
+  })
 })
 
 describe('Daemon.reconcile', () => {
@@ -177,10 +274,11 @@ describe('Daemon.reconcile', () => {
 
 // A daemon whose hosts are inert stubs; each started host is recorded so tests can
 // assert eviction (stop() called + dropped from the hosts map).
-function makeStubDaemon(root: string) {
+function makeStubDaemon(root: string, clock?: FakeClock) {
   const hosts: Array<{ id: string; stop: ReturnType<typeof vi.fn> }> = []
   const daemon = new Daemon({
     root,
+    ...(clock ? { clock } : {}),
     hostFactory: (agent) => {
       const h = {
         id: agent.id,

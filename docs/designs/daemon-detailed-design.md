@@ -680,7 +680,7 @@ paused org deletes nothing. The purge deletes an org's sessions only after
 
 ### 5.2 Reconciler: Desired State -> Actual State
 
-Changes from **CP**, an **agentconnect agent command**, or **manual file edits** all use one reconciler, driven by `chokidar` on `agents/**` plus explicit triggers:
+Changes from **CP**, an **agentconnect agent command**, or **manual file edits** all use one reconciler, driven by `chokidar` on the tree agent discovery walks (`agents/**` down to each agent root's `agent.json`, never into an agent's checkouts or runtime state) plus explicit triggers:
 
 ```
 desired = merge(local active agent.json files, CP agents/integrations/crons in memory)
