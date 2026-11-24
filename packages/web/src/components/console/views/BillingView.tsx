@@ -1480,7 +1480,7 @@ export default function BillingView() {
                 onChangePlan={myRole === 'owner' ? openChangePlan : undefined}
               />
               {/* Shared subgrid rows (head, figure, notice, foot) keep both cards' figures and feet level. */}
-              <div className="grid items-stretch gap-[18px] desktop:grid-cols-2 desktop:grid-rows-[auto_1fr_auto_auto] desktop:gap-y-0">
+              <div className="@container grid items-stretch gap-[18px] desktop:grid-cols-2 desktop:grid-rows-[auto_1fr_auto_auto] desktop:gap-y-0">
                 <div
                   className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
                   data-balance-card="true"
@@ -1500,7 +1500,7 @@ export default function BillingView() {
                       </span>
                     ) : null}
                   </div>
-                  <div className="flex flex-1 items-end gap-3 px-[18px] py-6">
+                  <div className="flex flex-1 items-end gap-3 px-[18px] py-6 desktop:pt-2">
                     <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
                       {fmtMicroUsd(acct.balanceMicro)}
                     </span>

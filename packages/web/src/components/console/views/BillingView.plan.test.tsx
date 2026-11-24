@@ -176,7 +176,10 @@ describe('BillingView plan layout', () => {
   it('names the plan, its price and renewal, and this month’s sessions', async () => {
     await render()
     expect(q('[data-plan-name]')!.textContent).toBe('ProStandard')
-    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
+    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month')
+    expect(q('[data-plan-price] strong')!.textContent).toBe('$20')
+    expect(q('[data-plan-billing-date]')!.textContent).toBe('Renews Dec 4')
+    expect(q('[data-plan-retention]')!.textContent).toBe('30-day history')
     const sessions = q('[data-plan-sessions]')!.textContent
     expect(sessions).toContain('Sessions this month')
     expect(sessions).toContain('120 / 500')
@@ -216,7 +219,8 @@ describe('BillingView plan layout', () => {
   it('reads a renewal scheduled to Free as the plan ending', async () => {
     mocks.subscription.mockResolvedValue({ ...SUB, scheduled: FREE })
     await render()
-    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · ends Dec 4')
+    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month')
+    expect(q('[data-plan-billing-date]')!.textContent).toBe('Ends Dec 4')
     expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Free on Dec 4Cancel')
   })
 
@@ -224,7 +228,7 @@ describe('BillingView plan layout', () => {
     mocks.role = 'member'
     mocks.subscription.mockResolvedValue({ ...SUB, scheduled: TEAM })
     await render()
-    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
+    expect(q('[data-plan-billing-date]')!.textContent).toBe('Renews Dec 4')
     expect(planCard().querySelector('[data-plan-scheduled]')!.textContent).toBe('Switching to Team ×2 on Dec 4')
     expect(q('[data-plan-scheduled] button')).toBeNull()
   })
@@ -234,13 +238,15 @@ describe('BillingView plan layout', () => {
     await render()
     expect(q('[data-plan-name]')!.textContent).toBe('Free')
     expect(q('[data-plan-price]')!.textContent).toBe('$0 / month')
+    expect(q('[data-plan-billing-date]')).toBeNull()
     expect(q('[data-plan-credits]')).toBeNull()
   })
 
   it('shows a contract as contract pricing ending on its end date, with nothing scheduled', async () => {
     mocks.subscription.mockResolvedValue({ ...SUB, priceCents: null, scheduled: null })
     await render()
-    expect(q('[data-plan-price]')!.textContent).toBe('Contract pricing · ends Dec 4')
+    expect(q('[data-plan-price]')!.textContent).toBe('Contract pricing')
+    expect(q('[data-plan-billing-date]')!.textContent).toBe('Ends Dec 4')
   })
 
   it('says there is no plan when the org has none, and keeps the sessions', async () => {
@@ -303,11 +309,10 @@ describe('BillingView history retention', () => {
   const DATED = { days: 7, from: '2026-12-11T00:00:00.000Z', awaitingNotice: false }
   const AWAITING = { days: 7, from: null, awaitingNotice: true }
 
-  it('shows the window in force beside the price, with no notice when nothing is pending', async () => {
+  it('shows the window in force below the price, with no notice when nothing is pending', async () => {
     mocks.subscription.mockResolvedValue({ ...SUB, retentionDays: null, retention: retention(null) })
     await render()
-    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
-    expect(q('[data-plan-retention]')!.textContent).toBe(' · Unlimited history')
+    expect(q('[data-plan-retention]')!.textContent).toBe('Unlimited history')
     expect(q('[data-plan-retention-next]')).toBeNull()
   })
 
@@ -322,7 +327,7 @@ describe('BillingView history retention', () => {
       retention: retention(null, DATED)
     })
     await render()
-    expect(q('[data-plan-retention]')!.textContent).toBe(' · Unlimited history')
+    expect(q('[data-plan-retention]')!.textContent).toBe('Unlimited history')
   })
 
   it('dates the deletion in amber and points an owner at Change plan', async () => {
@@ -357,13 +362,13 @@ describe('BillingView history retention', () => {
       "History retention will shorten to 7 days; you'll be emailed at least 30 days before."
     )
     expect(strip.className).not.toContain('amber')
-    expect(q('[data-plan-retention]')!.textContent).toBe(' · 30-day history')
+    expect(q('[data-plan-retention]')!.textContent).toBe('30-day history')
   })
 
   it('falls back to the plan’s window on an older service and shows no notice', async () => {
     mocks.subscription.mockResolvedValue(SUB_OLD)
     await render()
-    expect(q('[data-plan-retention]')!.textContent).toBe(' · 30-day history')
+    expect(q('[data-plan-retention]')!.textContent).toBe('30-day history')
     expect(q('[data-plan-retention-next]')).toBeNull()
   })
 })
@@ -449,6 +454,6 @@ describe('BillingView plan credits', () => {
     mocks.subscription.mockResolvedValue(SUB_OLD)
     await render()
     expect(q('[data-plan-credits]')).toBeNull()
-    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month · renews Dec 4')
+    expect(q('[data-plan-price]')!.textContent).toBe('$20 / month')
   })
 })
