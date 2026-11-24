@@ -2875,7 +2875,7 @@ export default function SessionDetailView() {
   // and only loses the report. The composer never touches it: reporting is not a send, so a
   // half-typed follow-up and a staged image stay the owner's.
   const appReport =
-    isLive && (isPg || isWebchat)
+    isLive && (isPg || isWebchat || isContinuable)
       ? (agentId: string | undefined, text: string): boolean => {
           if (isContinuable) markSessionTarget(session.id)
           return pgNotice(

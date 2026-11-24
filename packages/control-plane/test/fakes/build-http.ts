@@ -498,7 +498,14 @@ export function buildHttpApp(
     computerRepo,
     new PgGithubAppRepo(prisma)
   )
-  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
+  const agentDelivery = new AgentDelivery({
+    control: sender,
+    specs: agentSpecs,
+    placement: placementResolver,
+    // As `buildContainer` binds it: a pushed integration may settle a capability request.
+    integrationUpserted: (agentId, platform) =>
+      void depsOverrides?.capabilityRequests?.integrationUpserted(agentId, platform)
+  })
 
   // LATE-BOUND exactly as `buildContainer` binds it (§9): the providers below are
   // constructed WITH this dep bundle, because their funnel plugins are route

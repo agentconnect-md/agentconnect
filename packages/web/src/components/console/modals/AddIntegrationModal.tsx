@@ -524,6 +524,8 @@ export default function AddIntegrationModal({
   } = useConsoleData()
   const { me } = useProfile()
   const [platform, setPlatform] = useState<Platform>(initialPlatform ?? 'slack')
+  // The caller's platform until the member picks one: its offer may be read after the first render fell back to another.
+  const preselect = useRef(initialPlatform)
   // Each regional platform's pick, host state because its PICKER TILE hosts the switch and callers preselect Feishu's.
   const [regionPicks, setRegionPicks] = useState<Record<string, string>>(
     initialFeishuRegion ? { feishu: initialFeishuRegion } : {}
@@ -821,6 +823,7 @@ export default function AddIntegrationModal({
   // it (§10's reset seam).
   const pickPlatform = (candidate: Platform) => {
     if (createdHook || !isPlatformAvailable(candidate)) return
+    preselect.current = undefined
     setPlatform(candidate)
     setModePick(null)
     setBotPick(null)
@@ -831,6 +834,15 @@ export default function AddIntegrationModal({
     setIdentityChrome(null)
     setRegionLocked(false)
   }
+
+  // A preselected platform that was not offered yet when the modal opened is selected once it is.
+  const preselectAvailable = preselect.current !== undefined && isPlatformAvailable(preselect.current)
+  useEffect(() => {
+    const wanted = preselect.current
+    if (!wanted || !preselectAvailable || createdHook) return
+    preselect.current = undefined
+    setPlatform(wanted)
+  }, [preselectAvailable, createdHook])
 
   // Daemon data arrives asynchronously and can change after the modal opens. If
   // the current bot platform disappears, reset its form and choose the first

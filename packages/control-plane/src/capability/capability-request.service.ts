@@ -24,7 +24,7 @@ import {
   type SessionCapabilitySettledResult
 } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
-import type { OrgId } from '../domain/ids.js'
+import { AgentId, type OrgId } from '../domain/ids.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type {
   AgentRecord,
@@ -87,12 +87,13 @@ export function wakeBackoffMs(attempts: number): number {
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), RETRY_MAX_MS)
 }
 
-/** A change outside any agent's spec that can satisfy open requests: an MCP server connected or re-keyed, or a code host connected. */
+/** A change outside any agent's spec that can satisfy open requests: an MCP server connected or re-keyed, a code host connected, or a chat integration pushed. */
 export type CapabilityOrgChange =
   | { kind: 'mcp-oauth'; server: string }
   | { kind: 'mcp-headers'; server: string }
   | { kind: 'code-host'; provider: 'github' | 'gitlab' }
   | { kind: 'cron'; agentId: string }
+  | { kind: 'chat-integration'; agentId: string; platform: string }
 
 /** Whether a settled request of this ask must reload the session before its reminder runs (§4.8). */
 export function reloadsSession(ask: CapabilityAsk | null): boolean {
@@ -119,6 +120,13 @@ function touchedBy(
 ): boolean {
   if (!ask) return false
   if (change.kind === 'cron') return ask.kind === 'cron' && row.agentId === change.agentId
+  if (change.kind === 'chat-integration')
+    return (
+      ask.kind === 'connection' &&
+      ask.want.type === 'chat-integration' &&
+      ask.want.platform === change.platform &&
+      row.agentId === change.agentId
+    )
   if (change.kind === 'mcp-oauth')
     return ask.kind === 'connection' && ask.want.type === 'mcp-oauth' && ask.want.server === change.server
   if (change.kind === 'mcp-headers')
@@ -425,8 +433,14 @@ export class CapabilityRequestService {
       const agent = await this.deps.agents.getUnscoped(row.agentId)
       if (agent && agent.orgId === orgId) await this.complete(row, agent, by, true, [], true)
     }
-    if (change.kind === 'code-host' || change.kind === 'cron') return
+    if (change.kind === 'code-host' || change.kind === 'cron' || change.kind === 'chat-integration') return
     await this.rebound(orgId, change.server)
+  }
+
+  /** After a chat integration's spec was pushed, by whichever route: complete the agent's open requests for that platform once it is active. */
+  async integrationUpserted(agentId: string, platform: string): Promise<void> {
+    const agent = await this.deps.agents.getUnscoped(AgentId(agentId))
+    if (agent) await this.orgChanged(agent.orgId, { kind: 'chat-integration', agentId: agent.id, platform }, null)
   }
 
   /** `agent/mcp-rebound` to each daemon serving an agent that uses the server, where it understands it (§4.8 item 2). */
@@ -463,6 +477,18 @@ export class CapabilityRequestService {
       const current = await this.deps.requests.get(orgId, id)
       return current?.status === 'completed' ? current : 'not_open'
     }
+    return (await this.deps.requests.get(orgId, id)) ?? 'not_found'
+  }
+
+  /** Look again from the console: completes an open request only when what it asked for already holds, so a missed trigger cannot strand it. */
+  async recheckFromConsole(orgId: OrgId, id: string): Promise<CapabilityRequestRecord | 'not_found'> {
+    const row = await this.deps.requests.get(orgId, id)
+    if (!row) return 'not_found'
+    if (row.status !== 'open') return row
+    const agent = await this.deps.agents.getUnscoped(row.agentId)
+    if (!agent || agent.orgId !== orgId) return 'not_found'
+    // Nobody decided here: the request is settled by what the server observes, as a trigger would have.
+    await this.complete(row, agent, null, true)
     return (await this.deps.requests.get(orgId, id)) ?? 'not_found'
   }
 

@@ -165,6 +165,12 @@ vi.mock('@/components/console/PlaygroundProvider', () => {
   }
 })
 
+const modal = vi.hoisted(() => ({
+  openNativeIntegration: vi.fn((..._args: unknown[]) => true),
+  closeNativeIntegration: vi.fn()
+}))
+vi.mock('@/components/console/ModalProvider', () => ({ useOptionalModal: () => modal, useModal: () => modal }))
+
 vi.mock('next/link', () => ({
   default: ({ children, href, ...rest }: { children: React.ReactNode; href: string }) => (
     <a href={href} {...rest}>
@@ -192,6 +198,7 @@ import { ThreadPanel } from './ThreadPanel'
 import type { Turn } from '../session-turns'
 import { msgStep } from '../transcript-steps'
 import { renderWithIntl } from '@/i18n/test-utils'
+import { INTEGRATION_SETUP_URI } from '@agentconnect.md/protocol'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -210,6 +217,7 @@ beforeEach(() => {
   wire.sentFiles = []
   wire.live = []
   wire.calls = []
+  modal.openNativeIntegration.mockClear()
   wire.extra = []
   wire.permissionRequests = []
   wire.operations = []
@@ -379,6 +387,35 @@ describe('ThreadPanel', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
     expect(wire.calls).toEqual(['target:ses_task', 'send:ses_task:agent_1:does 1.5 include the orders migration?'])
+  })
+
+  it('tells the agent what a native configuration dialog opened in the thread saved', async () => {
+    wire.live = [
+      {
+        kind: 'app',
+        turnId: 't1',
+        text: '',
+        app: {
+          appId: 'app-1',
+          title: 'Agent configuration',
+          toolName: 'agentconnect-admin__createAgent',
+          nativeUi: {
+            resourceUri: INTEGRATION_SETUP_URI,
+            resourceVersion: 1,
+            orgId: '11111111-1111-4111-8111-111111111111',
+            intent: { mode: 'create', provider: 'github' }
+          }
+        }
+      }
+    ]
+    await render()
+    const card = container.querySelector('[data-native-app-status]')!
+    expect(card.getAttribute('data-native-app-status')).not.toBe('inert')
+    await act(async () => card.querySelector('button')!.click())
+    const completed = modal.openNativeIntegration.mock.calls[0]![1] as (text: string) => void
+    await act(async () => completed('Created agent bugrepro-mailer.'))
+    expect(wire.calls).toEqual(['target:ses_task', 'notice:ses_task:agent_1:Created agent bugrepro-mailer.'])
+    expect(container.textContent).not.toContain('not notified')
   })
 
   it('draws the task’s Fill card and answers it on the conversation’s own socket and channel', async () => {

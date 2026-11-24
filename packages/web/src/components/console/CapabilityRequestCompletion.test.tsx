@@ -9,6 +9,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mocks = vi.hoisted(() => ({
   settle: vi.fn(),
+  recheck: vi.fn(),
   fetchAgent: vi.fn(),
   updateAgent: vi.fn(),
   editProps: undefined as Record<string, unknown> | undefined,
@@ -57,6 +58,7 @@ vi.mock('@/components/console/McpServersCard', () => ({
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   settleCapabilityRequest: mocks.settle,
+  recheckCapabilityRequest: mocks.recheck,
   fetchAgentDto: mocks.fetchAgent,
   fetchAgentRepos: mocks.fetchRepos,
   updateAgentRepo: mocks.updateRepo,
@@ -135,6 +137,7 @@ const button = (scope: HTMLElement, text: string) =>
 
 beforeEach(() => {
   mocks.settle.mockReset()
+  mocks.recheck.mockReset()
   mocks.fetchAgent.mockReset()
   mocks.updateAgent.mockReset()
   mocks.editProps = undefined
@@ -308,10 +311,30 @@ describe('completing a capability request', () => {
     expect(mocks.startOauth).toHaveBeenCalledWith('prov-1', { returnPath: '/acme/requests/req-9' })
     expect(open).toHaveBeenCalledWith('https://auth.example.test/start', 'mcp_provider_oauth', expect.any(String))
     expect(scope.textContent).toContain('Waiting for the connection to finish')
+    // Still open on the server: the page only re-reads, and never settles by its own say-so.
+    mocks.recheck.mockResolvedValue(request({ id: 'req-9' }))
     await act(async () => button(scope, 'Check again')!.click())
+    expect(mocks.recheck).toHaveBeenCalledWith('req-9', 'org-1')
     expect(onRefresh).toHaveBeenCalled()
+    expect(onSettled).not.toHaveBeenCalled()
     expect(mocks.settle).not.toHaveBeenCalled()
     open.mockRestore()
+  })
+
+  it('asks the server to look again, and shows the request completed once the connection holds', async () => {
+    const done = request({ id: 'req-9', status: 'completed' })
+    mocks.recheck.mockResolvedValue(done)
+    const scope = await render(
+      request({
+        id: 'req-9',
+        kind: 'connection',
+        want: { type: 'chat-integration', platform: 'email' },
+        current: { connected: false }
+      })
+    )
+    await act(async () => button(scope, 'Check again')!.click())
+    expect(onSettled).toHaveBeenCalledWith(done)
+    expect(onRefresh).not.toHaveBeenCalled()
   })
 
   it('opens the add-integration dialog for the agent on the asked platform', async () => {

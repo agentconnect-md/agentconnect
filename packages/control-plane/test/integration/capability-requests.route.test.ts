@@ -1,19 +1,22 @@
 import { randomUUID } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CAPABILITY_REQUESTS_FEATURE,
   type CapabilityForward,
   type CapabilityReopened,
-  type CapabilityRequestReq
+  type CapabilityRequestReq,
+  type SessionCapabilitySettled
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { DEFAULT_ORG_ID, DEFAULT_ORG_SLUG } from '../../prisma/seed.js'
 import { CapabilityRequestService } from '../../src/capability/capability-request.service.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
+import { PgIntegrationRepo } from '../../src/persistence/repositories/integration.repo.js'
 import { PgCapabilityRequestRepo } from '../../src/persistence/repositories/capability-request.repo.js'
 import { PgMcpProviderRepo } from '../../src/persistence/repositories/mcp.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
@@ -37,7 +40,11 @@ async function member(role: 'collaborator' | 'viewer', name: string): Promise<st
   return userId
 }
 
-function service(sent: { reopened: CapabilityReopened[]; forwarded: CapabilityForward[] }) {
+function service(sent: {
+  reopened: CapabilityReopened[]
+  forwarded: CapabilityForward[]
+  settled?: SessionCapabilitySettled[]
+}) {
   return new CapabilityRequestService({
     clock: systemClock,
     requests: new PgCapabilityRequestRepo(prisma),
@@ -46,13 +53,24 @@ function service(sent: { reopened: CapabilityReopened[]; forwarded: CapabilityFo
     skillSources: { getByName: async () => null },
     orgs: new PgOrgRepo(prisma),
     facts: {
-      load: async () => ({ mcpProvider: { providerId: null, connected: false, headerPresent: false } }),
+      // A chat integration is read from its real row; every other kind keeps the fixed answer.
+      load: async (agent, asked) =>
+        asked.kind === 'connection' && asked.want.type === 'chat-integration'
+          ? {
+              integrationConnected: (await new PgIntegrationRepo(prisma).activeForAgents([agent.id])).some(
+                (i) => i.platform === (asked.want as { platform: string }).platform
+              )
+            }
+          : { mcpProvider: { providerId: null, connected: false, headerPresent: false } },
       unknownTarget: async () => undefined
     },
     webAppUrl: 'https://console.example.test',
     placement: { dispatchDaemon: async () => DAEMON as never },
     daemon: () => ({ state: 'READY', capabilities: { features: [CAPABILITY_REQUESTS_FEATURE] } }),
-    sendSettled: async () => ({ accepted: true }),
+    sendSettled: async (_d, _o, wake) => {
+      sent.settled?.push(wake)
+      return { accepted: true }
+    },
     sendReopened: async (_d, _o, frame) => void sent.reopened.push(frame),
     sendForward: async (_d, _o, frame) => {
       sent.forwarded.push(frame)
@@ -77,6 +95,77 @@ const ask = (agentId: string, want: Record<string, unknown>): CapabilityRequestR
 })
 
 describe('capability request routes', () => {
+  it('completes a chat integration request when the integration is created, and wakes the conversation that asked', async () => {
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
+    const sent = { reopened: [], forwarded: [], settled: [] as SessionCapabilitySettled[] }
+    const capabilityRequests = service(sent)
+    capabilityRequests.start()
+    const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    const asked = await capabilityRequests.request(agent, {
+      ...ask(agentId, {}),
+      ask: { kind: 'connection', want: { type: 'chat-integration', platform: 'slack' } }
+    })
+    const id = asked.requestId!
+    const control = { integrationUpsert: async () => undefined } as unknown as ControlSender
+    const app = buildHttpApp(prisma, undefined, undefined, control, { capabilityRequests })
+    running.push(app)
+
+    // Looking again before anything is connected settles nothing.
+    const early = await app.app.inject({ method: 'POST', url: `${ORG}/capability-requests/${id}/recheck` })
+    expect(early.statusCode, early.body).toBe(200)
+    expect(early.json()).toMatchObject({ status: 'open' })
+
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'bugrepro-bot', platform: 'slack', agentId, slack: { botToken: 'xoxb-1', appToken: 'xapp-1' } }
+    })
+    expect(created.statusCode, created.body).toBe(201)
+
+    await vi.waitFor(async () => {
+      await capabilityRequests.settle()
+      expect(sent.settled).toEqual([expect.objectContaining({ requestId: id, status: 'completed' })])
+    })
+    const page = await app.app.inject({ method: 'GET', url: `${ORG}/capability-requests/${id}` })
+    expect(page.json()).toMatchObject({ status: 'completed', current: { connected: true } })
+    capabilityRequests.stop()
+  })
+
+  it('completes a satisfied request on recheck when its trigger was missed', async () => {
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, runtime: 'claude-acp' })
+    const capabilityRequests = service({ reopened: [], forwarded: [] })
+    const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId)))!
+    const asked = await capabilityRequests.request(agent, {
+      ...ask(agentId, {}),
+      ask: { kind: 'connection', want: { type: 'chat-integration', platform: 'slack' } }
+    })
+    // Built without the service, so the create below reaches no trigger.
+    const silent = buildHttpApp(prisma, undefined, undefined, {
+      integrationUpsert: async () => undefined
+    } as unknown as ControlSender)
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, { capabilityRequests })
+    running.push(silent, app)
+    const created = await silent.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { name: 'bugrepro-bot', platform: 'slack', agentId, slack: { botToken: 'xoxb-1', appToken: 'xapp-1' } }
+    })
+    expect(created.statusCode, created.body).toBe(201)
+    const url = `${ORG}/capability-requests/${asked.requestId!}`
+    expect((await app.app.inject({ method: 'GET', url })).json()).toMatchObject({ status: 'open' })
+    const checked = await app.app.inject({ method: 'POST', url: `${url}/recheck` })
+    expect(checked.statusCode, checked.body).toBe(200)
+    expect(checked.json()).toMatchObject({ status: 'completed', settledBy: null })
+  })
+
   it('shows a request to whoever sees the agent and lets only an editor settle, decline and reopen it', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
