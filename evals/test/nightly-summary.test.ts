@@ -102,6 +102,19 @@ describe('nightly game targets', () => {
     expect(summarizeCells(trials).map((cell) => cell.mark)).toEqual(['on-target', 'below', 'safety', 'no-valid'])
     expect(trials[3]!.invalidReason).toBe('invalid trial (§9.1)')
   })
+
+  it('keeps quota counting below target but known, since the loop guard bounds its room', () => {
+    const [cell] = summarizeCells(
+      readGames(
+        'counting',
+        promptfoo([
+          { success: true, namedScores: { game: 0.92 }, response: { metadata: { caseId: 'counting-quota-v1' } } }
+        ])
+      )
+    )
+    expect(cell!.mark).toBe('below')
+    expect(cell!.knownCause).toMatch(/loop guard/)
+  })
 })
 
 describe('nightly scenario and probe targets', () => {

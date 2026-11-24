@@ -51,7 +51,10 @@ const ADDON_CONTROLS = new Set(['memory-cross-session-recall/daemon-core', 'memo
 export const KNOWN_CAUSES: Record<string, string> = {
   'addons/collab-delivery-reply/daemon-core':
     'the add-on runner loads no collaboration routes, so callAgent is refused',
-  'addons/memory-collab-handoff/memory-only': 'the add-on runner loads no collaboration routes, so callAgent is refused'
+  'addons/memory-collab-handoff/memory-only':
+    'the add-on runner loads no collaboration routes, so callAgent is refused',
+  'counting/counting-quota-v1':
+    'the loop guard admits 8 automatic turns per agent a minute, and whoever posts 12 has seen 9 peer posts by then'
 }
 
 const ADDON_VALID = new Set(['passed', 'agent_failed', 'safety_failed'])
