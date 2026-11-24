@@ -3105,7 +3105,8 @@ export default function SessionDetailView() {
         className={
           part === 'line'
             ? `mt-[3px] flex w-full ${rootIsMine ? 'justify-end' : 'justify-start'}`
-            : 'mt-[6px] flex w-full'
+            : // Block, not flex: the card's message must span the row, or its name truncates and its bubble wraps.
+              'mt-[6px] w-full'
         }
       >
         <RootThreadFooter
