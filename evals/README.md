@@ -126,6 +126,8 @@ With no `AGENTCONNECT_EVAL_SUBJECT_ROOT` it uses [`subjects/claude`](subjects/cl
 
 A trial that hit an infrastructure, grader or case error measured nothing: it never counts for or against a target, and a cell with no valid trial is marked ⚠️. The command exits 1 when someone should look — a suite wrote no results, a cell has no valid trial, a safety failure, or a cell below target whose cause is not in `KNOWN_CAUSES` — and 0 otherwise. Each run writes the raw reports, `summary.json` and `summary.md` under `.artifacts/evaluation/nightly/<timestamp>/`.
 
+When it exits 1 it also writes `.artifacts/evaluation/nightly/handoff.md` for whoever fixes it: the commit, and for each item that needs a look its `eval-nightly:` marker and the command that re-runs it. A fix PR puts the marker in its body so a later night finds that PR instead of opening another. The file is deleted at the start of every run, so it exists only after a run that needs attention.
+
 The raw-ACP add-on cell needs the Linux sandbox, so schedule the run on a Linux host.
 
 ## Evidence and privacy

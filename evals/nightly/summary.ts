@@ -273,6 +273,62 @@ function actual(cell: Cell): string {
     : `no valid trial (${cell.invalidReasons.join(', ') || 'none ran'})`
 }
 
+export interface AttentionItem {
+  suite: SuiteId
+  /** The report line, ids and counts only. */
+  line: string
+  /** Names the item in a fix PR's body so a later night finds it instead of opening another. */
+  marker: string
+}
+
+/** What someone should look at: missing or broken suites, then unexplained misses, a suite of misses as one item. */
+export function attentionItems(run: NightlyRun): AttentionItem[] {
+  const items: AttentionItem[] = []
+  for (const suite of run.suites) {
+    const marker = `eval-nightly:${suite.suite}`
+    if (!suite.results) items.push({ suite: suite.suite, line: `⚠️ ${suite.suite}: no result file`, marker })
+    else if (suite.apparatusFailed) {
+      const line = `⚠️ ${suite.suite}: a scenario failed to run, so its results may be incomplete`
+      items.push({ suite: suite.suite, line, marker })
+    }
+  }
+  for (const suite of run.suites) {
+    const cells = run.cells.filter((cell) => cell.suite === suite.suite)
+    const flagged = cells.filter((cell) => cell.mark !== 'on-target' && !cell.knownCause)
+    if (flagged.length > COLLAPSE_AT && flagged.every((cell) => cell.mark === 'below')) {
+      const scope = flagged.length === cells.length ? `all ${cells.length}` : `${flagged.length} of ${cells.length}`
+      const line = `❌ ${suite.suite}: ${scope} cases below target`
+      items.push({ suite: suite.suite, line, marker: `eval-nightly:${suite.suite}` })
+      continue
+    }
+    for (const cell of flagged) {
+      const line = `${MARK[cell.mark]} ${suite.suite} · ${cellName(cell)}: ${actual(cell)}`
+      items.push({ suite: suite.suite, line, marker: `eval-nightly:${cellKey(cell)}` })
+    }
+  }
+  return items
+}
+
+/** Games run once a night, so a re-run asks for three to tell a regression from noise. */
+function rerunCommand(suite: SuiteId, repeat: number): string {
+  const games = suite === 'counting' || suite === 'relay'
+  return `pnpm eval:nightly --suites ${suite} ${games ? '--game-repeat 3' : `--repeat ${repeat}`}`
+}
+
+/** The message agentconnect-eval sends its fixer when the run needs attention; undefined when it does not. */
+export function renderHandoff(run: NightlyRun): string | undefined {
+  if (!needsAttention(run)) return undefined
+  const lines = [
+    `Nightly eval hand-off. It ran on commit ${run.commit}${run.dirty ? ' (dirty)' : ''} with Node ${run.node} and ${run.subject}.`,
+    'Re-run each item on current main with its command; the marker goes in the body of any PR that fixes it.',
+    ''
+  ]
+  for (const item of attentionItems(run)) {
+    lines.push(`- ${item.line}`, `  marker: ${item.marker}`, `  rerun: ${rerunCommand(item.suite, run.repeat)}`)
+  }
+  return `${lines.join('\n')}\n`
+}
+
 /** A content-free Slack-ready report: ids and counts only, never prompts, outputs or local paths. */
 export function renderMarkdown(run: NightlyRun): string {
   const count = (mark: Mark) => run.cells.filter((cell) => cell.mark === mark).length
@@ -290,20 +346,7 @@ export function renderMarkdown(run: NightlyRun): string {
     `\`${run.commit.slice(0, 12)}\`${run.dirty ? ' (dirty)' : ''} · Node ${run.node} · \`${run.subject}\` · repeat ${run.repeat} · ${minutes} min`
   ]
 
-  const attention = [
-    ...missingSuites.map((suite) => `⚠️ ${suite}: no result file`),
-    ...brokenSuites.map((suite) => `⚠️ ${suite}: a scenario failed to run, so its results may be incomplete`)
-  ]
-  for (const suite of run.suites) {
-    const cells = run.cells.filter((cell) => cell.suite === suite.suite)
-    const flagged = cells.filter((cell) => cell.mark !== 'on-target' && !cell.knownCause)
-    if (flagged.length > COLLAPSE_AT && flagged.every((cell) => cell.mark === 'below')) {
-      const scope = flagged.length === cells.length ? `all ${cells.length}` : `${flagged.length} of ${cells.length}`
-      attention.push(`❌ ${suite.suite}: ${scope} cases below target`)
-      continue
-    }
-    for (const cell of flagged) attention.push(`${MARK[cell.mark]} ${suite.suite} · ${cellName(cell)}: ${actual(cell)}`)
-  }
+  const attention = attentionItems(run).map((item) => item.line)
   lines.push('', '*Needs a look*', ...(attention.length > 0 ? attention : ['none']))
 
   const known = new Map<string, string[]>()

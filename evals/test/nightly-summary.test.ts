@@ -10,6 +10,7 @@ import {
   readProbe,
   readThreadChatter,
   readWebchatAddressed,
+  renderHandoff,
   renderMarkdown,
   summarizeCells,
   type NightlyRun
@@ -214,6 +215,43 @@ describe('nightly report', () => {
     const nightly = run(cells, [{ suite: 'send-message-probe', results: true }])
     expect(needsAttention(nightly)).toBe(false)
     expect(renderMarkdown(nightly)).toContain('✅ all 1 cells on target')
+  })
+
+  it('hands each unexplained item to the fixer with a marker and a re-run, and nothing when all is well', () => {
+    const relay = Array.from({ length: 8 }, (_, index) => ({
+      success: true,
+      namedScores: { game: 0 },
+      response: { metadata: { caseId: `relay-${index}` } }
+    }))
+    const cells = summarizeCells([
+      ...readGames('relay', promptfoo(relay)),
+      ...readThreadChatter({ records: [{ scenario: 'ticketing', valid: true, unwantedReplies: 1, missedReplies: 0 }] }),
+      ...readAddons(promptfoo([addonRow('collab-delivery-reply', 'daemon-core', 'passed', 0)]))
+    ])
+    const handoff = renderHandoff(
+      run(cells, [
+        { suite: 'relay', results: true },
+        { suite: 'thread-chatter', results: true },
+        { suite: 'addons', results: true },
+        { suite: 'counting', results: false }
+      ])
+    )
+    expect(handoff).toContain('commit abcdef1234567890')
+    expect(handoff).toContain(
+      '- ⚠️ counting: no result file\n  marker: eval-nightly:counting\n  rerun: pnpm eval:nightly --suites counting --game-repeat 3'
+    )
+    expect(handoff).toContain(
+      '- ❌ relay: all 8 cases below target\n  marker: eval-nightly:relay\n  rerun: pnpm eval:nightly --suites relay --game-repeat 3'
+    )
+    expect(handoff).toContain(
+      '- ❌ thread-chatter · ticketing: 0/1\n  marker: eval-nightly:thread-chatter/ticketing\n  rerun: pnpm eval:nightly --suites thread-chatter --repeat 3'
+    )
+    expect(handoff).not.toContain('collab-delivery-reply')
+
+    const quiet = summarizeCells(
+      readProbe('send-message-probe', { runs: [{ scenario: 'origin-reply', verdict: 'PASS' }] })
+    )
+    expect(renderHandoff(run(quiet, [{ suite: 'send-message-probe', results: true }]))).toBeUndefined()
   })
 
   it('reports the add-on deltas over mean outcome', () => {

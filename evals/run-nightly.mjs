@@ -11,6 +11,7 @@ import {
   readProbe,
   readThreadChatter,
   readWebchatAddressed,
+  renderHandoff,
   renderMarkdown,
   summarizeCells
 } from './nightly/summary.ts'
@@ -80,6 +81,9 @@ const startedAt = Date.now()
 const at = new Date(startedAt).toISOString()
 const runDir = join(artifactsRoot, 'nightly', at.replace(/[:.]/g, '-'))
 mkdirSync(runDir, { recursive: true })
+// A fixed path the scheduled agent reads; it exists only when tonight's run needs attention.
+const handoffPath = join(artifactsRoot, 'nightly', 'handoff.md')
+rmSync(handoffPath, { force: true })
 
 // An operator subject wins; otherwise the checked-in Claude template and its agent ids.
 const env = { ...process.env, PROMPTFOO_DISABLE_TELEMETRY: process.env.PROMPTFOO_DISABLE_TELEMETRY ?? '1' }
@@ -240,6 +244,11 @@ const nightly = {
 const markdown = renderMarkdown(nightly)
 writeFileSync(join(runDir, 'summary.json'), `${JSON.stringify(nightly, null, 2)}\n`)
 writeFileSync(join(runDir, 'summary.md'), markdown)
+const handoff = renderHandoff(nightly)
+if (handoff) {
+  writeFileSync(join(runDir, 'handoff.md'), handoff)
+  writeFileSync(handoffPath, handoff)
+}
 process.stdout.write(markdown)
 console.error(`eval:nightly: report written to ${join(runDir, 'summary.md')}`)
 process.exitCode = needsAttention(nightly) ? 1 : 0
