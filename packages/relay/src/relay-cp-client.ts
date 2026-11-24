@@ -198,6 +198,8 @@ export interface RelayCpClientDeps {
   onDeploymentConfig?: (config: RcDeploymentConfig) => void
   /** Every connection's deployment snapshot, undefined when the CP sent none, for state that must follow the CP's current configuration. */
   onDeploymentSnapshot?: (config: RcDeploymentConfig | undefined) => void
+  /** Called with the shared Mattermost interactive-button HMAC secret from `rc/auth/ok` (never log). */
+  onMattermostActionSecret?: (secret: string) => void
 }
 
 export class RelayCpClient {
@@ -771,6 +773,7 @@ export class RelayCpClient {
     this.deps.onDeploymentSnapshot?.(ok.deploymentConfig)
     // A CP that sends no TURN secret cannot mint credentials this relay could check, so its TURN stays unadvertised.
     if (ok.computerTurnSecret) this.deps.turn?.onSecret(ok.computerTurnSecret)
+    if (ok.mattermostActionSecret) this.deps.onMattermostActionSecret?.(ok.mattermostActionSecret)
     const turnUrls = ok.computerTurnSecret ? this.deps.turn?.urls : undefined
 
     // ── register (upsert by name → relayId; re-sent every reconnect) ──

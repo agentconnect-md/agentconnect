@@ -957,7 +957,7 @@ describe('session visibility — external conversation audiences', () => {
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('enabled')
   })
 
-  it.each(['slack', 'telegram', 'discord', 'googlechat', 'msteams'] as const)(
+  it.each(['slack', 'telegram', 'discord', 'googlechat', 'msteams', 'mattermost'] as const)(
     '%s stops showing previously synced sessions when turned off',
     async (provider) => {
       const daemonId = await seedDaemon(prisma, randomUUID())

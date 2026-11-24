@@ -7,10 +7,9 @@
  * rules, context as plain values/callbacks, and already-VERIFIED authorship (verification needs
  * I/O, so it stays with the caller).
  *
- * Pinned divergence, deliberately not harmonized: the daemon ladder admits bot-sender mentions via
- * a Slack literal while the relay ladder reads the manifest's `botSenderRouting`. Both are
- * Slack-only today, so behavior is identical — but a platform that admits bot senders must revisit
- * {@link routeRules} alongside the manifest.
+ * Bot-sender admission: both the daemon ladder ({@link routeRules}) and the relay ladder
+ * ({@link arbitrateSharedBotResult}) read the §5 manifest's `botSenderRouting` (fail-closed `false`
+ * for unknown platforms) to decide whether a third-party bot's explicit @-mention may enter.
  */
 import { MAX_AGENT_CALL_HOPS, hasReachedAgentCallHopLimit, manifestFor } from '@agentconnect.md/protocol'
 
@@ -178,7 +177,11 @@ export function routeRules(
 
   // 1. explicit @bot mention — across layers; overrides thread affinity (§8.3).
   const mention = kindCandidates.find((r) => r.match.kind === 'mention')
-  if (mention && verifiedAgentAuthor === undefined && (!msg.sender.isBot || msg.platform === 'slack')) {
+  if (
+    mention &&
+    verifiedAgentAuthor === undefined &&
+    (!msg.sender.isBot || manifestFor(msg.platform).botSenderRouting)
+  ) {
     return pickRule(mention, 'mention')
   }
   // Only a VERIFIED AgentConnect author continues into the implicit rungs (§2.3); every other bot
@@ -549,7 +552,7 @@ const sharedBotTarget = (r: SharedBotRoute): SharedBotRouteTarget => ({
  *    (`conversationDefaults`, linear-integration.md §6.2), then the group's
  *    `defaultAgentId` (§10.3), all gated on the bot actually being ADDRESSED;
  *  - bot senders are admitted by the platform manifest's `botSenderRouting`
- *    (equivalent today to the daemon ladder's Slack-only admission), and only
+ *    (matching the daemon ladder), and only through an explicit mention;
  *    through an explicit mention;
  *  - `verifiedAgentAuthor` routes through the ladder exactly as a human would
  *    with itself excluded (send-message-routing-rework.md §2.3), and cannot

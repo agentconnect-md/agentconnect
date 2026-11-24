@@ -72,6 +72,8 @@ const CHROME = new Map<string, TurnChrome>([
   ['googlechat', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
   // The same for Teams: notices are sent as extended Markdown (teams-integration.md §4.3).
   ['msteams', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
+  // Mattermost answers status on demand via /status and parses notices as standard Markdown.
+  ['mattermost', { statusSurface: 'on-demand', noticeMarkup: 'markdown' }],
   // A mail is one message sent at the end, so there is no status bar to show or edit.
   ['email', { statusSurface: 'on-demand' }]
 ])

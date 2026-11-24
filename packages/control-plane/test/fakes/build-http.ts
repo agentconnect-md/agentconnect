@@ -158,6 +158,8 @@ import { weComCredentialRoutes } from '../../src/platforms/wecom/routes.js'
 import { createEmailCpProvider } from '../../src/platforms/email/provider.js'
 import { emailSettingsRoutes } from '../../src/platforms/email/settings-routes.js'
 import { emailAddressRoutes } from '../../src/platforms/email/routes.js'
+import { createMattermostCpProvider } from '../../src/platforms/mattermost/provider.js'
+import { mattermostCredentialRoutes } from '../../src/platforms/mattermost/routes.js'
 import { TENANTLESS_SENTINEL } from '../../src/persistence/ports.js'
 import { weChatLoginRoutes } from '../../src/platforms/wechat/routes.js'
 import { WeChatLoginService } from '../../src/platforms/wechat/login.js'
@@ -282,6 +284,8 @@ export interface PlatformStubs {
   weComDial?: WeComDial
   /** The deployment's mail domain; absent ⇒ Email is not set up. */
   emailMailDomain?: string
+  /** Mattermost's REST API, stubbed; absent ⇒ every credential check is a connectivity failure. */
+  mattermostFetch?: typeof fetch
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -311,7 +315,8 @@ const PLATFORM_STUB_KEYS = [
   'msTeamsPlatformApp',
   'weChatLoginClient',
   'weComDial',
-  'emailMailDomain'
+  'emailMailDomain',
+  'mattermostFetch'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -795,6 +800,11 @@ export function buildHttpApp(
         provider: 'feishu',
         available: false,
         resolve: async () => ({ allowedScopes: [], degraded: false })
+      },
+      {
+        provider: 'mattermost',
+        available: false,
+        resolve: async () => ({ allowedScopes: [], degraded: false })
       }
     ],
     ...coreOverrides,
@@ -948,6 +958,10 @@ export function buildHttpApp(
     if (!platformStubs.weComDial) throw new TypeError('no wecom dial stub installed')
     return platformStubs.weComDial(url, handlers)
   }
+  const mattermostFetch: typeof fetch = (input, init) =>
+    platformStubs.mattermostFetch
+      ? platformStubs.mattermostFetch(input, init)
+      : Promise.reject(new TypeError('no mattermost fetch stub installed'))
   const msTeamsRelayBase = relayHttpBase(configOverrides?.PUBLIC_RELAY_URL) ?? undefined
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: async (appId, appSecret, region) =>
@@ -1094,6 +1108,12 @@ export function buildHttpApp(
         }),
         emailSettingsRoutes(deps)
       ]
+    }),
+    createMattermostCpProvider({
+      fetch: mattermostFetch,
+      installRoutes: [mattermostCredentialRoutes(deps, mattermostFetch)],
+      isInstalled: async (externalAppId, botUserId) =>
+        (await deps.repos.bot.getByExternalIdentity('mattermost', externalAppId, botUserId)) !== null
     })
   ])
 

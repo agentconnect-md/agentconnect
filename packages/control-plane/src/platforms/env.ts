@@ -24,6 +24,7 @@ import { GoogleChatCpEnvSchema } from './googlechat/provider.js'
 import { MsTeamsCpEnvSchema } from './msteams/deployment-app.js'
 import { WeChatCpEnvSchema } from './wechat/provider.js'
 import { EmailCpEnvSchema } from './email/deployment.js'
+import { MattermostCpEnvSchema } from './mattermost/provider.js'
 
 /** Every platform's declared env keys. Telegram and Discord own none — their
  *  whole install is the create-DTO path, with no deployment-level
@@ -35,7 +36,8 @@ export const CP_PLATFORM_ENV_SCHEMAS = [
   { platformId: 'googlechat', envSchema: GoogleChatCpEnvSchema },
   { platformId: 'msteams', envSchema: MsTeamsCpEnvSchema },
   { platformId: 'wechat', envSchema: WeChatCpEnvSchema },
-  { platformId: 'email', envSchema: EmailCpEnvSchema }
+  { platformId: 'email', envSchema: EmailCpEnvSchema },
+  { platformId: 'mattermost', envSchema: MattermostCpEnvSchema }
 ] as const
 
 type EnvSchemaOf<T> = T extends { envSchema: infer S } ? S : never

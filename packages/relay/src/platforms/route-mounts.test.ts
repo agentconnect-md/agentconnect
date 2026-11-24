@@ -24,6 +24,10 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
+import { MATTERMOST_ACTION_PATH } from '@agentconnect.md/protocol'
+import { systemClock } from '@agentconnect.md/connection'
+import { buildRelayServer } from '../server.js'
+import { registerMattermostActionIngress } from './mattermost/action-ingress.js'
 import { relayIngressPlugins } from './registry.js'
 import type { RelayIngressRouteDeps } from './contract.js'
 
@@ -89,6 +93,39 @@ describe('relay platform route mounts', () => {
         await routesOf((app) => plugin.installRoutes(app, routeDeps())),
         `'${plugin.platformId}' registered no routes`
       ).not.toHaveLength(0)
+    }
+  })
+
+  it('mounts POST /mattermost/actions alongside the plugin registry on the Relay server', async () => {
+    const mmDeps = {
+      masterSecret: () => 'test-secret',
+      getDaemon: () => undefined,
+      daemonForAgent: () => undefined,
+      orgForAgent: () => undefined,
+      clock: systemClock,
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    }
+    expect(await routesOf((app) => registerMattermostActionIngress(app, mmDeps))).toEqual([
+      `POST ${MATTERMOST_ACTION_PATH}`
+    ])
+
+    const server = buildRelayServer({ isReady: () => true, relayId: () => 'relay-1' }, { logger: false })
+    const mounted: string[] = []
+    server.addHook('onRoute', (route) => {
+      const methods = Array.isArray(route.method) ? route.method : [route.method]
+      for (const method of methods) if (method !== 'HEAD') mounted.push(`${method} ${route.url}`)
+    })
+    for (const plugin of relayIngressPlugins) plugin.installRoutes(server, routeDeps())
+    registerMattermostActionIngress(server, mmDeps)
+    await server.ready()
+    try {
+      expect(mounted.sort()).toEqual(
+        [...Object.values(EXPECTED_MOUNTS).flat(), `POST ${MATTERMOST_ACTION_PATH}`].sort()
+      )
+      const res = await server.inject({ method: 'POST', url: MATTERMOST_ACTION_PATH, payload: {} })
+      expect(res.statusCode).not.toBe(404)
+    } finally {
+      await server.close()
     }
   })
 })

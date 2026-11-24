@@ -286,6 +286,7 @@ export class LogtoIdentityService {
       identityTtlMs?: number
       githubRepoIdentity?: GithubRepoIdentityLookup
       clearMicrosoftTenantIdentities?: (sub: string) => Promise<void>
+      mattermostOauthRealmKey?: string
     }
   ) {
     this.identityTtlMs = opts?.identityTtlMs ?? PROVIDER_IDENTITY_TTL_MS
@@ -357,11 +358,13 @@ export class LogtoIdentityService {
     return id && /^[1-9]\d*$/.test(id) && raw?.sub === id && raw.iss === issuer ? id : null
   }
 
-  // Verified chat identities use workspace, developer region, or global provider user ids.
+  // Verified chat identities use workspace, developer region, bound Mattermost OAuth realm, or global provider user ids.
   async chatIdentitiesFor(sub: string): Promise<LinkedChatIdentity[]> {
     const user = await this.logtoUser(sub, this.identityTtlMs)
     const slack = slackIdentityOf(user)
     const google = firstString(user?.identities?.google?.userId)
+    const mattermostId = firstString(user?.identities?.mattermost?.userId)
+    const mattermostRealmKey = this.opts?.mattermostOauthRealmKey
     return [
       ...(slack ? [{ platform: 'slack', tenant: slack.teamId, memberId: slack.userId }] : []),
       ...(google && /^[1-9]\d*$/.test(google)
@@ -369,7 +372,10 @@ export class LogtoIdentityService {
         : []),
       ...feishuIdentitiesOf(user).map((f) => ({ platform: 'feishu', tenant: f.region, memberId: f.unionId })),
       ...globalChatIdentitiesOf(user),
-      ...msteamsIdentitiesOf(user)
+      ...msteamsIdentitiesOf(user),
+      ...(mattermostRealmKey && mattermostId && /^[a-z0-9]{26}$/.test(mattermostId)
+        ? [{ platform: 'mattermost', tenant: mattermostRealmKey, memberId: mattermostId }]
+        : [])
     ]
   }
 
@@ -1005,6 +1011,7 @@ function reverseKeyOf(identity: LinkedChatIdentity): { target: string; id: strin
   if (platform === 'slack') return { target: 'slack', id: memberId }
   if (platform === 'discord') return { target: 'discord', id: memberId }
   if (platform === 'msteams') return { target: 'azuread', id: memberId }
+  if (platform === 'mattermost') return { target: 'mattermost', id: memberId }
   if (platform === 'googlechat' && memberId.startsWith('users/')) return { target: 'google', id: memberId.slice(6) }
   return null
 }

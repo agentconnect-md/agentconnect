@@ -4,7 +4,7 @@ import { sessionAccessNotifications, unverifiedConversationNotice } from '@/lib/
 const orgPath = (path: string) => `/acme${path}`
 
 describe('sessionAccessNotifications', () => {
-  it.each(['telegram', 'discord', 'gitlab', 'googlechat', 'msteams'])(
+  it.each(['telegram', 'discord', 'gitlab', 'googlechat', 'msteams', 'mattermost'])(
     'routes %s identity and app permission failures to the right repair',
     (provider) => {
       const identity = sessionAccessNotifications('sessions', true, [{ provider, reason: 'authorization' }], orgPath)
@@ -17,6 +17,23 @@ describe('sessionAccessNotifications', () => {
       expect(unverifiedConversationNotice(false, [issue], orgPath).retry).toBe(false)
     }
   )
+
+  it('points Mattermost app authorization failures to channel access and bot credentials without System Admin text', () => {
+    const notice = unverifiedConversationNotice(
+      false,
+      [{ provider: 'mattermost', reason: 'app_authorization' }],
+      orgPath
+    )
+    expect(notice.retry).toBe(false)
+    expect(notice.message).toContain('channel access')
+    expect(notice.message).toContain('credentials')
+    expect(notice.message).not.toContain('System Admin')
+    expect(notice.action).toEqual({
+      label: 'Open Integrations',
+      href: '/acme/integrations?platform=mattermost',
+      external: false
+    })
+  })
   it('creates an actionable Lark quota notification for hidden sessions', () => {
     expect(
       sessionAccessNotifications('sessions', true, [{ provider: 'feishu', region: 'lark', reason: 'quota' }], orgPath)

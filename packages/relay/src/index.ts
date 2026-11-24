@@ -36,6 +36,7 @@ import { WebchatRouter, bindWebchatPostAuthor, fanImageUpdate, imageUpdateBound 
 import { VERDICT_TTL_MS, WebchatVerdictCache } from './webchat-verdict-cache.js'
 import { registerAgentChatRoutes } from './agent-chat-route.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
+import { registerMattermostActionIngress } from './platforms/mattermost/action-ingress.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
   // Build the server first so the CP client can log through its pino instance. The
   // health probes and the CP-revoke callback read the client / rd server through a
   // holder (both are constructed below, once the logger exists).
+  let mattermostActionSecret: string | undefined
   const held: {
     client?: RelayCpClient
     rdServer?: RelayDaemonServer
@@ -160,6 +162,9 @@ async function main(): Promise<void> {
     onRegistered: (id) => log.info(`relay: registered with CP as ${id}`),
     onDeploymentConfig: (snapshot) => {
       deploymentConfig.githubWebhookSecret = snapshot.githubWebhookSecret
+    },
+    onMattermostActionSecret: (secret) => {
+      mattermostActionSecret = secret
     },
     // Unlike the GitHub secret, applied on every registration: bot assignments are replayed then too, so the anchor follows a restarted CP.
     onDeploymentSnapshot: (snapshot) =>
@@ -270,11 +275,21 @@ async function main(): Promise<void> {
   for (const plugin of relayIngressPlugins) {
     plugin.installRoutes(server, { manager: () => held.relayIngress, log })
   }
+  const limiter = new HookRateLimiter(systemClock)
+  // Mattermost uses signed card-action callbacks only (no `rc/bot-assign` HTTP bot pool); pinned in `platforms/route-mounts.test.ts`.
+  registerMattermostActionIngress(server, {
+    masterSecret: () => mattermostActionSecret,
+    getDaemon: (daemonId) => held.rdServer?.get(daemonId),
+    daemonForAgent: (agentId) => collab.agent(agentId)?.daemonId,
+    orgForAgent: (agentId) => collab.agent(agentId)?.orgId,
+    limiter: new HookRateLimiter(systemClock),
+    clock: systemClock,
+    log
+  })
 
   // Public webhook ingress (POST /webhooks/in/:token). Routes must register
   // before listen; the rd/* server only exists after it — hence the late bind.
   // One limiter serves both ingresses (keys are hookIds — no collision).
-  const limiter = new HookRateLimiter(systemClock)
   registerHookIngress(server, {
     table: hookTable,
     daemons: () => held.rdServer,

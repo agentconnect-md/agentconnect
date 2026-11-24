@@ -13,6 +13,7 @@ import {
   GitlabMark,
   OrgIconView,
   PlatformMark,
+  SocialLoginMark,
   modelProviderSlug
 } from './marks'
 
@@ -178,7 +179,8 @@ describe('PlatformMark', () => {
       'dingtalk',
       'msteams',
       'wechat',
-      'wecom'
+      'wecom',
+      'mattermost'
     ]) {
       // Slack and webhook belong here too, but render without `ssr`, so SSR gives them an empty <span>.
       const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)
@@ -222,5 +224,14 @@ describe('PlatformMark', () => {
 
     expect(lark).toContain('src="/brands/lark.svg"')
     expect(feishu).toContain('src="/brands/lark.svg"')
+  })
+})
+
+describe('SocialLoginMark', () => {
+  it('renders the Mattermost brand mark in Mattermost blue', () => {
+    const markup = renderToStaticMarkup(<SocialLoginMark target="mattermost" size={18} />)
+
+    expect(markup).toContain('<svg')
+    expect(markup).toContain('#0058CC')
   })
 })

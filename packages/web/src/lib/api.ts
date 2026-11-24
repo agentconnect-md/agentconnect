@@ -929,6 +929,7 @@ export type CreateIntegrationInput =
     })
   | (CreateIntegrationBase & { platform: 'qq'; qq?: { appId: string; appSecret: string } })
   | (CreateIntegrationBase & { platform: 'wecom'; wecom?: { botId: string; secret: string } })
+  | (CreateIntegrationBase & { platform: 'mattermost'; mattermost?: { serverUrl: string; botToken: string } })
   | (CreateIntegrationBase & {
       platform: 'dingtalk'
       dingtalk?: { clientId: string; clientSecret: string; edition?: 'mainland' | 'international' }
@@ -2886,7 +2887,7 @@ export async function putSessionVisibility(
 }
 
 export type SessionAccessProvider =
-  'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat' | 'msteams'
+  'slack' | 'github' | 'gitlab' | 'feishu' | 'telegram' | 'discord' | 'googlechat' | 'msteams' | 'mattermost'
 export type SessionProfileProvider =
   Exclude<SessionAccessProvider, 'googlechat' | 'msteams'> | 'lark' | 'google' | 'azuread'
 

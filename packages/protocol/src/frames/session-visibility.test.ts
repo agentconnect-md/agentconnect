@@ -174,18 +174,21 @@ describe('EventSession visibility-classification fields (session-visibility.md Â
     ).toEqual(externalOrigin)
   })
 
-  it.each(['telegram', 'discord', 'googlechat', 'msteams'] as const)('carries %s conversation proof', (provider) => {
-    const externalOrigin = {
-      provider,
-      realmKey: 'bot42',
-      resourceKind: 'conversation',
-      resourceKey: '123',
-      integrationId: ID
+  it.each(['telegram', 'discord', 'googlechat', 'msteams', 'mattermost'] as const)(
+    'carries %s conversation proof',
+    (provider) => {
+      const externalOrigin = {
+        provider,
+        realmKey: 'bot42',
+        resourceKind: 'conversation',
+        resourceKey: '123',
+        integrationId: ID
+      }
+      expect(
+        EventSession.parse({ ...legacyMilestone, platform: provider, channel: '123', externalOrigin }).externalOrigin
+      ).toEqual(externalOrigin)
     }
-    expect(
-      EventSession.parse({ ...legacyMilestone, platform: provider, channel: '123', externalOrigin }).externalOrigin
-    ).toEqual(externalOrigin)
-  })
+  )
 
   it('rejects an unknown conversationKind, an empty scope, and a non-uuid correlation id', () => {
     expect(EventSession.safeParse({ ...legacyMilestone, conversationKind: 'thread' }).success).toBe(false)

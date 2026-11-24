@@ -80,6 +80,23 @@ describe('routeRules (ladder smoke — deep coverage lives in the daemon suites)
     const rules = [rule({ agentId: 'a1', match: { kind: 'auto' } })]
     expect(routeRules(msg({ sender: { isBot: true } }), rules, () => null)).toBeNull()
   })
+
+  it('admits third-party bot explicit mentions via manifest botSenderRouting (Slack & Mattermost only among chat mirrors)', () => {
+    const mentionRule = rule({ agentId: 'a1', botUserId: 'UBOT', match: { kind: 'mention' } })
+    const autoRule = rule({ agentId: 'a1', botUserId: 'UBOT', match: { kind: 'auto' } })
+    for (const platform of ['slack', 'mattermost']) {
+      expect(
+        routeRules(msg({ platform, mentionedBots: ['UBOT'], sender: { isBot: true } }), [mentionRule], () => null)
+      ).toMatchObject({ agentId: 'a1', via: 'mention' })
+      // Without an explicit mention, an unverified bot still stops before implicit rungs.
+      expect(routeRules(msg({ platform, sender: { isBot: true } }), [autoRule], () => null)).toBeNull()
+    }
+    for (const platform of ['telegram', 'discord', 'feishu', 'some-future-platform']) {
+      expect(
+        routeRules(msg({ platform, mentionedBots: ['UBOT'], sender: { isBot: true } }), [mentionRule], () => null)
+      ).toBeNull()
+    }
+  })
 })
 
 describe('conversationAdmitsAgent (the Off/gated fence predicate)', () => {

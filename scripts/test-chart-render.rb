@@ -146,18 +146,47 @@ _, refused_proxy, refused_proxy_status = Open3.capture3(*command, '--set', 'daem
 abort('daemonPool.extraEnv.AC_GITHUB_GIT_PROXY must be refused') if refused_proxy_status.success?
 abort("refusal for AC_GITHUB_GIT_PROXY must say why:\n#{refused_proxy}") unless refused_proxy.include?('features.githubGitProxy')
 
-# A console flag is one features knob: email is off by default and its knob alone turns it on.
+# A console flag is one features knob: email and mattermost are off by default and their knobs alone turn them on.
 feature_flags = lambda do |docs|
   web = docs.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-web' } ||
         abort('the web Deployment must render')
   web.dig('spec', 'template', 'spec', 'containers').flat_map { |item| item.fetch('env', []) }
      .find { |item| item['name'] == 'FEATURE_FLAGS' }&.fetch('value', '').to_s.split(',')
 end
-abort('features.email must be off by default') if feature_flags.call(documents).include?('email')
-rendered_email, error_email, status_email = Open3.capture3(*command, '--set', 'features.email=true')
-abort("helm template with features.email=true failed:\n#{error_email}") unless status_email.success?
-abort('features.email=true must put email in FEATURE_FLAGS') unless
-  feature_flags.call(YAML.load_stream(rendered_email).compact).include?('email')
+%w[email mattermost].each do |flag|
+  abort("features.#{flag} must be off by default") if feature_flags.call(documents).include?(flag)
+  rendered_flag, error_flag, status_flag = Open3.capture3(*command, '--set', "features.#{flag}=true")
+  abort("helm template with features.#{flag}=true failed:\n#{error_flag}") unless status_flag.success?
+  abort("features.#{flag}=true must put #{flag} in FEATURE_FLAGS") unless
+    feature_flags.call(YAML.load_stream(rendered_flag).compact).include?(flag)
+end
+
+# Mattermost dial policy is one mattermost block read by both the Control Plane and the pool, so they cannot disagree.
+mattermost_env = lambda do |docs, name|
+  workload = docs.find { |doc| %w[Deployment StatefulSet].include?(doc['kind']) && doc.dig('metadata', 'name') == name } ||
+             abort("#{name} must render")
+  workload.dig('spec', 'template', 'spec', 'containers').flat_map { |item| item.fetch('env', []) }
+          .select { |item| %w[MATTERMOST_ALLOW_PRIVATE_NETWORK AGENTCONNECT_INTERNAL_ALLOWED_HOSTS].include?(item['name']) }
+          .to_h { |item| [item['name'], item['value']] }
+end
+mattermost_workloads = %w[example-agentconnect-control-plane example-agentconnect-daemon-pool]
+mattermost_workloads.each do |name|
+  abort("#{name} must not set Mattermost dial policy by default") unless mattermost_env.call(documents, name).empty?
+end
+rendered_mm, error_mm, status_mm = Open3.capture3(
+  *command, '--set', 'mattermost.allowPrivateNetwork=true',
+  '--set-json', 'mattermost.internalAllowedHosts=["chat.corp.example","10.0.0.7"]'
+)
+abort("helm template with mattermost values failed:\n#{error_mm}") unless status_mm.success?
+mattermost_workloads.each do |name|
+  expected = { 'MATTERMOST_ALLOW_PRIVATE_NETWORK' => 'true', 'AGENTCONNECT_INTERNAL_ALLOWED_HOSTS' => 'chat.corp.example,10.0.0.7' }
+  abort("#{name} must carry the mattermost values") unless mattermost_env.call(YAML.load_stream(rendered_mm).compact, name) == expected
+end
+%w[controlPlane.extraEnv.MATTERMOST_ALLOW_PRIVATE_NETWORK=true daemonPool.extraEnv.AGENTCONNECT_INTERNAL_ALLOWED_HOSTS=chat.corp.example].each do |setting|
+  _, refused_mm, refused_mm_status = Open3.capture3(*command, '--set', setting)
+  abort("#{setting} must be refused") if refused_mm_status.success?
+  abort("refusal for #{setting} must say why:\n#{refused_mm}") unless refused_mm.include?('collides with the chart-owned mattermost values')
+end
 
 # One source per install. An entry the Secret omits is a supported shape, so a second source
 # filling that same variable assembles a pair out of two halves — a provider key aimed at a
@@ -651,7 +680,7 @@ relay_route = public_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.di
 relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches'].to_a }.map { |match| match.dig('path', 'value') }
 # Every HTTP ingress path the relay registry mounts; a path the route omits falls through to
 # the web catch-all (or the gateway 404) and that platform's ingress silently receives nothing.
-%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /webhooks/gitea /webhooks/azure-devops /slack/events /slack/interactions /feishu/events /linear/events /googlechat/events /googlechat/media /msteams/messages /email/inbound /email/send /ai-sdk/agents /ag-ui/agents /ahp/agents].each do |path|
+%w[/mcp /memory /webchat /webhooks/in /webhooks/github /webhooks/gitlab /webhooks/gitea /webhooks/azure-devops /slack/events /slack/interactions /feishu/events /linear/events /googlechat/events /googlechat/media /msteams/messages /mattermost/actions /email/inbound /email/send /ai-sdk/agents /ag-ui/agents /ahp/agents].each do |path|
   abort("relay route must forward #{path}") unless relay_paths.include?(path)
 end
 

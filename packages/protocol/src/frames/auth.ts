@@ -61,10 +61,16 @@ export const AuthOk = z.object({
   // session deep links without local config. Omitted when the CP has no console URL
   // configured; a daemon-local `webAppUrl` overrides it.
   webAppUrl: z.string().optional(),
-  // Slug of the org this daemon's api key belongs to. The console is org-scoped
-  // (`<webAppUrl>/<orgSlug>/sessions/<id>`), so the daemon needs it to build a link that
-  // resolves. Omitted when the CP can't resolve it; then the daemon drops the segment.
+  // Relay pool's HTTP(S) origin (normalized PUBLIC_RELAY_URL) for direct interactive callbacks.
+  publicRelayUrl: z
+    .string()
+    .url({ protocol: /^https?$/ })
+    .optional(),
+  // CP-derived HMAC secret for signing Mattermost interactive action button tokens (secret, never log).
+  mattermostActionSecret: z.string().min(32).max(256).optional(),
+  // Slug and orgId of the org this daemon's api key belongs to (omitted for install-wide pool daemons).
   orgSlug: z.string().optional(),
+  orgId: z.string().min(1).max(64).optional(),
   // Durable upgrade intent returned only to bootstrap-capable callers.
   lifecycle: BootstrapLifecycle.optional(),
   resume: z

@@ -34,121 +34,111 @@ import {
   type DaemonLifecycleBeginOk,
   HISTORY_RETENTION_CONFIRM_FEATURE,
   HISTORY_RETENTION_CONFIRM_MAX,
-  HistoryRetentionConfirmResult
-} from '@agentconnect.md/protocol'
-/**
- * `CpClient` — the daemon-side CP WebSocket client FSM (protocol §2.1). Dials
- * out, runs the auth → register handshake, then (Tasks 5–7) emits heartbeats,
- * dispatches C→D control frames, and reconnects with backoff. Local-first:
- * `start()` is non-blocking and a CP failure never affects the daemon.
- */
-import type {
-  AnyFrame,
-  RegisterReq,
-  Heartbeat,
-  HeartbeatDuties,
-  DutyClaimOk,
-  DutyFetchOk,
-  FactsRuntimeProfile,
-  FactsMcpServer,
-  UsageReport,
-  EventSession,
-  SessionActivity,
-  AgentActivity,
-  AgentSkillStatus,
-  SessionPurged,
-  IntegrationChannels,
-  IntegrationRevoked,
-  IntegrationTenant,
-  IntegrationRevokedOk,
-  IntegrationRoomGrant,
-  IntegrationRoomGrantOk,
-  CronReport,
-  HookReport,
-  HookPreparing,
-  HookPreparingOk,
-  HookStart,
-  HookStartOk,
-  GithubReviewAuthorize,
-  GithubReviewAuthorized,
-  SharedImageGetOk,
-  SharedImageGetReq,
-  SharedImagePutOk,
-  SharedImagePutReq,
-  TransferGetOk,
-  TransferGetReq,
-  TransferSignOk,
-  TransferSignReq,
-  TransferSettleOk,
-  TransferSettleReq,
-  AgentApprovalRoute,
-  AgentApprovalRouted,
-  AgentEmailMembers,
-  AgentEmailMembersOk,
-  AgentReadAccess,
-  AgentReadAccessOk,
-  GithubReviewResultReport,
-  GithubReviewResultOk,
-  GithubReviewDeclare,
-  GithubReviewDeclareOk,
-  CodeHostNoteResult,
-  CodeHostNoteResultOk,
-  CodeHostReviewAuthorize,
-  CodeHostReviewAuthorized,
-  CodeHostReviewLeaseRenew,
-  CodeHostReviewLeaseRenewed,
-  CodeHostReviewOpAccepted,
-  CodeHostReviewOpRequest,
-  CodeHostReviewResultOk,
-  CodeHostReviewResultReport,
-  GitCredRequest,
-  GitCredGrant,
-  LinearCredRequest,
-  LinearCredGrant,
-  ProviderCredentialsRequest,
-  ProviderCredentialsReply,
-  ChannelAgentsReq,
-  ChannelAgentsOk,
-  ChildSessionStatus,
-  ChildSessionStatusReq,
-  MemoryConnectionFact,
-  WebchatMcpGrantIssue,
-  WebchatMcpGrantIssued,
-  WebchatMcpGrantAccept,
-  WebchatMcpGrantActivate,
-  WebchatMcpGrantRenew,
-  WebchatMcpGrantRenewed,
-  WebchatMcpGrantRevoke,
-  WebchatMcpGrantRevoked,
-  KnowledgeSearchReq,
-  KnowledgeSearchOk,
-  KnowledgeListReq,
-  KnowledgeListOk,
-  KnowledgeRecordConflict,
-  KnowledgeRecordOk,
-  KnowledgeRecordReadReq,
-  KnowledgeRecordWriteReq,
-  MemoryStoreReq,
-  MemoryFsReply,
-  MemoryHistoryAppendReq,
-  MemoryHistoryAppendOk,
-  MemoryHistoryReadReq,
-  MemoryHistoryReadOk,
-  MemoryHomeMigratedReq,
-  MemoryHomeMigratedOk,
-  OrgSkillsReq,
-  OrgSkillsOk,
-  OrganizationSuggestionsSyncReq,
-  OrganizationSuggestionsSyncOk,
-  ManagedSkillReadReq,
-  ManagedSkillChunk,
-  BootstrapLifecycle,
-  DaemonLifecycleProgress,
-  FrameOrgPeer,
-  OrganizationMode,
-  AgentExistsOk
-} from '@agentconnect.md/protocol'
-import {
+  HistoryRetentionConfirmResult,
+  type AnyFrame,
+  type RegisterReq,
+  type Heartbeat,
+  type HeartbeatDuties,
+  type DutyClaimOk,
+  type DutyFetchOk,
+  type FactsRuntimeProfile,
+  type FactsMcpServer,
+  type UsageReport,
+  type EventSession,
+  type SessionActivity,
+  type AgentActivity,
+  type AgentSkillStatus,
+  type SessionPurged,
+  type IntegrationChannels,
+  type IntegrationRevoked,
+  type IntegrationTenant,
+  type IntegrationRevokedOk,
+  type IntegrationRoomGrant,
+  type IntegrationRoomGrantOk,
+  type CronReport,
+  type HookReport,
+  type HookPreparing,
+  type HookPreparingOk,
+  type HookStart,
+  type HookStartOk,
+  type GithubReviewAuthorize,
+  type GithubReviewAuthorized,
+  type SharedImageGetOk,
+  type SharedImageGetReq,
+  type SharedImagePutOk,
+  type SharedImagePutReq,
+  type TransferGetOk,
+  type TransferGetReq,
+  type TransferSignOk,
+  type TransferSignReq,
+  type TransferSettleOk,
+  type TransferSettleReq,
+  type AgentApprovalRoute,
+  type AgentApprovalRouted,
+  type AgentEmailMembers,
+  type AgentEmailMembersOk,
+  type AgentReadAccess,
+  type AgentReadAccessOk,
+  type GithubReviewResultReport,
+  type GithubReviewResultOk,
+  type GithubReviewDeclare,
+  type GithubReviewDeclareOk,
+  type CodeHostNoteResult,
+  type CodeHostNoteResultOk,
+  type CodeHostReviewAuthorize,
+  type CodeHostReviewAuthorized,
+  type CodeHostReviewLeaseRenew,
+  type CodeHostReviewLeaseRenewed,
+  type CodeHostReviewOpAccepted,
+  type CodeHostReviewOpRequest,
+  type CodeHostReviewResultOk,
+  type CodeHostReviewResultReport,
+  type GitCredRequest,
+  type GitCredGrant,
+  type LinearCredRequest,
+  type LinearCredGrant,
+  type ProviderCredentialsRequest,
+  type ProviderCredentialsReply,
+  type ChannelAgentsReq,
+  type ChannelAgentsOk,
+  type ChildSessionStatus,
+  type ChildSessionStatusReq,
+  type MemoryConnectionFact,
+  type WebchatMcpGrantIssue,
+  type WebchatMcpGrantIssued,
+  type WebchatMcpGrantAccept,
+  type WebchatMcpGrantActivate,
+  type WebchatMcpGrantRenew,
+  type WebchatMcpGrantRenewed,
+  type WebchatMcpGrantRevoke,
+  type WebchatMcpGrantRevoked,
+  type KnowledgeSearchReq,
+  type KnowledgeSearchOk,
+  type KnowledgeListReq,
+  type KnowledgeListOk,
+  type KnowledgeRecordConflict,
+  type KnowledgeRecordOk,
+  type KnowledgeRecordReadReq,
+  type KnowledgeRecordWriteReq,
+  type MemoryStoreReq,
+  type MemoryFsReply,
+  type MemoryHistoryAppendReq,
+  type MemoryHistoryAppendOk,
+  type MemoryHistoryReadReq,
+  type MemoryHistoryReadOk,
+  type MemoryHomeMigratedReq,
+  type MemoryHomeMigratedOk,
+  type OrgSkillsReq,
+  type OrgSkillsOk,
+  type OrganizationSuggestionsSyncReq,
+  type OrganizationSuggestionsSyncOk,
+  type ManagedSkillReadReq,
+  type ManagedSkillChunk,
+  type BootstrapLifecycle,
+  type DaemonLifecycleProgress,
+  type FrameOrgPeer,
+  type OrganizationMode,
+  type AgentExistsOk,
   AGENT_EXISTS_FEATURE,
   AGENT_EXISTS_MAX,
   COMPUTER_CHANNEL_FEATURE,
@@ -206,6 +196,12 @@ import {
   checkReplyFrameOrg,
   isInstallWideFrameType
 } from '@agentconnect.md/protocol'
+/**
+ * `CpClient` — the daemon-side CP WebSocket client FSM (protocol §2.1). Dials
+ * out, runs the auth → register handshake, then (Tasks 5–7) emits heartbeats,
+ * dispatches C→D control frames, and reconnects with backoff. Local-first:
+ * `start()` is non-blocking and a CP failure never affects the daemon.
+ */
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { SessionAdmitOutcome } from '../session-admission.js'
 import type { AgentControlDeps } from './control/agent.js'
@@ -386,6 +382,12 @@ export interface CpClientDeps
   /** Called with the Web App console origin from `auth/ok` (the CP's own console URL, or
    *  undefined when it has none). Used as the fallback base for session deep links. */
   onWebAppUrl?: (webAppUrl: string | undefined) => void
+  /** Called with the normalized Relay HTTP(S) base URL from `auth/ok` for direct interactive callbacks. */
+  onPublicRelayUrl?: (publicRelayUrl: string | undefined) => void
+  /** Called with the CP-derived Mattermost interactive button HMAC secret from `auth/ok`. */
+  onMattermostActionSecret?: (secret: string | undefined) => void
+  /** Called with the daemon's orgId from `auth/ok` (present for org-scoped API-key daemons, absent for pool daemons). */
+  onOrgId?: (orgId: string | undefined) => void
   /** Called with the daemon's org slug from `auth/ok` (or undefined when the CP couldn't
    *  resolve it). The console is org-scoped, so this becomes the `<orgSlug>` segment of a
    *  session deep link (`<webAppUrl>/<orgSlug>/sessions/<id>`). */
@@ -692,6 +694,9 @@ export class CpClient {
       heartbeatSec: number
       dutyLeaseMs?: number
       webAppUrl?: string
+      publicRelayUrl?: string
+      mattermostActionSecret?: string
+      orgId?: string
       orgSlug?: string
       organizationMode?: OrganizationMode
       memberSet?: { setId: string; name: string }
@@ -719,6 +724,9 @@ export class CpClient {
     // Adopt the CP's Web App console origin (for session deep links). Local config wins,
     // so the daemon applies this only as a fallback (see sessionLink).
     this.deps.onWebAppUrl?.(ok.webAppUrl)
+    this.deps.onPublicRelayUrl?.(ok.publicRelayUrl)
+    this.deps.onMattermostActionSecret?.(ok.mattermostActionSecret)
+    this.deps.onOrgId?.(ok.organizationMode === 'connection' ? ok.orgId : undefined)
     // Adopt the org slug the daemon belongs to — the `<orgSlug>` path segment of a deep link.
     this.deps.onOrgSlug?.(ok.orgSlug)
     this.state = 'REGISTERING'

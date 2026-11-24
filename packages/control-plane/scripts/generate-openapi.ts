@@ -39,6 +39,7 @@ import { createWeChatCpProvider } from '../src/platforms/wechat/provider.js'
 import { createWeComCpProvider } from '../src/platforms/wecom/provider.js'
 import { createEmailCpProvider } from '../src/platforms/email/provider.js'
 import { emailAddressRoutes } from '../src/platforms/email/routes.js'
+import { createMattermostCpProvider } from '../src/platforms/mattermost/provider.js'
 
 /** `config` plus the platform registry are read at spec-build time; repos stay
  *  untouched (the docs/spec routes hit no DB-backed handler). Same stub shape as
@@ -69,7 +70,8 @@ function stubDeps(): HttpDeps {
       createMsTeamsCpProvider(),
       createWeChatCpProvider({}),
       createWeComCpProvider(),
-      createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] })
+      createEmailCpProvider({ installRoutes: [emailAddressRoutes({ addresses: { taken: async () => false } })] }),
+      createMattermostCpProvider()
     ])
   } as unknown as HttpDeps
 }

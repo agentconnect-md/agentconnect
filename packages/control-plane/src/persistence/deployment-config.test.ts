@@ -124,6 +124,47 @@ describe('DeploymentConfigValuesV1Schema', () => {
     ).toBe(false)
   })
 
+  it('normalizes logto.mattermostConnector.serverUrl and refuses invalid or link-local URLs', () => {
+    const parsed = DeploymentConfigValuesV1Schema.parse({
+      ...base,
+      logto: {
+        ...base.logto,
+        mattermostConnector: { serverUrl: ' HTTPS://Chat.Example.COM:8443/team/// ', clientId: ' mm-oauth-client ' }
+      }
+    }).logto?.mattermostConnector
+    expect(parsed).toEqual({ serverUrl: 'https://chat.example.com:8443/team', clientId: 'mm-oauth-client' })
+    expect(
+      DeploymentConfigValuesV1Schema.parse({
+        ...base,
+        logto: { ...base.logto, mattermostConnector: { serverUrl: 'http://192.168.10.20:8065/', clientId: 'mm' } }
+      }).logto?.mattermostConnector
+    ).toEqual({ serverUrl: 'http://192.168.10.20:8065', clientId: 'mm' })
+
+    for (const badUrl of [
+      'http://169.254.169.254',
+      'http://[fe80::1]:8065',
+      'http://0.0.0.0:8065',
+      'https://user:pass@chat.example.com',
+      'https://chat.example.com?a=1',
+      'https://chat.example.com#frag',
+      'ftp://chat.example.com'
+    ]) {
+      expect(
+        DeploymentConfigValuesV1Schema.safeParse({
+          ...base,
+          logto: { ...base.logto, mattermostConnector: { serverUrl: badUrl, clientId: 'mm' } }
+        }).success,
+        badUrl
+      ).toBe(false)
+    }
+    expect(
+      DeploymentConfigValuesV1Schema.safeParse({
+        ...base,
+        logto: { ...base.logto, mattermostConnector: { serverUrl: 'https://chat.example.com', clientId: ' ' } }
+      }).success
+    ).toBe(false)
+  })
+
   const oidcAuth = {
     mode: 'oidc' as const,
     audience: 'web-app',
@@ -228,6 +269,23 @@ describe('deploymentSecretsRequiringRefresh', () => {
     })
     expect(deploymentSecretsRequiringRefresh(base, next)).toEqual([`logto.${provider}ConnectorClientSecret`])
     expect(deploymentSecretsRequiringRefresh(next, next)).toEqual([])
+  })
+
+  it('binds logto.mattermostConnectorClientSecret to both serverUrl and clientId', () => {
+    const withMm = (serverUrl: string, clientId: string) =>
+      DeploymentConfigValuesV1Schema.parse({
+        ...base,
+        logto: { ...base.logto, mattermostConnector: { serverUrl, clientId } }
+      })
+    const first = withMm('https://chat.example.com/team/', 'mm-1')
+    expect(deploymentSecretsRequiringRefresh(base, first)).toEqual(['logto.mattermostConnectorClientSecret'])
+    expect(deploymentSecretsRequiringRefresh(first, withMm('https://chat.example.com/team', 'mm-1'))).toEqual([])
+    expect(deploymentSecretsRequiringRefresh(first, withMm('https://other.example.com', 'mm-1'))).toEqual([
+      'logto.mattermostConnectorClientSecret'
+    ])
+    expect(deploymentSecretsRequiringRefresh(first, withMm('https://chat.example.com/team', 'mm-2'))).toEqual([
+      'logto.mattermostConnectorClientSecret'
+    ])
   })
 
   it('binds write-only secrets only to provider identity fields', () => {

@@ -6851,6 +6851,8 @@ export interface ChannelPlacementRecord {
    *  complete channel placement set and `name`, this lets the snapshot builder derive
    *  an exact conversation-scoped `@mention` (send-message-routing-rework.md §8.5). */
   botUserId?: string
+  /** Public bot handle without leading `@` (e.g. `acbot` on Mattermost). */
+  botUsername?: string
   callPolicy: AgentCallPolicy
   allowedCallerAgentIds: string[]
   outboundPolicy: AgentCallPolicy

@@ -728,12 +728,14 @@ describe('executeTool: sendMessage (channel post)', () => {
       await executeTool(
         ctx,
         'shareFile',
-        { path: 'out/chart.png', caption: 'cc <@U1> @here <at user_id="all">everyone</at>' },
+        { path: 'out/chart.png', caption: 'cc <@U1> @here @channel @all <at user_id="all">everyone</at>' },
         d
       )
       const caption = (gw.uploadFile as ReturnType<typeof vi.fn>).mock.calls[0]![2] as string
       expect(caption).not.toContain('<@U1>')
       expect(caption).not.toContain('@here')
+      expect(caption).not.toContain('@channel')
+      expect(caption).not.toContain('@all')
       expect(caption).not.toContain('<at ')
       expect(caption).toContain('U1')
     })
@@ -1466,7 +1468,9 @@ describe('executeTool: sendMessage (channel post)', () => {
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
       executeTool(dual, 'sendMessage', { action: 'postMessage', toUser: '42', platform: 'telegram', message: 'x' }, d)
-    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk or WeCom (not telegram) yet')
+    ).rejects.toThrow(
+      'sendMessage: toUser is only supported on Slack or DingTalk or WeCom or Mattermost (not telegram) yet'
+    )
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -1484,7 +1488,9 @@ describe('executeTool: sendMessage (channel post)', () => {
         { action: 'postMessage', toUser: '42', channel: '-100123', platform: 'telegram', message: 'x' },
         d
       )
-    ).rejects.toThrow('sendMessage: toUser is only supported on Slack or DingTalk or WeCom (not telegram) yet')
+    ).rejects.toThrow(
+      'sendMessage: toUser is only supported on Slack or DingTalk or WeCom or Mattermost (not telegram) yet'
+    )
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 
@@ -1611,6 +1617,95 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(server.last.frames('aibot_send_msg').map((f) => f.body!.msgtype)).toEqual(['image', 'markdown'])
       expect(recorded).toMatchObject([{ channel: 'dm:user-carol', thread: 'dm' }])
       await conn.stop()
+    })
+  })
+
+  describe('on Mattermost', () => {
+    it('supports updating an existing channel thread and routing channel toUser mentions to postMentioning', async () => {
+      const threadId = 'mmpost00000000000000000001'
+      const postMentioning = vi.fn(async () => 'mmpost00000000000000000009')
+      const gw = fakeGateway({
+        postMentioning,
+        getThreadReplies: vi.fn(async (_channel, thread) =>
+          thread === threadId
+            ? [{ sender: 'u1', ts: threadId, text: 'root', isBot: false, chrome: false, attachments: [] }]
+            : []
+        )
+      })
+      const { deps: d, recorded } = deps(gw)
+      const mmCtx: SessionContext = {
+        ...ctx,
+        platform: 'mattermost',
+        integrationId: 'int-mm',
+        channel: 'mmch00000000000000000001',
+        thread: 'mmpost00000000000000000000',
+        deliveryThread: 'mmpost00000000000000000000',
+        integrations: [...ctx.integrations!, { id: 'int-mm', platform: 'mattermost' }]
+      }
+
+      const plain = (await executeTool(
+        mmCtx,
+        'sendMessage',
+        {
+          action: 'postMessage',
+          channel: 'mmch00000000000000000002',
+          thread: threadId,
+          platform: 'mattermost',
+          message: 'update'
+        },
+        d
+      )) as Record<string, unknown>
+      expect(gw.postMessage).toHaveBeenCalledWith(
+        'mmch00000000000000000002',
+        'update',
+        threadId,
+        expect.objectContaining({
+          agentAuthorId: 'bot-a',
+          response: expect.objectContaining({ deliveryState: 'final' })
+        })
+      )
+      expect(plain).toMatchObject({ post: { channel: 'mmch00000000000000000002', thread: threadId } })
+      expect(recorded).toContainEqual({
+        channel: 'mmch00000000000000000002',
+        thread: threadId,
+        text: 'update',
+        ts: 'ts-123'
+      })
+
+      await executeTool(
+        mmCtx,
+        'sendMessage',
+        {
+          action: 'postMessage',
+          channel: 'mmch00000000000000000002',
+          toUser: ['mmuser00000000000000000001', 'mmuser00000000000000000002'],
+          platform: 'mattermost',
+          message: 'please check'
+        },
+        d
+      )
+      expect(postMentioning).toHaveBeenCalledWith(
+        'mmch00000000000000000002',
+        'please check',
+        ['mmuser00000000000000000001', 'mmuser00000000000000000002'],
+        authorIdentity
+      )
+
+      await expect(
+        executeTool(
+          mmCtx,
+          'sendMessage',
+          {
+            action: 'postMessage',
+            channel: 'mmch00000000000000000002',
+            thread: threadId,
+            toUser: ['mmuser00000000000000000001'],
+            platform: 'mattermost',
+            message: 'please check'
+          },
+          d
+        )
+      ).rejects.toThrow(/unexpected `thread`/)
     })
   })
 

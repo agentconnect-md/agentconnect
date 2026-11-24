@@ -34,7 +34,8 @@ import {
   FOLLOW_UP_WATCH_FEATURE,
   GITHUB_APP_WEBHOOK_V1_FEATURE,
   COMPUTER_WS_PUBLIC_PATH,
-  WECOM_PLATFORM
+  WECOM_PLATFORM,
+  MATTERMOST_PLATFORM
 } from '@agentconnect.md/protocol'
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
@@ -424,6 +425,8 @@ import { createMsTeamsCpProvider } from './platforms/msteams/provider.js'
 import { createWeChatCpProvider } from './platforms/wechat/provider.js'
 import { createWeComCpProvider } from './platforms/wecom/provider.js'
 import { weComCredentialRoutes } from './platforms/wecom/routes.js'
+import { createMattermostCpProvider, deriveMattermostActionSecret } from './platforms/mattermost/provider.js'
+import { mattermostCredentialRoutes } from './platforms/mattermost/routes.js'
 import { createEmailCpProvider } from './platforms/email/provider.js'
 import { emailAddressRoutes } from './platforms/email/routes.js'
 import { emailSettingsRoutes } from './platforms/email/settings-routes.js'
@@ -492,6 +495,10 @@ import { GoogleChatSessionAccessService } from './http/googlechat-session-access
 import { createTelegramSessionAccess } from './platforms/telegram/session-access.js'
 import { createDiscordSessionAccess } from './platforms/discord/session-access.js'
 import { createMsTeamsSessionAccess } from './platforms/msteams/session-access.js'
+import {
+  MattermostSessionAccessService,
+  resolveMattermostOauthRealmKey
+} from './platforms/mattermost/session-access.js'
 import { SessionAccessWarmer } from './http/session-access-warmer.js'
 import {
   TENANTLESS_SENTINEL,
@@ -553,6 +560,8 @@ export interface ContainerOpts {
   slackFetch?: FetchLike
   /** Feishu/Lark Open Platform fetch override for Session membership checks. */
   feishuFetch?: FetchLike
+  /** Mattermost HTTP fetch override for credential checks and Session membership checks. */
+  mattermostFetch?: typeof fetch
   /** npm dist-tags fetch override for the daemon "latest version" resolver — tests
    *  stub it (absent under NODE_ENV=test ⇒ the resolver is inert, no network). */
   daemonReleaseFetch?: FetchLike
@@ -767,6 +776,8 @@ export function buildContainer(
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: config.API_KEY_PEPPER })
   const webAppUrl = resolveWebAppUrl(config)
+  const relayPublicBase = relayHttpBase(config.PUBLIC_RELAY_URL) ?? undefined
+  const mattermostActionSecret = config.MATTERMOST_ACTION_SECRET ?? deriveMattermostActionSecret(config.API_KEY_PEPPER)
   // In-cluster Kubernetes access: assembled ONLY when the daemon pool is enabled. Hoisted
   // above the auth service because an in-cluster daemon authenticates against this client.
   const clusterAccess = loadClusterAccess(config)
@@ -796,7 +807,9 @@ export function buildContainer(
       // a concrete CORS_ORIGIN (the browser console origin a two-origin deploy already lists),
       // else PUBLIC_CP_URL for single-origin deploys. All unset ⇒ no webAppUrl sent (daemon
       // uses its own config). See resolveWebAppUrl.
-      WEB_APP_URL: webAppUrl
+      WEB_APP_URL: webAppUrl,
+      ...(relayPublicBase ? { PUBLIC_RELAY_URL: relayPublicBase } : {}),
+      MATTERMOST_ACTION_SECRET: mattermostActionSecret
     },
     // Resolves the daemon's org slug for the org-scoped deep link (`…/<orgSlug>/sessions/…`).
     repos.org,
@@ -2515,6 +2528,10 @@ export function buildContainer(
             : {})
         })
       : undefined
+  const mattermostOauthRealmKey = resolveMattermostOauthRealmKey(
+    config,
+    opts.deploymentConfig ? (opts.deploymentConfig.values.logto?.mattermostConnector?.serverUrl ?? null) : undefined
+  )
   const logtoIdentity: LogtoIdentityService | undefined =
     logtoMgmtCfg && config.OIDC_ISSUER
       ? new LogtoIdentityService(
@@ -2530,7 +2547,8 @@ export function buildContainer(
           {
             identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000,
             ...(githubRepoIdentity ? { githubRepoIdentity } : {}),
-            clearMicrosoftTenantIdentities: (sub) => azureDevOpsUserIdentityStore.clearBySubject(sub)
+            clearMicrosoftTenantIdentities: (sub) => azureDevOpsUserIdentityStore.clearBySubject(sub),
+            ...(mattermostOauthRealmKey ? { mattermostOauthRealmKey } : {})
           }
         )
       : undefined
@@ -2681,6 +2699,39 @@ export function buildContainer(
     msTeamsPlatformApp,
     msTeamsAgentBots
   )
+  const parseHostList = (raw?: string): string[] =>
+    (raw ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean)
+  const internalAllowedHosts = parseHostList(config.AGENTCONNECT_INTERNAL_ALLOWED_HOSTS)
+  const mattermostAllowPrivateNetwork = config.MATTERMOST_ALLOW_PRIVATE_NETWORK
+    ? config.MATTERMOST_ALLOW_PRIVATE_NETWORK === 'true'
+    : config.NODE_ENV !== 'production'
+  const rawMattermostOauthServerUrl = opts.deploymentConfig
+    ? opts.deploymentConfig.values.logto?.mattermostConnector?.serverUrl
+    : config.MATTERMOST_OAUTH_SERVER_URL
+  let mattermostOauthHost: string | undefined
+  if (rawMattermostOauthServerUrl?.trim()) {
+    try {
+      mattermostOauthHost = new URL(rawMattermostOauthServerUrl.trim()).hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    } catch {
+      mattermostOauthHost = undefined
+    }
+  }
+  // A tenant supplies serverUrl, so hosts allowlisted for MCP OAuth (CP_ALLOWED_OUTBOUND_HOSTS) stay out of its reach.
+  const mattermostOutboundAllowlist = new Set([
+    ...internalAllowedHosts,
+    ...(mattermostOauthHost ? [mattermostOauthHost] : [])
+  ])
+  const mattermostSessionAccess = new MattermostSessionAccessService({
+    ...botSessionAccessDeps,
+    users: repos.user,
+    allowPrivateNetwork: mattermostAllowPrivateNetwork,
+    allowlist: mattermostOutboundAllowlist,
+    ...(mattermostOauthRealmKey ? { mattermostOauthRealmKey } : {}),
+    ...(opts.mattermostFetch ? { fetchImpl: opts.mattermostFetch } : {})
+  })
 
   // Built once and shared between the route deps (the live paths) and the
   // platform providers below — one closure per platform, not two.
@@ -2924,7 +2975,8 @@ export function buildContainer(
       googleChatSessionAccess,
       telegramSessionAccess,
       discordSessionAccess,
-      msTeamsSessionAccess
+      msTeamsSessionAccess,
+      mattermostSessionAccess
     ],
     ...(iconStore ? { iconStore } : {}),
     ...(fileTransfer ? { fileTransfer } : {}),
@@ -2940,12 +2992,7 @@ export function buildContainer(
   const mcpPush = makeMcpPush(httpDeps)
   // The CP's own outbound allowlist — never the relay's; the two egress permissions are
   // separate by design (see `net/guarded-fetch.ts`).
-  const mcpOutboundAllowlist = new Set(
-    (config.CP_ALLOWED_OUTBOUND_HOSTS ?? '')
-      .split(',')
-      .map((h) => h.trim().toLowerCase())
-      .filter(Boolean)
-  )
+  const mcpOutboundAllowlist = new Set([...parseHostList(config.CP_ALLOWED_OUTBOUND_HOSTS), ...internalAllowedHosts])
   const mcpOauthDial: Dial = (url, init) => guardedRequest(url, { ...init, allowlist: mcpOutboundAllowlist })
   const mcpTokenService = new McpProviderTokenService({
     oauth: repos.mcpProviderOauth,
@@ -3371,8 +3418,6 @@ export function buildContainer(
     fetch: (input, init) => fetch(input, init),
     ...(logtoIdentity ? { identity: logtoIdentity } : {})
   }
-  // The relay pool's public origin: the relays learn it from their snapshot and Google Chat apps are addressed under it (§11).
-  const relayPublicBase = relayHttpBase(config.PUBLIC_RELAY_URL) ?? undefined
   // The relay's anchor points every unclaimed Workspace customer of the deployment app at the console's claim page (§10.4).
   const googleChatAnchor = googleChatClaimAnchor(googleChatPlatformApp, webAppUrl)
   if (googleChatPlatformApp && !googleChatAnchor) {
@@ -3591,6 +3636,20 @@ export function buildContainer(
         }),
         emailSettingsRoutes(httpDeps)
       ]
+    }),
+    createMattermostCpProvider({
+      ...(opts.mattermostFetch ? { fetch: opts.mattermostFetch } : {}),
+      allowPrivateNetwork: mattermostAllowPrivateNetwork,
+      allowlist: mattermostOutboundAllowlist,
+      actionSecret: mattermostActionSecret,
+      installRoutes: [
+        mattermostCredentialRoutes(httpDeps, opts.mattermostFetch, {
+          allowPrivateNetwork: mattermostAllowPrivateNetwork,
+          allowlist: mattermostOutboundAllowlist
+        })
+      ],
+      isInstalled: async (externalAppId, botUserId) =>
+        (await repos.bot.getByExternalIdentity(MATTERMOST_PLATFORM, externalAppId, botUserId)) !== null
     })
   ])
 
@@ -3932,6 +3991,7 @@ export function buildContainer(
     verifyComputerRelayToken: (credential, computerId) =>
       computerChannelGrants.verifyRelayToken(credential, computerId),
     computerTurnSecret: computerRelayTurnSecret,
+    mattermostActionSecret,
     relays: repos.relay,
     relayReg,
     clock,

@@ -31,6 +31,7 @@ import { createMsTeamsCpProvider } from './msteams/provider.js'
 import { createWeChatCpProvider } from './wechat/provider.js'
 import { createWeComCpProvider } from './wecom/provider.js'
 import { createEmailCpProvider } from './email/provider.js'
+import { createMattermostCpProvider } from './mattermost/provider.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import { Platform, UpsertCronBody, WaitlistJoinBody } from '../http/dto/index.js'
 import { findTool } from '../http/mcp/tools.js'
@@ -50,7 +51,8 @@ const productionRegistry = buildCpPlatformRegistry([
   createMsTeamsCpProvider(),
   createWeChatCpProvider({}),
   createWeComCpProvider(),
-  createEmailCpProvider()
+  createEmailCpProvider(),
+  createMattermostCpProvider()
 ])
 
 const sorted = [...CP_PLATFORM_IDS].sort()

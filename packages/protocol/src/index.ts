@@ -319,6 +319,7 @@ export {
   DINGTALK_PLATFORM,
   EMAIL_PLATFORM,
   GOOGLE_CHAT_PLATFORM,
+  MATTERMOST_PLATFORM,
   MSTEAMS_PLATFORM,
   THREADLESS_GROUP_ROOT,
   WECHAT_PLATFORM,
@@ -326,6 +327,15 @@ export {
   manifestFor
 } from './platform-manifest.js'
 export type { AppendConversationKind, MembershipEnumeration, PlatformManifest } from './platform-manifest.js'
+export {
+  MATTERMOST_ACTION_PATH,
+  MATTERMOST_CARD_NOTE_MAX,
+  MattermostActionClaims,
+  deriveMattermostOrgActionSecret,
+  signMattermostActionToken,
+  verifyMattermostActionToken,
+  verifyMattermostActionTokenWithMaster
+} from './mattermost-action-token.js'
 
 // ── exact money — the decimal amount every reported/stored/served cost uses ──
 export {

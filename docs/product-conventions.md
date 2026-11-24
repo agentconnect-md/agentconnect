@@ -111,11 +111,12 @@ before it:
 
 Who counts as "people" depends on whether the product can tell who someone is:
 
-- **A platform whose permissions are synced with the console** (Slack, Feishu/Lark, Telegram, Discord, Google Chat or Microsoft Teams with the
+- **A platform whose permissions are synced with the console** (Slack, Feishu/Lark, Telegram, Discord, Google Chat, Microsoft Teams or Mattermost with the
   organization's session access sync on): only people whose console permissions allow the
   action, that is, the agent's editors, recognized by the account they linked under Sign-in
   methods in their console Profile: their Slack account in the app's workspace, or their
-  Feishu/Lark account in the app's region, or their Telegram, Discord, Google or Microsoft account. Anyone else, a guest or an editor who has not linked
+  Feishu/Lark account in the app's region, or their Telegram, Discord, Google, Microsoft or
+  Mattermost account. Anyone else, a guest or an editor who has not linked
   included, is refused privately, and the card stays as it is. A refused approval says only an
   Agent editor can answer it, and someone linked to no console account is told how to link one;
   it gives no console link, since the console shows that conversation only to the same people. A
@@ -149,7 +150,7 @@ Every level keeps these rules:
   asked, in their own direct message, when they are a full member of the installing workspace;
   otherwise the agent's editors. Where permissions are synced it goes to an Agent editor's
   direct message, the person who asked first when they are one.
-- Slack, Telegram, Discord, Feishu/Lark and Google Chat post the approval card in the
+- Slack, Telegram, Discord, Feishu/Lark, Google Chat and Mattermost post the approval card in the
   conversation the request came from: in its thread, its Telegram topic or reply chain, or at
   its top level when it is one long conversation. The card offers the runtime's own choices,
   "always allow" included where offered; a list longer than any card can show is declined with a
@@ -162,7 +163,7 @@ Every level keeps these rules:
 - A refusal names who can answer instead, or where to go. A refused click or tap is told only to
   the person who made it, and leaves the card as everyone else sees it: on Slack and Discord in a
   message only they see, on Telegram in an alert on the tap, on Feishu/Lark in a toast on the
-  click, and on Google Chat in a private message.
+  click, on Google Chat in a private message, and on Mattermost in an ephemeral message only they see.
 - The setting does not change the agent's permission policy. Which tool calls need approval is
   set by the agent's permission mode in the console and, for a Claude Code agent whose workspace
   is a Git repository, by that repository's `allow`, `ask` and `deny` rules ("A repository's

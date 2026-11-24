@@ -58,6 +58,7 @@ const MANAGED_KEYS = [
   'LOGTO_MGMT_APP_ID',
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_RESOURCE',
+  'MATTERMOST_OAUTH_SERVER_URL',
   'PRESET_AGENTS_ENABLED'
 ] as const
 
@@ -160,6 +161,9 @@ export function applyDeploymentEnvironment(
     set('LOGTO_MGMT_APP_ID', values.logto.managementAppId)
     set('LOGTO_MGMT_APP_SECRET', secrets['logto.managementAppSecret'])
     set('LOGTO_MGMT_RESOURCE', values.logto.managementResource)
+    if (values.logto.mattermostConnector) {
+      set('MATTERMOST_OAUTH_SERVER_URL', values.logto.mattermostConnector.serverUrl)
+    }
   }
 
   env.PRESET_AGENTS_ENABLED = String(values.features.presetAgentsEnabled)

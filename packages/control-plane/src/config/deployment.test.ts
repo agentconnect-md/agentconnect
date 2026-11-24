@@ -273,6 +273,39 @@ describe('applyDeploymentEnvironment', () => {
     expect(managed.LARK_PLATFORM_APP_ID).toBe('cli_lark')
     expect(managed.LARK_PLATFORM_APP_SECRET).toBe('db-secret')
   })
+
+  it('projects MATTERMOST_OAUTH_SERVER_URL from logto.mattermostConnector and clears stale startup values', () => {
+    const base = runtime()
+    const managed = applyDeploymentEnvironment(
+      {
+        ...bootstrap,
+        MATTERMOST_OAUTH_SERVER_URL: 'https://stale-mm.example.test'
+      },
+      runtime({
+        values: {
+          ...base.values,
+          logto: {
+            managementAppId: 'm2m-app',
+            managementResource: 'https://login.example.test/api',
+            browser: null,
+            githubConnector: null,
+            mattermostConnector: { serverUrl: 'https://mm.example.test/sub', clientId: 'mm-client' }
+          }
+        },
+        secrets: {
+          'logto.managementAppSecret': 'logto-secret',
+          'logto.mattermostConnectorClientSecret': 'mm-secret'
+        }
+      })
+    )
+    expect(managed.MATTERMOST_OAUTH_SERVER_URL).toBe('https://mm.example.test/sub')
+
+    const cleared = applyDeploymentEnvironment(
+      { ...bootstrap, MATTERMOST_OAUTH_SERVER_URL: 'https://stale-mm.example.test' },
+      runtime()
+    )
+    expect(cleared.MATTERMOST_OAUTH_SERVER_URL).toBeUndefined()
+  })
 })
 
 describe('relayDeploymentSnapshot', () => {

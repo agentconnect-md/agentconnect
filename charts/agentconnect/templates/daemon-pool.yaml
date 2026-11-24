@@ -265,6 +265,7 @@ spec:
               value: /var/run/ac-key-server-ca/ca.crt
             {{- end }}
             {{- end }}
+            {{- include "agentconnect.mattermostEnv" (dict "root" $ "extraEnv" .Values.daemonPool.extraEnv "owner" "daemonPool") | nindent 12 }}
             {{- range $k, $v := .Values.daemonPool.extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}

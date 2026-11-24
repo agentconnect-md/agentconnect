@@ -41,7 +41,7 @@ const wizardOf = (id: string) => {
 }
 
 describe('platform registry', () => {
-  it('registers exactly the twelve chat platforms, in picker order', () => {
+  it('registers exactly the thirteen chat platforms, in picker order', () => {
     const ids = [
       'slack',
       'msteams',
@@ -53,6 +53,7 @@ describe('platform registry', () => {
       'wecom',
       'wechat',
       'qq',
+      'mattermost',
       'linear',
       'email'
     ]
@@ -333,6 +334,12 @@ describe('invite hint copy', () => {
       undefined,
       'invite the bot to any group in QQ and @-mention it to start.',
       '把机器人拉进QQ的任意群，并 @ 它即可开始使用。'
+    ],
+    [
+      'mattermost',
+      undefined,
+      'invite the bot to any channel in Mattermost and @-mention it to start.',
+      '把机器人拉进Mattermost的任意频道，并 @ 它即可开始使用。'
     ],
     [
       'wechat',

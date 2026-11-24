@@ -20,6 +20,7 @@ import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
 import { DingTalkConnection } from '../src/platforms/dingtalk/connection.js'
 import { FeishuConnection } from '../src/feishu/connection.js'
+import { MattermostConnection } from '../src/platforms/mattermost/connection.js'
 import { WeComConnection } from '../src/platforms/wecom/connection.js'
 
 /**
@@ -76,6 +77,8 @@ describe('the read-port registry', () => {
     expect(offersDirectMessages('feishu')).toBe(has(FeishuConnection, 'openDirectMessage'))
     expect(offersDirectMessages('dingtalk')).toBe(has(DingTalkConnection, 'openDirectMessage'))
     expect(offersDirectMessages('wecom')).toBe(has(WeComConnection, 'openDirectMessage'))
+    expect(offersDirectMessages('mattermost')).toBe(has(MattermostConnection, 'openDirectMessage'))
+    expect(readPortsFor('mattermost')?.channelMentions).toBe('gateway')
     // WeCom documents no mention in a bot's proactive message, so the toUser channel form stays refused there.
     expect(readPortsFor('wecom')?.channelMentions).toBeUndefined()
   })
@@ -84,7 +87,8 @@ describe('the read-port registry', () => {
   it('declares an authoritative member listing exactly where the adapter offers one', () => {
     for (const [platform, ctor] of [
       ['slack', SlackConnection],
-      ['feishu', FeishuConnection]
+      ['feishu', FeishuConnection],
+      ['mattermost', MattermostConnection]
     ] as const) {
       expect(membersAuthoritative(platform), platform).toBe(true)
       expect(has(ctor, 'listMemberIds'), platform).toBe(true)
@@ -101,11 +105,12 @@ describe('the read-port registry', () => {
 
   // assistant-mode.md §5.5: a public channel is confirmed only by a platform's own privacy report, and only Slack tells a guest apart.
   it('declares channel privacy and workspace standing exactly where the adapter answers them', () => {
-    for (const platform of ['slack', 'discord', 'feishu', 'telegram'])
+    for (const platform of ['slack', 'discord', 'feishu', 'telegram', 'mattermost'])
       expect(reportsChannelPrivacy(platform), platform).toBe(true)
     for (const platform of ['qq', 'linear', 'googlechat', 'webchat', ''])
       expect(reportsChannelPrivacy(platform), platform).toBe(false)
     expect(tellsWorkspaceMembers('slack')).toBe(has(SlackConnection, 'isFullMember'))
+    expect(tellsWorkspaceMembers('mattermost')).toBe(has(MattermostConnection, 'isFullMember'))
     for (const [platform, ctor] of [
       ['telegram', TelegramConnection],
       ['discord', DiscordConnection],
@@ -119,6 +124,7 @@ describe('the read-port registry', () => {
   // assistant-mode.md §5.3: only Slack's channel lookup says whether another organization shares a channel.
   it('declares a channel lookup that reports a share only for Slack', () => {
     expect(reportsSharedConversations('slack')).toBe(true)
+    expect(reportsSharedConversations('mattermost')).toBe(true)
     for (const platform of ['telegram', 'discord', 'feishu', 'qq', 'linear', 'googlechat', 'webchat', ''])
       expect(reportsSharedConversations(platform), platform).toBe(false)
   })
@@ -128,7 +134,8 @@ describe('the read-port registry', () => {
     for (const [platform, ctor] of [
       ['slack', SlackConnection],
       ['discord', DiscordConnection],
-      ['feishu', FeishuConnection]
+      ['feishu', FeishuConnection],
+      ['mattermost', MattermostConnection]
     ] as const) {
       expect(declaresPort(platform, 'channelHistory'), platform).toBe(true)
       expect(has(ctor, 'getChannelHistory'), platform).toBe(true)
@@ -137,6 +144,13 @@ describe('the read-port registry', () => {
     expect(has(TelegramConnection, 'getChannelHistory')).toBe(false)
     for (const platform of ['qq', 'linear', 'googlechat', 'webchat', ''])
       expect(declaresPort(platform, 'channelHistory'), platform).toBe(false)
+  })
+
+  it('declares publicMessageSearch and publicChannelReach for Mattermost in agreement with MattermostConnection', () => {
+    expect(declaresPort('mattermost', 'publicMessageSearch')).toBe(has(MattermostConnection, 'searchPublicMessages'))
+    expect(declaresPort('mattermost', 'publicMessageSearch')).toBe(true)
+    expect(readPortsFor('mattermost')?.publicChannelReach).toBe(true)
+    expect(has(MattermostConnection, 'joinChannel')).toBe(true)
   })
 
   it('is fail-closed for an unregistered platform', () => {
@@ -165,6 +179,7 @@ describe('the direct-message port', () => {
     expect(directMessagePlatformFor('slack')).toBe('slack')
     expect(directMessagePlatformFor('dingtalk')).toBe('dingtalk')
     expect(directMessagePlatformFor('wecom')).toBe('wecom')
+    expect(directMessagePlatformFor('mattermost')).toBe('mattermost')
     expect(directMessagePlatformFor('telegram')).toBe('slack')
     expect(directMessagePlatformFor('discord')).toBe('slack')
     expect(directMessagePlatformFor('feishu')).toBe('slack')
@@ -172,7 +187,7 @@ describe('the direct-message port', () => {
   })
 
   it('renders the capable platforms for the "not supported here" error', () => {
-    expect(directMessagePlatformList()).toBe('Slack or DingTalk or WeCom')
+    expect(directMessagePlatformList()).toBe('Slack or DingTalk or WeCom or Mattermost')
   })
 })
 
@@ -211,7 +226,8 @@ describe('credentialed attachment tools', () => {
       'readDingTalkFile',
       'readWeChatFile',
       'readWeComFile',
-      'readGoogleChatFile'
+      'readGoogleChatFile',
+      'readMattermostFile'
     ])
   })
 
@@ -222,6 +238,8 @@ describe('credentialed attachment tools', () => {
     expect(isAttachmentReadTool('readDingTalkFile')).toBe(true)
     expect(isAttachmentReadTool('readWeChatFile')).toBe(true)
     expect(isAttachmentReadTool('readWeComFile')).toBe(true)
+    expect(isAttachmentReadTool('readGoogleChatFile')).toBe(true)
+    expect(isAttachmentReadTool('readMattermostFile')).toBe(true)
     expect(isAttachmentReadTool('readDiscordFile')).toBe(false)
     expect(isAttachmentReadTool('getCurrentChannel')).toBe(false)
     expect(isAttachmentReadTool('')).toBe(false)

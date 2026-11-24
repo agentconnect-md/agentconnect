@@ -90,6 +90,8 @@ export interface PlatformChannelInfo {
 export interface PlatformChannelRef {
   id: string
   name?: string
+  spaceId?: string
+  space?: string
   isPrivate?: boolean
   isCodeSession?: boolean
   /** Whether the bot is in it, where a listing also names conversations it is not in (Slack's public channels). */
@@ -270,6 +272,7 @@ export interface PlatformSearchHit {
   channel: string
   channelName?: string
   messageTs: string
+  threadTs?: string
   text: string
   author?: string
   authorId?: string
@@ -506,6 +509,8 @@ export type ChatCardAnswer =
   | { kind: 'approval'; requestId: string; option: number }
   | { kind: 'choice'; requestId: string; token: string | null }
   | { kind: 'submit'; requestId: string; values: Record<string, string | readonly string[]> }
+  | { kind: 'capabilityDecline'; cardId: string; generation: number }
+  | { kind: 'draft'; draftId: string; optionId: 'approve' | 'discard' }
 
 /** One relayed card click as its platform decoded it: the answer, the card's own message id, and who clicked. */
 export interface ChatCardClick {
@@ -521,6 +526,8 @@ export interface RelayCardClicks {
   decode(msg: RdMsgPlatformAction): ChatCardClick | null
   /** The ack's `response` carrying a refusal the relay shows only the clicker. */
   response(privateText: string): unknown
+  /** For a platform whose click names its actor unverified: the click with `actor.isBot` settled, true for anyone it cannot vouch for. */
+  verifyActor?(click: ChatCardClick, msg: RdMsgPlatformAction, conn: unknown): Promise<ChatCardClick>
 }
 
 /** §5.3 relayed member joins: people added to a conversation, each looked up for a guest or another organization. */

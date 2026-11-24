@@ -121,6 +121,7 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   msteams: 'Reply in channels & chats',
   wechat: 'Reply in your own chat',
   wecom: 'Reply in groups & chats',
+  mattermost: 'Reply in channels & DMs',
   email: 'Reply to mail',
   // One row per code host the picker offers, read from the total table above.
   ...Object.fromEntries(TRIGGER_CODE_HOST_PROVIDERS.map((provider) => [provider, CODE_HOST_BLURB[provider]])),

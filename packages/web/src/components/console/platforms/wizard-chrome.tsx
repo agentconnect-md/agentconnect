@@ -42,6 +42,8 @@ export type IdentityCardKey =
   | 'Integrations.dialog.identityCards.wechat.existing'
   | 'Integrations.dialog.identityCards.wecom.create'
   | 'Integrations.dialog.identityCards.wecom.existing'
+  | 'Integrations.dialog.identityCards.mattermost.create'
+  | 'Integrations.dialog.identityCards.mattermost.existing'
   | 'Integrations.dialog.identityCards.email.create'
   | 'Integrations.dialog.identityCards.email.existing'
 
@@ -60,6 +62,7 @@ export function identityCards(
     | 'msteams'
     | 'wechat'
     | 'wecom'
+    | 'mattermost'
     | 'email'
 ): {
   create: IdentityCardKey
@@ -93,6 +96,7 @@ export type InviteHintBrandKey =
   | 'Platforms.msteams.brand'
   | 'Platforms.wechat.brand'
   | 'Platforms.wecom.brand'
+  | 'Platforms.mattermost.brand'
   | 'Platforms.email.brand'
 
 /** The host messages an invite hint can name — the two arms of its hint row — and the keys of its two values. */

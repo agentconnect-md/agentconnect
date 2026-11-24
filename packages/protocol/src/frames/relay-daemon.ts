@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { COMPUTER_FORM_FIELDS_MAX, ComputerFormValue } from '../computer-form-fill.js'
 import { TaskInitiator } from '../initiator.js'
 import { GOOGLE_CHAT_MARKUP } from '../consts.js'
+import { MATTERMOST_CARD_NOTE_MAX } from '../mattermost-action-token.js'
 import { RdAhpOpen, RdAhpOpened, RdAhpAuthorize, RdAhpAuthorized, RdAhpMessage, RdAhpClose } from '../ahp.js'
 import { CodeHostReplyTarget } from '../code-host.js'
 import { ExternalSessionAudience } from './telemetry.js'
@@ -1242,6 +1243,31 @@ export const WireMsTeamsCardActionResponse = z.object({
   note: z.string().min(1).max(MSTEAMS_CARD_NOTE_MAX)
 })
 export type WireMsTeamsCardActionResponse = z.infer<typeof WireMsTeamsCardActionResponse>
+
+/** R→D `platform_action` payload for a clicked Mattermost interactive attachment button. */
+export const WireMattermostCardAction = z.object({
+  postId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  channelId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  teamId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/)
+    .optional(),
+  userId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  userName: z.string().max(128).optional(),
+  kind: z.enum(['approval', 'elicit', 'capability', 'draft']),
+  requestId: z.string().min(1).max(128),
+  option: z.number().int().min(0).max(99).optional(),
+  token: z.string().max(128).nullable().optional(),
+  cardId: z.string().uuid().optional(),
+  generation: z.number().int().positive().optional()
+})
+export type WireMattermostCardAction = z.infer<typeof WireMattermostCardAction>
+
+/** The `rd/ack` `response` for a Mattermost button click: ephemeral text shown only to the clicker. */
+export const WireMattermostCardActionResponse = z.object({
+  ephemeralText: z.string().min(1).max(MATTERMOST_CARD_NOTE_MAX).optional()
+})
+export type WireMattermostCardActionResponse = z.infer<typeof WireMattermostCardActionResponse>
 
 /**
  * R→D REQ → rd/ack (§6.6). The ONE platform-interaction envelope replacing the

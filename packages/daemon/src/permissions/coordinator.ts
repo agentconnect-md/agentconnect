@@ -2545,6 +2545,7 @@ export class PermissionCoordinator {
     if (rec.kind === 'elicitation') {
       const chat = rec.chat
       if (!chat) return
+      if (chat.ts !== undefined && input.ts !== undefined && input.ts !== chat.ts) return
       if (chat.ts === undefined && input.ts !== undefined) chat.ts = input.ts
       if (chat.editor) {
         await this.answerEditorCard(input.requestId, rec, { ...chat, editor: chat.editor }, optionId, input.actor)
@@ -2573,6 +2574,7 @@ export class PermissionCoordinator {
     // A request no card was posted for is the console's alone.
     const chat = besideClicked ? rec.beside : rec.chat
     if (!chat) return
+    if (chat.ts !== undefined && input.ts !== undefined && input.ts !== chat.ts) return
     if (chat.ts === undefined && input.ts !== undefined) chat.ts = input.ts
     // A bot never answers, and its click leaves the card for the people there.
     if (input.actor?.isBot) {
@@ -3030,8 +3032,10 @@ export class PermissionCoordinator {
     if (surface === 'external')
       return { to: this.host.chatEditorsOnly(agentId, p.plan.integrationId) ? 'none' : 'asker' }
     // A list longer than this card holds goes to the console, which offers it whole.
+    const out = chatOut(p)
     const fits = options === undefined || options <= facet.maxOptions
-    return surface === 'open' && chatOut(p) && fits ? { to: 'card', facet } : { to: 'none' }
+    const available = !facet.canApproveInChat || facet.canApproveInChat(out)
+    return surface === 'open' && out && fits && available ? { to: 'card', facet } : { to: 'none' }
   }
 
   /** Whether `p` is still the session's live, unsuppressed turn after an await. */
@@ -3603,6 +3607,7 @@ export class PermissionCoordinator {
     if (a.token === null || !hasCard(rec) || card?.surface !== 'chat' || !card.facet.tap || !card.form)
       return await this.handleElicitChoice({ requestId: a.requestId, value: a.token, ...actor })
     // Only ever fills a gap: a recorded id is the send's own and is never overwritten by a tap.
+    if (card.ts !== undefined && a.ts !== undefined && a.ts !== card.ts) return
     if (card.ts === undefined && a.ts !== undefined) card.ts = a.ts
     const form = this.cardForm(rec)
     if (!form) return

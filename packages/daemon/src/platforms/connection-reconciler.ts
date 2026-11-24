@@ -12,6 +12,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
+  MATTERMOST_PLATFORM,
   manifestFor,
   originKindOf,
   type FeishuRegion,
@@ -69,6 +70,14 @@ import {
 import { consolidateWeChat, WeChatConnection, weChatConnKey, weChatEndpointOverrides } from './wechat/connection.js'
 import { weChatStateStore } from './wechat/state.js'
 import { consolidateWeCom, WeComConnection, weComConnKey } from './wecom/connection.js'
+import {
+  consolidateMattermost,
+  MattermostConnection,
+  mattermostConnKey,
+  type MattermostConnectionDeps
+} from './mattermost/connection.js'
+import type { MattermostActionCallbackConfig } from './mattermost/action-button.js'
+import type { ChatCardClick, InteractionActor, PlatformChannelRef } from './contract.js'
 import { consolidateEmail, EmailConnection } from './email/connection.js'
 import type { EmailMembers } from './email/members.js'
 import { transcriptChannelKey } from '../store/local-store.js'
@@ -79,7 +88,6 @@ import { storeConversationMemory } from './conversation-memory.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 import { CredentialRevocationReporter } from './credential-revocation.js'
-import type { InteractionActor } from './contract.js'
 
 /** Deadline on the detached Linear team-list refresh — long enough for a slow answer, short
  *  enough that a stalled provider does not leave a request hanging for the next reconcile. */
@@ -98,6 +106,7 @@ export type PlatformConnection =
   | MsTeamsConnection
   | WeChatConnection
   | WeComConnection
+  | MattermostConnection
   | EmailConnection
 
 /**
@@ -130,6 +139,8 @@ export interface PlatformActionSink {
     ts?: string
     actor?: InteractionActor
   }): Promise<string | undefined>
+  /** Handle a decoded chat card interaction (e.g. pure-WS Mattermost numbered reply fallback). */
+  onCardClick?: (click: ChatCardClick, agentId: string, integrationId: string) => Promise<string | undefined>
   /** A capability card's Decline named by its card and generation, judged against the bots of the connection it arrived on. */
   declineCapabilityCard(a: {
     generation: number
@@ -212,6 +223,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     msteams?: ReadonlyMap<string, MsTeamsConnection>
     wechat?: ReadonlyMap<string, WeChatConnection>
     wecom?: ReadonlyMap<string, WeComConnection>
+    mattermost?: ReadonlyMap<string, MattermostConnection>
     email?: ReadonlyMap<string, EmailConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
@@ -234,6 +246,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindWeChat?(integrationId: string, conn: WeChatConnection, botId: string): void
   /** The BotID a group mention names, which WeCom sends as `aibotid`. */
   bindWeCom?(integrationId: string, conn: WeComConnection, botId: string): void
+  /** The bot's Mattermost `user_id`, resolved via `GET /api/v4/users/me`. */
+  bindMattermost?(integrationId: string, conn: MattermostConnection, botUserId: string): void
   /** The agent's own address, which a group mail names it by. */
   bindEmail?(integrationId: string, conn: EmailConnection, address: string): void
   /** The member question an address's started mail asks of its recipients. */
@@ -245,7 +259,9 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   slackNameResolver(): SlackNameResolver | undefined
   channelNameResolver(): ChannelNameResolver | undefined
   /** Host hop back into `ConnectionReconciler.refreshChannels` — every internal re-list goes through it so the membership refresh stays one seam. */
-  refreshChannels(conn: SlackConnection, joined?: JoinedChannel): Promise<void>
+  refreshChannels(conn: AuthoritativeChannelConnection, joined?: JoinedChannel): Promise<void>
+  /** Mattermost interactive attachment button callback coordinates (Relay URL + org HMAC secret + daemonId). */
+  mattermostActionCallback?(agentId?: string): MattermostActionCallbackConfig | undefined
   onInbound(msg: NormalizedMessage, srcIntegrationIds?: string[]): void
   srcIntegrationIds(conn: unknown): string[]
   /** Where a platform's finding that a place is external goes (assistant-mode.md §5.3). */
@@ -271,12 +287,20 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   integrationIdForTransportScope(agentId: string, platform: string, transportScope?: string | null): string | undefined
   connForIntegration(integrationId: string): PlatformConnection | undefined
   emitSessionMetadataSnapshotsForDisplayName(id: string): Promise<void>
+  /** Test seam for injecting Mattermost WS/REST transports without network sockets. */
+  mattermostTransport?():
+    Partial<Pick<MattermostConnectionDeps, 'createSocket' | 'fetchImpl' | 'timing' | 'sendIntervalMs'>> | undefined
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
     integrationId: string | undefined,
     callMeta: CallMeta
   ): Promise<string | null>
+}
+
+export interface AuthoritativeChannelConnection {
+  readonly botUserId: string
+  listBotChannels(): Promise<PlatformChannelRef[] | null>
 }
 
 export class ConnectionReconciler {
@@ -404,8 +428,12 @@ export class ConnectionReconciler {
 
   // One long connection per bot on this daemon: a second subscribe of the same bot evicts the first (official doc, path 101463).
   readonly weComPool = new ConnectionPool<WeComConnection>('wecom', (conn) => weComConnKey(conn.group))
+  readonly mattermostPool = new ConnectionPool<MattermostConnection>('mattermost', (conn) =>
+    mattermostConnKey(conn.group)
+  )
   // A kicked connection's redial pass, armed for the end of its cooldown; the client itself never redials after a kick.
   private readonly weComRedialTimers = new Map<string, TimerHandle>()
+  private readonly mattermostRetryTimers = new Map<string, TimerHandle>()
 
   async reconcileWeComConnections(): Promise<void> {
     const groups = consolidateWeCom(this.host.transportAgents())
@@ -459,6 +487,95 @@ export class ConnectionReconciler {
       Math.max(0, at - this.host.clock().now())
     )
     this.weComRedialTimers.set(key, timer)
+  }
+
+  private armMattermostRetry(key: string, delayMs = 30_000): void {
+    const previous = this.mattermostRetryTimers.get(key)
+    if (previous) this.host.clock().clearTimeout(previous)
+    const timer = this.host.clock().setTimeout(() => {
+      this.mattermostRetryTimers.delete(key)
+      if (this.host.draining()) return
+      void this.reconcileMattermostConnections().catch(() => this.log.warn('mattermost: retry pass failed'))
+    }, delayMs)
+    this.mattermostRetryTimers.set(key, timer)
+  }
+
+  async reconcileMattermostConnections(): Promise<void> {
+    const groups = consolidateMattermost(this.host.transportAgents())
+    for (const [key, timer] of this.mattermostRetryTimers) {
+      if (groups.has(key)) continue
+      this.host.clock().clearTimeout(timer)
+      this.mattermostRetryTimers.delete(key)
+    }
+    for (const [key, group] of groups) {
+      let conn = this.mattermostPool.find(key)
+      let newlyOpened = false
+      let resolvedGroup = group
+      if (!conn) {
+        if (!this.mattermostPool.beginConnect(key)) continue
+        const transport = this.host.mattermostTransport?.()
+        const opened: MattermostConnection = new MattermostConnection(group, {
+          log: this.log,
+          now: () => this.host.clock().now(),
+          newTraceId: () => randomUUID(),
+          ...(transport ?? {}),
+          onMessage: (msg) => {
+            this.host.channelNameResolver()?.noteMessage(opened, msg)
+            this.host.onInbound(msg, this.host.srcIntegrationIds(opened))
+          },
+          onChannelsChanged: (joined) => void this.host.refreshChannels?.(opened, joined),
+          checksJoinedMembers: () => this.host.placeTrust?.().watches(this.host.srcIntegrationIds(opened)) ?? false,
+          onPlaceExternal: (channel, reason) =>
+            this.host.placeTrust?.().detected(this.host.srcIntegrationIds(opened), channel, reason),
+          onCredentialRevoked: (revocation) =>
+            this.revocations.report(this.revocableIntegrations(opened, opened.group), revocation),
+          actionCallback: (agentId) => this.host.mattermostActionCallback?.(agentId),
+          ...(this.host.onCardClick
+            ? {
+                onCardClick: (click, agentId, integrationId) => this.host.onCardClick!(click, agentId, integrationId)
+              }
+            : {})
+        })
+        conn = opened
+        try {
+          await conn.start()
+          const latestGroup = consolidateMattermost(this.host.transportAgents()).get(key)
+          if (this.host.draining() || !latestGroup) {
+            await conn.stop()
+            continue
+          }
+          resolvedGroup = latestGroup
+          conn.updateGroup(latestGroup)
+          this.mattermostPool.add(conn)
+          newlyOpened = true
+        } catch (err) {
+          await conn.stop().catch(() => {})
+          this.log.warn(`mattermost: could not open connection; retrying in 30s: ${formatErr(err)}`)
+          if (!this.host.draining() && consolidateMattermost(this.host.transportAgents()).has(key)) {
+            this.armMattermostRetry(key)
+          }
+          continue
+        } finally {
+          this.mattermostPool.endConnect(key)
+        }
+      } else {
+        conn.updateGroup(resolvedGroup)
+      }
+      const pendingRetry = this.mattermostRetryTimers.get(key)
+      if (pendingRetry) {
+        this.host.clock().clearTimeout(pendingRetry)
+        this.mattermostRetryTimers.delete(key)
+      }
+      const existingBindings = this.host.bindings().mattermost
+      const hadUnbound = resolvedGroup.integrations.some(({ integrationId }) => !existingBindings?.get(integrationId))
+      for (const { integrationId } of resolvedGroup.integrations) {
+        this.host.bindMattermost?.(integrationId, conn, conn.botUserId)
+      }
+      this.publishedSockets.add(conn)
+      if (newlyOpened || hadUnbound) {
+        void this.host.refreshChannels?.(conn)
+      }
+    }
   }
 
   // §7.5 connection pools — one per (platform, MODE), each keyed by the platform's
@@ -527,12 +644,13 @@ export class ConnectionReconciler {
       this.msTeamsPool,
       this.weChatPool,
       this.weComPool,
+      this.mattermostPool,
       this.emailPool
     ]
   }
 
   // One-way latch: a socket whose integrations were bound speaks only for its live bindings from then on.
-  private readonly publishedSockets = new WeakSet<SlackConnection>()
+  private readonly publishedSockets = new WeakSet<SlackConnection | MattermostConnection>()
 
   /** Bind a started socket's integrations, pool it, and latch it onto its live bindings. */
   private publishSlackSocket(conn: SlackConnection, integrations: ConsolidatedGroup['integrations']): void {
@@ -542,7 +660,10 @@ export class ConnectionReconciler {
   }
 
   /** The CP-owned integrations a socket speaks for: the roster it opens with until it is bound, then only its live bindings, so a moved integration is never reported from its old socket. */
-  private revocableIntegrations(conn: SlackConnection, group: ConsolidatedGroup): string[] {
+  private revocableIntegrations(
+    conn: SlackConnection | MattermostConnection,
+    group: { integrations: readonly { integrationId: string }[] }
+  ): string[] {
     const ids = this.publishedSockets.has(conn)
       ? this.host.srcIntegrationIds(conn)
       : group.integrations.map((i) => i.integrationId)
@@ -726,6 +847,10 @@ export class ConnectionReconciler {
     const weComByIntegration = new Map<string, string>()
     for (const [key, group] of weComGroups)
       for (const { integrationId } of group.integrations) weComByIntegration.set(integrationId, key)
+    const mattermostGroups = consolidateMattermost(agents)
+    const mattermostByIntegration = new Map<string, string>()
+    for (const [key, group] of mattermostGroups)
+      for (const { integrationId } of group.integrations) mattermostByIntegration.set(integrationId, key)
     const emailGroups = consolidateEmail(agents)
     const emailByIntegration = new Map<string, string>()
     for (const [key, group] of emailGroups)
@@ -737,6 +862,7 @@ export class ConnectionReconciler {
       ...msTeamsByIntegration.keys(),
       ...weChatByIntegration.keys(),
       ...weComByIntegration.keys(),
+      ...mattermostByIntegration.keys(),
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
@@ -761,6 +887,9 @@ export class ConnectionReconciler {
     }
     for (const [id, conn] of bindings.wecom ?? []) {
       if (weComConnKey(conn.group) !== weComByIntegration.get(id)) this.host.unbindIntegration(id)
+    }
+    for (const [id, conn] of bindings.mattermost ?? []) {
+      if (mattermostConnKey(conn.group) !== mattermostByIntegration.get(id)) this.host.unbindIntegration(id)
     }
     for (const [id, conn] of bindings.email ?? []) {
       if (conn.key !== emailByIntegration.get(id)) this.host.unbindIntegration(id)
@@ -842,6 +971,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.msTeamsPool, new Set(msTeams.keys()))
     await this.prunePool(this.weChatPool, new Set(weChatGroups.keys()))
     await this.prunePool(this.weComPool, new Set(weComGroups.keys()))
+    await this.prunePool(this.mattermostPool, new Set(mattermostGroups.keys()))
     await this.prunePool(this.emailPool, new Set(emailGroups.keys()))
   }
 
@@ -1544,6 +1674,11 @@ export class ConnectionReconciler {
         await this.host.refreshChannels(conn)
         return { ok: true }
       }
+      if (conn instanceof MattermostConnection) {
+        await conn.leaveChannel(target.channel)
+        await this.host.refreshChannels(conn)
+        return { ok: true }
+      }
       if (conn instanceof TelegramConnection) {
         try {
           await conn.leaveChannel(target.channel)
@@ -1571,7 +1706,9 @@ export class ConnectionReconciler {
   }
 
   /** Re-list the bot's channels and report them per bound integration; never throws, and the cached snapshot replays on a CP reconnect. */
-  async refreshChannels(conn: SlackConnection, joined?: JoinedChannel): Promise<void> {
+  async refreshChannels(conn: AuthoritativeChannelConnection, joined?: JoinedChannel): Promise<void> {
+    const isMattermost = conn instanceof MattermostConnection
+    const platform = isMattermost ? MATTERMOST_PLATFORM : 'slack'
     try {
       const channels = await conn.listBotChannels()
       if (!channels) return
@@ -1582,7 +1719,8 @@ export class ConnectionReconciler {
         await this.host.emitSessionMetadataSnapshotsForDisplayName(c.id)
       }
       const snapshots = this.host.channelSnapshots()
-      for (const [integrationId, c] of this.host.bindings().slack) {
+      const bindings = isMattermost ? (this.host.bindings().mattermost ?? []) : this.host.bindings().slack
+      for (const [integrationId, c] of bindings) {
         if (c !== conn) continue
         // The listing carries channels only, so observed DM rows survive into the reconnect snapshot.
         const previous = snapshots.get(integrationId)?.channels ?? []
@@ -1591,11 +1729,11 @@ export class ConnectionReconciler {
         const merged = this.host.placeTrust().listed(integrationId, [...channels, ...direct])
         snapshots.set(integrationId, { channels: merged, authoritative: true })
         this.host.cpClient()?.emitIntegrationChannels({ integrationId, channels: merged })
-        await this.maybeIntroduceOnJoin('slack', integrationId, channels, joined)
+        await this.maybeIntroduceOnJoin(platform, integrationId, channels, joined)
       }
-      this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
+      this.log.debug(`${platform}: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
     } catch (err) {
-      this.log.debug(`slack: channel snapshot refresh failed: ${formatErr(err)}`)
+      this.log.debug(`${platform}: channel snapshot refresh failed: ${formatErr(err)}`)
     }
   }
 
@@ -1738,6 +1876,8 @@ export class ConnectionReconciler {
     this.slackRetryTimers.clear()
     for (const t of this.weComRedialTimers.values()) this.host.clock().clearTimeout(t)
     this.weComRedialTimers.clear()
+    for (const t of this.mattermostRetryTimers.values()) this.host.clock().clearTimeout(t)
+    this.mattermostRetryTimers.clear()
     this.revocations.stop()
   }
 

@@ -45,10 +45,19 @@ export function buildCollabSnapshot(
   // conversely duplicate legacy bot rows may expose the same member id. Count the
   // actual placed agents behind each channel-scoped identity so old daemons receive a
   // truthful compatibility flag.
+  const mentionIdentityKey = (p: ChannelPlacementRecord): string | undefined => {
+    const id = p.botUserId
+      ? `id:${p.botUserId}`
+      : p.botUsername
+        ? `handle:${p.botUsername.trim().replace(/^@+/, '').toLowerCase()}`
+        : undefined
+    return id ? `${p.platform}\u0000${p.channelId}\u0000${id}` : undefined
+  }
   const agentsByMentionIdentity = new Map<string, Set<string>>()
   for (const p of placements) {
-    if (!servingDaemonOf(p) || !p.botUserId) continue
-    const key = `${p.platform}\u0000${p.channelId}\u0000${p.botUserId}`
+    if (!servingDaemonOf(p)) continue
+    const key = mentionIdentityKey(p)
+    if (!key) continue
     const agents = agentsByMentionIdentity.get(key) ?? new Set<string>()
     agents.add(p.agentId)
     agentsByMentionIdentity.set(key, agents)
@@ -66,6 +75,7 @@ export function buildCollabSnapshot(
       route = { orgId, platform: p.platform, channelId: p.channelId, agents: [] }
       byChannel.set(key, route)
     }
+    const mentionKey = mentionIdentityKey(p)
     route.agents.push({
       agentId: p.agentId,
       daemonId,
@@ -75,8 +85,8 @@ export function buildCollabSnapshot(
       // meaningful inside a conversation, which is also why the flat org directory below
       // omits them (an org-wide listing has no single conversation-specific address).
       ...(p.botUserId !== undefined ? { botUserId: p.botUserId } : {}),
-      ...(p.botUserId !== undefined &&
-      (agentsByMentionIdentity.get(`${p.platform}\u0000${p.channelId}\u0000${p.botUserId}`)?.size ?? 0) > 1
+      ...(p.botUsername !== undefined ? { botUsername: p.botUsername } : {}),
+      ...(mentionKey !== undefined && (agentsByMentionIdentity.get(mentionKey)?.size ?? 0) > 1
         ? { botShared: true }
         : {}),
       callPolicy: p.callPolicy,

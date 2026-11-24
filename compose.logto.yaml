@@ -51,12 +51,13 @@ services:
         condition: service_completed_successfully
     entrypoint: ['sh', '-c', 'npm run cli db seed -- --swe && npm run cli db alteration deploy latest && npm start']
     environment:
-      CI: 'true'
-      DB_URL: postgresql://logto:${LOGTO_POSTGRES_PASSWORD:-logto}@postgres:5432/logto
-      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}
-      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
+      - CI=true
+      - DB_URL=postgresql://logto:${LOGTO_POSTGRES_PASSWORD:-logto}@postgres:5432/logto
+      - ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
+      - ADMIN_ENDPOINT=${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
       # Private addresses an SSO identity provider is reached at; empty keeps every one blocked.
-      SSRF_ALLOWED_ADDRESSES: ${LOGTO_SSRF_ALLOWED_ADDRESSES:-}
+      - SSRF_ALLOWED_ADDRESSES=${LOGTO_SSRF_ALLOWED_ADDRESSES:-${AGENTCONNECT_INTERNAL_ALLOWED_HOSTS:-}}
+      - NODE_EXTRA_CA_CERTS
     healthcheck:
       test:
         - CMD

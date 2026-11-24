@@ -5,6 +5,7 @@ import {
   DINGTALK_PLATFORM,
   EMAIL_PLATFORM,
   GOOGLE_CHAT_PLATFORM,
+  MATTERMOST_PLATFORM,
   MSTEAMS_PLATFORM,
   WECHAT_PLATFORM,
   WECOM_PLATFORM,
@@ -45,25 +46,28 @@ describe('platform manifest', () => {
 
   it('lists conversations on every platform but Email, and on an unknown id', () => {
     expect(DEFAULT_MANIFEST.listsConversations).toBe(true)
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'linear', 'some-future-platform'])
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'linear', MATTERMOST_PLATFORM, 'some-future-platform'])
       expect(manifestFor(p).listsConversations, p).toBe(true)
     expect(manifestFor(EMAIL_PLATFORM).listsConversations).toBe(false)
   })
 
-  it('keeps Slack the only authoritative-enumeration platform', () => {
-    // This is what made the retired branches readable as `=== 'slack'`; pin it so
-    // a later manifest edit cannot silently widen a Slack-only path.
-    for (const p of ['slack', 'telegram', 'discord', 'feishu']) {
-      expect(manifestFor(p).membershipEnumeration === 'authoritative').toBe(p === 'slack')
+  it('keeps Slack and Mattermost as the authoritative-enumeration platforms', () => {
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', MATTERMOST_PLATFORM]) {
+      expect(manifestFor(p).membershipEnumeration === 'authoritative', p).toBe(
+        p === 'slack' || p === MATTERMOST_PLATFORM
+      )
     }
   })
 
-  it('admits bot senders on no platform but Slack — and never on an unknown id', () => {
+  it('admits bot senders on Slack and Mattermost — and never on an unknown id', () => {
     // Relay arbitration reads this BEFORE any target resolves (§8): a `true`
     // platform admits a third-party bot via explicit mention; everyone else and
     // every unknown id stays on the drop arm the retired `!== 'slack'` encoded.
-    for (const p of ['slack', 'telegram', 'discord', 'feishu']) {
-      expect(manifestFor(p).botSenderRouting).toBe(p === 'slack')
+    for (const p of ['slack', MATTERMOST_PLATFORM]) {
+      expect(manifestFor(p).botSenderRouting, p).toBe(true)
+    }
+    for (const p of ['telegram', 'discord', 'feishu']) {
+      expect(manifestFor(p).botSenderRouting, p).toBe(false)
     }
     expect(manifestFor('some-future-platform').botSenderRouting).toBe(false)
     expect(DEFAULT_MANIFEST.botSenderRouting).toBe(false)
@@ -74,7 +78,8 @@ describe('platform manifest', () => {
     // daemon is reached; it retired a core `platform === 'slack'` predicate, so
     // the Slack arm is an equivalence and Linear is the whole new behavior.
     for (const p of ['slack', 'linear']) expect(manifestFor(p).multiAgentShareable, p).toBe(true)
-    for (const p of ['telegram', 'discord', 'feishu']) expect(manifestFor(p).multiAgentShareable, p).toBe(false)
+    for (const p of ['telegram', 'discord', 'feishu', MATTERMOST_PLATFORM])
+      expect(manifestFor(p).multiAgentShareable, p).toBe(false)
     expect(manifestFor('some-future-platform').multiAgentShareable).toBe(false)
     expect(DEFAULT_MANIFEST.multiAgentShareable).toBe(false)
   })
@@ -83,7 +88,8 @@ describe('platform manifest', () => {
     // One CP read hangs off this before any route or owner exists: the compile projects a row's
     // owner into `conversationDefaults` and emits no channel-scoped route for it.
     expect(manifestFor('linear').ownerAsDefault).toBe(true)
-    for (const p of ['slack', 'telegram', 'discord', 'feishu']) expect(manifestFor(p).ownerAsDefault, p).toBe(false)
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', MATTERMOST_PLATFORM])
+      expect(manifestFor(p).ownerAsDefault, p).toBe(false)
     expect(manifestFor('some-future-platform').ownerAsDefault).toBe(false)
     expect(DEFAULT_MANIFEST.ownerAsDefault).toBe(false)
   })
@@ -96,12 +102,12 @@ describe('platform manifest', () => {
     expect(manifestFor(DINGTALK_PLATFORM).addressedByConstruction).toBe(true)
     expect(manifestFor(WECOM_PLATFORM).addressedByConstruction).toBe(true)
     // Teams delivers every message its resource-specific consent covers, so a mention there is a fresh address, as on Slack.
-    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', MSTEAMS_PLATFORM])
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'qq', MSTEAMS_PLATFORM, MATTERMOST_PLATFORM])
       expect(manifestFor(p).addressedByConstruction, p).toBe(false)
     expect(manifestFor('some-future-platform').addressedByConstruction).toBe(false)
   })
 
-  it('lets rooms append everywhere but Linear, and DMs and group DMs only on Slack', () => {
+  it('lets rooms append everywhere but Linear, DMs only on Slack, and group DMs on Slack and Mattermost', () => {
     // The spec projection reads it to give an assistant-mode agent one session per place; an unknown id forces nothing.
     for (const p of [
       'slack',
@@ -112,7 +118,8 @@ describe('platform manifest', () => {
       GOOGLE_CHAT_PLATFORM,
       DINGTALK_PLATFORM,
       MSTEAMS_PLATFORM,
-      WECOM_PLATFORM
+      WECOM_PLATFORM,
+      MATTERMOST_PLATFORM
     ])
       expect(manifestFor(p).appendKinds, p).toContain('channel')
     expect(manifestFor('linear').appendKinds).toEqual([])
@@ -125,12 +132,14 @@ describe('platform manifest', () => {
       DINGTALK_PLATFORM,
       MSTEAMS_PLATFORM,
       WECOM_PLATFORM,
+      MATTERMOST_PLATFORM,
       'linear'
     ])
       expect(manifestFor(p).appendKinds, p).not.toContain('im')
     expect(manifestFor('slack').appendKinds).toContain('im')
-    // Only Slack has a group DM of its own, a small room that keys one session too (auto-session-mode.md §3.2).
+    // Slack and Mattermost group DMs (`mpim` / `G`) are small rooms that key one session too (auto-session-mode.md §3.2).
     expect(manifestFor('slack').appendKinds).toContain('mpim')
+    expect(manifestFor(MATTERMOST_PLATFORM).appendKinds).toContain('mpim')
     for (const p of [
       'telegram',
       'discord',
@@ -159,7 +168,8 @@ describe('platform manifest', () => {
       GOOGLE_CHAT_PLATFORM,
       DINGTALK_PLATFORM,
       MSTEAMS_PLATFORM,
-      WECHAT_PLATFORM
+      WECHAT_PLATFORM,
+      MATTERMOST_PLATFORM
     ])
       expect(manifestFor(p).threadlessRoomRoot, p).toBeUndefined()
     expect(manifestFor('some-future-platform').threadlessRoomRoot).toBeUndefined()
@@ -263,6 +273,23 @@ describe('platform manifest', () => {
     // A chat origin the console composer may not continue.
     expect(originKindOf(EMAIL_PLATFORM)).toBe('chat')
     expect(continuableOrigin(EMAIL_PLATFORM)).toBe(false)
+  })
+
+  it('admits authoritative enumeration, console continuation, group DM append, and bot-sender routing on Mattermost without sharing bots or inferring DMs', () => {
+    const { platform, ...axes } = manifestFor(MATTERMOST_PLATFORM)
+    expect(platform).toBe('mattermost')
+    expect(axes).toEqual({
+      ...DEFAULT_MANIFEST,
+      consoleContinuation: true,
+      membershipEnumeration: 'authoritative',
+      botSenderRouting: true,
+      appendKinds: ['channel', 'mpim']
+    })
+    expect(axes.multiAgentShareable).toBe(false)
+    expect(axes.dmChannelPattern).toBeUndefined()
+    expect(axes.leaveGranularity).toBe('conversation')
+    expect(originKindOf(MATTERMOST_PLATFORM)).toBe('chat')
+    expect(continuableOrigin(MATTERMOST_PLATFORM)).toBe(true)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {

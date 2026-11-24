@@ -79,6 +79,8 @@ export interface RelayConnDeps {
   deploymentConfig?: RcDeploymentConfig
   /** The secret viewer TURN credentials are minted from, so a relay serving TURN can check them (computer-use.md §7.2); never logged. */
   computerTurnSecret?: string
+  /** Shared HMAC secret for verifying Mattermost interactive button callbacks; never logged. */
+  mattermostActionSecret?: string
   /** Fired after a successful register — recompute + fan `relay/roster` to daemons,
    *  and replay the compiled hook rules to THIS relay (its table is a memory copy). */
   onRegistered: (ch: RelayChannel) => void
@@ -318,7 +320,8 @@ export class RelayConnection implements RelayChannel {
       heartbeatSec: this.deps.auth.heartbeatSec,
       serverTime: new Date(this.deps.clock.now()).toISOString(),
       ...(this.deps.deploymentConfig ? { deploymentConfig: this.deps.deploymentConfig } : {}),
-      ...(this.deps.computerTurnSecret ? { computerTurnSecret: this.deps.computerTurnSecret } : {})
+      ...(this.deps.computerTurnSecret ? { computerTurnSecret: this.deps.computerTurnSecret } : {}),
+      ...(this.deps.mattermostActionSecret ? { mattermostActionSecret: this.deps.mattermostActionSecret } : {})
     })
   }
 

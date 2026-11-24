@@ -65,6 +65,17 @@ describe('a platform’s thread shape (webchat-threads.md §7)', () => {
     expect(slack.threadUrl?.({ channelId: 'C0EXAMPLE', workspaceId: null, rootId: TS })).toBeUndefined()
   })
 
+  it('recognizes Mattermost 26-char post ids and builds /_redirect/pl/ thread links', () => {
+    const mm = threadShapeOf('mattermost')!
+    const mmRoot = 'a1b2c3d4e5f6g7h8i9j0k1l2m3'
+    expect(namesThread(mm, mmRoot)).toBe(true)
+    expect(namesThread(mm, TS)).toBe(false)
+    expect(mm.threadUrl?.({ channelId: 'ch1', serverUrl: 'https://mm.example.com', rootId: mmRoot })).toBe(
+      `https://mm.example.com/_redirect/pl/${mmRoot}`
+    )
+    expect(mm.threadUrl?.({ channelId: 'ch1', workspaceId: 'mm-0123456789abcdef', rootId: mmRoot })).toBeUndefined()
+  })
+
   it('reads a Slack replyToMessage call’s thread off its message id by Slack’s shape', () => {
     const call = {
       kind: 'tool',

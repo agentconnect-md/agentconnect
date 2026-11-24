@@ -38,6 +38,12 @@ describe('social login provider selection', () => {
     expect(targets('github,azuread,slack,google')).toEqual(['google', 'github', 'slack', 'azuread'])
   })
 
+  it('offers opt-in Mattermost sign-in', () => {
+    expect(SOCIAL_LOGIN_CATALOG).toContainEqual({ target: 'mattermost', name: 'Mattermost' })
+    expect(targets('mattermost')).toEqual(['mattermost'])
+    expect(targets('gitlab,mattermost')).toEqual(['gitlab', 'mattermost'])
+  })
+
   it('ignores targets it cannot render rather than rendering a blank button', () => {
     expect(targets('github,facebook')).toEqual(['github'])
   })

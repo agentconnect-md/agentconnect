@@ -4077,7 +4077,8 @@ export const SessionExternalAccessProviderEnum = z.enum([
   'telegram',
   'discord',
   'googlechat',
-  'msteams'
+  'msteams',
+  'mattermost'
 ])
 export const SessionExternalAccessDto = z.object({
   provider: SessionExternalAccessProviderEnum,

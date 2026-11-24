@@ -29,7 +29,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { lookup as dnsLookup } from 'node:dns'
 import { isIP, type LookupFunction } from 'node:net'
-import { privateV4, privateV6 } from './private-address.js'
+import { linkLocalOrUnspecifiedV4, linkLocalOrUnspecifiedV6, privateV4, privateV6 } from './private-address.js'
 
 /** Default ceilings. A discovery/token endpoint that needs more than this is not one. */
 export const GUARDED_TIMEOUT_MS = 10_000
@@ -46,36 +46,58 @@ function unroutableV4(ip: string): boolean {
   return false
 }
 
-/** True when the CP must not dial `ip`. Literals only — the caller supplies resolved addresses. */
-export function isBlockedAddress(ip: string): boolean {
-  const addr = ip
+function normalizeLiteralIp(ip: string): string {
+  return ip
     .trim()
     .toLowerCase()
     .replace(/^\[|\]$/g, '')
+}
+
+/** True when the CP must not dial `ip`. Literals only — the caller supplies resolved addresses. */
+export function isBlockedAddress(ip: string): boolean {
+  const addr = normalizeLiteralIp(ip)
   if (isIP(addr) === 4) return privateV4(addr) || unroutableV4(addr)
   return privateV6(addr)
 }
 
+/** True only for link-local (`169.254.0.0/16`, `fe80::/10`) and unspecified (`0.0.0.0/8`, `::`) addresses; allows private/loopback self-hosted hosts. */
+export function isLinkLocalOrUnspecifiedAddress(ip: string): boolean {
+  const addr = normalizeLiteralIp(ip)
+  if (isIP(addr) === 4) return linkLocalOrUnspecifiedV4(addr)
+  if (isIP(addr) === 6) return linkLocalOrUnspecifiedV6(addr)
+  return false
+}
+
 /**
  * A `net.LookupFunction` that resolves the name, refuses the request if ANY resolved
- * address is blocked, and returns exactly one validated address so the socket is pinned
- * to it. Reject-if-any (not just the chosen address) is what defeats round-robin
+ * address is blocked, and returns only the validated addresses (all of them when
+ * `options.all` is requested so Node Happy Eyeballs works across dual-stack AAAA/A records,
+ * or `addresses[0]` otherwise), pinning the socket without DNS re-resolution.
+ * Reject-if-any (not just the chosen address) is what defeats round-robin
  * rebinding; erroring the lookup fails the outbound connection.
  */
-export function makeGuardedLookup(allowPrivate: boolean): LookupFunction {
+export function makeGuardedLookup(
+  allowPrivate: boolean,
+  blockAddress: (ip: string) => boolean = isBlockedAddress,
+  resolve: typeof dnsLookup = dnsLookup
+): LookupFunction {
   const fn: LookupFunction = (hostname, options, callback) => {
-    dnsLookup(hostname, { all: true }, (err, addresses) => {
+    resolve(hostname, { all: true }, (err, addresses) => {
       if (err) return callback(err, '', 0)
       if (!addresses || addresses.length === 0) return callback(new Error('ssrf: unresolved host'), '', 0)
-      if (!allowPrivate && addresses.some((a) => isBlockedAddress(a.address))) {
+      if (addresses.some((a) => isLinkLocalOrUnspecifiedAddress(a.address))) {
         return callback(new Error('ssrf: blocked address'), '', 0)
       }
-      const pick = addresses[0]!
-      if ((options as { all?: boolean }).all) {
-        return (callback as unknown as (e: Error | null, a: Array<{ address: string; family: number }>) => void)(null, [
-          { address: pick.address, family: pick.family }
-        ])
+      if (!allowPrivate && addresses.some((a) => blockAddress(a.address))) {
+        return callback(new Error('ssrf: blocked address'), '', 0)
       }
+      if ((options as { all?: boolean }).all) {
+        return (callback as unknown as (e: Error | null, a: Array<{ address: string; family: number }>) => void)(
+          null,
+          addresses.map(({ address, family }) => ({ address, family }))
+        )
+      }
+      const pick = addresses[0]!
       callback(null, pick.address, pick.family)
     })
   }
@@ -111,18 +133,28 @@ export interface GuardedRequestInit {
   body?: string
   /** Hosts the deployment opted out of the private-address block. Pinning still applies. */
   allowlist?: ReadonlySet<string>
+  /** Override address-blocking predicate (defaults to {@link isBlockedAddress}). */
+  blockAddress?: (ip: string) => boolean
   timeoutMs?: number
   maxBytes?: number
+  signal?: AbortSignal
 }
 
 /** The `LookupFunction` factory to use. Injectable so tests can drive resolution without DNS. */
-export type LookupFactory = (allowPrivate: boolean) => LookupFunction
+export type LookupFactory = (allowPrivate: boolean, blockAddress?: (ip: string) => boolean) => LookupFunction
 
 /**
  * One guarded request. Resolves to a `GuardedResult` rather than throwing, because every
  * caller here has to branch on the failure anyway and none of them may leak the reason
  * into a log line. A 3xx comes back as an ordinary response for the caller to reject.
  */
+/** Whether the allowlist names the URL's host: a bare host covers every port, `host:port` or `[v6]:port` only that one. */
+export function hostAllowlisted(allowlist: ReadonlySet<string>, target: URL): boolean {
+  const host = target.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80')
+  return allowlist.has(host) || allowlist.has(`${host}:${port}`) || allowlist.has(`[${host}]:${port}`)
+}
+
 export function guardedRequest(
   rawUrl: string,
   init: GuardedRequestInit = {},
@@ -142,11 +174,16 @@ export function guardedRequest(
   if (target.username || target.password) return Promise.resolve({ ok: false, failure: 'url_rejected' })
 
   const host = target.hostname.replace(/^\[|\]$/g, '')
-  const allowPrivate = init.allowlist?.has(host.toLowerCase()) === true
+  const allowPrivate = init.allowlist ? hostAllowlisted(init.allowlist, target) : false
+  const blockAddress = init.blockAddress ?? isBlockedAddress
   // An IP-literal host never reaches `lookup` (node connects straight to it), so the pin
   // would not run — check literals here or the guard is bypassed by e.g. http://[::1].
-  if (!allowPrivate && isIP(host) && isBlockedAddress(host)) {
+  // Link-local / cloud metadata / unspecified addresses are never permitted, even on allowlisted hosts.
+  if (isIP(host) && (isLinkLocalOrUnspecifiedAddress(host) || (!allowPrivate && blockAddress(host)))) {
     return Promise.resolve({ ok: false, failure: 'address_blocked' })
+  }
+  if (init.signal?.aborted) {
+    return Promise.resolve({ ok: false, failure: 'unreachable' })
   }
 
   const timeoutMs = init.timeoutMs ?? GUARDED_TIMEOUT_MS
@@ -156,9 +193,11 @@ export function guardedRequest(
 
   return new Promise<GuardedResult>((resolve) => {
     let settled = false
+    const cleanups: Array<() => void> = []
     const done = (result: GuardedResult): void => {
       if (settled) return
       settled = true
+      for (const cleanup of cleanups) cleanup()
       resolve(result)
     }
     const req = requestFn(
@@ -169,7 +208,7 @@ export function guardedRequest(
           ...init.headers,
           ...(body === undefined ? {} : { 'content-length': Buffer.byteLength(body) })
         },
-        lookup: lookupFactory(allowPrivate),
+        lookup: lookupFactory(allowPrivate, blockAddress),
         ...(target.protocol === 'https:' ? { servername: target.hostname } : {})
       },
       (res) => {
@@ -206,6 +245,14 @@ export function guardedRequest(
     req.on('error', (err) => {
       done({ ok: false, failure: /^ssrf: blocked address/.test(err.message) ? 'address_blocked' : 'unreachable' })
     })
+    if (init.signal) {
+      const onAbort = (): void => {
+        req.destroy()
+        done({ ok: false, failure: 'unreachable' })
+      }
+      init.signal.addEventListener('abort', onAbort, { once: true })
+      cleanups.push(() => init.signal?.removeEventListener('abort', onAbort))
+    }
     if (body !== undefined) req.write(body)
     req.end()
   })

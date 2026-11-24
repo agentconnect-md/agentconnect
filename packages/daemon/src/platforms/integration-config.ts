@@ -27,6 +27,7 @@ import {
   EMPTY_DECISION_BUNDLE,
   IntegrationDingTalkConfig,
   IntegrationEmailConfig,
+  IntegrationMattermostConfig,
   IntegrationMsTeamsConfig,
   IntegrationQQConfig,
   IntegrationWeChatConfig,
@@ -60,6 +61,7 @@ const CONFIG_SCHEMAS = {
   msteams: IntegrationMsTeamsConfig,
   wechat: IntegrationWeChatConfig,
   wecom: IntegrationWeComConfig,
+  mattermost: IntegrationMattermostConfig,
   email: IntegrationEmailConfig
 } as const
 

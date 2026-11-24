@@ -22,7 +22,7 @@
  * credential. The service is transport-free: it returns an `AuthResult` the WS
  * handler turns into `replyTo(..., "auth/ok", ...)` or `transport.close(...)`.
  */
-import type { AuthReq, AuthOk } from '@agentconnect.md/protocol'
+import { deriveMattermostOrgActionSecret, type AuthOk, type AuthReq } from '@agentconnect.md/protocol'
 import type { AuthResult, ClientCtx, ClusterDaemonIdentity, DaemonAuth, VerifiedClusterDaemon } from '../ports.js'
 import type { ApiKeyRepo, MemberSetRepo, OrgRepo } from '../persistence/ports.js'
 import type { EpochService } from '../orchestrator/epoch.js'
@@ -39,6 +39,10 @@ export interface AuthServiceConfig {
   /** Web App console origin sent to daemons on `auth/ok` for session deep links.
    *  Undefined ⇒ no `webAppUrl` in the reply (daemon falls back to its own config). */
   WEB_APP_URL?: string
+  /** Relay HTTP(S) origin sent on `auth/ok` so daemons can point interactive button callbacks at Relay. */
+  PUBLIC_RELAY_URL?: string
+  /** Shared HMAC secret for signing Mattermost interactive action button tokens (never logged). */
+  MATTERMOST_ACTION_SECRET?: string
 }
 
 export class DaemonAuthService implements DaemonAuth {
@@ -169,7 +173,13 @@ export class DaemonAuthService implements DaemonAuth {
       dutyLeaseMs: this.config.DUTY_LEASE_MS,
       serverTime: new Date(nowMs).toISOString(),
       organizationMode: orgId ? 'connection' : 'frame',
+      ...(orgId ? { orgId } : {}),
       ...(this.config.WEB_APP_URL ? { webAppUrl: this.config.WEB_APP_URL } : {}),
+      ...(this.config.PUBLIC_RELAY_URL ? { publicRelayUrl: this.config.PUBLIC_RELAY_URL } : {}),
+      // Only an org-scoped daemon is told a secret here, and only its own org's; a pool daemon reads one per integration.
+      ...(this.config.MATTERMOST_ACTION_SECRET && orgId
+        ? { mattermostActionSecret: deriveMattermostOrgActionSecret(this.config.MATTERMOST_ACTION_SECRET, orgId) }
+        : {}),
       ...(orgSlug ? { orgSlug } : {}),
       ...(memberSet ? { memberSet: { setId: memberSet.id, name: memberSet.name } } : {}),
       // A reconnecting daemon (resume present) is told to do a full register reconcile.

@@ -607,7 +607,8 @@ export const MCP_TOOLS: McpToolDef[] = [
             'msteams',
             'wechat',
             'wecom',
-            'email'
+            'email',
+            'mattermost'
           ])
           .optional(),
         channel: z.string().min(1).optional(),

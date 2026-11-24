@@ -72,7 +72,8 @@ describe('sign-in where organizations own SSO connections', () => {
       'Continue with GitLab',
       'Continue with Lark / Feishu',
       'Continue with Discord',
-      'Continue with Telegram'
+      'Continue with Telegram',
+      'Continue with Mattermost'
     ])
     expect(host.querySelector('a.sso')!.getAttribute('href')).toBe('/login/sso')
     expect(host.textContent).toContain('First time here?')

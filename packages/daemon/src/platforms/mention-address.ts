@@ -20,23 +20,35 @@
  * address shape for a platform this build does not know is the fail-OPEN
  * direction.
  */
-import { slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
+import { mattermostMentionAddress, slackMentionAddress, type AgentMentionIdentity } from '@agentconnect.md/message'
 
 /** Given the conversation's mention directory, the addresses in it that the
  *  splitter must not cut. */
 export type CompoundMentionAddressReader = (directory: readonly AgentMentionIdentity[]) => string[]
 
+const compoundReader =
+  (render: (entry: AgentMentionIdentity) => string | undefined): CompoundMentionAddressReader =>
+  (directory) =>
+    directory
+      // Shared-bot entries only: those are the ones whose address carries a
+      // trailing slug and is therefore splittable.
+      .filter((entry) => entry.botShared)
+      .map((entry) => render(entry))
+      .filter((address): address is string => address !== undefined)
+
+const ADDRESSES = new Map<string, (entry: AgentMentionIdentity) => string | undefined>([
+  ['slack', slackMentionAddress],
+  ['mattermost', mattermostMentionAddress]
+])
+
+/** How one agent is addressed on a platform; a platform with no entry of its own is addressed the Slack way, as before. */
+export function mentionAddressFor(platform: string, identity: AgentMentionIdentity): string | undefined {
+  return (ADDRESSES.get(platform) ?? slackMentionAddress)(identity)
+}
+
 const READERS = new Map<string, CompoundMentionAddressReader>([
-  [
-    'slack',
-    (directory) =>
-      directory
-        // Shared-bot entries only: those are the ones whose address carries a
-        // trailing slug and is therefore splittable.
-        .filter((entry) => entry.botShared)
-        .map((entry) => slackMentionAddress(entry))
-        .filter((address): address is string => address !== undefined)
-  ]
+  ['slack', compoundReader(slackMentionAddress)],
+  ['mattermost', compoundReader(mattermostMentionAddress)]
 ])
 
 /**

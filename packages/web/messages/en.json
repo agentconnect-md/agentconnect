@@ -2717,6 +2717,10 @@
           "create": "Create a smart bot in WeCom",
           "existing": "An unused WeCom bot"
         },
+        "mattermost": {
+          "create": "Connect a Mattermost bot",
+          "existing": "An unused Mattermost bot"
+        },
         "email": {
           "create": "Choose this agent's address",
           "existing": "An address is never moved to another agent"
@@ -5812,6 +5816,15 @@
           "unavailable": "Configure Microsoft sign-in for this deployment before enabling permission sync.",
           "unresolved": "{count, plural, one {# session hidden: no trusted conversation scope.} other {# sessions hidden: no trusted conversation scope.}}",
           "degraded": "Microsoft Teams conversation sources stopped resolving. New sessions are being hidden."
+        },
+        "mattermost": {
+          "name": "Mattermost",
+          "label": "Require Mattermost access",
+          "description": "Only members of the channel or conversation can see its sessions.",
+          "details": "Channels, group messages, and DMs follow current membership, checked by the conversation's Mattermost bot.\nLink your Mattermost account in Profile. Previously learned agent memory is preserved.\nOlder sessions without a trusted conversation source stay hidden until new trusted activity binds them.\nTurning this off hides previously synced sessions. Turning it back on restores access checks.",
+          "unavailable": "Configure Mattermost sign-in for this deployment before enabling permission sync.",
+          "unresolved": "{count, plural, one {# session hidden: no trusted conversation scope.} other {# sessions hidden: no trusted conversation scope.}}",
+          "degraded": "Mattermost conversation sources stopped resolving. New sessions are being hidden."
         }
       }
     },
@@ -7637,6 +7650,49 @@
         "updated": "Secret saved. The bot reconnects with it."
       },
       "brand": "WeCom"
+    },
+    "mattermost": {
+      "checking": "Checking credentials…",
+      "connect": "Connect",
+      "editions": {
+        "selfHosted": "Self-hosted",
+        "cloud": "Mattermost Cloud"
+      },
+      "cloud": {
+        "step1": "In your Mattermost Cloud workspace → System Console → Integrations → Bot Accounts, create a bot account and copy its Bot Account Token. Add the bot to the teams and channels where you want it to reply.",
+        "step2": "Enter your Mattermost Cloud workspace name or URL and Bot Token (required to connect)",
+        "workspaceOrUrl": "Workspace or URL",
+        "workspaceOrUrlPlaceholder": "acme  or  https://acme.cloud.mattermost.com",
+        "tokenHint": "Connects outbound over HTTPS and WebSocket v4 — no public webhook or inbound firewall port needed."
+      },
+      "step1": "In Mattermost System Console → Integrations → Bot Accounts, create a bot account and copy its token (recommended). A Personal Access Token (PAT) is also accepted. Add the bot to the teams and channels where you want it to reply.",
+      "step2": "Enter your Mattermost Server URL and Bot Token (required to connect)",
+      "tokenHint": "Bot Account Token is recommended; Personal Access Token (PAT) is also accepted. Self-hosted intranet and http:// URLs are supported.",
+      "fields": {
+        "serverUrl": "Server URL",
+        "serverUrlPlaceholder": "https://mattermost.example.com",
+        "botToken": "Bot Token",
+        "botTokenPlaceholder": "Paste Bot Account Token or PAT"
+      },
+      "errors": {
+        "invalidServerUrl": "Enter a valid http:// or https:// Mattermost server URL (without username, query, or fragment). Intranet and loopback addresses are supported, while cloud metadata and link-local addresses are blocked.",
+        "invalidCredentials": "Mattermost rejected this Bot Token. Check your Server URL and copy a valid Bot Account Token or Personal Access Token (PAT), then connect again.",
+        "botMismatch": "This token belongs to a different Mattermost account than the installed bot. Paste a token for the same bot account, or install it as a new bot.",
+        "checkUnavailable": "AgentConnect couldn’t reach your Mattermost server to verify this bot, so nothing was saved. Check the Server URL and network access, then try again.",
+        "alreadyInstalled": "This Mattermost bot is already connected. Disconnect it from any agent using it, then choose “An unused Mattermost bot” to reuse it. If it’s in another organization, remove it there first."
+      },
+      "settings": {
+        "replace": "Replace token",
+        "hint": "AgentConnect verifies the new token against your Mattermost server without disconnecting the running bot, then reconnects it with the new token.",
+        "newToken": "New Bot Token",
+        "save": "Save",
+        "checking": "Checking…",
+        "close": "Close",
+        "updated": "Token saved. The bot reconnects with it.",
+        "revoked": "Mattermost rejected this bot’s token. Replace the token to reconnect.",
+        "rejected": "Mattermost rejected this bot’s token ({code}). Replace the token to reconnect."
+      },
+      "brand": "Mattermost"
     },
     "email": {
       "brand": "Email",

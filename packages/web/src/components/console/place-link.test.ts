@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { conversationUrl, rowUrl, sessionPlaceLink, type PlaceDirectory } from './place-link'
+import { conversationUrl, resolveThreadServerUrl, rowUrl, sessionPlaceLink, type PlaceDirectory } from './place-link'
 import type { IntegrationChannelRow } from '@/lib/data'
 
 describe('rowUrl', () => {
@@ -189,5 +189,186 @@ describe('sessionPlaceLink', () => {
       sessionPlaceLink({ platform: 'webchat', channelId: 'conv-1', thread: 'append:1' }, directory)
     ).toBeUndefined()
     expect(sessionPlaceLink({ platform: 'slack', channelId: 'cron:sched-1' }, directory)).toBeUndefined()
+  })
+
+  it('resolves Mattermost thread links from bot platformConfig.serverUrl when threadUrl is absent', () => {
+    const mmRoot = 'a1b2c3d4e5f6g7h8i9j0k1l2m3'
+    const mmDirectory: PlaceDirectory = {
+      bots: [
+        {
+          id: 'bot_mm',
+          workspaceId: null,
+          externalAppId: 'mm-0123456789abcdef',
+          platformConfig: { serverUrl: 'https://mm.example.com/team' }
+        }
+      ],
+      integrations: [
+        {
+          id: 'int_mm',
+          agentId: 'agent-1',
+          botId: 'bot_mm',
+          platform: 'mattermost',
+          channels: [{ channelId: 'ch123456789012345678901234', name: 'town-square', trigger: 'mention' }]
+        }
+      ]
+    }
+    expect(
+      sessionPlaceLink(
+        {
+          platform: 'mattermost',
+          channelId: 'ch123456789012345678901234',
+          thread: mmRoot,
+          workspaceId: 'mm-0123456789abcdef'
+        },
+        mmDirectory
+      )
+    ).toEqual({
+      url: `https://mm.example.com/team/_redirect/pl/${mmRoot}`,
+      opens: 'thread'
+    })
+
+    const multiServerDirectory: PlaceDirectory = {
+      bots: [
+        {
+          id: 'bot_mm_first',
+          workspaceId: null,
+          externalAppId: 'mm-1111111111111111',
+          platformConfig: { serverUrl: 'https://mm-one.example.com' }
+        },
+        {
+          id: 'bot_mm_second',
+          workspaceId: null,
+          externalAppId: 'mm-2222222222222222',
+          platformConfig: { serverUrl: 'https://mm-two.example.com' }
+        }
+      ],
+      integrations: [
+        {
+          id: 'int_mm_first',
+          agentId: 'agent-1',
+          botId: 'bot_mm_first',
+          platform: 'mattermost',
+          channels: [{ channelId: 'ch123456789012345678901234', name: 'town-square', trigger: 'mention' }]
+        },
+        {
+          id: 'int_mm_second',
+          agentId: 'agent-1',
+          botId: 'bot_mm_second',
+          platform: 'mattermost',
+          channels: [{ channelId: 'ch123456789012345678901234', name: 'town-square', trigger: 'mention' }]
+        }
+      ]
+    }
+    expect(
+      sessionPlaceLink(
+        {
+          platform: 'mattermost',
+          channelId: 'ch123456789012345678901234',
+          thread: mmRoot,
+          agentId: 'agent-1',
+          workspaceId: 'mm-2222222222222222'
+        },
+        multiServerDirectory
+      )
+    ).toEqual({
+      url: `https://mm-two.example.com/_redirect/pl/${mmRoot}`,
+      opens: 'thread'
+    })
+    expect(
+      resolveThreadServerUrl(multiServerDirectory, {
+        platform: 'mattermost',
+        tenantScope: 'mm-2222222222222222',
+        agentId: 'agent-1',
+        channelId: 'ch123456789012345678901234'
+      })
+    ).toBe('https://mm-two.example.com')
+    expect(
+      resolveThreadServerUrl(multiServerDirectory, {
+        platform: 'mattermost',
+        tenantScope: 'mm-unknown-tenant',
+        agentId: 'agent-1',
+        channelId: 'ch123456789012345678901234'
+      })
+    ).toBeNull()
+  })
+
+  it('rejects non-http(s) and userinfo URLs in threadUrl, channel url, and serverUrl', () => {
+    const mmRoot = 'p1234567890123456789012345'
+    for (const unsafe of ['javascript:alert(1)', 'data:text/html,x', 'https://user:pass@evil.example']) {
+      expect(
+        sessionPlaceLink(
+          {
+            platform: 'slack',
+            channelId: 'C1',
+            workspaceId: 'T1',
+            thread: '1700000000.000100',
+            threadUrl: unsafe
+          },
+          {
+            bots: [{ id: 'b1', platform: 'slack', workspaceId: 'T1', externalAppId: null, platformConfig: null }],
+            integrations: [
+              {
+                id: 'i1',
+                agentId: 'a1',
+                botId: 'b1',
+                platform: 'slack',
+                channels: [{ channelId: 'C1', name: 'general', trigger: 'mention', url: unsafe }]
+              }
+            ]
+          }
+        )
+      ).toEqual({
+        url: 'https://app.slack.com/client/T1/C1/thread/C1-1700000000.000100',
+        opens: 'thread'
+      })
+
+      expect(
+        conversationUrl(
+          { platform: 'linear', channelId: 'ENG' },
+          {
+            bots: [],
+            integrations: [
+              {
+                id: 'i2',
+                agentId: 'a1',
+                botId: 'b2',
+                platform: 'linear',
+                channels: [{ channelId: 'ENG', name: 'ENG', trigger: 'mention', url: unsafe }]
+              }
+            ]
+          }
+        )
+      ).toBeUndefined()
+
+      expect(
+        sessionPlaceLink(
+          {
+            platform: 'mattermost',
+            channelId: 'ch123456789012345678901234',
+            thread: mmRoot,
+            workspaceId: 'mm-unsafe'
+          },
+          {
+            bots: [
+              {
+                id: 'b_mm',
+                workspaceId: null,
+                externalAppId: 'mm-unsafe',
+                platformConfig: { serverUrl: unsafe }
+              }
+            ],
+            integrations: [
+              {
+                id: 'i_mm',
+                agentId: 'a1',
+                botId: 'b_mm',
+                platform: 'mattermost',
+                channels: [{ channelId: 'ch123456789012345678901234', name: 'town-square', trigger: 'mention' }]
+              }
+            ]
+          }
+        )
+      ).toBeUndefined()
+    }
   })
 })

@@ -587,14 +587,17 @@ async function postMentioning(
   text: string,
   users: string[],
   identity: SendIdentity,
-  platform: string
+  platform: string,
+  threadTs?: string
 ): Promise<string | undefined> {
   if (!gateway.postMentioning) {
     throw new Error(
       `sendMessage: the selected ${platformLabel(platform)} integration cannot mention people in a channel`
     )
   }
-  return gateway.postMentioning(channel, text, users, identity)
+  return threadTs !== undefined
+    ? gateway.postMentioning(channel, text, users, identity, threadTs)
+    : gateway.postMentioning(channel, text, users, identity)
 }
 
 async function openDirectMessage(gateway: MessageGateway, user: string, platform: string): Promise<string> {
@@ -1011,7 +1014,7 @@ export async function deliverSendMessage(
         notices.push('Files were published, but their message id is unavailable. Do not retry the upload.')
     } else {
       providerPostId = mentionUsers
-        ? await postMentioning(gw, postChannel, body, mentionUsers, identity, wantPlatform)
+        ? await postMentioning(gw, postChannel, body, mentionUsers, identity, wantPlatform, updateThread)
         : await gw.postMessage(postChannel, body, updateThread, identity)
     }
     const ts = providerPostId ?? `local-${deps.now()}`

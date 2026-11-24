@@ -15,7 +15,7 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiDiscord, SiForgejo, SiGitea, SiGithub, SiTelegram, SiVercel } from 'react-icons/si'
+import { SiDiscord, SiForgejo, SiGitea, SiGithub, SiMattermost, SiTelegram, SiVercel } from 'react-icons/si'
 import { VscAzureDevops } from 'react-icons/vsc'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useGiteaProduct } from '@/lib/gitea-product'
@@ -398,6 +398,7 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
 export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; size?: number }) {
   if (target === 'telegram') return <SiTelegram size={size} color="#26A5E4" aria-hidden />
   if (target === 'discord') return <SiDiscord size={size} color="#5865F2" aria-hidden />
+  if (target === 'mattermost') return <SiMattermost size={size} color="#0058CC" aria-hidden />
   if (target === 'github') return <SiGithub size={size} aria-hidden />
   if (target === 'gitlab')
     return <IconifyIcon icon={gitlabIcon} {...(size ? { width: size, height: size } : {})} aria-hidden />

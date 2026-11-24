@@ -32,7 +32,9 @@ export interface AgentMentionIdentity {
   /** Slack member id this agent's bot posts as (`U…`/`B…`). Absent ⇒ the agent has no
    *  Slack presence in this conversation and therefore no address. */
   botUserId?: string
-  /** True when `botUserId` backs more than one agent, so the address needs the slug. */
+  /** Mattermost bot username without leading `@` (e.g. `acbot`). */
+  botUsername?: string
+  /** True when `botUserId` or `botUsername` backs more than one agent, so the address needs the slug. */
   botShared?: boolean
   /** Directory slug used to disambiguate agents behind a shared bot. */
   name?: string

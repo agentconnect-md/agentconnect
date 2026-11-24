@@ -1,10 +1,19 @@
 import { platformLabel, reachesPublicChannelsOnly } from '../../platforms/read-ports.js'
 import type { MessageGateway, SessionContext } from './context.js'
 
-/** The platform's own "no such conversation" (Slack's `channel_not_found`): the one lookup failure that proves the post would fail too. */
+/** The platform's own "no such conversation" (Slack's `channel_not_found`, Mattermost `404` missing channel): the one lookup failure that proves the post would fail too. */
 function isUnknownConversation(err: unknown): boolean {
   const code = (err as { data?: { error?: unknown } } | undefined)?.data?.error
-  return code === 'channel_not_found'
+  if (code === 'channel_not_found') return true
+  const mm = err as { status?: unknown; id?: unknown } | undefined
+  if (mm?.status === 404) {
+    return (
+      mm.id === undefined ||
+      mm.id === 'app.channel.get.existing.app_error' ||
+      mm.id === 'store.sql_channel.get.existing.app_error'
+    )
+  }
+  return false
 }
 
 /** Where `sendMessage` may post beyond this session's conversation on a `publicChannelReach` platform: a public channel, by the platform's own description; fails closed. */

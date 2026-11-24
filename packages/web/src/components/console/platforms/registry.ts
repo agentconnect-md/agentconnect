@@ -26,6 +26,7 @@ import { QQModule } from './qq'
 import { telegramModule } from './telegram'
 import { weChatModule } from './wechat'
 import { weComModule } from './wecom'
+import { mattermostModule } from './mattermost'
 
 /**
  * The console's platform registry (§10) — the single platform-set authority
@@ -50,6 +51,7 @@ const MODULES: readonly WebPlatformModule[] = [
   weComModule,
   weChatModule,
   QQModule,
+  mattermostModule,
   linearModule,
   emailModule
 ]

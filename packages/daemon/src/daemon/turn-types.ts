@@ -28,6 +28,7 @@ import type { GoogleChatAction, GoogleChatConverger } from '../platforms/googlec
 import type { MsTeamsAction, MsTeamsConverger } from '../platforms/msteams/turn-output.js'
 import type { WeChatAction, WeChatConverger } from '../platforms/wechat/turn-output.js'
 import type { WeComAction, WeComConverger } from '../platforms/wecom/turn-output.js'
+import type { MattermostAction, MattermostConverger } from '../platforms/mattermost/turn-output.js'
 import type { EmailAction, EmailConverger } from '../platforms/email/turn-output.js'
 import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import type { TurnAcknowledgement } from '../platforms/turn-output.js'
@@ -520,6 +521,7 @@ export type DaemonRenderAction =
   | MsTeamsAction
   | WeChatAction
   | WeComAction
+  | MattermostAction
   | EmailAction
 export type DaemonConverger =
   | QQConverger
@@ -533,6 +535,7 @@ export type DaemonConverger =
   | MsTeamsConverger
   | WeChatConverger
   | WeComConverger
+  | MattermostConverger
   | EmailConverger
 
 /**

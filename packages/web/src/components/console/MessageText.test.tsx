@@ -169,4 +169,16 @@ describe('MessageText', () => {
     expect(markup.startsWith('<div class="mdtxt"><p class="whitespace-pre-wrap">&lt;@U1|ada&gt; **bold** x')).toBe(true)
     expect(markup).not.toContain('<strong>')
   })
+
+  it('never auto-loads external images or malformed scheme-relative links in Slack or Markdown renderers', () => {
+    for (const platform of ['slack', 'mattermost']) {
+      const imgHtml = renderToStaticMarkup(<MessageText text="![pixel](https://evil.test/p.png)" platform={platform} />)
+      expect(imgHtml).not.toContain('<img')
+      expect(imgHtml).toContain('<a href="https://evil.test/p.png" target="_blank" rel="noopener noreferrer">pixel</a>')
+
+      const malformedHtml = renderToStaticMarkup(<MessageText text="[x](https:relative)" platform={platform} />)
+      expect(malformedHtml).not.toContain('<a ')
+      expect(malformedHtml).toContain('>x<')
+    }
+  })
 })

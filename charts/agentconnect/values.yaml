@@ -154,6 +154,8 @@ features:
   wechat: false
   # The WeCom integration's console install entry points; off hides them (an existing WeCom bot keeps its Bots tab).
   wecom: false
+  # The Mattermost integration's console install entry points; off hides them (an existing Mattermost bot keeps its Bots tab).
+  mattermost: false
   # The Email integration's console install entry points, offered only where Email has a mail domain too; off hides them.
   email: false
   # The built-in agent offers the deployment's Google Chat app first, through its Marketplace listing; turn it on once that listing is live.
@@ -179,6 +181,17 @@ features:
 # cluster-scoped RBAC and the agent-sandbox CRDs must exist (the chart's crds/ directory
 # ships them on first install; `--skip-crds` opts out). Set false for an install that runs
 # no agents here: with `--skip-crds` it then needs and gains no cluster-scoped object.
+# Which Mattermost servers may be dialed (mattermost-integration.md §3.2). The Control Plane checks a
+# bot's server URL and the daemon pool connects to it, so both read these values; stating either
+# variable in controlPlane.extraEnv or daemonPool.extraEnv is refused.
+mattermost:
+  # Let an organization's server URL resolve to a private or loopback address. Off, only the hosts
+  # below may; link-local and metadata addresses stay blocked either way.
+  allowPrivateNetwork: false
+  # Internal hostnames or IP literals that may be dialed with private networks off. Matched against
+  # the URL host exactly, on any port. The Control Plane's MCP OAuth egress honors the same list.
+  internalAllowedHosts: []
+
 daemonPool:
   enabled: true
   image: daemon

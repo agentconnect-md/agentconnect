@@ -742,7 +742,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
         // `botUserId` is the public member id a `<@…>` resolves to. Whether it is
         // shared is conversation-scoped and is derived from the complete placement set
         // in `buildCollabSnapshot`; the bot's `shareable` capacity flag is not identity.
-        bot: { select: { slackAppId: true, botUserId: true } },
+        bot: { select: { slackAppId: true, externalAppId: true, botUserId: true, platformConfig: true, name: true } },
         agent: {
           select: {
             id: true,
@@ -759,10 +759,20 @@ export class PgIntegrationRepo implements IntegrationRepo {
       },
       orderBy: { createdAt: 'asc' }
     })
+    const stripHandle = (value: unknown): string | null => {
+      if (typeof value !== 'string') return null
+      const clean = value.trim().replace(/^@+/, '').trim()
+      return clean.length > 0 ? clean : null
+    }
     // (platform, channelId, agentId) → the first (earliest) placement seen.
     const seen = new Map<string, ChannelPlacementRecord>()
     for (const i of rows) {
       const platform = i.platform as Platform
+      const botAppId = platform === 'slack' ? i.bot.slackAppId : platform === 'mattermost' ? i.bot.externalAppId : null
+      const botUserId = platform === 'slack' || platform === 'mattermost' ? i.bot.botUserId : null
+      const botConfig = (i.bot.platformConfig as Record<string, unknown> | null) ?? null
+      const botUsername =
+        platform === 'mattermost' ? (stripHandle(botConfig?.botUsername) ?? stripHandle(i.bot.name)) : null
       for (const ch of i.channels) {
         const key = `${platform}\u0000${ch.channelId}\u0000${i.agent.id}`
         if (seen.has(key)) continue
@@ -772,8 +782,9 @@ export class PgIntegrationRepo implements IntegrationRepo {
           agentId: AgentId(i.agent.id),
           daemonId: i.agent.daemonId,
           integrationId: IntegrationId(i.id),
-          ...(platform === 'slack' && i.bot.slackAppId ? { botAppId: i.bot.slackAppId } : {}),
-          ...(platform === 'slack' && i.bot.botUserId ? { botUserId: i.bot.botUserId } : {}),
+          ...(botAppId ? { botAppId } : {}),
+          ...(botUserId ? { botUserId } : {}),
+          ...(botUsername ? { botUsername } : {}),
           callPolicy: i.agent.callPolicy as ChannelPlacementRecord['callPolicy'],
           allowedCallerAgentIds: i.agent.allowedCallerAgentIds,
           outboundPolicy: i.agent.outboundPolicy as ChannelPlacementRecord['outboundPolicy'],

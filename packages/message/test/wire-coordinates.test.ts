@@ -9,6 +9,9 @@ describe('wire coordinates', () => {
     expect(nativeMessageId('telegram:-1002233:87')).toBe('87')
     expect(nativeMessageId('discord:99887766:11223344')).toBe('11223344')
     expect(nativeMessageId('feishu:oc_abc:om_xyz')).toBe('om_xyz')
+    expect(nativeMessageId('mattermost:mmch0000000000000000000001:mmpost00000000000000000001')).toBe(
+      'mmpost00000000000000000001'
+    )
   })
 
   it('splits the native (container, message) pair for every minted format', () => {
@@ -56,6 +59,19 @@ describe('wire coordinates', () => {
     expect(isThreadRootMessage({ msgId: 'feishu:oc_a:om_reply', thread: 'om_root' })).toBe(false)
     // Feishu DM: thread is the CHAT id — never a message coordinate.
     expect(isThreadRootMessage({ msgId: 'feishu:oc_a:om_1', thread: 'oc_a' })).toBe(false)
+    // Mattermost top-level vs reply (thread = root_id || id).
+    expect(
+      isThreadRootMessage({
+        msgId: 'mattermost:mmch0000000000000000000001:mmpost00000000000000000001',
+        thread: 'mmpost00000000000000000001'
+      })
+    ).toBe(true)
+    expect(
+      isThreadRootMessage({
+        msgId: 'mattermost:mmch0000000000000000000001:mmpost00000000000000000002',
+        thread: 'mmpost00000000000000000001'
+      })
+    ).toBe(false)
     // No thread coordinate at all.
     expect(isThreadRootMessage({ msgId: 'slack:C1:3.300' })).toBe(false)
   })

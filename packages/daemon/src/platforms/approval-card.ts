@@ -121,6 +121,8 @@ export interface ApprovalCardFacet {
   answerScope?(handle: ApprovalCardHandle): string | undefined
   /** A clicker's display name, for a click that carried none. */
   nameOf?(handle: ApprovalCardHandle, userId: string): Promise<string | undefined>
+  /** Whether chat approvals are deliverable on `conn` (e.g. callback URL configured); absent ⇒ true. */
+  canApproveInChat?(conn: unknown): boolean
 }
 
 /** "Agent’s task “title”", or just "Agent’s task" without a title; plain text, each surface defuses its own markup. */

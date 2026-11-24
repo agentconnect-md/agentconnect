@@ -119,7 +119,8 @@ const SESSION_PLATFORM_IDS = [
   'msteams',
   'wechat',
   'wecom',
-  'email'
+  'email',
+  'mattermost'
 ] as const
 
 const SessionFilterQueryDto = z.object({
@@ -843,7 +844,8 @@ export function sessionRoutes(deps: HttpDeps) {
       telegram: 'Telegram',
       discord: 'Discord',
       googlechat: 'Google Chat',
-      msteams: 'Microsoft Teams'
+      msteams: 'Microsoft Teams',
+      mattermost: 'Mattermost'
     } as const
     type ExternalAccessProvider = keyof typeof accessProviders
     const externalAccessAvailable = (provider: ExternalAccessProvider) =>

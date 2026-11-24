@@ -113,6 +113,7 @@ function build(
     onPullRequestFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onPullRequestFeedback']
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     computerTurnSecret?: string
+    mattermostActionSecret?: string
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
     onBotCredentialCheck?: ConstructorParameters<typeof RelayConnection>[1]['onBotCredentialCheck']
@@ -172,6 +173,7 @@ function build(
     clock: over.clock ?? clock,
     ...(over.deploymentConfig ? { deploymentConfig: over.deploymentConfig } : {}),
     ...(over.computerTurnSecret ? { computerTurnSecret: over.computerTurnSecret } : {}),
+    ...(over.mattermostActionSecret ? { mattermostActionSecret: over.mattermostActionSecret } : {}),
     onRegistered,
     onRunReport,
     onSetChannelAgent: vi.fn(async () => {}),
@@ -476,11 +478,17 @@ describe('RelayConnection FSM', () => {
     )
   })
 
-  it('hands the TURN secret over on rc/auth/ok and stores the TURN URLs a relay registers', async () => {
-    const { transport, upsertByName } = build({ computerTurnSecret: 'x'.repeat(43) })
+  it('hands the TURN secret and Mattermost action secret over on rc/auth/ok and stores the TURN URLs a relay registers', async () => {
+    const { transport, upsertByName } = build({
+      computerTurnSecret: 'x'.repeat(43),
+      mattermostActionSecret: 'y'.repeat(43)
+    })
     transport.feed('rc/auth', { method: 'token', credential: RELAY_TOKEN })
     await Promise.resolve()
-    expect(transport.lastRep('rc/auth/ok')!.payload).toMatchObject({ computerTurnSecret: 'x'.repeat(43) })
+    expect(transport.lastRep('rc/auth/ok')!.payload).toMatchObject({
+      computerTurnSecret: 'x'.repeat(43),
+      mattermostActionSecret: 'y'.repeat(43)
+    })
     const turnUrls = ['turn:turn-0.example.test:3478?transport=udp', 'turns:turn-0.example.test:443?transport=tcp']
     transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test', turnUrls })
     await Promise.resolve()

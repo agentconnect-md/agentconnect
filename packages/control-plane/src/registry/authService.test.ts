@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { deriveMattermostOrgActionSecret } from '@agentconnect.md/protocol'
 import { DaemonAuthService } from './authService.js'
 import { ApiKeyCodec } from './apiKey.js'
 import type { ApiKeyRepo, ApiKeyRecord } from '../persistence/ports.js'
@@ -95,7 +96,59 @@ describe('DaemonAuthService.authenticate — close-code contract', () => {
     // The daemon's self-fence is derived from this, so it must be THIS CP's horizon.
     expect(r.okFrame.dutyLeaseMs).toBe(DUTY_LEASE_DEFAULTS.leaseMs)
     expect(r.okFrame.webAppUrl).toBeUndefined() // omitted when WEB_APP_URL is unset
+    expect(r.okFrame.publicRelayUrl).toBeUndefined()
+    expect(r.okFrame.mattermostActionSecret).toBeUndefined()
     expect(repo.touchLastUsed).toHaveBeenCalledOnce()
+  })
+
+  it('includes publicRelayUrl and mattermostActionSecret in auth/ok when configured', async () => {
+    const { token } = codec.mint()
+    const secret = 'm'.repeat(43)
+    const service = new DaemonAuthService(
+      codec,
+      makeRepo(),
+      okEpoch,
+      clock,
+      {
+        HEARTBEAT_SEC: 15,
+        DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs,
+        WEB_APP_URL: 'https://console.example.test',
+        PUBLIC_RELAY_URL: 'https://relay.example.test',
+        MATTERMOST_ACTION_SECRET: secret
+      },
+      { slugById: async () => 'acme' },
+      memberSets
+    )
+    const r = await service.authenticate({ apiKey: token, agentVersion: '1' }, ctx)
+    expect(r.ok).toBe(true)
+    if (!r.ok) throw new Error('expected ok')
+    expect(r.okFrame.webAppUrl).toBe('https://console.example.test')
+    expect(r.okFrame.publicRelayUrl).toBe('https://relay.example.test')
+    expect(r.okFrame.orgId).toBe('org_1')
+    // Org-scoped daemons receive an org-derived secret, never the raw deployment master secret.
+    expect(r.okFrame.mattermostActionSecret).toBe(deriveMattermostOrgActionSecret(secret, 'org_1'))
+    expect(r.okFrame.mattermostActionSecret).not.toBe(secret)
+
+    // Another organization receives a distinct derived secret.
+    const otherService = new DaemonAuthService(
+      codec,
+      makeRepo({ findByHash: vi.fn(async () => record({ orgId: OrgId('org_2') })) }),
+      okEpoch,
+      clock,
+      {
+        HEARTBEAT_SEC: 15,
+        DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs,
+        MATTERMOST_ACTION_SECRET: secret
+      },
+      { slugById: async () => 'beta' },
+      memberSets
+    )
+    const r2 = await otherService.authenticate({ apiKey: token, agentVersion: '1' }, ctx)
+    expect(r2.ok).toBe(true)
+    if (!r2.ok) throw new Error('expected ok')
+    expect(r2.okFrame.orgId).toBe('org_2')
+    expect(r2.okFrame.mattermostActionSecret).toBe(deriveMattermostOrgActionSecret(secret, 'org_2'))
+    expect(r2.okFrame.mattermostActionSecret).not.toBe(r.okFrame.mattermostActionSecret)
   })
 
   it('announces the daemon’s member set — the daemon’s whole duty-enforcement predicate', async () => {
@@ -263,13 +316,21 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
   }
   const orgs = { slugById: async () => 'cluster-org' }
 
-  function withIdentity(verify: ClusterDaemonIdentity['verify'], repo = makeRepo()): DaemonAuthService {
+  function withIdentity(
+    verify: ClusterDaemonIdentity['verify'],
+    repo = makeRepo(),
+    masterSecret?: string
+  ): DaemonAuthService {
     return new DaemonAuthService(
       codec,
       repo,
       okEpoch,
       clock,
-      { HEARTBEAT_SEC: 15, DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs },
+      {
+        HEARTBEAT_SEC: 15,
+        DUTY_LEASE_MS: DUTY_LEASE_DEFAULTS.leaseMs,
+        ...(masterSecret ? { MATTERMOST_ACTION_SECRET: masterSecret } : {})
+      },
       orgs,
       memberSets,
       { verify }
@@ -278,7 +339,8 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
 
   it('a verified token authenticates an install-wide member without any API key', async () => {
     const repo = makeRepo()
-    const r = await withIdentity(async () => verified, repo).authenticate(
+    const masterSecret = 'p'.repeat(43)
+    const r = await withIdentity(async () => verified, repo, masterSecret).authenticate(
       { serviceAccountToken: 'projected', agentVersion: '1' },
       ctx
     )
@@ -290,6 +352,9 @@ describe('DaemonAuthService.authenticate — the in-cluster token path', () => {
     expect(r.orgId).toBeNull()
     expect(r.okFrame.organizationMode).toBe('frame')
     expect(r.okFrame.orgSlug).toBeUndefined()
+    expect(r.okFrame.orgId).toBeUndefined()
+    // A pool daemon serves many organizations, so it is never handed the master secret.
+    expect(r.okFrame.mattermostActionSecret).toBeUndefined()
     // No key was presented, so nothing may be looked up or touched.
     expect(repo.findByHash).not.toHaveBeenCalled()
     expect(repo.touchLastUsed).not.toHaveBeenCalled()

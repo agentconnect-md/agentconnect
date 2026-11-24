@@ -331,3 +331,24 @@ Viewer media egress ports (computer-use.md §7.2): relay TURN/STUN public and co
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
+
+{{/*
+Mattermost dial policy for one workload (mattermost-integration.md §3.2). The Control Plane checks a
+server URL and the pool dials it, so both render from the same values and cannot disagree.
+Call with (dict "root" $ "extraEnv" <that workload's extraEnv> "owner" "<values key>").
+*/}}
+{{- define "agentconnect.mattermostEnv" -}}
+{{- range (list "MATTERMOST_ALLOW_PRIVATE_NETWORK" "AGENTCONNECT_INTERNAL_ALLOWED_HOSTS") }}
+{{- if hasKey $.extraEnv . }}
+{{- fail (printf "%s.extraEnv.%s collides with the chart-owned mattermost values: set mattermost.allowPrivateNetwork or mattermost.internalAllowedHosts instead" $.owner .) }}
+{{- end }}
+{{- end }}
+{{- if .root.Values.mattermost.allowPrivateNetwork }}
+- name: MATTERMOST_ALLOW_PRIVATE_NETWORK
+  value: "true"
+{{- end }}
+{{- with .root.Values.mattermost.internalAllowedHosts }}
+- name: AGENTCONNECT_INTERNAL_ALLOWED_HOSTS
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- end }}

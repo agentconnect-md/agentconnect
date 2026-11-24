@@ -95,6 +95,16 @@ export const IntegrationWeComConfig = z.object({
 })
 export type IntegrationWeComConfig = z.infer<typeof IntegrationWeComConfig>
 
+// The Mattermost payload (self-hosted API v4): WebSocket + REST authenticated by a Bot Account token or PAT.
+export const IntegrationMattermostConfig = z.object({
+  serverUrl: z.string().url({ protocol: /^https?$/ }), // normalized base URL without trailing slash (http or https for self-hosted)
+  botToken: z.string().min(1), // Bot Account token or PAT (plaintext — never log)
+  botUserId: z.string().min(1).optional(), // resolved via GET /api/v4/users/me; seeded by CP
+  botUsername: z.string().min(1).optional(), // resolved via GET /api/v4/users/me; seeded by CP for @username mentions
+  actionSecret: z.string().min(32).max(256).optional() // this organization's card-callback HMAC secret (plaintext — never log)
+})
+export type IntegrationMattermostConfig = z.infer<typeof IntegrationMattermostConfig>
+
 /**
  * The Telegram config payload — long-polling + routing (grammY). Telegram has a
  * SINGLE BotFather HTTP token — no app-level token and no signing secret
@@ -366,8 +376,8 @@ const CHANNEL_KEY_MAX = 32
 /** Cap on a conversation's own link — a permalink the console opens, never a payload. */
 const CHANNEL_URL_MAX = 512
 
-/** Only an `https` origin is a link here: the console opens it in a new tab. */
-const CHANNEL_URL = /^https:\/\/\S+$/
+/** Only an `http` or `https` origin is a link here: the console opens it in a new tab (allowing self-hosted servers). */
+const CHANNEL_URL = /^https?:\/\/\S+$/
 
 /**
  * A conversation's platform handle and permalink narrowed to what {@link IntegrationChannel}

@@ -55,50 +55,101 @@ function blockedV4(ip: string): boolean {
   })
 }
 
+function parseIpv4Tail(part: string): [number, number] | null {
+  const octets = part.split('.')
+  if (octets.length !== 4 || octets.some((o) => !/^\d+$/.test(o))) return null
+  const nums = octets.map(Number)
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+  const [a, b, c, d] = nums as [number, number, number, number]
+  return [((a << 8) | b) & 0xffff, ((c << 8) | d) & 0xffff]
+}
+
+function expandIpv6Side(raw: string, allowTrailingV4: boolean): number[] | null {
+  if (!raw) return []
+  const parts = raw.split(':')
+  const out: number[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!
+    if (!part) return null
+    if (allowTrailingV4 && i === parts.length - 1 && part.includes('.')) {
+      const pair = parseIpv4Tail(part)
+      if (!pair) return null
+      out.push(pair[0], pair[1])
+      continue
+    }
+    if (!/^[0-9a-f]{1,4}$/.test(part)) return null
+    out.push(parseInt(part, 16))
+  }
+  return out
+}
+
+function parseIpv6Hextets(addr: string): number[] | null {
+  const compressed = addr.split('::')
+  if (compressed.length > 2) return null
+  if (compressed.length === 1) {
+    const hextets = expandIpv6Side(compressed[0]!, true)
+    return hextets && hextets.length === 8 ? hextets : null
+  }
+  const left = expandIpv6Side(compressed[0]!, false)
+  const right = expandIpv6Side(compressed[1]!, true)
+  if (!left || !right || left.length + right.length >= 8) return null
+  return [...left, ...new Array<number>(8 - left.length - right.length).fill(0), ...right]
+}
+
+function embeddedV4FromHextets(h: readonly number[]): string | null {
+  const toV4 = (hi: number, lo: number): string => `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
+  const zero0to4 = h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0
+  if (zero0to4 && h[5] === 0xffff) return toV4(h[6]!, h[7]!) // ::ffff:0:0/96
+  if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0xffff && h[5] === 0) {
+    return toV4(h[6]!, h[7]!) // ::ffff:0:0:0/96
+  }
+  if (zero0to4 && h[5] === 0 && (h[6] !== 0 || (h[7] ?? 0) > 1)) return toV4(h[6]!, h[7]!) // ::/96
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
+    return toV4(h[6]!, h[7]!) // NAT64 64:ff9b::/96
+  }
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0x0001) return toV4(h[6]!, h[7]!) // NAT64 64:ff9b:1::/48
+  return null
+}
+
 /**
- * True if `ip` is an address the relay must NOT proxy to. Covers IPv4 (via CIDR table)
- * and IPv6: loopback (`::1`), unspecified (`::`), ULA (`fc00::/7`), link-local
- * (`fe80::/10`), and IPv4-mapped (`::ffff:a.b.c.d`, checked against the v4 table).
+ * True if `ip` is an address the relay must NOT proxy to. Covers IPv4 (via CIDR table + Alibaba IMDS)
+ * and IPv6: loopback (`::1`), unspecified (`::`), ULA (`fc00::/7`), link-local (`fe80::/10`),
+ * multicast (`ff00::/8`), AWS IMDS (`fd00:ec2::254`), and embedded IPv4 forms.
  */
 export function isBlockedIp(ip: string): boolean {
-  const addr = ip
-    .trim()
-    .toLowerCase()
-    .replace(/^\[|\]$/g, '')
-  if (addr.includes('.') && !addr.includes(':')) return blockedV4(addr)
-  // IPv4-mapped IPv6 — dotted (`::ffff:127.0.0.1`) or Node's canonical hex (`::ffff:7f00:1`).
-  const mapped = addr.match(/^::ffff:(.+)$/)
-  if (mapped) {
-    const rest = mapped[1]!
-    if (rest.includes('.')) return blockedV4(rest)
-    const [hi = '0', lo = '0'] = rest.split(':')
-    const h = parseInt(hi, 16)
-    const l = parseInt(lo, 16)
-    if (!Number.isNaN(h) && !Number.isNaN(l)) {
-      return blockedV4(`${(h >> 8) & 0xff}.${h & 0xff}.${(l >> 8) & 0xff}.${l & 0xff}`)
-    }
+  const addr =
+    ip
+      .trim()
+      .toLowerCase()
+      .replace(/^\[|\]$/g, '')
+      .split('%')[0] ?? ''
+  if (addr.includes('.') && !addr.includes(':')) {
+    return addr === '100.100.100.200' || blockedV4(addr)
   }
-  if (addr === '::1' || addr === '::') return true
-  const firstHextet = addr.split(':')[0] ?? ''
-  const byte0 = parseInt(firstHextet.padStart(4, '0').slice(0, 2), 16)
-  if (Number.isNaN(byte0)) return false
-  if (byte0 === 0xfc || byte0 === 0xfd) return true // fc00::/7 ULA
-  if (byte0 === 0xfe) {
-    const byte1 = parseInt(firstHextet.padStart(4, '0').slice(2, 4) || '0', 16)
-    if ((byte1 & 0xc0) === 0x80) return true // fe80::/10 link-local (top 10 bits 1111111010)
-  }
+  const h = parseIpv6Hextets(addr)
+  if (!h) return false
+  if (h.every((x) => x === 0)) return true // ::
+  if (h.slice(0, 7).every((x) => x === 0) && h[7] === 1) return true // ::1
+  const v4 = embeddedV4FromHextets(h)
+  if (v4) return v4 === '100.100.100.200' || blockedV4(v4)
+  if ((h[0]! & 0xfe00) === 0xfc00) return true // fc00::/7 ULA (incl. fd00:ec2::254)
+  if ((h[0]! & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
+  if ((h[0]! & 0xff00) === 0xff00) return true // ff00::/8 multicast
   return false
 }
 
 /**
  * A `net.LookupFunction` that resolves `hostname`, blocks the request if ANY resolved
- * address is disallowed (unless `allowPrivate`), and returns a single validated address —
- * pinning the connection to it. Reject-if-any (not just the chosen IP) defeats round-robin
- * rebinding. On block/failure it errors the lookup, which fails the outbound connection.
+ * address is disallowed (unless `allowPrivate`), and returns only the validated
+ * addresses (all of them when `options.all` is truthy so Node Happy Eyeballs works
+ * across dual-stack AAAA/A records, or `addresses[0]` otherwise) — pinning the
+ * connection without DNS re-resolution. Reject-if-any (not just the chosen IP) defeats
+ * round-robin rebinding. On block/failure it errors the lookup, which fails the
+ * outbound connection.
  */
-export function makeGuardedLookup(allowPrivate: boolean): LookupFunction {
+export function makeGuardedLookup(allowPrivate: boolean, resolve: typeof dnsLookup = dnsLookup): LookupFunction {
   const fn: LookupFunction = (hostname, options, callback) => {
-    dnsLookup(hostname, { all: true }, (err, addresses) => {
+    resolve(hostname, { all: true }, (err, addresses) => {
       if (err) return callback(err, '', 0)
       if (!addresses || addresses.length === 0) {
         return callback(new Error(`ssrf: no address for ${hostname}`), '', 0)
@@ -107,13 +158,14 @@ export function makeGuardedLookup(allowPrivate: boolean): LookupFunction {
         const bad = addresses.find((a) => isBlockedIp(a.address))
         if (bad) return callback(new Error(`ssrf: blocked address ${bad.address} for ${hostname}`), '', 0)
       }
-      const pick = addresses[0]!
       // Respect the caller's `all` shape (http.request may request either form).
-      if ((options as { all?: boolean }).all) {
-        return (callback as unknown as (e: Error | null, a: Array<{ address: string; family: number }>) => void)(null, [
-          { address: pick.address, family: pick.family }
-        ])
+      if ((options as { all?: boolean } | undefined)?.all) {
+        return (callback as unknown as (e: Error | null, a: Array<{ address: string; family: number }>) => void)(
+          null,
+          addresses.map(({ address, family }) => ({ address, family }))
+        )
       }
+      const pick = addresses[0]!
       callback(null, pick.address, pick.family)
     })
   }

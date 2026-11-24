@@ -107,6 +107,9 @@ export interface CpClientConnectionHost {
   exitFatal(code: number): void
   setDaemonId(daemonId: string): void
   setWebAppUrl(webAppUrl: string | undefined): void
+  setPublicRelayUrl(publicRelayUrl: string | undefined): void
+  setMattermostActionSecret(secret: string | undefined): void
+  setOrgId?(orgId: string | undefined): void
   setOrgSlug(orgSlug: string | undefined): void
   /** Settles the promise `startCpClient` returns, on the first register/ok. */
   resolveInitialRegistry(): void
@@ -299,6 +302,15 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     onWebAppUrl: (webAppUrl) => {
       host.setWebAppUrl(webAppUrl)
       if (webAppUrl) host.log().debug(`cp: web app url ${webAppUrl} (session deep links)`)
+    },
+    onPublicRelayUrl: (publicRelayUrl) => {
+      host.setPublicRelayUrl(publicRelayUrl)
+    },
+    onMattermostActionSecret: (secret) => {
+      host.setMattermostActionSecret(secret)
+    },
+    onOrgId: (orgId) => {
+      host.setOrgId?.(orgId)
     },
     onOrgSlug: (slug) => {
       host.setOrgSlug(slug)

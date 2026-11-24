@@ -3,22 +3,13 @@
 // Transcript message renderer: one renderer per row, resolved from the row's own platform (a module's override, else the default below).
 
 import { memo, type ComponentType } from 'react'
-import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+import { SafeMarkdownText } from './markdown-text'
 import { platformTextRenderer } from './platforms/registry'
 import { slackToMarkdown } from './slack-mrkdwn'
 
-// Transcript rows from ACP aren't section-split like Slack posts, so a pathological
-// reasoning row can be huge. react-markdown + remark plugins are superlinear on very
-// large strings, so above this cap we skip parsing and render cheap pre-wrapped text.
-const MAX_PARSE = 100_000
-
-// The only targets that reach a reader as a working link; anything else renders as its label.
-// A leading slash passes react-markdown's sanitizer as a same-origin relative URL, so a host path a
-// runtime linked used to render an anchor opening this console on a path it does not serve. The
-// daemon flattens those before delivery now; this keeps rows recorded before that from 404ing.
-const WEB_HREF = /^(?:https?:|mailto:)/i
+const SLACK_MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks]
 
 /**
  * The core default renderer: Slack mrkdwn semantics over a CommonMark
@@ -38,64 +29,12 @@ const WEB_HREF = /^(?:https?:|mailto:)/i
  * tab. Styling lives under `.mdtxt` (compact, inline — distinct from `.md-body`).
  */
 export const SlackMrkdwnText: ComponentType<{ text: string }> = function SlackMrkdwnText({ text }) {
-  if (text.length > MAX_PARSE) {
-    return (
-      <div className="mdtxt">
-        <p className="whitespace-pre-wrap">{text}</p>
-      </div>
-    )
-  }
-  return (
-    <div className="mdtxt">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
-        components={{
-          a: ({ children, node: _node, ...props }) =>
-            WEB_HREF.test(props.href ?? '') ? (
-              <a {...props} target="_blank" rel="noopener noreferrer">
-                {children}
-              </a>
-            ) : (
-              <>{children}</>
-            )
-        }}
-      >
-        {slackToMarkdown(text)}
-      </ReactMarkdown>
-    </div>
-  )
+  return <SafeMarkdownText text={text} transform={slackToMarkdown} remarkPlugins={SLACK_MARKDOWN_PLUGINS} />
 }
 
 /** CommonMark as written — a GitHub or GitLab body — with the same link policy and the same
  *  `.mdtxt` styling, and none of the Slack control-syntax normalization the default applies. */
-export const MarkdownText: ComponentType<{ text: string }> = function MarkdownText({ text }) {
-  if (text.length > MAX_PARSE) {
-    return (
-      <div className="mdtxt">
-        <p className="whitespace-pre-wrap">{text}</p>
-      </div>
-    )
-  }
-  return (
-    <div className="mdtxt">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ children, node: _node, ...props }) =>
-            WEB_HREF.test(props.href ?? '') ? (
-              <a {...props} target="_blank" rel="noopener noreferrer">
-                {children}
-              </a>
-            ) : (
-              <>{children}</>
-            )
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  )
-}
+export { MarkdownText } from './markdown-text'
 
 // memo: the transcript re-renders on every unrelated state change in
 // SessionDetailView (composer keystrokes, the 1s duration tick, expanding one turn's

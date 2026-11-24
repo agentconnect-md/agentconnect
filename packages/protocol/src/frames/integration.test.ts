@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  conversationLink,
   IntegrationChannel,
   IntegrationCoreEnvelope,
   IntegrationRevoked,
@@ -230,5 +231,29 @@ describe('IntegrationTenant', () => {
     expect(decoded.ok && decoded.frame).toMatchObject({ type: 'integration/tenant', orgId: 'org-a', payload: report })
     expect(IntegrationTenant.safeParse({ ...report, integrationIds: [] }).success).toBe(false)
     expect(IntegrationTenant.safeParse({ ...report, tenantId: '' }).success).toBe(false)
+  })
+})
+
+describe('IntegrationChannel url & conversationLink', () => {
+  it('accepts both https and self-hosted http channel URLs while rejecting unsafe or oversized URLs', () => {
+    expect(conversationLink('ENG', 'https://linear.app/acme/team/ENG')).toEqual({
+      key: 'ENG',
+      url: 'https://linear.app/acme/team/ENG'
+    })
+    expect(conversationLink(undefined, 'http://localhost:8065/agentconnect/channels/playground')).toEqual({
+      url: 'http://localhost:8065/agentconnect/channels/playground'
+    })
+    expect(conversationLink(undefined, 'javascript:alert(1)')).toEqual({})
+    expect(conversationLink(undefined, 'https://example.com/' + 'a'.repeat(500))).toEqual({})
+
+    expect(
+      IntegrationChannel.parse({
+        id: 'ch1',
+        spaceId: 'team1',
+        space: 'AgentConnect',
+        url: 'http://localhost:8065/agentconnect/channels/playground'
+      }).url
+    ).toBe('http://localhost:8065/agentconnect/channels/playground')
+    expect(IntegrationChannel.safeParse({ id: 'ch2', url: 'javascript:alert(1)' }).success).toBe(false)
   })
 })

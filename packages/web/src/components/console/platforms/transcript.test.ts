@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { MarkdownText } from '@/components/console/MessageText'
 import type { SessionMessageDto } from '@/lib/api'
 import { platformMessageIdentity, platformRegistry, platformTextRenderer, platformTranscriptOrdering } from './registry'
 
@@ -18,17 +19,21 @@ function row(over: Partial<SessionMessageDto>): SessionMessageDto {
 }
 
 describe('transcript module members', () => {
-  it('gives only Google Chat a text renderer of its own', () => {
+  it('gives only Google Chat and Mattermost a text renderer of their own', () => {
     // Each override lands with its own visual review, so the set is named here and a new one is a visible diff.
     expect(
       platformRegistry
         .all()
         .filter((module) => module.textRenderer)
         .map((module) => module.platformId)
-    ).toEqual(['googlechat'])
-    for (const id of [...platformRegistry.ids().filter((id) => id !== 'googlechat'), ...UNCLAIMED]) {
+    ).toEqual(['googlechat', 'mattermost'])
+    for (const id of [
+      ...platformRegistry.ids().filter((id) => id !== 'googlechat' && id !== 'mattermost'),
+      ...UNCLAIMED
+    ]) {
       expect(platformTextRenderer(id), id).toBeUndefined()
     }
+    expect(platformTextRenderer('mattermost')).toBe(MarkdownText)
     expect(platformTextRenderer(undefined)).toBeUndefined()
   })
 

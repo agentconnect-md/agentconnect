@@ -221,7 +221,52 @@ import {
   sessionFileName,
   SessionFileArea,
   SESSION_FILES_FEATURE,
-  parseOrgRefusal
+  parseOrgRefusal,
+  MATTERMOST_PLATFORM,
+  MATTERMOST_ACTION_PATH,
+  type RegisterReq,
+  type RelayRosterEntry,
+  type CronReport,
+  type FactsMcpServer,
+  type IntegrationChannel,
+  type Drain,
+  type DrainProgress,
+  type DrainDone,
+  type SessionKey,
+  type SessionActivity,
+  type Ack,
+  type RdMsg,
+  type RdMsgHook,
+  type RdHookRouting,
+  type RdMsgWebchat,
+  type RdMsgIm,
+  type RdMsgPlatformAction,
+  type RdAck,
+  type RdAgentMsgFwd,
+  type RdAgentMsgAck,
+  type RdChatEvent,
+  type GitCommitIdentity,
+  type MemoryDreamingPolicy,
+  type ChannelAgentsOk,
+  type SessionPullRequestFeedback,
+  type SessionPullRequestFeedbackResult,
+  type SessionCapabilitySettled,
+  type SessionCapabilitySettledResult,
+  type CapabilityAskers,
+  type CapabilityReopened,
+  type CapabilityForward,
+  type CapabilityForwardResult,
+  type AgentMcpRebound,
+  type TaskList,
+  type TaskListReq,
+  type McpAppRpc,
+  type McpAppRpcResult,
+  type CodeHostProvider,
+  type McpAppOutcome,
+  type RuntimeStrategyEntries,
+  type ChannelSessionMode,
+  type WebchatRemoteMcpEntitlement,
+  type SessionAdmitRequest
 } from '@agentconnect.md/protocol'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, realpathSync } from 'node:fs'
@@ -681,6 +726,13 @@ import type { WeComConnection } from './platforms/wecom/connection.js'
 import { weComCommandChrome } from './platforms/wecom/command-chrome.js'
 import { weComPlatformModule } from './platforms/wecom/module.js'
 import { createWeComTurnOutput } from './platforms/wecom/surface.js'
+import type { MattermostConnection, MattermostConnectionDeps } from './platforms/mattermost/connection.js'
+import type { MattermostActionCallbackConfig } from './platforms/mattermost/action-button.js'
+import { mattermostDraftCardPort } from './platforms/mattermost/draft-card.js'
+import { mattermostCommandChrome } from './platforms/mattermost/command-chrome.js'
+import { mattermostPlatformModule } from './platforms/mattermost/module.js'
+import { MattermostResponseRouting } from './platforms/mattermost/response-routing.js'
+import { createMattermostTurnOutput } from './platforms/mattermost/surface.js'
 import type { EmailConnection } from './platforms/email/connection.js'
 import { emailCommandChrome } from './platforms/email/command-chrome.js'
 import { EmailMembers } from './platforms/email/members.js'
@@ -751,6 +803,7 @@ import { telegramCommandChrome } from './platforms/telegram/command-chrome.js'
 import { discordCommandChrome } from './platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
+  MATTERMOST_RESPONSE_FINAL_EVENT_TAG,
   nativeMessageCoordinates,
   resolveSlackMentionedAgents,
   slackTextAddressesAnyone,
@@ -1383,51 +1436,6 @@ import {
   telegramReplyTarget as telegramReplyTargetExternal
 } from './platforms/telegram/threading.js'
 import { TurnOutputRegistry, type TurnAcknowledgement, type TurnAcknowledgementEnd } from './platforms/turn-output.js'
-import type {
-  RegisterReq,
-  RelayRosterEntry,
-  CronReport,
-  FactsMcpServer,
-  IntegrationChannel,
-  Drain,
-  DrainProgress,
-  DrainDone,
-  SessionKey,
-  SessionActivity,
-  Ack,
-  RdMsg,
-  RdMsgHook,
-  RdHookRouting,
-  RdMsgWebchat,
-  RdMsgIm,
-  RdMsgPlatformAction,
-  RdAck,
-  RdAgentMsgFwd,
-  RdAgentMsgAck,
-  RdChatEvent,
-  GitCommitIdentity,
-  MemoryDreamingPolicy,
-  ChannelAgentsOk,
-  SessionPullRequestFeedback,
-  SessionPullRequestFeedbackResult,
-  SessionCapabilitySettled,
-  SessionCapabilitySettledResult,
-  CapabilityAskers,
-  CapabilityReopened,
-  CapabilityForward,
-  CapabilityForwardResult,
-  AgentMcpRebound,
-  TaskList,
-  TaskListReq,
-  McpAppRpc,
-  McpAppRpcResult,
-  CodeHostProvider,
-  McpAppOutcome,
-  RuntimeStrategyEntries,
-  ChannelSessionMode,
-  WebchatRemoteMcpEntitlement,
-  SessionAdmitRequest
-} from '@agentconnect.md/protocol'
 import { boundedDiagnostic, formatErr, startFailureDetail } from './daemon/text.js'
 import { BackgroundExecs, noteOpenExec } from './daemon/background-execs.js'
 import { HostPasses } from './daemon/host-passes.js'
@@ -2076,6 +2084,7 @@ export class Daemon {
     registry.register(msTeamsCommandChrome)
     registry.register(weChatCommandChrome)
     registry.register(weComCommandChrome)
+    registry.register(mattermostCommandChrome)
     registry.register(emailCommandChrome)
     return registry
   })()
@@ -2288,6 +2297,24 @@ export class Daemon {
           warn: (message) => this.log.warn(message)
         })
       )
+      registry.register(
+        createMattermostTurnOutput({
+          recordReplySegment: (p, text) => this.recordReplySegment(p, text),
+          appendTranscript: async (row) => await this.store.appendTranscript(row),
+          nowUs: () => this.clock.now() * 1000,
+          warn: (message) => this.log.warn(message),
+          sendIdentity: (p) => this.mattermostResponses.sendIdentity(p, 'streaming'),
+          finalIdentity: (p) =>
+            p.reply.finalRouting?.hasPeers ? this.mattermostResponses.sendIdentity(p, 'final') : undefined,
+          recordPublishedPost: (p, post) => {
+            p.reply.lastResponse = { ts: post.ts, text: post.text }
+            if (p.reply.firstResponse === undefined) p.reply.firstResponse = post.ts
+            if (post.finalStamped) p.reply.finalStamped = post.ts
+          },
+          prepareResponseClosure: (p) => this.mattermostResponses.prepareResponseClosure(p),
+          closeResponse: (p) => this.mattermostResponses.closeResponse(p)
+        })
+      )
       registry.register(createEmailTurnOutput(this.emailTurnHost()))
       return registry
     })()
@@ -2363,7 +2390,7 @@ export class Daemon {
     sessionLink: (sessionId) => this.sessionLink(sessionId),
     reportTaskOwners: async (agentId, keys) => await this.reportTaskOwners(agentId, keys),
     threadLink: (integrationId, at) =>
-      sessionThreadUrlFor(at, integrationId === undefined ? undefined : this.connForIntegration(integrationId)),
+      sessionThreadUrlFor(at, integrationId === undefined ? undefined : this.linkConnForIntegration(integrationId)),
     sendBack: (agentId, taskKey, note) => this.sendTaskBackToWork(agentId, taskKey, note),
     lookBackSettled: async (agentId, taskKey, outcome) => {
       await this.store.assistantSubsessions.noteLookBackOutcome(agentId, taskKey, outcome, this.clock.now())
@@ -2443,6 +2470,8 @@ export class Daemon {
   private weChatConnByIntegration = new Map<string, WeChatConnection>()
   // integrationId -> the WeComConnection that owns it: the smart bot's daemon-held long connection and its sends.
   private weComConnByIntegration = new Map<string, WeComConnection>()
+  // integrationId -> the MattermostConnection that owns it: self-hosted WS v4 + REST v4 bot connection.
+  private mattermostConnByIntegration = new Map<string, MattermostConnection>()
   // integrationId -> the EmailConnection of the agent's address: no socket, reads from the mail index, sends through the relay.
   private emailConnByIntegration = new Map<string, EmailConnection>()
   // One Google Chat write budget per app on this daemon (§10.8), built from the config on first use.
@@ -2870,6 +2899,10 @@ export class Daemon {
       /** Builds the Slack app each connection drives. Injected by tests ONLY — unset, connections
        * build the real client and reach slack.com, which is not something a unit suite should need. */
       slackAppFactory?: SlackAppFactory
+      mattermostTransport?: Partial<
+        Pick<MattermostConnectionDeps, 'createSocket' | 'fetchImpl' | 'timing' | 'sendIntervalMs'>
+      >
+      mattermostActionCallback?: MattermostActionCallbackConfig
       /** Explicit test/evaluation-only Dream bypass. It is honored only with an
        * injected hostFactory, never by the production CLI/config surface. */
       dreamOperationPolicy?: DreamOperationPolicy
@@ -3151,7 +3184,7 @@ export class Daemon {
     this.fleetUpgrade = new FleetUpgradeCoordinator({
       log: () => this.log,
       clock: () => this.clock,
-      shutdownDrainMs: () => this.cfg.limits.shutdownDrainMs,
+      shutdownDrainMs: () => this.cfg?.limits?.shutdownDrainMs ?? 25_000,
       shutdownDrainBudgetMs: () => this.shutdownDrainBudgetMs(),
       raceDeadline: (work, ms) => this.raceDeadline(work, ms),
       supervisor: () => this.opts.supervisor,
@@ -3411,6 +3444,7 @@ export class Daemon {
         msteams: this.msTeamsConnByIntegration,
         wechat: this.weChatConnByIntegration,
         wecom: this.weComConnByIntegration,
+        mattermost: this.mattermostConnByIntegration,
         email: this.emailConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
@@ -3443,6 +3477,7 @@ export class Daemon {
       bindMsTeams: (id, conn, botUserId) => this.bind(this.msTeamsConnByIntegration, id, conn, botUserId),
       bindWeChat: (id, conn, botId) => this.bind(this.weChatConnByIntegration, id, conn, botId),
       bindWeCom: (id, conn, botId) => this.bind(this.weComConnByIntegration, id, conn, botId),
+      bindMattermost: (id, conn, botUserId) => this.bind(this.mattermostConnByIntegration, id, conn, botUserId),
       bindEmail: (id, conn, address) => this.bind(this.emailConnByIntegration, id, conn, address),
       emailMembers: () => this.emailMembers,
       transportScopeOf: (integrationId) => this.transportScopeForIntegrationIds([integrationId]),
@@ -3471,7 +3506,9 @@ export class Daemon {
       integrationConfigById: (integrationId) => this.integrationConfigById(integrationId),
       integrationIdForTransportScope: (agentId, platform, transportScope) =>
         this.integrationIdForTransportScope(agentId, platform, transportScope),
-      connForIntegration: (integrationId) => this.connForIntegration(integrationId),
+      connForIntegration: (integrationId) => this.anyConnForIntegration(integrationId),
+      mattermostTransport: () => this.opts?.mattermostTransport,
+      mattermostActionCallback: (agentId) => this.mattermostActionCallback(agentId),
       emitSessionMetadataSnapshotsForDisplayName: (id) =>
         this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(id),
       dispatch: (agentId, msg, integrationId, callMeta) =>
@@ -3501,6 +3538,7 @@ export class Daemon {
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       openElicitEditor: (a) => this.permissions.openElicitEditor(a.requestId),
       handleElicitCardTap: async (a) => await this.permissions.handleElicitCardTap(a),
+      onCardClick: (click, agentId, integrationId) => this.answerCardClick(click, agentId, integrationId),
       handlePermissionPick: async (a) => await this.permissions.handlePermissionChoice(a),
       declineCapabilityCard: async (a) => await this.declineCapabilityCard(a),
       submitElicitEditor: async (a) => {
@@ -3557,6 +3595,7 @@ export class Daemon {
     this.msTeamsConnByIntegration.delete(integrationId)
     this.weChatConnByIntegration.delete(integrationId)
     this.weComConnByIntegration.delete(integrationId)
+    this.mattermostConnByIntegration.delete(integrationId)
     this.emailConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
@@ -3590,7 +3629,7 @@ export class Daemon {
         error: (message) => this.log.error(message),
         integrationIdForSessionTransport: (id, platform, scope) =>
           this.integrationIdForSessionTransport(id, platform, scope),
-        connForIntegration: (id) => this.connForIntegration(id),
+        connForIntegration: (id) => this.connForIntegration(id) ?? this.mattermostConnByIntegration.get(id),
         botUserIds: () => this.botUserIds,
         resolveCpAgent: (id, platform) => this.resolveCpAgent(id, platform),
         dispatch: (id, message, integrationId, context, options) =>
@@ -3922,7 +3961,8 @@ export class Daemon {
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
       integrationIdForSessionTransport: (agentId, platform, transportScope) =>
         this.integrationIdForSessionTransport(agentId, platform, transportScope),
-      connForIntegration: (integrationId) => this.connForIntegration(integrationId),
+      connForIntegration: (integrationId) =>
+        this.connForIntegration(integrationId) ?? this.mattermostConnByIntegration.get(integrationId),
       botUserIds: () => this.botUserIds,
       resolveCpAgent: (agentId, platform) => this.resolveCpAgent(agentId, platform),
       sendWebchatPost: (post) => this.relays?.sendWebchatPost(post),
@@ -5453,7 +5493,8 @@ export class Daemon {
         this.QQConnByIntegration.get(integrationId) ??
         this.dingTalkConnByIntegration.get(integrationId) ??
         this.weChatConnByIntegration.get(integrationId) ??
-        this.weComConnByIntegration.get(integrationId),
+        this.weComConnByIntegration.get(integrationId) ??
+        this.mattermostConnByIntegration.get(integrationId),
       // The live turn's own delivery thread, which `activeTurnShare` already records per
       // turn from `plan.thread`. The bridge context froze the opening turn's value at
       // registration, and a session that spans several threads outgrows it immediately.
@@ -5803,7 +5844,7 @@ export class Daemon {
         threadsOf: async (agentId, key) =>
           (await this.store.assistantSubsessions.threadsOf(agentId, key)).map((t) => {
             const integrationId = this.integrationIdForSessionTransport(agentId, t.platform, t.transportScope)
-            const link = sessionThreadUrlFor(t, integrationId ? this.connForIntegration(integrationId) : undefined)
+            const link = sessionThreadUrlFor(t, integrationId ? this.linkConnForIntegration(integrationId) : undefined)
             return { channel: t.channel, thread: t.thread, ...(link ? { link } : {}) }
           }),
         // A new title names the task's session too, so the console shows what listTasks does.
@@ -6769,6 +6810,9 @@ export class Daemon {
     void this.connections.reconcileDingTalkConnections().catch(() => this.log.warn('dingtalk: initial connect failed'))
     void this.connections.reconcileWeChatConnections().catch(() => this.log.warn('wechat: initial connect failed'))
     void this.connections.reconcileWeComConnections().catch(() => this.log.warn('wecom: initial connect failed'))
+    void this.connections
+      .reconcileMattermostConnections()
+      .catch(() => this.log.warn('mattermost: initial connect failed'))
     void this.connections.reconcileEmailConnections().catch(() => this.log.warn('email: initial bind failed'))
     // open consolidated Slack connections, resolve bot user ids (merged rules are per-message)
     await this.connections.openInitialSlackConnections(agents)
@@ -7301,6 +7345,7 @@ export class Daemon {
       await this.connections.reconcileMsTeamsConnections()
       await this.connections.reconcileWeChatConnections()
       await this.connections.reconcileWeComConnections()
+      await this.connections.reconcileMattermostConnections()
       await this.connections.reconcileEmailConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
@@ -11564,7 +11609,7 @@ export class Daemon {
       inPlace && draft.cardThread
         ? sessionThreadUrlFor(
             { platform: parent.platform, channel: parent.channel, thread: draft.cardThread },
-            this.connForIntegration(integrationId)
+            this.linkConnForIntegration(integrationId)
           )
         : undefined
     const rootText = (by: { name: string | null }) => `**${sentence}**\n\nApproved by ${by.name ?? 'an approver'}.`
@@ -12162,7 +12207,9 @@ export class Daemon {
 
   private draftCardPort(integrationId: string): DraftCardPort | undefined {
     const conn = this.connByIntegration.get(integrationId)
-    return conn ? slackDraftCardPort(conn, integrationId) : undefined
+    if (conn) return slackDraftCardPort(conn, integrationId)
+    const mmConn = this.mattermostConnByIntegration.get(integrationId)
+    return mmConn ? mattermostDraftCardPort(mmConn, integrationId) : undefined
   }
 
   /** One daemon-authored report of a check or task into its place, through the coordinator's one path for them; true once admitted, at most once per `reportId`. */
@@ -13702,6 +13749,8 @@ export class Daemon {
     generation: number
     cardId: string
     actor: { userId: string; name?: string }
+    agentId?: string
+    integrationId?: string
     srcIntegrationIds?: readonly string[]
   }): Promise<void> {
     const row = await this.store.capabilityCards.get(a.cardId).catch(() => undefined)
@@ -13710,6 +13759,8 @@ export class Daemon {
       requestId: row.requestId,
       optionId: capabilityDeclineOption(a.generation, a.cardId),
       actor: { userId: a.actor.userId, ...(a.actor.name ? { name: a.actor.name } : {}) },
+      ...(a.agentId !== undefined ? { agentId: a.agentId } : {}),
+      ...(a.integrationId !== undefined ? { integrationId: a.integrationId } : {}),
       ...(a.srcIntegrationIds ? { srcIntegrationIds: a.srcIntegrationIds } : {})
     })
   }
@@ -13717,7 +13768,7 @@ export class Daemon {
   /** A reply that declines a reply-only capability card (QQ's "1"), claimed before the message is routed (§4.4.2). */
   private async claimCapabilityReply(msg: NormalizedMessage, srcIntegrationIds?: readonly string[]): Promise<boolean> {
     const facet = this.turnSurfaces.exact(msg.platform)?.capabilityCards
-    if (facet?.declineControl !== 'reply' || !facet.claimReply || msg.replyTo === undefined) return false
+    if (!facet?.claimReply || msg.replyTo === undefined) return false
     if (!facet.claimReply(msg.text)) return false
     const row = (await this.store.capabilityCards.atMessage(msg.channel, msg.replyTo).catch(() => [])).find(
       (card) => card.platform === msg.platform && (!srcIntegrationIds || srcIntegrationIds.includes(card.integrationId))
@@ -15786,7 +15837,40 @@ export class Daemon {
    *  says the SENDING APP belongs to AgentConnect — it does not identify WHICH agent
    *  authored the message, which is why {@link verifyAgentAuthor} needs the metadata
    *  claim as well. */
+  private readonly mattermostResponses = new MattermostResponseRouting({
+    agents: () => this.agents.values(),
+    agent: (agentId) => this.agents.get(agentId),
+    connections: () => this.mattermostConnByIntegration.values(),
+    connFor: (integrationId) => this.mattermostConnByIntegration.get(integrationId),
+    liveBotUserId: (integrationId) => this.botUserIds[integrationId],
+    agentPostIdentity: (agentId) => this.agentPostIdentity(agentId),
+    orgForAgent: (agentId) => this.cpCollab.orgForAgent(agentId),
+    mentionDirectory: (orgId, platform, channel) => this.cpCollab.mentionDirectory(orgId, platform, channel),
+    debug: (message) => this.log.debug(message)
+  })
+
+  /** Platforms that recognize their own bots by bot user rather than by app id, each with how it does so. */
+  private readonly botAuthorship = new Map<
+    string,
+    { authorIsBotUser: boolean; isLocalBot(senderId: string, appId?: string): boolean }
+  >([[MATTERMOST_PLATFORM, this.mattermostResponses]])
+
   private isManagedAgentBotIdentity(platform: string, channel: string, senderId: string, appId?: string): boolean {
+    const ownBots = this.botAuthorship.get(platform)
+    if (ownBots) {
+      if (ownBots.isLocalBot(senderId, appId)) return true
+      const seenOrgs = new Set<string>()
+      for (const agent of this.agents.values()) {
+        const orgId = this.cpCollab.orgForAgent(agent.id)
+        if (!orgId || seenOrgs.has(orgId)) continue
+        seenOrgs.add(orgId)
+        for (const agentId of this.cpCollab.agentsForBotUser(orgId, platform, senderId)) {
+          const placement = this.cpCollab.resolve(orgId, platform, channel, agentId)
+          if (placement && (!appId || !placement.botAppId || placement.botAppId === appId)) return true
+        }
+      }
+      return false
+    }
     const localIdentity = [...this.connByIntegration.values()].some(
       (conn) => (!!conn.botUserId && senderId === conn.botUserId) || (!!conn.botId && senderId === conn.botId)
     )
@@ -15863,6 +15947,9 @@ export class Daemon {
     // could author messages as any of its co-tenants.
     const placement = this.cpCollab.resolve(orgId, msg.platform, msg.channel, claim.authorAgentId)
     if (!placement) return null
+    if (this.botAuthorship.get(msg.platform)?.authorIsBotUser && placement.botUserId !== msg.sender.id) {
+      return null
+    }
     if (msg.sender.appId !== undefined && placement.botAppId !== undefined && placement.botAppId !== msg.sender.appId) {
       return null
     }
@@ -16811,7 +16898,7 @@ export class Daemon {
     const owner = await this.store.getSession(row.parentSessionKey)
     const link = sessionThreadUrlFor(
       { platform: msg.platform, channel: msg.channel, thread: msg.channel },
-      integrationId === undefined ? undefined : this.connForIntegration(integrationId)
+      integrationId === undefined ? undefined : this.linkConnForIntegration(integrationId)
     )
     const report = roomRunReport(ended, row.title, output, row.summary, link)
     const room = (await this.store.assistantSubsessions.threadsOf(agentId, key)).find(
@@ -16875,7 +16962,7 @@ export class Daemon {
   /** auto-session-mode.md §4.4: 🤔 on a message while a coordinator turn decides it, taken back after its placement settles. */
   private showTriaging(agentId: string, message: DeliveredMessage): () => void {
     const conn: Partial<ContractConnection> | undefined =
-      message.integrationId === undefined ? undefined : this.replyConnFor(agentId, message.integrationId)
+      message.integrationId === undefined ? undefined : this.anyConnForIntegration(message.integrationId)
     const at = nativeMessageCoordinates(message.msg)
     const react = conn?.react
     if (!conn || !react || !at) return () => {}
@@ -18150,6 +18237,7 @@ export class Daemon {
     msTeamsPlatformModule(this.relayIngressHost((integrationId) => this.msTeamsConnByIntegration.get(integrationId))),
     weChatPlatformModule,
     weComPlatformModule,
+    mattermostPlatformModule,
     emailPlatformModule({
       connection: (integrationId) => this.emailConnByIntegration.get(integrationId),
       members: this.emailMembers,
@@ -18435,8 +18523,8 @@ export class Daemon {
 
   /** A relayed click on a platform module's approval or question card: re-check the agent and integration, then core re-derives the answer; a refusal only the clicker hears rides the ack. */
   private async handleRelayCardClick(msg: RdMsgPlatformAction, cards: RelayCardClicks): Promise<RdAck> {
-    const click = cards.decode(msg)
-    if (!click) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+    const decoded = cards.decode(msg)
+    if (!decoded) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
     const agent = this.agents.get(msg.agentId)
     if (!agent) {
       this.log.warn(`relay: ${msg.platformId} card click for unknown agent ${msg.agentId} — dropping`)
@@ -18446,12 +18534,18 @@ export class Daemon {
       this.log.warn(`relay: ${msg.platformId} card click for unknown integration ${msg.integrationId} — dropping`)
       return { msgId: msg.msgId, accepted: false, reason: 'not_found' }
     }
-    const told = await this.answerCardClick(click)
+    let click = decoded
+    if (cards.verifyActor) click = await cards.verifyActor(decoded, msg, this.anyConnForIntegration(msg.integrationId))
+    const told = await this.answerCardClick(click, msg.agentId, msg.integrationId)
     return { msgId: msg.msgId, accepted: true, ...(told ? { response: cards.response(told) } : {}) }
   }
 
   /** Hand one decoded card click to the permission coordinator; what only the clicker is told, when the card's surface cannot tell them itself. */
-  private async answerCardClick(click: ChatCardClick): Promise<string | undefined> {
+  private async answerCardClick(
+    click: ChatCardClick,
+    agentId: string,
+    integrationId: string
+  ): Promise<string | undefined> {
     const { answer } = click
     const actor = click.actor ? { actor: click.actor } : {}
     const ts = click.ts !== undefined ? { ts: click.ts } : {}
@@ -18464,6 +18558,46 @@ export class Daemon {
       })
     if (answer.kind === 'submit')
       return await this.permissions.submitElicitEditor({ requestId: answer.requestId, values: answer.values, ...actor })
+    if (answer.kind === 'draft') {
+      await this.drafts
+        .handleChoice({
+          requestId: answer.draftId,
+          optionId: answer.optionId,
+          agentId,
+          integrationId,
+          ...actor
+        })
+        .catch(() => false)
+      return undefined
+    }
+    if (answer.kind === 'capabilityDecline') {
+      if (!click.actor) return undefined
+      const conn = this.anyConnForIntegration(integrationId)
+      const srcIntegrationIds = conn ? this.srcIntegrationIds(conn) : [integrationId]
+      const run = () =>
+        this.declineCapabilityCard({
+          generation: answer.generation,
+          cardId: answer.cardId,
+          actor: click.actor!,
+          agentId,
+          integrationId,
+          srcIntegrationIds
+        })
+      if (!conn) {
+        await run().catch(() => {})
+        return undefined
+      }
+      const told = await withCapabilityClick(
+        conn,
+        click.actor.userId,
+        {
+          ...(click.actor.name ? { name: click.actor.name } : {}),
+          ...(click.actor.isBot !== undefined ? { isBot: click.actor.isBot } : {})
+        },
+        run
+      ).catch(() => [] as string[])
+      return told.at(-1)
+    }
     return await this.permissions.handleElicitCardTap({
       requestId: answer.requestId,
       token: answer.token,
@@ -19923,7 +20057,10 @@ export class Daemon {
         ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
         // The closing edit of a streamed reply shares its post's coordinates, so it refreshes that
         // row to the completed text instead of being ignored as a duplicate.
-        ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
+        ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ||
+        msg.ingressEventTag === MATTERMOST_RESPONSE_FINAL_EVENT_TAG
+          ? { authoritative: true }
+          : {}),
         kind: 'text',
         text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
         // Deliberately BODYLESS: the body is first-wins, and the authoritative ingest — which runs
@@ -20028,7 +20165,10 @@ export class Daemon {
       recipient: agentId,
       ...(msg.transcriptPostId ? { postId: msg.transcriptPostId } : {}),
       ...(msg.platformTimeMs ? { eventTimeUs: msg.platformTimeMs * 1000 } : {}),
-      ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
+      ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ||
+      msg.ingressEventTag === MATTERMOST_RESPONSE_FINAL_EVENT_TAG
+        ? { authoritative: true }
+        : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
       // Bodyless unless asked, as step 1: the authoritative ingest persists the prompt, which a coordinator batch's members never reach.
@@ -21215,6 +21355,7 @@ export class Daemon {
     ['msteams', (id) => (id ? this.msTeamsConnByIntegration.get(id) : undefined)],
     ['wechat', (id) => (id ? this.weChatConnByIntegration.get(id) : undefined)],
     ['wecom', (id) => (id ? this.weComConnByIntegration.get(id) : undefined)],
+    ['mattermost', (id) => (id ? this.mattermostConnByIntegration.get(id) : undefined)],
     ['email', (id) => (id ? this.emailConnByIntegration.get(id) : undefined)]
   ])
 
@@ -21276,6 +21417,15 @@ export class Daemon {
       async (ctx) => {
         const conn = ctx.integrationId ? this.weComConnByIntegration.get(ctx.integrationId) : undefined
         if (conn) await conn.sendText(ctx.channel, ctx.notice)
+      }
+    ],
+    [
+      'mattermost',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.mattermostConnByIntegration.get(ctx.integrationId) : undefined
+        if (!conn) return
+        const rootId = ctx.thread && /^[a-z0-9]{26}$/.test(ctx.thread) ? ctx.thread : undefined
+        await conn.createPost(ctx.channel, ctx.notice, rootId ? { rootId } : undefined)
       }
     ],
     [
@@ -26769,6 +26919,36 @@ export class Daemon {
    *  when the CP couldn't resolve it; then the segment is dropped. */
   private cpOrgSlug?: string
 
+  private cpOrgId?: string
+  private cpPublicRelayUrl?: string
+  private cpMattermostActionSecret?: string
+
+  private mattermostActionCallback(agentId?: string): MattermostActionCallbackConfig | undefined {
+    if (this.opts?.mattermostActionCallback) return this.opts.mattermostActionCallback
+    if (!this.cpPublicRelayUrl || !this.cfg.daemonId) return undefined
+    const orgId =
+      this.cpOrgId ??
+      (agentId ? (this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)) : undefined)
+    if (!orgId) return undefined
+    // The secret is always one organization's: sent with the integration, or at auth to a daemon that serves a single org.
+    const specSecret = agentId
+      ? this.agents
+          .get(agentId)
+          ?.integrations.map((i) => (i.platform === MATTERMOST_PLATFORM ? integrationConfig(i) : undefined))
+          .map((config) => (config && 'actionSecret' in config ? config.actionSecret : undefined))
+          .find((value): value is string => typeof value === 'string')
+      : undefined
+    const secret = specSecret ?? (this.cpOrgId ? this.cpMattermostActionSecret : undefined)
+    if (!secret) return undefined
+    const base = this.cpPublicRelayUrl.replace(/\/+$/, '')
+    return {
+      url: `${base}${MATTERMOST_ACTION_PATH}`,
+      secret,
+      daemonId: this.cfg.daemonId,
+      orgId
+    }
+  }
+
   /** Presentation-only source hint carried by provider-rendered session links —
    *  the platform's own fact (§7.4 link-source strategy). */
   /**
@@ -27352,7 +27532,7 @@ export class Daemon {
       session.platform,
       session.transportScope
     )
-    return sessionThreadUrlFor(session, integrationId ? this.connForIntegration(integrationId) : undefined)
+    return sessionThreadUrlFor(session, integrationId ? this.linkConnForIntegration(integrationId) : undefined)
   }
 
   /** Assemble a status snapshot from the parts (agent config + host model selector +
@@ -27612,10 +27792,12 @@ export class Daemon {
       return
     }
     // Duck-typed like showActivity, so a connection fake without the optional facet is fine.
-    const react = (replyConn as Partial<SlackConnection> | undefined)?.react
+    const reactTarget = (replyConn ?? (plan.suppressReplyConn ? undefined : run.egressConn)) as
+      Partial<ContractConnection> | undefined
+    const react = reactTarget?.react
     const at = nativeMessageCoordinates(msg)
     if (!react || !at) return
-    const place = () => void react.call(replyConn, at.channel, at.messageId, 'seen').catch(() => {})
+    const place = () => void react.call(reactTarget, at.channel, at.messageId, 'seen').catch(() => {})
     if (plan.platform !== 'slack') {
       place()
       return
@@ -29238,6 +29420,7 @@ export class Daemon {
     for (const [id, c] of this.msTeamsConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.weChatConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.weComConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.mattermostConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.emailConnByIntegration) if (c === conn) out.push(id)
     return out
   }
@@ -30002,6 +30185,7 @@ export class Daemon {
     | MsTeamsConnection
     | DingTalkConnection
     | WeComConnection
+    | MattermostConnection
     | EmailConnection
     | undefined {
     return (
@@ -30010,6 +30194,7 @@ export class Daemon {
       this.msTeamsConnByIntegration.get(integrationId) ??
       this.dingTalkConnByIntegration.get(integrationId) ??
       this.weComConnByIntegration.get(integrationId) ??
+      this.mattermostConnByIntegration.get(integrationId) ??
       this.emailConnByIntegration.get(integrationId)
     )
   }
@@ -30048,8 +30233,16 @@ export class Daemon {
       this.msTeamsConnByIntegration.get(integrationId) ??
       this.weChatConnByIntegration.get(integrationId) ??
       this.weComConnByIntegration.get(integrationId) ??
+      this.mattermostConnByIntegration.get(integrationId) ??
       this.emailConnByIntegration.get(integrationId)
     )
+  }
+
+  /** Connection for deriving deep links: prefers primary conn when it exposes `workspaceUrl`, else platform conn. */
+  private linkConnForIntegration(integrationId: string): PlatformConnection | undefined {
+    const primary = this.connForIntegration(integrationId)
+    if (primary && 'workspaceUrl' in primary && primary.workspaceUrl) return primary
+    return this.anyConnForIntegration(integrationId) ?? primary
   }
 
   /** CP-owned cron ids currently held in memory. */
@@ -32678,7 +32871,7 @@ export class Daemon {
   /** `agent/stop` (§8.2): drain the agent's in-flight turns, stop its host, and
    *  leave it gated so it stays down until a matching `agent/launch` revives it. */
   private async stopAgent(agentId: string): Promise<void> {
-    const { targets } = await this.drainScope({ kind: 'agent', agentId }, this.cfg.limits.shutdownDrainMs)
+    const { targets } = await this.drainScope({ kind: 'agent', agentId }, this.cfg?.limits?.shutdownDrainMs ?? 25_000)
     // Cold heads are not visible to drainScope until session/new|load returns;
     // the authority fence below aborts and drains those too.
     await this.stopSelectedTurnHosts(targets)
@@ -33001,9 +33194,11 @@ export class Daemon {
    *  daemon keeps the short window its service manager allows; a duty holder's release reserve
    *  extends past that window (turn wait stays the full window) instead of being carved from it. */
   private shutdownDrainBudgetMs(): number {
-    if (this.k8s || this.hasPoolDrainWorkInFlight()) return this.cfg.limits.poolShutdownDrainMs
-    if (this.dutyCoordinator.dutyEnforced()) return this.cfg.limits.shutdownDrainMs + Daemon.DUTY_RELEASE_RESERVE_MS
-    return this.cfg.limits.shutdownDrainMs
+    const shutdownDrainMs = this.cfg?.limits?.shutdownDrainMs ?? 25_000
+    const poolShutdownDrainMs = this.cfg?.limits?.poolShutdownDrainMs ?? 300_000
+    if (this.k8s || this.hasPoolDrainWorkInFlight()) return poolShutdownDrainMs
+    if (this.dutyCoordinator.dutyEnforced()) return shutdownDrainMs + Daemon.DUTY_RELEASE_RESERVE_MS
+    return shutdownDrainMs
   }
 
   /** §2.5 SIGTERM / daemon shutdown: gate new turns, then await in-flight turns up
@@ -33066,8 +33261,9 @@ export class Daemon {
           if (klass(agentId)) void runner.cancelInFlight(agentId).catch(() => {})
         }
       }
+      const shutdownDrainMs = this.cfg?.limits?.shutdownDrainMs ?? 25_000
       const startAt = this.clock.now()
-      const localCutoffAt = startAt + Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs)
+      const localCutoffAt = startAt + Math.min(shutdownDrainMs, deadlineMs)
       const finalCutoffAt = startAt + deadlineMs
       let localCut = false
       while (runner.inFlightAgents().length > 0) {
@@ -33083,11 +33279,12 @@ export class Daemon {
         await this.sleepUntil(Math.min(now + 1_000, localCut ? finalCutoffAt : localCutoffAt))
       }
     }
+    const shutdownDrainMs = this.cfg?.limits?.shutdownDrainMs ?? 25_000
     const dreams = drainDreams()
     // Hosted environments join this drain on the budget this machine's own turns get, then their shims stop (session-executors.md §9).
-    const hosted = Promise.resolve(
-      this.executorFacet?.drain(Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs))
-    ).catch((err) => this.log.warn(`shutdown: draining hosted environments failed: ${formatErr(err)}`))
+    const hosted = Promise.resolve(this.executorFacet?.drain(Math.min(shutdownDrainMs, deadlineMs))).catch((err) =>
+      this.log.warn(`shutdown: draining hosted environments failed: ${formatErr(err)}`)
+    )
     const work = Promise.all([...active, ...coldStops])
     if (active.length > 0 || coldStops.length > 0) {
       this.log.info(
@@ -33103,7 +33300,7 @@ export class Daemon {
       }
       // Two windows: work that cannot move to a successor is cut at the local one; only
       // pool-drain-class turns ride out the rest of the budget (see poolDrainAgent).
-      const localWaitMs = Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs)
+      const localWaitMs = Math.min(shutdownDrainMs, deadlineMs)
       let res = await this.raceDeadline(work, localWaitMs)
       if (res === 'timeout' && localWaitMs < deadlineMs) {
         const cut = await cancelInFlight((id) => !this.poolDrainAgent(id), 'daemon shutdown local drain window')
@@ -33534,6 +33731,15 @@ export class Daemon {
       },
       setOrgSlug: (orgSlug) => {
         this.cpOrgSlug = orgSlug
+      },
+      setOrgId: (orgId) => {
+        this.cpOrgId = orgId
+      },
+      setPublicRelayUrl: (url) => {
+        this.cpPublicRelayUrl = url
+      },
+      setMattermostActionSecret: (secret) => {
+        this.cpMattermostActionSecret = secret
       },
       resolveInitialRegistry,
       cpLinkLost: () => this.orgHistoryRetention.linkLost(),
