@@ -410,7 +410,8 @@ export function ChangePlanDialog({
             <div className="h-[220px] animate-pulse rounded-[10px] bg-(--surface-sunken)" />
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-2.5 desktop:auto-cols-fr desktop:grid-flow-col desktop:grid-cols-none">
+              {/* 200px floor fits four tiers in the 900px dialog; a fifth scrolls sideways */}
+              <div className="grid grid-cols-2 gap-2.5 desktop:auto-cols-[minmax(200px,1fr)] desktop:grid-flow-col desktop:grid-cols-none desktop:overflow-x-auto desktop:pb-1">
                 {tiers.map((x) => {
                   const custom = x.salesMode === 'contact_sales'
                   const grants = x.options.map((o) => o.grantMicro)
