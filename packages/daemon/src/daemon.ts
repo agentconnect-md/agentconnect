@@ -31400,12 +31400,22 @@ export class Daemon {
     const reclaimedAt = this.clock.now()
     let reclaimed = 0
     let retained = 0
+    let active = 0
+    let waiting = 0
     let failed = 0
     let discarded = 0
     for (const rec of expired) {
       if (this.draining) return 0
       const res = await this.cleanupSessionWorktree(rec)
-      if (res.outcome === 'active') continue
+      if (res.outcome === 'active') {
+        active += 1
+        continue
+      }
+      // Nothing was judged for an agent not loaded here (a set member detaches every agent it does not hold), and the stamp would hide its worktrees from every later pass.
+      if (res.outcome === 'not_applicable' && !this.agents.has(rec.agentId)) {
+        waiting += 1
+        continue
+      }
       if (res.outcome === 'retained' || res.outcome === 'failed') {
         if (res.outcome === 'retained') retained += 1
         else failed += 1
@@ -31414,7 +31424,10 @@ export class Daemon {
       }
       // Inside the admission fence, which a turn must pass first: the row stays, so a new turn could otherwise start in the sandbox going away.
       await this.withWorkspaceAdmissionFence(rec.agentId, async () => {
-        if (await this.sessionRetentionActive(rec)) return
+        if (await this.sessionRetentionActive(rec)) {
+          active += 1
+          return
+        }
         // A legacy session shares its agent's VM, which only its row's purge may retire.
         const ownSandbox = !this.legacyMicrosandboxSessions.has(sessionHostKey(rec.agentId, rec.key))
         try {
@@ -31440,6 +31453,8 @@ export class Daemon {
     this.log.info(
       `retention: reclaimed the workspaces of ${reclaimed}/${expired.length} idle session(s)` +
         (retained ? `, ${retained} retained (dirty/unique commits)` : '') +
+        (active ? `, ${active} still active` : '') +
+        (waiting ? `, ${waiting} waiting for their agent to load here` : '') +
         (failed ? `, ${failed} failed` : '')
     )
     return discarded
