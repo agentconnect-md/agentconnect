@@ -465,7 +465,11 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    * contract: only a DEFINITIVE rejection may refuse with 400; a network blip
    * is 503, never proof the credential is bad.
    */
-  validateConfig(credentials: TCredentials, transport: CpInstallTransport): Promise<CpConfigValidation>
+  validateConfig(
+    credentials: TCredentials,
+    transport: CpInstallTransport,
+    context?: { orgId: string }
+  ): Promise<CpConfigValidation>
 
   /**
    * Map a validated credential block onto the rows a NEW bot install writes —

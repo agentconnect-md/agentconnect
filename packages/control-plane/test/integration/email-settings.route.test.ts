@@ -74,6 +74,31 @@ async function withAddress(app: HttpApp): Promise<{ integrationId: string; botId
 const url = (integrationId: string) => `${ORG}/integrations/${integrationId}/email/settings`
 
 describe('an email address’s settings', () => {
+  it('takes the settings on create, and refuses a member outside the organization', async () => {
+    const { app } = harness()
+    await withAddress(app)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const create = (name: string, outsideSessions: object) =>
+      app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: {
+          platform: 'email',
+          agentId,
+          transport: 'http',
+          email: { name, whoMayWrite: 'anyone', outsideSessions }
+        }
+      })
+    const refused = await create(`stranger-${agentId.slice(0, 8)}`, { kind: 'member', userId: 'nobody-here' })
+    expect(refused.statusCode).toBe(400)
+    expect(refused.json()).toMatchObject({ code: 'EMAIL_OUTSIDE_MEMBER_UNKNOWN' })
+    const res = await create(`open-${agentId.slice(0, 8)}`, { kind: 'org' })
+    expect(res.statusCode).toBe(201)
+    const read = await app.app.inject({ method: 'GET', url: url((res.json() as { id: string }).id) })
+    expect(read.json()).toEqual({ whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } })
+  })
+
   it('reads Members, and outside sessions seen by the agent’s editors, by default', async () => {
     const { app } = harness()
     const { integrationId } = await withAddress(app)

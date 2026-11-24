@@ -7649,6 +7649,7 @@
       "creating": "正在创建…",
       "done": "完成",
       "created": "成员使用登录邮箱发往此地址的邮件将送达该 Agent。",
+      "createdAnyone": "任何人发往此地址的邮件都将送达该 Agent。",
       "copy": "复制",
       "copied": "已复制",
       "copyAddress": "复制地址",

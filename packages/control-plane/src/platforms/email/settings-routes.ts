@@ -10,19 +10,18 @@ import { ctxOf, denyViewerWrite, orgOf } from '../../http/rbac.js'
 import { pushBotConfig } from '../../http/bot-config-push.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { IntegrationId } from '../../domain/ids.js'
-import { emailAddressSettings, emailSettingsEntries } from './settings.js'
-
-const OutsideSessionsBody = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('editors') }),
-  z.object({ kind: z.literal('org') }),
-  z.object({ kind: z.literal('member'), userId: z.string().min(1).max(256) })
-])
+import {
+  EMAIL_OUTSIDE_MEMBER_UNKNOWN,
+  EmailOutsideSessionsBody,
+  emailAddressSettings,
+  emailSettingsEntries
+} from './settings.js'
 
 const EmailSettingsBody = z.object({
   whoMayWrite: EmailWhoMayWrite.describe(
     '`members`: members who may use the agent; `anyone`: any authenticated sender.'
   ),
-  outsideSessions: OutsideSessionsBody.describe(
+  outsideSessions: EmailOutsideSessionsBody.describe(
     'Who sees a session a message from outside the organization opens: whoever can edit the agent when it is read, the organization, or one member.'
   )
 })
@@ -108,12 +107,7 @@ export function emailSettingsRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         const outside = req.body.outsideSessions
         if (outside.kind === 'member' && !(await deps.repos.user.activeMember(found.bot.orgId, outside.userId)))
-          return reply.code(400).send({
-            error: 'Bad Request',
-            statusCode: 400,
-            message: 'Outside senders’ sessions go to an active member of the organization.',
-            code: 'EMAIL_OUTSIDE_MEMBER_UNKNOWN'
-          })
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, ...EMAIL_OUTSIDE_MEMBER_UNKNOWN })
         await deps.repos.bot.mergeBotIdentity(found.bot.orgId, found.bot.id, () => ({
           platformConfig: emailSettingsEntries(req.body)
         }))

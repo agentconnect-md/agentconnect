@@ -275,7 +275,7 @@ goes to the agent's editors in the Console.
 
 ### 4.1 The address's settings
 
-An Agent editor sets two things on the address, in the Email settings dialog its
+An Agent editor sets two things on the address, when adding it or later in the Email settings dialog its
 integration card opens; the card states both in one line under the address:
 
 - **Who may write**: **Members** (the default, step 3 as above) or
@@ -894,7 +894,7 @@ line per host:
   receives one; the address's two settings, stored in the address's `Bot`
   row's platform configuration and projected into the spec, with the picked member's state in the member
   answer.
-- **Console**: the one-field add flow, the address display, the mark, and the
+- **Console**: the add flow (the name, then the §4.1 choices), the address display, the mark, and the
   two settings of §4.1 in the integration panel.
 
 Normalization lives in the message package with sanitized fixtures. The new

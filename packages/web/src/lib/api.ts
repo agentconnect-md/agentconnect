@@ -965,7 +965,11 @@ export type CreateIntegrationInput =
   // WeChat installs only through the CP's QR login, so the console's one create shape is a reuse by bot id.
   | (CreateIntegrationBase & { platform: 'wechat'; botId: string })
   // Email takes only the address name; mail arrives through the relay, so its one transport is http.
-  | (CreateIntegrationBase & { platform: 'email'; transport: 'http'; email?: { name: string } })
+  | (CreateIntegrationBase & {
+      platform: 'email'
+      transport: 'http'
+      email?: { name: string } & Partial<EmailSettingsInput>
+    })
 
 export interface TelegramBotCheckDto {
   status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'

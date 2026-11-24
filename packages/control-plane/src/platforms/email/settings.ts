@@ -1,9 +1,17 @@
 // An address's two settings (email-integration.md §4.1), kept in its bot row's public bag: one address is one bot and one integration, never shared.
+import { z } from 'zod'
 import { EmailWhoMayWrite } from '@agentconnect.md/protocol'
 import type { BotRecord, UserRepo } from '../../persistence/ports.js'
 
 /** Where a session a non-member's message opens goes: whoever can edit the agent when it is read, the organization, or private to one member. */
 export type EmailOutsideSessions = { kind: 'editors' } | { kind: 'org' } | { kind: 'member'; userId: string }
+
+/** The outside-sessions choice as a request names it, on create and on the settings route. */
+export const EmailOutsideSessionsBody = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('editors') }),
+  z.object({ kind: z.literal('org') }),
+  z.object({ kind: z.literal('member'), userId: z.string().min(1).max(256) })
+])
 
 export interface EmailAddressSettings {
   whoMayWrite: EmailWhoMayWrite
@@ -38,6 +46,12 @@ export function emailSettingsEntries(settings: EmailAddressSettings): Record<str
       outside.kind === 'member' ? `${USER_PREFIX}${outside.userId}` : outside.kind === 'org' ? 'org' : EDITORS
   }
 }
+
+/** The refusal both routes send when outside sessions name someone who is not an active member. */
+export const EMAIL_OUTSIDE_MEMBER_UNKNOWN = {
+  code: 'EMAIL_OUTSIDE_MEMBER_UNKNOWN',
+  message: 'Outside senders’ sessions go to an active member of the organization.'
+} as const
 
 /** Where a non-member's session goes now: the agent's editors, the organization, the picked member while they are an active member, else nowhere, which refuses the message (§4.1). */
 export async function emailOutsideSessionOwner(
