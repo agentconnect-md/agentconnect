@@ -200,7 +200,13 @@ async function click(el: Element | null | undefined) {
   await flush()
 }
 const rows = () =>
-  [...dialog()!.querySelectorAll('[data-quote-row]')].map((r) => [...r.children].map((c) => c.textContent))
+  [...dialog()!.querySelectorAll('[data-quote-row]')].map((r) =>
+    [...r.children].map((c) =>
+      c.childElementCount ? [...c.children].map((child) => child.textContent).join(' ') : c.textContent
+    )
+  )
+const resultRows = () =>
+  [...dialog()!.querySelectorAll('[data-plan-done] dl > div')].map((r) => [...r.children].map((c) => c.textContent))
 const notes = () => [...dialog()!.querySelectorAll('[data-plan-note]')].map((n) => n.textContent)
 const pressed = (attr: string) =>
   [...dialog()!.querySelectorAll(`[${attr}][aria-pressed="true"]`)].map((b) => b.getAttribute(attr))
@@ -267,21 +273,28 @@ describe('plan actions: who sees them', () => {
 })
 
 describe('Change plan: choose', () => {
-  it('lists the tiers with their terms, the picked tier’s options, and holds Review on the current plan', async () => {
+  it('shows every tier’s terms and the selected plan’s details without a comparison toggle', async () => {
     await render()
     await openChangePlan()
     const tiers = [...dialog()!.querySelectorAll('[data-plan-tier]')]
     expect(tiers.map((x) => x.getAttribute('data-plan-tier'))).toEqual(['free', 'pro', 'max', 'business'])
-    expect(tiers[0]!.textContent).toBe('Free$0/ monthTop-ups only1K sessions7-day history')
-    expect(tiers[1]!.textContent).toBe('ProCurrentfrom $40/ month$40 credits / mo5K–10K sessionsUnlimited history')
-    expect(tiers[3]!.textContent).toBe('BusinessCustomby contractCustom creditsCustom sessionsOrg SSO')
+    expect(tiers[0]!.textContent).toBe('Free$0/ mo1K sessionsTop-ups only7-day history')
+    expect(tiers[1]!.textContent).toBe('ProCurrentFrom $40/ mo5K–10K sessions$40 credits / moUnlimited history')
+    expect(tiers[3]!.textContent).toBe('BusinessCustomby contractCustom sessionsCustom creditsOrg SSO')
+    expect(buttonIn(dialog()!, 'Compare details')).toBeUndefined()
     expect(pressed('data-plan-tier')).toEqual(['pro'])
+    expect(dialog()!.textContent).toContain('Pro details$40 credits / mo · Unlimited history')
     const options = [...dialog()!.querySelectorAll('[data-plan-option]')].map((o) => o.textContent)
-    expect(options).toEqual(['5,000$40 / mo · current', '10,000$50 / mo'])
+    expect(options).toEqual(['5,000 sessions$40 / mo · current', '10,000 sessions$50 / mo'])
     expect(buttonIn(dialog()!, 'Review change')!.disabled).toBe(true)
     await click(dialog()!.querySelector('[data-plan-option="double"]'))
+    await click(tiers[1])
+    expect(pressed('data-plan-option')).toEqual(['double'])
     expect(dialog()!.querySelector('.modalfoot')!.textContent).toContain('Pro ×2 · 10,000 sessions')
     expect(buttonIn(dialog()!, 'Review change')!.disabled).toBe(false)
+    await click(tiers[0])
+    expect(dialog()!.textContent).toContain('Free detailsTop-ups only · 7-day history')
+    expect(dialog()!.querySelector('[data-plan-option]')).toBeNull()
   })
 
   it('turns a contract tier into Contact us, linked to the deployment’s support address', async () => {
@@ -317,14 +330,14 @@ describe('Change plan: an immediate upgrade', () => {
     await click(buttonIn(dialog()!, 'Review change'))
     expect(step()).toBe('review')
     expect(mocks.quote).toHaveBeenLastCalledWith('org_example', { tierId: 'pro', optionId: 'double' })
-    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Upgrade')
-    expect(dialog()!.textContent).toContain('CurrentPro Standard · 5,000 sessions')
-    expect(dialog()!.textContent).toContain('NowPro ×2 · 10,000 sessions')
+    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Review upgrade')
+    expect(dialog()!.textContent).toContain('Current planPro Standard')
+    expect(dialog()!.textContent).toContain('New planPro ×2')
     expect(rows()).toEqual([
-      ['Due today', '$5.00 (prorated)'],
-      ['Credits added', '$0.00'],
+      ['Due today', '$5.00 Prorated'],
+      ['Next charge', 'Dec 4 · $50.00'],
       ['Sessions / month', '5,000 → 10,000'],
-      ['Next charge', 'Dec 4 · $50.00']
+      ['Credits added', '$0.00']
     ])
     expect(notes()).toEqual([])
 
@@ -341,8 +354,8 @@ describe('Change plan: an immediate upgrade', () => {
     await act(async () => resolve(change('completed')))
     await flush()
     expect(step()).toBe('done')
-    expect(dialog()!.textContent).toContain('Upgraded to Pro ×2')
-    expect(dialog()!.textContent).toContain('10,000 sessions / month')
+    expect(dialog()!.textContent).toContain('Your Pro ×2 plan is active.')
+    expect(resultRows()).toEqual([['Sessions / month', '10,000']])
     expect(mocks.subscription.mock.calls.length).toBeGreaterThan(reads)
     await click(buttonIn(dialog()!, 'Done'))
     expect(dialog()).toBeNull()
@@ -401,7 +414,7 @@ describe('Change plan: an immediate upgrade', () => {
     await click(buttonIn(dialog()!, 'Review change'))
     await click(buttonIn(dialog()!, 'Pay $5.00'))
     expect(step()).toBe('review')
-    expect(rows()[0]).toEqual(['Due today', '$5.20 (prorated)'])
+    expect(rows()[0]).toEqual(['Due today', '$5.20 Prorated'])
     expect(notes()[0]).toContain('That quote expired, so this is a fresh one.')
     await click(buttonIn(dialog()!, 'Pay $5.20'))
     expect(mocks.confirm.mock.calls[1]![1].quoteId).toBe('quote_2')
@@ -429,13 +442,13 @@ describe('Change plan: changes at renewal', () => {
     await openChangePlan()
     await click(dialog()!.querySelector('[data-plan-option="standard"]'))
     await click(buttonIn(dialog()!, 'Review change'))
-    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Schedule change')
-    expect(dialog()!.textContent).toContain('Dec 4Pro Standard · 5,000 sessions')
+    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Review scheduled change')
+    expect(dialog()!.textContent).toContain('New planPro Standard')
     expect(rows()).toEqual([
       ['Due today', '$0.00'],
       ['Takes effect', 'Dec 4'],
       ['Sessions / month', '10,000 → 5,000'],
-      ['Then', '$40.00 / mo']
+      ['Monthly renewal', '$40.00 / mo']
     ])
     expect(notes()).toEqual(['Cancel anytime before Dec 4.'])
     const quotes = mocks.quote.mock.calls.length
@@ -444,7 +457,10 @@ describe('Change plan: changes at renewal', () => {
     expect(mocks.quote.mock.calls.length).toBe(quotes)
     expect(step()).toBe('done')
     expect(dialog()!.textContent).toContain('Scheduled for Dec 4')
-    expect(dialog()!.textContent).toContain('Pro Standard · 5,000 sessions')
+    expect(resultRows()).toEqual([
+      ['New plan', 'Pro Standard'],
+      ['Sessions / month', '5,000']
+    ])
   })
 
   it('dates the history deletion from the service’s hold after the renewal, not the new window', async () => {
@@ -587,11 +603,12 @@ describe('Change plan: first purchase from Free', () => {
     await openChangePlan()
     await click(dialog()!.querySelector('[data-plan-tier="pro"]'))
     await click(buttonIn(dialog()!, 'Review change'))
-    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Upgrade')
+    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Review upgrade')
     expect(rows()).toEqual([
       ['Due today', '$40.00'],
-      ['Credits added', '+$40.00'],
-      ['Sessions / month', '1,000 → 5,000']
+      ['Monthly renewal', '$40.00 / mo'],
+      ['Sessions / month', '1,000 → 5,000'],
+      ['Credits added', '+$40.00']
     ])
     await click(buttonIn(dialog()!, 'Pay $40.00'))
     const [, args] = mocks.checkout.mock.calls[0]!
@@ -614,8 +631,11 @@ describe('Change plan: first purchase from Free', () => {
     expect(dialog()!.textContent).toContain('Confirming payment…')
     await flush(2_500)
     expect(step()).toBe('done')
-    expect(dialog()!.textContent).toContain('Upgraded to Pro Standard')
-    expect(dialog()!.textContent).toContain('5,000 sessions / month · +$40.00 credits')
+    expect(dialog()!.textContent).toContain('Your Pro Standard plan is active.')
+    expect(resultRows()).toEqual([
+      ['Sessions / month', '5,000'],
+      ['Credits added', '+$40.00']
+    ])
     expect(mocks.getChange).toHaveBeenCalledWith('org_example', 'chg_1')
   })
 })
