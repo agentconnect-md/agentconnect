@@ -4,7 +4,7 @@
   "runtimes": {
     "claude-acp": {
       "command": "npx",
-      "args": ["-y", "@agentclientprotocol/claude-agent-acp@0.109.1"]
+      "args": ["-y", "@agentclientprotocol/claude-agent-acp@0.110.1"]
     }
   }
 }
