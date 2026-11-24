@@ -296,8 +296,8 @@ describe('Change plan: choose', () => {
     await render('billing,subscriptions', { HELP_SUPPORT_URL: 'https://support.example.test/sales' })
     await openChangePlan()
     expect(dialog()!.querySelector('[data-plan-tier]')).toBeNull()
-    expect(dialog()!.querySelector('[data-plan-note]')!.textContent).toBe(
-      "Enterprise Standard is a contract plan ending Dec 4, so it can't be changed here. Contact us to change or renew it."
+    expect(dialog()!.querySelector('[data-plan-contract]')!.textContent).toBe(
+      "CurrentEnterprise StandardContractSessions / month5,000EndsDec 4Contract plans are managed by our sales team and can't be changed here. Contact us to change the plan or renew it."
     )
     const contact = [...dialog()!.querySelectorAll('a')].find((a) => a.textContent === 'Contact us')!
     expect(contact.getAttribute('href')).toBe('https://support.example.test/sales')

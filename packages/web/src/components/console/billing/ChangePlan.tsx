@@ -296,6 +296,18 @@ export function ChangePlanDialog({
   const fromLabel = combo(planLabel(sub), sub.sessionLimit)
   const toLabel = option ? combo(planLabel(option), option.sessionLimit) : ''
   const support = helpSupportUrl()
+  // A contract is priced outside the console and its tier is not in the catalog, so changes go through sales.
+  const onContract = sub.priceCents === null
+  const contactLink = (
+    <a
+      className="dsbtn sm dsbtn-primary no-underline"
+      href={support}
+      target={support.startsWith('https://') ? '_blank' : undefined}
+      rel="noopener noreferrer"
+    >
+      {t('contactUs')}
+    </a>
+  )
 
   const requestQuote = async (again: boolean) => {
     if (!option) return
@@ -385,7 +397,50 @@ export function ChangePlanDialog({
   )
 
   let body: ReactNode = null
-  if (step === 'choose') {
+  if (step === 'choose' && onContract) {
+    const rows = [
+      { k: t('sessionsPerMonth'), v: number(sub.sessionLimit) },
+      ...(sub.paidThrough ? [{ k: t('contract.ends'), v: day(sub.paidThrough) }] : [])
+    ]
+    body = (
+      <>
+        <div className="modalhead">
+          <span className="cardtitle flex-1">{t('title')}</span>
+          {close}
+        </div>
+        <div className="modalbody" data-plan-contract="true">
+          <div className="rounded-md border border-(--border-subtle) bg-(--surface-app) px-4 pt-3 pb-1">
+            <span className="eyebrow block">{t('current')}</span>
+            <span className="mt-1 flex items-center gap-2">
+              <span className="font-sans text-[15px] font-semibold leading-normal">{planLabel(sub)}</span>
+              <span className="badge bg-(--surface-active) text-(--text-secondary)">{t('contract.badge')}</span>
+            </span>
+            <div className="mt-2">
+              {rows.map((r) => (
+                <div
+                  key={r.k}
+                  className="flex items-baseline justify-between gap-3 border-t border-(--border-subtle) py-[9px] font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+                >
+                  <span>{r.k}</span>
+                  <span className="mono text-right text-[12.5px] font-semibold text-(--text-primary)">{r.v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="mt-3 font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+            {t('contract.body')}
+          </p>
+        </div>
+        <div className="modalfoot">
+          <span className="flex-1" />
+          <Button size="sm" variant="secondary" onClick={onClose}>
+            {t('cancel')}
+          </Button>
+          {contactLink}
+        </div>
+      </>
+    )
+  } else if (step === 'choose') {
     const tierPrice = (x: PlanTier) => {
       const prices = x.options.map((o) => o.priceCents ?? 0)
       const min = Math.min(...prices)
@@ -397,8 +452,6 @@ export function ChangePlanDialog({
       return min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`
     }
     const compact = (n: number) => number(n, { notation: 'compact' })
-    // A contract is priced outside the console and its tier is not in the catalog, so changes go through sales.
-    const onContract = sub.priceCents === null
     body = (
       <>
         <div className="modalhead">
@@ -406,13 +459,7 @@ export function ChangePlanDialog({
           {close}
         </div>
         <div className="modalbody">
-          {onContract ? (
-            <Note icon="mail">
-              {sub.paidThrough
-                ? t('contractEnds', { plan: planLabel(sub), date: day(sub.paidThrough) })
-                : t('contract', { plan: planLabel(sub) })}
-            </Note>
-          ) : catalog.error ? (
+          {catalog.error ? (
             <InlineError text={t('loadError', { error: (catalog.error as Error).message })} />
           ) : !plans ? (
             <div className="h-[220px] animate-pulse rounded-[10px] bg-(--surface-sunken)" />
@@ -505,20 +552,13 @@ export function ChangePlanDialog({
         </div>
         <div className="modalfoot">
           <span className="min-w-0 flex-1 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
-            {option && !same && !onContract ? toLabel : ''}
+            {option && !same ? toLabel : ''}
           </span>
           <Button size="sm" variant="secondary" onClick={onClose}>
             {t('cancel')}
           </Button>
-          {contact || onContract ? (
-            <a
-              className="dsbtn sm dsbtn-primary no-underline"
-              href={support}
-              target={support.startsWith('https://') ? '_blank' : undefined}
-              rel="noopener noreferrer"
-            >
-              {t('contactUs')}
-            </a>
+          {contact ? (
+            contactLink
           ) : (
             <Button size="sm" disabled={!option || same || !sellable(option)} onClick={toReview}>
               {t('reviewChange')}
@@ -751,7 +791,7 @@ export function ChangePlanDialog({
   return (
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
-        className={step === 'choose' ? 'modal max-w-[900px]' : 'modal max-w-[540px]'}
+        className={step === 'choose' && !onContract ? 'modal max-w-[900px]' : 'modal max-w-[540px]'}
         role="dialog"
         aria-modal="true"
         aria-label={t('title')}

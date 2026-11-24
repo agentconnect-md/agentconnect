@@ -5568,8 +5568,11 @@
         "optionCurrent": "{meta} · 当前",
         "contactNote": "按合同定价——会话上限、额度、保留期和组织 SSO。",
         "contactUs": "联系我们",
-        "contract": "{plan} 为合同套餐，无法在此更改。如需更改，请联系我们。",
-        "contractEnds": "{plan} 为合同套餐，{date} 到期，无法在此更改。如需更改或续约，请联系我们。",
+        "contract": {
+          "badge": "合同",
+          "ends": "到期",
+          "body": "合同套餐由销售团队管理，无法在此更改。如需变更或续约，请联系我们。"
+        },
         "reviewChange": "查看变更",
         "combo": "{plan} · {sessions} 个会话",
         "review": {
