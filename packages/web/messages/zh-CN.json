@@ -5585,6 +5585,8 @@
           "then": "之后",
           "historyWarning": "超过 {days, plural, other {# 天}}的历史记录将从 {date} 起删除。",
           "cancelBefore": "{date} 之前可随时取消。",
+          "replacesScheduled": "此次升级会取代原定于 {date} 换到 {plan} 的预约。",
+          "replacesCancel": "此次升级会撤销原定于 {date} 的取消，套餐将继续续费。",
           "refreshed": "原报价已过期，这是新的报价。付款前请核对金额。",
           "pay": "支付 {amount}",
           "quoting": "正在生成报价…",

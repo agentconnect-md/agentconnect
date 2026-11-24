@@ -331,6 +331,25 @@ describe('Change plan: an immediate upgrade', () => {
     expect(dialog()).toBeNull()
   })
 
+  it.each([
+    [
+      { tierId: 'free', tierName: 'Free', optionId: 'standard', optionName: 'Standard' },
+      'This upgrade withdraws your cancellation scheduled for Dec 4; the plan keeps renewing.'
+    ],
+    [
+      { tierId: 'lite', tierName: 'Lite', optionId: 'standard', optionName: 'Standard' },
+      'This upgrade replaces your change to Lite Standard scheduled for Dec 4.'
+    ]
+  ])('quotes an upgrade over a scheduled change and says the upgrade replaces it', async (scheduled, note) => {
+    mocks.subscription.mockResolvedValue({ ...PRO, scheduled })
+    await render()
+    await openChangePlan()
+    await click(dialog()!.querySelector('[data-plan-option="double"]'))
+    await click(buttonIn(dialog()!, 'Review change'))
+    expect(mocks.quote).toHaveBeenLastCalledWith('org_example', { tierId: 'pro', optionId: 'double' })
+    expect(notes()).toEqual([note])
+  })
+
   it('offers the provider page when the card needs action, and finishes once the poll says it settled', async () => {
     vi.useFakeTimers()
     mocks.confirm.mockResolvedValue(change('pending', 'https://pay.example.test/i/1'))

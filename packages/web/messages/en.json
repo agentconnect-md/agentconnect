@@ -5585,6 +5585,8 @@
           "then": "Then",
           "historyWarning": "History older than {days, plural, one {# day} other {# days}} is deleted from {date}.",
           "cancelBefore": "Cancel anytime before {date}.",
+          "replacesScheduled": "This upgrade replaces your change to {plan} scheduled for {date}.",
+          "replacesCancel": "This upgrade withdraws your cancellation scheduled for {date}; the plan keeps renewing.",
           "refreshed": "That quote expired, so this is a fresh one. Check the amount before you pay.",
           "pay": "Pay {amount}",
           "quoting": "Preparing quote…",
