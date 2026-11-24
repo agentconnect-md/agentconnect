@@ -6,12 +6,14 @@ import useSWR from 'swr'
 import { Button, Icon } from '@/components/ui'
 import { ApiError, type EmailAddressCheckDto, type EmailAddressNameReason } from '@/lib/api'
 import type { Agent } from '@/lib/data'
+import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import type { WizardHost } from '../contract'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
 import { emailApi } from './api'
 import { AddressField } from './fields'
+import { EmailSettingsChoices, emailOutsideSessionsInput, type EmailSettingsDraft } from './settings'
 
 /** How long typing pauses before the name is checked. */
 export const EMAIL_NAME_CHECK_DELAY_MS = 300
@@ -57,20 +59,35 @@ export function EmailWizardBody({ agent, host }: { agent: Agent; host: WizardHos
   const t = useTranslations('Platforms.email')
   const [input, setInput] = useState('')
   const [saving, setSaving] = useState(false)
-  const [created, setCreated] = useState<string | null>(null)
+  const [created, setCreated] = useState<{ address: string; anyone: boolean } | null>(null)
+  const [draft, setDraft] = useState<EmailSettingsDraft>({
+    whoMayWrite: 'members',
+    outsideKind: 'editors',
+    memberId: ''
+  })
+  const { members } = useConsoleData()
   const busy = useRef(false)
   const name = input.trim().toLowerCase()
   const { mailDomain, answer, failed } = useNameCheck(name, host.mockMode)
   const address = answer?.available ? answer.address : null
+  // Members is the default the Control Plane applies, so only Anyone is sent, with its outside-sessions choice.
+  const anyone = draft.whoMayWrite === 'anyone'
+  const outsideSessions = anyone ? emailOutsideSessionsInput(draft) : undefined
+  const ready = address !== null && (!anyone || outsideSessions !== undefined)
 
   async function submit() {
-    if (!address || busy.current) return
+    if (!address || !ready || busy.current) return
     busy.current = true
     setSaving(true)
     host.setError(null)
     try {
-      await host.createIntegration({ platform: 'email', agentId: agent.id, transport: 'http', email: { name } })
-      setCreated(address)
+      await host.createIntegration({
+        platform: 'email',
+        agentId: agent.id,
+        transport: 'http',
+        email: outsideSessions ? { name, whoMayWrite: 'anyone' as const, outsideSessions } : { name }
+      })
+      setCreated({ address, anyone })
     } catch (error) {
       const reason = error instanceof ApiError && error.code ? REFUSAL_REASON[error.code] : undefined
       host.setError(reason ? t(`reason.${reason}`) : error instanceof Error ? error.message : String(error))
@@ -87,9 +104,9 @@ export function EmailWizardBody({ agent, host }: { agent: Agent; host: WizardHos
   if (created) {
     return (
       <div className="mb-4 flex flex-col gap-2">
-        <AddressField address={created} />
+        <AddressField address={created.address} />
         <p role="status" className="m-0 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-          {t('created')}
+          {created.anyone ? t('createdAnyone') : t('created')}
         </p>
         <div className="flex justify-end">
           <Button onClick={host.close}>{t('done')}</Button>
@@ -149,8 +166,11 @@ export function EmailWizardBody({ agent, host }: { agent: Agent; host: WizardHos
           <span className="min-w-0 break-all">{status.text}</span>
         </p>
       )}
+      <div className="mt-2 flex flex-col gap-[18px]">
+        <EmailSettingsChoices draft={draft} onChange={(next) => !saving && setDraft(next)} members={members} />
+      </div>
       <div className="flex justify-end">
-        <Button disabled={!address || saving} onClick={() => void submit()}>
+        <Button disabled={!ready || saving} onClick={() => void submit()}>
           <Icon name="plus" size={15} />
           {saving ? t('creating') : t('create')}
         </Button>

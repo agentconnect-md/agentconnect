@@ -114,6 +114,57 @@ describe('the Email provider (email-integration.md §3)', () => {
     expect(results.map((result) => result.ok).sort()).toEqual([false, true])
   })
 
+  it('stores the settings a create chose, and checks a picked member before claiming the name (§4.1)', async () => {
+    const addresses = ledger()
+    const activeMember = vi.fn(async (orgId: string, userId: string) =>
+      orgId === 'org-1' && userId === 'member-2' ? ({ userId } as OrgMemberRecord) : null
+    )
+    const provider = createEmailCpProvider({ mailDomain: DOMAIN, addresses, activeMember })
+    const ctx = { orgId: 'org-1' }
+    const gone = {
+      name: 'helper',
+      whoMayWrite: 'anyone' as const,
+      outsideSessions: { kind: 'member' as const, userId: 'x' }
+    }
+    expect(await provider.validateConfig(gone, 'http', ctx)).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 'EMAIL_OUTSIDE_MEMBER_UNKNOWN'
+    })
+    expect(addresses.claim).not.toHaveBeenCalled()
+
+    const credentials = {
+      name: 'helper',
+      whoMayWrite: 'anyone' as const,
+      outsideSessions: { kind: 'member' as const, userId: 'member-2' }
+    }
+    const validated = await provider.validateConfig(credentials, 'http', ctx)
+    if (!validated.ok) throw new Error('refused')
+    const install = provider.buildNewBotInstall({
+      credentials,
+      identity: validated.identity,
+      transport: 'http',
+      shareable: false
+    })
+    const entries = { whoMayWrite: 'anyone', outsideSessions: 'user:member-2' }
+    expect(install.bot).toEqual({ externalAppId: `helper@${DOMAIN}`, platformConfig: entries })
+    expect(
+      provider.projectBotIdentity!({
+        externalAppId: `helper@${DOMAIN}`,
+        platformConfig: { ...entries, other: 'x' }
+      } as never)
+    ).toEqual({ externalAppId: `helper@${DOMAIN}`, externalTenantId: '-', platformConfig: entries })
+
+    // Anyone alone keeps outside sessions with the agent's editors.
+    const open = provider.buildNewBotInstall({
+      credentials: { name: 'open', whoMayWrite: 'anyone' },
+      identity: { externalAppId: `open@${DOMAIN}` },
+      transport: 'http',
+      shareable: false
+    })
+    expect(open.bot?.platformConfig).toEqual({ whoMayWrite: 'anyone', outsideSessions: 'editors' })
+  })
+
   it('reads a name as an address without touching the ledger', () => {
     expect(emailAddressFor(' Helper ', DOMAIN)).toEqual({ ok: true, address: `helper@${DOMAIN}` })
     expect(emailAddressFor('helper', undefined)).toEqual({ ok: false, reason: 'not_configured' })

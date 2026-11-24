@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-a' } }) }))
 vi.mock('./api', () => ({ emailApi: { check: mocks.check, offered: vi.fn() } }))
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({ members: [{ userId: 'member-2', name: 'Ada', email: 'ada@example.test' }] })
+}))
 
 const agent = { id: 'agent-a', name: 'helper' } as unknown as Agent
 const DOMAIN = 'mail.example.test'
@@ -165,6 +168,35 @@ describe('EmailWizardBody', () => {
     expect(host.querySelector('button[aria-label="Copy address"]')).not.toBeNull()
     await act(async () => primary('Done')?.click())
     expect(state.close).toHaveBeenCalled()
+  })
+
+  it('offers who may write before the create, and sends Anyone with who sees outside mail', async () => {
+    const state = await render()
+    const radio = (label: string) =>
+      [...host.querySelectorAll('[role="radio"]')].find((el) => el.textContent?.startsWith(label)) as HTMLElement
+    expect(radio('Members of your organization').getAttribute('aria-checked')).toBe('true')
+    expect(host.textContent).not.toContain('Who sees mail from outside the organization')
+    await type('help')
+    await act(async () => radio('Anyone').click())
+    await act(async () => radio('Everyone in the organization').click())
+    await act(async () => primary('Create')?.click())
+    expect(state.createIntegration).toHaveBeenCalledWith({
+      platform: 'email',
+      agentId: 'agent-a',
+      transport: 'http',
+      email: { name: 'help', whoMayWrite: 'anyone', outsideSessions: { kind: 'org' } }
+    })
+    expect(status()).toBe('Emails sent to this address from anyone will reach this agent.')
+  })
+
+  it('holds the create while a specific member is still to be picked', async () => {
+    await render()
+    const radio = (label: string) =>
+      [...host.querySelectorAll('[role="radio"]')].find((el) => el.textContent?.startsWith(label)) as HTMLElement
+    await type('help')
+    await act(async () => radio('Anyone').click())
+    await act(async () => radio('A specific member').click())
+    expect(primary('Create')?.disabled).toBe(true)
   })
 
   it('words a create refusal by its code and keeps the name to change', async () => {

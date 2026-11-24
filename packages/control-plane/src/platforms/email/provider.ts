@@ -5,6 +5,7 @@ import {
   EMAIL_PLATFORM,
   EMAIL_STARTED_OWNER_PREFIX,
   EMAIL_V1_FEATURE,
+  EmailWhoMayWrite,
   type IntegrationEmailConfig
 } from '@agentconnect.md/protocol'
 import { canonicalEmailAddress, validateEmailName, type EmailNameRefusal } from '@agentconnect.md/message'
@@ -17,16 +18,28 @@ import {
 } from '../../persistence/ports.js'
 import type { CpConfigRefusal, CpInstallTransport, CpPlatformProvider, CpValidatedIdentity } from '../provider.js'
 import { EmailCpEnvSchema } from './deployment.js'
-import { emailAddressSettings, emailOutsideSessionOwner } from './settings.js'
+import {
+  EMAIL_OUTSIDE_MEMBER_UNKNOWN,
+  EmailOutsideSessionsBody,
+  emailAddressSettings,
+  emailOutsideSessionOwner,
+  emailSettingsEntries
+} from './settings.js'
 
-/** The `email` block of `POST /integrations`: the one thing an organization chooses. */
+/** The `email` block of `POST /integrations`: the address name, and optionally its two settings (§4.1). */
 export const EmailCreateCredentials = z.object({
   name: z
     .string()
     .trim()
     .min(1)
     .max(64)
-    .describe('The address name, the part before the @: 3 to 40 lower-case letters, digits, dots and hyphens.')
+    .describe('The address name, the part before the @: 3 to 40 lower-case letters, digits, dots and hyphens.'),
+  whoMayWrite: EmailWhoMayWrite.optional().describe(
+    '`members` (the default): members who may use the agent; `anyone`: any authenticated sender.'
+  ),
+  outsideSessions: EmailOutsideSessionsBody.optional().describe(
+    'Who sees a session a message from outside the organization opens; defaults to whoever can edit the agent.'
+  )
 })
 export type EmailCreateCredentials = z.infer<typeof EmailCreateCredentials>
 
@@ -111,19 +124,35 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
     envSchema: EmailCpEnvSchema,
 
     // The claim is the fence: an address is recorded before its row exists, so a create that fails afterwards leaves it taken rather than free for someone else.
-    async validateConfig(credentials) {
+    async validateConfig(credentials, _transport, context) {
       const named = emailAddressFor(credentials.name, deps.addresses ? deps.mailDomain : undefined)
       if (!named.ok) return { ok: false, ...REFUSALS[named.reason] }
+      // A picked member is checked before the claim, so a refused pick leaves the name free.
+      const outside = credentials.outsideSessions
+      if (outside?.kind === 'member' && !(context && (await deps.activeMember?.(context.orgId, outside.userId))))
+        return { ok: false, status: 400, ...EMAIL_OUTSIDE_MEMBER_UNKNOWN }
       if (!(await deps.addresses!.claim(named.address))) return { ok: false, ...REFUSALS.taken }
       const identity: CpValidatedIdentity = { name: named.address, externalAppId: named.address }
       return { ok: true, identity }
     },
 
     // One address serves one agent, so a requested `shareable` is dropped.
-    buildNewBotInstall: ({ identity }) => {
+    buildNewBotInstall: ({ credentials, identity }) => {
       const address = identity.externalAppId ?? ''
+      const { whoMayWrite, outsideSessions } = credentials
+      const chosen = whoMayWrite !== undefined || outsideSessions !== undefined
       return {
-        bot: { externalAppId: address },
+        bot: {
+          externalAppId: address,
+          ...(chosen
+            ? {
+                platformConfig: emailSettingsEntries({
+                  whoMayWrite: whoMayWrite ?? 'members',
+                  outsideSessions: outsideSessions ?? { kind: 'editors' }
+                })
+              }
+            : {})
+        },
         secrets: emailSecrets(),
         externalIdentity: {
           externalAppId: address,
@@ -133,8 +162,17 @@ export function createEmailCpProvider(deps: EmailCpProviderDeps = {}): CpPlatfor
       }
     },
 
+    // The settings a create chose ride the bag, re-read so only the two known keys are stored.
     projectBotIdentity: (input) =>
-      input.externalAppId ? { externalAppId: input.externalAppId, externalTenantId: TENANTLESS_SENTINEL } : {},
+      input.externalAppId
+        ? {
+            externalAppId: input.externalAppId,
+            externalTenantId: TENANTLESS_SENTINEL,
+            ...(input.platformConfig
+              ? { platformConfig: emailSettingsEntries(emailAddressSettings({ platformConfig: input.platformConfig })) }
+              : {})
+          }
+        : {},
 
     secretShape: {
       slots: { botToken: 'A fixed marker: an address has no credential, and the sending token never leaves the relay' },

@@ -120,6 +120,105 @@ function Radio({ on, label, note, onPick }: { on: boolean; label: string; note?:
   )
 }
 
+/** The two choices as a form holds them: who may write, and who sees outside mail with its picked member. */
+export interface EmailSettingsDraft {
+  whoMayWrite: WhoMayWrite
+  outsideKind: OutsideKind
+  memberId: string
+}
+
+/** The draft's outside-sessions choice as the Control Plane takes it; undefined while a member is still to be picked. */
+export function emailOutsideSessionsInput(
+  draft: EmailSettingsDraft,
+  fallbackMember = ''
+): EmailSettingsInput['outsideSessions'] | undefined {
+  if (draft.outsideKind === 'editors') return { kind: 'editors' }
+  if (draft.outsideKind === 'org') return { kind: 'org' }
+  // Members-only still stores an outside pick, so a missing member falls back to the given one.
+  const member = draft.memberId || (draft.whoMayWrite === 'members' ? fallbackMember : '')
+  return member ? { kind: 'member', userId: member } : undefined
+}
+
+/** Who may write, and under Anyone who sees outside mail: the radios the create pane and the settings dialog share. */
+export function EmailSettingsChoices({
+  draft,
+  onChange,
+  members,
+  memberGone = false
+}: {
+  draft: EmailSettingsDraft
+  onChange: (next: EmailSettingsDraft) => void
+  members: readonly MemberDto[]
+  memberGone?: boolean
+}) {
+  const t = useTranslations('Platforms.email.settings')
+  const acceptId = useId()
+  const outsideId = useId()
+  const set = (patch: Partial<EmailSettingsDraft>) => onChange({ ...draft, ...patch })
+  const memberPicker = (
+    <div className="min-w-40 flex-1 desktop:max-w-[240px]">
+      <FieldSelect<string>
+        ariaLabel={t('member')}
+        value={draft.memberId}
+        options={[
+          ...(draft.memberId === NOBODY
+            ? [{ value: NOBODY, label: memberGone ? t('nobody') : t('chooseMember') }]
+            : []),
+          ...members.map((candidate) => ({ value: candidate.userId, label: memberDisplayName(candidate) }))
+        ]}
+        onChange={(value) => set(value ? { memberId: value, outsideKind: 'member' } : { memberId: value })}
+      />
+    </div>
+  )
+  // One row per choice of who sees outside mail; a choice may carry a control beside its radio.
+  const outsideChoices: readonly { kind: OutsideKind; label: string; note?: string; control?: ReactNode }[] = [
+    { kind: 'editors', label: t('editors'), note: t('default') },
+    { kind: 'org', label: t('organization') },
+    { kind: 'member', label: t('specificMember'), control: memberPicker }
+  ]
+  return (
+    <>
+      <div>
+        <div id={acceptId} className="fldlbl mb-1">
+          {t('acceptFrom')}
+        </div>
+        <div role="radiogroup" aria-labelledby={acceptId} className="flex flex-col">
+          <Radio
+            on={draft.whoMayWrite === 'members'}
+            label={t('members')}
+            onPick={() => set({ whoMayWrite: 'members' })}
+          />
+          <Radio
+            on={draft.whoMayWrite === 'anyone'}
+            label={t('anyone')}
+            onPick={() => set({ whoMayWrite: 'anyone' })}
+          />
+        </div>
+      </div>
+      {draft.whoMayWrite === 'anyone' && (
+        <div>
+          <div id={outsideId} className="fldlbl mb-1">
+            {t('outsideViewers')}
+          </div>
+          <div role="radiogroup" aria-labelledby={outsideId} className="flex flex-col">
+            {outsideChoices.map((choice) => (
+              <div key={choice.kind} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Radio
+                  on={draft.outsideKind === choice.kind}
+                  label={choice.label}
+                  {...(choice.note ? { note: choice.note } : {})}
+                  onPick={() => set({ outsideKind: choice.kind })}
+                />
+                {choice.control}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 /** The address's settings as a draft that one Save writes. */
 function EmailSettingsDialog({
   settings,
@@ -135,53 +234,23 @@ function EmailSettingsDialog({
   const t = useTranslations('Platforms.email.settings')
   const actions = useTranslations('Common.actions')
   const titleId = useId()
-  const acceptId = useId()
-  const outsideId = useId()
   const editor = members.find((member) => member.isCurrentUser) ?? members[0]
   // The picker shows a member only when one is the saved choice.
   const initialMember = pickedMember(settings)
   const memberGone = settings.outsideSessions.kind === 'member' && initialMember === NOBODY
-  const [whoMayWrite, setWhoMayWrite] = useState<WhoMayWrite>(settings.whoMayWrite)
-  const [outsideKind, setOutsideKind] = useState<OutsideKind>(settings.outsideSessions.kind)
-  const [memberId, setMemberId] = useState(initialMember)
+  const [draft, setDraft] = useState<EmailSettingsDraft>({
+    whoMayWrite: settings.whoMayWrite,
+    outsideKind: settings.outsideSessions.kind,
+    memberId: initialMember
+  })
   const [saving, setSaving] = useState(false)
   const [failed, setFailed] = useState(false)
 
-  // Members-only still stores an outside pick, so a missing member falls back to the editor as before.
-  const member = memberId || (whoMayWrite === 'members' ? (editor?.userId ?? '') : '')
-  const outsideSessions: EmailSettingsInput['outsideSessions'] | undefined =
-    outsideKind === 'editors'
-      ? { kind: 'editors' }
-      : outsideKind === 'org'
-        ? { kind: 'org' }
-        : member
-          ? { kind: 'member', userId: member }
-          : undefined
+  const outsideSessions = emailOutsideSessionsInput(draft, editor?.userId ?? '')
   const unchanged =
-    whoMayWrite === settings.whoMayWrite && outsideKind === settings.outsideSessions.kind && memberId === initialMember
-
-  const memberPicker = (
-    <div className="min-w-40 flex-1 desktop:max-w-[240px]">
-      <FieldSelect<string>
-        ariaLabel={t('member')}
-        value={memberId}
-        options={[
-          ...(memberId === NOBODY ? [{ value: NOBODY, label: memberGone ? t('nobody') : t('chooseMember') }] : []),
-          ...members.map((candidate) => ({ value: candidate.userId, label: memberDisplayName(candidate) }))
-        ]}
-        onChange={(value) => {
-          setMemberId(value)
-          if (value) setOutsideKind('member')
-        }}
-      />
-    </div>
-  )
-  // One row per choice of who sees outside mail; a choice may carry a control beside its radio.
-  const outsideChoices: readonly { kind: OutsideKind; label: string; note?: string; control?: ReactNode }[] = [
-    { kind: 'editors', label: t('editors'), note: t('default') },
-    { kind: 'org', label: t('organization') },
-    { kind: 'member', label: t('specificMember'), control: memberPicker }
-  ]
+    draft.whoMayWrite === settings.whoMayWrite &&
+    draft.outsideKind === settings.outsideSessions.kind &&
+    draft.memberId === initialMember
 
   const submit = async () => {
     if (saving) return
@@ -190,7 +259,7 @@ function EmailSettingsDialog({
     setSaving(true)
     setFailed(false)
     try {
-      await onSave({ whoMayWrite, outsideSessions })
+      await onSave({ whoMayWrite: draft.whoMayWrite, outsideSessions })
       onClose()
     } catch {
       setFailed(true)
@@ -213,35 +282,7 @@ function EmailSettingsDialog({
           </button>
         </div>
         <div className="modalbody flex flex-col gap-[18px]">
-          <div>
-            <div id={acceptId} className="fldlbl mb-1">
-              {t('acceptFrom')}
-            </div>
-            <div role="radiogroup" aria-labelledby={acceptId} className="flex flex-col">
-              <Radio on={whoMayWrite === 'members'} label={t('members')} onPick={() => setWhoMayWrite('members')} />
-              <Radio on={whoMayWrite === 'anyone'} label={t('anyone')} onPick={() => setWhoMayWrite('anyone')} />
-            </div>
-          </div>
-          {whoMayWrite === 'anyone' && (
-            <div>
-              <div id={outsideId} className="fldlbl mb-1">
-                {t('outsideViewers')}
-              </div>
-              <div role="radiogroup" aria-labelledby={outsideId} className="flex flex-col">
-                {outsideChoices.map((choice) => (
-                  <div key={choice.kind} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <Radio
-                      on={outsideKind === choice.kind}
-                      label={choice.label}
-                      {...(choice.note ? { note: choice.note } : {})}
-                      onPick={() => setOutsideKind(choice.kind)}
-                    />
-                    {choice.control}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <EmailSettingsChoices draft={draft} onChange={setDraft} members={members} memberGone={memberGone} />
           {failed && (
             <p role="alert" className="m-0 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
               {t('failed')}

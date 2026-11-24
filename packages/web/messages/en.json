@@ -7649,6 +7649,7 @@
       "creating": "Creating…",
       "done": "Done",
       "created": "Emails sent to this address from a member’s sign-in email will reach this agent.",
+      "createdAnyone": "Emails sent to this address from anyone will reach this agent.",
       "copy": "Copy",
       "copied": "Copied",
       "copyAddress": "Copy address",
