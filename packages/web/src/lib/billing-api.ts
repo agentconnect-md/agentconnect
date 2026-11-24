@@ -816,6 +816,11 @@ export async function fetchBillingSubscriptionChange(orgId: string, id: string):
   return changeView(await request<unknown>(`${orgPath(orgId)}/subscription/changes/${encodeURIComponent(id)}`))
 }
 
+/** Withdraw an unpaid upgrade and void its invoice; the caller rereads the plan rather than parsing the reply. */
+export async function cancelBillingSubscriptionChange(orgId: string, id: string): Promise<void> {
+  await request<unknown>(`${orgPath(orgId)}/subscription/changes/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 /** Move to the plan at the next renewal; Free's option cancels the renewal. */
 export async function scheduleBillingChange(orgId: string, args: { tierId: string; optionId: string }): Promise<void> {
   await request<unknown>(`${orgPath(orgId)}/subscription/scheduled`, { method: 'PUT', body: args })

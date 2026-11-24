@@ -18,6 +18,7 @@ import {
   BillingShapeError,
   PURCHASE_MAX_MICRO,
   PURCHASE_MIN_MICRO,
+  cancelBillingSubscriptionChange,
   createBillingPurchase,
   fetchBillingAccount,
   fetchBillingPurchase,
@@ -1465,6 +1466,19 @@ export default function BillingView() {
           {plansOffered && (
             <PlanBanners
               reads={plan}
+              onCancelPending={
+                myRole === 'owner'
+                  ? async (change) => {
+                      try {
+                        await cancelBillingSubscriptionChange(orgId, change.id)
+                      } catch (e) {
+                        // Already paid or expired: the reread shows where it landed.
+                        if (!(e instanceof BillingError && (e.status === 404 || e.status === 409))) throw e
+                      }
+                      await Promise.all([plan.subscription.mutate(), catalog.mutate()])
+                    }
+                  : undefined
+              }
               limitAction={
                 increase?.bannerLabel
                   ? { label: increase.bannerLabel, onClick: () => setPlanDialog({ target: increase.open }) }

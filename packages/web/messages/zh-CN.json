@@ -5501,7 +5501,10 @@
         "upgradeTitle": "套餐升级正在等待付款",
         "body": "付款完成后套餐随即变更。",
         "bodyNoLink": "付款页面正在准备中，请稍后再查看。",
-        "pay": "完成付款"
+        "pay": "完成付款",
+        "cancel": "取消升级",
+        "cancelConfirm": "确定取消这次升级？对应账单会作废，套餐保持不变。",
+        "cancelError": "无法取消升级：{error}"
       },
       "limitReached": {
         "title": "已达会话上限",

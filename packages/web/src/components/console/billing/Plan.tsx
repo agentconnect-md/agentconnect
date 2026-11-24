@@ -430,30 +430,73 @@ function AmberBanner({
   )
 }
 
-function PendingPaymentBanner({ change }: { change: BillingPendingChange }) {
+/** An owner can withdraw an unpaid upgrade; a pending checkout is replaced by starting checkout again. */
+function PendingPaymentBanner({
+  change,
+  onCancel
+}: {
+  change: BillingPendingChange
+  onCancel?: (change: BillingPendingChange) => Promise<void>
+}) {
   const t = useTranslations('Billing.plan.pending')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const cancelable = change.kind === 'upgrade' && onCancel
+  const cancel = async () => {
+    if (!cancelable || busy || !window.confirm(t('cancelConfirm'))) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onCancel(change)
+    } catch (e) {
+      setError(t('cancelError', { error: (e as Error).message }))
+    }
+    setBusy(false)
+  }
   return (
     <AmberBanner data="pending" icon="clock" title={change.kind === 'upgrade' ? t('upgradeTitle') : t('checkoutTitle')}>
       <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
         {change.payUrl ? t('body') : t('bodyNoLink')}
       </div>
-      {change.payUrl && (
-        <a className="lnk mt-2 flex w-fit" href={change.payUrl} target="_blank" rel="noopener noreferrer">
-          {t('pay')}
-          <Icon name="arrow-up-right" size={12} />
-        </a>
+      {(change.payUrl || cancelable) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+          {change.payUrl && (
+            <a className="lnk flex w-fit" href={change.payUrl} target="_blank" rel="noopener noreferrer">
+              {t('pay')}
+              <Icon name="arrow-up-right" size={12} />
+            </a>
+          )}
+          {cancelable && (
+            <button
+              type="button"
+              className="lnk"
+              data-plan-pending-cancel="true"
+              disabled={busy}
+              onClick={() => void cancel()}
+            >
+              {t('cancel')}
+            </button>
+          )}
+        </div>
+      )}
+      {error && (
+        <div role="alert" className="mt-1 font-sans text-[12.5px] font-normal leading-normal text-(--status-error)">
+          {error}
+        </div>
       )}
     </AmberBanner>
   )
 }
 
-/** The plan's page banners: a payment still owed for a plan change, and a spent session limit whose CTA is the Increase-limit entry. */
+/** The plan's page banners: a payment still owed for a plan change (owners may withdraw an upgrade), and a spent session limit whose CTA is the Increase-limit entry. */
 export function PlanBanners({
   reads,
-  limitAction
+  limitAction,
+  onCancelPending
 }: {
   reads: PlanReads
   limitAction?: { label: string; onClick: () => void }
+  onCancelPending?: (change: BillingPendingChange) => Promise<void>
 }) {
   const t = useTranslations('Billing.plan.limitReached')
   const { day } = useUtcDates()
@@ -462,7 +505,7 @@ export function PlanBanners({
   const atLimit = usage !== undefined && usage.limit !== null && usage.used >= usage.limit
   return (
     <>
-      {change && <PendingPaymentBanner change={change} />}
+      {change && <PendingPaymentBanner change={change} onCancel={onCancelPending} />}
       {atLimit && (
         <AmberBanner
           data="session-limit"

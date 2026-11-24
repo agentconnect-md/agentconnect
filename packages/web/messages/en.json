@@ -5501,7 +5501,10 @@
         "upgradeTitle": "Your plan upgrade is waiting for payment",
         "body": "The plan changes once the payment completes.",
         "bodyNoLink": "The payment page is being prepared. Check back shortly.",
-        "pay": "Complete payment"
+        "pay": "Complete payment",
+        "cancel": "Cancel upgrade",
+        "cancelConfirm": "Cancel this upgrade? Its invoice is voided and your plan stays as it is.",
+        "cancelError": "Couldn't cancel the upgrade: {error}"
       },
       "limitReached": {
         "title": "Session limit reached",
