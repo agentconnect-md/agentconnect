@@ -2,25 +2,27 @@
 
 **Status**: Proposed
 **Scope**: protocol + control-plane + relay + daemon + web
-**Depends on**: [centralized-tool-management.md](centralized-tool-management.md)
+**Depends on**: [centralized-tool-management.md](centralized-tool-management.md), [github-app-git-credentials.md](github-app-git-credentials.md) (Phase 2: the daemon credential proxy)
 **Issue**: [#4164](https://github.com/agentconnect-md/agentconnect/issues/4164)
 
 > **Architecture**: an administrator sets each tool of an organization MCP provider, for one
 > agent, to one of the four decisions of Claude's connector settings: **Always allow**,
 > **Needs approval**, **Always ask**, or **Blocked**.
 >
-> - A restricted `(agent, provider)` pair receives **its own grant**. The relay binds that
->   grant's hash to a per-tool decision table and parses MCP for it.
-> - **Blocked** tools are hidden and refused by the relay.
-> - **Approval does not happen in the relay.** The agent's runtime keeps asking the way it
->   already does: a person in a manual mode, the runtime's own automated reviewer in an
->   auto-review mode.
-> - The daemon observes the outcome on ACP and sends the relay a one-time **approval
->   ticket** for that exact tool call. The relay forwards an approval-gated call only
->   against a matching ticket.
+> - A restricted `(agent, provider)` pair receives **its own grant**, and the relay binds
+>   that grant's hash to a per-tool decision table. For restricted grants only, the relay
+>   parses MCP: it hides and refuses Blocked tools.
+> - The restricted grant key **never enters the runtime**. The runtime holds a placeholder,
+>   and the daemon's credential proxy exchanges it for the key, the way code-host tokens and
+>   provider API keys already work.
+> - **Approval does not happen in the relay.** The runtime keeps asking the way it already
+>   does: a person in a manual mode, its own automated reviewer in an auto-review mode. The
+>   daemon observes the outcome on ACP. Because every restricted call passes through the
+>   daemon's proxy, the daemon forwards an approval-gated call only when the call matches an
+>   approval it recorded: the same tool call id, tool and arguments, used once.
 >
-> The CP computes the decision table when the policy is saved and relays tickets between the
-> daemon and the relay pool. It never sees call content.
+> The CP computes the decision table when the policy is saved and is absent from the call
+> path.
 
 ## 1. Background
 
@@ -30,10 +32,14 @@ apart and every agent can call every tool. The motivating request (#4164): some 
 should read through a server but not write through it, while other agents keep full access
 to the same server.
 
-Four facts shape the design. The last three were measured (§12):
+Five facts shape the design. The last three were measured (§12):
 
-- **Enforcement must sit where the call happens.** Hiding a tool is not authorization, so the
-  relay must refuse calls itself. That requires per-agent grants.
+- **Enforcement must sit where the call happens.** Hiding a tool is not authorization, so
+  something on the call path must refuse calls. That requires per-agent grants.
+- **An approval is only as strong as the custody of the key.** A runtime that holds the
+  grant key can call the relay without the approval it was supposed to wait for. The daemon
+  is the only party that sees the approval, so the daemon should hold the key, which is the
+  rule the credential proxy already established for code hosts and model providers.
 - **Tool annotations are hints, and runtimes do not act on them.**
   - The specification says clients must not base tool-use decisions on an untrusted
     server's annotations, and `readOnlyHint` defaults to `false`.
@@ -45,10 +51,12 @@ Four facts shape the design. The last three were measured (§12):
   - Codex asks a person in its workspace and read-only modes, lets its Guardian reviewer
     decide in Auto review, and asks no one in Full access.
   - An administrator who allows automatic approval wants these gates honored, not replaced.
-- **The call can be tied to its approval.** The `tools/call` request a runtime sends carries
-  the ACP `toolCallId` in `params._meta`: `claudecode/toolUseId` from Claude, `callId` from
-  Codex. That is the same id the daemon sees in the permission request or the reviewer's
-  verdict. The call arrives 4–26 ms after the approval.
+- **The call can be tied to its approval.**
+  - The `tools/call` request a runtime sends carries the ACP `toolCallId` in
+    `params._meta`: `claudecode/toolUseId` from Claude, `callId` from Codex. That is the same
+    id the daemon sees in the permission request or the reviewer's verdict.
+  - The call's `arguments` equal the `rawInput` that ACP showed for that id (Codex nests them
+    under `rawInput.arguments`).
 
 ## 2. Goals / Non-goals
 
@@ -56,21 +64,25 @@ Four facts shape the design. The last three were measured (§12):
 
 - Per agent and per provider, an administrator chooses **Full access** (today's behavior)
   or sets each tool to one of the four decisions. Presets cover the common cases.
-- The relay refuses a blocked call for that agent, while another agent with full access to
-  the same provider still succeeds.
-- An approval-gated call reaches the upstream only after the gate the decision names has
-  approved that exact call.
-- Defined behavior for each runtime mode, including modes that cannot ask (§7.2).
+- A blocked call is refused for that agent, while another agent with full access to the
+  same provider still succeeds.
+- An approval-gated call reaches the upstream only when it matches an approval that the
+  decision accepts, for the same tool and the same arguments, once.
+- Defined behavior for each runtime mode, including modes that cannot ask (§7.3).
 - Defined behavior for tools without annotations, tools added after the policy was saved,
   and tools whose annotations change.
-- Works for `custom` and `open_connector` providers.
+- Works for `custom` and `open_connector` providers, and through a CP outage.
 - No change for agents and providers without a policy.
 
 **Non-goals**
 
-- Asking from the relay. MCP elicitation from the relay was evaluated (§12). It cannot honor
-  a runtime's automatic approval, and it would hold a call open while a person decides.
-- Remembered approvals ("allow for this session"). Every ticket covers exactly one call.
+- Guarding against the agent's editors. The policy restricts the agent:
+  - any editor of the agent can return it to Full access;
+  - a new agent starts at Full access;
+  - a restricted agent that delegates work to an unrestricted agent gets that agent's
+    access for the delegated work.
+- Asking from the relay, and relay-side approval tickets. Both were evaluated (§12.2).
+- Remembered approvals ("allow for this session"). Every approval covers exactly one call.
 - Restricting `resources/*`, `prompts/*` or `completion/*`. The policy covers tools only.
 - Argument-level rules, for example allowing a tool only for one channel.
 - Restricting daemon-local `config.mcpServers` definitions, which connect directly to their
@@ -98,12 +110,12 @@ console:
 
 ### 3.2 Decisions
 
-| Decision           | Console description                                                     | Gate the relay requires                                               |
-| ------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **Always allow**   | The agent uses it without asking.                                       | None                                                                  |
-| **Needs approval** | The agent asks before each use, except in a mode with automatic review. | A ticket from a person, or from the runtime's automated review (§7.2) |
-| **Always ask**     | A person approves each use, even in a mode with automatic review.       | A ticket from a person                                                |
-| **Blocked**        | The agent cannot see or use it.                                         | Refused; hidden from `tools/list`                                     |
+| Decision           | Console description                                                     | What lets a call through                                         |
+| ------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **Always allow**   | The agent uses it without asking.                                       | Nothing more                                                     |
+| **Needs approval** | The agent asks before each use, except in a mode with automatic review. | A matching approval from a person or the runtime's review (§7.3) |
+| **Always ask**     | A person approves each use, even in a mode with automatic review.       | A matching approval from a person                                |
+| **Blocked**        | The agent cannot see or use it.                                         | Nothing; hidden from `tools/list`                                |
 
 ### 3.3 Policy
 
@@ -131,10 +143,9 @@ In every preset, **Other** is never more permissive than **Write/delete**. This 
 specification's default of `readOnlyHint: false`. An administrator who has checked an
 unlabeled tool can loosen it with an override.
 
-## 4. Tool catalog (CP)
+## 4. Tool catalog
 
-The console needs each provider's tool list. The CP fetches it and stores one snapshot per
-provider:
+The console needs each provider's tool list. The CP stores one snapshot per provider:
 
 ```prisma
 model McpToolCatalog {
@@ -149,30 +160,34 @@ model McpToolCatalog {
 
 `CatalogTool` is `{ name, title?, description?, readOnlyHint?, destructiveHint?,
 idempotentHint?, openWorldHint?, interactive }`, with `description` truncated to 1,000
-characters. It is metadata, not message content, so it does not cross the base design's
-content invariant.
+characters. It is metadata, not message content.
 
-**Fetch.**
+**The relay fetches it.** The CP never presents an upstream credential: the base goal keeps
+upstream secrets used only by relays.
 
-- `custom` providers: the CP acts as a minimal Streamable HTTP MCP client over its guarded
-  egress (`net/guarded-fetch.ts`, the precedent set by the OAuth discovery probe in
-  [mcp-provider-oauth.md](mcp-provider-oauth.md) §10).
+- The CP sends a control request, `rc/mcp-catalog { providerId }`, to a relay connected to
+  its process that advertises `mcp-tool-policy-v1`.
+- The relay answers with `rc/mcp-catalog/ok { tools } | { failure }`. It uses the binding
+  it already holds and its authoritative §5.3 egress, so an upstream the operator allowed on
+  the relay is reachable here too.
+- For a `custom` provider the relay acts as a minimal Streamable HTTP MCP client.
   - It sends `initialize`, `notifications/initialized`, then `tools/list` following
     `nextCursor`, and ends the session with `DELETE`.
-  - It authenticates with the provider's resolved upstream headers or OAuth access token.
   - It accepts `application/json` and `text/event-stream` responses.
-  - Limits: 10 pages, 1,000 tools, 1 MiB in total, and the guarded per-request timeout.
-- `open_connector` providers: the CP's OpenConnector client lists the service's actions
-  from the same `/v1/actions?service=` endpoint the relay adapter translates to.
+  - Limits: 10 pages, 1,000 tools, 1 MiB in total, and a 10-second budget.
+- For an `open_connector` provider it lists the service's actions as its adapter already
+  does.
 
 **When.** On provider creation and update, on demand from the console, and when the policy
-panel opens on a snapshot older than 24 hours. A fetch failure keeps the previous snapshot
-and records `failure`.
+panel opens on a snapshot older than 24 hours.
 
-**Without a catalog.** The CP may be unable to reach the provider, for example because its
-egress allowlist excludes a host the relay can reach. Group settings then cannot be
-expanded. The console accepts tool names typed by hand as overrides, and the decision table
-consists of those overrides alone.
+- A failure keeps the previous snapshot and records `failure`. One code is
+  `relay_unavailable`, when the CP process has no capable relay.
+- This is a control operation outside the call path. It waits for a relay like any other
+  control request.
+
+**Without a catalog.** When no snapshot exists yet, the console accepts tool names typed by
+hand as overrides, and the decision table consists of those overrides alone.
 
 ## 5. Control plane
 
@@ -230,12 +245,13 @@ agent's access by itself.
 
 ### 5.4 Grant lifecycle and projection
 
-| Event                                      | Effect                                                                                                                                                                  |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First policy saved for `(agent, provider)` | Mint an agent grant. Push the relay binding (§6.1) **before** the agent-scoped definition (§7.1) to the daemons serving the agent, the existing order for a new key.    |
-| Policy changed                             | Re-push the relay binding, and push the definition again only for its decision table (§7.1). The key is unchanged, and the next call is judged against the new table.   |
-| Policy removed (Full access)               | Push `mcpserver/remove{agentId}` so the agent falls back to the shared definition, then revoke the grant and send `rc/mcp-unassign{providerId, grantKeyHash}`.          |
-| Agent disables the provider                | The policy row and its grant persist, and no definition is projected while the provider is disabled. Re-enabling restores the same restriction rather than Full access. |
+| Event                                      | Effect                                                                                                                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First policy saved for `(agent, provider)` | Mint an agent grant. Push the relay binding (§6.1) **before** the agent-scoped definition (§7.1) to the daemons serving the agent, the existing order for a new key.                          |
+| Policy changed                             | Re-push the relay binding and the definition's decision table. The key is unchanged, and the next call is judged against the new table, mid-session included.                                 |
+| Policy removed (Full access)               | Push `mcpserver/remove{agentId}` so the agent falls back to the shared definition, then revoke the grant and send `rc/mcp-unassign{providerId, grantKeyHash}`.                                |
+| Agent disables the provider                | The policy row and its grant persist, and no definition is projected while the provider is disabled. Re-enabling restores the same restriction rather than Full access.                       |
+| Agent moves                                | The target receives the agent-scoped definition through the owned activation, after placement commits and before `agent/activate` (base §7). The source's agent-scoped definition is removed. |
 
 `mcpDefsForAgents` projects, for each agent that enables a provider:
 
@@ -243,14 +259,15 @@ agent's access by itself.
 - an agent-scoped definition carrying the agent grant and its decision table, when it has
   one.
 
-The register snapshot, `duty/fetch`, and live pushes all go through this one projector.
+The register snapshot, `duty/fetch`, live pushes and the move path all go through this one
+projector.
 
 ### 5.5 HTTP surface
 
 | Route                                                          | Purpose                                    |
 | -------------------------------------------------------------- | ------------------------------------------ |
 | `GET /api/v1/mcp-providers/:id/tools`                          | Catalog snapshot, `fetchedAt`, `failure`   |
-| `POST /api/v1/mcp-providers/:id/tools/refresh`                 | Fetch the catalog now                      |
+| `POST /api/v1/mcp-providers/:id/tools/refresh`                 | Ask a relay to fetch the catalog now       |
 | `GET /api/v1/agents/:agentId/mcp-tool-policies`                | Every policy of an agent, with drift       |
 | `PUT /api/v1/agents/:agentId/mcp-tool-policies/:providerId`    | Save `groups` and `overrides`, then expand |
 | `DELETE /api/v1/agents/:agentId/mcp-tool-policies/:providerId` | Return to Full access                      |
@@ -266,25 +283,6 @@ Authorization:
   server or an API key could otherwise loosen its own tools, so `openapi.test.ts` gains these
   two routes.
 
-### 5.6 Ticket routing
-
-Approval tickets (§7.3) travel daemon → CP → every relay:
-
-- D→C `mcp/approval-ticket { agentId, providerId, tool, toolCallId, source }`;
-- C→R `rc/mcp-approval-ticket { grantKeyHash, tool, toolCallId, source, expiresAt }`,
-  broadcast to every relay advertising `mcp-tool-policy-v1`.
-
-`source` is `person` or `runtime-review`.
-
-Before broadcasting, the CP checks three things, then stores nothing:
-
-- the daemon currently serves the agent;
-- the agent has a policy for the provider;
-- `tool` is in that policy's `approvalTools` or `askTools`.
-
-It resolves the agent grant's hash and sets `expiresAt` to two minutes from receipt. A
-ticket carries no arguments and no content.
-
 ## 6. Relay
 
 ### 6.1 Binding
@@ -299,6 +297,8 @@ restrictedGrants?: { grantKeyHash: string; policy: number }[]           // index
 
 - `grantKeyHashes` keeps carrying the unrestricted hashes. It stays non-empty, because the
   shared grant exists while the provider exists.
+- `approval` and `ask` are sent non-empty only to relays that also advertise
+  `mcp-tool-approval-v1`. A relay without it receives those names as Blocked (§8).
 - Tables are deduplicated because agents usually share a few policies. The frame relies on
   `rc/fragment` beyond the frame size limit.
 - `McpBindingTable.resolve` returns `{ upstream, policy? }`.
@@ -314,13 +314,18 @@ When it is present, the relay applies the following.
 - Parse the body as JSON-RPC. A single message and a batch array are both accepted.
   Unparseable JSON gets a JSON-RPC parse error and is not forwarded (fail closed).
 - `tools/call` with `params.name` in `allow` is forwarded.
-- `tools/call` with a name in `approval` or `ask` goes through the ticket check (§6.3).
+- `tools/call` with a name in `approval` or `ask` must carry the daemon's approval header
+  (§7.2). For an `ask` tool, the header's source must be `person`. This is a consistency
+  check behind the daemon's own, not the approval itself: only the daemon holds the key.
 - Any other `tools/call` is refused with a tool result, so the model sees why and stops
   retrying:
   `{ content: [{ type: 'text', text: 'The tool "<name>" is blocked for this agent.' }], isError: true }`.
 - A batch containing a call that is not in `allow` is answered entirely by the relay. Each
   request member receives the refusal or an error naming the refused member. This is not
   worth more complexity for a construct the 2025-06-18 protocol removed.
+- **The relay forwards what it judged.** It re-serializes the parsed message rather than
+  forwarding the original bytes, so a difference between its parser and the upstream's
+  (duplicate keys, for example) cannot carry a Blocked call past it.
 - Every other method is forwarded unchanged.
 
 **Response side.** This applies only when the forwarded POST contained a `tools/list`.
@@ -337,34 +342,23 @@ Each page is filtered independently, so pagination needs nothing extra; an empty
 `nextCursor` is valid. Responses to `tools/call` and other methods are never parsed or
 buffered.
 
-**Unchanged.** `GET` streams and `DELETE` pass through. A `notifications/tools/list_changed`
-only makes the client list again, and that list is filtered.
+**Unchanged.**
 
-**`open_connector`.** The relay already terminates MCP for these providers. The same policy
-and ticket check guard `callTool` and filter `listTools`.
+- `GET` streams and `DELETE` pass through.
+- A `notifications/tools/list_changed` only makes the client list again, and that list is
+  filtered.
+- A `tools/list` response replayed on a resumed `GET` stream is not filtered. That affects
+  hiding only: a call to a Blocked tool is still refused.
+
+**`open_connector`.** The relay already terminates MCP for these providers. The same checks
+guard `callTool` and filter `listTools`.
 
 **Logging.** A refused call logs at info with the provider id, tool name and reason, never
 the grant key or the arguments. It increments
 `relay_mcp_tool_denied_total{providerId, reason}`.
 
-### 6.3 Ticket check
-
-1. Read the call id from `params._meta`. Known keys are `claudecode/toolUseId` (Claude) and
-   `callId` (Codex); this list grows as harnesses are verified. A call without a known id is
-   refused: "requires approval, and this runtime cannot be matched to one".
-2. Look up the ticket `(grantKeyHash, toolCallId)`. The call usually arrives before the
-   ticket (§12), so the relay waits up to 3 seconds for it.
-3. Accept only when:
-   - `tool` equals `params.name`;
-   - the ticket has not expired;
-   - for an `ask` tool, `source` is `person`.
-4. Consume the ticket and forward the call.
-5. Otherwise refuse with an `isError` result: "The tool "<name>" requires approval, and this
-   call was not approved."
-
-Tickets live in memory, bounded per grant, and are dropped on expiry. The relay reads no
-annotations and holds no catalog. Group logic and drift live in the CP, so a relay never
-loosens access on its own.
+The relay reads no annotations and holds no table other than the CP's. Group logic and drift
+live in the CP, so a relay never loosens access on its own.
 
 ## 7. Daemon
 
@@ -383,22 +377,70 @@ loosens access on its own.
 - Facts are unchanged. Agent-scoped definitions, like other CP definitions, are not folded
   into the daemon's fact set.
 
-### 7.2 Runtime gates
+### 7.2 Restricted calls through the credential proxy
+
+The CP delivers an agent-scoped definition to the daemon with the grant key, as every
+definition is delivered today.
+
+- A daemon without `mcp-tool-approval-v1` hands that definition to the runtime unchanged.
+  Allow and block are then enforced by the relay alone.
+- A daemon advertising `mcp-tool-approval-v1` hands the runtime a **placeholder** in the
+  `Authorization` header instead, never the grant key:
+
+- The credential proxy gains a third placeholder kind, `mcp`, sealed for the agent, the
+  provider and the relay origin. It joins the existing kinds, code-host tokens and provider
+  API keys.
+- It rides the listeners and tunnels those kinds already use in every execution strategy.
+  Executor tunnels gain an `mcp` scope.
+- The proxy terminates TLS for the relay origin with the daemon CA that sessions already
+  trust.
+- A runtime that bypasses the proxy reaches the relay with the placeholder and is refused
+  with 401. Whether a client honors the proxy is a usability question, never an exposure
+  (§12.3).
+
+For each request to the relay origin, the proxy does the following:
+
+1. It opens the placeholder and resolves the agent's agent-scoped definition. A
+   placeholder for another agent, or one presented at another origin, is refused.
+2. `GET` and `DELETE` are forwarded with the grant key swapped in.
+3. A POST is parsed as JSON-RPC, and every `tools/call` is judged against the definition's
+   table:
+   - **Always allow:** forwarded.
+   - **Blocked:** refused locally, with the relay's wording.
+   - **Needs approval and Always ask:** the proxy reads the call id from `params._meta`
+     (`claudecode/toolUseId` or `callId`) and looks up the approval record (§7.4). It
+     accepts the call only when all of these hold:
+     - the record exists and has not been used;
+     - the record has not expired;
+     - its tool equals `params.name`;
+     - its argument digest equals the digest of `params.arguments`;
+     - its source satisfies the decision (`person` for Always ask).
+
+     It then consumes the record and adds the approval header
+     `X-AC-Tool-Approval: <source>`. Otherwise it refuses with an `isError` result: "The
+     tool "<name>" requires approval, and this call was not approved."
+4. The proxy forwards the message it judged, re-serialized, with the grant key in place of
+   the placeholder.
+
+Approval is enforced on the daemon, next to the record. It needs no CP and no relay state,
+and it survives a CP outage.
+
+### 7.3 Runtime gates
 
 The daemon arranges each runtime's own gate so that it asks where the decision requires, and
-reads the gate's outcome. The Claude tool name is `mcp__<server>__<tool>`, with the
+records the gate's outcome. The Claude tool name is `mcp__<server>__<tool>`, with the
 runtime's name normalization applied.
 
-| Runtime and mode                                       | Needs approval                                                                                                                                                                  | Always ask                                                                  |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Claude manual modes (`default`, `acceptEdits`, `plan`) | Runtime asks a person: ticket `person` on an allow answer                                                                                                                       | Same                                                                        |
-| Claude `auto`                                          | Claude's classifier decides. ACP shows no verdict, so the daemon issues ticket `runtime-review` when the call's `tool_call` appears; a call the classifier blocks is never sent | Daemon adds a `permissions.ask` rule, so a person is asked: ticket `person` |
-| Claude `bypassPermissions`                             | Daemon adds a `permissions.ask` rule, so a person is asked: ticket `person`                                                                                                     | Same                                                                        |
-| Claude `dontAsk`                                       | Runtime denies the call                                                                                                                                                         | Same                                                                        |
-| Codex `read-only`, `workspace-write`                   | Runtime asks a person: ticket `person` on an allow answer                                                                                                                       | Same                                                                        |
-| Codex `agent` (Auto review)                            | The Guardian Review update for `targetItemId` with `review.status: "approved"`: ticket `runtime-review`                                                                         | Refused: the reviewer, not a person, decides                                |
-| Codex `agent-full-access`                              | Refused: nothing asks                                                                                                                                                           | Refused                                                                     |
-| Any other runtime                                      | Refused until its gate and call id are verified                                                                                                                                 | Refused                                                                     |
+| Runtime and mode                                       | Needs approval                                                                                                                                                            | Always ask                                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Claude manual modes (`default`, `acceptEdits`, `plan`) | Runtime asks a person: record `person` on an allow answer                                                                                                                 | Same                                                                        |
+| Claude `auto`                                          | Claude's classifier decides. ACP shows no verdict, so the daemon records `runtime-review` when the call's `tool_call` appears; a call the classifier blocks is never sent | Daemon adds a `permissions.ask` rule, so a person is asked: record `person` |
+| Claude `bypassPermissions`                             | Daemon adds a `permissions.ask` rule, so a person is asked: record `person`                                                                                               | Same                                                                        |
+| Claude `dontAsk`                                       | Runtime denies the call                                                                                                                                                   | Same                                                                        |
+| Codex `read-only`, `workspace-write`                   | Runtime asks a person: record `person` on an allow answer                                                                                                                 | Same                                                                        |
+| Codex `agent` (Auto review)                            | The Guardian Review update for `targetItemId` with `review.status: "approved"`: record `runtime-review`                                                                   | Refused: the reviewer, not a person, decides                                |
+| Codex `agent-full-access`                              | Refused: nothing asks                                                                                                                                                     | Refused                                                                     |
+| Any other runtime                                      | Refused until its gate and call id are verified                                                                                                                           | Refused                                                                     |
 
 The daemon applies session settings as follows:
 
@@ -415,26 +457,36 @@ A person's approval follows the existing permission-request answer rules: the tu
 caller or an agent editor, including the Slack approval DM of
 [slack-approval-dm.md](slack-approval-dm.md). A permission card for an approval-gated tool
 offers only once-options (allow once, reject). Claude already offers only these, and an
-"always" answer would produce no ticket for later calls.
+"always" answer would produce no record for later calls.
 
-### 7.3 Tickets
+### 7.4 Approval records
 
-When a row above yields a ticket, the daemon sends `mcp/approval-ticket` (§5.6) carrying
-the ACP `toolCallId`. It sends nothing for a refusal, a rejection, or a refused row. A
-refused row also appears in the turn's tool result and in the console (§10).
+A record is `{ agentId, toolCallId, tool, argsDigest, source, expiresAt }`.
+
+- It is kept in the daemon's memory for two minutes, bounded per agent, and dropped on
+  expiry or use.
+- `argsDigest` is the SHA-256 of the canonical JSON (sorted keys) of the arguments ACP showed
+  for that id: Claude's `rawInput`, Codex's `rawInput.arguments`.
+- A record is created only by a row of §7.3 that yields one. For Claude Auto, a later
+  `tool_call_update` that reports the call failed or was refused deletes the record.
 
 ## 8. Compatibility and rollout
 
 Each mixed-version case fails closed:
 
-| Peer lacks the feature             | CP behavior                                                                                                                        | Effect                                                 |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Relay without `mcp-tool-policy-v1` | Its `rc/mcp-assign` omits restricted grants, and it receives no tickets                                                            | A restricted agent's call through that relay gets 401  |
-| Daemon without `mcp-agent-defs-v1` | Drops the restricted provider from that agent's projected `AgentSpec.mcpServers`, so the shared definition is never attached to it | The restricted agent loses the provider on that daemon |
+| Peer lacks the feature                | CP behavior                                                                                                                        | Effect                                                 |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Relay without `mcp-tool-policy-v1`    | Its `rc/mcp-assign` omits restricted grants, and it is never asked for a catalog                                                   | A restricted agent's call through that relay gets 401  |
+| Daemon without `mcp-agent-defs-v1`    | Drops the restricted provider from that agent's projected `AgentSpec.mcpServers`, so the shared definition is never attached to it | The restricted agent loses the provider on that daemon |
+| Relay without `mcp-tool-approval-v1`  | Sends `approval` and `ask` names as Blocked                                                                                        | Approval-gated tools are refused through that relay    |
+| Daemon without `mcp-tool-approval-v1` | Sends `approval` and `ask` names as Blocked in the definition                                                                      | Approval-gated tools are refused for that agent        |
 
-The console shows both conditions on the policy panel. A relay pool in mid-upgrade can
-therefore return intermittent 401s for restricted agents. That is the accepted cost of never
-falling open.
+`mcp-tool-approval-v1` belongs to stage 6 alone (§13), so the CP and the console can tell a
+peer that enforces allow and block from one that also handles approvals.
+
+The console shows each condition on the policy panel. A relay pool in mid-upgrade can
+therefore return intermittent refusals for restricted agents. That is the accepted cost of
+never falling open.
 
 Delivery order: relay and daemon land first and stay dormant, because no CP sends them the
 new fields. The CP and console follow. The migration is additive, and nothing changes until a
@@ -442,33 +494,38 @@ policy row exists.
 
 ## 9. Security
 
-- **Boundary.** The relay's per-call check on the agent grant enforces Blocked and the
-  presence of a valid ticket. Hiding tools is a convenience on top.
-- **What a ticket proves.**
-  - `person`: a person allowed that exact call.
-  - Codex `runtime-review`: the Guardian approved it.
-  - Claude Auto `runtime-review`: only that the call went through the runtime in a mode
-    whose classifier gates it. This is the trust the administrator chose with Needs
+- **Who the policy restricts.** The agent, not its editors (§2 Non-goals).
+- **Boundary.**
+  - Blocked is enforced twice: by the daemon's proxy and by the relay's per-call check on
+    the agent grant.
+  - Approval is enforced by the daemon's proxy, which alone holds the restricted grant key.
+  - Hiding tools is a convenience on top.
+- **What an approval proves.**
+  - `person`: a person allowed that call, with those arguments, once.
+  - Codex `runtime-review`: the Guardian approved that call.
+  - Claude Auto `runtime-review`: only that the runtime proposed that call in a mode whose
+    classifier gates it. ACP shows no verdict. A party holding the session's placeholder
+    could therefore run a call the classifier refused, with exactly the proposed arguments,
+    before the refusal arrives. This is the trust the administrator chose with Needs
     approval. An administrator who wants a person chooses Always ask.
-- **Key confidentiality.** A ticket binds to the agent grant and one `toolCallId`. An agent
-  that extracts its grant key can only replay an id that the daemon already ticketed, once,
-  within two minutes, for the same tool.
-  - In a sandbox pod, a runtime receives only its own session's definitions.
+- **Key custody.** The restricted grant key never enters the runtime.
+  - A placeholder is useful only through the daemon's proxy, for its own agent and origin,
+    and within that agent's table and records.
   - On a self-hosted daemon without sandboxing, agents run under the daemon's user and share
-    one trust domain, as they already do for the daemon's other credentials.
-  - The public documentation states this.
+    one trust domain with the daemon's memory, as they already do for its other
+    credentials. The public documentation states this.
 - **Self-loosening.**
   - Policy writes are interactive-only (§5.5).
   - Disabling and re-enabling a provider does not reset a policy (§5.4).
   - Switching to a mode that cannot ask makes approval-gated tools refused, not allowed
-    (§7.2).
+    (§7.3).
 - **Annotations.** Annotations never reach an enforcement decision. They seed the groups,
   and the administrator's save fixes the table.
-- **Content stays on the data plane.** A ticket carries ids, a tool name and a source.
-  Arguments stay between the runtime, the daemon's approval card, and the relay.
-- **CP outage.** Relays keep their bindings and tables, and daemons keep their definitions,
-  so Always allow and Blocked keep working. Tickets cannot travel, so approval-gated calls
-  are refused until the CP returns. Policy edits and catalog refreshes wait.
+- **Upstream credentials.** Only relays present them, including for the catalog fetch (§4).
+- **Content stays on the data plane.** Arguments are seen by the runtime, the daemon's
+  approval card and proxy, and the relay. The CP sees policies and catalog metadata only.
+- **CP outage.** Relays keep their bindings and tables, and daemons keep their definitions
+  and records, so every decision keeps working. Policy edits and catalog refreshes wait.
 
 ## 10. Console
 
@@ -486,7 +543,7 @@ settings:
 - a drift banner ("3 new tools are blocked until you review them");
 - the mixed-version warnings of §8;
 - a runtime warning when the agent's runtime and mode refuse an approval decision under
-  §7.2. For example, Codex Full access refuses both approval decisions, and Codex Auto
+  §7.3. For example, Codex Full access refuses both approval decisions, and Codex Auto
   review refuses Always ask;
 - hand-entered tool names when no catalog is available.
 
@@ -496,46 +553,51 @@ console's responsive rules in `packages/web/STYLE.md`.
 ## 11. Tests
 
 - **Protocol:**
-  - codec round-trips for the new `rc/mcp-assign` fields, both ticket frames, and `agentId`
+  - codec round-trips for the new `rc/mcp-assign` fields, `rc/mcp-catalog`, and `agentId`
     and `toolDecisions` on `mcpserver/*`;
   - old-shape decoding unchanged.
 - **CP `test:unit`:**
   - group derivation, including absent annotations;
   - expansion of all four decisions with overrides and hand-typed names;
   - drift detection never altering the table;
-  - per-relay and per-daemon gating;
-  - projection of shared versus agent-scoped definitions;
-  - ticket validation: an agent not served, a tool not gated, and expiry.
+  - per-relay and per-daemon gating for both capabilities;
+  - projection of shared versus agent-scoped definitions, including the move path.
 - **CP `test:int`:**
   - policy CRUD and its RBAC;
   - interactive-only refusal for API keys and delegated calls;
   - grant mint, unassign and revoke ordering;
   - cascade on agent and provider deletion;
   - disable and re-enable keeping the policy;
-  - catalog fetch against a fake MCP server (JSON, SSE, pagination, limits, failure codes).
+  - catalog refresh through a fake relay, including `relay_unavailable`.
 - **Relay:**
   - blocked `tools/call` never forwarded, allowed one forwarded;
   - batches;
+  - the re-serialized message forwarded instead of the original bytes;
+  - the approval header required, and `person` required for `ask` tools;
   - `tools/list` filtering over JSON and SSE, including pagination and the 4 MiB limit;
   - an unrestricted grant on the same provider stays byte-transparent;
   - `open_connector` enforcement;
   - snapshot replay prunes restricted grants;
-  - tickets: a ticket arriving before and after the call, the 3-second wait, expiry, and
-    single use;
-  - tickets: a mismatched tool, `runtime-review` rejected for an `ask` tool, and a call
-    without a known id.
+  - catalog fetch against a fake MCP server (JSON, SSE, pagination, limits, failure codes).
 - **Daemon:**
   - `CpMcpDefs` agent-layer precedence and convergence;
   - the Apps host connection scope for agent-scoped `ui` definitions;
-  - every §7.2 row, driven by recorded ACP traces, including a mid-session mode change;
-  - settings rules per decision;
-  - once-only permission options.
-- **Acceptance (#4164):** two agents enable one provider, one with the Read-only preset. A
-  write call from the restricted agent is refused at the relay, while the same call from the
-  other agent succeeds. A Needs approval call goes through after an approval and is refused
-  after a rejection.
+  - the `mcp` placeholder kind: wrong agent, wrong origin, and a bypass with the
+    placeholder;
+  - the proxy's judgment for each decision;
+  - approval records: a mismatched tool, mismatched arguments, a reused record, expiry, a
+    call without a known id, and a Claude Auto refusal deleting the record;
+  - every §7.3 row, driven by recorded ACP traces, including a mid-session mode change;
+  - settings rules per decision, and once-only permission options.
+- **Acceptance (#4164):**
+  - Two agents enable one provider, one with the Read-only preset. A write call from the
+    restricted agent is refused, while the same call from the other agent succeeds.
+  - A Needs approval call goes through after an approval and is refused after a rejection.
+  - The same call replayed with other arguments is refused.
 
-## 12. Live check
+## 12. Evidence and alternatives
+
+### 12.1 Live check
 
 **Setup.** Measured on 2026-11-20 with the pinned harnesses, `claude-agent-acp` 0.109.0 and
 `codex-acp` 2.8.0-agentconnect.1 (`codex` 0.170.0):
@@ -560,36 +622,41 @@ console's responsive rules in `packages/web/STYLE.md`.
 | Codex `agent-full-access`   | full server definition in `CODEX_CONFIG` with `approval_mode = "prompt"` | Ignored; no prompt                                                                                                   |
 | Codex `agent` (Auto review) | same                                                                     | The Guardian decided; no person asked                                                                                |
 
-**Call ids.** Every `tools/call` carried the ACP `toolCallId` in `params._meta`: Claude as
-`claudecode/toolUseId`, Codex as `callId`.
+**Call ids and arguments.** Every `tools/call` carried the ACP `toolCallId` in
+`params._meta`: Claude as `claudecode/toolUseId`, Codex as `callId`. Its `arguments` equaled
+the `rawInput` that ACP showed for that id (Codex: `rawInput.arguments`).
 
-**Relay asking via elicitation (evaluated alternative).**
+### 12.2 Alternatives
 
-- The question reached the client for Claude `bypassPermissions`, Codex `agent` and Codex
-  `workspace-write`. Codex `agent-full-access` declined it automatically within 3 ms.
-- A call held for 75 seconds completed on both harnesses.
+| Approach                                                                  | Why not                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The relay asks** through MCP elicitation and holds the call             | It works mechanically:<br>• the question reached the client for Claude `bypassPermissions`, Codex `agent` and Codex `workspace-write`;<br>• Codex `agent-full-access` declined it within 3 ms;<br>• a call held for 75 seconds completed on both harnesses.<br>But it replaces the runtime's gate instead of honoring its automatic review, and an answer reaching another relay pod needs a cross-pod hop. |
+| **Daemon tickets** broadcast through the CP to every relay                | • The CP joins the per-call path, against base §3.<br>• A broadcast ticket consumed per pod is not single-use across the pool.<br>• The ticket binds no arguments.<br>• While the runtime holds the key, a caller can post first and wait for the ticket.                                                                                                                                                   |
+| **The daemon's credential proxy** holds the key and checks a local record | Chosen. The approval and the check live in the same process, the record binds the arguments, and nothing crosses the CP or the relay pool.                                                                                                                                                                                                                                                                  |
 
-That alternative was set aside because it cannot honor a runtime's automatic review
-(§2 Non-goals).
+### 12.3 Remaining before the approval stage ships
 
-**Remaining before the approval stage ships:**
-
-- a run on a real daemon with a chat card;
-- a Claude Auto classifier refusal, to confirm the call is never sent;
-- the ticket path across two relay pods.
+- Claude's and Codex's MCP HTTP clients honoring the proxy variables and the trust bundle,
+  in every execution strategy. A client that does not still fails closed, with a 401 at the
+  relay.
+- A run on a real daemon with a chat card.
+- A Claude Auto classifier refusal: the call is never sent, and the record is deleted.
 
 ## 13. Delivery
 
 1. This design, with the matching updates to
    [centralized-tool-management.md](centralized-tool-management.md).
-2. Protocol fields and relay allow/block enforcement behind `mcp-tool-policy-v1`.
+2. Protocol fields, relay allow/block enforcement and the relay catalog fetch, behind
+   `mcp-tool-policy-v1`. This stage also refreshes item 3 (the MCP proxy) of
+   `.oss-scanner/threat_model.md`.
 3. Daemon agent layer and Apps host scope behind `mcp-agent-defs-v1`.
-4. CP schema, catalog fetch, policy routes, grant lifecycle, projection and gating.
+4. CP schema, catalog storage, policy routes, grant lifecycle, projection and gating.
 5. Console panel and public documentation. **Needs approval** and **Always ask** are
    selectable only once stage 6 has shipped.
-6. Approval:
-   - the relay ticket check;
-   - the ticket frames and CP routing;
-   - the daemon's runtime-gate observation and settings rules.
+6. Approval, behind `mcp-tool-approval-v1`:
+   - the credential proxy's `mcp` placeholder;
+   - the proxy's judgment and approval records;
+   - the runtime-gate observation and settings rules;
+   - the relay's approval-header check.
 
-   It ships after the remaining checks of §12.
+   It ships after the checks of §12.3.

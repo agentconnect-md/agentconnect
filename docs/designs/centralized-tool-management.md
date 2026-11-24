@@ -190,9 +190,9 @@ Authorization: Bearer <grantKey>
 For a `custom` provider presenting an unrestricted grant, the relay does not
 understand MCP. It performs authentication, substitutes headers, and forwards
 bytes or response streams. Under the proposed per-agent tool permissions, a
-restricted agent grant additionally passes the per-tool decision and
-approval-ticket check of [mcp-tool-permissions.md](mcp-tool-permissions.md) §6,
-which parses `tools/call` requests and filters `tools/list` responses:
+restricted agent grant additionally passes the per-tool decision check of
+[mcp-tool-permissions.md](mcp-tool-permissions.md) §6, which parses `tools/call`
+requests and filters `tools/list` responses:
 
 1. Read the grant key from the header → hash it → **look up locally** the delivered binding (§5.2) to obtain `{ upstreamUrl, headers }`.
 2. **Replace** the agent-side `Authorization` value, inject the real upstream headers, and forward `GET`, `POST`, or `DELETE` unchanged to `upstreamUrl`. Stream the response back unchanged; do not parse JSON-RPC.
