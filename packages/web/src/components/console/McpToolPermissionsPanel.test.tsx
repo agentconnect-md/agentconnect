@@ -271,6 +271,25 @@ describe('McpToolPermissionsPanel catalog', () => {
   })
 })
 
+describe('McpToolPermissionsPanel re-save after the catalog changed', () => {
+  it('keeps Save off while the saved table still matches the catalog', async () => {
+    await render(policy())
+    expect(buttonByText('Save')?.disabled).toBe(true)
+  })
+
+  it('offers Save for unchanged rules once the catalog lists a tool the table lacks, and saves the same rules', async () => {
+    const listed = [...TOOLS, { name: 'get_issue', readOnlyHint: true, interactive: false, group: 'readOnly' as const }]
+    api.fetchMcpToolCatalog.mockResolvedValue(catalog({ tools: listed, groups: { readOnly: 2, write: 2, other: 1 } }))
+    await render(policy())
+    expect(buttonByText('Save')?.disabled).toBe(false)
+    await save()
+    expect(api.saveAgentMcpToolPolicy).toHaveBeenCalledWith('a1', 'p1', {
+      groups: { readOnly: 'allow', write: 'block', other: 'block' },
+      overrides: {}
+    })
+  })
+})
+
 describe('McpToolPermissionsPanel warnings', () => {
   it('shows the drift banner for new, changed and missing tools', async () => {
     const view = await render(

@@ -61,6 +61,36 @@ export function resolveDecision(
   return overrides[tool.name] ?? groups[tool.group]
 }
 
+/** The names a save would store against this catalog, by the control plane's own expansion rule (§5.2). */
+export function expandTable(
+  groups: McpToolGroupDecisions,
+  overrides: Record<string, McpToolDecision>,
+  tools: readonly Pick<McpCatalogToolDto, 'name' | 'group'>[]
+): Record<'allow' | 'approval' | 'ask', Set<string>> {
+  const table = { allow: new Set<string>(), approval: new Set<string>(), ask: new Set<string>() }
+  const add = (name: string, decision: McpToolDecision) => {
+    if (decision !== 'block') table[decision].add(name)
+  }
+  for (const tool of tools) add(tool.name, resolveDecision(tool, groups, overrides))
+  for (const [name, decision] of Object.entries(overrides)) add(name, decision)
+  return table
+}
+
+/** Whether saving the same rules against this catalog would store a different table: the catalog changed since the last save. */
+export function needsResave(
+  policy: Pick<AgentMcpToolPolicyDto, 'groups' | 'overrides' | 'allowTools' | 'approvalTools' | 'askTools'>,
+  tools: readonly Pick<McpCatalogToolDto, 'name' | 'group'>[]
+): boolean {
+  const table = expandTable(policy.groups, policy.overrides, tools)
+  const same = (expanded: Set<string>, saved: readonly string[]) =>
+    expanded.size === new Set(saved).size && saved.every((name) => expanded.has(name))
+  return !(
+    same(table.allow, policy.allowTools) &&
+    same(table.approval, policy.approvalTools) &&
+    same(table.ask, policy.askTools)
+  )
+}
+
 /** Write/delete tools are destructive unless they say otherwise (§3.1). */
 export const isDestructive = (tool: Pick<McpCatalogToolDto, 'group' | 'destructiveHint'>) =>
   tool.group === 'write' && tool.destructiveHint !== false

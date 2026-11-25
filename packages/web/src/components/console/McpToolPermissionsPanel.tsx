@@ -27,6 +27,7 @@ import {
   presetOf,
   sameGroups,
   sameOverrides,
+  needsResave,
   type McpToolPreset
 } from '@/lib/mcp-tool-permissions'
 import { formatRelative } from '@/i18n/format'
@@ -119,10 +120,14 @@ export function McpToolPermissionsPanel({
     .sort()
   const noCatalog = catalog !== null && tools.length === 0
 
+  // A saved policy whose catalog changed is dirty too: the control plane expands the table only on save.
   const dirty =
     preset === 'full'
       ? policy !== null
-      : policy === null || !sameGroups(groups, policy.groups) || !sameOverrides(overrides, policy.overrides)
+      : policy === null ||
+        !sameGroups(groups, policy.groups) ||
+        !sameOverrides(overrides, policy.overrides) ||
+        (catalog !== null && needsResave(policy, tools))
 
   const choosePreset = (next: McpToolPreset) => {
     setPreset(next)
