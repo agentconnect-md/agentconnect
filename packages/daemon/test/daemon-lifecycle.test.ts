@@ -1360,7 +1360,7 @@ describe('Daemon session lifecycle (#118)', () => {
     // cold backstop aborts only SessionManager's caller; the helper remains live.
     clock.advance(30_000)
     await expect(warmDispatch).resolves.toBeNull()
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(true)
 
     const replacement = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
     await new Promise<void>((resolve) => setImmediate(resolve))
@@ -1430,12 +1430,12 @@ describe('Daemon session lifecycle (#118)', () => {
     await expect(warmTurn).resolves.toBeNull()
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(stopped).toBe(false)
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(true)
 
     releaseWarm()
     await stop
     expect(stopped).toBe(true)
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(false)
     await daemon.stop()
   })
 
@@ -1590,6 +1590,61 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   })
 
+  it("prepares an agent's isolated sessions side by side, and a file publication or shared session after them alone", async () => {
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => quietHost() as any
+    })
+    await daemon.start()
+    const agent = (daemon as any).agents.get('bot-a')
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve))
+    const running = new Set<string>()
+    const releases = new Map<string, () => void>()
+    ;(daemon as any).runAgentWorkspacePreparation = async (_agent: unknown, request?: { sessionKey: string }) => {
+      const key = request?.sessionKey ?? 'agent'
+      running.add(key)
+      await new Promise<void>((resolve) => releases.set(key, resolve))
+      running.delete(key)
+      return '/cwd'
+    }
+    const prepare = (sessionKey: string, isolation: 'session' | 'shared') =>
+      (daemon as any).prepareAgentWorkspace(agent, undefined, { sessionKey, isolation }) as Promise<string>
+
+    const first = prepare('one', 'session')
+    const second = prepare('two', 'session')
+    await settle()
+    expect([...running].sort()).toEqual(['one', 'two'])
+
+    let published = false
+    const publication = (daemon as any).withWorkspaceFileWrite('bot-a', async () => {
+      published = true
+    }) as Promise<void>
+    const shared = prepare('three', 'shared')
+    const third = prepare('four', 'session')
+    await settle()
+    expect(published).toBe(false)
+    expect([...running].sort()).toEqual(['one', 'two'])
+
+    releases.get('one')!()
+    await settle()
+    expect(published).toBe(false)
+    releases.get('two')!()
+    await Promise.all([first, second, publication])
+    expect(published).toBe(true)
+    await settle()
+    expect([...running]).toEqual(['three'])
+    releases.get('three')!()
+    await shared
+    await settle()
+    expect([...running]).toEqual(['four'])
+    releases.get('four')!()
+    await third
+    await (daemon as any).workspacePreparations.idle('bot-a')
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(false)
+    await daemon.stop()
+  })
+
   it('serializes workspace preparation and file publication in both admission orders', async () => {
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
@@ -1643,7 +1698,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await preparingAfterPublication
     expect(laterPreparationEntered).toBe(true)
     await new Promise<void>((resolve) => setImmediate(resolve))
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(false)
     expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(false)
     await daemon.stop()
   })

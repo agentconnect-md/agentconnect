@@ -288,6 +288,7 @@ import { recordedImageModels, type MicrosandboxManager, type MicrosandboxEnviron
 import { probeImageModels } from './microsandbox/model-probe.js'
 import { localShimGitRunner } from './execution/local-git.js'
 import type { GitRunner } from './workspace/git-runner.js'
+import { AgentWorkspaceScheduler } from './workspace/agent-workspace-scheduler.js'
 import { openTaskDiff, TaskDiffIneligible, TaskDiffUnavailable, type TaskDiff } from './workspace/task-diff.js'
 import {
   localMicrosandboxEnvironment,
@@ -1763,6 +1764,8 @@ type HostRetirement = {
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
 const RELAY_ACK_SLOW_MS = 4000
+/** Sessions of one agent with their own isolation that may prepare at once; work on the agent's own roots stays one at a time. */
+const PARALLEL_SESSION_PREPARATIONS = 4
 /** An agent config watcher that stayed armed this long resets its out-of-watch-capacity backoff. */
 const WATCHER_STABLE_MS = 60 * 60_000
 
@@ -2850,12 +2853,13 @@ export class Daemon {
   private activeDispatchesByAgent = new Map<string, Set<Promise<void>>>()
   private activeDispatchDoneByKey = new Map<string, Promise<void>>()
   private workspaceDispatchFences = new Map<string, Promise<void>>()
-  /** Whole per-agent workspace-mutation tails. Preparation (managed-cache
-   * resolution, clone/pull, immutable snapshots, skill reconciliation) and CP
-   * editor/Dream/Git writes share this lane, so no two authorities mutate the
-   * same root concurrently. Session abort only fences the caller; admitted I/O
-   * remains in this tail until it has actually settled. */
-  private workspacePreparationTails = new Map<string, Promise<void>>()
+  /** Per-agent workspace work. Preparation (managed-cache resolution,
+   * clone/pull, immutable snapshots, skill reconciliation) and CP editor/Dream/Git
+   * writes are exclusive, so no two authorities mutate the same root concurrently;
+   * sessions with their own isolation prepare side by side in their own
+   * directories (workspace/agent-workspace-scheduler.ts). Session abort only
+   * fences the caller; admitted I/O stays registered until it has settled. */
+  private readonly workspacePreparations = new AgentWorkspaceScheduler(PARALLEL_SESSION_PREPARATIONS)
   // Connection-specific half of the same lease. Unlike `pending[].conn`, this is
   // acquired immediately when dispatchOne captures replyConn, before its first
   // await, so ordinary config reconciliation cannot close that pre-pending use.
@@ -9671,7 +9675,9 @@ export class Daemon {
     agent: Agent,
     operation: () => Promise<T>,
     expectedWarmHost?: AcpHost,
-    allowAgentDrain = false
+    allowAgentDrain = false,
+    /** A session with its own isolation prepares in its own directory, beside the agent's other such sessions. */
+    ownDirectory = false
   ): Promise<T> {
     // SessionManager's abort fence intentionally cannot cancel filesystem/network
     // work already admitted here. Register every session preparation and eager
@@ -9680,27 +9686,20 @@ export class Daemon {
     // Rejections release the queue; a hung mutation keeps later generations and
     // destructive authority release fail-closed behind it.
     this.assertCurrentWorkspacePreparation(agent, expectedWarmHost, allowAgentDrain)
-    return this.enqueueAgentWorkspaceMutation(agent.id, () => {
+    const guarded = () => {
       // The host or agent authority may be superseded while this operation waits
       // behind an older preparation or file publication. Re-check at the exact
       // mutation boundary.
       this.assertCurrentWorkspacePreparation(agent, expectedWarmHost, allowAgentDrain)
       return operation()
-    })
+    }
+    return ownDirectory
+      ? this.workspacePreparations.shared(agent.id, guarded)
+      : this.workspacePreparations.exclusive(agent.id, guarded)
   }
 
   private enqueueAgentWorkspaceMutation<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
-    const prior = this.workspacePreparationTails.get(agentId) ?? Promise.resolve()
-    const run = prior.then(operation)
-    const tail = run.then(
-      () => undefined,
-      () => undefined
-    )
-    this.workspacePreparationTails.set(agentId, tail)
-    void tail.then(() => {
-      if (this.workspacePreparationTails.get(agentId) === tail) this.workspacePreparationTails.delete(agentId)
-    })
-    return run
+    return this.workspacePreparations.exclusive(agentId, operation)
   }
 
   private prepareAgentWorkspace(
@@ -9714,7 +9713,8 @@ export class Daemon {
         agent,
         () => this.runAgentWorkspacePreparation(agent, request),
         expectedWarmHost,
-        allowAgentDrain
+        allowAgentDrain,
+        request?.isolation === 'session'
       )
     )
   }
@@ -9740,17 +9740,14 @@ export class Daemon {
             })
           }),
         undefined,
-        allowAgentDrain
+        allowAgentDrain,
+        true
       )
     )
   }
 
   private async waitForWorkspacePreparations(agentId: string): Promise<void> {
-    while (true) {
-      const tail = this.workspacePreparationTails.get(agentId)
-      if (!tail) return
-      await tail
-    }
+    await this.workspacePreparations.idle(agentId)
   }
 
   private async waitForWorkspaceDispatchFence(agentId: string): Promise<void> {
@@ -35712,9 +35709,7 @@ export class Daemon {
     // workspace I/O. Keep the trusted ledger/store boundary alive until every
     // registered preparation has quiesced; a hung mutation deliberately prevents
     // shutdown from pretending the workspace is stable.
-    while (this.workspacePreparationTails.size > 0) {
-      await Promise.all([...this.workspacePreparationTails.values()])
-    }
+    await this.workspacePreparations.allIdle()
     // After the hosts (and thus their spawned mcp-bridge subprocesses) are gone,
     // so server.close() isn't left waiting on a live bridge connection.
     await Promise.resolve(this.mcp?.stop()).catch((e) => errors.push(e))

@@ -166,8 +166,8 @@ describe('Daemon CP agent → memory + reconcile', () => {
     ;(daemon as any).prefetchClone(agent)
     await entered.promise
     await daemon.reconcile()
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
-    expect((daemon as any).workspacePreparationTails.has('bot-b')).toBe(false)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(true)
+    expect((daemon as any).workspacePreparations.busy('bot-b')).toBe(false)
     expect(hosts).toHaveLength(0)
     release.resolve()
     await (daemon as any).waitForWorkspacePreparations('bot-a')
@@ -1438,7 +1438,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
 
     expect(removed).toBe(false)
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(true)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(true)
     expect(existsSync(join(workspace, 'early-prefetch'))).toBe(true)
     expect(removeAgent).not.toHaveBeenCalled()
 
@@ -1446,7 +1446,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await removing
     expect(removeAgent).toHaveBeenCalledOnce()
     expect(existsSync(join(root, 'agents', 'bot-a'))).toBe(false)
-    expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
+    expect((daemon as any).workspacePreparations.busy('bot-a')).toBe(false)
     await daemon.reconcile()
     await daemon.stop()
   })
