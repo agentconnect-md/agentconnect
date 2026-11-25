@@ -192,6 +192,13 @@ export class ModelSessionHostPool {
     return [...this.entries.keys()]
   }
 
+  /** The agent's started hosts, by session key. */
+  startedHostsForAgent(agentId: string): { sessionKey: string; host: AcpHost }[] {
+    return [...this.entries.values()].flatMap((entry) =>
+      entry.agentId === agentId && entry.host ? [{ sessionKey: entry.sessionKey, host: entry.host }] : []
+    )
+  }
+
   staticCredential(target: ModelProviderTarget): ModelCredential | undefined {
     return staticModelCredential(this.staticModelCredentials, target)
   }
