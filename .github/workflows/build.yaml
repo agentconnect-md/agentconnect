@@ -323,9 +323,9 @@ jobs:
                   verify: ({"daemon": "daemon", "runtime-sandbox": "runtime-sandbox", "runtime-sandbox-full": "runtime-sandbox-full"}[$name] // "")
                 }
             ]
-            # A multi-platform runtime target verifies real runtimes, so it runs one native leg per platform; finalize joins them.
+            # Multi-platform targets but the daemon (it verifies a loaded amd64 build) run one native leg per platform; finalize joins them.
             | map(
-                if .component != "" and (.platforms | contains(",")) then
+                if .verify != "daemon" and (.platforms | contains(",")) then
                   . as $leg
                   | ($leg.platforms | split(","))[]
                   | (sub("^linux/"; "")) as $arch
@@ -557,7 +557,7 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Multi-arch targets (the services and the computer image) run their arm64 install steps under emulation on this amd64 runner.
+      # Only the daemon still builds both platforms on one amd64 runner, so its arm64 half runs under emulation.
       - name: Set up QEMU
         if: contains(matrix.platforms, 'linux/arm64') && runner.arch != 'ARM64'
         uses: docker/setup-qemu-action@v4
@@ -823,7 +823,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/image-digest
       # A split target built at this release gets its tags only here, as one index over every verified platform.
-      - name: Join split runtime images into their release tags
+      - name: Join split images into their release tags
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -833,7 +833,11 @@ jobs:
           for dir in "$root"/*/; do
             target="$(basename "$dir")"
             component="$(cat "${dir}component")"
-            effective="$(sed -n "s/^${component}=//p" "${RUNNER_TEMP}/image-decision/${component}")"
+            # A service target is in the matrix only when prepare chose to build it at this version.
+            effective="$VERSION"
+            if [ -n "$component" ]; then
+              effective="$(sed -n "s/^${component}=//p" "${RUNNER_TEMP}/image-decision/${component}")"
+            fi
             if [ "$effective" != "$VERSION" ]; then
               echo "${target} is unchanged since ${effective}; aliased below"
               continue
