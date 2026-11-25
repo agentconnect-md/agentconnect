@@ -187,6 +187,15 @@ import {
   SAVE_SCHEDULE_ARGS,
   type AgentCronToolDeps
 } from './ops/agent-crons.js'
+import {
+  fetchArtifact,
+  FETCH_ARTIFACT_ARGS,
+  listArtifacts,
+  LIST_ARTIFACTS_ARGS,
+  publishArtifact,
+  PUBLISH_ARTIFACT_ARGS,
+  type ArtifactToolDeps
+} from './ops/artifacts.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -239,7 +248,8 @@ export interface OpsDeps
     AssistantSubsessionDeps,
     TaskReadDeps,
     CapabilityRequestDeps,
-    AgentCronToolDeps {
+    AgentCronToolDeps,
+    ArtifactToolDeps {
   /** Rejected tool arguments are logged here at debug, key names only — the sole trace of them (#1921). */
   log?: Pick<Logger, 'debug'>
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
@@ -361,7 +371,10 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['withdrawCapabilityRequest', withdrawCapabilityRequest],
   ['listSchedules', listSchedules],
   ['saveSchedule', saveSchedule],
-  ['deleteSchedule', deleteSchedule]
+  ['deleteSchedule', deleteSchedule],
+  ['publishArtifact', publishArtifact],
+  ['fetchArtifact', fetchArtifact],
+  ['listArtifacts', listArtifacts]
 ])
 
 /**
@@ -433,6 +446,9 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['listSchedules', LIST_SCHEDULES_ARGS],
   ['saveSchedule', SAVE_SCHEDULE_ARGS],
   ['deleteSchedule', DELETE_SCHEDULE_ARGS],
+  ['publishArtifact', PUBLISH_ARTIFACT_ARGS],
+  ['fetchArtifact', FETCH_ARTIFACT_ARGS],
+  ['listArtifacts', LIST_ARTIFACTS_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

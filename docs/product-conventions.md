@@ -884,6 +884,39 @@ a caption lost after it is reported as a notice on an otherwise successful send 
 as a failure. The agent is never told nothing was sent while its words sit in the
 conversation, because it would retry and post them twice.
 
+### Publishing an artifact (agent tools)
+
+Toward a control plane that serves artifacts, every session except a follow-up's check,
+organization research and a getting-to-know task gets three tools beside `shareFile`
+([artifacts.md](designs/artifacts.md) §7). `publishArtifact` turns a file or a directory
+from the workspace or the session files into a versioned deliverable people open in the
+console; `shareFile` still drops a file into the conversation, and an agent may do both for
+the same result. `fetchArtifact` puts a revision back into the session outputs so the agent
+can keep working after its workspace was cleaned up, and `listArtifacts` lists what the
+conversation can reach.
+
+- **Path and fence.** The path takes the same forms and fence as `shareFile`: a session
+  file (`files:outputs/…`) or a checkout-relative path; `.git`, escapes and links out are
+  refused. A directory publishes every regular file in it as one revision, leaves out
+  `.git`, and refuses a link or special file by name rather than skipping it.
+- **Checked before anything uploads.** At most 200 files and 50 MB per revision, paths
+  that collide after case folding or Unicode normalization, and empty files are refused
+  naming the file. A directory of more than one file needs an entry, the file that opens
+  first.
+- **Revisions, not copies.** A new artifact needs a title. Publishing again with its id adds
+  a revision and keeps the title, which only people rename; an agent revises only the
+  artifacts it created. A retried call within the same turn returns the same revision.
+- **The link is the agent's to give.** The result carries a console link pinned to the
+  revision and who can open it, in a sentence the agent repeats. Publishing posts nothing
+  to a chat platform; the agent puts the link in its reply. Every publication leaves one
+  card row in the session transcript, committed before a console turn shows it.
+- **Fetch replaces one directory.** A fetch writes into `files:outputs/<title>-<id>/`,
+  verifying each file's size and checksum, and replaces what an earlier fetch of the same
+  artifact left there only after every file arrived; a failed fetch changes nothing.
+- **Refusals say what to do.** Missing storage, an unknown session, an artifact the
+  conversation cannot reach, one the agent did not create, an oversized file and an
+  incomplete upload each get their own sentence.
+
 ## Self-authored channel roots
 
 When an agent uses `sendMessage` to publish a new channel-root message without waking

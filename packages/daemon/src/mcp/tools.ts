@@ -21,6 +21,7 @@ import { coordinatorTools } from '../auto-session/coordinator-prompt.js'
 import { LIST_TASKS_TOOL, READ_TASK_TOOL, STOP_TASK_TOOL, UPDATE_TASK_TOOL } from './ops/assistant-subsessions.js'
 import { CAPABILITY_REQUEST_TOOLS } from './ops/capability-requests.js'
 import { AGENT_CRON_TOOLS } from './ops/agent-crons.js'
+import { ARTIFACT_TOOLS } from './ops/artifacts.js'
 import { CODE_HOST_RESEARCH_TOOLS } from './ops/code-host-research.js'
 import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
@@ -1042,6 +1043,7 @@ export const ALL_TOOL_NAMES = [
       UPDATE_TASK_TOOL,
       ...CAPABILITY_REQUEST_TOOLS,
       ...AGENT_CRON_TOOLS,
+      ...ARTIFACT_TOOLS,
       // A coordinator's own tools (auto-session-mode.md §5.4): it refuses every ask, so one left out here could never run.
       ...coordinatorTools()
     ]

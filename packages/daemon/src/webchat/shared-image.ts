@@ -348,10 +348,32 @@ export async function publishWebchatSharedFile(
   source: SharedFileSource
 ): Promise<SharedFileReceipt> {
   const marker = sharedFileMarker(source.path, source.mimeType, source.bytes, source.sha256)
-  const text = source.caption ? `${source.caption}\n${marker}` : marker
+  const { postId, notice } = await publishWebchatAgentRow(
+    deps,
+    turn,
+    source.caption ? `${source.caption}\n${marker}` : marker,
+    { tool: 'shareFile', subject: 'file' }
+  )
+  return {
+    type: 'agentconnect.file',
+    version: 1,
+    postId,
+    published: true,
+    original: { kind: 'workspace' },
+    ...(notice ? { notice } : {})
+  }
+}
+
+/** One agent row a tool publishes into a console turn: committed to the transcript first, then emitted live as its own segment. */
+export async function publishWebchatAgentRow(
+  deps: Pick<SharedImagePublisherDeps, 'store' | 'log'>,
+  turn: WebchatShareTurn,
+  text: string,
+  label: { tool: string; subject: string }
+): Promise<{ postId: string; notice?: string }> {
   if (turn.signal?.aborted || !turn.stillPublishable()) {
     throw new SharedImagePublishError(
-      'shareFile: the turn ended before the file could be published — nothing was posted.'
+      `${label.tool}: the turn ended before the ${label.subject} could be published — nothing was posted.`
     )
   }
   const { wc } = turn
@@ -374,7 +396,7 @@ export async function publishWebchatSharedFile(
     )
   } catch (err) {
     throw new SharedImagePublishError(
-      `shareFile: the file could not be recorded, so it was not posted (${(err as Error).message}).`
+      `${label.tool}: the ${label.subject} could not be recorded, so it was not posted (${(err as Error).message}).`
     )
   }
   const at = Number(ts)
@@ -394,7 +416,7 @@ export async function publishWebchatSharedFile(
       wc.postSink?.({
         conversationId: wc.conversationId,
         agentId: turn.agentId,
-        // No hopCount: a shared file is transcript-only for peers and never wakes another agent.
+        // No hopCount: a published row is transcript-only for peers and never wakes another agent.
         post: {
           postId,
           conversationId: wc.conversationId,
@@ -407,17 +429,10 @@ export async function publishWebchatSharedFile(
       })
     }
   } catch (err) {
-    notice = 'The file was saved, but the live view may need a refresh to show it.'
-    deps.log.warn(`shareFile: live file delivery failed (${(err as Error).message})`)
+    notice = `The ${label.subject} was saved, but the live view may need a refresh to show it.`
+    deps.log.warn(`${label.tool}: live ${label.subject} delivery failed (${(err as Error).message})`)
   }
-  return {
-    type: 'agentconnect.file',
-    version: 1,
-    postId,
-    published: true,
-    original: { kind: 'workspace' },
-    ...(notice ? { notice } : {})
-  }
+  return { postId, ...(notice ? { notice } : {}) }
 }
 
 /** Shared-file snapshot seams (agent-authored-attachments.md §4.1): CP signing over this daemon's socket. */

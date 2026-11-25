@@ -223,6 +223,8 @@ import {
   parseSessionFileName,
   sessionFileName,
   SessionFileArea,
+  ARTIFACT_MAX_BYTES,
+  ArtifactInitiator,
   SESSION_FILES_FEATURE,
   parseOrgRefusal,
   MATTERMOST_PLATFORM,
@@ -1168,10 +1170,15 @@ import {
   WorkspaceViolationError
 } from './workspace/workspace-files.js'
 import { readRegularFile, RegularFileError } from './fs/regular-file.js'
-import { localWorkspaceFs } from './workspace/workspace-fs.js'
+import { localWorkspaceFs, type WorkspaceFs } from './workspace/workspace-fs.js'
 import { attachmentFileName, type SaveAttachmentResult } from './mcp/ops/platform-reads.js'
 import { saveAttachmentTo, type SaveAttachmentTarget } from './mcp/ops/save-attachment.js'
 import type { ShareReadResult, ShareTargetResult } from './mcp/ops/share-file.js'
+import type { ArtifactPort, ArtifactSourceResult, ArtifactTurn } from './mcp/ops/artifacts.js'
+import { artifactToolsFor } from './mcp/ops/artifacts.js'
+import { ArtifactToolError } from './artifacts/manifest.js'
+import { replaceOutputsDir } from './artifacts/outputs-dir.js'
+import { putObjectBytes } from './source-cache/put-object.js'
 import { sharedFileKind } from './mcp/ops/share-file-types.js'
 import { TaskViolationError } from './cp/task-reader.js'
 import {
@@ -1552,6 +1559,7 @@ import {
   webchatRoutingNoteBlocks
 } from './webchat/narrowed-scope.js'
 import {
+  publishWebchatAgentRow,
   publishWebchatSharedFile,
   publishWebchatSharedImage,
   snapshotSharedFile,
@@ -1765,6 +1773,8 @@ const ROOM_GRANT_WAIT_MS = 5_000
 const ROOM_GRANT_RELAY_WAIT_MS = 1_000
 const ROOM_GRANT_POLL_MS = 50
 const ROOM_GRANT_GRACE_MS = 3_000
+/** One artifact file's PUT or GET, up to the 50 MB revision limit. */
+const ARTIFACT_TRANSFER_TIMEOUT_MS = 120_000
 // One pod-local skill ref listing, the same bound the daemon's own ref naming has.
 const POD_SKILL_REF_TIMEOUT_MS = 10_000
 /** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */
@@ -6087,6 +6097,8 @@ export class Daemon {
       },
       // read*File: a downloaded non-image binary lands in the session files directory's `uploads/` (inbound-file-attachments.md §2.4).
       saveAttachment: (ctx, name, bytes) => this.saveSessionUpload(ctx, name, bytes),
+      // publishArtifact, fetchArtifact, listArtifacts (artifacts.md §7), toward a CP that advertises artifacts-v1.
+      artifacts: this.artifactPort(),
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const perFile = cfg.limits.maxOutboundFileBytes ?? cfg.limits.maxAttachmentBytes
@@ -12675,6 +12687,8 @@ export class Daemon {
     ]
     // The agent's own crons, with no approval, toward a CP that serves them; execution re-checks.
     tools = [...tools, ...agentCronToolsFor(this.agentCronsServed(), { thread })]
+    // Artifacts (artifacts.md §7), toward a CP that advertises them; execution re-checks.
+    tools = [...tools, ...artifactToolsFor(this.cpClient?.supportsArtifacts?.() === true, { thread })]
     // §14.2 brokers: a host's tools ride with any repository the agent holds there, and the clamped lease still authorizes each call.
     for (const provider of this.codeHostBrokers.keys()) {
       if (this.holdsEffectRepository(agent, provider)) tools = [...tools, ...codeHostEffectToolsFor(provider)]
@@ -15007,29 +15021,50 @@ export class Daemon {
     name: string,
     bytes: Buffer
   ): Promise<SaveAttachmentResult> {
+    const at = this.sessionFilesTarget(agentId, key, isolation)
+    if (!at.ok) return at
+    try {
+      return await saveAttachmentTo(at.target, name, bytes)
+    } catch (err) {
+      if (at.offDisk) return { ok: false, reason: 'sandboxed' }
+      return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** Where one session's files areas are written: the pod's or executor's channel there, a descriptor descent here. */
+  private sessionFilesTarget(
+    agentId: string,
+    key: string,
+    isolation: SessionRecord['workspaceIsolation']
+  ):
+    | { ok: true; target: SaveAttachmentTarget; offDisk: boolean }
+    | { ok: false; reason: 'no-workspace' | 'sandboxed' | 'write-failed'; detail?: string } {
     const agent = this.agents.get(agentId)
     if (!agent) return { ok: false, reason: 'no-workspace' }
     const location = this.workspaces.sessionFilesLocation(agent, key, isolation)
     const podFs = this.workspaces.offDiskFsFor(agentId, location.scope)
     if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+    if (podFs) {
+      const target = { kind: 'workspace-fs', fs: podFs, root: location.anchor, segments: location.segments } as const
+      return { ok: true, offDisk: true, target }
+    }
+    let root: string
     try {
-      const root = podFs ? location.anchor : realpathSync(location.anchor)
-      const target: SaveAttachmentTarget = podFs
-        ? { kind: 'workspace-fs', fs: podFs, root, segments: location.segments }
-        : process.platform === 'linux'
-          ? { kind: 'pinned', root, segments: location.segments }
-          : {
-              kind: 'workspace-fs',
-              fs: localWorkspaceFs,
-              root,
-              segments: location.segments,
-              canonicalDir: canonicalWorkspacePath
-            }
-      return await saveAttachmentTo(target, name, bytes)
+      root = realpathSync(location.anchor)
     } catch (err) {
-      if (podFs) return { ok: false, reason: 'sandboxed' }
       return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
     }
+    const target: SaveAttachmentTarget =
+      process.platform === 'linux'
+        ? { kind: 'pinned', root, segments: location.segments }
+        : {
+            kind: 'workspace-fs',
+            fs: localWorkspaceFs,
+            root,
+            segments: location.segments,
+            canonicalDir: canonicalWorkspacePath
+          }
+    return { ok: true, offDisk: false, target }
   }
 
   /** Fetch one console upload on the URL the control plane signed for it and save it in the session's uploads; the area for the agent's own download when it cannot. */
@@ -15091,65 +15126,31 @@ export class Daemon {
     return undefined
   }
 
-  /** Single-shot read of one session file under its area's fence: the pod's descent there, a link-free canonical area here. */
-  private async readSessionFile(
-    agentId: string,
-    file: { area: SessionFileArea; path: string; location: SessionFilesLocation },
-    cap: number
-  ): Promise<
-    | { ok: true; bytes: Buffer }
-    | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
-  > {
-    const podFs = this.workspaces.offDiskFsFor(agentId, file.location.scope)
-    if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
-    if (podFs) {
-      let resolved: string
-      try {
-        resolved = containedWorkspacePath(join(file.location.anchor, ...file.location.segments, file.area), file.path)
-      } catch (err) {
-        return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
-      }
-      let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
-      try {
-        read = await podFs.readFileBytes(resolved, cap)
-      } catch {
-        read = 'channel-lost'
-      }
-      if (read === 'channel-lost') return { ok: false, reason: 'sandboxed' }
-      if (!read) return { ok: false, reason: 'not-found' }
-      if ('tooLarge' in read)
-        return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
-      return { ok: true, bytes: read.bytes }
-    }
-    let resolved: string | null
-    try {
-      resolved = await canonicalWorkspacePath(realSessionFilesPath(file.location, file.area), file.path)
-    } catch (err) {
-      return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
-    }
-    if (!resolved) return { ok: false, reason: 'not-found' }
-    try {
-      return { ok: true, bytes: await readRegularFile(resolved, cap) }
-    } catch (err) {
-      if (err instanceof RegularFileError && err.reason === 'too-large') {
-        return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
-      }
-      return { ok: false, reason: 'not-found' }
-    }
-  }
-
-  /** Resolve + fence + single-shot read of a workspace-relative file for `shareFile` (agent-authored-attachments.md §4). */
-  private async readShareWorkspaceFile(
+  /** `shareFile`'s resolver and fence (agent-authored-attachments.md §4): a session file in its own area, else the checkout; on a pod the lexical fence plus the pod's descent, here a realpath-verified path. */
+  private async resolveSharePath(
     ctx: SessionContext,
-    rel: string,
-    cap: number
+    rel: string
   ): Promise<
-    | { ok: true; bytes: Buffer }
-    | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
+    { ok: true; podFs?: WorkspaceFs; path: string } | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' }
   > {
+    const refusal = (err: unknown) =>
+      ({ ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }) as const
     // A session file is read from its own area, the one fence root it may name (inbound-file-attachments.md §2.4).
     const file = await this.sessionFileOf(ctx, rel)
-    if (file) return await this.readSessionFile(ctx.agentId, file, cap)
+    if (file) {
+      const podFs = this.workspaces.offDiskFsFor(ctx.agentId, file.location.scope)
+      if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+      try {
+        if (podFs) {
+          const area = join(file.location.anchor, ...file.location.segments, file.area)
+          return { ok: true, podFs, path: containedWorkspacePath(area, file.path) }
+        }
+        const resolved = await canonicalWorkspacePath(realSessionFilesPath(file.location, file.area), file.path)
+        return resolved ? { ok: true, path: resolved } : { ok: false, reason: 'not-found' }
+      } catch (err) {
+        return refusal(err)
+      }
+    }
     const scope = createWorkspaceScope({
       workspaces: this.workspaces,
       agentOf: (id) => this.agents.get(id),
@@ -15165,21 +15166,34 @@ export class Daemon {
       (await scope.location(ctx.agentId, acpSessionId).catch(() => undefined)) ??
       (await scope.location(ctx.agentId).catch(() => undefined))
     if (!location) return { ok: false, reason: 'not-found' }
-
     // Pod arm (design §6), and an executor's: the daemon adds the lexical fence (with the `.git` rule); the shim's fd-anchored descent is the symlink guarantee.
     const podFs = this.workspaces.offDiskFsFor(ctx.agentId, { sessionKey: key })
-    if (podFs !== undefined) {
-      if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
-      let resolved: string
-      try {
-        resolved = containedWorkspacePath(location.root, rel)
-      } catch (err) {
-        return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
-      }
+    if (podFs === 'unbound') return { ok: false, reason: 'sandboxed' }
+    try {
+      if (podFs) return { ok: true, podFs, path: containedWorkspacePath(location.root, rel) }
+      const resolved = await canonicalWorkspacePath(location.root, rel)
+      return resolved ? { ok: true, path: resolved } : { ok: false, reason: 'not-found' }
+    } catch (err) {
+      return refusal(err)
+    }
+  }
+
+  /** Resolve + fence + single-shot read of a workspace-relative file for `shareFile` (agent-authored-attachments.md §4). */
+  private async readShareWorkspaceFile(
+    ctx: SessionContext,
+    rel: string,
+    cap: number
+  ): Promise<
+    | { ok: true; bytes: Buffer }
+    | { ok: false; reason: 'sandboxed' | 'not-found' | 'escape' | 'too-large'; detail?: string }
+  > {
+    const at = await this.resolveSharePath(ctx, rel)
+    if (!at.ok) return at
+    if (at.podFs) {
       // Refusals come back undefined, so anything THROWN is the channel: "sandbox unreachable" invites a retry where "missing" would not.
-      let read: Awaited<ReturnType<typeof podFs.readFileBytes>> | 'channel-lost'
+      let read: Awaited<ReturnType<WorkspaceFs['readFileBytes']>> | 'channel-lost'
       try {
-        read = await podFs.readFileBytes(resolved, cap)
+        read = await at.podFs.readFileBytes(at.path, cap)
       } catch {
         read = 'channel-lost'
       }
@@ -15189,23 +15203,164 @@ export class Daemon {
         return { ok: false, reason: 'too-large', detail: `${read.tooLarge} bytes > ${cap}-byte cap` }
       return { ok: true, bytes: read.bytes }
     }
-
-    let resolved: string | null
-    try {
-      resolved = await canonicalWorkspacePath(location.root, rel)
-    } catch (err) {
-      return { ok: false, reason: err instanceof WorkspaceViolationError ? 'escape' : 'not-found' }
-    }
-    if (!resolved) return { ok: false, reason: 'not-found' }
     // Single-shot (§4) from one descriptor: the cwd is runtime-writable, so a FIFO or a swapped-in symlink is refused, not read.
     try {
-      return { ok: true, bytes: await readRegularFile(resolved, cap) }
+      return { ok: true, bytes: await readRegularFile(at.path, cap) }
     } catch (err) {
       if (err instanceof RegularFileError && err.reason === 'too-large') {
         return { ok: false, reason: 'too-large', detail: `${err.size} bytes > ${cap}-byte cap` }
       }
       return { ok: false, reason: 'not-found' }
     }
+  }
+
+  /** The publish tool's view of a share path (artifacts.md §5.3): the same fence, then a walk that never follows a link. */
+  private async artifactSource(ctx: SessionContext, rel: string): Promise<ArtifactSourceResult> {
+    const at = await this.resolveSharePath(ctx, rel)
+    if (!at.ok) return at
+    const below = (sub: string): string => (sub === '' ? at.path : join(at.path, ...sub.split('/')))
+    const { podFs } = at
+    if (podFs) {
+      return {
+        ok: true,
+        tree: {
+          stat: (sub) => podFs.stat(below(sub)),
+          readdir: (sub) => podFs.readdir(below(sub)),
+          read: (sub, max) => podFs.readFileBytes(below(sub), max)
+        }
+      }
+    }
+    return {
+      ok: true,
+      tree: {
+        stat: (sub) => localWorkspaceFs.stat(below(sub)),
+        readdir: (sub) => localWorkspaceFs.readdir(below(sub)),
+        // Each file is re-verified under the resolved root before its descriptor read, so a link swapped in after the walk is refused.
+        read: async (sub, max) => {
+          const resolved = await canonicalWorkspacePath(at.path, sub).catch(() => null)
+          if (!resolved) return undefined
+          try {
+            return { bytes: await readRegularFile(resolved, max) }
+          } catch (err) {
+            return err instanceof RegularFileError && err.reason === 'too-large' ? { tooLarge: err.size! } : undefined
+          }
+        }
+      }
+    }
+  }
+
+  /** The artifact tools' seams (artifacts.md §7): CP signing over this daemon's socket, the share fence, the session files write path. */
+  private artifactPort(): ArtifactPort {
+    const client = (): CpClient => {
+      if (!this.cpClient) throw new Error('the control plane is not connected')
+      return this.cpClient
+    }
+    return {
+      served: () => this.cpClient?.supportsArtifacts?.() === true,
+      turn: (ctx) => this.artifactTurn(ctx),
+      begin: (req) => client().beginArtifactPublish(req, this.orgForAgent(req.agentId)),
+      complete: (req) => client().completeArtifactPublish(req, this.orgForAgent(req.agentId)),
+      fetch: (req) => client().fetchArtifact(req, this.orgForAgent(req.agentId)),
+      list: (req) => client().listArtifacts(req, this.orgForAgent(req.agentId)),
+      network: () => this.transferNetwork(),
+      maxFileBytes: () => Math.min(ARTIFACT_MAX_BYTES, this.fileTransfer?.maxBytes ?? ARTIFACT_MAX_BYTES),
+      normalizePath: async (ctx, path) => {
+        const file = await this.sessionFileOf(ctx, path)
+        return file ? sessionFileName(file.area, file.path) : path
+      },
+      source: (ctx, path) => this.artifactSource(ctx, path),
+      recordCard: (ctx, text) => this.recordArtifactCard(ctx, text),
+      writeOutputs: async (ctx, dirName, fill) => {
+        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        const row = await this.store.getSession(key).catch(() => undefined)
+        const at = this.sessionFilesTarget(ctx.agentId, key, row?.workspaceIsolation)
+        if (!at.ok) return at
+        try {
+          return await replaceOutputsDir(at.target, dirName, fill)
+        } catch (err) {
+          if (err instanceof ArtifactToolError) throw err
+          if (at.offDisk) return { ok: false, reason: 'sandboxed' }
+          return { ok: false, reason: 'write-failed', detail: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      put: (upload, bytes) =>
+        putObjectBytes({
+          bytes,
+          url: new URL(upload.url),
+          headers: upload.headers,
+          timeoutMs: ARTIFACT_TRANSFER_TIMEOUT_MS
+        }),
+      download: async (url, maxBytes) => {
+        const response = await fetch(url, {
+          redirect: 'error',
+          signal: AbortSignal.timeout(ARTIFACT_TRANSFER_TIMEOUT_MS)
+        })
+        if (!response.ok) {
+          await response.body?.cancel()
+          throw new Error(`HTTP ${response.status}`)
+        }
+        return await readBoundedBody(response, maxBytes, 'artifact file')
+      },
+      cards: new Set()
+    }
+  }
+
+  /** The session a tool call publishes from, its live turn's identity, and who started that turn (artifacts.md §6.1). */
+  private async artifactTurn(ctx: SessionContext): Promise<ArtifactTurn | undefined> {
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const live = [...this.pending.values()].find((turn) => turn.plan.sessionKey === key)?.outwardSessionId
+    const sessionId = live ?? (await this.store.getSession(key).catch(() => undefined))?.sessionId ?? undefined
+    if (!sessionId) return undefined
+    const entry = this.activeGateEntries.get(key)
+    const initiator = entry ? await this.artifactInitiator(ctx, entry.msg) : undefined
+    return { sessionId, turn: entry?.msg.msgId ?? 'idle', ...(initiator ? { initiator } : {}) }
+  }
+
+  /** A schedule or hook by its id, else the person the turn reads for; a chat member only on a bot the CP knows. */
+  private async artifactInitiator(ctx: SessionContext, msg: NormalizedMessage): Promise<ArtifactInitiator | undefined> {
+    let candidate: unknown
+    if (msg.source === 'cron') {
+      const cronId = msg.cronRun?.cronId ?? msg.roomOfCron
+      candidate = cronId ? { kind: 'cron', cronId } : undefined
+    } else if (msg.source === 'hook') {
+      const hookId = msg.sessionTriggerId?.startsWith('hook:') ? msg.sessionTriggerId.slice('hook:'.length) : undefined
+      candidate = hookId ? { kind: 'hook', hookId } : undefined
+    } else {
+      const asker = (await this.readAskersFor(ctx).catch(() => NOBODY)).people[0]
+      candidate =
+        asker?.kind === 'console'
+          ? { kind: 'console', userId: asker.userId }
+          : asker
+            ? { kind: 'chat', integrationId: asker.integrationId, memberId: asker.userId }
+            : undefined
+    }
+    const parsed = ArtifactInitiator.safeParse(candidate)
+    return parsed.success ? parsed.data : undefined
+  }
+
+  /** The card's row (artifacts.md §11.1): a console turn commits it before emitting it, any other turn records it in the transcript and posts nothing. */
+  private async recordArtifactCard(ctx: SessionContext, text: string): Promise<{ notice?: string }> {
+    const turn = this.webchatShareTurn(ctx)
+    if (turn) {
+      const { notice } = await publishWebchatAgentRow({ store: this.store, log: this.log }, turn, text, {
+        tool: 'publishArtifact',
+        subject: 'artifact card'
+      })
+      return notice ? { notice } : {}
+    }
+    await this.store.appendTranscript({
+      channel: transcriptChannelKey(ctx.channel, ctx.transportScope),
+      thread: ctx.deliveryThread,
+      admission: {
+        agentId: ctx.agentId,
+        sessionKey: sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+      },
+      ts: `local-${this.clock.now()}`,
+      sender: ctx.agentId,
+      kind: 'text',
+      text
+    })
+    return {}
   }
 
   /** The trusted coordinates a console-owned turn or a delegated task's page shares into; undefined for an IM

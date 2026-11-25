@@ -9,7 +9,7 @@ export type SharedFileKind =
 
 /** The type a shared document is labelled with, by extension. HTML, SVG and scripts stay opaque, as the
  *  console's workspace download labels them: a shared file is for saving, never for a browser to run. */
-const DOCUMENT_MIME_TYPES: Record<string, string> = {
+export const DOCUMENT_MIME_TYPES: Record<string, string> = {
   pdf: 'application/pdf',
   zip: 'application/zip',
   gz: 'application/gzip',

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CRON_RUN_SKIPPED_FEATURE, MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
@@ -591,6 +591,22 @@ describe('Daemon session lifecycle (#118)', () => {
           reason: 'escape'
         })
 
+        // The publish tool walks the same fenced area on the pod, and a fetch replaces one outputs directory there (artifacts.md §5.3, §7.1).
+        pod.dirs.add(`${outputs}/site`)
+        pod.files.set(`${outputs}/site/index.html`, '<p>hi</p>')
+        pod.files.set(`${outputs}/site/app.js`, 'x')
+        const artifacts = d.mcp.deps.artifacts
+        const source = await artifacts.source(ctx, 'files:outputs/site')
+        expect(await source.tree.stat('')).toBe('dir')
+        expect((await source.tree.readdir('')).sort()).toEqual(['app.js', 'index.html'])
+        const single = await artifacts.source(ctx, 'files:outputs/charts/a.png')
+        expect(await single.tree.read('', 1000)).toEqual({ bytes: png })
+        expect(await artifacts.source(ctx, 'files:outputs/../home/x')).toEqual({ ok: false, reason: 'escape' })
+        expect(
+          await artifacts.writeOutputs(ctx, 'report-0f8fad5b', (put: any) => put('img/a.svg', Buffer.from('<svg/>')))
+        ).toEqual({ ok: true, path: `${outputs}/report-0f8fad5b`, name: 'files:outputs/report-0f8fad5b' })
+        expect(String(pod.files.get(`${outputs}/report-0f8fad5b/img/a.svg`))).toBe('<svg/>')
+
         // No pod of the agent bound: both refuse rather than fall back to this member's own disk.
         bound = false
         expect(await d.mcp.deps.saveAttachment(ctx, 'other.pdf', Buffer.from('%PDF-2'))).toEqual({
@@ -598,6 +614,7 @@ describe('Daemon session lifecycle (#118)', () => {
           reason: 'sandboxed'
         })
         expect(await d.mcp.deps.readWorkspaceFile(ctx, 'out/chart.png')).toEqual({ ok: false, reason: 'sandboxed' })
+        expect(await artifacts.source(ctx, 'out')).toEqual({ ok: false, reason: 'sandboxed' })
       } finally {
         await daemon.stop()
       }
@@ -728,6 +745,43 @@ describe('Daemon session lifecycle (#118)', () => {
         }
       } finally {
         killFifoWriters()
+        await daemon.stop()
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'walks a local directory for publishArtifact under the share fence and refuses a link inside it',
+    async () => {
+      const root = scaffold()
+      const daemon = new Daemon({ root, hostFactory: () => quietHost() as never })
+      try {
+        await daemon.start()
+        const d = daemon as any
+        await vi.waitFor(() => expect(d.sessionRetentionSweepInFlight).toBe(false))
+        const site = join(root, 'agents', 'bot-a', 'workspace', 'site')
+        mkdirSync(join(site, 'css'), { recursive: true })
+        writeFileSync(join(site, 'index.html'), '<p>hi</p>')
+        writeFileSync(join(site, 'css', 'a.css'), 'p{}')
+        const ctx = {
+          agentId: 'bot-a',
+          platform: 'slack',
+          channel: 'C1',
+          thread: 'T1',
+          transportScope: TRANSPORT_SCOPE
+        }
+        const artifacts = d.mcp.deps.artifacts
+        const source = await artifacts.source(ctx, 'site')
+        expect(await source.tree.stat('')).toBe('dir')
+        expect((await source.tree.readdir('')).sort()).toEqual(['css', 'index.html'])
+        expect(await source.tree.read('css/a.css', 100)).toEqual({ bytes: Buffer.from('p{}') })
+        expect(await artifacts.source(ctx, '../outside')).toEqual({ ok: false, reason: 'escape' })
+        expect(await artifacts.source(ctx, '.git')).toEqual({ ok: false, reason: 'escape' })
+        // A link inside the directory is `other` to the walk, and a read through it is refused.
+        symlinkSync('/etc', join(site, 'etc'))
+        expect(await source.tree.stat('etc')).toBe('other')
+        expect(await source.tree.read('etc/hostname', 1000)).toBeUndefined()
+      } finally {
         await daemon.stop()
       }
     }
