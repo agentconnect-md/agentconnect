@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  caseDescriptions,
   needsAttention,
   pairedEffects,
   readAddons,
@@ -11,6 +12,7 @@ import {
   readThreadChatter,
   readWebchatAddressed,
   renderMarkdown,
+  singleTrialMisses,
   summarizeCells,
   type NightlyRun
 } from '../nightly/summary.js'
@@ -61,7 +63,7 @@ describe('nightly add-on targets', () => {
     const cells = summarizeCells(
       readAddons(
         promptfoo([
-          addonRow('memory-collab-handoff', 'daemon-core', 'passed', 1),
+          addonRow('memory-cross-session-recall', 'daemon-core', 'passed', 1),
           addonRow('core-simple-instruction', 'daemon-core', 'infra_error'),
           addonRow('core-simple-instruction', 'raw-acp', 'safety_failed')
         ])
@@ -73,9 +75,12 @@ describe('nightly add-on targets', () => {
 
   it('attaches a known cause so the cell does not raise an alert', () => {
     const [cell] = summarizeCells(
-      readAddons(promptfoo([addonRow('collab-delivery-reply', 'daemon-core', 'passed', 0)]))
+      readAddons(promptfoo([addonRow('core-simple-instruction', 'daemon-core', 'passed', 0)])),
+      {
+        'addons/core-simple-instruction/daemon-core': 'a cause already understood'
+      }
     )
-    expect(cell!.knownCause).toMatch(/collaboration routes/)
+    expect(cell!.knownCause).toBe('a cause already understood')
     expect(needsAttention(run([cell!]))).toBe(false)
   })
 })
@@ -173,15 +178,21 @@ describe('nightly report', () => {
       namedScores: { game: 0 },
       response: { metadata: { caseId: `relay-${index}` } }
     }))
-    const cells = summarizeCells([
-      ...readGames('relay', promptfoo(relay)),
-      ...readAddons(
-        promptfoo([
-          addonRow('collab-delivery-reply', 'daemon-core', 'passed', 0),
-          addonRow('memory-collab-handoff', 'memory-only', 'passed', 0)
-        ])
-      )
-    ])
+    const cells = summarizeCells(
+      [
+        ...readGames('relay', promptfoo(relay)),
+        ...readAddons(
+          promptfoo([
+            addonRow('core-simple-instruction', 'daemon-core', 'passed', 0),
+            addonRow('memory-cross-session-recall', 'memory-only', 'passed', 0)
+          ])
+        )
+      ],
+      {
+        'addons/core-simple-instruction/daemon-core': 'a cause already understood',
+        'addons/memory-cross-session-recall/memory-only': 'a cause already understood'
+      }
+    )
     const markdown = renderMarkdown(
       run(cells, [
         { suite: 'relay', results: true },
@@ -191,7 +202,7 @@ describe('nightly report', () => {
     expect(markdown).toContain('❌ relay: all 8 cases below target')
     expect(markdown).not.toContain('relay-3')
     expect(markdown).toMatch(
-      /\*Known, no alert\*\n❌ collab-delivery-reply · daemon-core 0\/1, memory-collab-handoff · memory-only 0\/1: /
+      /\*Known, no alert\*\n❌ core-simple-instruction · daemon-core 0\/1, memory-cross-session-recall · memory-only 0\/1: /
     )
     expect(markdown).toContain('❌ relay 0/8')
   })
@@ -227,6 +238,72 @@ describe('nightly report', () => {
       )
     )
     expect(pairedEffects(cells)).toEqual([{ caseId: 'memory-cross-session-recall', memory: 0.5 }])
+  })
+})
+
+describe('single-trial reruns', () => {
+  const probe = (verdicts: string[], rerun?: boolean) =>
+    readProbe('coordinator-probe', {
+      runs: verdicts.map((verdict) => ({ scenario: 'elsewhere-read-task', verdict }))
+    }).map((trial) => ({ ...trial, ...(rerun ? { rerun } : {}) }))
+
+  it('reruns only a single-trial cell whose one valid trial missed without a safety failure', () => {
+    const trials = [
+      ...probe(['DEGRADED']),
+      ...readProbe('coordinator-probe', {
+        runs: [
+          { scenario: 'ignore-peer', verdict: 'PASS' },
+          { scenario: 'greeting', verdict: 'UNAVAILABLE' },
+          { scenario: 'webchat-status', verdict: 'DEGRADED' },
+          { scenario: 'webchat-status', verdict: 'PASS' }
+        ]
+      }),
+      ...readGames('relay', promptfoo([{ success: false, gradingResult: { reason: 'product-invariant violation' } }]))
+    ]
+    expect(singleTrialMisses(trials)).toEqual(['elsewhere-read-task'])
+  })
+
+  it('reruns nothing when more than five cells of a suite missed', () => {
+    const relay = Array.from({ length: 6 }, (_, index) => ({
+      success: true,
+      namedScores: { game: 0 },
+      response: { metadata: { caseId: `relay-${index}` } }
+    }))
+    expect(singleTrialMisses(readGames('relay', promptfoo(relay)))).toEqual([])
+    expect(singleTrialMisses(readGames('relay', promptfoo(relay.slice(1))))).toHaveLength(5)
+  })
+
+  it('keeps a miss that passed every rerun out of the alert and lists it apart', () => {
+    const cells = summarizeCells([...probe(['DEGRADED']), ...probe(['PASS', 'PASS'], true)])
+    expect(cells[0]).toMatchObject({ mark: 'below', met: 2, valid: 3, reproduced: false })
+    const nightly = run(cells, [{ suite: 'coordinator-probe', results: true }])
+    expect(needsAttention(nightly)).toBe(false)
+    const markdown = renderMarkdown(nightly)
+    expect(markdown).toContain('*Needs a look*\nnone')
+    expect(markdown).toContain(
+      '*Did not reproduce, no alert*\n❌ coordinator-probe · elsewhere-read-task: 2/3, missed once and passed every rerun'
+    )
+  })
+
+  it('alerts when a rerun misses again or measured nothing', () => {
+    for (const reruns of [probe(['PASS', 'DEGRADED'], true), probe(['UNAVAILABLE', 'UNAVAILABLE'], true), []]) {
+      const cells = summarizeCells([...probe(['DEGRADED']), ...reruns])
+      expect(cells[0]!.reproduced).not.toBe(false)
+      expect(needsAttention(run(cells, [{ suite: 'coordinator-probe', results: true }]))).toBe(true)
+    }
+  })
+
+  it('maps game case ids to the descriptions promptfoo filters by', () => {
+    const document = promptfoo([
+      {
+        testCase: { description: 'Quota counting · each agent posts exactly 2' },
+        response: { metadata: { caseId: 'counting-quota-v2' } }
+      },
+      { testCase: {}, response: { metadata: { caseId: 'relay-clean-v1' } } }
+    ])
+    expect([...caseDescriptions(document)]).toEqual([
+      ['counting-quota-v2', 'Quota counting · each agent posts exactly 2']
+    ])
   })
 })
 

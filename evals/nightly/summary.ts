@@ -26,6 +26,8 @@ export interface Trial {
   safety?: boolean
   score?: number
   invalidReason?: string
+  /** A confirmation trial for a single-trial cell that missed. */
+  rerun?: boolean
 }
 
 export type Mark = 'on-target' | 'below' | 'safety' | 'no-valid'
@@ -41,18 +43,19 @@ export interface Cell {
   meanScore?: number
   mark: Mark
   knownCause?: string
+  /** Set when a missed single-trial cell was rerun: whether any valid rerun missed too (true when none was valid). */
+  reproduced?: boolean
   invalidReasons: string[]
 }
 
 /** Add-on cells whose target is 0: the treatment lacks the capability, so a pass means the control leaked. */
-const ADDON_CONTROLS = new Set(['memory-cross-session-recall/daemon-core', 'memory-collab-handoff/daemon-core'])
+const ADDON_CONTROLS = new Set(['memory-cross-session-recall/daemon-core'])
 
-/** Causes already understood; a cell below target for one of these does not raise an alert. */
-export const KNOWN_CAUSES: Record<string, string> = {
-  'addons/collab-delivery-reply/daemon-core':
-    'the add-on runner loads no collaboration routes, so callAgent is refused',
-  'addons/memory-collab-handoff/memory-only': 'the add-on runner loads no collaboration routes, so callAgent is refused'
-}
+/** Causes already understood, by cell key; a cell below target for one of these does not raise an alert. */
+export const KNOWN_CAUSES: Record<string, string> = {}
+
+/** Confirmation trials a missed single-trial cell gets before it may raise an alert. */
+export const RERUNS = 2
 
 const ADDON_VALID = new Set(['passed', 'agent_failed', 'safety_failed'])
 
@@ -184,8 +187,28 @@ export function cellKey(cell: Pick<Cell, 'suite' | 'caseId' | 'treatment'>): str
   return [cell.suite, cell.caseId, cell.treatment].filter(Boolean).join('/')
 }
 
+/** Case ids of single-trial cells that missed without a safety failure, rerun before alerting; a suite with more is failing as a whole. */
+export function singleTrialMisses(trials: readonly Trial[]): string[] {
+  const groups = new Map<string, Trial[]>()
+  for (const trial of trials) groups.set(cellKey(trial), [...(groups.get(cellKey(trial)) ?? []), trial])
+  const missed = [...groups.values()].flatMap((group) =>
+    group.length === 1 && group[0]!.valid && !group[0]!.met && !group[0]!.safety ? [group[0]!.caseId] : []
+  )
+  return missed.length > COLLAPSE_AT ? [] : missed
+}
+
+/** Each promptfoo row's case id mapped to its test description, which `--filter-pattern` selects by. */
+export function caseDescriptions(document: unknown): Map<string, string> {
+  return new Map(
+    promptfooRows(document).flatMap((row, index) => {
+      const description = text(record(row.testCase).description)
+      return description ? [[rowCaseId(row, index), description] as const] : []
+    })
+  )
+}
+
 /** A cell is on target only if every valid trial met it. */
-export function summarizeCells(trials: readonly Trial[]): Cell[] {
+export function summarizeCells(trials: readonly Trial[], knownCauses: Record<string, string> = KNOWN_CAUSES): Cell[] {
   const groups = new Map<string, Trial[]>()
   for (const trial of trials) groups.set(cellKey(trial), [...(groups.get(cellKey(trial)) ?? []), trial])
   return [...groups.entries()].map(([key, group]) => {
@@ -195,6 +218,8 @@ export function summarizeCells(trials: readonly Trial[]): Cell[] {
     const scores = valid.flatMap((trial) => (trial.score !== undefined ? [trial.score] : []))
     const mark: Mark =
       safety > 0 ? 'safety' : valid.length === 0 ? 'no-valid' : met === valid.length ? 'on-target' : 'below'
+    const reruns = group.filter((trial) => trial.rerun && trial.valid)
+    const rerun = group.some((trial) => trial.rerun)
     return {
       suite: group[0]!.suite,
       caseId: group[0]!.caseId,
@@ -205,7 +230,8 @@ export function summarizeCells(trials: readonly Trial[]): Cell[] {
       safety,
       ...(scores.length > 0 ? { meanScore: scores.reduce((sum, value) => sum + value, 0) / scores.length } : {}),
       mark,
-      ...(mark === 'below' && KNOWN_CAUSES[key] ? { knownCause: KNOWN_CAUSES[key] } : {}),
+      ...(mark === 'below' && knownCauses[key] ? { knownCause: knownCauses[key] } : {}),
+      ...(rerun ? { reproduced: reruns.length === 0 || reruns.some((trial) => !trial.met) } : {}),
       invalidReasons: [...new Set(group.flatMap((trial) => (trial.invalidReason ? [trial.invalidReason] : [])))]
     }
   })
@@ -231,14 +257,18 @@ export interface NightlyRun {
   cells: Cell[]
 }
 
+/** A below-target cell with no known cause whose miss, if rerun, came back. */
+function alerting(cell: Cell): boolean {
+  return (
+    cell.mark === 'safety' ||
+    cell.mark === 'no-valid' ||
+    (cell.mark === 'below' && !cell.knownCause && cell.reproduced !== false)
+  )
+}
+
 /** Someone should look: a suite measured nothing, a cell has no valid trial, or a cell failed for an unknown reason. */
 export function needsAttention(run: NightlyRun): boolean {
-  return (
-    run.suites.some((suite) => !suite.results || suite.apparatusFailed) ||
-    run.cells.some(
-      (cell) => cell.mark === 'safety' || cell.mark === 'no-valid' || (cell.mark === 'below' && !cell.knownCause)
-    )
-  )
+  return run.suites.some((suite) => !suite.results || suite.apparatusFailed) || run.cells.some(alerting)
 }
 
 const MARK: Record<Mark, string> = { 'on-target': '✅', below: '❌', safety: '🛑', 'no-valid': '⚠️' }
@@ -296,7 +326,7 @@ export function renderMarkdown(run: NightlyRun): string {
   ]
   for (const suite of run.suites) {
     const cells = run.cells.filter((cell) => cell.suite === suite.suite)
-    const flagged = cells.filter((cell) => cell.mark !== 'on-target' && !cell.knownCause)
+    const flagged = cells.filter(alerting)
     if (flagged.length > COLLAPSE_AT && flagged.every((cell) => cell.mark === 'below')) {
       const scope = flagged.length === cells.length ? `all ${cells.length}` : `${flagged.length} of ${cells.length}`
       attention.push(`❌ ${suite.suite}: ${scope} cases below target`)
@@ -313,6 +343,16 @@ export function renderMarkdown(run: NightlyRun): string {
   if (known.size > 0) {
     lines.push('', '*Known, no alert*')
     for (const [cause, cells] of known) lines.push(`❌ ${cells.join(', ')}: ${cause}`)
+  }
+
+  const passedReruns = run.cells.filter(
+    (cell) => cell.mark === 'below' && !cell.knownCause && cell.reproduced === false
+  )
+  if (passedReruns.length > 0) {
+    lines.push('', '*Did not reproduce, no alert*')
+    for (const cell of passedReruns) {
+      lines.push(`❌ ${cell.suite} · ${cellName(cell)}: ${actual(cell)}, missed once and passed every rerun`)
+    }
   }
 
   lines.push('', '*Suites*')
