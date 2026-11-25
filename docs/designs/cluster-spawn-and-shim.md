@@ -364,7 +364,7 @@ configured `sandboxwarmpools` and `sandboxtemplates` but still never reads or wr
 The pod template's `runtimeClassName` follows the template in the same resume patch, in both
 directions: a Sandbox whose class differs from the template's is moved onto it (added, replaced,
 or removed), and one that already matches is not touched. A template without a class therefore
-leaves every Sandbox exactly as it was, while setting the class moves agents onto an isolating
+leaves every Sandbox that also has none exactly as it was, while setting the class moves agents onto an isolating
 runtime such as gVisor at their next wake, and clearing it moves them back. A present class is
 guarded with a JSON Patch `test`; an absent one cannot be, so an add rests on the resume's other
 guards. New sandboxes and warm spares take the class from the template directly.
