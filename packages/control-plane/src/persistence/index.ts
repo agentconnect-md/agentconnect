@@ -75,7 +75,13 @@ export {
   PgIntegrationRepo,
   PgIntegrationChannelRepo
 } from './repositories/integration.repo.js'
-export { PgMcpProviderRepo, PgMcpProviderSecretStore, PgMcpGrantRepo } from './repositories/mcp.repo.js'
+export {
+  PgMcpProviderRepo,
+  PgMcpProviderSecretStore,
+  PgMcpGrantRepo,
+  PgAgentMcpToolPolicyRepo,
+  PgMcpToolCatalogRepo
+} from './repositories/mcp.repo.js'
 export {
   PgMcpProviderOauthRepo,
   PgMcpProviderOauthSecretStore,

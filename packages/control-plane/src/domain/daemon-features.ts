@@ -22,6 +22,7 @@ import {
   CODE_HOST_PROVIDERS,
   HOOK_DECISION_ROUTING_V1_FEATURE,
   DECISION_CHAIN_V1_FEATURE,
+  MCP_AGENT_DEFS_V1_FEATURE,
   WORKSPACE_GIT_V1_FEATURE,
   isSelfManagedGitlabHost,
   type AgentSpec
@@ -126,12 +127,32 @@ export function encodeSpecWorkspaceForPeer<S extends Pick<AgentSpec, 'workspace'
   return { ...spec, workspace: legacy }
 }
 
-/** Every per-peer AgentSpec encoding: hook routings only to a peer that hosts them, each only where its provider is read, then the workspace arm (§8). */
+/** CP-internal mark of the MCP providers an agent is restricted on; a symbol key, so it is never serialized onto the wire. */
+export const RESTRICTED_MCP_SERVERS: unique symbol = Symbol('restrictedMcpServers')
+
+/** A spec that may carry {@link RESTRICTED_MCP_SERVERS}. */
+export type RestrictableSpec = { [RESTRICTED_MCP_SERVERS]?: readonly string[]; mcpServers?: string[] }
+
+/** Mark the providers this agent is restricted on, so a peer that cannot layer agent definitions never attaches the shared one (mcp-tool-permissions.md §8). */
+export function withRestrictedMcpServers<S extends object>(spec: S, names: readonly string[]): S {
+  return names.length === 0 ? spec : { ...spec, [RESTRICTED_MCP_SERVERS]: [...names] }
+}
+
+/** Drop the restricted providers from the enable-list a peer without `mcp-agent-defs-v1` receives. */
+function encodeMcpServersForPeer<S>(spec: S, advertisedFeatures: readonly string[] | undefined): S {
+  const restricted = (spec as RestrictableSpec)[RESTRICTED_MCP_SERVERS]
+  const names = (spec as RestrictableSpec).mcpServers
+  if (!restricted?.length || !names || advertises(advertisedFeatures, [MCP_AGENT_DEFS_V1_FEATURE])) return spec
+  return { ...spec, mcpServers: names.filter((name) => !restricted.includes(name)) }
+}
+
+/** Every per-peer AgentSpec encoding: restricted MCP providers only where agent definitions are read, hook routings only to a peer that hosts them, then the workspace arm (§8). */
 export function encodeAgentSpecForPeer<S extends Pick<AgentSpec, 'workspace' | 'hookRoutings'>>(
   spec: S,
   advertisedFeatures: readonly string[] | undefined,
   codeHosts: CodeHostProviderRegistry = codeHostProviders
 ): S {
+  spec = encodeMcpServersForPeer(spec, advertisedFeatures)
   if (spec.hookRoutings !== undefined && !advertises(advertisedFeatures, [HOOK_DECISION_ROUTING_V1_FEATURE])) {
     const { hookRoutings: _stripped, ...rest } = spec
     spec = rest as S

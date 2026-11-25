@@ -1156,6 +1156,8 @@ model Agent {
   followUpWatches       FollowUpWatch[]
   capabilityRequests    CapabilityRequest[]
   researchedRecords     OrganizationRecord[] @relation("OrganizationRecordResearch")
+  mcpToolPolicies       AgentMcpToolPolicy[]
+  mcpGrants             McpGrant[]
 
   @@unique([orgId, name]) // slug is unique within an org
   // Referenced by the composite assignment FK: a binding cannot name an agent in
@@ -4157,6 +4159,9 @@ model McpProvider {
   oauth     McpProviderOauth?
   grants    McpGrant[]
 
+  toolPolicies AgentMcpToolPolicy[]
+  toolCatalog  McpToolCatalog?
+
   @@unique([orgId, name])
   @@index([orgId])
   @@map("mcp_provider")
@@ -4176,23 +4181,58 @@ model McpProviderSecret {
   @@map("mcp_provider_secret")
 }
 
-// A proxy grant: the bearer key the daemon injects into the agent and the relay
-// validates. v1 = one active grant per provider (shared identity). The CP re-pushes
-// the plaintext key to daemons on every reconcile, so the persisted value must be
-// recoverable through SecretCipher. `none` stores plaintext; an encrypting provider
-// stores ciphertext. The key remains store-only and never enters a DTO; the relay
-// receives only sha256(key) via rc/mcp-assign.
+// A proxy grant: a SecretCipher-sealed bearer key daemons receive in plaintext and relays only as sha256; never in a DTO.
 model McpGrant {
   id            String   @id @default(cuid())
   mcpProviderId String   @db.Uuid
   key           String   @unique // bearer grant key in stored SecretCipher form; store-only
   status        String   @default("active") // active | revoked
+  // Null is the organization-shared grant; set, the grant of one restricted (agent, provider) pair (mcp-tool-permissions.md §5.1).
+  agentId       String?  @db.Uuid
+  custody       String? // daemon | runtime for an agent grant, never changed; null for the shared grant (§5.6)
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
 
   provider McpProvider @relation(fields: [mcpProviderId], references: [id], onDelete: Cascade)
+  agent    Agent?      @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([mcpProviderId])
+  @@index([mcpProviderId, agentId])
+  @@index([agentId])
   @@map("mcp_grant")
+}
+
+// One agent's per-tool decisions for one provider (mcp-tool-permissions.md §5.1); no row means Full access.
+model AgentMcpToolPolicy {
+  agentId          String    @db.Uuid
+  mcpProviderId    String    @db.Uuid
+  groups           Json      @db.JsonB // { readOnly, write, other: 'allow' | 'approval' | 'ask' | 'block' }
+  overrides        Json      @default("{}") @db.JsonB // toolName → decision, ahead of the group
+  // The expanded decision table, computed on save (§5.2); a name in none of the lists is Blocked.
+  allowTools       String[]  @default([])
+  approvalTools    String[]  @default([])
+  askTools         String[]  @default([])
+  catalogFetchedAt DateTime? @db.Timestamptz(6) // the catalog snapshot the expansion used
+  updatedByUserId  String?
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+
+  agent    Agent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  provider McpProvider @relation(fields: [mcpProviderId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, mcpProviderId])
+  @@index([mcpProviderId])
+  @@map("agent_mcp_tool_policy")
+}
+
+// One provider's tool catalog snapshot, fetched through a relay (mcp-tool-permissions.md §4); metadata, not content.
+model McpToolCatalog {
+  mcpProviderId String   @id @db.Uuid
+  tools         Json     @db.JsonB // McpCatalogTool[]
+  fetchedAt     DateTime @db.Timestamptz(6)
+  failure       String? // closed reason code; never a host or a secret
+
+  provider McpProvider @relation(fields: [mcpProviderId], references: [id], onDelete: Cascade)
+
+  @@map("mcp_tool_catalog")
 }
 
 // The CP's OAuth grant for one `auth: oauth2` provider (docs/designs/mcp-provider-oauth.md).

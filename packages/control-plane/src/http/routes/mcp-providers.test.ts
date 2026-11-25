@@ -20,11 +20,22 @@ const provider: McpProviderRecord = {
   updatedAt: new Date()
 }
 
+/** The agent-grant half of the port, unused by the shared-grant rotation under test. */
+const noAgentGrants = {
+  mintForAgent: async () => {
+    throw new Error('not used')
+  },
+  activeForAgent: async () => [],
+  activeRestricted: async () => [],
+  activeOfAgent: async () => []
+} satisfies Partial<McpGrantRepo>
+
 /** In-memory grant repo recording revoke calls; mintFor yields a fresh active key. */
 function fakeGrants(active: McpGrantRecord[]) {
   const revoked: string[] = []
   let minted = 0
   const repo: McpGrantRepo = {
+    ...noAgentGrants,
     activeForProvider: async () => active,
     mintFor: async (mcpProviderId) => ({
       id: `new-${++minted}`,
@@ -110,6 +121,7 @@ describe('rotateProviderGrant', () => {
     ])
     const yieldTick = () => new Promise((r) => setTimeout(r, 0)) // force the two calls to interleave if unguarded
     const repo: McpGrantRepo = {
+      ...noAgentGrants,
       activeForProvider: async () => {
         await yieldTick()
         return [...active.values()]
@@ -154,6 +166,7 @@ describe('rotateProviderGrant', () => {
     const yieldTick = () => new Promise((r) => setTimeout(r, 0))
     let published = '' // what the relay would currently accept (last rc/mcp-assign wins)
     const repo: McpGrantRepo = {
+      ...noAgentGrants,
       activeForProvider: async () => (await yieldTick(), [...active.values()]),
       mintFor: async (mcpProviderId) => {
         await yieldTick()

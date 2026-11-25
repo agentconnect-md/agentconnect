@@ -42,6 +42,8 @@ import {
   PgExternalMemoryGrantRepo,
   PgMcpProviderRepo,
   PgMcpGrantRepo,
+  PgAgentMcpToolPolicyRepo,
+  PgMcpToolCatalogRepo,
   PgDutyGroupRepo,
   PgHookSecretStore
 } from '../../src/persistence/index.js'
@@ -221,7 +223,9 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     externalMemoryConnectionSecret: new PgExternalMemoryConnectionSecretStore(prisma, cipher),
     externalMemoryGrant: new PgExternalMemoryGrantRepo(prisma, cipher),
     mcpProvider: new PgMcpProviderRepo(prisma),
-    mcpGrant: new PgMcpGrantRepo(prisma, cipher)
+    mcpGrant: new PgMcpGrantRepo(prisma, cipher),
+    agentMcpToolPolicy: new PgAgentMcpToolPolicyRepo(prisma),
+    mcpToolCatalog: new PgMcpToolCatalogRepo(prisma)
   }
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: TEST_API_KEY_PEPPER })
@@ -316,7 +320,13 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
         REASSIGN_GRACE_SEC: 60,
         ACK_TIMEOUT_MS: opts.ackTimeoutMs ?? 5000
       },
-      mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster: { entries: async () => relays } },
+      mcp: {
+        providers: repos.mcpProvider,
+        grants: repos.mcpGrant,
+        relayRoster: { entries: async () => relays },
+        policies: repos.agentMcpToolPolicy,
+        catalogs: repos.mcpToolCatalog
+      },
       memory: {
         connections: repos.externalMemoryConnection,
         installations: repos.memoryPluginInstallation,

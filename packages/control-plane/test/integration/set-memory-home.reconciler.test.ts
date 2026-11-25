@@ -38,6 +38,9 @@ class ControlSpy {
   async agentUpsert(daemonId: string, value: AgentUpsert): Promise<void> {
     this.upserts.push({ daemonId, agentId: value.agentId, memory: (value.spec as { memory?: unknown }).memory })
   }
+  daemonFeatures(_daemonId: string): readonly string[] | undefined {
+    return undefined
+  }
   async mcpServerUpsert(_daemonId: string, _spec: McpServerSpec): Promise<void> {}
   async mcpServerRemove(_daemonId: string, _orgId: string, _name: string): Promise<void> {}
 }

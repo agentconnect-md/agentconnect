@@ -63,10 +63,13 @@ import {
   type PlacementTarget
 } from '../domain/placement.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
+import { withRestrictedMcpServers } from '../domain/daemon-features.js'
 import { convergeAgentRouting } from './agentRouting.js'
 import { cronToUpsert, integrationToSpec, httpIntegrationToSpec, type ChatAuthoritySource } from './placement.js'
 import {
+  MCP_DEFS_ANY_PEER,
   mcpDefsForAgents,
+  mcpDefsForPeer,
   memoryDefsForAgents,
   type McpDefinitionDeps,
   type MemoryDefinitionDeps
@@ -185,6 +188,8 @@ interface MoveBundle extends Pick<DutyAgentBundle, 'mcpServers' | 'memoryConnect
   computers: string[]
   /** The agent's own GitHub App bot, pinned so activation ships what a later upsert at this revision would. */
   gitCommitIdentity?: GitCommitIdentity
+  /** The MCP providers the agent is restricted on, pinned so an older target never attaches their shared definition. */
+  mcpRestricted: string[]
 }
 
 interface ActivationSnapshot {
@@ -912,7 +917,8 @@ export class AgentMoveService {
     const log = { warn: (obj: object, msg: string) => this.deps.log?.warn(obj, msg) }
     try {
       const [mcpServers, memoryConnections] = await Promise.all([
-        mcpDefsForAgents([agent], this.deps.mcp, log, { agentId: agent.id }),
+        // Projected for any peer; each send narrows it to the daemon it reaches.
+        mcpDefsForAgents([agent], this.deps.mcp, MCP_DEFS_ANY_PEER, log, { agentId: agent.id }),
         memoryDefsForAgents([agent], this.deps.memory, log, { agentId: agent.id })
       ])
       return { mcpServers, memoryConnections }
@@ -938,6 +944,7 @@ export class AgentMoveService {
       apiGates,
       computers,
       gitCommitIdentity,
+      mcpRestricted,
       registries
     ] = await Promise.all([
       this.deps.integrations.listForAgent(agent.id),
@@ -953,6 +960,7 @@ export class AgentMoveService {
       this.deps.specs.apiGatesOf(agent),
       this.deps.specs.computersOf(agent),
       this.deps.specs.gitCommitIdentityOf(agent),
+      this.deps.specs.mcpRestrictedOf(agent),
       this.registryDefinitions(agent)
     ])
     const specs = await Promise.all(
@@ -1013,6 +1021,7 @@ export class AgentMoveService {
       apiGates,
       computers,
       ...(gitCommitIdentity ? { gitCommitIdentity } : {}),
+      mcpRestricted,
       ...registries
     }
   }
@@ -1023,24 +1032,27 @@ export class AgentMoveService {
       // project() (not assemble()): the snapshot pinned the secrets, skills, and
       // resolved organization environment into the bundle so the activation
       // fingerprint compares stable inputs.
-      spec: {
-        ...this.deps.specs.project(
-          agent,
-          bundle.secrets,
-          bundle.skills,
-          bundle.managedSkills,
-          bundle.organizationEnvironment,
-          bundle.additionalRepos,
-          bundle.gitlabHook,
-          false,
-          bundle.hookRoutings,
-          bundle.additionalInstallations,
-          bundle.apiGates,
-          bundle.computers,
-          bundle.gitCommitIdentity
-        ),
-        liveSecrets: bundle.liveSecrets
-      },
+      spec: withRestrictedMcpServers(
+        {
+          ...this.deps.specs.project(
+            agent,
+            bundle.secrets,
+            bundle.skills,
+            bundle.managedSkills,
+            bundle.organizationEnvironment,
+            bundle.additionalRepos,
+            bundle.gitlabHook,
+            false,
+            bundle.hookRoutings,
+            bundle.additionalInstallations,
+            bundle.apiGates,
+            bundle.computers,
+            bundle.gitCommitIdentity
+          ),
+          liveSecrets: bundle.liveSecrets
+        },
+        bundle.mcpRestricted
+      ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons
     }
@@ -1060,6 +1072,7 @@ export class AgentMoveService {
       bundle,
       fingerprint: JSON.stringify({
         ...this.activationDefinition(agent, bundle),
+        mcpRestricted: bundle.mcpRestricted,
         mcpServers: bundle.mcpServers,
         memoryConnections: bundle.memoryConnections
       })
@@ -1198,7 +1211,8 @@ export class AgentMoveService {
       return this.failClosedOwnership(agent.id, daemonId, agent.orgId)
     }
     try {
-      for (const spec of bundle.mcpServers) await this.deps.control.mcpServerUpsert(daemonId, spec)
+      for (const spec of mcpDefsForPeer(bundle.mcpServers, this.deps.control.daemonFeatures(daemonId)))
+        await this.deps.control.mcpServerUpsert(daemonId, spec)
       for (const spec of bundle.memoryConnections) await this.deps.control.memoryConnectionUpsert(daemonId, spec)
     } catch {
       // A failed send may contain the raw secret or grant in its exception; report only the operation.

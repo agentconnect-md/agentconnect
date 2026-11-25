@@ -1267,6 +1267,54 @@ export const McpProviderCreatedDto = McpProviderDto.extend({
   grantKey: z.string()
 })
 
+/** One per-tool decision (mcp-tool-permissions.md §3.2). */
+const McpToolDecisionEnum = z.enum(['allow', 'approval', 'ask', 'block'])
+const McpToolGroupsBody = z.object({
+  readOnly: McpToolDecisionEnum,
+  write: McpToolDecisionEnum,
+  other: McpToolDecisionEnum
+})
+
+/** `PUT /agents/:agentId/mcp-tool-policies/:providerId` — a decision per group plus per-tool overrides; the CP expands the table on save. */
+export const SaveAgentMcpToolPolicyBody = z
+  .object({
+    groups: McpToolGroupsBody,
+    overrides: z
+      .record(z.string().min(1).max(256), McpToolDecisionEnum)
+      .default({})
+      .refine((overrides) => Object.keys(overrides).length <= 1000, { message: 'at most 1000 overrides' })
+  })
+  .strict()
+
+/** One agent's policy for one provider: the saved decisions, the expanded table, and drift against the current catalog. */
+export const AgentMcpToolPolicyDto = z.object({
+  providerId: z.string(),
+  providerName: z.string(),
+  groups: McpToolGroupsBody,
+  overrides: z.record(z.string(), McpToolDecisionEnum),
+  allowTools: z.array(z.string()),
+  approvalTools: z.array(z.string()),
+  askTools: z.array(z.string()),
+  catalogFetchedAt: z.string().nullable(),
+  updatedBy: z.string().nullable(),
+  updatedAt: z.string(),
+  // Null without a catalog snapshot; otherwise what a re-save would change, never applied by itself (§5.3).
+  drift: z
+    .object({ newTools: z.array(z.string()), changedTools: z.array(z.string()), missingTools: z.array(z.string()) })
+    .nullable()
+})
+
+/** Every policy of an agent, plus the peers that cannot enforce one yet (§8). */
+export const AgentMcpToolPoliciesDto = z.object({
+  policies: z.array(AgentMcpToolPolicyDto),
+  compatibility: z.object({
+    // Daemons serving the agent without agent definitions: a restricted provider is not attached there.
+    daemonsWithoutAgentDefinitions: z.array(z.string()),
+    // Connected relays without tool policies: a restricted agent's calls through them are refused.
+    relaysWithoutToolPolicies: z.number().int().nonnegative()
+  })
+})
+
 /** `POST /mcp-providers/:id/oauth/start` — begin the authorization funnel. Supplying a
  *  `clientId` selects pre-registration over dynamic registration for this provider. */
 export const StartMcpProviderOauthBody = z

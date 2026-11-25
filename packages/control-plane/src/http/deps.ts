@@ -40,6 +40,8 @@ import type {
   DutyGroupRepo,
   McpProviderSecretStore,
   McpGrantRepo,
+  AgentMcpToolPolicyRepo,
+  McpToolCatalogRepo,
   McpProviderRecord,
   McpProviderOauthRepo,
   McpProviderOauthSecretStore,
@@ -289,6 +291,10 @@ export interface HttpDeps {
     mcpProviderSecret: McpProviderSecretStore
     /** Plaintext bearer grant keys for MCP providers (store-only, echoed once on create). */
     mcpGrant: McpGrantRepo
+    /** Per-agent MCP tool policies (mcp-tool-permissions.md §5.1). */
+    agentMcpToolPolicy: AgentMcpToolPolicyRepo
+    /** Provider tool catalog snapshots (§4). */
+    mcpToolCatalog: McpToolCatalogRepo
     /** The CP's OAuth grant per `auth: 'oauth2'` provider — non-secret state, the refresh
      *  lease, and every transaction that writes a sealed pair atomically with its version. */
     mcpProviderOauth: McpProviderOauthRepo

@@ -6,6 +6,7 @@
 import { isFrame, type DutyAgentBundle } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import { encodeAgentSpecForPeer } from '../../domain/daemon-features.js'
+import { mcpDefsForPeer } from '../../orchestrator/agentDefinitions.js'
 import { encodeIntegrationSpecForPeer, integrationDeliverableToPeer } from '../../domain/decision-trigger-features.js'
 import type { DaemonWsDeps } from '../deps.js'
 import { frameOrgId } from './frame-org.js'
@@ -54,6 +55,7 @@ export const handleDutyFetch: Handler = async (frame, conn, deps) => {
     bundle: {
       ...bundle,
       spec: encodeAgentSpecForPeer(bundle.spec, features),
+      mcpServers: mcpDefsForPeer(bundle.mcpServers, features),
       integrations: bundle.integrations
         .filter((i) => integrationDeliverableToPeer(i, features))
         .map((i) => encodeIntegrationSpecForPeer(i, features))

@@ -6,6 +6,9 @@ import {
   currentMcpGrant,
   mcpProxyDef,
   mcpRcAssign,
+  mcpRcAssignFor,
+  mcpBinding,
+  mcpAgentDef,
   blockedUpstreamUrl,
   relayHttpOrigin
 } from './mcpProvider.js'
@@ -154,5 +157,69 @@ describe('mcpRcAssign', () => {
     const blob = JSON.stringify(assign)
     expect(blob).not.toContain('oct_one')
     expect(blob).not.toContain('oct_two')
+  })
+})
+
+describe('mcpRcAssignFor — one binding shaped per relay (mcp-tool-permissions.md §6.1, §8)', () => {
+  const upstream = [{ name: 'Authorization', value: 'Bearer UPSTREAM_SECRET' }]
+  const readOnly = { allow: ['read'], approval: [], ask: [] }
+  const binding = mcpBinding(
+    provider,
+    upstream,
+    ['oct_shared'],
+    [
+      { key: 'oct_agent_a', policy: readOnly },
+      { key: 'oct_agent_b', policy: { allow: ['read'], approval: [], ask: [] } },
+      { key: 'oct_agent_c', policy: { allow: ['read', 'write'], approval: [], ask: [] } }
+    ]
+  )
+
+  it('gives a relay advertising mcp-tool-policy-v1 the restricted grants over deduplicated tables', () => {
+    const assign = mcpRcAssignFor(binding, ['mcp-tool-policy-v1'])
+    expect(() => RcMcpAssign.parse(assign)).not.toThrow()
+    expect(assign.grantKeyHashes).toEqual([grantKeyHash('oct_shared')])
+    expect(assign.toolPolicies).toEqual([readOnly, { allow: ['read', 'write'], approval: [], ask: [] }])
+    expect(assign.restrictedGrants).toEqual([
+      { grantKeyHash: grantKeyHash('oct_agent_a'), policy: 0 },
+      { grantKeyHash: grantKeyHash('oct_agent_b'), policy: 0 },
+      { grantKeyHash: grantKeyHash('oct_agent_c'), policy: 1 }
+    ])
+    expect(JSON.stringify(assign)).not.toContain('oct_agent')
+  })
+
+  it('gives a relay without it no restricted grant at all, so their calls are refused there', () => {
+    for (const features of [undefined, [], ['hook-decision-routing-v1']]) {
+      const assign = mcpRcAssignFor(binding, features)
+      expect(assign).toEqual(mcpRcAssign(provider, upstream, ['oct_shared']))
+      expect(assign).not.toHaveProperty('restrictedGrants')
+    }
+  })
+
+  it('sends the unrestricted frame unchanged when there is no restricted grant', () => {
+    expect(mcpRcAssignFor(mcpBinding(provider, upstream, ['oct_shared']), ['mcp-tool-policy-v1'])).toEqual(
+      mcpRcAssign(provider, upstream, ['oct_shared'])
+    )
+  })
+})
+
+describe('mcpAgentDef', () => {
+  it('layers the agent’s own grant and decision table over the shared definition’s shape', () => {
+    const def = mcpAgentDef(
+      provider,
+      { key: 'oct_agent', createdAt: new Date(5_000), custody: 'runtime' },
+      'https://relay.example.test',
+      'agent-1',
+      { allowTools: ['read'], approvalTools: ['write'], askTools: [] },
+      [{ name: 'read' }, { name: 'write' }]
+    )
+    expect(() => McpServerSpec.parse(def)).not.toThrow()
+    expect(def).toMatchObject({
+      name: 'linear',
+      agentId: 'agent-1',
+      issuedAt: 5_000,
+      url: `https://relay.example.test/mcp/${provider.id}`,
+      headers: [{ name: 'Authorization', value: 'Bearer oct_agent' }],
+      toolDecisions: { allow: ['read'], approval: [], ask: [], block: ['write'] }
+    })
   })
 })

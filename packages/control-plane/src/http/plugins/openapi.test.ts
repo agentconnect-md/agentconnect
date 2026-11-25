@@ -422,7 +422,9 @@ describe('openapi plane', () => {
           'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/projects',
           'POST /api/v1/orgs/:orgId/azure-devops/connect/:flow/verify',
           'POST /api/v1/orgs/:orgId/agents/:id/github-app/owners/authorize',
-          'POST /api/v1/orgs/:orgId/agents/:id/github-app/owners'
+          'POST /api/v1/orgs/:orgId/agents/:id/github-app/owners',
+          'PUT /api/v1/orgs/:orgId/agents/:agentId/mcp-tool-policies/:providerId',
+          'DELETE /api/v1/orgs/:orgId/agents/:agentId/mcp-tool-policies/:providerId'
         ].sort()
       )
       const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>

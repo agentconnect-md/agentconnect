@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { RelayControlSender } from './relayControl.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
+import { MCP_TOOL_POLICY_V1_FEATURE } from '@agentconnect.md/protocol'
+import { grantKeyHash, mcpBinding } from './mcpProvider.js'
 
 function ch(relayId: string, send = vi.fn()): RelayChannel {
   return { relayId, send, close: vi.fn() }
@@ -174,5 +176,33 @@ describe('RelayControlSender.githubAppAssign', () => {
       ['rc/github-app-unassign', { githubAppId: assign.githubAppId }]
     ])
     expect(older).not.toHaveBeenCalled()
+  })
+})
+
+describe('RelayControlSender.mcpAssign', () => {
+  it('shapes one binding per relay: restricted grants only where tool policies are enforced', () => {
+    const reg = new RelayRegistry()
+    const enforcing = vi.fn()
+    const older = vi.fn()
+    reg.add({ relayId: 'new', features: [MCP_TOOL_POLICY_V1_FEATURE], send: enforcing, close: vi.fn() })
+    reg.add({ relayId: 'old', features: [], send: older, close: vi.fn() })
+    const provider = { id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d', orgId: 'org', name: 'docs', url: 'https://x.test' }
+    const sender = new RelayControlSender(reg)
+
+    sender.mcpAssign(
+      mcpBinding(
+        provider,
+        [],
+        ['oct_shared'],
+        [{ key: 'oct_agent', policy: { allow: ['read'], approval: [], ask: [] } }]
+      )
+    )
+
+    expect(enforcing.mock.calls[0]![1]).toMatchObject({
+      grantKeyHashes: [grantKeyHash('oct_shared')],
+      restrictedGrants: [{ grantKeyHash: grantKeyHash('oct_agent'), policy: 0 }]
+    })
+    expect(older.mock.calls[0]![1]).not.toHaveProperty('restrictedGrants')
+    expect(sender.relaysLacking(MCP_TOOL_POLICY_V1_FEATURE)).toBe(1)
   })
 })

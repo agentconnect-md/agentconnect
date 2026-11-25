@@ -92,6 +92,6 @@ export function makeOauthRebind(
         allowNetwork: false
       })
       if (headers === null) return
-      push.pushBinding(provider, headers, keys)
+      await push.pushBinding(provider, headers, keys)
     })
 }

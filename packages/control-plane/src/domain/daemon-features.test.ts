@@ -14,7 +14,8 @@ import {
   encodeAgentSpecForPeer,
   encodeSpecWorkspaceForPeer,
   isSelfManagedGitlabHost,
-  requiredDaemonFeatures
+  requiredDaemonFeatures,
+  withRestrictedMcpServers
 } from './daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import type { AgentRecord } from '../persistence/ports.js'
@@ -234,5 +235,29 @@ describe('hook routings per peer (code-host-decisions.md §3.3)', () => {
         DECISION_CHAIN_V1_FEATURE
       ]).hookRoutings
     ).toHaveLength(3)
+  })
+})
+
+describe('restricted MCP providers per peer (mcp-tool-permissions.md §8)', () => {
+  const spec = withRestrictedMcpServers(
+    {
+      workspace: { mode: 'scratch', isolation: 'shared', additionalRepos: [], additionalInstallations: [] },
+      mcpServers: ['docs', 'tracker', 'local-tools']
+    } as Pick<AgentSpec, 'workspace' | 'hookRoutings' | 'mcpServers'>,
+    ['docs']
+  )
+
+  it('drops a restricted provider from the enable-list a daemon without agent definitions receives', () => {
+    expect(encodeAgentSpecForPeer(spec, []).mcpServers).toEqual(['tracker', 'local-tools'])
+    expect(encodeAgentSpecForPeer(spec, undefined).mcpServers).toEqual(['tracker', 'local-tools'])
+  })
+
+  it('keeps it for a daemon that layers agent definitions', () => {
+    expect(encodeAgentSpecForPeer(spec, ['mcp-agent-defs-v1']).mcpServers).toEqual(['docs', 'tracker', 'local-tools'])
+  })
+
+  it('never serializes the mark, and leaves an unrestricted spec untouched', () => {
+    expect(JSON.parse(JSON.stringify(spec))).not.toHaveProperty('restrictedMcpServers')
+    expect(Object.getOwnPropertySymbols(withRestrictedMcpServers({ mcpServers: ['docs'] }, []))).toEqual([])
   })
 })

@@ -11,6 +11,7 @@ import type { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { buildAgentMoves } from '../../src/http/agent-moves.js'
+import { encodeAgentSpecForPeer } from '../../src/domain/daemon-features.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { joinPool, poolSetId } from '../fakes/member-set.js'
@@ -78,13 +79,17 @@ class MoveControlSpy {
   async memoryConnectionRemove(daemonId: string, connectionId: string): Promise<void> {
     this.calls.push(`memory-remove:${daemonId}:${connectionId}`)
   }
+  readonly features = new Map<string, string[]>()
+  daemonFeatures(daemonId: string): readonly string[] | undefined {
+    return this.features.get(daemonId)
+  }
   async mcpServerUpsert(daemonId: string, spec: McpServerSpec): Promise<void> {
     await this.recordCredentialPlacement(daemonId)
-    this.calls.push(`mcp-upsert:${daemonId}:${spec.name}`)
+    this.calls.push(`mcp-upsert:${daemonId}:${spec.name}${spec.agentId ? `:${spec.agentId}` : ''}`)
     this.mcpUpserts.push({ daemonId, spec })
   }
-  async mcpServerRemove(daemonId: string, _orgId: string, name: string): Promise<void> {
-    this.calls.push(`mcp-remove:${daemonId}:${name}`)
+  async mcpServerRemove(daemonId: string, _orgId: string, name: string, agentId?: string): Promise<void> {
+    this.calls.push(`mcp-remove:${daemonId}:${name}${agentId ? `:${agentId}` : ''}`)
   }
 }
 
@@ -472,6 +477,68 @@ describe('PUT /agents/:id/daemon', () => {
       ])
     }
   )
+
+  it.each([
+    ['a capable target receives the agent-scoped definition', true],
+    ['an older target receives neither definition and no provider name', false]
+  ])('moves a restricted agent: %s (mcp-tool-permissions.md §5.4, §8)', async (_title, capable) => {
+    await seedMoveDaemons()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: SOURCE })
+    const control = new MoveControlSpy(agentId)
+    control.features.set(SOURCE, ['mcp-agent-defs-v1'])
+    if (capable) control.features.set(TARGET, ['mcp-agent-defs-v1'])
+    running = buildHttpApp(prisma, { RELAY_STALE_MS: 60_000 }, live, control as unknown as ControlSender)
+    await running.deps.repos.relay.upsertByName('move-relay', 'wss://relay.example/rd', new Date())
+    const org = OrgId(DEFAULT_ORG_ID)
+    const provider = await running.deps.repos.mcpProvider.create({
+      orgId: org,
+      name: 'docs',
+      url: 'https://docs.example/mcp'
+    })
+    await running.deps.repos.mcpGrant.mintFor(org, provider.id)
+    const own = await running.deps.repos.mcpGrant.mintForAgent(org, provider.id, agentId, 'runtime')
+    await running.deps.repos.agentMcpToolPolicy.save(org, {
+      agentId,
+      mcpProviderId: provider.id,
+      groups: { readOnly: 'allow', write: 'block', other: 'block' },
+      overrides: { search: 'allow' },
+      allowTools: ['search'],
+      approvalTools: [],
+      askTools: [],
+      catalogFetchedAt: null,
+      updatedByUserId: null
+    })
+    await prisma.agent.update({ where: { id: agentId }, data: { runtimeOverrides: { mcpServers: ['docs'] } } })
+
+    const res = await running.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/daemon`,
+      payload: { daemonId: TARGET }
+    })
+    expect(res.statusCode, res.body).toBe(200)
+    if (capable) {
+      expect(control.calls.slice(0, 4)).toEqual([
+        `detach:${SOURCE}`,
+        `detach:${TARGET}`,
+        `mcp-upsert:${TARGET}:docs:${agentId}`,
+        `activate:${TARGET}`
+      ])
+      expect(control.mcpUpserts[0]?.spec).toMatchObject({
+        agentId,
+        headers: [{ name: 'Authorization', value: `Bearer ${own.key}` }],
+        toolDecisions: { allow: ['search'], approval: [], ask: [], block: [] }
+      })
+      expect(control.activations.at(-1)?.spec.mcpServers).toEqual(['docs'])
+    } else {
+      expect(control.mcpUpserts).toEqual([])
+      // The real sender encodes the activation for its peer; an older one never sees the restricted name.
+      expect(encodeAgentSpecForPeer(control.activations.at(-1)!.spec, undefined).mcpServers).toEqual([])
+    }
+    // The source no longer serves the agent, so its own definition and the unused shared one leave it.
+    expect(control.calls).toContain(`mcp-remove:${SOURCE}:docs:${agentId}`)
+    expect(control.calls).toContain(`mcp-remove:${SOURCE}:docs`)
+  })
 
   it('delivers an org MCP grant only after the move commits, including on a first-time target', async () => {
     await seedMoveDaemons()

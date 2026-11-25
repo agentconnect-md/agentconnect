@@ -20,22 +20,25 @@
  * references it".
  */
 import {
+  MCP_AGENT_DEFS_V1_FEATURE,
   RESERVED_MCP_SERVER_NAME,
   type McpServerSpec,
   type MemoryConnectionSpec,
   type RelayRosterEntry
 } from '@agentconnect.md/protocol'
 import type {
+  AgentMcpToolPolicyRepo,
   AgentRecord,
   ExternalMemoryConnectionRepo,
   ExternalMemoryConnectionSecretStore,
   ExternalMemoryGrantRepo,
   McpGrantRepo,
   McpProviderRepo,
+  McpToolCatalogRepo,
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
-import { currentMcpGrant, mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
+import { currentMcpGrant, mcpAgentDef, mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 
 /** Minimal relay-roster view both projectors pick a proxy base from. */
@@ -43,14 +46,29 @@ export interface RelayRosterView {
   entries(): Promise<RelayRosterEntry[]>
 }
 
-/** All a projector reads off an agent — the enable-list and the memory binding. */
-export type AgentDefinitionRef = Pick<AgentRecord, 'orgId' | 'mcpServers' | 'memory'>
+/** All a projector reads off an agent — its id, the enable-list and the memory binding. */
+export type AgentDefinitionRef = Pick<AgentRecord, 'id' | 'orgId' | 'mcpServers' | 'memory'>
 
 /** MCP-proxy projection inputs (centralized-tool-management.md §7). */
 export interface McpDefinitionDeps {
   providers: McpProviderRepo
   grants: McpGrantRepo
   relayRoster: RelayRosterView
+  /** Per-agent tool policies (mcp-tool-permissions.md §5.4); absent ⇒ every agent has Full access. */
+  policies?: Pick<AgentMcpToolPolicyRepo, 'listForOrg'>
+  /** Catalog snapshots, for the Blocked names a definition lists; absent ⇒ none. */
+  catalogs?: Pick<McpToolCatalogRepo, 'get'>
+}
+
+/** The features to project a bundle with when its receiving daemon is only known at send time; {@link mcpDefsForPeer} then narrows it. */
+export const MCP_DEFS_ANY_PEER: readonly string[] = [MCP_AGENT_DEFS_V1_FEATURE]
+
+/** The definitions one daemon may receive: agent-scoped ones only where it advertises `mcp-agent-defs-v1` (§8). */
+export function mcpDefsForPeer(
+  specs: readonly McpServerSpec[],
+  features: readonly string[] | undefined
+): McpServerSpec[] {
+  return features?.includes(MCP_AGENT_DEFS_V1_FEATURE) ? [...specs] : specs.filter((spec) => spec.agentId === undefined)
 }
 
 /** External-memory projection inputs (agent-memory.md). */
@@ -78,22 +96,18 @@ function groupByOrg(refs: Iterable<readonly [string, string]>): Map<string, Set<
   return byOrg
 }
 
-/**
- * The relay-proxied `http` MCP defs these agents enable by name: the RELAY proxy
- * url plus the provider's active plaintext grant key — never the upstream url or
- * its secret. The reserved name is excluded (the daemon injects its own
- * `agentconnect` server). No relay live ⇒ none, and the next register once a
- * relay appears is the backstop.
- */
+/** The relay-proxied MCP defs these agents enable, for a daemon advertising `features`: shared for unrestricted agents, agent-scoped for restricted ones where it reads them (mcp-tool-permissions.md §5.4, §8); none without a live relay. */
 export async function mcpDefsForAgents(
   agents: readonly AgentDefinitionRef[],
   deps: McpDefinitionDeps | undefined,
+  features: readonly string[] | undefined,
   log?: DefinitionLog,
   logCtx: object = {}
 ): Promise<McpServerSpec[]> {
   if (!deps) return []
+  const enabling = agents.filter((agent) => agent.mcpServers.some((name) => name !== RESERVED_MCP_SERVER_NAME))
   const wanted = groupByOrg(
-    agents.flatMap((agent) =>
+    enabling.flatMap((agent) =>
       agent.mcpServers.filter((name) => name !== RESERVED_MCP_SERVER_NAME).map((name) => [agent.orgId, name] as const)
     )
   )
@@ -106,15 +120,31 @@ export async function mcpDefsForAgents(
   // The roster url is the relay's rd/* WS dial address; the MCP proxy is HTTP on the
   // same origin — normalize wss→https so the `http` def points at a reachable endpoint.
   const relayBaseUrl = relayHttpOrigin(relay.url)
+  const agentDefs = features?.includes(MCP_AGENT_DEFS_V1_FEATURE) === true
   const specs: McpServerSpec[] = []
   for (const [orgId, names] of wanted) {
     const providers = (await deps.providers.listForOrg(OrgId(orgId))).filter((provider) => names.has(provider.name))
+    const policies = (await deps.policies?.listForOrg(OrgId(orgId))) ?? []
     for (const provider of providers) {
-      // The NEWEST active grant, through the one shared selector: a rotation
-      // overlaps old+new until the fresh key is distributed, and a bundle
-      // projected inside that window must never carry the retiring one.
-      const grant = currentMcpGrant(await deps.grants.activeForProvider(provider.orgId, provider.id))
-      if (grant) specs.push(mcpProxyDef(provider, grant, relayBaseUrl))
+      const enablers = enabling.filter((agent) => agent.orgId === orgId && agent.mcpServers.includes(provider.name))
+      const policyOf = new Map(
+        policies.filter((policy) => policy.mcpProviderId === provider.id).map((policy) => [policy.agentId, policy])
+      )
+      // The NEWEST active grant, through the one shared selector: a bundle projected inside a rotation's overlap must never carry the retiring one.
+      if (enablers.some((agent) => !policyOf.has(agent.id))) {
+        const grant = currentMcpGrant(await deps.grants.activeForProvider(provider.orgId, provider.id))
+        if (grant) specs.push(mcpProxyDef(provider, grant, relayBaseUrl))
+      }
+      // A restricted agent never receives the shared definition; a daemon that cannot layer its own gets neither.
+      const restricted = agentDefs ? enablers.filter((agent) => policyOf.has(agent.id)) : []
+      if (restricted.length === 0) continue
+      const catalog = (await deps.catalogs?.get(OrgId(orgId), provider.id))?.tools ?? []
+      for (const agent of restricted) {
+        const grant = currentMcpGrant(
+          (await deps.grants.activeForAgent(OrgId(orgId), provider.id, agent.id)).filter((g) => g.custody === 'runtime')
+        )
+        if (grant) specs.push(mcpAgentDef(provider, grant, relayBaseUrl, agent.id, policyOf.get(agent.id)!, catalog))
+      }
     }
   }
   return specs
