@@ -47,7 +47,8 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
 
     const driftOf = async (orgId: OrgId, policy: AgentMcpToolPolicyRecord): Promise<ToolPolicyDrift | null> => {
       const catalog = await deps.repos.mcpToolCatalog.get(orgId, policy.mcpProviderId)
-      return catalog ? toolPolicyDrift(policy, catalog.tools) : null
+      // A failure-only row (no fetch ever succeeded) is no snapshot.
+      return catalog?.fetchedAt ? toolPolicyDrift(policy, catalog.tools) : null
     }
 
     // The agent and provider a write names, with the checks enabling the provider takes; null means a refusal was sent.

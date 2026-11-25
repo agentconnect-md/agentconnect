@@ -390,9 +390,7 @@ export class PgMcpToolCatalogRepo implements McpToolCatalogRepo {
   }
 
   async put(orgId: OrgId, providerId: string, snapshot: Omit<McpToolCatalogRecord, 'mcpProviderId'>): Promise<void> {
-    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
-      throw new Error('mcp tool catalog write outside its organization')
-    }
+    await this.fence(orgId, providerId)
     const data = {
       tools: snapshot.tools as unknown as Prisma.InputJsonValue,
       fetchedAt: snapshot.fetchedAt,
@@ -403,5 +401,20 @@ export class PgMcpToolCatalogRepo implements McpToolCatalogRepo {
       create: { mcpProviderId: providerId, ...data },
       update: data
     })
+  }
+
+  async recordFailure(orgId: OrgId, providerId: string, failure: string): Promise<void> {
+    await this.fence(orgId, providerId)
+    await this.db.mcpToolCatalog.upsert({
+      where: { mcpProviderId: providerId },
+      create: { mcpProviderId: providerId, tools: [], fetchedAt: null, failure },
+      update: { failure }
+    })
+  }
+
+  private async fence(orgId: OrgId, providerId: string): Promise<void> {
+    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
+      throw new Error('mcp tool catalog write outside its organization')
+    }
   }
 }

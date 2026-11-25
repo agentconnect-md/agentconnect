@@ -55,6 +55,7 @@ import { integrationChannelDecisionRoutes } from './routes/integration-channel-d
 import { providerKeyRoutes } from './routes/provider-keys.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
 import { agentMcpToolPolicyRoutes } from './routes/agent-mcp-tool-policies.js'
+import { mcpToolCatalogRoutes } from './routes/mcp-tool-catalog.js'
 import { mcpProviderOauthPublicRoutes, mcpProviderOauthRoutes } from './routes/mcp-provider-oauth.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
 import { organizationKnowledgeRoutes } from './routes/organization-knowledge.js'
@@ -427,6 +428,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(integrationChannelDecisionRoutes(deps))
           await scope.register(providerKeyRoutes(deps))
           await scope.register(mcpProviderRoutes(deps))
+          await scope.register(mcpToolCatalogRoutes(deps))
           await scope.register(mcpProviderOauthRoutes(deps))
           await scope.register(skillSourceRoutes(deps))
           await scope.register(organizationKnowledgeRoutes(deps))

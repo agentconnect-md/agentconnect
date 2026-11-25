@@ -25,7 +25,11 @@ import {
   type RcGithubRerequestResult,
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
-import { RelayConnection } from './relay-connection.js'
+import { RELAY_REQUEST_TIMEOUT_MS, RelayConnection } from './relay-connection.js'
+import { RequestTimeout } from './correlator.js'
+import { ConnectionClosed } from './registry.js'
+import { ProtocolError } from '../domain/errors.js'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { RelayRegistry } from './relay-registry.js'
 import type { Transport } from './transport.js'
 import { RelayAuthService } from '../registry/relayAuthService.js'
@@ -1729,5 +1733,98 @@ describe('RelayConnection — frame fragments', () => {
       expect.objectContaining({ relayId: RELAY_ID, type: 'rc/collab-routes' }),
       'relay ws: frame exceeds the relay frame cap'
     )
+  })
+})
+
+describe('RelayConnection — CP → relay requests', () => {
+  const PROVIDER_ID = '77777777-7777-4777-8777-777777777777'
+  const TOOL = { name: 'list_issues', readOnlyHint: true, interactive: false }
+
+  async function ready() {
+    const fake = new FakeClock(NOW)
+    const built = build({ clock: fake })
+    await toReady(built.transport)
+    await vi.waitFor(() => expect(built.conn.state).toBe('READY'))
+    built.transport.sent = []
+    return { ...built, fake }
+  }
+
+  const answer = (transport: FakeServerTransport, type: RelayCpFrameType, payload: unknown, corr?: string) =>
+    transport.feedFrame(buildRelayCpFrame(type, payload as never, corr ? { corr } : {}))
+
+  it('settles on the correlated rc/mcp-catalog/ok', async () => {
+    const { conn, transport } = await ready()
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })
+    const req = transport.lastRep('rc/mcp-catalog')!
+    expect(req.payload).toEqual({ providerId: PROVIDER_ID })
+    answer(transport, 'rc/mcp-catalog/ok', { tools: [TOOL] }, req.id)
+    await expect(pending).resolves.toEqual({ tools: [TOOL] })
+    expect(transport.sent.map((f) => f.type)).toEqual(['rc/mcp-catalog'])
+  })
+
+  it('rejects with the relay error a correlated error frame carries', async () => {
+    const { conn, transport } = await ready()
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })
+    const req = transport.lastRep('rc/mcp-catalog')!
+    answer(transport, 'error', { code: 'UNKNOWN_FRAME', message: 'not served', retryable: false }, req.id)
+    await expect(pending).rejects.toMatchObject({ code: 'UNKNOWN_FRAME' })
+  })
+
+  it('rejects once, without resending, when the relay does not answer in time', async () => {
+    const { conn, transport, fake } = await ready()
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })
+    const settled = pending.catch((err: unknown) => err)
+    fake.advance(RELAY_REQUEST_TIMEOUT_MS)
+    expect(await settled).toBeInstanceOf(RequestTimeout)
+    expect(transport.sent.filter((f) => f.type === 'rc/mcp-catalog')).toHaveLength(1)
+  })
+
+  it('rejects pending requests when the socket closes', async () => {
+    const { conn, transport } = await ready()
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })
+    transport.simulateClose(1006)
+    await expect(pending).rejects.toBeInstanceOf(ConnectionClosed)
+  })
+
+  it('refuses a request before the relay is READY', async () => {
+    const { conn } = build({ clock: new FakeClock(NOW) })
+    await expect(conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })).rejects.toMatchObject({
+      code: 'PROTOCOL_STATE'
+    })
+  })
+
+  it('refuses an uncorrelated rc/mcp-catalog/ok and leaves the pending request open', async () => {
+    const { conn, transport } = await ready()
+    let settled = false
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID }).finally(() => (settled = true))
+    const req = transport.lastRep('rc/mcp-catalog')!
+    answer(transport, 'rc/mcp-catalog/ok', { tools: [] })
+    answer(transport, 'rc/mcp-catalog/ok', { tools: [] }, '99999999-9999-4999-8999-999999999999')
+    await vi.waitFor(() => expect(transport.sent.filter((f) => f.type === 'error')).toHaveLength(2))
+    expect(transport.sent.filter((f) => f.type === 'error').map((f) => (f.payload as { code: string }).code)).toEqual([
+      'PROTOCOL_STATE',
+      'PROTOCOL_STATE'
+    ])
+    expect(settled).toBe(false)
+    answer(transport, 'rc/mcp-catalog/ok', { tools: [TOOL] }, req.id)
+    await expect(pending).resolves.toEqual({ tools: [TOOL] })
+  })
+
+  it('fails the request a reply of another type names', async () => {
+    const { conn, transport } = await ready()
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })
+    const req = transport.lastRep('rc/mcp-catalog')!
+    answer(transport, 'rc/verify/ok', { ok: false, reason: 'x' }, req.id)
+    await expect(pending).rejects.toBeInstanceOf(ProtocolError)
+    expect(conn.state).toBe('READY')
+  })
+
+  it('fails the request a malformed reply answers, without an error frame back', async () => {
+    const { conn, transport } = await ready()
+    const pending = conn.request('rc/mcp-catalog', { providerId: PROVIDER_ID })
+    const req = transport.lastRep('rc/mcp-catalog')!
+    answer(transport, 'rc/mcp-catalog/ok', { tools: [TOOL], failure: 'timeout' }, req.id)
+    await expect(pending).rejects.toMatchObject({ code: 'BAD_PAYLOAD' })
+    expect(transport.sent.filter((f) => f.type === 'error')).toEqual([])
   })
 })

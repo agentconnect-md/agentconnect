@@ -4225,9 +4225,9 @@ model AgentMcpToolPolicy {
 
 // One provider's tool catalog snapshot, fetched through a relay (mcp-tool-permissions.md §4); metadata, not content.
 model McpToolCatalog {
-  mcpProviderId String   @id @db.Uuid
-  tools         Json     @db.JsonB // McpCatalogTool[]
-  fetchedAt     DateTime @db.Timestamptz(6)
+  mcpProviderId String    @id @db.Uuid
+  tools         Json      @db.JsonB // McpCatalogTool[]
+  fetchedAt     DateTime? @db.Timestamptz(6) // null until a fetch succeeds
   failure       String? // closed reason code; never a host or a secret
 
   provider McpProvider @relation(fields: [mcpProviderId], references: [id], onDelete: Cascade)

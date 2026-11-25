@@ -197,6 +197,7 @@ export function connectorRoutes(deps: HttpDeps) {
             connectionName: profile,
             ...(values ? { values } : {})
           })
+          deps.mcpToolCatalog?.schedule(orgId, provider.id)
           return reply.code(201).send(dto)
         } catch (e) {
           // Roll back the just-created provider row (+ its binding/secret/grant via
@@ -275,6 +276,7 @@ export function connectorRoutes(deps: HttpDeps) {
             connectionName: profile,
             ...(values ? { values } : {})
           })
+          deps.mcpToolCatalog?.schedule(orgOf(req), provider.id)
           return reply.code(200).send({})
         } catch (e) {
           // A 4xx upstream is the caller's fault (bad creds) → 400; anything else → 502.
