@@ -161,9 +161,13 @@ Where the manifest is stored is open question P1.
 - The browser already uploads to and downloads from the object store directly, through
   presigned URLs the CP signs; a download URL lives 30 minutes by default.
 - The store's public origin is not the console's: a separate host in the Helm chart, a
-  separate port in the Compose HTTPS overlay.
+  separate port on the console's host in the Compose HTTPS overlay.
+- Every download GET is signed with `attachment` and `application/octet-stream`, so nothing
+  renders on the bucket's origin
+  ([source-cache-file-transfer.md](source-cache-file-transfer.md) §3).
 - The bucket's CORS rule admits only the console origin.
-- The `icon/` prefix is already publicly readable.
+- The `icon/` prefix, and only it, is publicly readable
+  ([icon-uploads.md](icon-uploads.md)).
 - Session snapshots are content-addressed, recorded in `session_file_snapshot`, and deleted
   by the CP once the session is purged.
 - The console already has a sandboxed frame (the MCP App card): `srcdoc` with one inline
@@ -191,7 +195,25 @@ address keeps it until the prefix moves. The links people are given are always c
 addresses (§8); store addresses never appear in them.
 
 Objects are tagged `ac-cache=live`, which no lifecycle rule collects; the CP deletes them
-under §10.
+under §10, and when the organization is deleted. Keys are organization-scoped beside the
+existing transfer keys:
+
+```
+<prefix>/src/<org>/artifact/<artifactId>/<revision>/<path>   signed prefix
+<prefix>/src/<org>/artifact-pub/<random>/<path>              public random prefix
+```
+
+The CP performs a prefix move: it copies the objects server-side to a new random prefix,
+switches the revision's row, then deletes the old prefix. Revocation is complete only once
+the old prefix is gone, so the pending deletion is recorded and retried until it succeeds.
+A move happens only on an explicit action (unshare, or narrowing the audience). Passive
+narrowing never moves a prefix: a viewer who loses channel membership under `external`,
+loses an edit grant under `editors`, or leaves the organization keeps any store address
+they already copied, but is refused every console and share route from then on.
+
+Artifact bytes are kept until deleted, unlike session snapshots. For an organization whose
+daemons are self-hosted on a managed Control Plane, published deliverables therefore live
+in the operator's bucket indefinitely; publishing is the explicit act that puts them there.
 
 ### 5.3 Publishing
 
@@ -210,7 +232,9 @@ under §10.
    id, revision number and console link.
 
 Bytes go daemon → bucket → browser; the CP only signs and records, as for every other
-transfer. A retried publish carries the same idempotency key and gets the same revision
+transfer. The publish, complete and fetch frames are advertised under a CP feature,
+`artifacts-v1`, as `file-transfer-v2` is, so an older daemon offers no artifact tools and
+an older CP refuses them cleanly. A retried publish carries the same idempotency key and gets the same revision
 back rather than a second one.
 
 ### 5.4 Path rules
@@ -228,9 +252,25 @@ available.
 
 ### 5.5 Where a page runs, and what outbound requests leave open
 
-An HTML entry opens in `<iframe sandbox="allow-scripts">` whose `src` is the store
-address. Without `allow-same-origin` the page has an opaque origin and reaches no state of
-the console's origin or the store's.
+**Single files keep the existing rule.** The console fetches a single-file revision's bytes
+through its signed URL (the console origin is in the CORS rule) and renders them itself:
+HTML as `srcdoc` in a sandboxed frame, as the MCP App card does; images and PDF from `blob:`
+URLs typed by the manifest; Markdown and source as text. The download URL keeps its
+`attachment` / `octet-stream` signature, so in step 1 nothing renders on the bucket's origin.
+
+**Multi-file HTML reverses that rule.** A site's relative references only resolve when the
+page is loaded from the store, so its entry opens in `<iframe sandbox="allow-scripts">`
+whose `src` is the store address under the public prefix. This reverses three standing
+statements, which change with step 2:
+
+- `source-cache-file-transfer.md` §3, "nothing renders on the bucket's origin": it then holds
+  for every prefix except `artifact-pub/`, whose objects are served with their manifest type.
+- `icon-uploads.md`, anonymous reads on `icon/*` alone: `artifact-pub/*` joins it.
+- The deployment docs (the chart README's bucket requirements and
+  `self-host-caddy-https.md`), CORS for the console origin alone: `GET` opens to any origin.
+
+Without `allow-same-origin` the framed page has an opaque origin and reaches no state of the
+console's origin or the store's.
 
 The sandboxed page's origin is `null`. Classic scripts, styles and images load regardless,
 but ES modules and `fetch` of a local JSON file need CORS, so the bucket's CORS rule admits
@@ -259,8 +299,11 @@ organization, and organization owners can revoke any public share and delete any
 (§6.3).
 
 Someone who opens a store address directly in a new tab runs the page in the store's real
-origin, outside the sandbox. No sign-in state lives there. Whether the store's own
-administration console shares that origin is open question P2.
+origin, outside the sandbox. What that page can reach depends on what is same-site with the
+store: in the Compose HTTPS overlay the console and CP, the identity provider and the store
+share one host on different ports, and cookies are not separated by port; the chart puts
+the store on a sibling host of the same site. Settling this is open question P2, and step 2
+does not ship until it is settled.
 
 ## 6. Ownership and audience
 
@@ -268,14 +311,20 @@ administration console shares that origin is open question P2.
 
 The owner is a namespaced identity, the same form as a session's `ownerIdentity`
 ([session-visibility.md](session-visibility.md) §2): `user:<id>` for a console user, or the
-platform tuple for an IM sender. An IM sender who has not linked a console identity yet
-still owns their artifacts and sees them once they link, exactly as with their private
-sessions.
+platform tuple for an IM sender.
+
+**Owner rights belong only to an organization member.** An owner identity grants §6.3's
+owner rights to a viewer whose identity set contains it, and an identity set is only ever
+built for a signed-in member. So an IM sender who has not linked a console identity yet
+holds no rights until they link, exactly as they cannot see their private sessions until
+then; and an identity the product cannot place in the organization (an outside mail
+sender, a guest or Slack Connect user) never holds them.
 
 | The session that produced it               | Owner                                   | Audience                                               |
 | ------------------------------------------ | --------------------------------------- | ------------------------------------------------------ |
 | A private session                          | The session's `ownerIdentity`           | The owner only                                         |
-| A non-private session started by a person  | The identity that started the turn      | The session's audience, within the organization        |
+| A non-private session started by a member  | The identity that started the turn      | The session's audience, within the organization        |
+| An `editors` session                       | None (its owner identity is provenance) | The recorded agent's editors                           |
 | A cron or hook with a target conversation  | `user:<createdByUserId>` of the trigger | The session's audience, within the organization        |
 | A headless cron or hook                    | `user:<createdByUserId>` of the trigger | The owner only                                         |
 | Any of the above whose identity is unknown | None                                    | The session's audience; managed by organization owners |
@@ -285,6 +334,9 @@ sessions.
   a headless trigger by a null target channel.
 - A headless trigger whose creator is unknown has no audience to copy, so its artifacts
   are visible to organization owners only.
+- A non-private session started by someone who is not a member (a guest in an `external`
+  channel, an unlinked sender) records that identity as provenance only; the artifact has
+  no owner and is managed by organization owners.
 - An artifact always belongs to one organization and its viewers must be members; a
   `public` share is the only exception.
 
@@ -307,21 +359,24 @@ that agent is deleted, the audience becomes the organization owners; it never wi
 
 ### 6.3 Who can do what
 
-| Action                                                                           | Who                                  |
-| -------------------------------------------------------------------------------- | ------------------------------------ |
-| View, download                                                                   | Organization members in the audience |
-| Create an `org` share                                                            | Anyone who can view                  |
-| Create a `public` share, rename, change the audience between `private` and `org` | The owner and organization owners    |
-| Revoke a share, delete                                                           | The owner and organization owners    |
+| Action                                                                           | Who                                                                       |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| View, download                                                                   | Organization members in the audience                                      |
+| Create an `org` share                                                            | Anyone who can view                                                       |
+| Create a `public` share, rename, change the audience between `private` and `org` | The owner; organization owners, only on an artifact they can view         |
+| Revoke a share, delete                                                           | The owner and organization owners, including without viewing the artifact |
 
-An organization owner sees no other member's private artifact content, as with private
-sessions. For moderation they still see every active public share's metadata (title,
-owner, share time) in the Artifacts page and can revoke the share or delete the artifact
-without opening it. Narrowing an audience moves a public-prefix revision to a new prefix.
+An organization owner sees no other member's private artifact, as with private sessions,
+and cannot widen it or share it publicly, since either would let them read it. They keep
+moderation: they see every active public share's metadata (title, owner, share time) in
+the Artifacts page and can revoke a share or delete an artifact without opening it. An
+artifact with no owner is managed by organization owners within the same limit. Narrowing
+an audience moves a public-prefix revision to a new prefix (§5.2).
 
 When a member leaves the organization, their artifacts pass to the organization owners:
-the owner is cleared, and the private ones become visible and manageable by organization
-owners only.
+the owner is cleared, and the private ones become visible to and manageable by organization
+owners. This deliberately differs from a private session, whose orphaned transcript no one
+sees: an artifact is a deliverable the organization may still need, not a conversation.
 
 ## 7. Agent tools
 
@@ -343,12 +398,19 @@ stored copy is the reliable source.
 
 One agent often serves many people, so its reach is bounded twice:
 
-- **It sees only artifacts the current session's audience may see.** Otherwise anyone could
-  ask the agent in their own session to fetch an artifact made in someone else's private
-  session.
+- **It sees only artifacts the current session's whole audience may see.** Otherwise anyone
+  could ask the agent in their own session to fetch an artifact made in someone else's
+  private session. As a comparison of audiences: a `private` session reaches what its owner
+  can view; an `org` session reaches `org` artifacts; an `editors` session reaches `org`
+  artifacts and `editors` artifacts of the same agent; an `external` session, whose audience
+  may include non-members, reaches only artifacts with the same `external` scope.
 - **It changes and deletes only artifacts it produced.** After the agent is deleted its
   artifacts remain; people view, share and delete them as before, but no agent can append
   to them.
+
+Fetch is where this boundary ends: once fetched, the files are ordinary workspace files,
+and the agent can `shareFile` them into any conversation it is in. That is accepted, as for
+every other file the agent can read; the person asking is responsible (D19).
 
 Appending a revision does not depend on the session's audience (D19): a person may ask for
 an update to an organization-wide artifact from a private session. The publish result
@@ -358,8 +420,13 @@ new revision.
 ### 7.3 Whose authority
 
 Delete, share and unshare act with the authority of the identity that started the turn,
-under §6.3; a turn without one acts as the trigger's creator. People and agents follow one
-rule set, so nothing a person may not do becomes possible by asking the agent.
+under §6.3; a turn without one acts as the trigger's creator. That authority exists only
+when the identity resolves to an organization member (§6.1). A turn started by a
+non-member or an unlinked sender may publish and fetch, which are the agent's own work,
+but cannot share, unshare or delete. This matches **What people can do in chat**
+([product-conventions.md](../product-conventions.md)): console permissions apply only where
+the product can tell who someone is. People and agents follow one rule set, so nothing a
+person may not do becomes possible by asking the agent.
 
 Known risk: an agent steered by instructions hidden in content it read could publish or
 delete without the authorized person noticing. These rules do not prevent that. If it
@@ -545,24 +612,24 @@ keeps its composer:
 
 ## 13. Open questions
 
-| #   | Question                                                        | Proposal                                                                                                                        |
-| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | Manifest in the database or as an object in the bucket          | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
-| P2  | Does the store's administration console share the files' origin | Verify before step 2; if it does, put the public prefix behind its own host name or path rule                                   |
-| P3  | Which retention value the CP applies to revisions               | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything          |
-| P4  | Limit values                                                    | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan         |
+| #   | Question                                                                                                                                                                                                                                                | Proposal                                                                                                                                                            |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Manifest in the database or as an object in the bucket                                                                                                                                                                                                  | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds                                     |
+| P2  | What is same-site with the store origin, and what a page opened there outside the sandbox can reach: the console's and the identity provider's cookies (the Compose HTTPS overlay shares one host across ports), the store's own administration console | Settle before step 2. Where the store is same-site with the console, serve `artifact-pub/` from a host that is not, or offer only single files and non-HTML entries |
+| P3  | Which retention value the CP applies to revisions                                                                                                                                                                                                       | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything                                              |
+| P4  | Limit values                                                                                                                                                                                                                                            | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan                                             |
 
 ## 14. Rollout
 
 Each step can be verified on its own:
 
-| Step | Scope                                                                                                                         | Unlocks                                                                                  |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 1    | Data model; publish, fetch and list tools; signed-prefix storage; the conversation card; the standalone viewer page; download | Agent publishes, person opens. Covers single-file HTML, Markdown, images, PDF and source |
-| 2    | Multi-file HTML: public random prefix, the bucket's read policy and CORS, prefix moves, the root-relative path check          | Interactive multi-file pages                                                             |
-| 3    | In-session viewer: the dock's Artifacts tab, the left-pane viewer, opening by itself, revision switching                      | Viewing while revising                                                                   |
-| 4    | Sharing: `public` and `org` links, the share page, the agent's share and unshare tools                                        | Handing a revision to people outside the session                                         |
-| 5    | Management: the Artifacts page, deletion including the agent's delete tool, retention cleanup, limits                         | Long-term upkeep                                                                         |
+| Step | Scope                                                                                                                                                                                                                                                        | Unlocks                                                                                  |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| 1    | Data model; publish, fetch and list tools; signed-prefix storage; the conversation card; the standalone viewer page; download                                                                                                                                | Agent publishes, person opens. Covers single-file HTML, Markdown, images, PDF and source |
+| 2    | Multi-file HTML, after P2: public random prefix, the bucket's read policy and CORS, prefix moves, the root-relative path check, the amended rules of §5.5, and a threat-model test of the public prefix, any-origin CORS, active content and the share route | Interactive multi-file pages                                                             |
+| 3    | In-session viewer: the dock's Artifacts tab, the left-pane viewer, opening by itself, revision switching                                                                                                                                                     | Viewing while revising                                                                   |
+| 4    | Sharing: `public` and `org` links, the share page, the agent's share and unshare tools                                                                                                                                                                       | Handing a revision to people outside the session                                         |
+| 5    | Management: the Artifacts page, deletion including the agent's delete tool, retention cleanup, limits                                                                                                                                                        | Long-term upkeep                                                                         |
 
 Step 1 alone is a complete path; each later step adds to it. Multi-file pages change
 deployment configuration, so they are their own step and can be rolled back alone. Sharing
