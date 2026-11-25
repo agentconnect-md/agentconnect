@@ -1268,8 +1268,18 @@ export function agentPermissionDisplay(
 ): string {
   const catalog = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.modelCatalog ?? undefined
   const choices = permissionModeChoicesFor(runtime, catalog)
-  const mode = permissionMode || catalog?.defaultPermissionMode || permissionModeDefault(runtime)
+  const mode = agentPermissionMode(daemon, runtime, permissionMode)
   return choices.find((o) => o.v === mode)?.l ?? permissionModeLabel(runtime, permissionMode)
+}
+
+/** The mode an agent's sessions start in: the stored mode, else the catalog's default, else the static runtime default. */
+export function agentPermissionMode(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string,
+  permissionMode: string
+): string {
+  const catalog = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.modelCatalog ?? undefined
+  return permissionMode || catalog?.defaultPermissionMode || permissionModeDefault(runtime)
 }
 
 export interface SessionFile {

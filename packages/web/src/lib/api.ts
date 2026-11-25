@@ -6847,6 +6847,10 @@ export interface AgentMcpToolPoliciesDto {
     daemonsWithoutAgentDefinitions: string[]
     /** Connected relays that refuse a restricted agent's calls. */
     relaysWithoutToolPolicies: number
+    /** Daemon ids serving the agent that refuse approval-gated tools. */
+    daemonsWithoutApprovals: string[]
+    /** Connected relays that refuse approval-gated calls. */
+    relaysWithoutApprovals: number
   }
 }
 

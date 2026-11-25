@@ -10,9 +10,6 @@ import type {
 export const MCP_TOOL_GROUPS: readonly McpToolGroup[] = ['readOnly', 'write', 'other']
 export const MCP_TOOL_DECISIONS: readonly McpToolDecision[] = ['allow', 'approval', 'ask', 'block']
 
-/** Saving these acts as Blocked until approvals ship (§13 stage 6), so the console offers them disabled. */
-export const PENDING_DECISIONS: ReadonlySet<McpToolDecision> = new Set(['approval', 'ask'])
-
 /** The relay and CP failure codes a catalog fetch can record. */
 export const MCP_CATALOG_FAILURES = [
   'relay_unavailable',
@@ -31,10 +28,17 @@ export type McpCatalogFailureCode = (typeof MCP_CATALOG_FAILURES)[number]
 export const isKnownCatalogFailure = (code: string): code is McpCatalogFailureCode =>
   (MCP_CATALOG_FAILURES as readonly string[]).includes(code)
 
-export type McpToolPreset = 'full' | 'readOnly' | 'custom'
+export type McpToolPreset = 'full' | 'readOnly' | 'approveWrites' | 'askWrites' | 'custom'
+export const MCP_TOOL_PRESETS: readonly McpToolPreset[] = ['full', 'readOnly', 'approveWrites', 'askWrites', 'custom']
 
 export const ALL_ALLOWED: McpToolGroupDecisions = { readOnly: 'allow', write: 'allow', other: 'allow' }
-export const READ_ONLY_GROUPS: McpToolGroupDecisions = { readOnly: 'allow', write: 'block', other: 'block' }
+
+/** The groups each named preset sets (§3.3); Other is never more permissive than Write/delete. */
+export const PRESET_GROUPS: Readonly<Record<'readOnly' | 'approveWrites' | 'askWrites', McpToolGroupDecisions>> = {
+  readOnly: { readOnly: 'allow', write: 'block', other: 'block' },
+  approveWrites: { readOnly: 'allow', write: 'approval', other: 'approval' },
+  askWrites: { readOnly: 'allow', write: 'ask', other: 'ask' }
+}
 
 export const sameGroups = (a: McpToolGroupDecisions, b: McpToolGroupDecisions) =>
   MCP_TOOL_GROUPS.every((g) => a[g] === b[g])
@@ -47,9 +51,11 @@ export function sameOverrides(a: Record<string, McpToolDecision>, b: Record<stri
 /** The preset a saved policy reads as; no policy is Full access. */
 export function presetOf(policy: Pick<AgentMcpToolPolicyDto, 'groups' | 'overrides'> | null): McpToolPreset {
   if (!policy) return 'full'
-  return sameGroups(policy.groups, READ_ONLY_GROUPS) && Object.keys(policy.overrides).length === 0
-    ? 'readOnly'
-    : 'custom'
+  if (Object.keys(policy.overrides).length > 0) return 'custom'
+  const named = (['readOnly', 'approveWrites', 'askWrites'] as const).find((p) =>
+    sameGroups(policy.groups, PRESET_GROUPS[p])
+  )
+  return named ?? 'custom'
 }
 
 /** A tool's effective decision: its override, else its group's. */
@@ -89,6 +95,40 @@ export function needsResave(
     same(table.approval, policy.approvalTools) &&
     same(table.ask, policy.askTools)
   )
+}
+
+export type ApprovalDecision = 'approval' | 'ask'
+
+/** The approval decisions a save would store for at least one tool. */
+export function approvalDecisionsInUse(
+  groups: McpToolGroupDecisions,
+  overrides: Record<string, McpToolDecision>,
+  tools: readonly Pick<McpCatalogToolDto, 'name' | 'group'>[]
+): Set<ApprovalDecision> {
+  const table = expandTable(groups, overrides, tools)
+  return new Set((['approval', 'ask'] as const).filter((d) => table[d].size > 0))
+}
+
+/** Why a runtime's mode refuses approval decisions (§7.3): it asks no one, only its reviewer decides, or its gate is unverified. */
+export type ApprovalRefusalReason = 'noAsking' | 'reviewerOnly' | 'unsupported'
+
+export interface ApprovalRefusal {
+  reason: ApprovalRefusalReason
+  refused: readonly ApprovalDecision[]
+}
+
+const BOTH: readonly ApprovalDecision[] = ['approval', 'ask']
+
+/** What the daemon's runtime gate refuses for this runtime and permission mode (§7.3), or null when it can honor both decisions. */
+export function approvalRefusal(runtime: string, mode: string): ApprovalRefusal | null {
+  const id = runtime.toLowerCase()
+  if (!id) return null
+  if (id.includes('claude')) return mode === 'dontAsk' ? { reason: 'noAsking', refused: BOTH } : null
+  if (!id.includes('codex')) return { reason: 'unsupported', refused: BOTH }
+  if (mode === 'read-only' || mode === 'workspace-write') return null
+  if (mode === 'agent') return { reason: 'reviewerOnly', refused: ['ask'] }
+  // Full access asks no one, and the daemon records nothing in a Codex mode it does not know.
+  return { reason: 'noAsking', refused: BOTH }
 }
 
 /** Write/delete tools are destructive unless they say otherwise (§3.1). */

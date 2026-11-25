@@ -18,8 +18,9 @@ import {
   ALL_ALLOWED,
   MCP_TOOL_DECISIONS,
   MCP_TOOL_GROUPS,
-  PENDING_DECISIONS,
-  READ_ONLY_GROUPS,
+  MCP_TOOL_PRESETS,
+  PRESET_GROUPS,
+  approvalDecisionsInUse,
   hasDrift,
   isCatalogStale,
   isDestructive,
@@ -28,6 +29,8 @@ import {
   sameGroups,
   sameOverrides,
   needsResave,
+  type ApprovalDecision,
+  type ApprovalRefusal,
   type McpToolPreset
 } from '@/lib/mcp-tool-permissions'
 import { formatRelative } from '@/i18n/format'
@@ -35,14 +38,22 @@ import { Button, Icon } from '@/components/ui'
 import { FieldSelect, type FieldSelectOption } from '@/components/console/FieldSelect'
 import { ConfirmStrip } from '@/components/console/ConfirmStrip'
 
-const PRESETS: readonly McpToolPreset[] = ['full', 'readOnly', 'custom']
 const EXCERPT_CHARS = 140
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-/** The compatibility warnings of §8, with daemon ids resolved to names by the caller. */
+/** The compatibility warnings of §8, with daemon ids resolved to names by the caller; the approval lists leave out peers the first two already name. */
 export interface ToolPolicyCompatibility {
   daemonsWithoutAgentDefinitions: string[]
   relaysWithoutToolPolicies: number
+  daemonsWithoutApprovals: string[]
+  relaysWithoutApprovals: number
+}
+
+/** The agent's runtime and starting mode when its gate refuses an approval decision (§7.3), with display names. */
+export interface RuntimeApprovalGate {
+  refusal: ApprovalRefusal
+  runtime: string
+  mode: string
 }
 
 /** One agent's tool permissions for one registry MCP provider: presets, groups, per-tool overrides, save or return to Full access. */
@@ -52,6 +63,7 @@ export function McpToolPermissionsPanel({
   providerName,
   policy,
   compatibility,
+  runtimeGate = null,
   onClose,
   onSaved
 }: {
@@ -61,6 +73,7 @@ export function McpToolPermissionsPanel({
   /** The saved policy; null means Full access. */
   policy: AgentMcpToolPolicyDto | null
   compatibility: ToolPolicyCompatibility | null
+  runtimeGate?: RuntimeApprovalGate | null
   onClose: () => void
   /** A save or removal landed; the caller re-reads the policies. */
   onSaved: () => void
@@ -135,8 +148,8 @@ export function McpToolPermissionsPanel({
     if (next === 'full') {
       setGroups(ALL_ALLOWED)
       setOverrides({})
-    } else if (next === 'readOnly') {
-      setGroups(READ_ONLY_GROUPS)
+    } else if (next !== 'custom') {
+      setGroups(PRESET_GROUPS[next])
       setOverrides({})
     }
   }
@@ -186,15 +199,11 @@ export function McpToolPermissionsPanel({
     }
   }
 
-  const decisionOptions = (allowed: readonly McpToolDecision[] = MCP_TOOL_DECISIONS) =>
-    allowed.map((decision): FieldSelectOption<McpToolDecision> => ({
-      value: decision,
-      label: t(`decisions.${decision}.label`),
-      description: PENDING_DECISIONS.has(decision)
-        ? t('decisionPending', { description: t(`decisions.${decision}.description`) })
-        : t(`decisions.${decision}.description`),
-      disabled: PENDING_DECISIONS.has(decision)
-    }))
+  const decisionOptions = MCP_TOOL_DECISIONS.map((decision): FieldSelectOption<McpToolDecision> => ({
+    value: decision,
+    label: t(`decisions.${decision}.label`),
+    description: t(`decisions.${decision}.description`)
+  }))
 
   const failure = catalog?.failure
   const failureText = failure
@@ -204,6 +213,11 @@ export function McpToolPermissionsPanel({
     : null
   const daemons = compatibility?.daemonsWithoutAgentDefinitions ?? []
   const relays = compatibility?.relaysWithoutToolPolicies ?? 0
+  // Approval warnings matter only while the table would gate some tool on an approval.
+  const gated = restricted ? approvalDecisionsInUse(groups, overrides, tools) : new Set<ApprovalDecision>()
+  const approvalDaemons = gated.size > 0 ? (compatibility?.daemonsWithoutApprovals ?? []) : []
+  const approvalRelays = gated.size > 0 ? (compatibility?.relaysWithoutApprovals ?? 0) : 0
+  const runtimeRefuses = runtimeGate?.refusal.refused.some((d) => gated.has(d)) === true
 
   return (
     <>
@@ -226,6 +240,24 @@ export function McpToolPermissionsPanel({
             <Warning>{t('compat.daemons', { count: daemons.length, names: daemons.join(', ') })}</Warning>
           )}
           {restricted && relays > 0 && <Warning>{t('compat.relays', { count: relays })}</Warning>}
+          {approvalDaemons.length > 0 && (
+            <Warning testId="tool-policy-approval-daemons">
+              {t('compat.daemonsApprovals', { count: approvalDaemons.length, names: approvalDaemons.join(', ') })}
+            </Warning>
+          )}
+          {approvalRelays > 0 && (
+            <Warning testId="tool-policy-approval-relays">
+              {t('compat.relaysApprovals', { count: approvalRelays })}
+            </Warning>
+          )}
+          {runtimeGate && runtimeRefuses && (
+            <Warning testId="tool-policy-runtime">
+              {t(`runtimeWarnings.${runtimeGate.refusal.reason}`, {
+                runtime: runtimeGate.runtime,
+                mode: runtimeGate.mode
+              })}
+            </Warning>
+          )}
           {policy && hasDrift(policy.drift) && (
             <Warning testId="tool-policy-drift">
               {policy.drift.newTools.length > 0 && (
@@ -244,7 +276,7 @@ export function McpToolPermissionsPanel({
           <div className="fld">
             <span className="fldlbl">{t('presetLabel')}</span>
             <div className="pillbar max-w-full flex-wrap self-start" role="radiogroup" aria-label={t('presetLabel')}>
-              {PRESETS.map((p) => (
+              {MCP_TOOL_PRESETS.map((p) => (
                 <button
                   key={p}
                   type="button"
@@ -305,7 +337,7 @@ export function McpToolPermissionsPanel({
                 tools={tools.filter((tool) => tool.group === group)}
                 decision={groups[group]}
                 overrides={overrides}
-                options={decisionOptions()}
+                options={decisionOptions}
                 disabled={busy}
                 onGroup={(decision) => setGroup(group, decision)}
                 onOverride={setOverride}
@@ -517,7 +549,7 @@ function ToolRow({
   )
 }
 
-/** Overrides naming tools the catalog does not list; without a catalog, the only way to allow or block a tool. */
+/** Overrides naming tools the catalog does not list; without a catalog, the only way to decide a tool. */
 function ManualTools({
   names,
   overrides,
@@ -532,7 +564,7 @@ function ManualTools({
   canAdd: boolean
   taken: ReadonlySet<string>
   disabled: boolean
-  options: (allowed?: readonly McpToolDecision[]) => FieldSelectOption<McpToolDecision>[]
+  options: FieldSelectOption<McpToolDecision>[]
   onOverride: (name: string, decision: McpToolDecision | null) => void
 }) {
   const t = useTranslations('Agents.detail.toolPermissions')
@@ -554,8 +586,6 @@ function ManualTools({
         <div className="overflow-hidden rounded-lg border border-(--border-subtle)">
           {names.map((name) => {
             const current = overrides[name] ?? 'allow'
-            const allowed: McpToolDecision[] = ['allow', 'block']
-            if (!allowed.includes(current)) allowed.push(current)
             return (
               <div
                 key={name}
@@ -566,7 +596,7 @@ function ManualTools({
                   <FieldSelect
                     ariaLabel={t('toolDecision', { tool: name })}
                     value={current}
-                    options={options(allowed)}
+                    options={options}
                     onChange={(next) => onOverride(name, next)}
                     disabled={disabled}
                     menuWidth={320}

@@ -83,6 +83,7 @@ export default function AgentToolsDialog({
           <AgentToolsCard
             agentId={agent.id}
             runtime={agent.runtime}
+            permissionMode={agent.permissionMode}
             daemon={daemons.find((item) => item.daemonId === agent.daemon)}
             canEdit={canEdit}
             onBusyChange={mcpBusy}

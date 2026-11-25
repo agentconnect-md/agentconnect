@@ -219,6 +219,7 @@ function SettingsAndTools({ request, onSettled }: CompletionProps) {
             <AgentToolsCard
               agentId={agent.id}
               runtime={agent.runtime}
+              permissionMode={agent.permissionMode}
               daemon={daemons.find((item) => item.daemonId === agent.daemon)}
               canEdit={agent.canEdit && !busy}
               onBusyChange={setRosterBusy}
