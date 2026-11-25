@@ -103,6 +103,8 @@ export type StandingContextInput = {
   sessionFiles?: Readonly<Record<SessionFileArea, string>>
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
+  /** The conversation's own memory layer when its writes land beside the shared store; its index is '' until its first write. */
+  memoryOwnLayer?: { layer: 'person' | 'here'; index: string }
   /** What this conversation may do with memory beyond the common rules, such as a person's own directory entry; '' for none. */
   memoryGuidance?: string
   /** Whether the host carries standing context on the system-prompt meta channel. */
@@ -134,12 +136,23 @@ export type StandingContext = {
   sessionDigest: string
 }
 
-// Agent memory INDEX (memory/provider.ts), read fresh. It's STANDING context
-// (like the system prompt), NOT a user turn — so it rides the system-prompt channel,
-// never a leading prompt block (which a runtime would auto-title from — #398).
-// '' for native / absent memory ⇒ a clean no-op.
-function buildMemoryAppend(memoryIndex: string): string {
-  if (!memoryIndex) return ''
+// The memory INDEX is standing context on the system-prompt channel, never a leading prompt block (#398); '' when absent.
+function buildMemoryAppend(memoryIndex: string, own?: StandingContextInput['memoryOwnLayer']): string {
+  if (!memoryIndex && !own) return ''
+  const boundary = (body: string, layer?: string) =>
+    `<agentconnect-memory-file path="MEMORY.md"${layer ? ` layer="${layer}"` : ''}>\n` +
+    `${encodeMemoryBoundaryBody(body)}\n</agentconnect-memory-file>`
+  // Each layer keeps its own MEMORY.md, so a layered conversation sees one boundary per file and which one it edits.
+  const files = own
+    ? `Each memory-file boundary below holds one layer's own \`MEMORY.md\`: \`shared\` is read in every ` +
+      `conversation, and \`${own.layer}\` is this conversation's own layer. \`readMemory\` and \`writeMemory\` ` +
+      `without \`layer\` reach the \`${own.layer}\` file, which stays empty until its first write, so copy an ` +
+      `\`oldString\` for them only from that boundary; pass \`layer: "shared"\` to edit the shared file. Only text ` +
+      `inside a boundary belongs to that \`MEMORY.md\`; everything outside them is session context and not a ` +
+      `valid source for \`oldString\`. These injected indexes are a start-of-session snapshot. Their bodies use`
+    : `Only text inside the memory-file boundary below belongs to \`MEMORY.md\`; everything outside it is ` +
+      `session context and not a valid source for \`oldString\`. This injected index is a start-of-session ` +
+      `snapshot. Its body uses`
   return (
     `# Persistent memory\n` +
     `You keep a persistent memory across sessions. Your context is periodically compacted, and this index is ` +
@@ -150,13 +163,11 @@ function buildMemoryAppend(memoryIndex: string): string {
     `near-duplicate, and delete a memory that turns out to be wrong.\n\n` +
     `MEMORY.md below is GENERATED from those descriptions — do not hand-edit it; to change how a topic appears, ` +
     `change that topic's \`description\`.\n\n` +
-    `Only text inside the memory-file boundary below belongs to \`MEMORY.md\`; everything outside it is ` +
-    `session context and not a valid source for \`oldString\`. This injected index is a start-of-session ` +
-    `snapshot. Its body uses one layer of XML character-reference encoding: \`&amp;\`, \`&lt;\`, and \`&gt;\` ` +
+    `${files} one layer of XML character-reference encoding: \`&amp;\`, \`&lt;\`, and \`&gt;\` ` +
     `represent literal ampersand, less-than, and greater-than characters. Decode exactly one layer when ` +
     `deriving \`oldString\`; all other characters and line breaks are unchanged. A \`readMemory\` result is ` +
     `raw and needs no decoding. After a memory write, or when uncertain, call \`readMemory\` before editing.\n\n` +
-    `<agentconnect-memory-file path="MEMORY.md">\n${encodeMemoryBoundaryBody(memoryIndex)}\n</agentconnect-memory-file>`
+    (own ? `${boundary(memoryIndex, 'shared')}\n\n${boundary(own.index, own.layer)}` : boundary(memoryIndex))
   )
 }
 
@@ -495,7 +506,7 @@ export function buildSessionMessagesBlock(input: {
 
 /** Build standing instructions for native session metadata when supported, or the first prompt block otherwise. */
 export function buildStandingContext(input: StandingContextInput): StandingContext {
-  const memoryAppend = buildMemoryAppend(input.memoryIndex)
+  const memoryAppend = buildMemoryAppend(input.memoryIndex, input.memoryOwnLayer)
   // A rule, not memory content: re-asserted on resume with the other standing rules.
   const memoryGuidance = input.memoryGuidance?.trim() ?? ''
   const agentMeta = buildAgentMeta(input)

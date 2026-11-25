@@ -136,7 +136,7 @@ describe('the record-backed shared layer', () => {
     const stored = (await f.fs.readFile('memory/MEMORY.md'))!.content
     expect(stored).toContain('[deploys](deploys.md)')
     expect(stored).not.toMatch(/organization\.md|channels\.md|members\.md/)
-    const standing = await f.provider.standingContextAtSessionStart(f.scope)
+    const standing = (await f.provider.standingContextAtSessionStart(f.scope)).index
     expect(standing).toContain('- [About](organization.md) — what the organization does; nothing recorded yet')
     expect(standing).toContain('- [Channels](channels.md) — what each place is for, 0 places')
     expect(standing).toContain('- [People](members.md) — who works on what, 0 people')
@@ -145,7 +145,7 @@ describe('the record-backed shared layer', () => {
   it('withholds People with outsiders or where it is not visible, and leaves the rest', async () => {
     const outsiders = await fixture({ withOutsiders: true })
     expect((await outsiders.api.list({ limit: 100 })).entries.map((e) => e.label)).not.toContain('members')
-    expect(await outsiders.provider.standingContextAtSessionStart(outsiders.scope)).not.toContain('members.md')
+    expect((await outsiders.provider.standingContextAtSessionStart(outsiders.scope)).index).not.toContain('members.md')
     await expect(outsiders.provider.read(outsiders.scope, 'members.md')).rejects.toMatchObject({ code: 'FORBIDDEN' })
     expect((await outsiders.provider.read(outsiders.scope, 'channels.md')).content).toBe('# Channels')
 
@@ -168,7 +168,7 @@ describe('the record-backed shared layer', () => {
     await expect(f.api.create({ label: 'organization', text: '# About' })).rejects.toMatchObject({
       code: 'UNAVAILABLE'
     })
-    expect(await f.provider.standingContextAtSessionStart(f.scope)).not.toContain('channels.md')
+    expect((await f.provider.standingContextAtSessionStart(f.scope)).index).not.toContain('channels.md')
   })
 
   it('dates a record entry by when its revision was written', async () => {

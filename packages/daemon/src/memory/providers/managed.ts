@@ -38,6 +38,7 @@ import type {
   MemoryScope,
   MemoryWriteGuard,
   MemoryWriteResult,
+  MemoryStandingIndex,
   RecallPolicy,
   TurnRecord
 } from '../types.js'
@@ -149,21 +150,23 @@ export class ManagedMemoryProvider implements MemoryProvider {
     if (place) void writeChannelMemoryMeta(this.portsFor(scope.agentId).live, place.channelKey, place).catch(() => {})
   }
 
-  async standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
-    // The shared index first, then the other layer's, so the agent sees one memory.
+  async standingContextAtSessionStart(scope: MemoryScope): Promise<MemoryStandingIndex> {
     const { active, under, base } = this.layers(scope)
-    const roots = under ? [active, under] : [active]
-    const label = scope.personKey
-      ? 'Only for this person:'
-      : scope.channelKey
-        ? 'Only for this conversation:'
-        : undefined
-    const parts: string[] = []
-    for (const root of [...roots.filter((r) => r === base), ...roots.filter((r) => r !== base)]) {
-      const index = (await indexWithRecord(root, await readIndex(root))).trim()
-      if (index) parts.push(root !== base && label ? `${label}\n${index}` : index)
+    const indexOf = async (root: MemoryFs) => (await indexWithRecord(root, await readIndex(root))).trim()
+    // Writes land in a layer beside the shared store, whose MEMORY.md is a file of its own, empty or not.
+    if (active !== base)
+      return {
+        index: under === base ? await indexOf(base) : '',
+        own: { layer: scope.personKey ? 'person' : 'here', index: await indexOf(active) }
+      }
+    // A shared place's older folder is read beneath the shared store, which takes its writes.
+    const older = under ? await indexOf(under) : ''
+    const shared = await indexOf(base)
+    return {
+      index: [shared, older && `${scope.personKey ? 'Only for this person:' : 'Only for this conversation:'}\n${older}`]
+        .filter(Boolean)
+        .join('\n\n')
     }
-    return parts.join('\n\n')
   }
 
   async recallForTurn(): Promise<MemoryRecord[]> {

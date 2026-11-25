@@ -291,3 +291,29 @@ describe('live secrets in the standing context', () => {
     expect(JSON.stringify(buildStandingContext({ ...BASE, liveSecretNames: [] }))).not.toContain('# Live secrets')
   })
 })
+
+describe('the injected memory index', () => {
+  it('renders one boundary per layer and names the one a write without a layer edits', () => {
+    const { memoryAppend } = buildStandingContext({
+      ...BASE,
+      memoryIndex: '# shared index\n- [deploys](deploys.md)',
+      memoryOwnLayer: { layer: 'person', index: '' }
+    })
+    expect(memoryAppend).toContain(
+      '<agentconnect-memory-file path="MEMORY.md" layer="shared">\n# shared index\n- [deploys](deploys.md)\n</agentconnect-memory-file>'
+    )
+    expect(memoryAppend).toContain(
+      '<agentconnect-memory-file path="MEMORY.md" layer="person">\n\n</agentconnect-memory-file>'
+    )
+    expect(memoryAppend).toContain('without `layer` reach the `person` file, which stays empty until its first write')
+    expect(memoryAppend).toContain('pass `layer: "shared"` to edit the shared file')
+  })
+
+  it('keeps a single unlabelled boundary when writes land in the shared store', () => {
+    const { memoryAppend } = buildStandingContext({ ...BASE, memoryIndex: '# shared index' })
+    expect(memoryAppend).toContain(
+      '<agentconnect-memory-file path="MEMORY.md">\n# shared index\n</agentconnect-memory-file>'
+    )
+    expect(memoryAppend).not.toContain('layer="')
+  })
+})

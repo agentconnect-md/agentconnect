@@ -2562,6 +2562,13 @@ layer to reconstruct file text; all other characters and line breaks remain unch
 The serialized boundary body, including any truncation notice, must remain within the
 standing index's byte budget and may not split an XML entity or UTF-8 code point.
 
+Each memory layer keeps its own `MEMORY.md`. When a conversation's writes land in a layer
+beside the shared store (a person's own layer, or a conversation's own), each index gets a
+boundary of its own labeled with its `layer`, the conversation's own one rendered even
+while it is still empty, and prompt guidance must name that own file as the one
+`readMemory` and `writeMemory` reach without `layer`. One boundary must never hold two
+files' text, because an `oldString` copied from it would target a file that lacks it.
+
 For targeted `writeMemory` edits, `oldString` must come from the decoded bounded file
 content or verbatim from a current `readMemory` result; an `updateMemoryEntry` exact
 edit likewise sources `oldText` from a complete current `getMemoryEntry` result. The injected index is only a

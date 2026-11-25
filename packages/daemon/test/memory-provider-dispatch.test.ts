@@ -160,7 +160,7 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     await p.ensure({ agentId: 'bot-m' }, 'bot-m')
     await p.write({ agentId: 'bot-m' }, MEMORY_INDEX, '# idx')
     expect((await p.list({ agentId: 'bot-m' })).map((f) => f.name)).toContain(MEMORY_INDEX)
-    expect(await p.standingContextAtSessionStart({ agentId: 'bot-m' })).toContain('# idx')
+    expect((await p.standingContextAtSessionStart({ agentId: 'bot-m' })).index).toContain('# idx')
     await expect(
       p.recallForTurn({ agentId: 'bot-m' }, { turnId: 'turn-1', query: 'q', topK: 5, maxBytes: 8192, timeoutMs: 1000 })
     ).resolves.toEqual([])
@@ -172,7 +172,7 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     const scope = { agentId: 'bot-n' }
     expect(p.toolsForAgent('bot-n')).toEqual([])
     await p.ensure(scope, 'bot-n')
-    expect(await p.standingContextAtSessionStart(scope)).toBe('')
+    expect(await p.standingContextAtSessionStart(scope)).toEqual({ index: '' })
     expect(p.adminSurfaceForAgent('bot-n')).toBeNull()
     expect(await p.list(scope)).toEqual([])
     await expect(p.read(scope, MEMORY_INDEX)).rejects.toThrow('native memory is not exposed')
@@ -184,7 +184,7 @@ describe('DispatchingMemoryProvider (per-agent routing)', () => {
     const scope = { agentId: 'bot-0' }
     expect(p.toolsForAgent('bot-0')).toEqual([])
     await p.ensure(scope, 'bot-0')
-    expect(await p.standingContextAtSessionStart(scope)).toBe('')
+    expect(await p.standingContextAtSessionStart(scope)).toEqual({ index: '' })
     expect(p.adminSurfaceForAgent('bot-0')).toBeNull()
     expect(await p.list(scope)).toEqual([])
     await expect(p.read(scope, MEMORY_INDEX)).rejects.toThrow('persistent memory is disabled')
