@@ -22,7 +22,7 @@ import {
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { InlineButton, TelegramConnection } from '../../telegram/connection.js'
 import { TELEGRAM_CALLBACK_ANSWER_LIMIT, TELEGRAM_MESSAGE_LIMIT } from '../../telegram/render.js'
-import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
+import { appendPermCommand, clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import { TELEGRAM_BUTTON_LABEL_CAP, TELEGRAM_ELICIT_MAX_BUTTONS } from './elicit-card.js'
 import type { TelegramTurnState } from './turn-output.js'
 
@@ -83,7 +83,7 @@ export const telegramApprovalCards: ApprovalCardFacet = {
     ])
     const head = ask.subsession ? intro(ask.subsession) : ''
     return {
-      text: plain(`${head}🔒 Permission requested — ${permToolLabel(ask.params)}`),
+      text: plain(appendPermCommand(`${head}🔒 Permission requested — ${permToolLabel(ask.params)}`, ask.params)),
       buttons
     } satisfies TelegramApprovalDraft
   },
@@ -92,7 +92,7 @@ export const telegramApprovalCards: ApprovalCardFacet = {
     const head = card.subsession ? intro(card.subsession) : ''
     const decision = `${approvalMark(card.allowed)} ${clampTo(card.text, TELEGRAM_APPROVAL_DECISION_CAP)}`
     return {
-      text: plain(`${head}🔒 Permission — ${permToolLabel(card.params)}\n${decision}`),
+      text: plain(appendPermCommand(`${head}🔒 Permission — ${permToolLabel(card.params)}\n${decision}`, card.params)),
       buttons: []
     } satisfies TelegramApprovalDraft
   },

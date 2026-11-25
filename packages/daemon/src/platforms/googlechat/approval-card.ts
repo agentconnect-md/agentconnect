@@ -26,7 +26,7 @@ import {
   turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
-import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
+import { appendPermCommand, clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import type { GoogleChatMessageRef } from './connection.js'
 import type { GoogleChatTurnState } from './turn-output.js'
 
@@ -150,7 +150,7 @@ export const googleChatApprovalCards: ApprovalCardFacet = {
     if (!eventsUrl) return null
     const widgets = [
       ...(ask.subsession ? [intro(ask.subsession)] : []),
-      paragraph(cardText(`🔒 Permission requested — ${permToolLabel(ask.params)}`)),
+      paragraph(cardText(appendPermCommand(`🔒 Permission requested — ${permToolLabel(ask.params)}`, ask.params))),
       { buttonList: { buttons: options.map((o, i) => optionButton(eventsUrl, ask.requestId, o.name, i)) } }
     ]
     return {
@@ -164,7 +164,9 @@ export const googleChatApprovalCards: ApprovalCardFacet = {
     const decision = `${approvalMark(settled.allowed)} ${clampTo(settled.text, GOOGLE_CHAT_DECISION_CAP)}`
     const widgets = [
       ...(settled.subsession ? [intro(settled.subsession)] : []),
-      paragraph(cardText(`🔒 Permission — ${permToolLabel(settled.params)}\n${decision}`))
+      paragraph(
+        cardText(appendPermCommand(`🔒 Permission — ${permToolLabel(settled.params)}\n${decision}`, settled.params))
+      )
     ]
     return { cardsV2: card(widgets), clientId: '' } satisfies GoogleChatApprovalDraft
   },

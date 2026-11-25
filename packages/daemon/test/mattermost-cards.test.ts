@@ -483,6 +483,27 @@ describe('Mattermost approval cards & Relay button decoding', () => {
       text: TURN_NOTICE_TEXT
     })
   })
+
+  it('names a described request by its description, with the command it runs beneath, live and settled', () => {
+    const params = {
+      ...samplePermission,
+      toolCall: {
+        toolCallId: 'tc-1',
+        title: 'scripts/deploy --env staging',
+        rawInput: { command: 'scripts/deploy --env staging', description: 'Deploy to staging' }
+      }
+    } as unknown as RequestPermissionRequest
+    const conn = { createPost: vi.fn() }
+    const live = (mattermostApprovalCards.build({ requestId: 'r1', params }, conn) as any).render({
+      conn,
+      channel: 'ch1'
+    })
+    expect(live.text).toContain('🔒 **Permission requested** — `Deploy to staging`\n`scripts/deploy --env staging`')
+    const settled = (
+      mattermostApprovalCards.settled({ params, text: 'Allow', allowed: true, fallback: '' }) as any
+    ).render({ conn, channel: 'ch1' })
+    expect(settled.text).toMatch(/— `Deploy to staging`\n.+ Allow\n`scripts\/deploy --env staging`$/)
+  })
 })
 
 describe('Mattermost capability cards & ChatSessionContinuation mirroring', () => {

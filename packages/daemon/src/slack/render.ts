@@ -260,18 +260,16 @@ function capOutput(s: string): string {
   return t.length > MAX_TOOL_OUTPUT ? `${t.slice(0, MAX_TOOL_OUTPUT - 1)}…` : t
 }
 
-/**
- * A tool call's own TOP-LEVEL `rawInput` string, when the runtime sent one — the envelope a
- * runtime writes about its call, never the call's payload.
- *
- * A nested `arguments` object is deliberately NOT read: those keys belong to the tool, and a
- * tool is free to mean something else entirely by them. `gitlabMergeRequest` takes a
- * whole merge-request body as `arguments.description`, which is a document, not a step label.
- */
-function rawInputField(update: { rawInput?: unknown }, key: 'command' | 'description'): string {
+/** A TOP-LEVEL `rawInput` string the runtime wrote about its call; nested `arguments` belong to the tool (`gitlabMergeRequest`'s `description` is a document). */
+function rawInputField(update: { rawInput?: unknown }, key: 'command' | 'description' | 'command_description'): string {
   const raw = update.rawInput as Record<string, unknown> | undefined
   if (!raw || typeof raw !== 'object') return ''
   return typeof raw[key] === 'string' ? raw[key].trim() : ''
+}
+
+/** The runtime's own description of a call; Claude Code's shell tools may spell it `command_description`. */
+function rawInputDescription(update: { rawInput?: unknown }): string {
+  return rawInputField(update, 'description') || rawInputField(update, 'command_description')
 }
 
 /** Whether a runtime's description can stand as a card's one-line label. Even at the top level
@@ -514,13 +512,53 @@ export const CAPABILITY_OPEN_ACTION = 'ac_capability_open'
  *  interaction today, so there's no submit). */
 export const STATUS_MODAL_CALLBACK = 'ac_status_modal'
 
-/** Human label for the tool a permission request is about. ACP's `toolCall.title` is the
- *  intended display string, but some runtimes (e.g. codex) omit it at request time — fall
- *  back to the tool `kind`, then the `toolCallId`, then a generic phrase. */
+/** Human label for a permission request: the runtime's description, else `toolCall.title` (a shell title is the raw command), `kind`, `toolCallId`. */
 export function permToolLabel(params: RequestPermissionRequest): string {
   const tc = params.toolCall
-  const label = tc?.title?.trim() || tc?.kind?.trim() || tc?.toolCallId?.trim() || 'a tool call'
+  const label =
+    permDescription(params) || tc?.title?.trim() || tc?.kind?.trim() || tc?.toolCallId?.trim() || 'a tool call'
   return clampTo(label, 200)
+}
+
+/** A shell request's one-line description, read only beside a `command`: an MCP tool's top-level input may have a `description` argument. */
+function permDescription(params: RequestPermissionRequest): string {
+  const tc = params.toolCall
+  if (!tc || !rawInputField(tc, 'command')) return ''
+  const description = rawInputDescription(tc)
+  return isStepLabel(description) ? description : ''
+}
+
+/** The command a described request will run, so a card never shows only the model's account of it; '' when the label is the title. */
+export function permToolCommand(params: RequestPermissionRequest): string {
+  const tc = params.toolCall
+  return tc && permDescription(params) ? rawInputField(tc, 'command') : ''
+}
+
+/** How much of a permission request's command a card shows. */
+export const PERMISSION_COMMAND_CAP = 1500
+
+/** {@link permToolCommand} clamped for a card, '' when there is none. */
+export function permCommandText(params: RequestPermissionRequest): string {
+  const command = permToolCommand(params)
+  return command ? clampTo(command, PERMISSION_COMMAND_CAP) : ''
+}
+
+/** `text` with the request's command on its own line, passed through `format`, for a plain-text card. */
+export function appendPermCommand(
+  text: string,
+  params: RequestPermissionRequest,
+  format: (command: string) => string = (command) => command
+): string {
+  const command = permCommandText(params)
+  return command ? `${text}\n${format(command)}` : text
+}
+
+/** A described request's command as its own code-block section (backtick runs split, since mrkdwn fences cannot grow); none otherwise. */
+function permCommandBlocks(params: RequestPermissionRequest): unknown[] {
+  const command = permCommandText(params)
+  if (!command) return []
+  const body = clampTo(escapeSlackMrkdwn(command.replace(/`(?=`)/g, '`\u200b')), SLACK_SECTION_TEXT_CAP - 8)
+  return [{ type: 'section', text: agentMrkdwn(`\`\`\`\n${body}\n\`\`\``) }]
 }
 
 /** Slack button color for a permission option: green for allow, red for reject, default
@@ -536,18 +574,7 @@ function permOptionStyle(kind: string): 'primary' | 'danger' | undefined {
  *  is the block's own, not a row's. The 5 this used to slice to was neither. */
 export const SLACK_PERMISSION_MAX_OPTIONS = 25
 
-/**
- * Build the interactive permission-request card: a header naming the tool the agent
- * wants to run, and an actions row of buttons — one per ACP PermissionOption, green for
- * allow / red for reject. The choice rides each button `value` (`<requestId>|<optionId>`);
- * `requestId` ties the click back to the pending ACP request.
- *
- * Null ⇒ this card cannot offer the whole list (empty, or longer than the block holds), and the
- * caller must put the request somewhere that can. NEVER a card built from part of the list: the
- * reader would decide from a menu they cannot see the end of, and their pick would be reported as
- * their decision on the FULL request — the agent unable to tell it came from a truncated set
- * (#1811, the permission half of #1794's gap 7). Pure — safe to unit-test.
- */
+/** The permission card: label, command, one `<requestId>|<optionId>` button per option; null when not every option fits, never a partial menu (#1811). */
 export function buildPermissionCard(
   requestId: string,
   params: RequestPermissionRequest,
@@ -567,16 +594,12 @@ export function buildPermissionCard(
   })
   return [
     { type: 'section', text: agentMrkdwn(header) },
+    ...permCommandBlocks(params),
     { type: 'actions', ...(sessionTarget ? { block_id: sessionTarget } : {}), elements: buttons }
   ]
 }
 
-/**
- * Build the RESOLVED permission card (buttons removed) that replaces {@link
- * buildPermissionCard} in place once a choice is made — or when the turn is cancelled.
- * `decision` is the human label of what happened; `allowed` picks the icon (undefined ⇒
- * a neutral ⌛ for cancelled/expired). Pure.
- */
+/** The settled permission card, buttons replaced by `decision`; `allowed` picks the icon (undefined ⇒ ⌛ cancelled/expired). Pure. */
 export function buildPermissionResolvedCard(
   params: RequestPermissionRequest,
   decision: string,
@@ -589,7 +612,8 @@ export function buildPermissionResolvedCard(
       text: agentMrkdwn(
         `:lock: *Permission* — ${escapeSlackMrkdwn(permToolLabel(params))}\n${icon} ${escapeSlackMrkdwn(decision)}`
       )
-    }
+    },
+    ...permCommandBlocks(params)
   ]
 }
 
@@ -3022,7 +3046,7 @@ export class OutputConverger {
   private noteToolInput(update: { toolCallId?: string; rawInput?: unknown }): void {
     const id = update.toolCallId
     if (!id || update.rawInput === undefined) return
-    const description = rawInputField(update, 'description')
+    const description = rawInputDescription(update)
     const command = rawInputField(update, 'command')
     if (isStepLabel(description) && !this.toolDescriptions.has(id)) this.toolDescriptions.set(id, description)
     if (command && !this.toolCommands.has(id)) this.toolCommands.set(id, command)

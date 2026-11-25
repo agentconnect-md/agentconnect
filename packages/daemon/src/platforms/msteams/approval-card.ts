@@ -22,7 +22,7 @@ import {
   turnNoticeSettledText
 } from '../approval-card.js'
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
-import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
+import { clampTo, permCommandText, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import {
   adaptiveCard,
   buttonRows,
@@ -63,6 +63,12 @@ function contextIntro(context: ApprovalCardContext): AdaptiveElement[] {
   ]
 }
 
+/** The command a described request runs, under its label. */
+function commandText(params: ApprovalCardAsk['params']): AdaptiveElement[] {
+  const command = permCommandText(params)
+  return command ? plainText(command) : []
+}
+
 function optionStyle(kind: string): 'positive' | 'destructive' | undefined {
   if (kind === 'allow_once' || kind === 'allow_always') return 'positive'
   if (kind === 'reject_once' || kind === 'reject_always') return 'destructive'
@@ -84,6 +90,7 @@ export function buildMsTeamsApprovalCard(ask: ApprovalCardAsk): Record<string, u
     ...(ask.subsession ? intro(ask.subsession) : []),
     ...(ask.context ? contextIntro(ask.context) : []),
     ...plainText(`🔒 Permission requested — ${permToolLabel(ask.params)}`, { bold: true }),
+    ...commandText(ask.params),
     ...buttonRows(buttons)
   ])
 }
@@ -144,7 +151,8 @@ export const msTeamsApprovalCards: ApprovalCardFacet = {
       ...(settled.subsession ? intro(settled.subsession) : []),
       ...(settled.context ? contextIntro(settled.context) : []),
       ...plainText(`🔒 Permission — ${permToolLabel(settled.params)}`, { bold: true }),
-      ...plainText(decision)
+      ...plainText(decision),
+      ...commandText(settled.params)
     ])
     return { card } satisfies MsTeamsCardDraft
   },

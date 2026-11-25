@@ -11,6 +11,7 @@ import {
   renderStatusBar,
   buildStatusBlocks,
   buildStatusModal,
+  appendPermCommand,
   buildPermissionCard,
   buildPermissionDmUnanswerableCard,
   buildPermissionResolvedCard,
@@ -46,6 +47,9 @@ import {
   encodePermValue,
   decodePermValue,
   PERMISSION_ACTION_PREFIX,
+  PERMISSION_COMMAND_CAP,
+  permToolCommand,
+  permToolLabel,
   ELICIT_ACTION_PREFIX,
   ELICIT_CONFIRM_ACTION,
   ELICIT_DISMISS_ACTION,
@@ -1480,6 +1484,77 @@ describe('permission card', () => {
     expect((generic[0] as any).text.text).toContain('a tool call')
   })
 
+  // Claude's shell tool titles a request with its raw command; `rawInput` carries the model's own one-line description.
+  const shell = (rawInput: Record<string, unknown>, title = String(rawInput.command)) =>
+    req({ toolCall: { toolCallId: 'tc1', kind: 'execute', title, rawInput } as any })
+
+  it('labels a described request by its description and shows the verbatim command in its own code block', () => {
+    const command = 'S=/tmp/build; scripts/deploy --env staging < "$S/release.json"'
+    const p = shell({ command, description: 'Deploy the docs site to staging' })
+    expect(permToolLabel(p)).toBe('Deploy the docs site to staging')
+    expect(permToolCommand(p)).toBe(command)
+    const [header, code, actions] = buildPermissionCard('p', p) as any[]
+    expect(header.text.text).toBe(':lock: *Permission requested* — Deploy the docs site to staging')
+    expect(code.text).toMatchObject({ type: 'mrkdwn', verbatim: true })
+    expect(code.text.text).toBe('```\nS=/tmp/build; scripts/deploy --env staging &lt; "$S/release.json"\n```')
+    expect(actions.type).toBe('actions')
+    expect(slackCardViolations(buildPermissionCard('p', p, 'sess-target')!)).toEqual([])
+  })
+
+  it('reads the CLI’s newer `command_description` spelling too', () => {
+    expect(permToolLabel(shell({ command: 'ls -la', command_description: 'List files' }))).toBe('List files')
+  })
+
+  it('keeps the title, with no code block, when there is no description fit to be a label', () => {
+    for (const rawInput of [
+      { command: 'ls -la' },
+      { command: 'ls -la', description: 'first line\nsecond line' },
+      { command: 'ls -la', description: 'x'.repeat(200) }
+    ]) {
+      const p = shell(rawInput)
+      expect(permToolLabel(p)).toBe('ls -la')
+      expect(permToolCommand(p)).toBe('')
+      expect(buildPermissionCard('p', p)!.map((b: any) => b.type)).toEqual(['section', 'actions'])
+    }
+  })
+
+  it('ignores a `description` with no `command` beside it: an MCP tool’s input may have an argument by that name', () => {
+    const mcp = req({
+      toolCall: {
+        toolCallId: 'tc1',
+        title: 'mcp__jira__createIssue',
+        rawInput: { summary: 'Delete the prod database', description: 'Routine cleanup' }
+      } as any
+    })
+    expect(permToolLabel(mcp)).toBe('mcp__jira__createIssue')
+    expect(permToolCommand(mcp)).toBe('')
+    expect(buildPermissionCard('p', mcp)!.map((b: any) => b.type)).toEqual(['section', 'actions'])
+  })
+
+  it('splits backtick runs so a command cannot close the code block early', () => {
+    const p = shell({ command: 'echo ```\n*bold*```', description: 'Echo fences' })
+    const code = (buildPermissionCard('p', p) as any[])[1].text.text as string
+    expect(code.startsWith('```\n')).toBe(true)
+    expect(code.endsWith('\n```')).toBe(true)
+    expect(code.slice(4, -4)).not.toContain('``')
+  })
+
+  it('clamps a long command to the shared cap, inside Slack’s section limit even after escaping', () => {
+    const p = shell({ command: '<'.repeat(5000), description: 'Huge' })
+    expect(permToolCommand(p)).toHaveLength(5000)
+    const code = (buildPermissionCard('p', p) as any[])[1].text.text as string
+    expect(code.length).toBeLessThanOrEqual(3000)
+    expect(code.endsWith('…\n```')).toBe(true)
+    expect(appendPermCommand('head', p).length).toBe('head\n'.length + PERMISSION_COMMAND_CAP)
+  })
+
+  it('keeps the command on the settled card, under the decision', () => {
+    const p = shell({ command: 'scripts/deploy --env staging', description: 'Deploy to staging' })
+    const [summary, code] = buildPermissionResolvedCard(p, 'Yes — Ada', true) as any[]
+    expect(summary.text.text).toBe(':lock: *Permission* — Deploy to staging\n:white_check_mark: Yes — Ada')
+    expect(code.text.text).toBe('```\nscripts/deploy --env staging\n```')
+  })
+
   it('resolved card drops the buttons and shows the decision icon', () => {
     const allow = buildPermissionResolvedCard(req(), 'Allow Once', true)
     expect(allow).toHaveLength(1)
@@ -2800,6 +2875,14 @@ describe('agent-authored text on a Slack card never becomes a link', () => {
 
   it('on the permission card', () => {
     expectNoLink((buildPermissionCard('p', perm())![0] as any).text)
+  })
+
+  it('on the command block under a described permission request', () => {
+    const described = perm({
+      toolCall: { toolCallId: 'tc1', title: SPOOF, rawInput: { command: SPOOF, description: 'Look' } }
+    })
+    expectNoLink((buildPermissionCard('p', described)![1] as any).text)
+    expectNoLink((buildPermissionResolvedCard(described, 'Allow Once', true)[1] as any).text)
   })
 
   it('on the resolved permission card, tool title and agent-named option both', () => {

@@ -23,7 +23,13 @@ import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { DiscordConnection } from '../../discord/connection.js'
 import { DISCORD_MESSAGE_LIMIT, type DiscordButton, type DiscordComponents } from '../../discord/render.js'
 import { defuseNoticeText } from '../../permissions/elicit-notice.js'
-import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
+import {
+  appendPermCommand,
+  clampTo,
+  PERMISSION_COMMAND_CAP,
+  permToolLabel,
+  type SubsessionNoticeOutcome
+} from '../../slack/render.js'
 import { DISCORD_BUTTON_LABEL_CAP, DISCORD_CUSTOM_ID_CAP, DISCORD_ELICIT_MAX_BUTTONS } from './elicit-card.js'
 
 /** Five rows of five buttons: the elicitation card's options plus the Dismiss slot a permission card does not need. */
@@ -61,6 +67,7 @@ function intro(asker: SubsessionAsker): string {
 }
 
 const fit = (text: string): string => clampTo(text, DISCORD_MESSAGE_LIMIT)
+const mdCommand = (command: string): string => md(command, PERMISSION_COMMAND_CAP)
 
 export const discordApprovalCards: ApprovalCardFacet = {
   platform: 'discord',
@@ -79,7 +86,13 @@ export const discordApprovalCards: ApprovalCardFacet = {
     const components: DiscordComponents = []
     for (let i = 0; i < buttons.length; i += 5) components.push({ type: 1, components: buttons.slice(i, i + 5) })
     const head = ask.subsession ? intro(ask.subsession) : ''
-    const text = fit(`${head}🔒 **Permission requested** — ${md(permToolLabel(ask.params), 200)}`)
+    const text = fit(
+      appendPermCommand(
+        `${head}🔒 **Permission requested** — ${md(permToolLabel(ask.params), 200)}`,
+        ask.params,
+        mdCommand
+      )
+    )
     return { text, components } satisfies DiscordApprovalDraft
   },
 
@@ -87,7 +100,13 @@ export const discordApprovalCards: ApprovalCardFacet = {
     const head = card.subsession ? intro(card.subsession) : ''
     const decision = `${approvalMark(card.allowed)} ${md(card.text, DISCORD_APPROVAL_DECISION_CAP)}`
     return {
-      text: fit(`${head}🔒 **Permission** — ${md(permToolLabel(card.params), 200)}\n${decision}`),
+      text: fit(
+        appendPermCommand(
+          `${head}🔒 **Permission** — ${md(permToolLabel(card.params), 200)}\n${decision}`,
+          card.params,
+          mdCommand
+        )
+      ),
       components: []
     } satisfies DiscordApprovalDraft
   },

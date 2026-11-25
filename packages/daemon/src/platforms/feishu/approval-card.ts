@@ -23,7 +23,7 @@ import {
 import type { ElicitCardHost, ElicitCardTurn } from '../elicit-card.js'
 import type { FeishuConnection } from '../../feishu/connection.js'
 import { FEISHU_MESSAGE_LIMIT, feishuCardTarget } from '../../feishu/render.js'
-import { clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
+import { appendPermCommand, clampTo, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import {
   FEISHU_ELICIT_MAX_OPTIONS,
   FEISHU_LABEL_CAP,
@@ -106,7 +106,7 @@ export const feishuApprovalCards: ApprovalCardFacet = {
     const head = ask.subsession ? intro(ask.subsession) : []
     const card = feishuCard([
       ...head,
-      feishuPlainText(fit(`🔒 Permission requested — ${permToolLabel(ask.params)}`)),
+      feishuPlainText(fit(appendPermCommand(`🔒 Permission requested — ${permToolLabel(ask.params)}`, ask.params))),
       feishuButtonRow(buttons)
     ])
     return { card } satisfies FeishuApprovalDraft
@@ -116,7 +116,12 @@ export const feishuApprovalCards: ApprovalCardFacet = {
     const head = card.subsession ? intro(card.subsession) : []
     const decision = `${approvalMark(card.allowed)} ${clampTo(card.text, FEISHU_APPROVAL_DECISION_CAP)}`
     return {
-      card: feishuCard([...head, feishuPlainText(fit(`🔒 Permission — ${permToolLabel(card.params)}\n${decision}`))])
+      card: feishuCard([
+        ...head,
+        feishuPlainText(
+          fit(appendPermCommand(`🔒 Permission — ${permToolLabel(card.params)}\n${decision}`, card.params))
+        )
+      ])
     } satisfies FeishuApprovalDraft
   },
 
