@@ -76,26 +76,52 @@ describe('routeRules (ladder smoke — deep coverage lives in the daemon suites)
     expect(routed).toMatchObject({ agentId: 'peer' })
   })
 
-  it('unverified bot traffic stops after the explicit-mention rung', () => {
-    const rules = [rule({ agentId: 'a1', match: { kind: 'auto' } })]
-    expect(routeRules(msg({ sender: { isBot: true } }), rules, () => null)).toBeNull()
+  it("another bot's unaddressed post reaches the auto rung and a thread's owner, and no other implicit rung", () => {
+    const auto = rule({ agentId: 'a1', match: { kind: 'auto' } })
+    const bot = { isBot: true, id: 'B1' }
+    expect(routeRules(msg({ sender: bot }), [auto], () => null)).toMatchObject({ agentId: 'a1', via: 'auto' })
+    expect(routeRules(msg({ sender: bot, thread: 'T1' }), [rule()], () => 'a1')).toMatchObject({ via: 'thread' })
+    for (const match of [{ kind: 'dm' }, { kind: 'keyword', value: 'hello' }, { kind: 'decision' }] as const) {
+      expect(routeRules(msg({ sender: bot, isDm: match.kind === 'dm' }), [rule({ match })], () => null)).toBeNull()
+    }
+    // A mention of someone else's bot still belongs to them.
+    expect(routeRules(msg({ sender: bot, mentionedBots: ['U2'] }), [auto], () => null)).toBeNull()
   })
 
-  it('admits third-party bot explicit mentions via manifest botSenderRouting (Slack & Mattermost only among chat mirrors)', () => {
+  it('admits bot senders only where the manifest routes them (Slack & Mattermost among chat mirrors)', () => {
     const mentionRule = rule({ agentId: 'a1', botUserId: 'UBOT', match: { kind: 'mention' } })
     const autoRule = rule({ agentId: 'a1', botUserId: 'UBOT', match: { kind: 'auto' } })
     for (const platform of ['slack', 'mattermost']) {
       expect(
         routeRules(msg({ platform, mentionedBots: ['UBOT'], sender: { isBot: true } }), [mentionRule], () => null)
       ).toMatchObject({ agentId: 'a1', via: 'mention' })
-      // Without an explicit mention, an unverified bot still stops before implicit rungs.
-      expect(routeRules(msg({ platform, sender: { isBot: true } }), [autoRule], () => null)).toBeNull()
+      expect(routeRules(msg({ platform, sender: { isBot: true } }), [autoRule], () => null)).toMatchObject({
+        via: 'auto'
+      })
     }
     for (const platform of ['telegram', 'discord', 'feishu', 'some-future-platform']) {
       expect(
         routeRules(msg({ platform, mentionedBots: ['UBOT'], sender: { isBot: true } }), [mentionRule], () => null)
       ).toBeNull()
+      expect(routeRules(msg({ platform, sender: { isBot: true } }), [autoRule], () => null)).toBeNull()
     }
+  })
+
+  it('a blocked bot sender reaches no rung in its conversation, mention included', () => {
+    const blockedBotSenders = [{ channel: 'C1', senders: ['B1'] }]
+    const rules = [
+      rule({ botUserId: 'UBOT', match: { kind: 'mention' }, blockedBotSenders }),
+      rule({ match: { kind: 'auto' }, blockedBotSenders })
+    ]
+    const blocked = { isBot: true, id: 'B1' }
+    expect(routeRules(msg({ sender: blocked }), rules, () => null)).toBeNull()
+    expect(routeRules(msg({ sender: blocked, mentionedBots: ['UBOT'] }), rules, () => null)).toBeNull()
+    expect(routeRules(msg({ sender: blocked, thread: 'T1' }), rules, () => 'a1')).toBeNull()
+    expect(automaticAgents(msg({ sender: blocked }), rules)).toEqual([])
+    // Another bot, another conversation, and a person with the same id are untouched.
+    expect(routeRules(msg({ sender: { isBot: true, id: 'B2' } }), rules, () => null)).toMatchObject({ via: 'auto' })
+    expect(routeRules(msg({ sender: blocked, channel: 'C2' }), rules, () => null)).toMatchObject({ via: 'auto' })
+    expect(routeRules(msg({ sender: { isBot: false, id: 'B1' } }), rules, () => null)).toMatchObject({ via: 'auto' })
   })
 })
 

@@ -341,6 +341,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         isPrivate: false,
         kind: 'channel',
         sessionMode: 'createNew',
+        blockedBotSenders: [],
         trigger: 'mention',
         isCodeSession: false,
         decisionBinding: null,
@@ -360,6 +361,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         isPrivate: true,
         kind: 'channel',
         sessionMode: 'createNew',
+        blockedBotSenders: [],
         trigger: 'mention',
         isCodeSession: false,
         decisionBinding: null,
@@ -1938,6 +1940,7 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       isPrivate: false,
       kind: 'channel',
       sessionMode: 'createNew',
+      blockedBotSenders: [],
       trigger: 'any',
       isCodeSession: false,
       decisionBinding: null,
@@ -1987,6 +1990,30 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       payload: { trigger: 'any' }
     })
     expect(missIntegration.statusCode).toBe(404)
+  })
+})
+
+describe('PATCH /integrations/:id/channels/:channelId — blocked bot senders', () => {
+  it('a blockedBotSenders-only patch persists deduplicated, reaches the daemon, and leaves the trigger alone', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'alerts' }])
+    spy.upserts.length = 0
+    const url = `${ORG}/integrations/${id}/channels/C1`
+
+    const res = await running.app.inject({ method: 'PATCH', url, payload: { blockedBotSenders: ['B1', 'B2', 'B1'] } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ trigger: 'mention', blockedBotSenders: ['B1', 'B2'] })
+    expect(spy.upserts[0]!.u.core!.blockedBotSenders).toEqual([{ channel: 'C1', senders: ['B1', 'B2'] }])
+
+    // An unrelated patch keeps the list; an empty one clears it from the row and the spec.
+    await running.app.inject({ method: 'PATCH', url, payload: { trigger: 'any' } })
+    expect(spy.upserts.at(-1)!.u.core!.blockedBotSenders).toEqual([{ channel: 'C1', senders: ['B1', 'B2'] }])
+    const cleared = await running.app.inject({ method: 'PATCH', url, payload: { blockedBotSenders: [] } })
+    expect(cleared.json()).toMatchObject({ trigger: 'any', blockedBotSenders: [] })
+    expect(spy.upserts.at(-1)!.u.core!.blockedBotSenders).toEqual([])
   })
 })
 

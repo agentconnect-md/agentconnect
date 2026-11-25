@@ -6926,6 +6926,8 @@ export interface IntegrationChannelRecord {
   trigger: ChannelTrigger
   /** Which session a message here joins. Replicated across sibling rows like `trigger`. */
   sessionMode: ChannelSessionMode
+  /** Bot sender ids whose posts activate no agent here. Replicated across sibling rows like `trigger`. */
+  blockedBotSenders: string[]
   /** The By decision consumer (a gate or the bot's router); non-null exactly when `trigger` is 'decision' (null if unparseable). */
   decisionBinding: import('@agentconnect.md/protocol').ChannelDecisionBinding | null
   /** A Decision edit invalidated this gate; replicated across sibling rows like `trigger`. */
@@ -7044,6 +7046,12 @@ export interface IntegrationChannelRepo {
     integrationId: IntegrationId,
     channelId: string,
     sessionMode: ChannelSessionMode
+  ): Promise<IntegrationChannelRecord | null>
+  /** Replace the conversation's blocked bot senders; returns null when the row doesn't exist. */
+  setBlockedBotSenders(
+    integrationId: IntegrationId,
+    channelId: string,
+    senders: string[]
   ): Promise<IntegrationChannelRecord | null>
   /** Set or clear this integration row's owner marker. The orchestrator keeps
    *  exactly one row marked per shared conversation. Returns null when missing. */

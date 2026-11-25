@@ -1221,6 +1221,9 @@ export const MCP_TOOLS: McpToolDef[] = [
         sessionMode: UpdateIntegrationChannelBody.shape.sessionMode.describe(
           'createNew opens a session per thread; append joins the conversation’s one long-lived session; auto, where the daemon supports it, lets a coordinator session route each message'
         ),
+        blockedBotSenders: UpdateIntegrationChannelBody.shape.blockedBotSenders.describe(
+          'Replaces the platform bot ids whose posts never activate an agent here; any other bot’s post reaches an Any-message agent'
+        ),
         agentId: z.string().min(1).optional().describe('Owning agent for this channel (from listAgents)')
       })
       .strict()

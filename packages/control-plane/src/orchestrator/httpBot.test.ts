@@ -132,6 +132,7 @@ function channel(over: Partial<IntegrationChannelRecord>): IntegrationChannelRec
     trigger: 'mention',
     dmUserId: null,
     sessionMode: 'createNew',
+    blockedBotSenders: [],
     triggerChosen: false,
     decisionBinding: null,
     decisionNeedsReview: false,
@@ -263,6 +264,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       | 'setAgent'
       | 'setTrigger'
       | 'setSessionMode'
+      | 'setBlockedBotSenders'
       | 'upsertAgent'
       | 'upsertConversation'
     > = {
@@ -297,6 +299,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
         if (!row) return null
         row.agentId = agentId
+        return row
+      },
+      setBlockedBotSenders: async (integrationId, channelId, senders) => {
+        const row = channels.find((c) => c.integrationId === integrationId && c.channelId === channelId)
+        if (!row) return null
+        row.blockedBotSenders = senders
         return row
       },
       setSessionMode: async (integrationId, channelId, sessionMode) => {
@@ -1143,6 +1151,22 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.routes.filter((r) => r.scope?.channel === 'C5')).toEqual([
         expect.objectContaining({ agentId: ALICE, match: { kind: 'auto' } })
       ])
+    })
+
+    it("repeats a conversation's blocked bot senders on every sibling row and ships them on the hot route update", async () => {
+      channels = []
+      const orch = makeOrch()
+      await orch.replaceChannels(BOT, [{ id: 'C5', name: 'alerts' }])
+      await orch.updateConversation(BOT, 'C5', { blockedBotSenders: ['BNOISY'] })
+      expect(channels.filter((c) => c.channelId === 'C5').map((c) => c.blockedBotSenders)).toEqual([
+        ['BNOISY'],
+        ['BNOISY']
+      ])
+      const routes = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcBotAssign
+      expect(routes.blockedBotSenders).toEqual([{ channel: 'C5', senders: ['BNOISY'] }])
+      // A patch that names no list keeps it.
+      await orch.updateConversation(BOT, 'C5', { trigger: 'any' })
+      expect(channels.filter((c) => c.channelId === 'C5').every((c) => c.blockedBotSenders[0] === 'BNOISY')).toBe(true)
     })
 
     it('keeps new rooms Per thread for an owner whose daemon does not read Auto', async () => {

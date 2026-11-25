@@ -25,6 +25,7 @@ import type {
   RcRoutedConversation,
   SharedBotDecisionRouting,
   RcBotCredentialCheck,
+  ChannelBlockedBotSenders,
   RcConversationDefault,
   BindMatch,
   RcThreadAssign,
@@ -63,7 +64,13 @@ import type {
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
-import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } from './placement.js'
+import {
+  blockedBotSenderEntries,
+  defaultMemberOf,
+  isGatedAgent,
+  httpIntegrationToSpec,
+  placedMembers
+} from './placement.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -139,6 +146,8 @@ interface Compiled {
   mutedChannels: string[]
   /** The muted conversations that are Off (not a held decision): an addressed message there gets the §14.3 notice. */
   offChannels: string[]
+  /** Per conversation, the bot senders whose posts reach no agent of this bot. */
+  blockedBotSenders: ChannelBlockedBotSenders[]
   /** Every membership row of the bot, read once for the compile and reused by the
    *  spec push (both need the per-install trigger state). */
   botChannels: IntegrationChannelRecord[]
@@ -412,6 +421,7 @@ export class HttpBotOrchestrator {
             gatedAgentIds: compiled.gatedAgentIds,
             mutedChannels: compiled.mutedChannels,
             offChannels: compiled.offChannels,
+            blockedBotSenders: compiled.blockedBotSenders,
             // An owner edit converges here without a re-assign, so the defaults must ride the hot
             // update too — otherwise a connected relay keeps the old default, and the old grant.
             conversationDefaults: compiled.conversationDefaults,
@@ -1049,6 +1059,7 @@ export class HttpBotOrchestrator {
       trigger?: ChannelTrigger
       decisionBinding?: ChannelDecisionGate
       sessionMode?: ChannelSessionMode
+      blockedBotSenders?: string[]
     },
     options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
   ): Promise<IntegrationChannelRecord | null> {
@@ -1104,6 +1115,11 @@ export class HttpBotOrchestrator {
       const sessionMode = patch.sessionMode ?? currentRow?.sessionMode ?? rows[0]?.sessionMode ?? updated.sessionMode
       await this.syncConversationSessionMode(installs, channelId, sessionMode, rows)
       updated = { ...updated, sessionMode }
+      // Bot-scoped like the session mode: every sibling row repeats the list.
+      const blockedBotSenders =
+        patch.blockedBotSenders ?? currentRow?.blockedBotSenders ?? rows[0]?.blockedBotSenders ?? []
+      await this.syncConversationBlockedBotSenders(installs, channelId, blockedBotSenders, rows)
+      updated = { ...updated, blockedBotSenders }
       // Re-read the owner row so the response carries the joined Decision definition.
       const fresh = (await this.channels.listForBot(bot.id)).find(
         (row) => row.integrationId === owner.id && row.channelId === channelId
@@ -1392,6 +1408,23 @@ export class HttpBotOrchestrator {
    *  canonical owner leaves the choice on the rows that survive. Runs after
    *  {@link syncConversationTrigger}, which is what backfills a missing sibling row — this
    *  only writes rows that already exist, and skips the ones already carrying the value. */
+  private async syncConversationBlockedBotSenders(
+    installs: IntegrationRecord[],
+    channelId: string,
+    senders: string[],
+    knownRows: IntegrationChannelRecord[]
+  ): Promise<void> {
+    const known = new Map(knownRows.map((row) => [row.integrationId, row]))
+    const same = (row?: IntegrationChannelRecord): boolean =>
+      row !== undefined &&
+      row.blockedBotSenders.length === senders.length &&
+      row.blockedBotSenders.every((id) => senders.includes(id))
+    for (const integration of installs) {
+      if (same(known.get(integration.id))) continue
+      await this.channels.setBlockedBotSenders(integration.id, channelId, senders)
+    }
+  }
+
   private async syncConversationSessionMode(
     installs: IntegrationRecord[],
     channelId: string,
@@ -1477,6 +1510,15 @@ export class HttpBotOrchestrator {
           ownerRow?.sessionMode ??
             conversationRows.find((row) => row.sessionMode !== 'createNew')?.sessionMode ??
             'createNew',
+          conversationRows
+        )
+        // The blocked bot senders replicate on the same backfill; the owner row is authoritative.
+        await this.syncConversationBlockedBotSenders(
+          installs,
+          channelId,
+          ownerRow?.blockedBotSenders ??
+            conversationRows.find((row) => row.blockedBotSenders.length > 0)?.blockedBotSenders ??
+            [],
           conversationRows
         )
       }
@@ -1773,6 +1815,7 @@ export class HttpBotOrchestrator {
       gatedAgentIds: placed.filter((p) => p.gated).map((p) => p.integration.agentId),
       mutedChannels,
       offChannels,
+      blockedBotSenders: blockedBotSenderEntries(chans),
       conversationDefaults,
       ownerAsDefault,
       routedConversations,
@@ -1940,6 +1983,7 @@ export class HttpBotOrchestrator {
       gatedAgentIds: compiled.gatedAgentIds,
       mutedChannels: compiled.mutedChannels,
       offChannels: compiled.offChannels,
+      blockedBotSenders: compiled.blockedBotSenders,
       conversationDefaults: compiled.conversationDefaults,
       ownerAsDefault: compiled.ownerAsDefault,
       routedConversations: compiled.routedConversations,

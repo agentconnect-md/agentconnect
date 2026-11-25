@@ -66,9 +66,10 @@ export interface PlatformManifest {
   readonly dmChannelPattern?: RegExp
   /** Whether bot-authored messages may enter the routing ladder at all (§5).
    *  Read by relay arbitration BEFORE any target resolves: on a `true` platform
-   *  a third-party bot's message is admitted when it explicitly @-mentions the
-   *  receiving bot (verified AgentConnect authors ride the full ladder
-   *  separately); on a `false` platform bot senders never route. Fail-closed:
+   *  a third-party bot's message is admitted when it @-mentions the receiving
+   *  bot or lands in an Any-message conversation that does not block its sender
+   *  (verified AgentConnect authors ride the full ladder separately); on a
+   *  `false` platform bot senders never route. Fail-closed:
    *  an unknown platform admits no bot senders. */
   readonly botSenderRouting: boolean
   /** What a leave request may target on this platform (§5). A PRE-DISPATCH

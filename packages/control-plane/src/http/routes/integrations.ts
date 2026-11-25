@@ -94,6 +94,7 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
     decisionBinding: c.trigger === 'decision' ? c.decisionBinding : null,
     decision: c.trigger === 'decision' ? decisionChannelView(c, view?.names ?? new Map(), view?.readiness?.(c)) : null,
     sessionMode: c.sessionMode,
+    blockedBotSenders: c.blockedBotSenders,
     agentId: c.agentId,
     externalReason: c.externalReason ?? null
   }
@@ -1044,6 +1045,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // remains authoritative.
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
+          const blockedBotSenders = req.body.blockedBotSenders ? [...new Set(req.body.blockedBotSenders)] : undefined
           if (botScopedConversation) {
             updated = await deps.httpBot.updateConversation(
               bot.id,
@@ -1052,7 +1054,8 @@ export function integrationRoutes(deps: HttpDeps) {
                 ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
                 ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {}),
                 ...(gate ? { decisionBinding: gate } : {}),
-                ...(req.body.sessionMode !== undefined ? { sessionMode: req.body.sessionMode } : {})
+                ...(req.body.sessionMode !== undefined ? { sessionMode: req.body.sessionMode } : {}),
+                ...(blockedBotSenders ? { blockedBotSenders } : {})
               },
               {
                 expectedOwnerAgentId: effectiveOwner!.id,
@@ -1097,6 +1100,13 @@ export function integrationRoutes(deps: HttpDeps) {
                 integration.id,
                 req.params.channelId,
                 req.body.sessionMode
+              )
+            }
+            if (updated && blockedBotSenders) {
+              updated = await deps.repos.integrationChannel.setBlockedBotSenders(
+                integration.id,
+                req.params.channelId,
+                blockedBotSenders
               )
             }
           }

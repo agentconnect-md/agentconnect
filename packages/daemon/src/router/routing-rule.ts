@@ -19,6 +19,7 @@ import type { ActivationRule } from '@agentconnect.md/activation-policy'
 import {
   manifestFor,
   type AppendConversationKind,
+  type ChannelBlockedBotSenders,
   type ChannelSessionMode,
   type PlaceTrustLevel,
   type RouteAssign,
@@ -43,6 +44,7 @@ export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
   mutedChannels: string[]
+  blockedBotSenders: ChannelBlockedBotSenders[]
   gated: boolean
   /** The enabled By decision gate for a channel with its resolved definition, or undefined. */
   decisionBindingFor(channel: string): ResolvedDecisionGate | undefined
@@ -53,12 +55,13 @@ export function integrationRouting(int: Integration): {
   /** The bot router this daemon hosts for this integration, if any. */
   sharedBotRouting(): ResolvedDecisionBundle['sharedBotRouting']
 } {
-  const { bindRules, mutedChannels, gated, decisions } = integrationCore(int)
+  const { bindRules, mutedChannels, blockedBotSenders, gated, decisions } = integrationCore(int)
   const bundle = resolveDecisionBundle(decisions)
   return {
     staticBotUserId: configuredBotSelfId(int),
     bindRules,
     mutedChannels,
+    blockedBotSenders,
     gated,
     decisionBindingFor: (channel) => bundle.gates.get(channel),
     routingFor: (channel) => bundle.routed.get(channel),
@@ -142,7 +145,13 @@ export function resolveAgentIntegration(
   agent: Agent | undefined,
   botUserIds: Record<string, string>,
   platform?: string
-): { integrationId: string; botUserId: string; platform: string; mutedChannels: string[] } | null {
+): {
+  integrationId: string
+  botUserId: string
+  platform: string
+  mutedChannels: string[]
+  blockedBotSenders: ChannelBlockedBotSenders[]
+} | null {
   // Prefer an integration on the requested platform — an agent may bridge several (e.g.
   // Slack + Telegram). Delivering a reply/wake into a session on platform X must use X's
   // integration; otherwise the turn's output posts through the wrong platform's client
@@ -156,12 +165,13 @@ export function resolveAgentIntegration(
   const int =
     (platform ? agent?.integrations.find((i) => i.platform === platform) : undefined) ?? agent?.integrations[0]
   if (!int) return null
-  const { staticBotUserId, mutedChannels } = integrationRouting(int)
+  const { staticBotUserId, mutedChannels, blockedBotSenders } = integrationRouting(int)
   return {
     integrationId: int.id,
     botUserId: botUserIds[int.id] ?? staticBotUserId ?? '',
     platform: int.platform,
-    mutedChannels
+    mutedChannels,
+    blockedBotSenders
   }
 }
 
@@ -189,7 +199,7 @@ export function rulesFromAgent(
   const out: RoutingRule[] = []
   for (const int of agent.integrations) {
     const routing = integrationRouting(int)
-    const { staticBotUserId, mutedChannels } = routing
+    const { staticBotUserId, mutedChannels, blockedBotSenders } = routing
     const auto = opts.autoSessionMode && !agent.coordinatorDisabled
     const bindRules = [...routing.bindRules, ...(auto ? autoConversationRules(int, routing) : [])]
     const botUserId = botUserIds[int.id] ?? staticBotUserId ?? ''
@@ -201,6 +211,7 @@ export function rulesFromAgent(
         scope: { ...(br.channel ? { channel: br.channel } : {}), ...(br.thread ? { thread: br.thread } : {}) },
         match: br.match,
         mutedChannels,
+        blockedBotSenders,
         source: 'config',
         platform: int.platform
       })
@@ -212,9 +223,13 @@ export function rulesFromAgent(
 /** Resolve a stored CP rule to a RoutingRule; null if the agent is unservable. */
 export function resolveCpRule(
   cp: CpRule,
-  resolve: (
-    agentId: string
-  ) => { integrationId: string; botUserId: string; platform: string; mutedChannels?: string[] } | null
+  resolve: (agentId: string) => {
+    integrationId: string
+    botUserId: string
+    platform: string
+    mutedChannels?: string[]
+    blockedBotSenders?: ChannelBlockedBotSenders[]
+  } | null
 ): RoutingRule | null {
   const r = resolve(cp.agentId)
   if (!r) return null
@@ -227,6 +242,7 @@ export function resolveCpRule(
     // A CP session placement is scoped to a conversation the operator may since have
     // switched off; it carries its integration's fence for the same reason a local rule does.
     ...(r.mutedChannels ? { mutedChannels: r.mutedChannels } : {}),
+    ...(r.blockedBotSenders ? { blockedBotSenders: r.blockedBotSenders } : {}),
     source: 'cp',
     platform: r.platform,
     ...(cp.epoch !== undefined ? { epoch: cp.epoch } : {})

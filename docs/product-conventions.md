@@ -652,8 +652,10 @@ ladder as any other message**, with the author removed from the candidate set:
   exception: its one paired internal wake activates the new child exactly once;
 - agent-authored text cannot issue control commands (`!stop`, `!resume`, configuration
   actions);
-- a third-party bot is unchanged: where supported, it may activate an agent only through
-  an explicit mention.
+- another bot's post is an ordinary message, never an agent call: where the platform admits bot
+  senders, its mention activates the agent it names and its unaddressed post reaches a
+  conversation's Any-message agents and a thread's participants, unless the conversation
+  blocks that sender.
 
 **What this means in a shared channel.** A multi-agent conversation now ends because it
 reaches a limit, not because an agent stops addressing anyone. The agent-to-agent hop cap

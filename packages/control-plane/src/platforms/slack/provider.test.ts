@@ -151,6 +151,7 @@ const channel = (
   trigger,
   dmUserId: null,
   sessionMode: 'createNew',
+  blockedBotSenders: [],
   triggerChosen: false,
   decisionBinding: null,
   decisionNeedsReview: false,
@@ -543,6 +544,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
         mutedChannels: ['C3'],
         gated: false,
         sessionModes: [],
+        blockedBotSenders: [],
         externalChannels: [],
         decisions: { bindings: [], definitions: [] },
         chatAuthority: 'participants'
@@ -627,6 +629,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
         mutedChannels: ['C2'],
         gated: false,
         sessionModes: [],
+        blockedBotSenders: [],
         externalChannels: [],
         decisions: { bindings: [], definitions: [] },
         chatAuthority: 'participants'

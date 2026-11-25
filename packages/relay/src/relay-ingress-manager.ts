@@ -1367,9 +1367,7 @@ export class RelayIngressManager {
       return 'refused'
     }
     let tgt: RouteTarget | null = arbitration.kind === 'target' ? arbitration.target : null
-    // Third-party bots retain their strict explicit-mention-only behavior. Participant
-    // fan-out is for humans and verified AgentConnect authors; treating an arbitrary bot
-    // like a person in the room would let one mention wake unrelated joined agents.
+    // Another bot's mention wakes only the agent it names; its unaddressed post reaches the conversation's Any-message and joined agents, unless the conversation blocks that sender.
     let conversationTargets =
       msg.sender.isBot && tgt
         ? [{ target: tgt, via: 'mention' as const }]

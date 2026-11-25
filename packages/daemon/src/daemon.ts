@@ -17300,9 +17300,11 @@ export class Daemon {
     // owner. In a real multi-agent thread `threadOwner` intentionally returns null; the
     // joined agents (and every newly mentioned or channel-auto agent) still hear the
     // message as separate deliveries with target-specific trigger/mute handling.
-    const peerOutcomes = msg.sender.isBot
-      ? []
-      : await this.fanOutToThreadPeers(msg, routingRules, result?.agentId, undefined, record)
+    // Another bot's post reaches a thread's participants and the channel's Any-message agents where the platform admits bot senders.
+    const peerOutcomes =
+      msg.sender.isBot && !manifestFor(msg.platform).botSenderRouting
+        ? []
+        : await this.fanOutToThreadPeers(msg, routingRules, result?.agentId, undefined, record)
     const dispatchedPeer = peerOutcomes.find((outcome) => outcome.kind === 'dispatched')
     if (!result) {
       if (dispatchedPeer) return dispatchedPeer
@@ -20843,10 +20845,7 @@ export class Daemon {
   }
 
   /** Resolve a CP agentId (== local agent.id) to its integration; null if unservable. */
-  private resolveCpAgent(
-    agentId: string,
-    platform?: string
-  ): { integrationId: string; botUserId: string; platform: string; mutedChannels: string[] } | null {
+  private resolveCpAgent(agentId: string, platform?: string): ReturnType<typeof resolveAgentIntegration> {
     return resolveAgentIntegration(this.agents.get(agentId), this.botUserIds, platform)
   }
 

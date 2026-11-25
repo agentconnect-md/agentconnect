@@ -252,6 +252,13 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
+// One conversation's blocked bot senders: a listed bot's posts activate no agent there, and every other bot's reach its Any-message agents.
+export const ChannelBlockedBotSenders = z.object({
+  channel: z.string(),
+  senders: z.array(z.string().min(1)).min(1)
+})
+export type ChannelBlockedBotSenders = z.infer<typeof ChannelBlockedBotSenders>
+
 /** Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else. */
 export const PlaceTrustLevel = z.enum(['internal', 'external'])
 export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>
@@ -292,6 +299,8 @@ export const IntegrationCoreEnvelope = z.object({
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
   sessionModes: z.array(IntegrationSessionMode).default([]),
+  // Sparse; absent reads as none blocked.
+  blockedBotSenders: z.array(ChannelBlockedBotSenders).optional(),
   // Conversations the platform detected as external (assistant-mode.md §5.3); every other enabled one is internal.
   externalChannels: z.array(z.string()).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.

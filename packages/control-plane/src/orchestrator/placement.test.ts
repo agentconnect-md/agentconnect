@@ -131,6 +131,7 @@ const channel = (
   trigger,
   dmUserId: null,
   sessionMode,
+  blockedBotSenders: [],
   triggerChosen: false,
   decisionBinding: null,
   decisionNeedsReview: false,
@@ -361,6 +362,30 @@ describe('integrationToSpec externalChannels', () => {
       [shared('C1')]
     )
     expect(spec?.core.externalChannels).toEqual(['C1'])
+  })
+})
+
+describe('integrationToSpec blockedBotSenders', () => {
+  const blocking = (channelId: string, senders: string[]): IntegrationChannelRecord => ({
+    ...channel(channelId, 'any'),
+    blockedBotSenders: senders
+  })
+
+  it('lists only the conversations that block a bot sender', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [blocking('C1', ['B1', 'B2']), channel('C2', 'any')])
+    expect(spec.core.blockedBotSenders).toEqual([{ channel: 'C1', senders: ['B1', 'B2'] }])
+  })
+
+  it('ships for a relay-managed bot too', async () => {
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      NO_SESSION_SYNC,
+      INTEGRATION,
+      bot({ transport: 'http' }),
+      SECRET,
+      [blocking('C1', ['B1'])]
+    )
+    expect(spec?.core.blockedBotSenders).toEqual([{ channel: 'C1', senders: ['B1'] }])
   })
 })
 

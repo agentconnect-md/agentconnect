@@ -3165,6 +3165,8 @@ model IntegrationChannel {
   // shared bot's sibling rows like `trigger`, so deleting the canonical owner keeps it.
   // No `chosen` twin: unlike a stored Off, the default is never mistaken for a decision.
   sessionMode   ChannelSessionMode @default(createNew)
+  // Bot sender ids whose posts activate no agent here; every other bot's reach an Any-message agent. Replicated across sibling rows like `trigger`.
+  blockedBotSenders String[]     @default([])
   // True once a HUMAN chose this conversation's trigger (resource-visibility.md §14.8).
   // A stored Off is otherwise indistinguishable from a default nobody has decided yet,
   // and the two need opposite treatment: §14.8's catch-up may open a defaulted row and

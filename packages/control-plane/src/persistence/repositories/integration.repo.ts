@@ -964,6 +964,7 @@ function toChannelRecord(
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
     sessionMode: c.sessionMode as ChannelSessionMode,
+    blockedBotSenders: c.blockedBotSenders,
     decisionBinding: c.decisionBinding === null ? null : bindingOf(c.decisionBinding),
     decisionNeedsReview: c.decisionNeedsReview,
     decisionDefinition: c.decisionBinding === null ? null : definitionOf(c.decision),
@@ -1208,6 +1209,7 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       const settings = {
         trigger: old.trigger,
         sessionMode: old.sessionMode,
+        blockedBotSenders: old.blockedBotSenders,
         triggerChosen: old.triggerChosen,
         decisionBinding: old.decisionBinding === null ? Prisma.DbNull : (old.decisionBinding as Prisma.InputJsonValue),
         decisionId: old.decisionId,
@@ -1392,6 +1394,23 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       select: { trigger: true }
     })
     return row !== null && row.trigger !== 'off'
+  }
+
+  async setBlockedBotSenders(
+    integrationId: IntegrationId,
+    channelId: string,
+    senders: string[]
+  ): Promise<IntegrationChannelRecord | null> {
+    const res = await this.db.integrationChannel.updateMany({
+      where: { integrationId, channelId },
+      data: { blockedBotSenders: senders }
+    })
+    if (res.count === 0) return null
+    const row = await this.db.integrationChannel.findUnique({
+      where: { integrationId_channelId: { integrationId, channelId } },
+      include: CHANNEL_INCLUDE
+    })
+    return row ? (await channelRecords(this.db, [row]))[0]! : null
   }
 
   async setSessionMode(

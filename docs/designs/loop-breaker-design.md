@@ -113,8 +113,9 @@ The same apparent effect may travel through different trust paths. For example:
 causal metadata. A Slack message from an AgentConnect-managed bot is conversation
 history, not an activation path. It is deterministically dropped before
 command/model admission even if the body contains an explicit `@mention`.
-Third-party bots may still trigger an agent through an explicit `@mention`, but
-their messages are treated as L1 `automatic`/untrusted turns.
+Third-party bots may trigger an agent through an explicit `@mention`, or with any post
+in a conversation whose trigger is Any message; either way their messages are L1
+`automatic`/untrusted turns, and a conversation can block a sender outright.
 
 ---
 

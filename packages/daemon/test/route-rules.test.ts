@@ -69,14 +69,19 @@ describe('routeRules ladder', () => {
     expect(participantAgents(msg(), muted, ['joined'])).toEqual([])
   })
 
-  it('lets Slack bots enter only through an explicit mention', () => {
+  it("routes another Slack bot's mention to the agent it names and its unaddressed post to the auto rung", () => {
     const rules = [
       rule({ agentId: 'mentioned', botUserId: 'B9', match: { kind: 'mention' } }),
       rule({ agentId: 'auto', match: { kind: 'auto' } })
     ]
     const bot = { id: 'UPEERBOT', isBot: true }
 
-    expect(routeRules(msg({ sender: bot }), rules, noOwner)).toBeNull()
+    expect(routeRules(msg({ sender: bot }), rules, noOwner)).toEqual({
+      agentId: 'auto',
+      integrationId: 'i',
+      via: 'auto'
+    })
+    expect(routeRules(msg({ platform: 'telegram', sender: bot }), rules, noOwner)).toBeNull()
     expect(routeRules(msg({ sender: bot, mentionedBots: ['B9'] }), rules, noOwner)).toEqual({
       agentId: 'mentioned',
       integrationId: 'i',
@@ -368,7 +373,8 @@ describe('rulesFromAgent / resolveAgentIntegration (Telegram)', () => {
       integrationId: 'i-tg',
       botUserId: 'mybot',
       platform: 'telegram',
-      mutedChannels: []
+      mutedChannels: [],
+      blockedBotSenders: []
     })
     expect(resolveAgentIntegration(undefined, {})).toBeNull()
   })

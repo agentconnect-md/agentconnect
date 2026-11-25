@@ -890,6 +890,35 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled()
   })
 
+  it("forwards another bot's unaddressed post to the conversation's Any-message agents unless its sender is blocked there", async () => {
+    const { daemon, sendMsg } = online()
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon }))
+    const internals = internalsOf(manager)
+    const shared = channelAutoOwned()
+    shared.blockedBotSenders = [{ channel: 'C123', senders: ['BNOISY'] }]
+    internals.router.upsert(shared)
+    const post = (msgId: string, id: string, over: Partial<WireNormalizedMessage> = {}) =>
+      internals.forward(
+        BOT_ID,
+        followUp({
+          msgId,
+          thread: undefined,
+          sender: { id, isBot: true },
+          text: '[FIRING] disk',
+          mentionedBots: [],
+          ...over
+        })
+      )
+
+    await post('slack:C123:alert', 'BALERTS')
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ msgId: 'slack:C123:alert', agentId: AGENT_ID })
+
+    await post('slack:C123:noise', 'BNOISY')
+    await post('slack:C123:noise-mention', 'BNOISY', { text: '<@UBOT> hi', mentionedBots: ['UBOT'] })
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+  })
+
   it('names the bound Decision on a By decision delivery and skips a daemon that predates it', async () => {
     const decisionOwned = (): BotAssignment => {
       const a = channelOwned()
