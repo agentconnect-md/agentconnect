@@ -815,7 +815,7 @@ export class Placement implements ReconcileService {
       // above — an AgentSpec only names its MCP servers and its memory
       // connection, so a duty-held replica whose definitions were resolved by
       // placement would come up with neither. `ownedAgents`, not a second read.
-      mcpServers: await this.desiredMcpServers(daemonId, ownedAgents), // token-bearing (relay url + grant key)
+      mcpServers: await this.desiredMcpServers(daemonId, ownedAgents, req.capabilities.features), // token-bearing (relay url + grant key)
       memoryConnections: await this.desiredMemoryConnections(daemonId, ownedAgents),
       leases: desiredLeases,
       relays: [], // relay roster — populated once CP relay orchestration lands (shared-bot-relay.md A2)
@@ -834,8 +834,12 @@ export class Placement implements ReconcileService {
    * (placed on it or held by duty) rather than on placement — see
    * `orchestrator/agentDefinitions.ts` for the projector and its security note.
    */
-  private async desiredMcpServers(daemonId: DaemonId, agents: readonly AgentRecord[]): Promise<McpServerSpec[]> {
-    return mcpDefsForAgents(agents, this.orch?.mcp, this.orch?.log, { daemonId })
+  private async desiredMcpServers(
+    daemonId: DaemonId,
+    agents: readonly AgentRecord[],
+    features: readonly string[] | undefined
+  ): Promise<McpServerSpec[]> {
+    return mcpDefsForAgents(agents, this.orch?.mcp, features, this.orch?.log, { daemonId })
   }
 
   /** Connection defs referenced by the agents this daemon serves — same union. */

@@ -10,15 +10,23 @@
  * The frame carries the upstream credential (headers) — NEVER logged. Per-provider
  * failures are swallowed + logged so one bad row can't starve the rest of the pool.
  */
-import type { McpProviderRepo, McpProviderSecretStore, McpGrantRepo } from '../persistence/ports.js'
+import type {
+  AgentMcpToolPolicyRepo,
+  McpProviderRepo,
+  McpProviderSecretStore,
+  McpGrantRepo
+} from '../persistence/ports.js'
 import type { RelayChannel } from '../ws/relay-registry.js'
-import { mcpRcAssign } from './mcpProvider.js'
+import { mcpBinding, mcpRcAssignFor } from './mcpProvider.js'
+import { restrictedGrantsFor } from './mcpRestrictedGrants.js'
 import { resolveUpstreamHeaders, type McpTokenResolver } from './mcpUpstreamHeaders.js'
 
 export interface McpReplayDeps {
   providers: McpProviderRepo
   secrets: McpProviderSecretStore
   grants: McpGrantRepo
+  /** Per-agent tool policies, so restricted grants replay with their tables; absent ⇒ none. */
+  policies?: Pick<AgentMcpToolPolicyRepo, 'listForProvider'>
   /** OAuth token custody. Replay always resolves CACHED-ONLY — see below. */
   tokens?: McpTokenResolver
   log?: { warn(obj: object, msg: string): void }
@@ -38,7 +46,8 @@ export async function replayMcpTo(
       // resolve here would couple relay convergence to third-party authorization servers.
       const headers = await resolveUpstreamHeaders(deps, p, p.orgId, { allowNetwork: false })
       if (headers === null) continue // nothing callable to bind (never authorized, or swept)
-      ch.send('rc/mcp-assign', mcpRcAssign(p, headers, keys))
+      const restricted = await restrictedGrantsFor(p.orgId, p.id, deps)
+      ch.send('rc/mcp-assign', mcpRcAssignFor(mcpBinding(p, headers, keys, restricted), ch.features))
     } catch (err) {
       deps.log?.warn({ providerId: p.id, err }, 'mcp replay: send failed — skipped')
       withhold(p.id)

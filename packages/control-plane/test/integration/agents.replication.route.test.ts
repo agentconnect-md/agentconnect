@@ -670,6 +670,9 @@ class McpSpyControl {
   readonly mcpRemoves: Array<{ daemonId: string; orgId: string; name: string }> = []
   async agentUpsert(): Promise<void> {}
   async agentRemove(): Promise<void> {}
+  daemonFeatures(_daemonId: string): readonly string[] | undefined {
+    return undefined
+  }
   async mcpServerUpsert(daemonId: string, spec: { name: string; url: string; headers: unknown[] }): Promise<void> {
     this.mcpUpserts.push({ daemonId, spec })
   }
@@ -889,11 +892,15 @@ describe('agent updates follow the duty holder', () => {
       data: { mcpProviderId: providerId, key: 'oct_freshkey', createdAt: new Date(Date.now() + 1_000) }
     })
     const agent = await running.deps.repos.agent.getUnscoped(AgentId(agentId))
-    const defs = await mcpDefsForAgents([agent!], {
-      providers: running.deps.repos.mcpProvider,
-      grants: running.deps.repos.mcpGrant,
-      relayRoster: { entries: async () => [{ relayId: randomUUID(), url: 'ws://relay.example:8443' }] }
-    })
+    const defs = await mcpDefsForAgents(
+      [agent!],
+      {
+        providers: running.deps.repos.mcpProvider,
+        grants: running.deps.repos.mcpGrant,
+        relayRoster: { entries: async () => [{ relayId: randomUUID(), url: 'ws://relay.example:8443' }] }
+      },
+      []
+    )
 
     expect(defs).toHaveLength(1)
     expect(defs[0]!.headers).toEqual([{ name: 'Authorization', value: 'Bearer oct_freshkey' }])

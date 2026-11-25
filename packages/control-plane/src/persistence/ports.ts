@@ -11,6 +11,7 @@
  */
 import type { MemoryHomeUpdate } from '../agent-memory/home.js'
 import type {
+  McpCatalogTool,
   SkillSourceFailureCode,
   AgentModelProvider,
   AgentApiGates,
@@ -8003,21 +8004,105 @@ export interface McpGrantRecord {
   mcpProviderId: string
   key: string
   status: 'active' | 'revoked'
+  /** Null for the organization-shared grant; the restricted agent's id otherwise (mcp-tool-permissions.md §5.1). */
+  agentId?: string | null
+  /** An agent grant's custody, fixed at mint (§5.6); null for the shared grant. */
+  custody?: McpGrantCustody | null
   createdAt: Date
 }
+
+/** Who may hold an agent grant's key: only the daemon (approvals possible), or the runtime too (§5.6). */
+export type McpGrantCustody = 'daemon' | 'runtime'
+
+/** An active agent grant: its slot is `(provider, agentId, custody)`. */
+export type McpAgentGrantRecord = McpGrantRecord & { agentId: string; custody: McpGrantCustody }
 
 /** Grants hang off one provider and carry no org of their own — they fence
  *  through {@link McpProviderRepo} exactly like {@link McpProviderSecretStore}
  *  (org-scoped-data-layer.md §3.6). */
 export interface McpGrantRepo {
-  /** Mint a fresh active grant (generates a new plaintext key) for a provider.
-   *  v1 keeps exactly one active grant per provider — the caller revokes any prior
-   *  active grant first (shared org identity). Returns the row WITH the plaintext. */
+  /** Mint a fresh active organization-shared grant; the caller revokes the prior one. Returns the plaintext. */
   mintFor(orgId: OrgId, providerId: string): Promise<McpGrantRecord>
-  /** The provider's active grants (v1: 0 or 1). Carries plaintext — internal use only. */
+  /** The provider's active organization-shared grants, oldest first; agent grants are never listed. Carries plaintext. */
   activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]>
+  /** Mint a fresh active grant for one restricted `(agent, provider)` pair. Returns the plaintext. */
+  mintForAgent(
+    orgId: OrgId,
+    providerId: string,
+    agentId: string,
+    custody: McpGrantCustody
+  ): Promise<McpAgentGrantRecord>
+  /** One agent's active grants for a provider, oldest first, every custody. Carries plaintext. */
+  activeForAgent(orgId: OrgId, providerId: string, agentId: string): Promise<McpAgentGrantRecord[]>
+  /** Every active agent grant of a provider, oldest first. Carries plaintext. */
+  activeRestricted(orgId: OrgId, providerId: string): Promise<McpAgentGrantRecord[]>
+  /** Every active grant of one agent across providers, for unassigning their hashes before a cascade. */
+  activeOfAgent(orgId: OrgId, agentId: string): Promise<McpAgentGrantRecord[]>
   /** Mark a grant revoked (idempotent). No value is opened, so no scope needed. */
   revoke(grantId: string): Promise<void>
+}
+
+/** A decision for one tool (mcp-tool-permissions.md §3.2). */
+export type McpToolDecision = 'allow' | 'approval' | 'ask' | 'block'
+
+/** The console's tool groups (§3.1). */
+export type McpToolGroup = 'readOnly' | 'write' | 'other'
+
+/** One agent's per-tool policy for one provider (§3.3, §5.1); no row means Full access. */
+export interface AgentMcpToolPolicyRecord {
+  agentId: string
+  mcpProviderId: string
+  /** The provider's name, which the agent enable-list and the daemon definitions key on. */
+  providerName: string
+  groups: Record<McpToolGroup, McpToolDecision>
+  overrides: Record<string, McpToolDecision>
+  allowTools: string[]
+  approvalTools: string[]
+  askTools: string[]
+  catalogFetchedAt: Date | null
+  updatedByUserId: string | null
+  updatedAt: Date
+}
+
+export interface SaveAgentMcpToolPolicyInput {
+  agentId: string
+  mcpProviderId: string
+  groups: Record<McpToolGroup, McpToolDecision>
+  overrides: Record<string, McpToolDecision>
+  allowTools: string[]
+  approvalTools: string[]
+  askTools: string[]
+  catalogFetchedAt: Date | null
+  updatedByUserId: string | null
+}
+
+/** Policies fence through the agent's organization; creating or deleting one bumps the agent's configRevision, since it changes the spec an older daemon receives. */
+export interface AgentMcpToolPolicyRepo {
+  get(orgId: OrgId, agentId: string, providerId: string): Promise<AgentMcpToolPolicyRecord | null>
+  listForAgent(orgId: OrgId, agentId: string): Promise<AgentMcpToolPolicyRecord[]>
+  listForProvider(orgId: OrgId, providerId: string): Promise<AgentMcpToolPolicyRecord[]>
+  listForOrg(orgId: OrgId): Promise<AgentMcpToolPolicyRecord[]>
+  /** Insert or replace; `created` is true for the pair's first policy. */
+  save(
+    orgId: OrgId,
+    input: SaveAgentMcpToolPolicyInput
+  ): Promise<{ policy: AgentMcpToolPolicyRecord; created: boolean }>
+  /** Remove the pair's policy; false when there was none. */
+  delete(orgId: OrgId, agentId: string, providerId: string): Promise<boolean>
+}
+
+/** One provider's catalog snapshot (§4). `tools` is metadata, never content. */
+export interface McpToolCatalogRecord {
+  mcpProviderId: string
+  tools: McpCatalogTool[]
+  fetchedAt: Date
+  failure: string | null
+}
+
+/** Catalog snapshots fence through their provider's organization. */
+export interface McpToolCatalogRepo {
+  get(orgId: OrgId, providerId: string): Promise<McpToolCatalogRecord | null>
+  put(orgId: OrgId, providerId: string, snapshot: Omit<McpToolCatalogRecord, 'mcpProviderId'>): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

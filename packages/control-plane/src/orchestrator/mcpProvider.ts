@@ -14,8 +14,15 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import net from 'node:net'
-import type { McpServerSpec, RcMcpAssign } from '@agentconnect.md/protocol'
+import {
+  MCP_TOOL_POLICY_V1_FEATURE,
+  type McpServerSpec,
+  type McpToolPolicy,
+  type RcMcpAssign
+} from '@agentconnect.md/protocol'
 import { privateV4, privateV6 } from '../net/private-address.js'
+import type { AgentMcpToolPolicyRecord, McpGrantCustody } from '../persistence/ports.js'
+import { definitionToolDecisions, type CatalogToolView } from './mcpToolPolicy.js'
 
 /** The provider fields the mappers read (structural subset of the McpProvider row). */
 interface ProviderView {
@@ -119,10 +126,63 @@ export function mcpProxyDef(provider: ProviderView, grant: GrantView, relayBaseU
   }
 }
 
-/**
- * The rc/mcp-assign binding for a relay: the provider's UPSTREAM url + secret headers
- * plus the sha256 of each active grant key (never the plaintext keys themselves).
- */
+/** An agent-scoped definition (§7.1): the agent's own grant and its decision table, layered over the shared definition on the daemon. */
+export function mcpAgentDef(
+  provider: ProviderView,
+  grant: GrantView & { custody: McpGrantCustody },
+  relayBaseUrl: string,
+  agentId: string,
+  policy: Pick<AgentMcpToolPolicyRecord, 'allowTools' | 'approvalTools' | 'askTools'>,
+  catalog: readonly CatalogToolView[] = []
+): McpServerSpec {
+  return {
+    ...mcpProxyDef(provider, grant, relayBaseUrl),
+    agentId,
+    toolDecisions: definitionToolDecisions(policy, grant.custody, catalog)
+  }
+}
+
+/** One restricted agent grant in a binding: its key and the relay table its custody allows. */
+export interface RestrictedGrantView {
+  key: string
+  policy: McpToolPolicy
+}
+
+/** A provider's relay binding before it is shaped for one relay; carries the upstream credential — NEVER log. */
+export interface McpBinding {
+  base: RcMcpAssign
+  restricted: readonly RestrictedGrantView[]
+}
+
+/** The binding of a provider: upstream url and headers, the unrestricted grant keys, and the restricted agent grants. */
+export function mcpBinding(
+  provider: ProviderView,
+  upstreamHeaders: { name: string; value: string }[],
+  grantKeys: string[],
+  restricted: readonly RestrictedGrantView[] = []
+): McpBinding {
+  return { base: mcpRcAssign(provider, upstreamHeaders, grantKeys), restricted }
+}
+
+/** The `rc/mcp-assign` one relay receives: restricted grants with deduplicated tables only where it advertises `mcp-tool-policy-v1` (§6.1, §8). */
+export function mcpRcAssignFor(binding: McpBinding, relayFeatures: readonly string[] | undefined): RcMcpAssign {
+  if (binding.restricted.length === 0 || relayFeatures?.includes(MCP_TOOL_POLICY_V1_FEATURE) !== true)
+    return binding.base
+  const toolPolicies: McpToolPolicy[] = []
+  const indexOf = new Map<string, number>()
+  const restrictedGrants = binding.restricted.map((grant) => {
+    const signature = JSON.stringify([grant.policy.allow, grant.policy.approval, grant.policy.ask])
+    let policy = indexOf.get(signature)
+    if (policy === undefined) {
+      policy = toolPolicies.push(grant.policy) - 1
+      indexOf.set(signature, policy)
+    }
+    return { grantKeyHash: grantKeyHash(grant.key), policy }
+  })
+  return { ...binding.base, toolPolicies, restrictedGrants }
+}
+
+/** The unrestricted rc/mcp-assign: the provider's UPSTREAM url + secret headers and the sha256 of each shared grant key. */
 export function mcpRcAssign(
   provider: ProviderView,
   upstreamHeaders: { name: string; value: string }[],

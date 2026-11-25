@@ -70,6 +70,9 @@ class ControlSpy {
   }
   async memoryConnectionUpsert(_daemonId: string, _spec: MemoryConnectionSpec): Promise<void> {}
   async memoryConnectionRemove(_daemonId: string, _connectionId: string): Promise<void> {}
+  daemonFeatures(_daemonId: string): readonly string[] | undefined {
+    return undefined
+  }
   async mcpServerUpsert(_daemonId: string, _spec: McpServerSpec): Promise<void> {}
   async mcpServerRemove(_daemonId: string, _orgId: string, _name: string): Promise<void> {}
   async memoryHistory(): Promise<never> {

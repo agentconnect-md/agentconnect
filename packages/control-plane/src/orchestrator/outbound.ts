@@ -605,10 +605,10 @@ export class ControlSender {
     c.conn.send('mcpserver/upsert', spec, { epoch: c.sessionEpoch })
   }
 
-  /** Drop a proxied MCP server def by name from a daemon (live CRUD, epoch-fenced EVT). */
-  async mcpServerRemove(daemonId: string, orgId: string, name: string): Promise<void> {
+  /** Drop a proxied MCP server def by name; with `agentId`, only that agent's own (send it only to a daemon advertising `mcp-agent-defs-v1`). */
+  async mcpServerRemove(daemonId: string, orgId: string, name: string, agentId?: string): Promise<void> {
     const c = this.ready(daemonId) ?? (await this.untilReady(daemonId))
-    c.conn.send('mcpserver/remove', { orgId, name }, { epoch: c.sessionEpoch })
+    c.conn.send('mcpserver/remove', { orgId, name, ...(agentId ? { agentId } : {}) }, { epoch: c.sessionEpoch })
   }
 
   /** Push one daemon-private external-memory connection definition. Relay grants

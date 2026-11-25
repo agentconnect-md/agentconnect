@@ -15,7 +15,13 @@ export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMo
     specs: deps.agentSpecs,
     chatAuthority: deps.repos.session,
     crons: deps.repos.cron,
-    mcp: { providers: deps.repos.mcpProvider, grants: deps.repos.mcpGrant, relayRoster: deps.relayRoster },
+    mcp: {
+      providers: deps.repos.mcpProvider,
+      grants: deps.repos.mcpGrant,
+      relayRoster: deps.relayRoster,
+      policies: deps.repos.agentMcpToolPolicy,
+      catalogs: deps.repos.mcpToolCatalog
+    },
     memory: {
       connections: deps.repos.externalMemoryConnection,
       installations: deps.repos.memoryPluginInstallation,

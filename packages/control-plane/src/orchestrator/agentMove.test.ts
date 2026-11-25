@@ -317,6 +317,7 @@ function make(
   const appliedRevisions = new Map<string, bigint>()
   let targetDetachCount = 0
   const control = {
+    daemonFeatures: () => undefined,
     agentDetach: async (daemonId: string, value: AgentDetach, orgId?: string) => {
       calls.push(`detach:${daemonId}`)
       detaches.push(value)

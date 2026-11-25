@@ -43,6 +43,7 @@ import type {
   ComputerRepo,
   DecisionRepo,
   GithubAppRepo,
+  AgentMcpToolPolicyRepo,
   HookRepo,
   OrganizationEnvironmentResolver,
   OrganizationKnowledgeRepo,
@@ -52,6 +53,7 @@ import { isHonoredRepoGrant } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { derivedComputerIds } from '../domain/computer.js'
+import { withRestrictedMcpServers } from '../domain/daemon-features.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import { githubAppBotIdentity } from '../github/config.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
@@ -120,8 +122,17 @@ export class AgentSpecAssembler {
     // The Computers whose agent access grants an agent (computer-use.md §4.1); absent ⇒ none.
     private readonly computerGrants?: Pick<ComputerRepo, 'listAgentGrants'>,
     // The organization GitHub Apps, for an agent's own commit identity; absent ⇒ every agent commits as the built-in App.
-    private readonly githubApps?: Pick<GithubAppRepo, 'get'>
+    private readonly githubApps?: Pick<GithubAppRepo, 'get'>,
+    // The agent's per-tool MCP policies (mcp-tool-permissions.md §8); absent ⇒ no provider is restricted.
+    private readonly mcpToolPolicies?: Pick<AgentMcpToolPolicyRepo, 'listForAgent'>
   ) {}
+
+  /** The enabled MCP providers this agent is restricted on, which an older daemon must not attach at all. */
+  async mcpRestrictedOf(a: Pick<AgentRecord, 'id' | 'orgId' | 'mcpServers'>): Promise<string[]> {
+    if (!this.mcpToolPolicies) return []
+    const policies = await this.mcpToolPolicies.listForAgent(OrgId(a.orgId), a.id)
+    return policies.map((policy) => policy.providerName).filter((name) => a.mcpServers.includes(name))
+  }
 
   /** The bot of the agent's organization GitHub App; absent on the built-in App or an App whose bot id is unknown. */
   async gitCommitIdentityOf(a: Pick<AgentRecord, 'orgId' | 'githubAppId'>): Promise<GitCommitIdentity | undefined> {
@@ -169,7 +180,8 @@ export class AgentSpecAssembler {
       additionalInstallations,
       apiGates,
       computers,
-      gitCommitIdentity
+      gitCommitIdentity,
+      mcpRestricted
     ] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       this.secrets.live(a.orgId, a.id),
@@ -183,10 +195,11 @@ export class AgentSpecAssembler {
       this.additionalInstallationsOf(a),
       this.apiGatesOf(a),
       this.computersOf(a),
-      this.gitCommitIdentityOf(a)
+      this.gitCommitIdentityOf(a),
+      this.mcpRestrictedOf(a)
     ])
     // Live secrets ride beside the environment, never in it (capability-requests.md §4.9.2); always a full list, `[]` included, so a removal replicates.
-    return {
+    const spec: AssembledAgentSpec = {
       ...this.project(
         a,
         secrets,
@@ -204,6 +217,7 @@ export class AgentSpecAssembler {
       ),
       liveSecrets
     }
+    return withRestrictedMcpServers(spec, mcpRestricted)
   }
 
   /** The routings this agent hosts, always shipped so losing the last one replicates; the daemon digests [] as absent. */

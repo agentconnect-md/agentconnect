@@ -17,7 +17,6 @@ import type {
   RcGithubAppAssign,
   RcHookAssign,
   RcCollabRoutes,
-  RcMcpAssign,
   RcMcpUnassign,
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign,
@@ -34,6 +33,7 @@ import {
   codeHostHookRuleOf
 } from '@agentconnect.md/protocol'
 import { advertises } from '../domain/daemon-features.js'
+import { mcpRcAssignFor, type McpBinding } from './mcpProvider.js'
 import { codeHostProviders } from '../codehost/registry.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
@@ -128,11 +128,14 @@ export class RelayControlSender {
     this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }), 'hook')
   }
 
-  /** Load an MCP provider's proxy binding onto every relay (whole-pool BROADCAST —
-   *  any relay may serve the agent's HTTPS request). `headers` carry the UPSTREAM
-   *  credential — the frame is NEVER logged (centralized-tool-management.md §5.2). */
-  mcpAssign(a: RcMcpAssign): void {
-    this.broadcast((ch) => ch.send('rc/mcp-assign', a), 'mcp')
+  /** Load an MCP provider's binding onto every relay, shaped per relay's features; carries the upstream credential — NEVER logged. */
+  mcpAssign(binding: McpBinding): void {
+    this.broadcast((ch) => ch.send('rc/mcp-assign', mcpRcAssignFor(binding, ch.features)), 'mcp')
+  }
+
+  /** How many connected relays lack a feature, for the console's mixed-version warnings. */
+  relaysLacking(feature: string): number {
+    return this.relays.all().filter((ch) => !ch.features?.includes(feature)).length
   }
 
   /** Drop an MCP proxy binding pool-wide: whole provider (`{providerId}`) or a single

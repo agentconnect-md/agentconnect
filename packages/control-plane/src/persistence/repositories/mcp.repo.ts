@@ -12,7 +12,7 @@
  */
 import { mintGrantKey } from '../../orchestrator/mcpProvider.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import type { McpProvider, McpGrant } from '../../generated/prisma/client.js'
+import type { McpProvider, McpGrant, AgentMcpToolPolicy } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   McpProviderRepo,
@@ -23,6 +23,15 @@ import type {
   McpHeader,
   McpGrantRepo,
   McpGrantRecord,
+  McpAgentGrantRecord,
+  McpGrantCustody,
+  AgentMcpToolPolicyRepo,
+  AgentMcpToolPolicyRecord,
+  SaveAgentMcpToolPolicyInput,
+  McpToolCatalogRepo,
+  McpToolCatalogRecord,
+  McpToolDecision,
+  McpToolGroup,
   McpTransport,
   McpProviderKind,
   McpProviderAuthMode,
@@ -199,6 +208,8 @@ function toGrantRecord(g: McpGrant): McpGrantRecord {
     mcpProviderId: g.mcpProviderId,
     key: g.key,
     status: g.status as McpGrantRecord['status'],
+    agentId: g.agentId,
+    custody: g.custody as McpGrantCustody | null,
     createdAt: g.createdAt
   }
 }
@@ -221,8 +232,43 @@ export class PgMcpGrantRepo implements McpGrantRepo {
   }
 
   async activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]> {
+    return this.open(orgId, { mcpProviderId: providerId, agentId: null })
+  }
+
+  async mintForAgent(
+    orgId: OrgId,
+    providerId: string,
+    agentId: string,
+    custody: McpGrantCustody
+  ): Promise<McpAgentGrantRecord> {
+    const [providers, agents] = await Promise.all([
+      this.db.mcpProvider.count({ where: { id: providerId, orgId } }),
+      this.db.agent.count({ where: { id: agentId, orgId } })
+    ])
+    if (providers === 0 || agents === 0) throw new Error('mcp agent grant mint outside its organization')
+    const key = mintGrantKey()
+    const g = await this.db.mcpGrant.create({
+      data: { mcpProviderId: providerId, agentId, custody, key: await this.cipher.seal(key, orgScope(orgId)) }
+    })
+    return { ...toGrantRecord(g), agentId, custody, key }
+  }
+
+  async activeForAgent(orgId: OrgId, providerId: string, agentId: string): Promise<McpAgentGrantRecord[]> {
+    return (await this.open(orgId, { mcpProviderId: providerId, agentId })) as McpAgentGrantRecord[]
+  }
+
+  async activeRestricted(orgId: OrgId, providerId: string): Promise<McpAgentGrantRecord[]> {
+    return (await this.open(orgId, { mcpProviderId: providerId, agentId: { not: null } })) as McpAgentGrantRecord[]
+  }
+
+  async activeOfAgent(orgId: OrgId, agentId: string): Promise<McpAgentGrantRecord[]> {
+    return (await this.open(orgId, { agentId })) as McpAgentGrantRecord[]
+  }
+
+  /** Active grants matching `where` inside the org, oldest first, with their keys opened. */
+  private async open(orgId: OrgId, where: Prisma.McpGrantWhereInput): Promise<McpGrantRecord[]> {
     const rows = await this.db.mcpGrant.findMany({
-      where: { mcpProviderId: providerId, status: 'active', provider: { orgId } },
+      where: { ...where, status: 'active', provider: { orgId } },
       orderBy: { createdAt: 'asc' }
     })
     const scope = orgScope(orgId)
@@ -232,5 +278,130 @@ export class PgMcpGrantRepo implements McpGrantRepo {
   async revoke(grantId: string): Promise<void> {
     // updateMany → idempotent (no throw if already gone / already revoked).
     await this.db.mcpGrant.updateMany({ where: { id: grantId }, data: { status: 'revoked' } })
+  }
+}
+
+function toPolicyRecord(p: AgentMcpToolPolicy & { provider: { name: string } }): AgentMcpToolPolicyRecord {
+  return {
+    agentId: p.agentId,
+    mcpProviderId: p.mcpProviderId,
+    providerName: p.provider.name,
+    groups: p.groups as Record<McpToolGroup, McpToolDecision>,
+    overrides: p.overrides as Record<string, McpToolDecision>,
+    allowTools: p.allowTools,
+    approvalTools: p.approvalTools,
+    askTools: p.askTools,
+    catalogFetchedAt: p.catalogFetchedAt,
+    updatedByUserId: p.updatedByUserId,
+    updatedAt: p.updatedAt
+  }
+}
+
+const WITH_PROVIDER_NAME = { provider: { select: { name: true } } } as const
+
+export class PgAgentMcpToolPolicyRepo implements AgentMcpToolPolicyRepo {
+  constructor(private readonly db: PrismaLike) {}
+
+  async get(orgId: OrgId, agentId: string, providerId: string): Promise<AgentMcpToolPolicyRecord | null> {
+    const row = await this.db.agentMcpToolPolicy.findFirst({
+      where: { agentId, mcpProviderId: providerId, agent: { orgId }, provider: { orgId } },
+      include: WITH_PROVIDER_NAME
+    })
+    return row ? toPolicyRecord(row) : null
+  }
+
+  async listForAgent(orgId: OrgId, agentId: string): Promise<AgentMcpToolPolicyRecord[]> {
+    return this.list({ agentId, agent: { orgId } })
+  }
+
+  async listForProvider(orgId: OrgId, providerId: string): Promise<AgentMcpToolPolicyRecord[]> {
+    return this.list({ mcpProviderId: providerId, provider: { orgId } })
+  }
+
+  async listForOrg(orgId: OrgId): Promise<AgentMcpToolPolicyRecord[]> {
+    return this.list({ agent: { orgId } })
+  }
+
+  async save(
+    orgId: OrgId,
+    input: SaveAgentMcpToolPolicyInput
+  ): Promise<{ policy: AgentMcpToolPolicyRecord; created: boolean }> {
+    return withAmbientTx(this.db, async (tx) => {
+      const [agents, providers] = await Promise.all([
+        tx.agent.count({ where: { id: input.agentId, orgId } }),
+        tx.mcpProvider.count({ where: { id: input.mcpProviderId, orgId } })
+      ])
+      if (agents === 0 || providers === 0) throw new Error('mcp tool policy write outside its organization')
+      const key = { agentId_mcpProviderId: { agentId: input.agentId, mcpProviderId: input.mcpProviderId } }
+      const existed = (await tx.agentMcpToolPolicy.count({ where: key.agentId_mcpProviderId })) > 0
+      const data = {
+        groups: input.groups as Prisma.InputJsonValue,
+        overrides: input.overrides as Prisma.InputJsonValue,
+        allowTools: input.allowTools,
+        approvalTools: input.approvalTools,
+        askTools: input.askTools,
+        catalogFetchedAt: input.catalogFetchedAt,
+        updatedByUserId: input.updatedByUserId
+      }
+      const row = await tx.agentMcpToolPolicy.upsert({
+        where: key,
+        create: { agentId: input.agentId, mcpProviderId: input.mcpProviderId, ...data },
+        update: data,
+        include: WITH_PROVIDER_NAME
+      })
+      // A first policy drops the provider from the spec an older daemon receives, so the spec's revision advances.
+      if (!existed) await tx.agent.update({ where: { id: input.agentId }, data: { configRevision: { increment: 1 } } })
+      return { policy: toPolicyRecord(row), created: !existed }
+    })
+  }
+
+  async delete(orgId: OrgId, agentId: string, providerId: string): Promise<boolean> {
+    return withAmbientTx(this.db, async (tx) => {
+      const { count } = await tx.agentMcpToolPolicy.deleteMany({
+        where: { agentId, mcpProviderId: providerId, agent: { orgId } }
+      })
+      if (count > 0) await tx.agent.update({ where: { id: agentId }, data: { configRevision: { increment: 1 } } })
+      return count > 0
+    })
+  }
+
+  private async list(where: Prisma.AgentMcpToolPolicyWhereInput): Promise<AgentMcpToolPolicyRecord[]> {
+    const rows = await this.db.agentMcpToolPolicy.findMany({
+      where,
+      include: WITH_PROVIDER_NAME,
+      orderBy: [{ agentId: 'asc' }, { mcpProviderId: 'asc' }]
+    })
+    return rows.map(toPolicyRecord)
+  }
+}
+
+export class PgMcpToolCatalogRepo implements McpToolCatalogRepo {
+  constructor(private readonly db: PrismaLike) {}
+
+  async get(orgId: OrgId, providerId: string): Promise<McpToolCatalogRecord | null> {
+    const row = await this.db.mcpToolCatalog.findFirst({ where: { mcpProviderId: providerId, provider: { orgId } } })
+    if (!row) return null
+    return {
+      mcpProviderId: row.mcpProviderId,
+      tools: row.tools as unknown as McpToolCatalogRecord['tools'],
+      fetchedAt: row.fetchedAt,
+      failure: row.failure
+    }
+  }
+
+  async put(orgId: OrgId, providerId: string, snapshot: Omit<McpToolCatalogRecord, 'mcpProviderId'>): Promise<void> {
+    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
+      throw new Error('mcp tool catalog write outside its organization')
+    }
+    const data = {
+      tools: snapshot.tools as unknown as Prisma.InputJsonValue,
+      fetchedAt: snapshot.fetchedAt,
+      failure: snapshot.failure
+    }
+    await this.db.mcpToolCatalog.upsert({
+      where: { mcpProviderId: providerId },
+      create: { mcpProviderId: providerId, ...data },
+      update: data
+    })
   }
 }

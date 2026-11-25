@@ -39,7 +39,8 @@ const BUNDLE = {
       trigger: 'standup',
       enabled: true
     }
-  ]
+  ],
+  mcpServers: [] as Array<{ name: string; agentId?: string }>
 }
 
 function fetchFrame(agentId = AGENT, orgId: string | null = ORG): AnyFrame {
@@ -215,5 +216,23 @@ describe('handleDutyFetch', () => {
     expect(send.mock.calls[0]![3]).toBe(ORG)
     const reply = conn.replyTo.mock.calls[0]![2] as { bundle: typeof BUNDLE }
     expect(reply.bundle.integrations.map((i) => i.integrationId)).toEqual([INTEGRATION])
+  })
+
+  it('leaves out an agent-scoped MCP definition for a member that cannot layer it (mcp-tool-permissions.md §8)', async () => {
+    const shared = { name: 'docs' }
+    const own = { name: 'docs', agentId: AGENT }
+    const agentBundle = vi.fn(async () => ({ ...BUNDLE, mcpServers: [shared, own] }))
+    const older = fakeConn()
+    await handleDutyFetch(fetchFrame(), older, fakeDeps({ agent: AGENT_RECORD, holdsAgent: true, agentBundle }))
+    expect((older.replyTo.mock.calls[0]![2] as { bundle: typeof BUNDLE }).bundle.mcpServers).toEqual([shared])
+
+    const capable = fakeConn()
+    const scopes = Object.assign(fakeScopes(), { capabilities: { features: ['mcp-agent-defs-v1'] } })
+    await handleDutyFetch(
+      fetchFrame(),
+      capable,
+      fakeDeps({ agent: AGENT_RECORD, holdsAgent: true, agentBundle }, scopes)
+    )
+    expect((capable.replyTo.mock.calls[0]![2] as { bundle: typeof BUNDLE }).bundle.mcpServers).toEqual([shared, own])
   })
 })

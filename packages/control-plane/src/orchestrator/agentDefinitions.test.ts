@@ -8,13 +8,15 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
+  MCP_DEFS_ANY_PEER,
   mcpDefsForAgents,
+  mcpDefsForPeer,
   memoryDefsForAgents,
   type AgentDefinitionRef,
   type McpDefinitionDeps,
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
-import { OrgId } from '../domain/ids.js'
+import { AgentId, OrgId } from '../domain/ids.js'
 import type { McpProviderRecord } from '../persistence/ports.js'
 
 const ORG_A = '11111111-1111-4111-8111-111111111111'
@@ -24,7 +26,7 @@ const OTHER_CONNECTION = '44444444-4444-4444-8444-444444444444'
 const INSTALLATION = '55555555-5555-4555-8555-555555555555'
 
 function agent(orgId: string, over: Partial<AgentDefinitionRef> = {}): AgentDefinitionRef {
-  return { orgId: OrgId(orgId), mcpServers: [], memory: null, ...over } as AgentDefinitionRef
+  return { id: 'agent', orgId: OrgId(orgId), mcpServers: [], memory: null, ...over } as AgentDefinitionRef
 }
 
 function provider(orgId: string, name: string, id = `p-${orgId}-${name}`): McpProviderRecord {
@@ -52,7 +54,8 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
   it('projects only the providers the agents NAME, never the rest of the org registry', async () => {
     const specs = await mcpDefsForAgents(
       [agent(ORG_A, { mcpServers: ['docs'] })],
-      mcpDeps([provider(ORG_A, 'docs'), provider(ORG_A, 'payroll')])
+      mcpDeps([provider(ORG_A, 'docs'), provider(ORG_A, 'payroll')]),
+      []
     )
     expect(specs.map((s) => s.name)).toEqual(['docs'])
     // The token-bearing part: the RELAY proxy url + the grant key, never upstream.
@@ -69,7 +72,8 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
     // registry, and each org's own enable must still be found.
     const specs = await mcpDefsForAgents(
       [agent(ORG_A, { mcpServers: ['docs'] }), agent(ORG_B, { mcpServers: ['payroll'] })],
-      mcpDeps([provider(ORG_A, 'docs'), provider(ORG_A, 'payroll'), provider(ORG_B, 'payroll')])
+      mcpDeps([provider(ORG_A, 'docs'), provider(ORG_A, 'payroll'), provider(ORG_B, 'payroll')]),
+      []
     )
     expect(specs.map((s) => [s.orgId, s.name])).toEqual([
       [ORG_A, 'docs'],
@@ -80,7 +84,11 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
   it('projects the FRESH grant during a rotation overlap, and orders the def by it', async () => {
     // `activeForProvider` is ascending by createdAt and rotation leaves both active
     // until the fresh key is distributed, so the head is the key about to be revoked.
-    const specs = await mcpDefsForAgents([agent(ORG_A, { mcpServers: ['docs'] })], mcpDeps([provider(ORG_A, 'docs')]))
+    const specs = await mcpDefsForAgents(
+      [agent(ORG_A, { mcpServers: ['docs'] })],
+      mcpDeps([provider(ORG_A, 'docs')]),
+      []
+    )
     expect(specs[0]!.headers).toEqual([
       { name: 'Authorization', value: 'Bearer oct_p-11111111-1111-4111-8111-111111111111-docs' }
     ])
@@ -92,7 +100,8 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
     expect(
       await mcpDefsForAgents(
         [agent(ORG_A, { mcpServers: ['agentconnect'] })],
-        mcpDeps([provider(ORG_A, 'agentconnect')])
+        mcpDeps([provider(ORG_A, 'agentconnect')]),
+        []
       )
     ).toEqual([])
   })
@@ -102,6 +111,7 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
     const specs = await mcpDefsForAgents(
       [agent(ORG_A, { mcpServers: ['docs'] })],
       mcpDeps([provider(ORG_A, 'docs')], false),
+      [],
       { warn }
     )
     expect(specs).toEqual([])
@@ -110,8 +120,97 @@ describe('mcpDefsForAgents — the MCP half of an agent set’s definitions', ()
 
   it('an empty agent set reads no registry at all', async () => {
     const listForOrg = vi.fn()
-    await mcpDefsForAgents([], { ...mcpDeps([]), providers: { listForOrg } } as unknown as McpDefinitionDeps)
+    await mcpDefsForAgents([], { ...mcpDeps([]), providers: { listForOrg } } as unknown as McpDefinitionDeps, [])
     expect(listForOrg).not.toHaveBeenCalled()
+  })
+})
+
+describe('mcpDefsForAgents — restricted agents (mcp-tool-permissions.md §5.4, §8)', () => {
+  const RESTRICTED = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  const FULL = AgentId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+  const docs = provider(ORG_A, 'docs')
+  const policy = {
+    agentId: RESTRICTED,
+    mcpProviderId: docs.id,
+    providerName: 'docs',
+    allowTools: ['read'],
+    approvalTools: ['write'],
+    askTools: ['delete']
+  }
+  const restrictedDeps = (): McpDefinitionDeps =>
+    ({
+      ...mcpDeps([docs]),
+      grants: {
+        activeForProvider: async () => [{ id: 'g-shared', key: 'oct_shared', createdAt: new Date(2_000) }],
+        activeForAgent: async (_orgId: string, _providerId: string, agentId: string) => [
+          { id: 'g-agent', key: `oct_${agentId}`, agentId, custody: 'runtime', createdAt: new Date(3_000) }
+        ]
+      },
+      policies: { listForOrg: async () => [policy] },
+      catalogs: {
+        get: async () => ({ tools: [{ name: 'read' }, { name: 'write' }, { name: 'delete' }, { name: 'admin' }] })
+      }
+    }) as unknown as McpDefinitionDeps
+
+  it('gives a capable daemon the agent-scoped definition with its own grant and decision table, and no shared one', async () => {
+    const specs = await mcpDefsForAgents([agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })], restrictedDeps(), [
+      'mcp-agent-defs-v1'
+    ])
+    expect(specs).toHaveLength(1)
+    expect(specs[0]).toMatchObject({
+      name: 'docs',
+      agentId: RESTRICTED,
+      issuedAt: 3_000,
+      headers: [{ name: 'Authorization', value: `Bearer oct_${RESTRICTED}` }],
+      // A runtime grant sends approval-gated names as Blocked (§5.6, §8).
+      toolDecisions: { allow: ['read'], approval: [], ask: [], block: ['admin', 'delete', 'write'] }
+    })
+  })
+
+  it('gives an older daemon nothing for the restricted agent, so the shared definition never reaches it', async () => {
+    expect(
+      await mcpDefsForAgents([agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })], restrictedDeps(), [])
+    ).toEqual([])
+  })
+
+  it('still projects the shared definition when another agent on the daemon has Full access', async () => {
+    const agents = [
+      agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] }),
+      agent(ORG_A, { id: FULL, mcpServers: ['docs'] })
+    ]
+    const capable = await mcpDefsForAgents(agents, restrictedDeps(), ['mcp-agent-defs-v1'])
+    expect(capable.map((s) => [s.agentId, s.headers[0]!.value])).toEqual([
+      [undefined, 'Bearer oct_shared'],
+      [RESTRICTED, `Bearer oct_${RESTRICTED}`]
+    ])
+    const older = await mcpDefsForAgents(agents, restrictedDeps(), undefined)
+    expect(older.map((s) => s.agentId)).toEqual([undefined])
+  })
+
+  it('narrows a bundle projected for any peer to what the receiving daemon reads', async () => {
+    const specs = await mcpDefsForAgents(
+      [agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })],
+      restrictedDeps(),
+      MCP_DEFS_ANY_PEER
+    )
+    expect(mcpDefsForPeer(specs, ['mcp-agent-defs-v1'])).toHaveLength(1)
+    expect(mcpDefsForPeer(specs, [])).toEqual([])
+  })
+
+  it('lists no Blocked names without a catalog, and skips an agent whose grant is missing', async () => {
+    const deps = restrictedDeps()
+    const noCatalog = { ...deps, catalogs: { get: async () => null } } as unknown as McpDefinitionDeps
+    const [spec] = await mcpDefsForAgents([agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })], noCatalog, [
+      'mcp-agent-defs-v1'
+    ])
+    expect(spec!.toolDecisions).toEqual({ allow: ['read'], approval: [], ask: [], block: ['delete', 'write'] })
+    const noGrant = {
+      ...deps,
+      grants: { ...deps.grants, activeForAgent: async () => [] }
+    } as unknown as McpDefinitionDeps
+    expect(
+      await mcpDefsForAgents([agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })], noGrant, ['mcp-agent-defs-v1'])
+    ).toEqual([])
   })
 })
 

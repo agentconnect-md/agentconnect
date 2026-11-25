@@ -10,7 +10,9 @@
 import type { McpProviderRecord, McpHeader } from '../persistence/ports.js'
 import type { OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
-import { mcpProxyDef, mcpRcAssign, relayHttpOrigin, type GrantView } from '../orchestrator/mcpProvider.js'
+import { mcpBinding, type GrantView } from '../orchestrator/mcpProvider.js'
+import { restrictedGrantsFor } from '../orchestrator/mcpRestrictedGrants.js'
+import { makeMcpDefSync } from './mcp-defs.js'
 
 export interface McpPush {
   /** Takes the grant ROW: the daemon def carries its issuance instant as the
@@ -21,12 +23,8 @@ export interface McpPush {
    *  empty credential is how a working OAuth binding gets overwritten by a rotation or a PATCH. */
   pushAssign(provider: McpProviderRecord, headers: McpHeader[] | null, grant: GrantView, orgId: OrgId): Promise<void>
   pushUnassign(provider: McpProviderRecord, orgId: OrgId): Promise<void>
-  /** Relay-only re-bind: replaces a provider's injected credential and its WHOLE grant-hash
-   *  allowlist, without touching the daemon def. What a token refresh uses — the proxy url
-   *  and the grant key the agent holds do not change, so re-pushing the def is pure churn,
-   *  and pushing only the current grant would retire the other one during a rotation's
-   *  grace window. The caller supplies every active key for that reason. */
-  pushBinding(provider: McpProviderRecord, headers: McpHeader[], grantKeys: string[]): void
+  /** Relay-only re-bind with every active shared key the caller supplies and the restricted grants it loads; the daemon definitions are untouched. */
+  pushBinding(provider: McpProviderRecord, headers: McpHeader[], grantKeys: string[]): Promise<void>
   /** Relay-only unbind: drop the proxy binding while LEAVING the daemon definition in place.
    *  What an OAuth disconnect uses — the agent-facing proxy url and grant key are unchanged by
    *  it, so removing the def would make every enabling daemon lose the server until some other
@@ -36,15 +34,17 @@ export interface McpPush {
 }
 
 export function makeMcpPush(deps: HttpDeps): McpPush {
-  // The reachable relay proxy base an agent's MCP client dials (`${url}/mcp/:id`).
-  // Picks any alive relay from the durable table (same window the roster uses).
-  const relayBaseUrl = async (): Promise<string | null> => {
-    const alive = await deps.repos.relay.listAlive(new Date(Date.now() - (deps.config.RELAY_STALE_MS ?? 0)))
-    const url = alive[0]?.daemonUrl
-    // daemonUrl is the rd/* WS dial address (wss://…); the MCP proxy is HTTP on the
-    // same origin — normalize so the live push sends a reachable http def, not wss.
-    return url ? relayHttpOrigin(url) : null
-  }
+  const defs = makeMcpDefSync(deps)
+  const bindingOf = async (provider: McpProviderRecord, headers: McpHeader[], grantKeys: string[]) =>
+    mcpBinding(
+      provider,
+      headers,
+      grantKeys,
+      await restrictedGrantsFor(provider.orgId, provider.id, {
+        grants: deps.repos.mcpGrant,
+        policies: deps.repos.agentMcpToolPolicy
+      })
+    )
 
   // Every daemon SERVING an agent that enabled `name` — its placement plus any
   // duty holder. Resolved through AgentDelivery, never `a.daemonId` inline: a
@@ -56,25 +56,14 @@ export function makeMcpPush(deps: HttpDeps): McpPush {
   }
 
   return {
-    // Best-effort double-push (like integrations): the relay binding carries the
-    // UPSTREAM secret headers; the daemon proxy def carries the grant key + relay URL.
-    // NEVER logged. Swallows NoConnection per daemon (reconcile is the backstop).
+    // The relay binding (upstream secret headers, restricted grants kept) lands before the daemon definitions; NEVER logged.
     async pushAssign(provider, headers, grant, orgId) {
-      if (headers !== null) deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, [grant.key]))
-      const base = await relayBaseUrl()
-      if (!base) return
-      const spec = mcpProxyDef(provider, grant, base)
-      for (const d of await daemonsEnabling(orgId, provider.name)) {
-        try {
-          await deps.control.mcpServerUpsert(d, spec)
-        } catch {
-          // daemon offline — reconcile carries the def on its next register
-        }
-      }
+      if (headers !== null) deps.relayControl.mcpAssign(await bindingOf(provider, headers, [grant.key]))
+      await defs.converge(orgId, provider, { sharedGrant: grant })
     },
-    pushBinding(provider, headers, grantKeys) {
+    async pushBinding(provider, headers, grantKeys) {
       if (grantKeys.length === 0) return // a keyless binding is never callable
-      deps.relayControl.mcpAssign(mcpRcAssign(provider, headers, grantKeys))
+      deps.relayControl.mcpAssign(await bindingOf(provider, headers, grantKeys))
     },
     unbindRelay(provider) {
       deps.relayControl.mcpUnassign({ providerId: provider.id })

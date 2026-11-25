@@ -45,6 +45,8 @@ function controlSpy() {
     {
       get: (_target, prop: string) => {
         if (prop === 'then') return undefined
+        // A synchronous read on the real sender; no daemon here advertises anything.
+        if (prop === 'daemonFeatures') return () => undefined
         return async (...args: unknown[]) => {
           calls.push(prop)
           if (prop === 'agentWake') return { agentId: (args[1] as { agentId: string }).agentId, state: 'starting' }

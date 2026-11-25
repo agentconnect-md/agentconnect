@@ -122,7 +122,8 @@ import {
   type PlacementTarget
 } from '../../domain/placement.js'
 import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
-import { currentMcpGrant, mcpProxyDef, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { grantKeyHash, relayHttpOrigin } from '../../orchestrator/mcpProvider.js'
+import { makeMcpDefSync, registryProvidersOf as registryProvidersOfOrg } from '../mcp-defs.js'
 import { serializeByProviderNames } from './mcp-providers.js'
 
 /** Thrown inside the provider-name fence when the in-fence visibility re-check
@@ -1757,83 +1758,39 @@ export function agentRoutes(deps: HttpDeps) {
       return url ? relayHttpOrigin(url) : null
     }
 
-    // A registry provider's def (grant key + relay proxy URL) reaches a daemon ONLY by CP push:
-    // provider CRUD, an enable-list edit, a move, or the register/ok reconcile as the slow
-    // backstop. The two primitives below are that push and its inverse; every caller is
-    // best-effort, because an offline daemon converges on its next register.
-    /** The org registry rows among these names. A name with no row is a daemon-local def
-     *  (the operator's `config.json`) — never pushed, never removed, and absent here. */
-    const registryProvidersOf = async (orgId: OrgId, names: readonly string[]) => {
-      const wanted = new Set(names)
-      const rows = wanted.size === 0 ? [] : await deps.repos.mcpProvider.listForOrg(orgId)
-      return rows.filter((p) => wanted.has(p.name))
-    }
-    // One daemon's send, never surfaced: offline is the reconcile backstop, and the error is not
-    // logged because a codec/transport error can retain the grant-bearing payload.
-    const sendMcp = async (daemonId: string, fn: () => Promise<void>) => {
-      try {
-        await fn()
-      } catch (err) {
-        if (!(err instanceof NoConnection)) app.log.warn({ daemonId }, 'mcp def send failed (reconcile will converge)')
-      }
-    }
-    /** Push each provider's proxy def to these daemons. Nothing to push without a live relay. */
-    const pushMcpDefs = async (providers: readonly McpProviderRecord[], daemonIds: readonly string[]) => {
-      if (providers.length === 0 || daemonIds.length === 0) return
-      try {
-        const base = await relayProxyBase()
-        if (!base) return
-        for (const provider of providers) {
-          const grant = currentMcpGrant(await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))
-          if (!grant) continue
-          const spec = mcpProxyDef(provider, grant, base)
-          for (const daemonId of daemonIds) await sendMcp(daemonId, () => deps.control.mcpServerUpsert(daemonId, spec))
-        }
-      } catch (err) {
-        app.log.warn({ err }, 'mcp def push failed (reconcile will converge)')
-      }
-    }
-    /** Drop each provider's def from those of these daemons that serve NO agent still enabling
-     *  it. "Still used" is delivery-set membership, not placement: a duty holder counts. */
-    const dropMcpDefsIfUnused = async (
+    // A registry provider's definitions reach a daemon only by CP push; every caller is best-effort, and the register reconcile converges.
+    const mcpDefs = makeMcpDefSync(deps, app.log)
+    const registryProvidersOf = (orgId: OrgId, names: readonly string[]) => registryProvidersOfOrg(deps, orgId, names)
+    /** Converge each provider on these daemons, retiring the agent's own definition where it no longer needs one. */
+    const convergeMcpDefs = async (
       orgId: OrgId,
       providers: readonly McpProviderRecord[],
-      daemonIds: readonly string[]
+      daemonIds: readonly string[],
+      agentId: string,
+      pruneOnly = false
     ) => {
       if (providers.length === 0 || daemonIds.length === 0) return
       try {
-        const peers = await deps.repos.agent.list(orgId)
-        for (const { name } of providers) {
-          const stillOn = new Set(
-            await deps.agentDelivery.daemonsForAgents(peers.filter((a) => a.mcpServers.includes(name)))
-          )
-          for (const daemonId of daemonIds) {
-            if (!stillOn.has(daemonId))
-              await sendMcp(daemonId, () => deps.control.mcpServerRemove(daemonId, orgId, name))
-          }
+        for (const provider of providers) {
+          await mcpDefs.converge(orgId, provider, { daemonIds, retireAgentIds: [agentId], pruneOnly })
         }
       } catch (err) {
-        app.log.warn({ err }, 'mcp def removal deferred (reconcile will converge)')
+        app.log.warn({ err }, 'mcp def convergence deferred (reconcile will converge)')
       }
     }
 
-    // Reflect an enable-list edit onto every daemon serving the agent (a duty holder installed
-    // the same list and needs the same defs): provision the newly-enabled registry providers,
-    // retire the disabled ones that nobody there still uses. Never throws — its callers have
-    // already committed the row, and a failed sync converges on the daemon's next register.
+    // Reflect an enable-list edit onto every daemon serving the agent; never throws, since the row is already committed.
     const syncMcpDefsForAgent = async (
       agent: AgentRecord,
       before: readonly string[],
       after: readonly string[]
     ): Promise<void> => {
-      const added = after.filter((n) => !before.includes(n))
-      const removed = before.filter((n) => !after.includes(n))
-      if (added.length === 0 && removed.length === 0) return
+      const changed = [...after.filter((n) => !before.includes(n)), ...before.filter((n) => !after.includes(n))]
+      if (changed.length === 0) return
       try {
         const targets = await deps.agentDelivery.daemonsFor(agent)
         if (targets.length === 0) return
-        await pushMcpDefs(await registryProvidersOf(agent.orgId, added), targets)
-        await dropMcpDefsIfUnused(agent.orgId, await registryProvidersOf(agent.orgId, removed), targets)
+        await convergeMcpDefs(agent.orgId, await registryProvidersOf(agent.orgId, changed), targets, agent.id)
       } catch (err) {
         app.log.warn({ agentId: agent.id, err }, 'mcp def sync failed (reconcile will converge)')
       }
@@ -3756,7 +3713,8 @@ export function agentRoutes(deps: HttpDeps) {
               existing.memory.connectionId
             )
           }
-          if (existing.daemonId) await dropMcpDefsIfUnused(existing.orgId, registryProviders, [existing.daemonId])
+          if (existing.daemonId)
+            await convergeMcpDefs(existing.orgId, registryProviders, [existing.daemonId], existing.id, true)
           return toDto(
             moved,
             ctxOf(req),
@@ -3782,7 +3740,7 @@ export function agentRoutes(deps: HttpDeps) {
             await removeExternalMemoryFromDaemonIfUnused(existing.orgId, target.daemonId, existing.memory.connectionId)
           }
           // Same usage re-read for the staged MCP defs: an authoritative target keeps them.
-          await dropMcpDefsIfUnused(existing.orgId, registryProviders, [target.daemonId])
+          await convergeMcpDefs(existing.orgId, registryProviders, [target.daemonId], existing.id, true)
         }
       }
     )
@@ -3835,10 +3793,14 @@ export function agentRoutes(deps: HttpDeps) {
           }
           // The delete cascades the agent's installs with no uninstall running, so the bot-scoped half of one is run around it.
           const bots = await prepareAgentBotsForDelete(deps, current)
+          // Read before the cascade drops them, so the relays can retire each restricted grant's hash.
+          const mcpAgentGrants = await deps.repos.mcpGrant.activeOfAgent(orgOf(req), current.id)
           // AgentRepo holds the shared agent lifecycle lock while it captures
           // every HookDef, tombstones their durable review projections, and
           // cascades the Agent/HookDef rows in one transaction.
           const removedHooks = await deps.repos.agent.delete(orgOf(req), AgentId(req.params.id))
+          for (const grant of mcpAgentGrants)
+            deps.relayControl.mcpUnassign({ providerId: grant.mcpProviderId, grantKeyHash: grantKeyHash(grant.key) })
           await settleBotsAfterAgentDelete(deps, app.log, current, bots)
           // WITHDRAW it from the peer directory now, the mirror of the create path above.
           // Discovery (`channel/agents`) reads the DB live while a peer WAKE is authorized

@@ -154,6 +154,8 @@ import {
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
+  PgAgentMcpToolPolicyRepo,
+  PgMcpToolCatalogRepo,
   PgMcpProviderOauthRepo,
   PgMcpProviderOauthSecretStore,
   PgMcpProviderOauthStateStore,
@@ -686,6 +688,8 @@ export function buildContainer(
     mcpProvider: new PgMcpProviderRepo(prisma),
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
+    agentMcpToolPolicy: new PgAgentMcpToolPolicyRepo(prisma),
+    mcpToolCatalog: new PgMcpToolCatalogRepo(prisma),
     mcpProviderOauth: new PgMcpProviderOauthRepo(prisma),
     mcpProviderOauthSecret: new PgMcpProviderOauthSecretStore(prisma, secretCipher),
     mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),
@@ -973,7 +977,9 @@ export function buildContainer(
     // The Computers whose agent access grants each agent (computer-use.md §4.1).
     repos.computer,
     // Each agent's organization GitHub App, whose bot its commits are attributed to.
-    repos.githubApp
+    repos.githubApp,
+    // The MCP providers each agent is restricted on, dropped from the spec an older daemon receives.
+    repos.agentMcpToolPolicy
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -1509,7 +1515,13 @@ export function buildContainer(
     crons: repos.cron,
     // The `duty/fetch` bundle's MCP + external-memory projections (same seams the
     // reconcile roster below is given, same projector).
-    mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster },
+    mcp: {
+      providers: repos.mcpProvider,
+      grants: repos.mcpGrant,
+      relayRoster,
+      policies: repos.agentMcpToolPolicy,
+      catalogs: repos.mcpToolCatalog
+    },
     memory: {
       connections: repos.externalMemoryConnection,
       installations: repos.memoryPluginInstallation,
@@ -1556,7 +1568,13 @@ export function buildContainer(
       },
       // MCP-proxy reconcile bundle (centralized-tool-management.md §7): the org providers
       // a daemon's agents enabled + their grant keys + the relay roster to proxy through.
-      mcp: { providers: repos.mcpProvider, grants: repos.mcpGrant, relayRoster },
+      mcp: {
+        providers: repos.mcpProvider,
+        grants: repos.mcpGrant,
+        relayRoster,
+        policies: repos.agentMcpToolPolicy,
+        catalogs: repos.mcpToolCatalog
+      },
       memory: {
         connections: repos.externalMemoryConnection,
         installations: repos.memoryPluginInstallation,
@@ -2850,6 +2868,8 @@ export function buildContainer(
       mcpProvider: repos.mcpProvider,
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
+      agentMcpToolPolicy: repos.agentMcpToolPolicy,
+      mcpToolCatalog: repos.mcpToolCatalog,
       mcpProviderOauth: repos.mcpProviderOauth,
       mcpProviderOauthSecret: repos.mcpProviderOauthSecret,
       mcpProviderOauthState: repos.mcpProviderOauthState,
@@ -4156,6 +4176,7 @@ export function buildContainer(
               providers: repos.mcpProvider,
               secrets: repos.mcpProviderSecret,
               grants: repos.mcpGrant,
+              policies: repos.agentMcpToolPolicy,
               tokens: mcpTokenService,
               log: http.log
             },

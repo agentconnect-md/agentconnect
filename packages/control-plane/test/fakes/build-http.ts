@@ -66,6 +66,8 @@ import {
   PgMcpProviderRepo,
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
+  PgAgentMcpToolPolicyRepo,
+  PgMcpToolCatalogRepo,
   PgMcpProviderOauthRepo,
   PgMcpProviderOauthSecretStore,
   PgMcpProviderOauthStateStore,
@@ -376,6 +378,7 @@ export function buildHttpApp(
   const epoch = new EpochService(daemonRepo, clock)
   const apiKeyService = new ApiKeyService(codec, apiKeyRepo, daemonRepo, auditRepo, clock, new PgOrgRepo(prisma))
   const computerRepo = new PgComputerRepo(prisma)
+  const agentMcpToolPolicyRepo = new PgAgentMcpToolPolicyRepo(prisma)
   const agentRepoForComputers = new PgAgentRepo(prisma)
   // A whole ComputerScreenshots also shortens retention on a policy change, as the container wires it.
   const screenshots = depsOverrides?.computerScreenshots
@@ -501,7 +504,8 @@ export function buildHttpApp(
     agentInstallationAuthRepo,
     new PgDecisionRepo(prisma),
     computerRepo,
-    new PgGithubAppRepo(prisma)
+    new PgGithubAppRepo(prisma),
+    agentMcpToolPolicyRepo
   )
   const agentDelivery = new AgentDelivery({
     control: sender,
@@ -678,6 +682,8 @@ export function buildHttpApp(
       mcpProvider: new PgMcpProviderRepo(prisma),
       mcpProviderSecret: new PgMcpProviderSecretStore(prisma, cipher),
       mcpGrant: new PgMcpGrantRepo(prisma, cipher),
+      agentMcpToolPolicy: agentMcpToolPolicyRepo,
+      mcpToolCatalog: new PgMcpToolCatalogRepo(prisma),
       mcpProviderOauth: new PgMcpProviderOauthRepo(prisma),
       mcpProviderOauthSecret: new PgMcpProviderOauthSecretStore(prisma, cipher),
       mcpProviderOauthState: new PgMcpProviderOauthStateStore(prisma),

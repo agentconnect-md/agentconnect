@@ -54,6 +54,7 @@ import { decisionRoutingPreviewRoutes } from './routes/decision-routing-preview.
 import { integrationChannelDecisionRoutes } from './routes/integration-channel-decisions.js'
 import { providerKeyRoutes } from './routes/provider-keys.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
+import { agentMcpToolPolicyRoutes } from './routes/agent-mcp-tool-policies.js'
 import { mcpProviderOauthPublicRoutes, mcpProviderOauthRoutes } from './routes/mcp-provider-oauth.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
 import { organizationKnowledgeRoutes } from './routes/organization-knowledge.js'
@@ -405,6 +406,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(sessionFileRoutes(deps))
           await scope.register(agentRoutes(deps))
           await scope.register(agentRepoRoutes(deps))
+          await scope.register(agentMcpToolPolicyRoutes(deps))
           await scope.register(webchatTokenRoutes(deps))
           await scope.register(agentApiRoutes(deps))
           await scope.register(webchatMcpOperationRoutes(deps))
