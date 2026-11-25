@@ -51,6 +51,7 @@ import { registerGitlabIngress } from './hooks/gitlab-ingress.js'
 import { registerGiteaIngress } from './hooks/gitea/ingress.js'
 import { registerAzureDevOpsIngress } from './hooks/azure-devops/ingress.js'
 import { McpBindingTable } from './mcp/binding-table.js'
+import { fetchMcpCatalog, type CatalogDeps } from './mcp/catalog.js'
 import { registerMcpProxy, registerMemoryPluginProxy } from './mcp/proxy.js'
 import { MemoryConnectionBindingTable } from './memory/binding-table.js'
 import type { Logger } from './log.js'
@@ -131,6 +132,17 @@ async function main(): Promise<void> {
   // over rc/mcp-assign (whole-pool broadcast); the /mcp/:providerId route resolves + proxies.
   // Upstream headers are the upstream credential — never logged.
   const mcpBindings = new McpBindingTable()
+  const mcpAllowlist = new Set(
+    (config.RELAY_MCP_ALLOWED_UPSTREAMS ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean)
+  )
+  const mcpCatalogDeps: CatalogDeps = {
+    allowlist: mcpAllowlist,
+    ...(config.OPEN_CONNECTOR_URL ? { openConnectorUrl: config.OPEN_CONNECTOR_URL } : {}),
+    ...(config.OPEN_CONNECTOR_RUNTIME_TOKEN ? { openConnectorToken: config.OPEN_CONNECTOR_RUNTIME_TOKEN } : {})
+  }
   const memoryBindings = new MemoryConnectionBindingTable()
   const followUpWatches = new FollowUpWatchTable()
   const githubAppWebhooks = new GithubAppWebhookTable()
@@ -228,6 +240,7 @@ async function main(): Promise<void> {
     // MCP proxy bindings (centralized-tool-management.md §5.2) — token-bearing, never logged.
     onMcpAssign: (a) => mcpBindings.assign(a),
     onMcpUnassign: (a) => mcpBindings.unassign(a.providerId, a.grantKeyHash),
+    onMcpCatalog: (req) => fetchMcpCatalog(mcpBindings.upstream(req.providerId), mcpCatalogDeps),
     onMemoryConnectionAssign: (a) => memoryBindings.assign(a),
     onMemoryConnectionUnassign: (a) => memoryBindings.unassign(a.connectionId, a.revision, a.grantKeyHash),
     onGithubAppAssign: (a) => githubAppWebhooks.apply(a),
@@ -372,12 +385,7 @@ async function main(): Promise<void> {
   // the exchange through. Routes must register before listen.
   registerMcpProxy(server, {
     bindings: mcpBindings,
-    allowlist: new Set(
-      (config.RELAY_MCP_ALLOWED_UPSTREAMS ?? '')
-        .split(',')
-        .map((h) => h.trim().toLowerCase())
-        .filter(Boolean)
-    ),
+    allowlist: mcpAllowlist,
     log,
     ...(config.OPEN_CONNECTOR_URL ? { openConnectorUrl: config.OPEN_CONNECTOR_URL } : {}),
     ...(config.OPEN_CONNECTOR_RUNTIME_TOKEN ? { openConnectorToken: config.OPEN_CONNECTOR_RUNTIME_TOKEN } : {})

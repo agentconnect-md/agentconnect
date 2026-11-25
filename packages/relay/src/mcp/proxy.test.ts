@@ -358,3 +358,183 @@ describe('registerMcpProxy — MCP reverse proxy route', () => {
     }
   })
 })
+
+// A fake MCP upstream: lists three tools as JSON, SSE or plain text by path, and records every request it sees.
+function fakeMcpUpstream(): Promise<{
+  url: string
+  seen: Array<{ path: string; headers: IncomingMessage['headers']; body: string }>
+  close: () => Promise<void>
+}> {
+  const seen: Array<{ path: string; headers: IncomingMessage['headers']; body: string }> = []
+  const tools = [{ name: 'read_note' }, { name: 'write_note' }, { name: 'delete_note' }]
+  const srv: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.push({ path: req.url ?? '', headers: req.headers, body })
+      const message = JSON.parse(body || '{}') as { id?: number; method?: string }
+      const answer =
+        message.method === 'tools/list'
+          ? { jsonrpc: '2.0', id: message.id, result: { tools } }
+          : { jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: 'ok' }] } }
+      if (req.url === '/sse') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress' })}\n\n`)
+        res.end(`event: message\ndata: ${JSON.stringify(answer)}\n\n`)
+        return
+      }
+      if (req.url === '/text') {
+        res.writeHead(200, { 'content-type': 'text/plain' })
+        res.end(JSON.stringify(answer))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(answer))
+    })
+  })
+  return new Promise((resolve) => {
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address() as AddressInfo
+      resolve({ url: `http://127.0.0.1:${port}`, seen, close: () => new Promise((r) => srv.close(() => r())) })
+    })
+  })
+}
+
+describe('registerMcpProxy — restricted agent grants (mcp-tool-permissions.md §6.2)', () => {
+  let upstream: Awaited<ReturnType<typeof fakeMcpUpstream>>
+  let relay: Awaited<ReturnType<typeof startRelay>>
+  beforeAll(async () => {
+    upstream = await fakeMcpUpstream()
+    relay = await startRelay(['127.0.0.1'])
+  })
+  afterAll(async () => {
+    await relay.close()
+    await upstream.close()
+  })
+
+  const bind = (path: string) =>
+    relay.bindings.assign({
+      providerId: PID,
+      upstreamUrl: `${upstream.url}${path}`,
+      headers: [],
+      grantKeyHashes: [hash('shared')],
+      toolPolicies: [{ allow: ['read_note'], approval: ['write_note'], ask: [] }],
+      restrictedGrants: [{ grantKeyHash: hash('agent'), policy: 0 }]
+    })
+  const post = (key: string, body: string, extra: Record<string, string> = {}) =>
+    fetch(`${relay.base}/mcp/${PID}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', ...extra },
+      body
+    })
+  const listTools = async (res: Response) => {
+    const text = await res.text()
+    const data = text.includes('data:')
+      ? text
+          .split('\n\n')
+          .map((event) =>
+            event
+              .split('\n')
+              .find((line) => line.startsWith('data:'))
+              ?.slice(5)
+          )
+          .filter((line): line is string => line !== undefined)
+          .map((line) => JSON.parse(line) as { id?: number; result?: { tools?: Array<{ name: string }> } })
+          .find((message) => message.id === 1)
+      : (JSON.parse(text) as { id?: number; result?: { tools?: Array<{ name: string }> }; error?: unknown })
+    return data
+  }
+
+  it('refuses a blocked call without reaching the upstream, approval-gated names included', async () => {
+    bind('/json')
+    const before = upstream.seen.length
+    for (const name of ['delete_note', 'write_note']) {
+      const res = await post('agent', JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name } }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ id: 5, result: { isError: true } })
+    }
+    expect(upstream.seen.length).toBe(before)
+  })
+
+  it('forwards an allowed call as the judged message, without the approval header', async () => {
+    bind('/json')
+    const raw = '{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { "name": "read_note" } }'
+    const res = await post('agent', raw, { 'x-ac-tool-approval': 'person' })
+    expect(res.status).toBe(200)
+    const last = upstream.seen.at(-1)!
+    expect(last.body).toBe(JSON.stringify(JSON.parse(raw)))
+    expect(last.headers['x-ac-tool-approval']).toBeUndefined()
+  })
+
+  it('filters tools/list over JSON and over SSE', async () => {
+    const list = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    for (const path of ['/json', '/sse']) {
+      bind(path)
+      const message = await listTools(await post('agent', list))
+      expect(message?.result?.tools?.map((tool) => tool.name)).toEqual(['read_note'])
+    }
+  })
+
+  it('answers with an error when a tools/list response is neither JSON nor SSE', async () => {
+    bind('/text')
+    const res = await post('agent', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))
+    const message = await listTools(res)
+    expect(message).toMatchObject({ id: 1, error: {} })
+  })
+
+  it('keeps the shared grant on the same provider byte-transparent', async () => {
+    bind('/json')
+    const raw = '{ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }'
+    const message = await listTools(await post('shared', raw))
+    expect(message?.result?.tools).toHaveLength(3)
+    expect(upstream.seen.at(-1)!.body).toBe(raw)
+    const call = await post(
+      'shared',
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'delete_note' } })
+    )
+    expect(await call.json()).toMatchObject({ result: { content: [{ text: 'ok' }] } })
+  })
+})
+
+describe('registerMcpProxy — restricted grants on open_connector providers', () => {
+  it('refuses blocked actions and lists only allowed ones through the adapter', async () => {
+    const oc = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      const data = req.url?.startsWith('/v1/actions?') ? [{ id: 'read_mail' }, { id: 'send_mail' }] : { sent: true }
+      res.end(JSON.stringify({ success: true, data }))
+    })
+    await new Promise<void>((r) => oc.listen(0, '127.0.0.1', () => r()))
+    const { port } = oc.address() as AddressInfo
+    const bindings = new McpBindingTable()
+    const app = buildRelayServer({ isReady: () => true, relayId: () => 'r1' }, { logger: false })
+    registerMcpProxy(app, { bindings, allowlist: new Set(), log: silent, openConnectorUrl: `http://127.0.0.1:${port}` })
+    await app.listen({ port: 0, host: '127.0.0.1' })
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+    bindings.assign({
+      providerId: PID,
+      upstreamUrl: 'https://oc.example.test/mcp',
+      headers: [
+        { name: 'x-oomol-connector-service', value: 'gmail' },
+        { name: 'x-oomol-connector-alias', value: 'profile' }
+      ],
+      grantKeyHashes: [hash('shared')],
+      toolPolicies: [{ allow: ['read_mail'], approval: [], ask: [] }],
+      restrictedGrants: [{ grantKeyHash: hash('agent'), policy: 0 }]
+    })
+    const post = (message: unknown) =>
+      fetch(`${base}/mcp/${PID}`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer agent', 'content-type': 'application/json' },
+        body: JSON.stringify(message)
+      }).then((res) => res.json() as Promise<{ result?: { tools?: Array<{ name: string }>; isError?: boolean } }>)
+    try {
+      const list = await post({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+      expect(list.result?.tools?.map((tool) => tool.name)).toEqual(['read_mail'])
+      const blocked = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'send_mail' } })
+      expect(blocked.result?.isError).toBe(true)
+    } finally {
+      await app.close()
+      await new Promise((r) => oc.close(() => r(undefined)))
+    }
+  })
+})

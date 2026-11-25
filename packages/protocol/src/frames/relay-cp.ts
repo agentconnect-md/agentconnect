@@ -1433,19 +1433,53 @@ export type RcThreadLookupOk = z.infer<typeof RcThreadLookupOk>
 export const RcCollabRoutes = CollabRoutesSnapshot
 export type RcCollabRoutes = z.infer<typeof RcCollabRoutes>
 
-// C→R EVT — load an MCP provider's proxy binding onto this relay (centralized-tool-management.md
-// §5.2). The relay reverse-proxies `/mcp/:providerId`, authenticates the agent-side bearer
-// against `grantKeyHashes`, and injects the real upstream `headers` on forward. Whole-pool
-// BROADCAST like rc/bot-assign (any relay may receive the agent's HTTPS request). `headers`
-// carry the UPSTREAM credential — NEVER log this frame. Mirrors rc/bot-assign + RcBotSecrets.
-export const RcMcpAssign = z.object({
-  providerId: z.string().uuid(),
-  upstreamUrl: z.string(),
-  headers: z.array(z.object({ name: z.string(), value: z.string() })).default([]),
-  // sha256 of the active grant keys; REQUIRED, ≥1 non-empty — a binding is the proxy's bearer-key
-  // allowlist, so an empty set is rejected (never "unrestricted"). Retire a single key via rc/mcp-unassign.
-  grantKeyHashes: z.array(z.string().min(1)).min(1)
+// C→R EVT — pool-wide MCP proxy binding (centralized-tool-management.md §5.2); `headers` carry the UPSTREAM credential — NEVER log this frame.
+/** The longest MCP tool name a decision table or catalog carries. */
+export const MCP_TOOL_NAME_MAX = 256
+/** The most tools one decision list or one catalog carries. */
+export const MCP_TOOL_LIST_MAX = 1_000
+
+const McpToolNames = z.array(z.string().min(1).max(MCP_TOOL_NAME_MAX)).max(MCP_TOOL_LIST_MAX).default([])
+
+/** One restricted grant's per-tool decisions (mcp-tool-permissions.md §6.1); a name in no list is Blocked. */
+export const McpToolPolicy = z.object({
+  allow: McpToolNames,
+  approval: McpToolNames,
+  ask: McpToolNames
 })
+export type McpToolPolicy = z.infer<typeof McpToolPolicy>
+
+/** The relay enforces per-agent tool tables and answers `rc/mcp-catalog` (mcp-tool-permissions.md §6). */
+export const MCP_TOOL_POLICY_V1_FEATURE = 'mcp-tool-policy-v1'
+
+export const RcMcpAssign = z
+  .object({
+    providerId: z.string().uuid(),
+    upstreamUrl: z.string(),
+    headers: z.array(z.object({ name: z.string(), value: z.string() })).default([]),
+    // sha256 of the active unrestricted grant keys; never empty, because an empty allowlist must not read as "unrestricted".
+    grantKeyHashes: z.array(z.string().min(1)).min(1),
+    // Deduplicated decision tables, sent only to a relay advertising MCP_TOOL_POLICY_V1_FEATURE.
+    toolPolicies: z.array(McpToolPolicy).max(MCP_TOOL_LIST_MAX).optional(),
+    // Restricted agent grants: each hash is judged by its table, never treated as unrestricted.
+    restrictedGrants: z
+      .array(z.object({ grantKeyHash: z.string().min(1), policy: z.number().int().nonnegative() }))
+      .max(10_000)
+      .optional()
+  })
+  .superRefine((assign, ctx) => {
+    const unrestricted = new Set(assign.grantKeyHashes)
+    for (const [i, grant] of (assign.restrictedGrants ?? []).entries()) {
+      if (grant.policy >= (assign.toolPolicies?.length ?? 0))
+        ctx.addIssue({ code: 'custom', path: ['restrictedGrants', i, 'policy'], message: 'unknown tool policy' })
+      if (unrestricted.has(grant.grantKeyHash))
+        ctx.addIssue({
+          code: 'custom',
+          path: ['restrictedGrants', i],
+          message: 'a grant is restricted or not, never both'
+        })
+    }
+  })
 export type RcMcpAssign = z.infer<typeof RcMcpAssign>
 
 // C→R EVT — drop an MCP proxy binding: whole provider (`{providerId}`, deleted/revoked)
@@ -1455,6 +1489,46 @@ export const RcMcpUnassign = z.object({
   grantKeyHash: z.string().optional()
 })
 export type RcMcpUnassign = z.infer<typeof RcMcpUnassign>
+
+// C→R REQ → rc/mcp-catalog/ok — list a provider's tools through the relay's own binding and egress (mcp-tool-permissions.md §4).
+export const RcMcpCatalog = z.object({ providerId: z.string().uuid() })
+export type RcMcpCatalog = z.infer<typeof RcMcpCatalog>
+
+/** The longest tool description a catalog carries. */
+export const MCP_CATALOG_DESCRIPTION_MAX = 1_000
+
+/** One tool as the console groups it: its name, display text, annotation hints, and whether it renders an interface. */
+export const McpCatalogTool = z.object({
+  name: z.string().min(1).max(MCP_TOOL_NAME_MAX),
+  title: z.string().max(256).optional(),
+  description: z.string().max(MCP_CATALOG_DESCRIPTION_MAX).optional(),
+  readOnlyHint: z.boolean().optional(),
+  destructiveHint: z.boolean().optional(),
+  idempotentHint: z.boolean().optional(),
+  openWorldHint: z.boolean().optional(),
+  interactive: z.boolean()
+})
+export type McpCatalogTool = z.infer<typeof McpCatalogTool>
+
+/** Why a catalog fetch failed; a closed set that never carries a host or a secret. */
+export const McpCatalogFailure = z.enum([
+  'unknown_provider',
+  'misconfigured',
+  'blocked_address',
+  'unreachable',
+  'upstream_rejected',
+  'timeout',
+  'too_large',
+  'invalid_response'
+])
+export type McpCatalogFailure = z.infer<typeof McpCatalogFailure>
+
+export const RcMcpCatalogOk = z
+  .object({ tools: z.array(McpCatalogTool).max(MCP_TOOL_LIST_MAX).optional(), failure: McpCatalogFailure.optional() })
+  .refine((ok) => (ok.tools === undefined) !== (ok.failure === undefined), {
+    message: 'exactly one of tools or failure'
+  })
+export type RcMcpCatalogOk = z.infer<typeof RcMcpCatalogOk>
 
 // C→R EVT — purpose-separated external-memory proxy binding. It deliberately
 // does not reuse rc/mcp-assign: memory plugin traffic is daemon-private and must
@@ -1593,6 +1667,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/collab-routes': RcCollabRoutes,
   'rc/mcp-assign': RcMcpAssign,
   'rc/mcp-unassign': RcMcpUnassign,
+  'rc/mcp-catalog': RcMcpCatalog,
+  'rc/mcp-catalog/ok': RcMcpCatalogOk,
   'rc/memoryconnection-assign': RcMemoryConnectionAssign,
   'rc/memoryconnection-unassign': RcMemoryConnectionUnassign,
   'rc/github-app-assign': RcGithubAppAssign,
@@ -1658,6 +1734,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/collab-routes', RELAY_CP_SCHEMAS['rc/collab-routes']),
   frameSchema('rc/mcp-assign', RELAY_CP_SCHEMAS['rc/mcp-assign']),
   frameSchema('rc/mcp-unassign', RELAY_CP_SCHEMAS['rc/mcp-unassign']),
+  frameSchema('rc/mcp-catalog', RELAY_CP_SCHEMAS['rc/mcp-catalog']),
+  frameSchema('rc/mcp-catalog/ok', RELAY_CP_SCHEMAS['rc/mcp-catalog/ok']),
   frameSchema('rc/memoryconnection-assign', RELAY_CP_SCHEMAS['rc/memoryconnection-assign']),
   frameSchema('rc/memoryconnection-unassign', RELAY_CP_SCHEMAS['rc/memoryconnection-unassign']),
   frameSchema('rc/github-app-assign', RELAY_CP_SCHEMAS['rc/github-app-assign']),

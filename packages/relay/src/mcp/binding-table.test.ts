@@ -77,3 +77,37 @@ describe('McpBindingTable — reconnect snapshot', () => {
     expect(t.resolve(PID, 'k1')).not.toBeNull()
   })
 })
+
+describe('McpBindingTable — restricted agent grants', () => {
+  const assign = (t: McpBindingTable) =>
+    t.assign({
+      providerId: PID,
+      upstreamUrl: 'https://a',
+      headers,
+      grantKeyHashes: [hash('shared')],
+      toolPolicies: [{ allow: ['read_note'], approval: ['write_note'], ask: ['delete_note'] }],
+      restrictedGrants: [{ grantKeyHash: hash('agent'), policy: 0 }]
+    })
+
+  it('resolves a restricted grant with its table, and the shared grant without one', () => {
+    const t = new McpBindingTable()
+    assign(t)
+    expect(t.resolve(PID, 'shared')).toEqual({ upstreamUrl: 'https://a', headers })
+    const restricted = t.resolve(PID, 'agent')
+    expect(restricted?.policy?.allow.has('read_note')).toBe(true)
+    // Approval-gated names stay Blocked until this relay handles approvals.
+    expect(restricted?.policy?.allow.has('write_note')).toBe(false)
+    expect(restricted?.policy?.allow.has('delete_note')).toBe(false)
+  })
+
+  it('keeps a provider while a restricted grant remains, and drops it when none of either kind does', () => {
+    const t = new McpBindingTable()
+    assign(t)
+    t.unassign(PID, hash('shared'))
+    expect(t.resolve(PID, 'agent')?.policy).toBeDefined()
+    expect(t.upstream(PID)).toEqual({ upstreamUrl: 'https://a', headers })
+    t.unassign(PID, hash('agent'))
+    expect(t.size()).toBe(0)
+    expect(t.upstream(PID)).toBeNull()
+  })
+})
