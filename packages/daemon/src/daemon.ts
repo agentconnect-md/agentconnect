@@ -28733,7 +28733,7 @@ export class Daemon {
   /** One ACP session's updates stay in arrival order: the async store would otherwise let
    *  a later update whose handler does less I/O emit ahead of an earlier one. */
   private enqueueAcpUpdate(owner: HostKey, sessionId: string, update: unknown): Promise<void> {
-    this.noteExtractionBridgeCall(owner, sessionId, update)
+    this.noteBuiltinSystemToolCall(owner, sessionId, update)
     const key = acpUpdateChainKey(owner, sessionId)
     const previous = this.acpUpdateChains.get(key) ?? Promise.resolve()
     const done = previous.then(() => this.onAcpUpdate(owner, sessionId, update))
@@ -28744,14 +28744,12 @@ export class Daemon {
     return done
   }
 
-  /** Ahead of the chain, not inside it: the runtime's approval request follows this notification at once, and a chain still writing earlier updates to the transcript would answer it before the call was known (#2091). */
-  private noteExtractionBridgeCall(owner: HostKey, sessionId: string, update: unknown): void {
-    const extraction = this.memoryExtractionCollectors.get(pendingTurnKey(owner, sessionId))
-    if (!extraction) return
+  /** Ahead of the chain, not inside it: the runtime's approval request follows this notification at once, and a chain still writing earlier updates would answer it before the call was known (#2091). */
+  private noteBuiltinSystemToolCall(owner: HostKey, sessionId: string, update: unknown): void {
     const toolCallId = (update as { toolCallId?: unknown } | undefined)?.toolCallId
-    if (typeof toolCallId === 'string' && toolCallId && isBuiltinSystemToolCall(update)) {
-      extraction.builtinSystemToolCallIds.add(toolCallId)
-    }
+    if (typeof toolCallId !== 'string' || !toolCallId || !isBuiltinSystemToolCall(update)) return
+    const key = pendingTurnKey(owner, sessionId)
+    ;(this.memoryExtractionCollectors.get(key) ?? this.pending.get(key))?.builtinSystemToolCallIds.add(toolCallId)
   }
 
   private async onAcpUpdate(owner: HostKey, sessionId: string, update: any): Promise<void> {
