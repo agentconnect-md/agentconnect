@@ -1463,6 +1463,9 @@ export type McpToolPolicy = z.infer<typeof McpToolPolicy>
 /** The relay enforces per-agent tool tables and answers `rc/mcp-catalog` (mcp-tool-permissions.md §6). */
 export const MCP_TOOL_POLICY_V1_FEATURE = 'mcp-tool-policy-v1'
 
+/** Stage 6 approvals (mcp-tool-permissions.md §5.6): relays check the approval header, daemons keep `daemon`-custody grants from runtimes. */
+export const MCP_TOOL_APPROVAL_V1_FEATURE = 'mcp-tool-approval-v1'
+
 export const RcMcpAssign = z
   .object({
     providerId: z.string().uuid(),

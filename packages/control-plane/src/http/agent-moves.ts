@@ -2,6 +2,8 @@
 import type { FastifyBaseLogger } from 'fastify'
 import { AgentMoveService } from '../orchestrator/agentMove.js'
 import type { HttpDeps } from './deps.js'
+import { makeMcpAgentGrantMinter } from '../orchestrator/mcpAgentGrants.js'
+import { serializeByProvider } from './provider-chain.js'
 
 export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMoveService {
   return new AgentMoveService({
@@ -20,7 +22,18 @@ export function buildAgentMoves(deps: HttpDeps, log: FastifyBaseLogger): AgentMo
       grants: deps.repos.mcpGrant,
       relayRoster: deps.relayRoster,
       policies: deps.repos.agentMcpToolPolicy,
-      catalogs: deps.repos.mcpToolCatalog
+      catalogs: deps.repos.mcpToolCatalog,
+      mintAgentGrant: makeMcpAgentGrantMinter({
+        grants: deps.repos.mcpGrant,
+        policies: deps.repos.agentMcpToolPolicy,
+        secrets: deps.repos.mcpProviderSecret,
+        // Read at call time: the token service joins the deps after this service is built.
+        get tokens() {
+          return deps.mcpTokenResolver
+        },
+        relays: deps.relayControl,
+        serialize: serializeByProvider
+      })
     },
     memory: {
       connections: deps.repos.externalMemoryConnection,

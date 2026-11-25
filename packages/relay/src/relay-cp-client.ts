@@ -92,6 +92,7 @@ import {
   GITHUB_APP_WEBHOOK_V1_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   MCP_TOOL_POLICY_V1_FEATURE,
+  MCP_TOOL_APPROVAL_V1_FEATURE,
   type RcSnapshotBegin,
   type RcSnapshotEnd,
   type ErrorCode
@@ -840,7 +841,9 @@ export class RelayCpClient {
           // Verifies organization GitHub Apps' webhooks with the secrets the CP sends it.
           GITHUB_APP_WEBHOOK_V1_FEATURE,
           // Judges restricted agent grants against their tool tables and answers rc/mcp-catalog.
-          MCP_TOOL_POLICY_V1_FEATURE
+          MCP_TOOL_POLICY_V1_FEATURE,
+          // Accepts approval-gated calls of a `daemon`-custody grant that carry the daemon's approval header.
+          MCP_TOOL_APPROVAL_V1_FEATURE
         ]
       })
     )

@@ -418,8 +418,14 @@ describe('registerMcpProxy — restricted agent grants (mcp-tool-permissions.md 
       upstreamUrl: `${upstream.url}${path}`,
       headers: [],
       grantKeyHashes: [hash('shared')],
-      toolPolicies: [{ allow: ['read_note'], approval: ['write_note'], ask: [] }],
-      restrictedGrants: [{ grantKeyHash: hash('agent'), policy: 0 }]
+      toolPolicies: [
+        { allow: ['read_note'], approval: ['write_note'], ask: [] },
+        { allow: [], approval: [], ask: ['delete_note'] }
+      ],
+      restrictedGrants: [
+        { grantKeyHash: hash('agent'), policy: 0 },
+        { grantKeyHash: hash('asker'), policy: 1 }
+      ]
     })
   const post = (key: string, body: string, extra: Record<string, string> = {}) =>
     fetch(`${relay.base}/mcp/${PID}`, {
@@ -445,14 +451,55 @@ describe('registerMcpProxy — restricted agent grants (mcp-tool-permissions.md 
     return data
   }
 
-  it('refuses a blocked call without reaching the upstream, approval-gated names included', async () => {
+  it('refuses a blocked call, and an unapproved gated one, without reaching the upstream', async () => {
     bind('/json')
     const before = upstream.seen.length
-    for (const name of ['delete_note', 'write_note']) {
-      const res = await post('agent', JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name } }))
+    const refusals = [
+      ['agent', 'delete_note', {}, 'The tool "delete_note" is blocked for this agent.'],
+      ['agent', 'write_note', {}, 'The tool "write_note" requires approval, and this call was not approved.'],
+      ['agent', 'write_note', { 'x-ac-tool-approval': 'nobody' }, 'requires approval'],
+      ['asker', 'delete_note', { 'x-ac-tool-approval': 'runtime-review' }, 'requires approval']
+    ] as const
+    for (const [key, name, extra, text] of refusals) {
+      const call = JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name } })
+      const res = await post(key, call, extra)
       expect(res.status).toBe(200)
-      expect(await res.json()).toMatchObject({ id: 5, result: { isError: true } })
+      const answer = (await res.json()) as { id: number; result: { isError: boolean; content: [{ text: string }] } }
+      expect(answer).toMatchObject({ id: 5, result: { isError: true } })
+      expect(answer.result.content[0].text).toContain(text)
     }
+    expect(upstream.seen.length).toBe(before)
+  })
+
+  it('forwards an approved gated call when the approval source satisfies its decision, without the header', async () => {
+    bind('/json')
+    const approved = [
+      ['agent', 'write_note', 'runtime-review'],
+      ['agent', 'write_note', 'person'],
+      ['asker', 'delete_note', 'person']
+    ] as const
+    for (const [key, name, source] of approved) {
+      const call = JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name } })
+      const res = await post(key, call, { 'x-ac-tool-approval': source })
+      expect(await res.json()).toMatchObject({ id: 8, result: { content: [{ text: 'ok' }] } })
+      const last = upstream.seen.at(-1)!
+      expect(JSON.parse(last.body)).toMatchObject({ params: { name } })
+      expect(last.headers['x-ac-tool-approval']).toBeUndefined()
+    }
+  })
+
+  it('answers a batch with an approval-gated member itself, even with an approval header', async () => {
+    bind('/json')
+    const before = upstream.seen.length
+    const batch = JSON.stringify([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_note' } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'write_note' } }
+    ])
+    const answers = (await (await post('agent', batch, { 'x-ac-tool-approval': 'person' })).json()) as unknown[]
+    expect(answers).toMatchObject([
+      { id: 1, error: {} },
+      { id: 2, result: { isError: true } }
+    ])
     expect(upstream.seen.length).toBe(before)
   })
 
@@ -471,7 +518,7 @@ describe('registerMcpProxy — restricted agent grants (mcp-tool-permissions.md 
     for (const path of ['/json', '/sse']) {
       bind(path)
       const message = await listTools(await post('agent', list))
-      expect(message?.result?.tools?.map((tool) => tool.name)).toEqual(['read_note'])
+      expect(message?.result?.tools?.map((tool) => tool.name)).toEqual(['read_note', 'write_note'])
     }
   })
 
@@ -497,10 +544,11 @@ describe('registerMcpProxy — restricted agent grants (mcp-tool-permissions.md 
 })
 
 describe('registerMcpProxy — restricted grants on open_connector providers', () => {
-  it('refuses blocked actions and lists only allowed ones through the adapter', async () => {
+  it('applies the same checks through the adapter, and lists only the tools it does not block', async () => {
     const oc = createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' })
-      const data = req.url?.startsWith('/v1/actions?') ? [{ id: 'read_mail' }, { id: 'send_mail' }] : { sent: true }
+      const actions = [{ id: 'read_mail' }, { id: 'send_mail' }, { id: 'delete_mail' }]
+      const data = req.url?.startsWith('/v1/actions?') ? actions : { sent: true }
       res.end(JSON.stringify({ success: true, data }))
     })
     await new Promise<void>((r) => oc.listen(0, '127.0.0.1', () => r()))
@@ -518,20 +566,24 @@ describe('registerMcpProxy — restricted grants on open_connector providers', (
         { name: 'x-oomol-connector-alias', value: 'profile' }
       ],
       grantKeyHashes: [hash('shared')],
-      toolPolicies: [{ allow: ['read_mail'], approval: [], ask: [] }],
+      toolPolicies: [{ allow: ['read_mail'], approval: [], ask: ['send_mail'] }],
       restrictedGrants: [{ grantKeyHash: hash('agent'), policy: 0 }]
     })
-    const post = (message: unknown) =>
+    const post = (message: unknown, extra: Record<string, string> = {}) =>
       fetch(`${base}/mcp/${PID}`, {
         method: 'POST',
-        headers: { authorization: 'Bearer agent', 'content-type': 'application/json' },
+        headers: { authorization: 'Bearer agent', 'content-type': 'application/json', ...extra },
         body: JSON.stringify(message)
       }).then((res) => res.json() as Promise<{ result?: { tools?: Array<{ name: string }>; isError?: boolean } }>)
     try {
       const list = await post({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
-      expect(list.result?.tools?.map((tool) => tool.name)).toEqual(['read_mail'])
-      const blocked = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'send_mail' } })
+      expect(list.result?.tools?.map((tool) => tool.name)).toEqual(['read_mail', 'send_mail'])
+      const blocked = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'delete_mail' } })
       expect(blocked.result?.isError).toBe(true)
+      const send = { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'send_mail', arguments: {} } }
+      expect((await post(send)).result?.isError).toBe(true)
+      expect((await post(send, { 'x-ac-tool-approval': 'runtime-review' })).result?.isError).toBe(true)
+      expect((await post(send, { 'x-ac-tool-approval': 'person' })).result?.isError).toBeFalsy()
     } finally {
       await app.close()
       await new Promise((r) => oc.close(() => r(undefined)))

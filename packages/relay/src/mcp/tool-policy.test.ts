@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { Readable } from 'node:stream'
-import { filterJsonBody, judgeRequest, SseToolsListFilter, TOOLS_LIST_BUFFER_LIMIT } from './tool-policy.js'
+import {
+  approvalSource,
+  filterJsonBody,
+  judgeRequest,
+  SseToolsListFilter,
+  TOOLS_LIST_BUFFER_LIMIT
+} from './tool-policy.js'
 
-const decisions = { allow: new Set(['read_note']) }
+const decisions = { allow: new Set(['read_note']), approval: new Set<string>(), ask: new Set<string>() }
+const gated = { allow: new Set(['read_note']), approval: new Set(['write_note']), ask: new Set(['delete_note']) }
 const body = (value: unknown) => Buffer.from(typeof value === 'string' ? value : JSON.stringify(value))
 const call = (id: number, name: unknown) => ({
   jsonrpc: '2.0',
@@ -82,6 +89,49 @@ describe('judgeRequest', () => {
     expect(judgeRequest(body('"text"'), decisions)).toMatchObject({ kind: 'respond', status: 400 })
   })
 
+  it('forwards an approval-gated call only with an approval header its decision accepts', () => {
+    expect(judgeRequest(body(call(1, 'write_note')), gated, 'person').kind).toBe('forward')
+    expect(judgeRequest(body(call(1, 'write_note')), gated, 'runtime-review').kind).toBe('forward')
+    expect(judgeRequest(body(call(1, 'delete_note')), gated, 'person').kind).toBe('forward')
+    const unapproved = {
+      content: [{ type: 'text', text: 'The tool "delete_note" requires approval, and this call was not approved.' }],
+      isError: true
+    }
+    for (const source of [undefined, 'runtime-review'] as const) {
+      const judgment = judgeRequest(body(call(2, 'delete_note')), gated, source)
+      expect(judgment).toMatchObject({ kind: 'respond', status: 200, refused: ['delete_note'] })
+      if (judgment.kind === 'respond') expect(judgment.json).toEqual({ jsonrpc: '2.0', id: 2, result: unapproved })
+    }
+    expect(judgeRequest(body(call(3, 'write_note')), gated)).toMatchObject({
+      kind: 'respond',
+      json: {
+        result: { content: [{ text: 'The tool "write_note" requires approval, and this call was not approved.' }] }
+      }
+    })
+    // An approval never opens a Blocked tool.
+    expect(judgeRequest(body(call(4, 'purge_note')), gated, 'person')).toMatchObject({
+      kind: 'respond',
+      json: { result: { content: [{ text: 'The tool "purge_note" is blocked for this agent.' }] } }
+    })
+  })
+
+  it('answers a whole batch with an approval-gated member, even when the request carries an approval', () => {
+    const judgment = judgeRequest(body([call(1, 'read_note'), call(2, 'write_note')]), gated, 'person')
+    expect(judgment).toMatchObject({ kind: 'respond', status: 200, refused: ['write_note'] })
+    if (judgment.kind !== 'respond') return
+    const answers = judgment.json as Array<{ id: number; error?: unknown; result?: { isError?: boolean } }>
+    expect(answers[0]!.error).toBeDefined()
+    expect(answers[1]!.result?.isError).toBe(true)
+  })
+
+  it('reads only a single known source from the approval header', () => {
+    expect(approvalSource('person')).toBe('person')
+    expect(approvalSource('runtime-review')).toBe('runtime-review')
+    expect(approvalSource(undefined)).toBeUndefined()
+    expect(approvalSource('Person')).toBeUndefined()
+    expect(approvalSource(['person', 'person'])).toBeUndefined()
+  })
+
   it('forwards everything else, including responses to server requests', () => {
     expect(judgeRequest(body({ jsonrpc: '2.0', id: 1, method: 'resources/read' }), decisions).kind).toBe('forward')
     expect(judgeRequest(body({ jsonrpc: '2.0', id: 'srv-1', result: { action: 'accept' } }), decisions).kind).toBe(
@@ -105,6 +155,18 @@ describe('filterJsonBody', () => {
     )
     expect(out[0].result).toEqual({ tools: [{ name: 'read_note' }], nextCursor: 'n' })
     expect(out[1].result.tools).toHaveLength(3)
+  })
+
+  it('keeps approval-gated tools listed, since a call to them can be approved', () => {
+    const all = [...tools, { name: 'purge_note' }]
+    const out = JSON.parse(
+      filterJsonBody(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: all } }), gated, new Set(['1']))
+    )
+    expect(out.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      'read_note',
+      'write_note',
+      'delete_note'
+    ])
   })
 
   it('turns anything it cannot filter into an error, never unfiltered data', () => {

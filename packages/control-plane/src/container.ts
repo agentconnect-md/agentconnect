@@ -363,7 +363,8 @@ import { RelayControlSender } from './orchestrator/relayControl.js'
 import { replayMcpTo } from './orchestrator/mcpReplay.js'
 import { replaySnapshot } from './orchestrator/relaySnapshot.js'
 import { makeMcpPush } from './http/mcp-push.js'
-import { makeOauthRebind } from './http/provider-chain.js'
+import { makeOauthRebind, serializeByProvider } from './http/provider-chain.js'
+import { makeMcpAgentGrantMinter } from './orchestrator/mcpAgentGrants.js'
 import { McpToolCatalogService } from './orchestrator/mcpToolCatalog.js'
 import { McpProviderOauthService } from './mcp-oauth/service.js'
 import { McpProviderTokenService } from './mcp-oauth/token-service.js'
@@ -1075,6 +1076,15 @@ export function buildContainer(
   // rc/daemon-revoke to connected relays (§9). Roster still comes from the DB.
   const relayReg = new RelayRegistry()
   const relayControl = new RelayControlSender(relayReg)
+  // Lazy agent-grant mint for projections (mcp-tool-permissions.md §5.6); the token service is built later and read at call time.
+  const mintMcpAgentGrant = makeMcpAgentGrantMinter({
+    grants: repos.mcpGrant,
+    policies: repos.agentMcpToolPolicy,
+    secrets: repos.mcpProviderSecret,
+    tokens: { resolve: (orgId, providerId, opts) => mcpTokenService.resolve(orgId, providerId, opts) },
+    relays: relayControl,
+    serialize: serializeByProvider
+  })
 
   // github-app config resolved early: the hook compiler stamps the App broadcast
   // slug beside each agent's targeted slug, the GithubService comes later.
@@ -1521,7 +1531,8 @@ export function buildContainer(
       grants: repos.mcpGrant,
       relayRoster,
       policies: repos.agentMcpToolPolicy,
-      catalogs: repos.mcpToolCatalog
+      catalogs: repos.mcpToolCatalog,
+      mintAgentGrant: mintMcpAgentGrant
     },
     memory: {
       connections: repos.externalMemoryConnection,
@@ -1574,7 +1585,8 @@ export function buildContainer(
         grants: repos.mcpGrant,
         relayRoster,
         policies: repos.agentMcpToolPolicy,
-        catalogs: repos.mcpToolCatalog
+        catalogs: repos.mcpToolCatalog,
+        mintAgentGrant: mintMcpAgentGrant
       },
       memory: {
         connections: repos.externalMemoryConnection,
@@ -3900,7 +3912,7 @@ export function buildContainer(
     computerChannelGrants,
     ...(computerPool ? { computerPool } : {}),
     memberSets: repos.memberSet,
-    agentBundle: (agent) => stagedAgentMoves.bundleFor(agent),
+    agentBundle: (agent, features) => stagedAgentMoves.bundleFor(agent, features),
     cron: repos.cron,
     hook: repos.hook,
     agent: repos.agent,

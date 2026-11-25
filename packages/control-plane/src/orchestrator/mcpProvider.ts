@@ -15,6 +15,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import net from 'node:net'
 import {
+  MCP_TOOL_APPROVAL_V1_FEATURE,
   MCP_TOOL_POLICY_V1_FEATURE,
   type McpServerSpec,
   type McpToolPolicy,
@@ -164,17 +165,19 @@ export function mcpBinding(
   return { base: mcpRcAssign(provider, upstreamHeaders, grantKeys), restricted }
 }
 
-/** The `rc/mcp-assign` one relay receives: restricted grants with deduplicated tables only where it advertises `mcp-tool-policy-v1` (§6.1, §8). */
+/** The `rc/mcp-assign` one relay receives: restricted grants with deduplicated tables only where it advertises `mcp-tool-policy-v1`, approval-gated names only where it also advertises `mcp-tool-approval-v1` (§6.1, §8). */
 export function mcpRcAssignFor(binding: McpBinding, relayFeatures: readonly string[] | undefined): RcMcpAssign {
   if (binding.restricted.length === 0 || relayFeatures?.includes(MCP_TOOL_POLICY_V1_FEATURE) !== true)
     return binding.base
+  const approvals = relayFeatures.includes(MCP_TOOL_APPROVAL_V1_FEATURE)
   const toolPolicies: McpToolPolicy[] = []
   const indexOf = new Map<string, number>()
   const restrictedGrants = binding.restricted.map((grant) => {
-    const signature = JSON.stringify([grant.policy.allow, grant.policy.approval, grant.policy.ask])
+    const table = approvals ? grant.policy : { allow: grant.policy.allow, approval: [], ask: [] }
+    const signature = JSON.stringify([table.allow, table.approval, table.ask])
     let policy = indexOf.get(signature)
     if (policy === undefined) {
-      policy = toolPolicies.push(grant.policy) - 1
+      policy = toolPolicies.push(table) - 1
       indexOf.set(signature, policy)
     }
     return { grantKeyHash: grantKeyHash(grant.key), policy }

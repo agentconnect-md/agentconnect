@@ -902,8 +902,8 @@ export class AgentMoveService {
   }
 
   /** The complete installable definition for an agent whose duty/fetch caller has already authorized its holder. */
-  async bundleFor(agent: AgentRecord): Promise<DutyAgentBundle> {
-    const snapshot = await this.snapshot(agent)
+  async bundleFor(agent: AgentRecord, peerFeatures?: readonly string[]): Promise<DutyAgentBundle> {
+    const snapshot = await this.snapshot(agent, peerFeatures)
     return {
       ...this.activationDefinition(agent, snapshot),
       mcpServers: snapshot.mcpServers,
@@ -912,13 +912,14 @@ export class AgentMoveService {
   }
 
   private async registryDefinitions(
-    agent: AgentRecord
+    agent: AgentRecord,
+    peerFeatures: readonly string[] | undefined
   ): Promise<Pick<DutyAgentBundle, 'mcpServers' | 'memoryConnections'>> {
     const log = { warn: (obj: object, msg: string) => this.deps.log?.warn(obj, msg) }
     try {
       const [mcpServers, memoryConnections] = await Promise.all([
-        // Projected for any peer; each send narrows it to the daemon it reaches.
-        mcpDefsForAgents([agent], this.deps.mcp, MCP_DEFS_ANY_PEER, log, { agentId: agent.id }),
+        // Projected for the receiving daemon, whose features pick each agent grant; each send still narrows it.
+        mcpDefsForAgents([agent], this.deps.mcp, peerFeatures, log, { agentId: agent.id }),
         memoryDefsForAgents([agent], this.deps.memory, log, { agentId: agent.id })
       ])
       return { mcpServers, memoryConnections }
@@ -928,8 +929,11 @@ export class AgentMoveService {
     }
   }
 
-  /** Read every placement-dependent wire definition. */
-  private async snapshot(agent: AgentRecord): Promise<MoveBundle> {
+  /** Read every placement-dependent wire definition, projecting MCP grants for `peerFeatures` (any peer when no daemon receives it). */
+  private async snapshot(
+    agent: AgentRecord,
+    peerFeatures: readonly string[] | undefined = MCP_DEFS_ANY_PEER
+  ): Promise<MoveBundle> {
     const [
       integrations,
       cronRows,
@@ -961,7 +965,7 @@ export class AgentMoveService {
       this.deps.specs.computersOf(agent),
       this.deps.specs.gitCommitIdentityOf(agent),
       this.deps.specs.mcpRestrictedOf(agent),
-      this.registryDefinitions(agent)
+      this.registryDefinitions(agent, peerFeatures)
     ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
@@ -1065,7 +1069,7 @@ export class AgentMoveService {
     if (!agent || !(await (this.deps.placement ?? PLACEMENT_ONLY).mayAct(agent, targetDaemonId))) {
       return this.failClosedOwnership(agentId, targetDaemonId, orgId)
     }
-    const bundle = await this.snapshot(agent)
+    const bundle = await this.snapshot(agent, this.deps.control.daemonFeatures(targetDaemonId))
     requireExternalMemoryDefinition(agent, bundle)
     return {
       agent,

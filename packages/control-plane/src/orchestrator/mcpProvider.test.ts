@@ -12,6 +12,7 @@ import {
   blockedUpstreamUrl,
   relayHttpOrigin
 } from './mcpProvider.js'
+import { relayToolPolicy } from './mcpToolPolicy.js'
 
 const provider = {
   id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
@@ -193,6 +194,32 @@ describe('mcpRcAssignFor — one binding shaped per relay (mcp-tool-permissions.
       expect(assign).toEqual(mcpRcAssign(provider, upstream, ['oct_shared']))
       expect(assign).not.toHaveProperty('restrictedGrants')
     }
+  })
+
+  it('sends a daemon grant’s approval-gated names only to a relay that also handles approvals; a runtime grant never has them', () => {
+    const table = { allowTools: ['read'], approvalTools: ['write'], askTools: ['delete'] }
+    const custody = mcpBinding(
+      provider,
+      upstream,
+      ['oct_shared'],
+      [
+        { key: 'oct_daemon', policy: relayToolPolicy(table, 'daemon') },
+        { key: 'oct_runtime', policy: relayToolPolicy(table, 'runtime') }
+      ]
+    )
+    const blank = { allow: ['read'], approval: [], ask: [] }
+    const capable = mcpRcAssignFor(custody, ['mcp-tool-policy-v1', 'mcp-tool-approval-v1'])
+    expect(capable.toolPolicies).toEqual([{ allow: ['read'], approval: ['write'], ask: ['delete'] }, blank])
+    expect(capable.restrictedGrants).toEqual([
+      { grantKeyHash: grantKeyHash('oct_daemon'), policy: 0 },
+      { grantKeyHash: grantKeyHash('oct_runtime'), policy: 1 }
+    ])
+    const older = mcpRcAssignFor(custody, ['mcp-tool-policy-v1'])
+    expect(older.toolPolicies).toEqual([blank])
+    expect(older.restrictedGrants).toEqual([
+      { grantKeyHash: grantKeyHash('oct_daemon'), policy: 0 },
+      { grantKeyHash: grantKeyHash('oct_runtime'), policy: 0 }
+    ])
   })
 
   it('sends the unrestricted frame unchanged when there is no restricted grant', () => {

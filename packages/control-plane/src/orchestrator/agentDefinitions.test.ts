@@ -17,7 +17,7 @@ import {
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
 import { AgentId, OrgId } from '../domain/ids.js'
-import type { McpProviderRecord } from '../persistence/ports.js'
+import type { McpAgentGrantRecord, McpGrantCustody, McpProviderRecord } from '../persistence/ports.js'
 
 const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
@@ -211,6 +211,78 @@ describe('mcpDefsForAgents — restricted agents (mcp-tool-permissions.md §5.4,
     expect(
       await mcpDefsForAgents([agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })], noGrant, ['mcp-agent-defs-v1'])
     ).toEqual([])
+  })
+})
+
+describe('mcpDefsForAgents — grant custody per receiving daemon (mcp-tool-permissions.md §5.6)', () => {
+  const RESTRICTED = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  const docs = provider(ORG_A, 'docs')
+  const APPROVALS = ['mcp-agent-defs-v1', 'mcp-tool-approval-v1']
+  const policy = {
+    agentId: RESTRICTED,
+    mcpProviderId: docs.id,
+    providerName: 'docs',
+    allowTools: ['read'],
+    approvalTools: ['write'],
+    askTools: ['delete']
+  }
+  const grant = (custody: McpGrantCustody, at: number): McpAgentGrantRecord => ({
+    id: `g-${custody}`,
+    mcpProviderId: docs.id,
+    key: `oct_${custody}`,
+    agentId: RESTRICTED,
+    custody,
+    status: 'active',
+    createdAt: new Date(at)
+  })
+  const custodyDeps = (held: McpAgentGrantRecord[], mintAgentGrant?: McpDefinitionDeps['mintAgentGrant']) =>
+    ({
+      ...mcpDeps([docs]),
+      grants: {
+        activeForProvider: async () => [{ id: 'g-shared', key: 'oct_shared', createdAt: new Date(1_000) }],
+        activeForAgent: async () => held
+      },
+      policies: { listForOrg: async () => [policy] },
+      catalogs: { get: async () => ({ tools: [{ name: 'read' }, { name: 'write' }, { name: 'admin' }] }) },
+      ...(mintAgentGrant ? { mintAgentGrant } : {})
+    }) as unknown as McpDefinitionDeps
+  const restricted = [agent(ORG_A, { id: RESTRICTED, mcpServers: ['docs'] })]
+
+  it('gives an approval-capable daemon the daemon grant with its approval-gated names, and an older one the runtime grant', async () => {
+    const deps = custodyDeps([grant('runtime', 2_000), grant('daemon', 3_000)])
+    const [capable] = await mcpDefsForAgents(restricted, deps, APPROVALS)
+    expect(capable).toMatchObject({
+      headers: [{ name: 'Authorization', value: 'Bearer oct_daemon' }],
+      toolDecisions: { allow: ['read'], approval: ['write'], ask: ['delete'], block: ['admin'] }
+    })
+    const [older] = await mcpDefsForAgents(restricted, deps, ['mcp-agent-defs-v1'])
+    expect(older).toMatchObject({
+      headers: [{ name: 'Authorization', value: 'Bearer oct_runtime' }],
+      toolDecisions: { allow: ['read'], approval: [], ask: [], block: ['admin', 'delete', 'write'] }
+    })
+  })
+
+  it('mints the daemon grant a capable daemon lacks instead of promoting the runtime one', async () => {
+    const mint = vi.fn(async () => grant('daemon', 4_000))
+    const [spec] = await mcpDefsForAgents(restricted, custodyDeps([grant('runtime', 2_000)], mint), APPROVALS)
+    expect(mint).toHaveBeenCalledExactlyOnceWith(docs, RESTRICTED, 'daemon')
+    expect(spec!.headers).toEqual([{ name: 'Authorization', value: 'Bearer oct_daemon' }])
+  })
+
+  it('mints the runtime grant an older daemon lacks, and never uses the daemon one there', async () => {
+    const mint = vi.fn(async () => grant('runtime', 4_000))
+    const [spec] = await mcpDefsForAgents(restricted, custodyDeps([grant('daemon', 3_000)], mint), [
+      'mcp-agent-defs-v1'
+    ])
+    expect(mint).toHaveBeenCalledExactlyOnceWith(docs, RESTRICTED, 'runtime')
+    expect(spec!.headers).toEqual([{ name: 'Authorization', value: 'Bearer oct_runtime' }])
+  })
+
+  it('mints nothing for a bundle no daemon receives, and projects nothing without a grant of the right custody', async () => {
+    const mint = vi.fn(async () => grant('runtime', 4_000))
+    expect(await mcpDefsForAgents(restricted, custodyDeps([], mint), MCP_DEFS_ANY_PEER)).toEqual([])
+    expect(mint).not.toHaveBeenCalled()
+    expect(await mcpDefsForAgents(restricted, custodyDeps([grant('runtime', 2_000)]), APPROVALS)).toEqual([])
   })
 })
 

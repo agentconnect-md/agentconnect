@@ -16,11 +16,15 @@ import { OrgId } from '../../src/domain/ids.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const CAPABLE = 'd0000000-0000-4000-8000-00000000c001'
 const OLDER = 'd0000000-0000-4000-8000-00000000c002'
+const APPROVER = 'd0000000-0000-4000-8000-00000000c003'
 const READ_ONLY = { groups: { readOnly: 'allow', write: 'block', other: 'block' }, overrides: {} }
 
 /** Records the daemon-bound frames, mirroring the real sender's per-peer spec encoding. */
 class PolicySpyControl {
-  readonly features = new Map<string, string[]>([[CAPABLE, ['mcp-agent-defs-v1']]])
+  readonly features = new Map<string, string[]>([
+    [CAPABLE, ['mcp-agent-defs-v1']],
+    [APPROVER, ['mcp-agent-defs-v1', 'mcp-tool-approval-v1']]
+  ])
   readonly events: string[] = []
   readonly upserts: Array<{ daemonId: string; spec: McpServerSpec }> = []
   readonly removes: Array<{ daemonId: string; name: string; agentId?: string }> = []
@@ -51,7 +55,7 @@ afterEach(async () => {
   await Promise.all(opened.splice(0).map((a) => a.close()))
 })
 
-function makeApp(opts: { userId?: string; control?: PolicySpyControl } = {}) {
+function makeApp(opts: { userId?: string; control?: PolicySpyControl; relayFeatures?: string[] } = {}) {
   const control = opts.control ?? new PolicySpyControl()
   const app = buildHttpApp(
     prisma,
@@ -63,7 +67,7 @@ function makeApp(opts: { userId?: string; control?: PolicySpyControl } = {}) {
   const frames: RelayFrame[] = []
   app.relayReg.add({
     relayId: `relay-${randomUUID()}`,
-    features: ['mcp-tool-policy-v1'],
+    features: opts.relayFeatures ?? ['mcp-tool-policy-v1'],
     send: (type, payload) => {
       frames.push({ type, payload })
       control.events.push(`relay:${type}`)
@@ -264,8 +268,73 @@ describe('agent MCP tool policies — grant lifecycle', () => {
     expect(list.statusCode).toBe(200)
     expect(list.json()).toMatchObject({
       policies: [{ providerId: provider.id, allowTools: ['create', 'search'] }],
-      compatibility: { daemonsWithoutAgentDefinitions: [], relaysWithoutToolPolicies: 0 }
+      compatibility: {
+        daemonsWithoutAgentDefinitions: [],
+        relaysWithoutToolPolicies: 0,
+        daemonsWithoutApprovals: [CAPABLE],
+        relaysWithoutApprovals: 1
+      }
     })
+  })
+
+  it('an approval-capable daemon gets a daemon grant with the approval-gated names, an older one a runtime grant with them Blocked', async () => {
+    const { app, control, frames } = makeApp({ relayFeatures: ['mcp-tool-policy-v1', 'mcp-tool-approval-v1'] })
+    const provider = await seedWorld(app)
+    await seedDaemon(prisma, APPROVER)
+    await seedDaemon(prisma, CAPABLE)
+    const onApprover = await placedAgent(APPROVER, ['docs'])
+    const onCapable = await placedAgent(CAPABLE, ['docs'])
+    await app.deps.repos.mcpToolCatalog.put(OrgId(DEFAULT_ORG_ID), provider.id, {
+      tools: [
+        { name: 'search', readOnlyHint: true, interactive: false },
+        { name: 'create', readOnlyHint: false, interactive: false },
+        { name: 'misc', interactive: false }
+      ],
+      fetchedAt: new Date('2026-11-20T00:00:00Z'),
+      failure: null
+    })
+    const gated = { groups: { readOnly: 'allow', write: 'approval', other: 'block' }, overrides: {} }
+    const grantsOf = (agentId: string) =>
+      app.deps.repos.mcpGrant.activeForAgent(OrgId(DEFAULT_ORG_ID), provider.id, agentId)
+    const ownDef = (agentId: string) => control.upserts.filter((u) => u.spec.agentId === agentId).at(-1)!
+
+    expect(
+      (await app.app.inject({ method: 'PUT', url: policyUrl(onApprover, provider.id), payload: gated })).statusCode
+    ).toBe(200)
+    const [daemonGrant, ...noRuntime] = await grantsOf(onApprover)
+    expect(daemonGrant).toMatchObject({ custody: 'daemon' })
+    expect(noRuntime).toEqual([])
+    expect(ownDef(onApprover)).toMatchObject({
+      daemonId: APPROVER,
+      spec: {
+        headers: [{ name: 'Authorization', value: `Bearer ${daemonGrant!.key}` }],
+        toolDecisions: { allow: ['search'], approval: ['create'], ask: [], block: ['misc'] }
+      }
+    })
+
+    expect(
+      (await app.app.inject({ method: 'PUT', url: policyUrl(onCapable, provider.id), payload: gated })).statusCode
+    ).toBe(200)
+    const [runtimeGrant, ...noDaemon] = await grantsOf(onCapable)
+    expect(runtimeGrant).toMatchObject({ custody: 'runtime' })
+    expect(noDaemon).toEqual([])
+    expect(ownDef(onCapable)).toMatchObject({
+      daemonId: CAPABLE,
+      spec: {
+        headers: [{ name: 'Authorization', value: `Bearer ${runtimeGrant!.key}` }],
+        toolDecisions: { allow: ['search'], approval: [], ask: [], block: ['create', 'misc'] }
+      }
+    })
+
+    // The relay judges each hash by its own custody's table.
+    const assign = lastAssign(frames)
+    const tableOf = (key: string) =>
+      assign.toolPolicies![assign.restrictedGrants!.find((g) => g.grantKeyHash === grantKeyHash(key))!.policy]
+    expect(tableOf(daemonGrant!.key)).toEqual({ allow: ['search'], approval: ['create'], ask: [] })
+    expect(tableOf(runtimeGrant!.key)).toEqual({ allow: ['search'], approval: [], ask: [] })
+
+    const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${onCapable}/mcp-tool-policies` })
+    expect(list.json().compatibility).toMatchObject({ daemonsWithoutApprovals: [CAPABLE], relaysWithoutApprovals: 0 })
   })
 
   it('an older daemon serving a restricted agent drops the provider from its spec and receives no definition for it', async () => {
