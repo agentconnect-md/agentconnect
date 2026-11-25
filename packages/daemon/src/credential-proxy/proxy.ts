@@ -56,6 +56,15 @@ import {
   type ResolvedProviderKey
 } from './provider-route.js'
 import { stripHostPathPrefix, type ManagedCredentialHost } from '../gitcred/managed-hosts.js'
+import { argumentsDigest, type ApprovalRecords } from '../mcp/approval-records.js'
+import {
+  judgeMcpGrantPost,
+  mcpGrantOrigin,
+  MCP_GRANT_BODY_LIMIT,
+  MCP_GRANT_STREAMS_PER_SESSION,
+  TOOL_APPROVAL_HEADER,
+  type McpGrantRoute
+} from './mcp-grant-route.js'
 
 /** How long a resolved provider key is reused; a 401 from the upstream drops it sooner. */
 const PROVIDER_KEY_TTL_MS = 60_000
@@ -114,6 +123,10 @@ export interface CredentialProxyDeps {
   providerSlotsOf?: (agentId: string) => readonly ProviderSlot[]
   /** A slot's real key, resolved when a request presents its placeholder. */
   resolveProviderSlot?: (agentId: string, slotId: string) => Promise<ResolvedProviderKey>
+  /** An agent's `daemon`-custody MCP grants, which only its placeholder reaches the relay with (mcp-tool-permissions.md §7.2). */
+  mcpGrantsOf?: (agentId: string) => readonly McpGrantRoute[]
+  /** The approvals a gated MCP call is checked against and consumes. */
+  approvals?: ApprovalRecords
   log: { info: (message: string) => void; warn: (message: string) => void }
   /** How upstream names resolve (a test seam), and the authorities the upstream leg trusts. */
   upstream?: { lookupFor?: DirectLookup; trustedCa?: string | string[] }
@@ -210,8 +223,15 @@ function providerKeyId(agentId: string, slot: ProviderSlot): string {
   return `${agentId}\n${slot.id}\n${slot.provider}\n${slotHostKey(slot)}\n${slot.pathPrefix ?? ''}`
 }
 
-/** Which credentials a listener exchanges: an executor tunnel's socket carries one kind, every other listener both. */
+/** Which credentials a listener exchanges: an executor tunnel's socket carries one kind, every other listener all of them, MCP grants included. */
 type ListenerScope = 'codehost' | 'provider' | 'both'
+
+/** One served MCP grant and where its relay answers. */
+interface ServedMcpGrant {
+  agentId: string
+  route: McpGrantRoute
+  origin: { hostname: string; port: number; path: string }
+}
 
 /** The `host:port` authorities instances answer on: each SaaS name on 443, a self-managed instance on its own port. */
 function routesOf(instances: readonly ProxyInstance[]): string[] {
@@ -263,6 +283,8 @@ export class CredentialProxy {
   private loopbackPort: number | undefined
   /** Resolved provider keys by agent and slot, each kept until its TTL or the upstream's 401. */
   private readonly providerKeys = new Map<string, ProviderKeyEntry>()
+  /** Open MCP GET streams per agent, grant and session. */
+  private readonly mcpStreams = new Map<string, number>()
 
   /** The daemon's own outbound proxy (HTTPS_PROXY, NO_PROXY) every upstream leg goes through; it resolves the names it carries, so on that route only a literal address is guarded here. */
   private readonly parentProxy: ResolvedParentProxy | undefined = resolveParentProxy()
@@ -409,10 +431,27 @@ export class CredentialProxy {
     return sealPlaceholder(this.deps.key, { agentId, hosts: [slotHostKey(slot)], kind: 'provider', slot: slot.id })
   }
 
-  /** The host names srt routes to this agent's socket: its instances' and its provider slots', never another agent's. */
+  /** The placeholder a session's runtime presents in place of a `daemon`-custody MCP grant; undefined for a grant the proxy does not serve. */
+  mcpGrantPlaceholderFor(agentId: string, provider: string, session?: string): string | undefined {
+    const grant = this.mcpGrants(agentId).find((candidate) => candidate.route.provider === provider)
+    if (!grant) return undefined
+    return sealPlaceholder(this.deps.key, {
+      agentId,
+      hosts: [hostKey(grant.origin.hostname, grant.origin.port)],
+      kind: 'mcp-grant',
+      mcpProvider: provider,
+      ...(session ? { session } : {})
+    })
+  }
+
+  /** The host names srt routes to this agent's socket: its instances', its provider slots' and its MCP grants' relay, never another agent's. */
   domainsFor(agentId: string): string[] {
     return [
-      ...new Set([...this.instances(agentId).flatMap(instanceHostnames), ...this.slots(agentId).map(slotHostname)])
+      ...new Set([
+        ...this.instances(agentId).flatMap(instanceHostnames),
+        ...this.slots(agentId).map(slotHostname),
+        ...this.mcpGrants(agentId).map((grant) => grant.origin.hostname)
+      ])
     ]
   }
 
@@ -457,6 +496,21 @@ export class CredentialProxy {
     return this.deps.providerSlotsOf?.(agentId) ?? []
   }
 
+  /** An agent's MCP grants the proxy can carry: those whose relay answers over HTTPS. */
+  private mcpGrants(agentId: string): ServedMcpGrant[] {
+    return (this.deps.mcpGrantsOf?.(agentId) ?? []).flatMap((route) => {
+      const origin = mcpGrantOrigin(route.url)
+      return origin ? [{ agentId, route, origin }] : []
+    })
+  }
+
+  /** The MCP grants a listener serves: its own agent's on a socket, every running agent's on loopback. */
+  private servedMcpGrants(boundAgent?: string): ServedMcpGrant[] {
+    return boundAgent !== undefined
+      ? this.mcpGrants(boundAgent)
+      : [...this.deps.runningAgents()].flatMap((id) => this.mcpGrants(id))
+  }
+
   /** The provider slots a listener serves: its own agent's on a socket, every running agent's on loopback. */
   private servedSlots(boundAgent?: string): ProviderSlot[] {
     return boundAgent !== undefined
@@ -471,7 +525,8 @@ export class CredentialProxy {
     const instances = [...this.served(), ...skills].filter((instance) => instanceHostnames(instance).includes(hostname))
     if (SAAS_HOSTS.includes(hostname) || slots.some((slot) => slot.saas) || instances.some((i) => i.saas))
       return deniedAddress
-    return slots.length > 0 || instances.length > 0 ? deniedSelfManagedAddress : undefined
+    const relay = this.servedMcpGrants().some((grant) => grant.origin.hostname === hostname)
+    return slots.length > 0 || instances.length > 0 || relay ? deniedSelfManagedAddress : undefined
   }
 
   /** A code host or provider named by an address in its denied space, which no name lookup on either route would catch. */
@@ -495,7 +550,11 @@ export class CredentialProxy {
         (scope !== 'provider' &&
           this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined)) ||
         (scope !== 'codehost' &&
-          this.servedSlots(boundAgent).some((slot) => slotServes(slot, host.toLowerCase(), port))),
+          this.servedSlots(boundAgent).some((slot) => slotServes(slot, host.toLowerCase(), port))) ||
+        (scope === 'both' &&
+          this.servedMcpGrants(boundAgent).some(
+            (grant) => grant.origin.hostname === host.toLowerCase() && grant.origin.port === port
+          )),
       filterRequest: (request, info) => this.decide(request, info, boundAgent, scope),
       onFilterRequestDenied: ({ method, url, reason }) =>
         this.deps.log.info(`credential proxy refused ${method} ${url.split('?')[0]}: ${reason}`),
@@ -507,7 +566,7 @@ export class CredentialProxy {
     })
   }
 
-  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token or the provider's key; over an agent's own socket, only that agent's, and over a tunnel's, only its kind. */
+  /** One request's decision: pass anything that is not ours untouched, and exchange our placeholder for the repository's token, the provider's key or the MCP grant; over an agent's own socket, only that agent's, and over a tunnel's, only its kind. */
   async decide(
     request: Request,
     info?: RequestInfo,
@@ -517,6 +576,119 @@ export class CredentialProxy {
     const url = new URL(request.url)
     const hostname = (info?.target?.host ?? url.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')
     const port = info?.target?.port ?? (url.port ? Number(url.port) : url.protocol === 'http:' ? 80 : 443)
+    const relay =
+      scope === 'both' && this.servedMcpGrants(boundAgent).some((grant) => grant.origin.hostname === hostname)
+    const decision = (relay && (await this.mcpGrantDecision(request, info, boundAgent, hostname, port))) || undefined
+    if (decision) return decision
+    const decided = await this.decideCredential(request, info, boundAgent, scope, url, hostname, port)
+    // A relay never receives an approval header the proxy did not add itself.
+    return relay && decided.action === 'allow'
+      ? { ...decided, removeHeaders: [...(decided.removeHeaders ?? []), TOOL_APPROVAL_HEADER] }
+      : decided
+  }
+
+  /** An MCP grant placeholder's decision (mcp-tool-permissions.md §7.2); undefined for a request that carries none. */
+  private async mcpGrantDecision(
+    request: Request,
+    info: RequestInfo | undefined,
+    boundAgent: string | undefined,
+    hostname: string,
+    port: number
+  ): Promise<RequestDecision | undefined> {
+    const presented = presentedCredential(request.headers.get('authorization'))
+    if (!presented || !looksLikePlaceholder(presented.value)) return undefined
+    const claims = openPlaceholder(this.deps.key, presented.value)
+    if (!claims) return deny(403, 'the agent credential was not issued by this daemon')
+    if (claims.kind !== 'mcp-grant') return undefined
+    if (info?.scheme !== 'https') return deny(403, 'the agent credential is only accepted over HTTPS')
+    if (!this.deps.knownAgent(claims.agentId)) return deny(403, 'the agent credential belongs to no running agent')
+    if (boundAgent !== undefined && claims.agentId !== boundAgent)
+      return deny(403, 'the agent credential belongs to another agent')
+    const grant = this.mcpGrants(claims.agentId).find((candidate) => candidate.route.provider === claims.mcpProvider)
+    if (
+      !grant ||
+      grant.origin.hostname !== hostname ||
+      grant.origin.port !== port ||
+      !claims.hosts.includes(hostKey(hostname, port))
+    )
+      return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
+    if (presented.scheme !== 'bearer')
+      return deny(400, 'an MCP grant is accepted in Authorization only as a Bearer token')
+    const target = info.requestTarget ?? `${new URL(request.url).pathname}${new URL(request.url).search}`
+    if (requestPath(target) !== grant.origin.path)
+      return deny(403, `the agent credential is not valid for ${requestPath(target)}`)
+    const provider = grant.route.provider
+    const keyed = (approval?: string): Pick<RequestDecision, 'removeHeaders' | 'setHeaders'> => ({
+      removeHeaders: [TOOL_APPROVAL_HEADER],
+      setHeaders: [
+        ['authorization', `Bearer ${grant.route.key}`],
+        ...(approval ? ([[TOOL_APPROVAL_HEADER, approval]] as [string, string][]) : [])
+      ]
+    })
+    const method = request.method.toUpperCase()
+    if (method === 'GET' || method === 'DELETE') {
+      // What the relay receives is judged whole, so a body these methods never carry is refused.
+      if (info.unshownBody && (await info.unshownBody())) return deny(400, `an MCP ${method} carries no body`)
+      if (method === 'DELETE') return { action: 'allow', ...keyed() }
+      const stream = `${claims.agentId}\n${provider}\n${claims.session ?? ''}`
+      const open = this.mcpStreams.get(stream) ?? 0
+      if (open >= MCP_GRANT_STREAMS_PER_SESSION)
+        return deny(429, `this session already holds ${open} open streams to the MCP server ${provider}`)
+      if (!request.signal.aborted) {
+        this.mcpStreams.set(stream, open + 1)
+        request.signal.addEventListener(
+          'abort',
+          () => {
+            const left = (this.mcpStreams.get(stream) ?? 1) - 1
+            if (left > 0) this.mcpStreams.set(stream, left)
+            else this.mcpStreams.delete(stream)
+          },
+          { once: true }
+        )
+      }
+      return { action: 'allow', ...keyed() }
+    }
+    if (method !== 'POST') return deny(405, `an MCP server takes GET, POST and DELETE, not ${method}`)
+    const body = await boundedText(request, MCP_GRANT_BODY_LIMIT)
+    if (body === undefined) return deny(413, 'the MCP request is too large')
+    const approvals = this.deps.approvals
+    const judgment = await judgeMcpGrantPost(body, grant.route.decisions, async (call) => {
+      if (!approvals || call.toolCallId === undefined) return undefined
+      const digest = argumentsDigest(call.arguments)
+      const record = await approvals.take(
+        claims.agentId,
+        call.toolCallId,
+        (candidate) =>
+          candidate.provider === provider &&
+          candidate.tool === call.name &&
+          candidate.argsDigest === digest &&
+          (call.decision !== 'ask' || candidate.source === 'person')
+      )
+      return record?.source
+    })
+    if (judgment.refused.length > 0) {
+      const names = judgment.refused.map((name) => JSON.stringify(name.slice(0, 128))).join(', ')
+      this.deps.log.info(`credential proxy: refused MCP tool ${names} of ${provider} for ${claims.agentId}`)
+    }
+    if (judgment.kind === 'respond')
+      return {
+        action: 'respond',
+        status: judgment.status,
+        ...(judgment.json === undefined ? {} : { contentType: 'application/json', body: JSON.stringify(judgment.json) })
+      }
+    return { action: 'allow', ...keyed(judgment.approval), body: judgment.body }
+  }
+
+  /** The code-host and provider decision: exchange our placeholder for the repository's token or the provider's key. */
+  private async decideCredential(
+    request: Request,
+    info: RequestInfo | undefined,
+    boundAgent: string | undefined,
+    scope: ListenerScope,
+    url: URL,
+    hostname: string,
+    port: number
+  ): Promise<RequestDecision> {
     // Judged by name on any port, so a placeholder sent in cleartext is refused below rather than forwarded.
     const codeHost =
       scope !== 'provider' && this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname))
@@ -545,7 +717,9 @@ export class CredentialProxy {
       )
     )
       return deny(403, 'the request carries more than one agent credential')
-    // The kind first: a code-host credential is never a provider key, nor the reverse.
+    // The kind first: a code-host credential is never a provider key, nor the reverse, and an MCP grant is neither.
+    if (claims.kind === 'mcp-grant')
+      return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     if (claims.kind === 'provider' ? keyed.length === 0 : !carried)
       return deny(403, `the agent credential is not valid for ${hostKey(hostname, port)}`)
     if (!this.deps.knownAgent(claims.agentId)) return deny(403, 'the agent credential belongs to no running agent')
@@ -937,6 +1111,26 @@ export class CredentialProxy {
       return 'the GraphQL request is not JSON'
     }
   }
+}
+
+/** A request body as text, or undefined past `limit` bytes. */
+async function boundedText(request: Request, limit: number): Promise<string | undefined> {
+  if (Number(request.headers.get('content-length') ?? '0') > limit) return undefined
+  if (!request.body) return ''
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined)
+      return undefined
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 function readFileOr(path: string): string {

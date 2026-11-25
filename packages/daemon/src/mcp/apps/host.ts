@@ -1,7 +1,12 @@
 // Hosts generic HTML MCP Apps; native Console dialogs arrive through ordinary ACP tool results instead.
 import { Client, StreamableHTTPClientTransport, type Transport } from '@modelcontextprotocol/client'
 import { CappedStdioClientTransport } from '../../memory-plugin/stdio-transport.js'
-import { MCP_APP_HTML_MAX_BYTES, type McpAppCsp, type McpAppDimensions } from '@agentconnect.md/protocol'
+import {
+  MCP_APP_HTML_MAX_BYTES,
+  type McpAppCsp,
+  type McpAppDimensions,
+  type McpToolDecisions
+} from '@agentconnect.md/protocol'
 import type { McpServerDef } from '../../config/config-schema.js'
 import type { Logger } from '../../log.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
@@ -99,6 +104,8 @@ export interface McpAppsHostDeps {
   version?: string
   /** Normalize a trusted stdio command the way runtime launches do (sandbox path rewriting). */
   resolveStdioCommand?: (command: string, env: McpServerDef['env']) => string
+  /** An agent-scoped definition's decision table (mcp-tool-permissions.md §7.1); absent for an unrestricted one. */
+  toolDecisions?: (view: string | undefined, name: string) => McpToolDecisions | undefined
 }
 
 /** The key one connection is held under. `\0` cannot occur in either half, so the pair cannot be
@@ -166,6 +173,15 @@ export class McpAppsHost {
     return connFingerprint(def)
   }
 
+  /** Why a restricted definition's tool is refused here: no runtime gate stands before a bridge call, so only Always allow passes. */
+  private refusal(view: string | undefined, server: string, tool: string): string | undefined {
+    const decisions = this.deps.toolDecisions?.(view, server)
+    if (!decisions || decisions.allow.includes(tool)) return undefined
+    return decisions.approval.includes(tool) || decisions.ask.includes(tool)
+      ? `The tool "${tool}" requires approval, which this interface cannot ask for.`
+      : `The tool "${tool}" is blocked for this agent.`
+  }
+
   /** The servers one organization has that are daemon-hosted rather than runtime-attached. */
   uiServers(orgId: string | undefined): string[] {
     return Object.entries(this.deps.defs(orgId))
@@ -201,7 +217,7 @@ export class McpAppsHost {
     for (const name of enabled) {
       const conn = this.conns.get(connKey(this.scopeOf(orgId, name), name))
       if (!conn || !this.isUiServer(orgId, name)) continue
-      for (const tool of conn.tools.values()) out.push(tool.descriptor)
+      for (const [tool, upstream] of conn.tools) if (!this.refusal(orgId, name, tool)) out.push(upstream.descriptor)
     }
     return out
   }
@@ -216,7 +232,7 @@ export class McpAppsHost {
       if (!this.isUiServer(orgId, name)) continue
       const conn = await this.connect(orgId, name)
       if (!conn) continue
-      for (const tool of conn.tools.values()) out.push(tool.descriptor)
+      for (const [tool, upstream] of conn.tools) if (!this.refusal(orgId, name, tool)) out.push(upstream.descriptor)
     }
     return out
   }
@@ -239,6 +255,8 @@ export class McpAppsHost {
     if (!conn) throw new Error(`MCP server "${server}" is not reachable`)
     const upstream = conn.tools.get(tool)
     if (!upstream) throw new Error(`MCP server "${server}" does not expose a tool named "${tool}"`)
+    const refused = this.refusal(orgId, server, tool)
+    if (refused) return { content: [{ type: 'text', text: refused }], isError: true, title: upstream.title ?? tool }
 
     const raw = (await conn.client.callTool(
       { name: tool, arguments: args },
@@ -325,6 +343,8 @@ export class McpAppsHost {
     const conn = await this.connect(orgId, server)
     if (!conn) throw new Error(`MCP server "${server}" is not reachable`)
     if (!conn.tools.has(tool)) throw new Error(`MCP server "${server}" does not expose a tool named "${tool}"`)
+    const refused = this.refusal(orgId, server, tool)
+    if (refused) return { content: [{ type: 'text', text: refused }], isError: true }
     const raw = (await conn.client.callTool(
       { name: tool, arguments: args },
       { timeout: CALL_TIMEOUT_MS, maxTotalTimeout: CALL_TIMEOUT_MS }

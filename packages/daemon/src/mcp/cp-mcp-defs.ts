@@ -124,6 +124,20 @@ export class CpMcpDefs {
     return this.layer(mcpView(orgId, agentId)).get(name)?.toolDecisions
   }
 
+  /** An agent's own definitions, each with its decision table: a table absent from the CP reads as every tool Blocked. */
+  agentDefinitions(
+    orgId: string | undefined,
+    agentId: string
+  ): Map<string, { def: McpServerDef; toolDecisions: McpToolDecisions }> {
+    const none: McpToolDecisions = { allow: [], approval: [], ask: [], block: [] }
+    return new Map(
+      [...this.layer(mcpView(orgId, agentId))].map(([name, value]) => [
+        name,
+        { def: value.def, toolDecisions: value.toolDecisions ?? none }
+      ])
+    )
+  }
+
   /** Every organization this daemon currently holds CP definitions for. */
   orgs(): string[] {
     return [...new Set([...this.cp.keys()].map((layer) => parseMcpView(layer).orgId!))]

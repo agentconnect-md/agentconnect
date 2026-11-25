@@ -288,6 +288,34 @@ describe('claudeSessionMeta', () => {
     })
   })
 
+  it("adds a restricted MCP provider's rules beside the repository's (mcp-tool-permissions.md §7.3)", () => {
+    const repository = { permissions: { allow: ['mcp__probe__write_note'], deny: ['Bash(rm:*)'] } }
+    const mcp = { allow: ['mcp__probe__read_note'], ask: ['mcp__probe__write_note'], deny: ['mcp__probe__delete_all'] }
+    const meta = claudeSessionMeta(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      [],
+      [],
+      [],
+      undefined,
+      repository,
+      mcp
+    )
+    // Claude weighs ask over allow, so a repository's allow cannot skip the person an approval needs.
+    expect(meta?.claudeCode.options.settings).toEqual({
+      permissions: {
+        allow: ['mcp__probe__write_note', 'mcp__probe__read_note'],
+        ask: ['mcp__probe__write_note'],
+        deny: ['Bash(rm:*)', 'mcp__probe__delete_all']
+      }
+    })
+  })
+
   it('enables the native Claude sandbox only behind an outer AgentConnect sandbox', () => {
     const credentialRoot = '/host/.claude/agentconnect-auth'
     const permissions = {

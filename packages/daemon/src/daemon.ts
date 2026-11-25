@@ -118,6 +118,8 @@ import {
   type KnowledgeRecordWriterKind,
   MEMORY_PERSON_LAYER_FEATURE,
   MCP_AGENT_DEFS_V1_FEATURE,
+  MCP_TOOL_APPROVAL_V1_FEATURE,
+  type McpToolDecisions,
   MEMORY_PLACE_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
@@ -321,7 +323,14 @@ import { AutoUpgrader, type AutoUpgradeHost } from './lifecycle/auto-upgrader.js
 import { QuiescenceSignal } from './lifecycle/quiescence.js'
 import { FleetUpgradeCoordinator } from './lifecycle/fleet-upgrade.js'
 import { ReadinessGate, readinessSinksFromEnv, readinessState, type ReadinessState } from './readiness.js'
-import { sessionRetentionMs, workspaceRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
+import {
+  sessionRetentionMs,
+  workspaceRetentionMs,
+  type Config,
+  type McpServerDef,
+  type RuntimeDef
+} from './config/config-schema.js'
+import { isCodexRuntimeDef } from './runtime-defs/executable-hints.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -520,6 +529,14 @@ import {
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
+import { ApprovalRecords } from './mcp/approval-records.js'
+import { claudeMcpRules, McpApprovalGate, type GateRuntime } from './mcp/approval-gate.js'
+import {
+  grantKeyOf,
+  mcpGrantShimRefusal,
+  placeholderHeaders,
+  type McpGrantRoute
+} from './credential-proxy/mcp-grant-route.js'
 import { toolContextFingerprint } from './session/turn/tool-context.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
@@ -667,7 +684,7 @@ import {
   screensCoordinatorMessage
 } from './auto-session/coordinator-filter.js'
 import { webchatCoordinatorTask } from './auto-session/webchat-task.js'
-import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
+import { CLAUDE_HEADLESS_DISALLOWED_TOOLS, isClaudeRuntimeDef } from './runtime-defs/claude-runtime.js'
 import { applyOpenCodeReadOnlyMode } from './runtime-defs/opencode-runtime.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
@@ -1923,6 +1940,10 @@ export class Daemon {
   private agentChannelServer?: AgentChannelServer
   /** The credential proxy, once it started (github-app-git-credentials.md, Phase 2); without it no session holds a code-host credential. */
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
+  /** Approvals of restricted MCP calls the credential proxy checks (mcp-tool-permissions.md §7.4); memory only. */
+  private readonly mcpApprovals = new ApprovalRecords()
+  /** Hosts whose launch routes the relay through the credential proxy, so a restricted grant's placeholder can be exchanged. */
+  private readonly mcpGrantRoutedHosts = new Set<HostKey>()
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host, srt, VM or pool pod session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
   /** How each agent's host and install key slots read their key again on this machine, by slot id. */
@@ -5204,6 +5225,10 @@ export class Daemon {
       // that organization's alone. Keying them the same way would dial a local server once per
       // org and hide the warmed one from every session that did not warm it.
       scopeOf: (view, name) => this.cpMcpDefs?.scopeOf(view, name),
+      toolDecisions: (view, name) => {
+        const { orgId, agentId } = parseMcpView(view)
+        return agentId ? this.cpMcpDefs?.agentDefinitions(orgId, agentId).get(name)?.toolDecisions : undefined
+      },
       log: this.log,
       version: DAEMON_VERSION,
       resolveStdioCommand: (command, entries) =>
@@ -6307,9 +6332,11 @@ export class Daemon {
               defs: this.mcpDefsForAgent(agent.id),
               caps: this.runtimeFacts.mcpCapabilities(agent.runtime),
               hostsUiServer: (name) => this.appsHost.isUiServer(this.mcpViewFor(agent.id), name),
+              grant: (name, def) => this.sessionMcpGrant(agent, sessionKey, name, def),
               session: { channel, thread, key: sessionKey },
               warn: (warning) => warnings.push(warning)
             })
+        const restricted = this.restrictedMcpDefs(agent.id)
         return {
           fingerprint: toolContextFingerprint(tools, configuredServers, instructions),
           instructions,
@@ -6346,8 +6373,17 @@ export class Daemon {
               })
               servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
             }
+            // A placeholder works only where the host's launch routes the relay through the proxy.
+            const routed = this.mcpGrantRoutedHosts.has(this.hostKeyFor(agent.id, sessionKey))
+            const attached = configuredServers.filter((server) => {
+              if (routed || !restricted.has(server.name)) return true
+              this.log.warn(
+                `mcp: server "${server.name}" is not attached to agent "${agent.id}": its runtime started without a route to the credential proxy, and attaches it once it restarts`
+              )
+              return false
+            })
             servers.push(
-              ...configuredServers.map((server) =>
+              ...attached.map((server) =>
                 this.agentRunsInSandbox(agent) && 'command' in server
                   ? {
                       ...server,
@@ -7186,6 +7222,7 @@ export class Daemon {
       this.providerSlots.delete(id)
       this.hostKeyReaders.delete(id)
       this.credentialProxy?.proxy.release(id)
+      this.mcpApprovals.release(id)
       await this.modelSessions.releaseForAgent(id)
       await this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(id, 'agent_detached')
       // Preserve lifecycle/move gates that predated this reconcile. A plain file/CP
@@ -7468,6 +7505,8 @@ export class Daemon {
         knownAgent: (agentId) => this.agents.has(agentId),
         providerSlotsOf: (agentId) => [...(this.providerSlots.get(agentId)?.values() ?? [])],
         resolveProviderSlot: (agentId, slotId) => this.resolveProviderSlot(agentId, slotId),
+        mcpGrantsOf: (agentId) => this.mcpGrantRoutes(agentId),
+        approvals: this.mcpApprovals,
         log: this.log,
         // A self-managed instance is often behind the operator's own authority, which the system roots alone would refuse.
         upstream: { trustedCa: upstreamAuthorities() }
@@ -7508,6 +7547,54 @@ export class Daemon {
     }
     if (isProxyOnlyProvider(ask.provider)) return await this.proxyOnlyLease(agentId, ask)
     throw new Error(`the credential proxy holds no ${ask.provider} credential`)
+  }
+
+  /** mcp-tool-permissions.md §5.6: a `daemon`-custody grant comes here only while the proxy keeps it from runtimes; a pool's pod shims carry no mcp-grant route yet. */
+  private mcpApprovalsActive(): boolean {
+    return this.credentialProxy !== undefined && !this.k8s
+  }
+
+  /** An agent's own MCP definitions whose grant only this daemon holds, with their decision tables. */
+  private restrictedMcpDefs(agentId: string): Map<string, { def: McpServerDef; toolDecisions: McpToolDecisions }> {
+    if (!this.mcpApprovalsActive()) return new Map()
+    return this.cpMcpDefs?.agentDefinitions(this.orgForAgent(agentId), agentId) ?? new Map()
+  }
+
+  /** The restricted grants the credential proxy exchanges an agent's placeholders for. */
+  private mcpGrantRoutes(agentId: string): McpGrantRoute[] {
+    return [...this.restrictedMcpDefs(agentId)].flatMap(([provider, { def, toolDecisions }]) => {
+      const key = grantKeyOf(def.headers)
+      return key && def.url && def.transport !== 'stdio'
+        ? [{ provider, url: def.url, key, decisions: toolDecisions }]
+        : []
+    })
+  }
+
+  /** How a session carries a restricted grant: the placeholder in its key's place, or why it stays off (§7.2, §8). */
+  private sessionMcpGrant(
+    agent: Agent,
+    sessionKey: string,
+    name: string,
+    def: McpServerDef
+  ): { headers: McpServerDef['headers'] } | { refused: string } | undefined {
+    if (!this.restrictedMcpDefs(agent.id).has(name)) return undefined
+    const placed = this.placedSession(sessionKey)
+    const shim = mcpGrantShimRefusal({
+      strategy: this.sessionStrategy(agent, sessionKey),
+      ...(placed ? { placed } : {})
+    })
+    if (shim) return { refused: shim }
+    const key = grantKeyOf(def.headers)
+    const placeholder = this.credentialProxy?.proxy.mcpGrantPlaceholderFor(agent.id, name, sessionKey)
+    // The key never leaves this daemon: a definition carrying it anywhere but Authorization is not attached.
+    const headers = key && placeholder ? placeholderHeaders(def.headers, key, placeholder) : undefined
+    return headers ? { headers } : { refused: 'its grant cannot be exchanged by the credential proxy' }
+  }
+
+  /** The §7.3 gate a runtime's approvals are read from. */
+  private gateRuntimeOf(runtimeId: string, runtime: RuntimeDef): GateRuntime {
+    if (isClaudeRuntimeDef(runtime)) return 'claude'
+    return runtimeId === 'codex-acp' || isCodexRuntimeDef(runtime) ? 'codex' : 'other'
   }
 
   /** azure-devops-integration.md §6.1, §11.9: the provider and its hooks, advertised together exactly while the credential proxy carries them. */
@@ -9900,6 +9987,8 @@ export class Daemon {
       (srtShim !== undefined || !runInSandbox)
     // A host or srt session with a managed code-host credential holds a placeholder the credential proxy exchanges.
     const proxied = managedCredentials && (remoteSession ? remoteCodehost !== undefined : localProxyRoute)
+    // So does one with a restricted MCP grant, the relay reached through the same route (mcp-tool-permissions.md §7.2).
+    const mcpGrantRoute = localProxyRoute && !credentialless && this.mcpGrantRoutes(agent.id).length > 0
     const target = opts.modelCredential?.target ?? modelProviderTarget(agent, runtime)
     // A VM session or an executor's host session reaches it through its shim's provider listener, switched at spawn.
     const shimProviderRoute =
@@ -10063,6 +10152,9 @@ export class Daemon {
           runtimeEnv
         )
       )
+    // A host session holding only an MCP grant placeholder reaches the loopback listener too.
+    else if (mcpGrantRoute && srtShim === undefined && this.credentialProxy)
+      Object.assign(env, this.credentialProxyRoute(this.credentialProxy, agent.id, 'host', env, runtimeEnv))
     // Every session in an srt environment the proxy intercepts trusts its CA, a placeholder or not, or its code-host requests would fail verification.
     else if (srtShim && this.credentialProxy && this.credentialProxyIntercepts(agent.id))
       Object.assign(env, this.sessionProxyTrust(this.credentialProxy.ca, env, runtimeEnv))
@@ -10273,6 +10365,21 @@ export class Daemon {
     // Filled right after construction, so the terminal reap can prove the host that exited is
     // still the memoized one before evicting anything.
     const constructed: { host?: AcpHost } = {}
+    if (!credentialless) {
+      this.mcpGrantRoutedHosts.delete(opts.hostKey)
+      if (mcpGrantRoute) this.mcpGrantRoutedHosts.add(opts.hostKey)
+    }
+    // Reads the runtime's approvals of restricted MCP calls off ACP, unmasked, for the proxy to check (§7.3).
+    const gateRuntime = this.gateRuntimeOf(runtimeEntry?.aliasOf ?? agent.runtime, launchRuntime)
+    const approvalGate = new McpApprovalGate({
+      agentId,
+      runtime: gateRuntime,
+      records: this.mcpApprovals,
+      restricted: () =>
+        new Map([...this.restrictedMcpDefs(agentId)].map(([name, entry]) => [name, entry.toolDecisions])),
+      modeOf: (sid) => constructed.host?.sessionPermissionMode(sid),
+      log: this.log
+    })
     const planeLaunch: PlaneLaunch = {
       agent,
       hostKey: opts.hostKey,
@@ -10297,8 +10404,21 @@ export class Daemon {
         : {}),
       // A plane runs the runtime in a sandbox pod or a VM; with none AcpHost falls back to its LocalDriver, which is what a self-hosted daemon wants.
       ...this.planeFor(planeLaunch)?.spawnFor(planeLaunch),
-      onUpdate,
-      onPermission: (sid, params) => this.permissions.onAcpPermission(opts.hostKey, sid, params),
+      onUpdate: (sid, update) => {
+        approvalGate.observe(sid, update)
+        onUpdate(sid, update)
+      },
+      onPermission: (sid, params) =>
+        approvalGate.permission(sid, params, (asked) => this.permissions.onAcpPermission(opts.hostKey, sid, asked)),
+      ...(gateRuntime === 'claude'
+        ? {
+            claudeMcpRules: (mode: string | undefined) =>
+              claudeMcpRules(
+                new Map([...this.restrictedMcpDefs(agentId)].map(([name, entry]) => [name, entry.toolDecisions])),
+                mode
+              )
+          }
+        : {}),
       ...(this.evalHooks.enabled
         ? {
             onPermissionEvent: (sid, params, event) =>
@@ -10536,6 +10656,8 @@ export class Daemon {
       MEMORY_PLACE_CLEAR_FEATURE,
       // Layers agent-scoped MCP definitions over its organization's (mcp-tool-permissions.md §7.1).
       MCP_AGENT_DEFS_V1_FEATURE,
+      // Keeps `daemon`-custody grants from runtimes and checks approvals in the credential proxy (§7.2).
+      ...(this.mcpApprovalsActive() ? [MCP_TOOL_APPROVAL_V1_FEATURE] : []),
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,

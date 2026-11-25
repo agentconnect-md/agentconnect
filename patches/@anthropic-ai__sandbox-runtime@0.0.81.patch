@@ -10,8 +10,101 @@ index 7ad12c3c8529987ba0a045103b8b30be09df0c99..65968d2480846c7ddd82f5ae7a0e5602
                          stripResponseHeaders: options.stripResponseHeaders,
                          requireHostMatch: options.requireHostMatch,
                          maxHeaderSize: options.maxHeaderSize,
+diff --git a/dist/sandbox/request-filter.d.ts b/dist/sandbox/request-filter.d.ts
+index dfe19391a83b3beff23da753122fdfb554074b80..2b9d98ed7cd2e7a112005cb5fb395e0af04638e1 100644
+--- a/dist/sandbox/request-filter.d.ts
++++ b/dist/sandbox/request-filter.d.ts
+@@ -10,7 +10,11 @@
+ import { type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
+ import { type Duplex, Readable } from 'node:stream';
+ export type RequestDecision = {
+-    action: 'allow' | 'deny';
++    action: 'allow' | 'deny' | 'respond';
++    /** Allow: the body forwarded in place of the client's, on the TLS-terminated path only. Respond: the answer's body. */
++    body?: string | Uint8Array;
++    /** Respond only: the answer's Content-Type. */
++    contentType?: string;
+     /**
+      * Human-readable reason. For denials this is surfaced to the sandboxed
+      * client in the response body so the agent can tell a policy block from a
+@@ -18,8 +22,8 @@ export type RequestDecision = {
+      */
+     reason?: string;
+     /**
+-     * Deny only: the response status, 400 to 599. Anything else, or none,
+-     * answers 403.
++     * Deny: the response status, 400 to 599. Anything else, or none,
++     * answers 403. Respond: the answer's status, 200 to 599.
+      */
+     status?: number;
+     /**
+diff --git a/dist/sandbox/request-filter.js b/dist/sandbox/request-filter.js
+index 5b8a48598f58864316b3be425bb271f70f260cbb..a702db8b73d43d6033b8386ef36d5402289af10d 100644
+--- a/dist/sandbox/request-filter.js
++++ b/dist/sandbox/request-filter.js
+@@ -177,10 +177,31 @@ export async function decideAndRespond(filterRequest, req, res, url, signal, onD
+         // failed; that rejection must not escape.
+         forCallback.cancel().catch(() => { });
+     }
++    // A replacement body is applied only on the TLS-terminated path, which buffers it whole.
++    if (decision.action === 'allow' && decision.body !== undefined && info?.scheme !== 'https') {
++        decision = {
++            action: 'deny',
++            reason: 'the allow decision replaces the body, which is done only on the TLS-terminated path; nothing was forwarded',
++            mark: 'plaintext_body_replace',
++        };
++    }
+     if (decision.action === 'allow') {
+         logForDebugging(`[request-filter] allow ${method} ${url}`);
+         return { body: forUpstream, decision };
+     }
++    if (decision.action === 'respond') {
++        logForDebugging(`[request-filter] respond ${decision.status} ${method} ${url}`);
++        const answer = decision.body === undefined ? Buffer.alloc(0) : Buffer.from(decision.body);
++        if (!res.headersSent) {
++            res.writeHead(decision.status, {
++                ...(decision.contentType ? { 'Content-Type': decision.contentType } : {}),
++                'Content-Length': String(answer.length),
++            });
++        }
++        res.end(answer);
++        endDeniedBody(req, res, forUpstream, shim);
++        return null;
++    }
+     onDeny?.(method, url, decision.reason ?? DEFAULT_DENY_REASON);
+     deny(res, decision, denyHeader);
+     endDeniedBody(req, res, forUpstream, shim);
+@@ -251,7 +272,7 @@ function malformedDecisionReason(decision) {
+     if (typeof decision !== 'object' || decision === null)
+         return 'not an object';
+     const d = decision;
+-    if (d.action !== 'allow' && d.action !== 'deny')
++    if (d.action !== 'allow' && d.action !== 'deny' && d.action !== 'respond')
+         return 'unknown action';
+     if (d.reason !== undefined && typeof d.reason !== 'string') {
+         return 'reason is not a string';
+@@ -265,6 +286,19 @@ function malformedDecisionReason(decision) {
+     }
+     if (d.action === 'deny')
+         return undefined;
++    // An answer the callback writes itself, in place of forwarding: a status and a body.
++    if (d.action === 'respond') {
++        if (!Number.isInteger(d.status) || d.status < 200 || d.status > 599)
++            return 'respond needs a status from 200 to 599';
++        if (d.body !== undefined && typeof d.body !== 'string' && !(d.body instanceof Uint8Array))
++            return 'body is not a string or bytes';
++        if (d.contentType !== undefined && (typeof d.contentType !== 'string' || !isValidHeaderValue(d.contentType)))
++            return 'contentType is not a header value';
++        return undefined;
++    }
++    // An allow's replacement body, sent in place of the client's, framed by its own length.
++    if (d.body !== undefined && typeof d.body !== 'string' && !(d.body instanceof Uint8Array))
++        return 'body is not a string or bytes';
+     if (d.onResponse !== undefined && typeof d.onResponse !== 'function') {
+         return 'onResponse is not a function';
+     }
 diff --git a/dist/sandbox/tls-terminate-proxy.js b/dist/sandbox/tls-terminate-proxy.js
-index 8aef52e85787ca2f0228748de5a5e13ae5e9db1d..6ed928b3143d7126adad68b589d3ec98758fe595 100644
+index 8aef52e85787ca2f0228748de5a5e13ae5e9db1d..7b6b0897be5a03f000f94996c4aab889a9cf351c 100644
 --- a/dist/sandbox/tls-terminate-proxy.js
 +++ b/dist/sandbox/tls-terminate-proxy.js
 @@ -10,14 +10,14 @@
@@ -66,7 +159,37 @@ index 8aef52e85787ca2f0228748de5a5e13ae5e9db1d..6ed928b3143d7126adad68b589d3ec98
                  vetted = probe;
                  probe.catch(() => {
                      if (vetted === probe)
-@@ -984,7 +1005,6 @@ async function forwardUpstream(filterRequest, mutateHeaders, getBodySubstitution
+@@ -862,6 +883,12 @@ async function forwardUpstream(filterRequest, mutateHeaders, getBodySubstitution
+     // a decision sets can itself carry a masked credential's sentinel.
+     if (decision)
+         applyHeaderEdits(fwdHeaders, decision);
++    // A replacement body is the whole body: the client's own, which the callback read, is drained.
++    const replacedBody = decision?.body === undefined ? undefined : Buffer.from(decision.body);
++    if (replacedBody !== undefined) {
++        body.on('error', () => { });
++        body.resume();
++    }
+     // SigV4 planning runs on the PRE-substitution headers (the trigger is
+     // the fake access key id in the credential scope, which the header
+     // substitution below replaces) but on the POST-strip view: the plan's
+@@ -881,7 +908,15 @@ async function forwardUpstream(filterRequest, mutateHeaders, getBodySubstitution
+     // SigV4 re-signing runs after substitution so the new signature covers
+     // the headers as they actually go upstream (real access key id, real
+     // session token). Same denial surface as filterRequest.
+-    let bufferedBody;
++    let bufferedBody = replacedBody;
++    if (replacedBody !== undefined) {
++        delete fwdHeaders['transfer-encoding'];
++        fwdHeaders['content-length'] = String(replacedBody.length);
++    }
++    if (replacedBody !== undefined && sigv4Plan) {
++        respondDenied(res, 'a replaced body is not re-signed for AWS SigV4; denied');
++        return;
++    }
+     if (sigv4Plan?.action === 'deny') {
+         respondDenied(res, sigv4Plan.reason);
+         endDeniedRequest(req, res, body);
+@@ -984,7 +1019,6 @@ async function forwardUpstream(filterRequest, mutateHeaders, getBodySubstitution
          body.destroy();
          return;
      }
