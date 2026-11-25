@@ -300,9 +300,11 @@ function namedCompatibility(
   return {
     daemonsWithoutAgentDefinitions: compat.daemonsWithoutAgentDefinitions.map(name),
     relaysWithoutToolPolicies: compat.relaysWithoutToolPolicies,
-    daemonsWithoutApprovals: compat.daemonsWithoutApprovals.filter((id) => !withoutDefinitions.has(id)).map(name),
+    daemonsWithoutApprovals: (compat.daemonsWithoutApprovals ?? [])
+      .filter((id) => !withoutDefinitions.has(id))
+      .map(name),
     // A relay without tool policies lacks approvals too, and its own warning already covers it.
-    relaysWithoutApprovals: Math.max(0, compat.relaysWithoutApprovals - compat.relaysWithoutToolPolicies)
+    relaysWithoutApprovals: Math.max(0, (compat.relaysWithoutApprovals ?? 0) - compat.relaysWithoutToolPolicies)
   }
 }
 
