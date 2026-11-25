@@ -29,6 +29,8 @@ command = [
   # Both pull-secret wires, set to different names so the render proves they stay separate.
   '--set-json', 'imagePullSecrets=[{"name":"example-pull"}]',
   '--set-json', 'daemonPool.runtime.imagePullSecrets=[{"name":"example-sandbox-pull"}]',
+  # An isolating runtime is a per-install switch; the defaults render below proves it is off unless set.
+  '--set', 'daemonPool.runtime.runtimeClassName=gvisor',
   # Off here so the object-count assertions below see only chart-owned objects, not the
   # vendored stack; the defaults render at the end covers the default-on stack.
   '--set', 'installCRD=false'
@@ -312,6 +314,7 @@ abort('sandboxes must run non-root under the default seccomp profile') unless te
   'runAsNonRoot' => true, 'runAsUser' => 10001, 'runAsGroup' => 10001, 'fsGroup' => 10001,
   'seccompProfile' => { 'type' => 'RuntimeDefault' }
 }
+abort('agent pods must run under the configured runtime class') unless template_pod['runtimeClassName'] == 'gvisor'
 abort('agent pods must be pinned to the configured node group') unless template_pod['nodeSelector'] == { 'example.com/agents' => 'true' }
 abort('agent pods must tolerate the configured node taint') unless template_pod['tolerations'] == [
   { 'key' => 'example.com/agents', 'operator' => 'Equal', 'value' => 'true', 'effect' => 'NoSchedule' }
@@ -613,6 +616,8 @@ abort('defaults must hold three warm spares') unless default_warm.dig('spec', 'r
 # hosting it privately sets them — and an empty list must render no key at all, not `null`.
 default_template_pod = defaults_find.call('SandboxTemplate', 'example-agentconnect-runtime').dig('spec', 'podTemplate', 'spec')
 abort('defaults must name no sandbox pull secrets') if default_template_pod.key?('imagePullSecrets')
+# No runtime class unless an install names one, so an existing install renders the template it had.
+abort('defaults must name no sandbox runtime class') if default_template_pod.key?('runtimeClassName')
 # The pool's data-plane Secret is referenced by a default NAME the operator creates, like
 # `secrets.existingSecret` — a required-but-empty value would fail the default render outright.
 default_data_plane = default_pool.dig('spec', 'template', 'spec', 'volumes').find { |v| v['name'] == 'data-plane' }

@@ -441,6 +441,12 @@ daemonPool:
     # without the tool instead. Turn this on only where the key a sandbox gets reaches the
     # real DeepSeek API.
     deepseekWebSearch: false
+    # RuntimeClass every agent sandbox runs under, such as `gvisor` for a gVisor (runsc) node
+    # setup. Empty ⇒ no runtimeClassName, so pods use the cluster's default runtime (runc) and the
+    # rendered template is unchanged. The class must already exist on the cluster. Existing
+    # sandboxes follow this value when they next resume from suspension, in both directions, so
+    # clearing it rolls agents back to the default runtime without deleting their workspaces.
+    runtimeClassName: ''
     # Where agent pods schedule. Empty ⇒ the scheduler's choice, which on a shared
     # cluster means they land next to control-plane workloads. Each environment that runs
     # agents should pin its node group here and tolerate that group's taint.

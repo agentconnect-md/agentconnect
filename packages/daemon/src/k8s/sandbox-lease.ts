@@ -8,7 +8,7 @@ import {
   type Sandbox,
   type SandboxApi
 } from './sandbox-api.js'
-import { poolRuntimeImage, sandboxContainerImage } from './sandbox-identity.js'
+import { poolRuntimeTarget, sandboxContainerImage, sandboxRuntimeClass } from './sandbox-identity.js'
 import type { SandboxLaunch } from './endpoint-provider.js'
 
 const MAX_MODE_ATTEMPTS = 5
@@ -140,12 +140,20 @@ export class SandboxLease {
           const image = await this.resolveResumeImage(sandboxName, sandbox)
           this.assertCurrent(launch)
           await this.deps.api.resumeWithRuntimeImage(sandboxName, image, launch)
-          if (image.observedImage === image.targetImage) {
+          const changes = [
+            ...(image.observedImage === image.targetImage
+              ? []
+              : [`runtime image ${image.observedImage} → ${image.targetImage}`]),
+            ...(image.runtimeClass
+              ? [
+                  `runtime class ${image.runtimeClass.observed ?? '(default)'} → ${image.runtimeClass.target ?? '(default)'}`
+                ]
+              : [])
+          ]
+          if (changes.length === 0) {
             this.deps.log.info(`cluster: sandbox ${sandboxName} → Running`)
           } else {
-            this.deps.log.info(
-              `cluster: sandbox ${sandboxName} runtime image ${image.observedImage} → ${image.targetImage}; resumed`
-            )
+            this.deps.log.info(`cluster: sandbox ${sandboxName} ${changes.join(', ')}; resumed`)
           }
         } else {
           await this.deps.api.setOperatingMode(sandboxName, desired, observed, launch)
@@ -173,7 +181,11 @@ export class SandboxLease {
   }
 
   private async resolveResumeImage(sandboxName: string, sandbox: Sandbox): Promise<ResumeImage> {
-    const targetImage = await poolRuntimeImage(this.deps.api, this.deps.warmPoolName)
-    return { ...sandboxContainerImage(sandboxName, sandbox, 'runtime'), targetImage }
+    const target = await poolRuntimeTarget(this.deps.api, this.deps.warmPoolName)
+    const resume: ResumeImage = { ...sandboxContainerImage(sandboxName, sandbox, 'runtime'), targetImage: target.image }
+    // The runtime class follows the template both ways, so clearing the value rolls agents back on their next wake.
+    const observed = sandboxRuntimeClass(sandbox)
+    if (observed !== target.runtimeClassName) resume.runtimeClass = { observed, target: target.runtimeClassName }
+    return resume
   }
 }

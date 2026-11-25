@@ -561,6 +561,16 @@ desktop's kept volume. `computerPlan.egress.orgProxy` lets an organization send 
 desktops' browser traffic through its own HTTP(S) proxy, and `computerPlan.egress.description`
 is the line the console shows about the deployment's own egress.
 
+## Sandbox runtime class
+
+Agent sandboxes run under the cluster's default container runtime unless
+`daemonPool.runtime.runtimeClassName` names a RuntimeClass, such as `gvisor` on nodes where
+gVisor's `runsc` is installed and registered with containerd. The class must exist before you
+set the value. New sandboxes and warm spares take it from the template at once; an existing
+sandbox moves onto it the next time it resumes from suspension, keeping its workspace volume.
+Clearing the value moves agents back to the default runtime the same way, so an environment
+can try an isolating runtime and roll back without deleting sandboxes.
+
 ## Node maintenance
 
 The Control Plane runs as one replica, and it also serves the API. Evicting its pod, as a

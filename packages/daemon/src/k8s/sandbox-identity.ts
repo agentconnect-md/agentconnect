@@ -83,13 +83,37 @@ export { LaunchTimeoutError } from '../remote/shim-endpoint.js'
 type PoolTemplateApi = {
   getWarmPool: (name: string) => Promise<{ spec?: { sandboxTemplateRef?: { name?: string } } }>
   getSandboxTemplate: (name: string) => Promise<{
-    spec?: { podTemplate?: { spec?: { containers?: Array<{ name?: string; image?: string }> } } }
+    spec?: {
+      podTemplate?: { spec?: { containers?: Array<{ name?: string; image?: string }>; runtimeClassName?: string } }
+    }
   }>
 }
+
+type TemplatePodSpec = { containers?: Array<{ name?: string; image?: string }>; runtimeClassName?: string }
 
 /** The image the pool's template pins for its `runtime` container: read from the cluster, so every member agrees, and a template bump is a new probe key. */
 export async function poolRuntimeImage(api: PoolTemplateApi, warmPoolName: string): Promise<string> {
   return await poolContainerImage(api, warmPoolName, 'runtime')
+}
+
+/** What a resumed agent Sandbox converges onto: the template's `runtime` image and its runtime class, unset when the template names none. */
+export async function poolRuntimeTarget(
+  api: PoolTemplateApi,
+  warmPoolName: string
+): Promise<{ image: string; runtimeClassName?: string }> {
+  const { templateName, spec } = await poolTemplatePodSpec(api, warmPoolName)
+  const image = templateContainerImage(templateName, spec, 'runtime')
+  const runtimeClassName = spec.runtimeClassName
+  if (runtimeClassName === undefined || runtimeClassName === '') return { image }
+  if (runtimeClassName.trim() !== runtimeClassName) {
+    throw new Error(`sandbox template ${templateName} has invalid runtimeClassName`)
+  }
+  return { image, runtimeClassName }
+}
+
+/** The runtime class this Sandbox's own pod template names, unset when it names none. */
+export function sandboxRuntimeClass(sandbox: Sandbox): string | undefined {
+  return sandbox.spec?.podTemplate?.spec?.runtimeClassName || undefined
 }
 
 /** The image the pool's template pins for the named container. */
@@ -98,6 +122,14 @@ export async function poolContainerImage(
   warmPoolName: string,
   containerName: string
 ): Promise<string> {
+  const { templateName, spec } = await poolTemplatePodSpec(api, warmPoolName)
+  return templateContainerImage(templateName, spec, containerName)
+}
+
+async function poolTemplatePodSpec(
+  api: PoolTemplateApi,
+  warmPoolName: string
+): Promise<{ templateName: string; spec: TemplatePodSpec }> {
   const pool = await api.getWarmPool(warmPoolName)
   const templateName = pool.spec?.sandboxTemplateRef?.name
   // Absent and padded are separate reports: an operator chases a never-wired template and a padded value differently.
@@ -106,7 +138,11 @@ export async function poolContainerImage(
     throw new Error(`sandbox warm pool ${warmPoolName} has invalid sandboxTemplateRef.name`)
   }
   const template = await api.getSandboxTemplate(templateName)
-  const containers = (template.spec?.podTemplate?.spec?.containers ?? []).filter((one) => one.name === containerName)
+  return { templateName, spec: template.spec?.podTemplate?.spec ?? {} }
+}
+
+function templateContainerImage(templateName: string, spec: TemplatePodSpec, containerName: string): string {
+  const containers = (spec.containers ?? []).filter((one) => one.name === containerName)
   if (containers.length > 1)
     throw new Error(`sandbox template ${templateName} has multiple ${containerName} containers`)
   const image = containers[0]?.image
