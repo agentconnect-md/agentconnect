@@ -30,10 +30,21 @@ interface CallState {
   following?: boolean
   /** A Codex Guardian review's target call. */
   reviews?: string
+  /** This review was linked to its target by server, tool and timing, so its status is its verdict. */
+  linked?: boolean
+  /** When the call's `tool_call` arrived. */
+  seenAt?: number
+  /** The call has finished, so no review can be for it. */
+  settled?: boolean
+  /** A Guardian review already claimed this call. */
+  claimed?: boolean
 }
 
 /** The most calls one session's gate remembers. */
 const MAX_CALLS_PER_SESSION = 512
+
+/** How soon after its call's `tool_call` an AIR Guardian review must start to be linked to it (Codex measured 2 ms). */
+const GUARDIAN_LINK_WINDOW_MS = 5_000
 
 /** Claude's spelling of a server or tool name inside `mcp__<server>__<tool>`. */
 export function claudeMcpName(name: string): string {
@@ -116,6 +127,7 @@ export class McpApprovalGate {
       restricted: () => ReadonlyMap<string, McpToolDecisions>
       modeOf: (sessionId: string) => string | undefined
       log?: { info: (message: string) => void; warn: (message: string) => void }
+      now?: () => number
     }
   ) {}
 
@@ -129,11 +141,14 @@ export class McpApprovalGate {
     const meta = claudeMeta(update._meta)
     const named = (update as { name?: unknown }).name
     if (update.sessionUpdate === 'tool_call') {
-      call.toolName = meta.toolName ?? (typeof named === 'string' ? named : update.title)
+      // The title is display text (0.112 shows `server: tool`), so only a name field identifies the tool.
+      call.toolName = meta.toolName ?? (typeof named === 'string' ? named : undefined)
       call.rawInput = update.rawInput
+      call.seenAt = (this.deps.now ?? Date.now)()
       if (meta.server) call.server = meta.server
       const target = isObject(update.rawInput) ? update.rawInput.targetItemId : undefined
       if (typeof target === 'string') call.reviews = target
+      else if (this.deps.runtime === 'codex') this.linkGuardianReview(sessionId, id, call)
       calls.delete(id)
       calls.set(id, call)
       for (const old of calls.keys()) {
@@ -145,6 +160,7 @@ export class McpApprovalGate {
       if (update.rawInput !== undefined) call.rawInput = update.rawInput
       if (meta.toolName) call.toolName = meta.toolName
     }
+    if (update.status === 'completed' || update.status === 'failed') call.settled = true
     if (this.deps.runtime === 'claude') this.observeClaude(sessionId, id, call, update, meta.nonExecutionKind)
     else this.observeCodex(sessionId, call, update)
   }
@@ -185,7 +201,8 @@ export class McpApprovalGate {
     const output = isObject(update.rawOutput) ? update.rawOutput : undefined
     const input = isObject(update.rawInput) ? update.rawInput : undefined
     const review = isObject(output?.review) ? output.review : isObject(input?.review) ? input.review : undefined
-    if (review?.status !== 'approved') return
+    // An AIR client's review carries no verdict object; Codex marks only an approved review `completed`.
+    if (call.linked ? update.status !== 'completed' : review?.status !== 'approved') return
     const targetId = typeof output?.targetItemId === 'string' ? output.targetItemId : call.reviews
     if (targetId !== call.reviews) return
     const target = this.calls(sessionId).get(targetId)
@@ -200,6 +217,37 @@ export class McpApprovalGate {
     })
   }
 
+  /** Link an AIR Guardian review, which names no target, to the one open, unclaimed call of its server and tool that just started. */
+  private linkGuardianReview(sessionId: string, id: string, review: CallState): void {
+    if (!id.startsWith('guardian_assessment:') || !isObject(review.rawInput)) return
+    const action = review.rawInput.action
+    if (!isObject(action) || action.type !== 'mcpToolCall') return
+    const { server, toolName } = action
+    if (typeof server !== 'string' || typeof toolName !== 'string') return
+    const now = (this.deps.now ?? Date.now)()
+    const candidates = [...this.calls(sessionId)].filter(
+      ([, call]) =>
+        !call.settled &&
+        !call.claimed &&
+        call.seenAt !== undefined &&
+        now - call.seenAt <= GUARDIAN_LINK_WINDOW_MS &&
+        isObject(call.rawInput) &&
+        call.rawInput.server === server &&
+        call.rawInput.tool === toolName
+    )
+    if (candidates.length !== 1) {
+      if (candidates.length > 1)
+        this.deps.log?.warn(
+          `mcp approvals: Guardian review ${id} of agent "${this.deps.agentId}" matches ${candidates.length} open calls of "${toolName}" on "${server}", so it records nothing`
+        )
+      return
+    }
+    const [targetId, target] = candidates[0]!
+    target.claimed = true
+    review.reviews = targetId
+    review.linked = true
+  }
+
   /** A restricted gated tool's permission request: once-only options, the digested arguments on the card, and a person's allow recorded before the answer returns. */
   async permission(
     sessionId: string,
@@ -211,6 +259,8 @@ export class McpApprovalGate {
     let gated: GatedTool | undefined
     let args: unknown
     let shown: unknown
+    // A restricted server's call whose tool is unknown still gets once-only options, though it records nothing.
+    let unnamed = false
     if (this.deps.runtime === 'codex' && isObject(params._meta) && params._meta.is_mcp_tool_approval === true) {
       if (this.deps.restricted().size === 0) return await ask(params)
       // Codex's MCP approval carries no arguments; they come from the call's own `tool_call`, without which nothing is approved.
@@ -226,15 +276,23 @@ export class McpApprovalGate {
       shown = call.rawInput
     } else if (this.deps.runtime === 'claude') {
       const meta = claudeMeta(params.toolCall._meta)
-      gated = this.claudeTool(meta.toolName ?? params.toolCall.title ?? undefined, meta.server)
+      // An AIR client's request omits the tool name, so it comes from the call's own `tool_call`.
+      const call = this.sessions.get(sessionId)?.get(id)
+      const toolName = meta.toolName ?? call?.toolName
+      gated = this.claudeTool(toolName, meta.server ?? call?.server)
       args = params.toolCall.rawInput
       shown = args
       if (gated && args === undefined) return refusal(params)
+      unnamed = toolName === undefined && meta.server !== undefined && this.deps.restricted().has(meta.server)
+      if (unnamed)
+        this.deps.log?.warn(
+          `mcp approvals: call ${id} of agent "${this.deps.agentId}" on restricted server "${meta.server}" names no tool, so nothing is recorded`
+        )
     }
-    if (!gated) return await ask(params)
+    if (!gated && !unnamed) return await ask(params)
     const argsDigest = argumentsDigest(args)
     // An "always" answer would leave every later call without a record, so only once-only options are offered.
-    const options = params.options.filter((option) => option.kind === 'allow_once' || option.kind === 'reject_once')
+    const options = onceOnly(params.options)
     const answer = await ask({ ...params, options, toolCall: { ...params.toolCall, rawInput: shown } })
     if (answer.outcome.outcome !== 'selected') return answer
     const selected = answer.outcome.optionId
@@ -243,7 +301,7 @@ export class McpApprovalGate {
       this.deps.log?.warn(`mcp approvals: refused an answer naming an option the card for call ${id} did not offer`)
       return refusal(params)
     }
-    if (picked.kind === 'allow_once' && personRecords(this.deps.runtime, mode, gated.decision)) {
+    if (gated && picked.kind === 'allow_once' && personRecords(this.deps.runtime, mode, gated.decision)) {
       this.deps.records.put({
         agentId: this.deps.agentId,
         toolCallId: id,
@@ -296,6 +354,11 @@ export class McpApprovalGate {
     const decision = decisions && gatedDecision(decisions, tool)
     return decision && { provider: server, tool, decision }
   }
+}
+
+/** The options whose answer covers this call alone. */
+function onceOnly(options: PermissionOption[]): PermissionOption[] {
+  return options.filter((option) => option.kind === 'allow_once' || option.kind === 'reject_once')
 }
 
 /** The runtime's reject-once answer, or a cancellation when it offered none. */
