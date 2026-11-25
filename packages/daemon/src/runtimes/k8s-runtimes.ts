@@ -174,9 +174,9 @@ export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K
     if (declared.models?.length) models[id] = [...declared.models]
     if (declared.acp) {
       const snapshot = declared.acp
-      const fallback = antigravityMcpFallback(id, snapshot.agentName, declared.version)
+      const fallback = antigravityMcpFallback(id, snapshot.agentName)
       acp[id] =
-        fallback && snapshot.capabilities && snapshot.capabilities.mcpCapabilities === undefined
+        fallback && snapshot.capabilities?.mcpCapabilities === undefined
           ? { ...snapshot, capabilities: { ...snapshot.capabilities, mcpCapabilities: fallback } }
           : snapshot
     }

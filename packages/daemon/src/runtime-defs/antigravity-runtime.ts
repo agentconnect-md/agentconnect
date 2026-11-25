@@ -5,9 +5,9 @@ export function isAntigravityRuntimeDef(runtime: RuntimeDef): boolean {
   return /(?:^|[\\/])agy(?:\.exe)?$/i.test(runtime.command) && runtime.args[0] === 'acp'
 }
 
-// These verified releases omit the MCP transport declaration but handle Streamable HTTP.
-export function antigravityMcpFallback(id?: string, name?: string, version?: string) {
-  if (id === 'antigravity-acp' && name === 'Antigravity ACP Server' && (version === '1.5.14' || version === '1.5.17')) {
+// Use native agy's known transports when its handshake omits MCP capabilities.
+export function antigravityMcpFallback(id?: string, name?: string) {
+  if (id === 'antigravity-acp' && name === 'Antigravity ACP Server') {
     return { http: true, sse: false }
   }
   return undefined

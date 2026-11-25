@@ -1025,8 +1025,7 @@ export class AcpHost {
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     this.canSteer = steeringSupported(init._meta)
     const mcp =
-      init.agentCapabilities?.mcpCapabilities ??
-      antigravityMcpFallback(this.opts.runtimeId, init.agentInfo?.name, init.agentInfo?.version)
+      init.agentCapabilities?.mcpCapabilities ?? antigravityMcpFallback(this.opts.runtimeId, init.agentInfo?.name)
     this.mcpCaps = {
       http: mcp?.http ?? false,
       sse: mcp?.sse ?? false
