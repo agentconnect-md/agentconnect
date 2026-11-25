@@ -11,6 +11,7 @@ import { useTranslations } from 'next-intl'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { useUnnamedLabel } from '@/components/console/platforms/unnamed-label'
+import { useLastReply } from '@/lib/use-last-reply'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
 import {
@@ -28,11 +29,14 @@ const ROSTER_FACES = 4
 
 export function Card({
   title,
+  tabs,
   action,
   className,
   children
 }: {
   title: string
+  /** A control that scopes the card's rows, drawn beside the title. */
+  tabs?: ReactNode
   action?: ReactNode
   className?: string
   children: ReactNode
@@ -40,7 +44,10 @@ export function Card({
   return (
     <div className={`card overflow-hidden ${className ?? ''}`}>
       <div className="cardhead justify-between">
-        <span className="cardtitle">{title}</span>
+        <span className="flex min-w-0 items-center gap-3">
+          <span className="cardtitle">{title}</span>
+          {tabs}
+        </span>
         {action}
       </div>
       {children}
@@ -100,6 +107,9 @@ export function RecentSessionsCard({
   limit = 6,
   className,
   showAgent = true,
+  showChannel = true,
+  lastReply = false,
+  tabs,
   rowClassName
 }: {
   title?: string
@@ -111,6 +121,11 @@ export function RecentSessionsCard({
   className?: string
   /** Agent detail already scopes to one agent — hide the redundant icon+name there. */
   showAgent?: boolean
+  /** A list already scoped to one integration hides the mark every row would repeat. */
+  showChannel?: boolean
+  /** Reads each row's last agent reply from its daemon and draws it on the second line. */
+  lastReply?: boolean
+  tabs?: ReactNode
   /** Per-row utilities. Home pins every dashboard row to one shared height so its two
    * columns end on the same line (see HomeView's row-budget note); other surfaces let
    * the rows size to their content. */
@@ -124,6 +139,7 @@ export function RecentSessionsCard({
   return (
     <Card
       title={title ?? t('recent')}
+      tabs={tabs}
       action={<CardLink href={allHref}>{t('allSessions')}</CardLink>}
       className={className}
     >
@@ -163,11 +179,18 @@ export function RecentSessionsCard({
                     split from, so the channel stays where it was. */}
                   <span className="mt-[3px] flex items-center gap-[6px] text-(--text-tertiary)">
                     {showAgent && (
-                      <span className="flex min-w-0 items-center gap-[6px]">
+                      <span
+                        className={
+                          lastReply
+                            ? 'flex max-w-[45%] min-w-0 flex-none items-center gap-[6px]'
+                            : 'flex min-w-0 items-center gap-[6px]'
+                        }
+                      >
                         <AgentFaces session={s} owner={owner} />
                       </span>
                     )}
-                    {s.channel && (
+                    {lastReply && <LastReply session={s} />}
+                    {showChannel && s.channel && (
                       // Shrinkable on purpose (no `flex-none`): a long #channel or
                       // schedule name has to give way and ellipsize inside the row
                       // rather than run past it. `ml-auto` only spends space the row
@@ -190,6 +213,17 @@ export function RecentSessionsCard({
         )}
       </>
     </Card>
+  )
+}
+
+/** The agent's last reply, one truncated line; draws nothing until the daemon answers. */
+function LastReply({ session }: { session: Session }) {
+  const reply = useLastReply(session, true)
+  if (!reply) return null
+  return (
+    <span title={reply} className="min-w-0 flex-1 truncate font-sans text-[11.5px] leading-normal">
+      {reply}
+    </span>
   )
 }
 
