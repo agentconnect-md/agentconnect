@@ -122,7 +122,7 @@ import { EgressForwarder, egressPort } from './egress.js'
 import { LoopbackGuard } from './loopback-guard.js'
 import { publicBaseUrl, rtcAdvertiseAddress } from './public-address.js'
 import { COMPUTER_DAEMON_VERSION } from './version.js'
-import { scheduleDoctor } from './doctor-schedule.js'
+import { carryCaptureChecks, scheduleDoctor } from './doctor-schedule.js'
 import * as linuxService from './service-linux.js'
 import * as windowsService from './service-windows.js'
 import {
@@ -224,6 +224,7 @@ async function main(): Promise<void> {
       daemon: { type: 'boolean' },
       prompt: { type: 'boolean' },
       'capture-timeout': { type: 'string' },
+      'no-capture': { type: 'boolean' },
       'no-service': { type: 'boolean' },
       register: { type: 'string' },
       'cp-url': { type: 'string' },
@@ -356,7 +357,7 @@ async function main(): Promise<void> {
         process.exitCode = 1
         return
       }
-      const checks = remote ?? (await doctor(setupContext(dir, config), captureMs))
+      const checks = remote ?? (await doctor(setupContext(dir, config), captureMs, !values['no-capture']))
       if (values.json) console.log(JSON.stringify(checks))
       else {
         if (remote) console.log(`(checked inside the running daemon: ${remote.host})\n`)
@@ -798,13 +799,22 @@ function startCpChannel(options: {
   const doctor = scheduleDoctor({
     intervalMs: DOCTOR_INTERVAL_MS,
     onError: (error) => log(`doctor for the Control Plane report failed: ${error.message}`),
-    run: async () => {
+    run: async (capture) => {
       // Where this daemon listens, which `--port` / PORT may have moved from the config's.
       const output = await runSelf(
-        ['doctor', '--json', '--here', '--host', config.host, '--port', String(config.port)],
+        [
+          'doctor',
+          '--json',
+          '--here',
+          ...(capture ? [] : ['--no-capture']),
+          '--host',
+          config.host,
+          '--port',
+          String(config.port)
+        ],
         120_000
       )
-      checks = localizeChecks(JSON.parse(output) as Check[])
+      checks = carryCaptureChecks(localizeChecks(JSON.parse(output) as Check[]), checks)
       doctorAt = new Date()
       client.beat()
     }
@@ -1313,7 +1323,7 @@ async function run(dir: string, initial: DaemonConfig, clientName: string): Prom
     () => authority.refusal(),
     consoleViewer,
     advertiseAddress,
-    // A first start downloads ffmpeg, so report the viewer then instead of at the next 30-minute doctor run.
+    // A first start downloads ffmpeg, so report the viewer then: the 30-minute runs never probe capture.
     () => live.channel?.refreshDoctor(),
     undefined,
     MAIN_DESKTOP,

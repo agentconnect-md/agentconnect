@@ -100,7 +100,8 @@ export async function macPermissions(driver: CuaDriver, prompt = false): Promise
 
 // ---- doctor ----
 
-export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Promise<Check[]> {
+// capture: false skips every check that captures the screen, which wakes a sleeping display; the periodic run uses it.
+export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000, capture = true): Promise<Check[]> {
   const checks: Check[] = []
   const { config } = ctx
   const registration = registrationCheck(ctx.dir)
@@ -118,7 +119,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
   )
   checks.push(registration)
   checks.push(sessionCheck())
-  wakeDisplay()
+  if (capture) wakeDisplay()
 
   if (isAbsolute(ctx.driverCommand) && !existsSync(ctx.driverCommand)) {
     checks.push({
@@ -140,15 +141,17 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
         checks.push(
           ...macPermissionChecks(await macPermissions(driver), appBundlePath() ? readGrantRecord(ctx.dir) : undefined)
         )
-      const shot = await driver
-        .call('get_desktop_state', { max_image_dimension: 320 })
-        .then(() => undefined)
-        .catch((error: Error) => error.message)
-      checks.push(
-        shot
-          ? { name: 'screenshot', status: 'fail', detail: shot.slice(0, 160), fix: permissionFix() }
-          : { name: 'screenshot', status: 'ok', detail: 'desktop capture works' }
-      )
+      if (capture) {
+        const shot = await driver
+          .call('get_desktop_state', { max_image_dimension: 320 })
+          .then(() => undefined)
+          .catch((error: Error) => error.message)
+        checks.push(
+          shot
+            ? { name: 'screenshot', status: 'fail', detail: shot.slice(0, 160), fix: permissionFix() }
+            : { name: 'screenshot', status: 'ok', detail: 'desktop capture works' }
+        )
+      }
     } catch (error) {
       checks.push({
         name: 'cua-driver',
@@ -162,7 +165,7 @@ export async function doctor(ctx: SetupContext, captureTimeoutMs = 15_000): Prom
   }
 
   checks.push(displayCheck(config))
-  checks.push(...ffmpegChecks(ctx, captureTimeoutMs))
+  checks.push(...ffmpegChecks(ctx, captureTimeoutMs, capture))
   if (process.platform === 'win32') checks.push(await firewallCheck())
   if (process.platform === 'linux') {
     checks.push(...linuxChecks(ctx))
@@ -403,7 +406,7 @@ function linuxChecks(ctx: SetupContext): Check[] {
   return checks
 }
 
-function ffmpegChecks(ctx: SetupContext, timeoutMs: number): Check[] {
+function ffmpegChecks(ctx: SetupContext, timeoutMs: number, capture: boolean): Check[] {
   if (!ctx.config.webrtc)
     return [{ name: 'webrtc viewer', status: 'warn', detail: 'disabled in config ("webrtc": false)' }]
   if (!ffmpegAvailable(ctx.ffmpeg)) {
@@ -428,6 +431,7 @@ function ffmpegChecks(ctx: SetupContext, timeoutMs: number): Check[] {
       }
     ]
   }
+  if (!capture) return [{ name: 'ffmpeg', status: 'ok', detail: ctx.ffmpeg }]
   const probe = probeCapture(ctx.ffmpeg, ctx.config.streamFps, timeoutMs, ctx.dir)
   return [
     { name: 'ffmpeg', status: 'ok', detail: ctx.ffmpeg },

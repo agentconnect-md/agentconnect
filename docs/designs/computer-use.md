@@ -108,7 +108,7 @@ Proposed [GLOSSARY.md](../../GLOSSARY.md) entries:
 interface Computer {
   id: string // cmp_...
   orgId: string
-  name: string // display name, such as "Yulong's MacBook"
+  name: string // display name, such as "Alex's MacBook"
   ownerUserId: string // the registrant; required for a self-hosted computer
   kind: 'self-hosted' | 'managed' // only self-hosted in this stage
   isolation: 'none' | 'container' | 'vm' // none: the user's real desktop; container: the §3.8 image
@@ -412,7 +412,10 @@ and a full handshake gate a retryable `RATE_LIMITED` with `4429`, and the deskto
 the heartbeat with a write that applies only while the Computer and the channel's key are both unrevoked, so a
 revoke made elsewhere also ends the channel at its next heartbeat. A clean close marks the Computer `offline`. A live
 status whose `lastSeenAt` is older than three heartbeats is shown as `offline`. The desktop runs `doctor` in a child
-when it starts and every 30 minutes. The capabilities are derived from those checks and the screen size.
+when it starts, when its viewer or firewall changes, and every 30 minutes. The 30-minute run passes `--no-capture`: it
+skips the screenshot and ffmpeg capture probes and the macOS wake, because capturing the screen wakes a sleeping display
+(on GNOME Wayland too, through the portal), and keeps the last `screenshot` and `screen capture` results while their
+prerequisite still passes. The capabilities are derived from those checks and the screen size.
 
 **[implemented]** Registration on the desktop. `setup --register <token> --cp-url <url>` (or just `register`) spends
 the token and stores the key in `computer-key.json` in the data directory with mode 0600. Moving the key into the
@@ -2285,8 +2288,8 @@ allow; the daemon's bundle stays permissive, since Chrome is a separate program 
 
 ### 12.1 Code
 
-The prototype lived in `packages/desktop` (`@agentconnect.md/desktop`, now `packages/computer`, `@agentconnect.md/computer`) on the
-`dev/yulong/cua-driver-daemon-mcp` branch and merged in M0 (§14.3); the package is now versioned and published with
+The prototype lived in `packages/desktop` (`@agentconnect.md/desktop`, now `packages/computer`, `@agentconnect.md/computer`) on a
+development branch and merged in M0 (§14.3); the package is now versioned and published with
 each release (§3.5). Main files: `src/computer.ts` (lease, arbitration, pause, `uncertain`),
 `src/tools.ts` (`computer_*` and the `cua_*` pass-through), `src/http-server.ts`, `src/viewer.ts` /
 `src/viewer-page.ts`, `src/stream/` (`ffmpeg.ts`, `rtc.ts`, `screen-stream.ts`, `wayland-capture.ts`),

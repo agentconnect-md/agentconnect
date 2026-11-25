@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { scheduleDoctor, type DoctorSchedule } from './doctor-schedule.js'
+import { carryCaptureChecks, scheduleDoctor, type DoctorSchedule } from './doctor-schedule.js'
+import type { Check } from './setup.js'
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
@@ -65,5 +66,52 @@ describe('scheduleDoctor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('captures on the first run and on refresh, never on the timer, which would wake a sleeping display', async () => {
+    vi.useFakeTimers()
+    try {
+      const captures: boolean[] = []
+      schedule = scheduleDoctor({
+        run: async (capture) => void captures.push(capture),
+        intervalMs: 1_000,
+        onError: () => undefined
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await vi.advanceTimersByTimeAsync(1_000)
+      schedule.refresh()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(captures).toEqual([true, false, false, true])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('carryCaptureChecks', () => {
+  const check = (name: string, status: Check['status'] = 'ok', detail = name): Check => ({ name, status, detail })
+
+  it('keeps the last capture results after their prerequisite when a run skipped capture', () => {
+    const previous = [
+      check('cua-driver'),
+      check('screenshot', 'fail', 'black'),
+      check('ffmpeg'),
+      check('screen capture')
+    ]
+    expect(carryCaptureChecks([check('cua-driver'), check('display'), check('ffmpeg')], previous)).toEqual([
+      check('cua-driver'),
+      check('screenshot', 'fail', 'black'),
+      check('display'),
+      check('ffmpeg'),
+      check('screen capture')
+    ])
+  })
+
+  it('drops a capture result once its prerequisite stops passing, and never overrides a fresh one', () => {
+    const previous = [check('cua-driver'), check('screenshot'), check('ffmpeg'), check('screen capture')]
+    const next = [check('cua-driver', 'fail'), check('ffmpeg'), check('screen capture', 'fail', 'locked')]
+    expect(carryCaptureChecks(next, previous)).toEqual(next)
+    expect(carryCaptureChecks([check('ffmpeg')], undefined)).toEqual([check('ffmpeg')])
   })
 })
