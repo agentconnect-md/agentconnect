@@ -725,6 +725,7 @@ export function standingContext(scenario: SendMessageScenario, usesMeta: boolean
     fileSecrets: [],
     memoryIndex: '',
     usesMeta,
+    botPlatforms: ['slack', 'telegram'],
     platformStanding:
       `# Known identities\n- Peer agent: ${IDS.peer} (its Slack bot is <@${IDS.peerBot}>)\n- Human team member: <@${IDS.human}>\n` +
       `- Channel #${IDS.workChannelName}: ${IDS.workChannel}\n- Channel ${IDS.updateChannel} has an existing thread rooted at ${IDS.updateThread}`

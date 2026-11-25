@@ -84,3 +84,17 @@ describe('standing collaboration guidance where only the coordinator delegates (
     expect(context.sessionDigest).not.toBe(buildStandingContext(BASE).sessionDigest)
   })
 })
+
+describe('a conversation on a platform the agent has no bot on', () => {
+  it('names the platforms a `channel` must go through, and only there', () => {
+    const botless = buildStandingContext({ ...BASE, platform: 'webchat', botPlatforms: ['slack', 'telegram'] })
+    expect(botless.collabAppend).toBe(
+      `${COLLAB_APPEND}\n- This conversation is on a platform you have no bot on, so every \`channel\` you name in ` +
+        '`sendMessage` is on another platform: pass `platform` with it (`"platform":"slack"` or `"platform":"telegram"`).'
+    )
+    expect(botless.resumeSystemContext).toContain(botless.collabAppend)
+    // Where it has a bot, `platform` defaults to the conversation's own, so nothing is added.
+    expect(buildStandingContext({ ...BASE, botPlatforms: ['slack', 'telegram'] }).collabAppend).toBe(COLLAB_APPEND)
+    expect(buildStandingContext({ ...BASE, platform: 'webchat', botPlatforms: [] }).collabAppend).toBe(COLLAB_APPEND)
+  })
+})

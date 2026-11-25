@@ -111,6 +111,8 @@ export type StandingContextInput = {
   usesMeta: boolean
   /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
   platformStanding?: string
+  /** The platforms the agent has a bot on, so a conversation on none of them is told to name one. */
+  botPlatforms?: readonly string[]
   /** Current rules for a daemon-owned task, refreshed with its tool context. */
   taskInstructions?: string
 }
@@ -400,6 +402,16 @@ const COLLAB_OWN_WORK =
 export const COLLAB_APPEND =
   COLLAB_HEADING + COLLAB_PLATFORM_WORKFLOW + COLLAB_BEFORE_SELF + COLLAB_SELF_DELEGATION + COLLAB_AFTER_SELF
 
+/** A conversation on a platform the agent has no bot on reaches every channel through another one, which `platform` must name. */
+export function botlessPlatformHint(platform: string, botPlatforms: readonly string[] | undefined): string {
+  if (!botPlatforms?.length || botPlatforms.includes(platform)) return ''
+  const names = botPlatforms.map((id) => `\`"platform":"${id}"\``).join(' or ')
+  return (
+    `- This conversation is on a platform you have no bot on, so every \`channel\` you name in \`sendMessage\` is ` +
+    `on another platform: pass \`platform\` with it (${names}).`
+  )
+}
+
 /** The collaboration guidance where only the coordinator delegates (auto-session-mode.md §5.1). */
 export const COLLAB_APPEND_WITHOUT_DELEGATION =
   COLLAB_HEADING +
@@ -537,7 +549,12 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
           ? THREADLESS_ROOM_TASK_APPEND
           : THREADED_TASK_APPEND
         : ''
-  const collabAppend = input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND
+  const collabAppend = [
+    input.tasksCoordinatorOnly === true ? COLLAB_APPEND_WITHOUT_DELEGATION : COLLAB_APPEND,
+    botlessPlatformHint(input.platform, input.botPlatforms)
+  ]
+    .filter(Boolean)
+    .join('\n')
   // A coordinator's own instructions replace the reply and collaboration rules: it only decides where messages go (auto-session-mode.md §5.4).
   const coordinator = isCoordinatorCoordinate(input.thread)
   const assemble = (meta: string) => {
