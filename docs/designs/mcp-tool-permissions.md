@@ -451,7 +451,7 @@ For each request to the relay origin, the proxy does the following:
    - **Needs approval and Always ask:** the proxy reads the call id from `params._meta`
      (`claudecode/toolUseId` or `callId`) and looks up the approval record (§7.4). It
      accepts the call only when all of these hold:
-     - the record exists and has not been used;
+     - the record exists, after waiting up to two seconds for it (§7.4), and has not been used;
      - the record has not expired;
      - its tool equals `params.name`;
      - its argument digest equals the digest of `params.arguments`;
@@ -486,8 +486,9 @@ runtime's name normalization applied.
 The daemon applies session settings as follows:
 
 - **Always allow:** adds a `permissions.allow` rule, so a manual mode does not ask.
-- **Blocked:** adds a `permissions.deny` rule, as defense in depth. In Auto mode it may also
-  add the tool to `autoMode.hard_deny`, which the classifier refuses before the call is sent.
+- **Blocked:** adds a `permissions.deny` rule, as defense in depth. It adds no
+  `autoMode.hard_deny` entry: those are prose rules the classifier reads, not an enforcement
+  point beside the proxy, the relay and `permissions.deny`.
 - **Needs approval and Always ask:** never use `_meta["anthropic/requiresUserInteraction"]`,
   because it would also force a person in Auto mode. They use `permissions.ask` rules
   instead, added only where the table calls for one.
@@ -498,12 +499,16 @@ the row in force when the permission request or `tool_call` arrives.
 A person's approval follows the existing permission-request answer rules: the turn's
 caller or an agent editor, including the Slack approval DM of
 [slack-approval-dm.md](slack-approval-dm.md). A permission card for an approval-gated tool
-offers only once-options (allow once, reject). Claude already offers only these. Codex also
-offers `allow_session` and `allow_always`, which the daemon removes; an "always" answer
-would produce no record for later calls.
+keeps only the options whose ACP kind is `allow_once` or `reject_once`, so core carries no
+runtime's option ids. Claude already offers only these; Codex also offers session and
+"always" options, which this rule removes, since an "always" answer would produce no record
+for later calls. The settle path refuses an answer naming an option the card did not offer,
+rather than relying on the card to omit it.
 
 Codex's MCP approval request (`_meta.is_mcp_tool_approval: true`) carries no `rawInput`.
-The daemon takes the arguments from that call's `tool_call` event, which precedes it.
+The daemon takes the arguments from that call's `tool_call` event, which precedes it, and the
+card renders that same value, the one the digest reads. An approval request whose call id
+had no `tool_call` creates no record and is answered with a rejection.
 
 ### 7.4 Approval records
 
@@ -515,13 +520,26 @@ A record is `{ agentId, toolCallId, tool, argsDigest, source, expiresAt }`.
   (JavaScript number rules) and with keys sorted recursively. The same function digests
   `params.arguments` at the proxy. Hashing bytes would refuse approved calls: Codex forwards
   the model's own text (`2.50`, `-0.0`, keys in the model's order) while ACP shows a
-  re-serialization (`2.5`, `0`). Integers beyond 2^53 that differ only in low digits share a
-  digest, which is accepted.
-- The arguments come from the latest `rawInput` ACP showed for that id: Claude's
-  `request_permission` or last `tool_call_update`; Codex's `tool_call.rawInput.arguments`.
+  re-serialization (`2.5`, `0`).
+- Integers beyond 2^53 that differ only in low digits share a digest. That is safe only
+  because §7.2 step 4 forwards the re-serialization of the same parse, so the upstream
+  receives the value that was shown and digested. The cost: a restricted grant rounds such
+  integers in transit, while an unrestricted grant stays byte-transparent.
+- **A `person` record** is bound to the answered card. Its digest is computed from the
+  arguments the card showed (Claude's `request_permission.rawInput`; Codex's
+  `tool_call.rawInput.arguments`) and never changes afterwards, so a later change fails
+  closed. The record is written before the answer is returned to the runtime, so the call
+  cannot reach the proxy ahead of it.
+- **A Codex `runtime-review` record** takes its digest from `tool_call.rawInput.arguments`
+  when the Guardian's approval arrives.
 - A record is created only by a row of §7.3 that yields one.
+- **Two channels.** Records are written from ACP, while calls arrive at the proxy, and in a
+  pod or an executor the two travel different paths. A call whose record has not arrived
+  waits up to two seconds for a matching record for its call id, then is refused. The Codex
+  Guardian's call was measured 4 ms after its approval update.
 - **Claude Auto:** the `tool_call` arrives with `rawInput: {}` and the arguments follow in
-  partial `tool_call_update`s. The record refreshes its digest from every update for that id,
+  partial `tool_call_update`s. Only this `runtime-review` record refreshes its digest, from
+  every update for that id,
   so the call matches only the arguments last shown. It is deleted when an update reports
   `status: "failed"` or `_meta.claudeCode.nonExecutionKind` starting with `automode-` (the
   classifier refusal, about 1–2 s after the `tool_call`). A model-level refusal emits no
@@ -717,9 +735,15 @@ Argument equality, the Claude Auto refusal signal, and proxy and trust handling 
 confirmed on the host strategy (§12.1, second check). Remaining:
 
 - A run on a real daemon with a chat card: Needs approval in a manual mode (approve and
-  reject), in Claude Auto and Codex Auto review, and Always ask.
-- The proxy route in a pool pod, a VM and an executor. A client that bypasses it still fails
-  closed, with a 401 at the relay.
+  reject), in Claude Auto and Codex Auto review, and Always ask. It re-confirms the Codex
+  Auto review and `workspace-write` rows of the first check on `codex-acp` 2.12.0, and that a
+  refusal from the Claude classifier's own judgment (not a `hard_deny` rule) emits the same
+  two signals the deletion rule relies on.
+- The proxy route under srt, in a pool pod, a VM and an executor, including the trust
+  variable each strategy sets: the daemon also sets `CODEX_CA_CERTIFICATE`, which Codex
+  reads first and which the VM path names for Codex, while the second check exercised
+  `SSL_CERT_FILE`. A client that bypasses the proxy still fails closed, with a 401 at the
+  relay.
 
 ## 13. Delivery
 
