@@ -3295,8 +3295,9 @@ Self-hosted daemons need the native Antigravity CLI (`agy`) on their PATH.
 Sign in with the CLI before resuming a session created with the standalone
 adapter. With the default data directories, the daemon imports that session's
 history on its first native resume. The full runtime image includes the CLI.
-Version 1.5.14 supports Streamable HTTP MCP connections. For a directly
-configured remote MCP server, use its Streamable HTTP endpoint.
+For directly configured remote MCP servers, the daemon follows the runtime's
+advertised transports. When native `agy acp` omits that declaration, the daemon
+uses Streamable HTTP and skips legacy SSE endpoints.
 
 On self-hosted daemons, a tab that starts the image initially folds away runtimes
 installed in the image but not on the host. A **Show runtimes not on host** control
