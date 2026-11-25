@@ -111,4 +111,23 @@ describe('slackMarkdownPlainText', () => {
       })
     ).toBe(markdown)
   })
+
+  it.each([
+    'Edit `__init__.py` and rerun.',
+    'Run:\n```py\nif __name__ == "__main__":\n  main()\n```',
+    'Run `a **b**` then:\n```sh\nls **/*.ts\n```\nDone.',
+    'Use `[label](url)` syntax for links.',
+    'Set `~~strike~~` or `2 * 3 * 4` here.'
+  ])('reads a markdown reply with Markdown-like code once: %j', (markdown) => {
+    expect(
+      extractSlackMessageText({
+        text: slackMarkdownPlainText(markdown),
+        blocks: [{ type: 'markdown', text: markdown }]
+      })
+    ).toBe(markdown)
+  })
+
+  it('keeps Markdown-like text in a human mrkdwn message as written', () => {
+    expect(extractSlackMessageText({ text: 'see [x](y) and __init__' })).toBe('see [x](y) and __init__')
+  })
 })

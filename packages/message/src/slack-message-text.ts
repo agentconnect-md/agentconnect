@@ -235,7 +235,7 @@ function attachmentText(value: unknown): string {
 // spells the same words plainly, so the key drops the delimiters and keeps every character they wrap.
 function canonical(value: string): string {
   return plainMrkdwn(
-    slackMarkdownPlainText(value)
+    value
       .replace(REFERENCE_RE, '$1')
       .replace(/<([@#!][^|>]+)\|[^>]*>/g, '<$1>')
       .replace(/&lt;/g, '<')
@@ -318,8 +318,20 @@ function referenceFilesText(value: unknown, body: string): string {
   )
 }
 
+// A Markdown reply's fallback is the plain text of its `markdown` blocks; it drops when those blocks are present.
+function fallbackText(text: string, blocks: unknown): string {
+  const markdown = Array.isArray(blocks)
+    ? join(blocks.map((value) => (record(value)?.type === 'markdown' ? blockText(value) : '')))
+    : ''
+  return markdown && canonical(text) === canonical(slackMarkdownPlainText(markdown)) ? '' : text
+}
+
 export function extractSlackMessageText(message: SlackTextBearingMessage): string {
   const attachments = Array.isArray(message.attachments) ? message.attachments.map(attachmentText) : []
-  const body = uniqueText([string(message.text), blocksText(message.blocks), ...attachments])
+  const body = uniqueText([
+    fallbackText(string(message.text), message.blocks),
+    blocksText(message.blocks),
+    ...attachments
+  ])
   return join([body, referenceFilesText(message.files, body)])
 }
