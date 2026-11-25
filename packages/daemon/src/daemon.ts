@@ -17328,9 +17328,10 @@ export class Daemon {
     // owner. In a real multi-agent thread `threadOwner` intentionally returns null; the
     // joined agents (and every newly mentioned or channel-auto agent) still hear the
     // message as separate deliveries with target-specific trigger/mute handling.
-    // Another bot's post reaches a thread's participants and the channel's Any-message agents where the platform admits bot senders.
+    // Another bot's unaddressed post reaches a thread's participants and the channel's Any-message agents where the platform admits bot senders; one that mentions anyone reaches the named agent alone.
+    const botFanOut = manifestFor(msg.platform).botSenderRouting && msg.mentionedBots.length === 0
     const peerOutcomes =
-      msg.sender.isBot && !manifestFor(msg.platform).botSenderRouting
+      msg.sender.isBot && !botFanOut
         ? []
         : await this.fanOutToThreadPeers(msg, routingRules, result?.agentId, undefined, record)
     const dispatchedPeer = peerOutcomes.find((outcome) => outcome.kind === 'dispatched')

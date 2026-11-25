@@ -262,20 +262,26 @@ export const PARITY_SCENARIOS: readonly ParityScenario[] = [
   },
   {
     id: 'unverified-author-no-agent-rungs',
-    title: 'an unverifiable author cannot activate through agent rungs',
+    title: 'an unverifiable author gains no agent-call identity',
     invariant:
-      'Only a VERIFIED agent author reaches the implicit continuation rungs. An unverifiable claim fails closed: transcript-only, no implicit activation.',
+      'Only a VERIFIED agent author is a caller. An unverifiable one is at most an ordinary sender: it carries no call identity and reaches no agent-only rung.',
     expect: {
       slack: {
-        activates: 'nobody',
+        activates: 'participants-minus-author',
         notes:
-          'an unmentioned third-party bot message activates no one (no thread affinity for bot traffic); an explicit mention from it still activates on Slack, whose manifest admits bot senders — verification, not bot-ness, is the boundary (send-message-routing-rework.md §2.3)'
+          "a third-party bot is an ordinary sender on Slack, whose manifest admits bot senders: its unaddressed post in a live thread reaches that thread's participants, and its mention reaches the named agent alone (send-message-routing-rework.md §2.3)"
       },
       webchat: {
         activates: 'nobody',
         notes:
           'an agent post with no usable depth stamp (pre-parity daemon, or an authorship claim the relay could not bind and therefore stripped) stays transcript-only — a missing depth never coerces to zero (webchat-multi-agents.md §5.2a)'
       }
+    },
+    // DECLARED divergence: a channel admits other bots as ordinary senders, and a webchat conversation has no such sender.
+    divergence: {
+      reason:
+        "A shared channel holds third-party bots, whose posts are ordinary messages to the agents listening there; a webchat conversation's only non-human authors are its own agents, so an unverifiable one has no ordinary-sender reading.",
+      cites: ['docs/designs/send-message-routing-rework.md §2.3', 'docs/designs/webchat-multi-agents.md §5.2a']
     }
   }
 ]

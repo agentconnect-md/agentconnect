@@ -293,14 +293,11 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     expect(published).toEqual([])
   },
 
-  // (i) Verification, not bot-ness, is the boundary: an UNVERIFIED third-party
-  // bot message never activates through the implicit agent rungs (no thread
-  // affinity, no fan-out) — while an explicit mention from it still activates
-  // on Slack, whose manifest admits bot senders.
+  // (i) Verification, not bot-ness, is the boundary: an UNVERIFIED third-party bot is an ordinary sender on Slack, heard by a thread's participants and by the agent it mentions, never a caller.
   'unverified-author-no-agent-rungs': async (scenario) => {
     // The spec is load-bearing: editing this scenario's declared outcome
     // fails this pin; changing the behavior fails the measured asserts below.
-    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'nobody' })
+    expect(declaredOutcome(scenario.expect.slack!)).toEqual({ activates: 'participants-minus-author' })
     const leg = await startRoom({
       agent1: (ctx) => {
         if (/START/.test(ctx.text)) ctx.reply('anchored in this thread')
@@ -313,24 +310,21 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     await leg.settle(trigger.handles)
     expect(leg.activations('agent1')).toBe(1)
 
-    // An UNMENTIONED third-party bot message in that live thread: no thread
-    // affinity, no participant fan-out — bot traffic without a verified
-    // author stops before every implicit rung.
+    // An UNMENTIONED third-party bot message in that live thread reaches the thread's participant and no one else.
     const chatter = leg.injectThirdPartyBot('external bot chatter, mentioning nobody', {
       thread: trigger.messageId
     })
     await leg.settle(chatter.handles)
-    expect(leg.activations('agent1')).toBe(1)
+    expect(leg.activations('agent1')).toBe(2)
     expect(leg.activations('agent2')).toBe(0)
 
-    // An EXPLICIT mention from the same unverified bot still activates on
-    // Slack — the platform's manifest admits bot senders at the mention rung.
+    // An EXPLICIT mention from the same bot reaches the named agent alone.
     const addressed = leg.injectThirdPartyBot(`<@${leg.botUserId('agent2')}> ping from an external bot`, {
       mentions: [leg.botUserId('agent2')]
     })
     await leg.settle(addressed.handles)
     expect(leg.activations('agent2')).toBe(1)
-    expect(leg.activations('agent1')).toBe(1)
+    expect(leg.activations('agent1')).toBe(2)
   }
 }
 
