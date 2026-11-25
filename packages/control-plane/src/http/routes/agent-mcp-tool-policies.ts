@@ -173,7 +173,7 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
             message: `a decision list would exceed ${MCP_TOOL_LIST_MAX} tools`
           })
         }
-        if (saved.created) await pushSpec(saved.agent)
+        if (saved.created) await pushCurrentSpec(orgId, saved.agent)
         return toDto(saved.policy, await driftOf(orgId, saved.policy))
       }
     )
@@ -223,10 +223,16 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
           release()
         }
         if (!removed) return notFound(reply, 'mcp tool policy')
-        await pushSpec(removed)
+        await pushCurrentSpec(orgId, removed)
         return reply.code(204).send(null)
       }
     )
+
+    /** Push the agent as stored now: the policy write bumped its revision, and a daemon refuses a changed spec under the revision it already applied. */
+    async function pushCurrentSpec(orgId: OrgId, agent: AgentRecord): Promise<void> {
+      const current = await deps.repos.agent.get(orgId, AgentId(agent.id))
+      if (current) await pushSpec(current)
+    }
 
     /** Re-push the provider's relay binding with every active shared key and its current restricted grants. */
     async function pushBinding(orgId: OrgId, provider: McpProviderRecord): Promise<void> {

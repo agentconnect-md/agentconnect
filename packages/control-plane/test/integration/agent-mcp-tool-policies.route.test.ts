@@ -25,11 +25,13 @@ class PolicySpyControl {
   readonly upserts: Array<{ daemonId: string; spec: McpServerSpec }> = []
   readonly removes: Array<{ daemonId: string; name: string; agentId?: string }> = []
   readonly specs: Array<{ daemonId: string; mcpServers: string[] }> = []
+  readonly revisions: string[] = []
   daemonFeatures(daemonId: string): readonly string[] | undefined {
     return this.features.get(daemonId)
   }
   async agentUpsert(daemonId: string, u: AgentUpsert): Promise<void> {
     this.specs.push({ daemonId, mcpServers: encodeAgentSpecForPeer(u.spec, this.daemonFeatures(daemonId)).mcpServers })
+    if (u.spec.configRevision !== undefined) this.revisions.push(u.spec.configRevision)
   }
   async agentRemove(): Promise<void> {}
   async mcpServerUpsert(daemonId: string, spec: McpServerSpec): Promise<void> {
@@ -279,6 +281,12 @@ describe('agent MCP tool policies — grant lifecycle', () => {
     expect(control.specs.at(-1)).toEqual({ daemonId: OLDER, mcpServers: [] })
     const list = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}/mcp-tool-policies` })
     expect(list.json().compatibility.daemonsWithoutAgentDefinitions).toEqual([OLDER])
+    // The spec carries the revision the policy write produced, or the daemon would refuse it as a conflict.
+    const stored = async () => String((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).configRevision)
+    expect(control.revisions.at(-1)).toBe(await stored())
+    expect((await app.app.inject({ method: 'DELETE', url: policyUrl(agentId, provider.id) })).statusCode).toBe(204)
+    expect(control.specs.at(-1)).toEqual({ daemonId: OLDER, mcpServers: ['docs'] })
+    expect(control.revisions.at(-1)).toBe(await stored())
   })
 
   it('DELETE restores the shared definition, removes the agent’s own, then revokes and unassigns its grant', async () => {
