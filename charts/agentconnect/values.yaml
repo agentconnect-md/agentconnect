@@ -1096,6 +1096,11 @@ modelEgress:
   # gives each provider its own listener port lists them all here; a single-port endpoint lists
   # one. A port missing from this list is a model call timing out with no obvious cause.
   ports: [8080]
+  # Labels of the pods that serve the endpoint, for the same sandbox egress rule. Empty ⇒ any pod
+  # in `namespace` listening on `ports` is reachable from sandboxes, which in a namespace shared
+  # with other workloads includes ports they happen to serve, such as a pool member's readiness
+  # port. Set it to the endpoint's pod labels to admit those pods alone.
+  podSelector: {}
   # The one gateway address this install's runtimes talk to. Each client is given
   # `<gatewayUrl>/<provider dialect>` — `/anthropic`, `/openai`, `/deepseek`, `/google` — because one
   # address is one address, while the runtimes disagree about what they append to it (Claude

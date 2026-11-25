@@ -347,10 +347,31 @@ egress_rendered, egress_error, egress_status = Open3.capture3(
   '--set', 'modelEgress.clients.codex.baseUrl=http://gateway.example.test:8080/openai',
   '--set', 'modelEgress.clients.codex.apiKey=example-cleartext-key',
   '--set', 'modelEgress.gatewayUrl=http://gateway.example.test:8080/',
-  '--set', 'modelEgress.clients.google.apiKey=example-google-key'
+  '--set', 'modelEgress.clients.google.apiKey=example-google-key',
+  '--set-json', 'modelEgress.podSelector={"app.kubernetes.io/component":"model-gateway"}'
 )
 abort("helm template (model egress) failed:\n#{egress_error}") unless egress_status.success?
 egress_documents = YAML.load_stream(egress_rendered).compact
+# Namespace and pods in ONE peer, so both must match; two peers would admit either.
+egress_rule = egress_documents.find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-runtime' }
+  .dig('spec', 'networkPolicy', 'egress').find { |rule| rule['ports'] == [{ 'protocol' => 'TCP', 'port' => 8080 }] } ||
+  abort('missing the model-egress sandbox rule')
+abort('the model-egress rule must name the endpoint pods within its namespace') unless egress_rule['to'] == [{
+  'namespaceSelector' => { 'matchLabels' => { 'kubernetes.io/metadata.name' => 'agentconnect-example' } },
+  'podSelector' => { 'matchLabels' => { 'app.kubernetes.io/component' => 'model-gateway' } }
+}]
+unselected_rendered, unselected_error, unselected_status = Open3.capture3(
+  *command,
+  '--set', 'daemonPool.modelCredentials.existingSecret=',
+  '--set', 'daemonPool.runtimeEnvironment.existingSecret=example-runtime-environment',
+  '--set', 'modelEgress.enabled=true', '--set-json', 'modelEgress.ports=[8080]'
+)
+abort("helm template (model egress, no pod selector) failed:\n#{unselected_error}") unless unselected_status.success?
+unselected_rule = YAML.load_stream(unselected_rendered).compact
+  .find { |doc| doc['kind'] == 'SandboxTemplate' && doc.dig('metadata', 'name') == 'example-agentconnect-runtime' }
+  .dig('spec', 'networkPolicy', 'egress').find { |rule| rule['ports'] == [{ 'protocol' => 'TCP', 'port' => 8080 }] }
+abort('without a pod selector the model-egress rule must stay namespace-wide') unless unselected_rule['to'] ==
+  [{ 'namespaceSelector' => { 'matchLabels' => { 'kubernetes.io/metadata.name' => 'agentconnect-example' } } }]
 egress_env = lambda do |kind, name, container_name|
   doc = egress_documents.find { |item| item['kind'] == kind && item.dig('metadata', 'name') == name } || abort("missing #{kind}/#{name}")
   pod_spec = kind == 'SandboxTemplate' ? doc.dig('spec', 'podTemplate', 'spec') : doc.dig('spec', 'template', 'spec')

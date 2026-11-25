@@ -37,12 +37,18 @@ spec:
       {{- if not $.Values.modelEgress.ports }}{{ fail "modelEgress.enabled needs modelEgress.ports: the sandbox egress allowlist names each endpoint listener port" }}{{ end }}
       # A managed egress endpoint is reached over plaintext inside the cluster, so the 443 rule
       # above does not cover it — without this the default-deny leaves every model call timing out
-      # with no obvious cause. Narrow on purpose: those exact ports, in that one namespace. This
-      # chart does not know what serves them; `modelEgress.namespace`/`ports` are told to it.
+      # with no obvious cause. Narrow on purpose: those exact ports, in that one namespace, on the
+      # endpoint's pods when `modelEgress.podSelector` names them. This chart does not know what
+      # serves them; `modelEgress.namespace`/`ports`/`podSelector` are told to it.
       - to:
           - namespaceSelector:
               matchLabels:
                 kubernetes.io/metadata.name: {{ $.Values.modelEgress.namespace | default $.Release.Namespace }}
+            {{- with $.Values.modelEgress.podSelector }}
+            podSelector:
+              matchLabels:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
         ports:
           {{- range $.Values.modelEgress.ports }}
           - protocol: TCP
