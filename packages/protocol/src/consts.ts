@@ -333,6 +333,9 @@ export const WEBCHAT_CONTINUATION_ATTACHMENTS_FEATURE = 'webchat_continuation_at
 /** Daemon reads a console user's own memory layer (`personUserId` on `memory/list` and `memory/read`); the CP sends it to no other daemon. */
 export const MEMORY_PERSON_LAYER_FEATURE = 'memory-person-layer-v1'
 
+/** The daemon layers agent-scoped MCP definitions over its organization's (mcp-tool-permissions.md §7.1). */
+export const MCP_AGENT_DEFS_V1_FEATURE = 'mcp-agent-defs-v1'
+
 /** Daemon deletes one place layer on `memory/channel/clear`; the CP offers clearing a layer only toward a daemon advertising it. */
 export const MEMORY_PLACE_CLEAR_FEATURE = 'memory-place-clear-v1'
 

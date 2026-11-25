@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { CpMcpDefs } from '../src/mcp/cp-mcp-defs.js'
-import { applyReconcileSnapshot } from '../src/cp/config-apply-handlers.js'
+import { applyMcpServerRemove, applyMcpServerUpsert, applyReconcileSnapshot } from '../src/cp/config-apply-handlers.js'
 
 const ORG = 'org-a'
 const DEF = { transport: 'http' as const, url: 'https://relay.example.test/mcp/p1', args: [], env: [], headers: [] }
@@ -76,5 +76,68 @@ describe('CpMcpDefs.isOrgScoped — what a connection may be keyed by', () => {
     expect(defs.isOrgScoped(undefined, 'clock')).toBe(false)
     // Another org does not own the first org's definition.
     expect(defs.isOrgScoped('org-b', 'charts')).toBe(false)
+  })
+})
+
+describe('agent-scoped definitions on the CP frame paths', () => {
+  const noop = () => undefined
+  const hostWith = (defs: CpMcpDefs, onMcpDefsChanged: () => void) =>
+    new Proxy(
+      {
+        cpMcpDefs: () => defs,
+        onMcpDefsChanged,
+        log: () => ({ warn: noop, info: noop, debug: noop, error: noop }),
+        cpDroppedAgents: () => new Set<string>(),
+        drainingAgents: () => new Set<string>(),
+        cpCollab: () => ({ replace: noop }),
+        cpRouting: () => ({ converge: noop })
+      } as Record<string, unknown>,
+      { get: (target, key: string) => target[key] ?? (() => undefined) }
+    ) as never
+  const decisions = { allow: ['read_note'], approval: [], ask: [], block: [] }
+
+  it('installs the agent layer from the snapshot, a live upsert, and removes it on an agent-scoped remove', async () => {
+    const defs = new CpMcpDefs({})
+    const changed = vi.fn()
+    await applyReconcileSnapshot(hostWith(defs, changed), {
+      agents: [],
+      assignments: [],
+      leases: [],
+      relays: [],
+      collabRoutes: [],
+      routingEpoch: 1,
+      crons: [],
+      integrations: [],
+      drop: { assignments: [], crons: [], agents: [], integrations: [] },
+      mcpServers: [
+        { orgId: ORG, name: 'notion', ...DEF },
+        {
+          orgId: ORG,
+          agentId: 'agent-1',
+          name: 'notion',
+          ...DEF,
+          url: 'https://relay.example.test/mcp/p1#a',
+          toolDecisions: decisions
+        }
+      ]
+    } as never)
+    expect(changed).toHaveBeenCalled()
+    expect(defs.effective(ORG, 'agent-1').notion?.url).toBe('https://relay.example.test/mcp/p1#a')
+    expect(defs.effective(ORG, 'agent-2').notion?.url).toBe(DEF.url)
+    // The routing fields never leak into the definition the runtime is handed.
+    expect(defs.effective(ORG, 'agent-1').notion).not.toHaveProperty('agentId')
+    expect(defs.effective(ORG, 'agent-1').notion).not.toHaveProperty('toolDecisions')
+    expect(defs.toolDecisions(ORG, 'agent-1', 'notion')).toEqual(decisions)
+
+    applyMcpServerUpsert(hostWith(defs, vi.fn()), {
+      orgId: ORG,
+      agentId: 'agent-2',
+      name: 'notion',
+      ...DEF,
+      url: 'https://relay.example.test/mcp/p1#b'
+    } as never)
+    expect(defs.effective(ORG, 'agent-2').notion?.url).toBe('https://relay.example.test/mcp/p1#b')
+    applyMcpServerRemove(hostWith(defs, vi.fn()), { orgId: ORG, agentId: 'agent-2', name: 'notion' })
+    expect(defs.effective(ORG, 'agent-2').notion?.url).toBe(DEF.url)
   })
 })

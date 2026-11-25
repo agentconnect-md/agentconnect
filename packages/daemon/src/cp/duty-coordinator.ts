@@ -528,11 +528,10 @@ export class DutyCoordinator {
   applyDutyDefinitions(bundle: DutyAgentBundle): void {
     for (const spec of bundle.memoryConnections ?? []) this.host.memoryConnections()?.upsert(spec)
     let mcpChanged = false
-    for (const { orgId, name, issuedAt, ...def } of bundle.mcpServers ?? []) {
+    for (const { orgId, name, issuedAt, agentId, toolDecisions, ...def } of bundle.mcpServers ?? []) {
       if (!orgId || name === RESERVED_MCP_SERVER_NAME) continue
-      // Same monotonic fence as the live push: a bundle projected before a grant
-      // rotation must never overwrite the fresh key it raced.
-      if (this.host.cpMcpDefs()?.upsert(orgId, name, def, issuedAt)) mcpChanged = true
+      // Same monotonic fence as the live push: a bundle projected before a grant rotation must never overwrite the fresh key it raced.
+      if (this.host.cpMcpDefs()?.upsert(orgId, name, def, issuedAt, agentId, toolDecisions)) mcpChanged = true
     }
     if (mcpChanged) this.host.onMcpDefsChanged()
   }
