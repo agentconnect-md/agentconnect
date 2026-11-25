@@ -63,6 +63,10 @@ spec:
     spec:
       # The only credential an agent gets is the audience-scoped projection below.
       automountServiceAccountToken: false
+      {{- with $runtime.runtimeClassName }}
+      # The isolating runtime, e.g. gVisor; a resumed sandbox converges onto it (cluster-spawn-and-shim.md §7).
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       {{- with $runtime.imagePullSecrets }}
       # The SANDBOX pull secrets, deliberately not `.Values.imagePullSecrets`: the controller
       # creates these pods in `sandboxNamespace`, and the kubelet resolves a pull secret in the

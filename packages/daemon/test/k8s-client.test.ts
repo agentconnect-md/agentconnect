@@ -327,6 +327,58 @@ describe('SandboxApi', () => {
     ])
   })
 
+  it.each([
+    {
+      name: 'adds a runtime class the Sandbox does not name yet',
+      runtimeClass: { target: 'gvisor' },
+      ops: [{ op: 'add', path: '/spec/podTemplate/spec/runtimeClassName', value: 'gvisor' }]
+    },
+    {
+      name: 'replaces a runtime class behind a guard on the observed one',
+      runtimeClass: { observed: 'gvisor', target: 'kata' },
+      ops: [
+        { op: 'test', path: '/spec/podTemplate/spec/runtimeClassName', value: 'gvisor' },
+        { op: 'replace', path: '/spec/podTemplate/spec/runtimeClassName', value: 'kata' }
+      ]
+    },
+    {
+      name: 'removes a runtime class the template no longer names',
+      runtimeClass: { observed: 'gvisor' },
+      ops: [
+        { op: 'test', path: '/spec/podTemplate/spec/runtimeClassName', value: 'gvisor' },
+        { op: 'remove', path: '/spec/podTemplate/spec/runtimeClassName' }
+      ]
+    },
+    { name: 'leaves a matching runtime class alone', runtimeClass: { observed: 'gvisor', target: 'gvisor' }, ops: [] }
+  ])('$name on resume', async ({ runtimeClass, ops }) => {
+    let patch: any
+    const { config } = await fakeApiServer(({ body }) => {
+      if (body) patch = JSON.parse(body)
+      return { json: { spec: { operatingMode: 'Running' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await api.resumeWithRuntimeImage(
+      'sb-1',
+      {
+        containerIndex: 1,
+        observedName: 'runtime',
+        observedImage: 'runtime:new',
+        targetImage: 'runtime:new',
+        runtimeClass
+      },
+      fence
+    )
+    expect(patch).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'sandbox-uid-1' },
+      { op: 'test', path: '/metadata/annotations/agentconnect.md~1launch-generation', value: '7' },
+      { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/1/name', value: 'runtime' },
+      { op: 'test', path: '/spec/podTemplate/spec/containers/1/image', value: 'runtime:new' },
+      ...ops,
+      { op: 'replace', path: '/spec/operatingMode', value: 'Running' }
+    ])
+  })
+
   it('reports a guarded resume rejection without guessing which precondition failed', async () => {
     const { config } = await fakeApiServer(() => ({
       status: 422,

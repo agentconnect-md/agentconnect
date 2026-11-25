@@ -17,7 +17,15 @@ import type { ShimConnection } from '../src/shim/connection.js'
 import type { SpawnRequest } from '../src/acp/spawn-driver.js'
 
 /** A SandboxApi stand-in whose object state a test drives directly. */
-function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; templateImage?: string } = {}) {
+function fakeApi(
+  options: {
+    ready?: boolean
+    mode?: 'Running' | 'Suspended'
+    templateImage?: string
+    templateRuntimeClass?: string
+    sandboxRuntimeClass?: string
+  } = {}
+) {
   const state = {
     claims: new Map<string, SandboxClaim>(),
     sandbox: {
@@ -29,7 +37,8 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
             containers: [
               { name: 'sidecar', image: 'sidecar:1' },
               { name: 'runtime', image: 'runtime:old' }
-            ]
+            ],
+            ...(options.sandboxRuntimeClass ? { runtimeClassName: options.sandboxRuntimeClass } : {})
           }
         }
       },
@@ -44,10 +53,12 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
       observedName: string
       observedImage: string
       targetImage: string
+      runtimeClass?: { observed?: string; target?: string }
     }>,
     rejectNextModeWrites: 0,
     beforeResume: undefined as (() => void) | undefined,
     templateImage: options.templateImage ?? 'runtime:new',
+    templateRuntimeClass: options.templateRuntimeClass,
     created: [] as SandboxClaim[],
     deleted: [] as string[]
   }
@@ -73,34 +84,51 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
     })),
     getSandboxTemplate: vi.fn(async () => ({
       spec: {
-        podTemplate: { spec: { containers: [{ name: 'runtime', image: state.templateImage }] } }
+        podTemplate: {
+          spec: {
+            containers: [{ name: 'runtime', image: state.templateImage }],
+            ...(state.templateRuntimeClass ? { runtimeClassName: state.templateRuntimeClass } : {})
+          }
+        }
       }
     })),
     resumeWithRuntimeImage: vi.fn(
       async (
         _name: string,
-        image: { containerIndex: number; observedName: string; observedImage: string; targetImage: string }
+        image: {
+          containerIndex: number
+          observedName: string
+          observedImage: string
+          targetImage: string
+          runtimeClass?: { observed?: string; target?: string }
+        }
       ) => {
         state.resumeWrites.push(image)
         state.beforeResume?.()
-        const containers = state.sandbox.spec?.podTemplate?.spec?.containers ?? []
+        const podSpec = state.sandbox.spec?.podTemplate?.spec
+        const containers = podSpec?.containers ?? []
         const current = containers[image.containerIndex]
         if (
           state.sandbox.spec?.operatingMode !== 'Suspended' ||
           current?.name !== image.observedName ||
-          current.image !== image.observedImage
+          current.image !== image.observedImage ||
+          (image.runtimeClass?.observed !== undefined && podSpec?.runtimeClassName !== image.runtimeClass.observed)
         ) {
           throw new GuardedResumeRejectedError('sb-1', new K8sApiError(422, 'Invalid', 'guard rejected'))
         }
         const nextContainers = containers.map((container, index) =>
           index === image.containerIndex ? { ...container, image: image.targetImage } : container
         )
+        const runtimeClassName = image.runtimeClass ? image.runtimeClass.target : podSpec?.runtimeClassName
         state.sandbox = {
           ...state.sandbox,
           spec: {
             ...state.sandbox.spec,
             operatingMode: 'Running',
-            podTemplate: { ...state.sandbox.spec?.podTemplate, spec: { containers: nextContainers } }
+            podTemplate: {
+              ...state.sandbox.spec?.podTemplate,
+              spec: { containers: nextContainers, ...(runtimeClassName ? { runtimeClassName } : {}) }
+            }
           }
         }
         return state.sandbox
@@ -313,6 +341,66 @@ describe('cluster spawn driver', () => {
       1
     )
     expect(infos).not.toContain('cluster: sandbox sb-1 → Running')
+  })
+
+  it('moves a resumed sandbox onto the runtime class the template names', async () => {
+    const { api, state } = fakeApi({ mode: 'Suspended', templateImage: 'runtime:old', templateRuntimeClass: 'gvisor' })
+    const { instance, infos } = driver(api)
+    await instance.ensureSandbox('agent-a')
+
+    await instance.wake('agent-a')
+
+    expect(state.resumeWrites).toEqual([
+      {
+        containerIndex: 1,
+        observedName: 'runtime',
+        observedImage: 'runtime:old',
+        targetImage: 'runtime:old',
+        runtimeClass: { target: 'gvisor' }
+      }
+    ])
+    expect(state.sandbox.spec?.podTemplate?.spec?.runtimeClassName).toBe('gvisor')
+    expect(state.deleted).toEqual([])
+    expect(infos).toContain('cluster: sandbox sb-1 runtime class (default) → gvisor; resumed')
+  })
+
+  it('moves a resumed sandbox back to the default runtime when the template drops its class', async () => {
+    const { api, state } = fakeApi({ mode: 'Suspended', templateImage: 'runtime:old', sandboxRuntimeClass: 'gvisor' })
+    const { instance, infos } = driver(api)
+    await instance.ensureSandbox('agent-a')
+
+    await instance.wake('agent-a')
+
+    expect(state.resumeWrites.map((write) => write.runtimeClass)).toEqual([{ observed: 'gvisor' }])
+    expect(state.sandbox.spec?.podTemplate?.spec?.runtimeClassName).toBeUndefined()
+    expect(infos).toContain('cluster: sandbox sb-1 runtime class gvisor → (default); resumed')
+  })
+
+  it('leaves the runtime class untouched when the sandbox already matches the template', async () => {
+    const { api, state } = fakeApi({
+      mode: 'Suspended',
+      templateImage: 'runtime:old',
+      templateRuntimeClass: 'gvisor',
+      sandboxRuntimeClass: 'gvisor'
+    })
+    const { instance, infos } = driver(api)
+    await instance.ensureSandbox('agent-a')
+
+    await instance.wake('agent-a')
+
+    expect(state.resumeWrites).toHaveLength(1)
+    expect(state.resumeWrites[0]).not.toHaveProperty('runtimeClass')
+    expect(state.sandbox.spec?.podTemplate?.spec?.runtimeClassName).toBe('gvisor')
+    expect(infos).toContain('cluster: sandbox sb-1 → Running')
+  })
+
+  it('refuses to resume onto a padded runtime class', async () => {
+    const { api, state } = fakeApi({ mode: 'Suspended', templateRuntimeClass: ' gvisor ' })
+    const { instance } = driver(api)
+    await instance.ensureSandbox('agent-a')
+
+    await expect(instance.wake('agent-a')).rejects.toThrow(/invalid runtimeClassName/)
+    expect(state.resumeWrites).toEqual([])
   })
 
   it('waits for current-generation readiness before dialing a resumed pod', async () => {

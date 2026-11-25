@@ -5,10 +5,11 @@ local child process, and how the two halves talk. Companion to
 [cli-daemon-split.md](cli-daemon-split.md) §7 (trust boundaries) and
 [daemon-detailed-design.md](daemon-detailed-design.md) §2.6 (`--k8s`).
 
-Staged scope: this describes the mechanism. The hardened security model — an isolating
-runtimeClass, admission policy, egress control, and a managed egress proxy so a provider
-key never enters the sandbox — is a separate, later plan. Until it lands, the pod and the
-shared Sandbox namespace are the only isolation boundaries, and a provider key is present inside
+Staged scope: this describes the mechanism. An install can select an isolating runtimeClass
+for its sandboxes (`daemonPool.runtime.runtimeClassName`, off by default; §7). The rest of
+the hardened security model — admission policy, egress control, and a managed egress proxy so
+a provider key never enters the sandbox — is a separate, later plan. Until it lands, the pod,
+its runtime, and the shared Sandbox namespace are the isolation boundaries, and a provider key is present inside
 the sandbox, so this shape suits internal dogfooding and self-hosted
 bring-your-own-key. A cloud daemon accepts the shared `MODEL_BASE_URL`/`MODEL_TOKEN` pair,
 or a runtime-scoped one that replaces it whole (`ANTHROPIC_MODEL_*` for Claude,
@@ -359,6 +360,14 @@ current image until it naturally becomes idle, and a template edit racing the da
 picked up by a later resume. The SandboxClaim, Sandbox UID, immutable volumeClaimTemplates, and
 workspace PVC all survive; only the pod incarnation changes. The daemon Role therefore reads the
 configured `sandboxwarmpools` and `sandboxtemplates` but still never reads or writes Pods directly.
+
+The pod template's `runtimeClassName` follows the template in the same resume patch, in both
+directions: a Sandbox whose class differs from the template's is moved onto it (added, replaced,
+or removed), and one that already matches is not touched. A template without a class therefore
+leaves every Sandbox exactly as it was, while setting the class moves agents onto an isolating
+runtime such as gVisor at their next wake, and clearing it moves them back. A present class is
+guarded with a JSON Patch `test`; an absent one cannot be, so an add rests on the resume's other
+guards. New sandboxes and warm spares take the class from the template directly.
 
 ## 8. The lifecycle of an idle agent: suspend, resume, discard
 

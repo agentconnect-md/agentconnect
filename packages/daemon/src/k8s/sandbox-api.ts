@@ -14,7 +14,11 @@ export interface ResumeImage {
   targetImage: string
   /** Init containers on the observed image, which move to the target with it. */
   initContainerIndexes?: number[]
+  /** Present only when the Sandbox's runtime class differs from the template's; absent fields mean unset. */
+  runtimeClass?: { observed?: string; target?: string }
 }
+
+type JsonPatchOp = { op: 'test' | 'replace' | 'add'; path: string; value: string } | { op: 'remove'; path: string }
 
 export const SANDBOX_LAUNCH_GENERATION = 'agentconnect.md/launch-generation'
 export interface SandboxFence {
@@ -53,7 +57,7 @@ interface SandboxContainer {
 
 interface SandboxPodTemplate {
   metadata?: { labels?: Record<string, string> }
-  spec?: { containers?: SandboxContainer[]; initContainers?: SandboxContainer[] }
+  spec?: { containers?: SandboxContainer[]; initContainers?: SandboxContainer[]; runtimeClassName?: string }
 }
 
 export interface Sandbox extends K8sObject {
@@ -130,6 +134,17 @@ export class GuardedResumeRejectedError extends Error {
     super(`sandbox ${sandbox}: guarded mode/image resume patch was rejected`)
     this.name = 'GuardedResumeRejectedError'
   }
+}
+
+// JSON Patch cannot test absence, so an unset observed class is guarded only by the resume's other tests.
+function runtimeClassOps(runtimeClass: ResumeImage['runtimeClass']): JsonPatchOp[] {
+  if (!runtimeClass || runtimeClass.observed === runtimeClass.target) return []
+  const path = '/spec/podTemplate/spec/runtimeClassName'
+  const { observed, target } = runtimeClass
+  const ops: JsonPatchOp[] = observed === undefined ? [] : [{ op: 'test', path, value: observed }]
+  if (target === undefined) ops.push({ op: 'remove', path })
+  else ops.push({ op: observed === undefined ? 'add' : 'replace', path, value: target })
+  return ops
 }
 
 function collectionPath(group: string, namespace: string, plural: string): string {
@@ -356,7 +371,7 @@ export class SandboxApi {
     guards: Array<{ op: 'test'; path: string; value: string }>
   ): Promise<Sandbox> {
     const containerPath = `/spec/podTemplate/spec/containers/${image.containerIndex}`
-    const body: Array<{ op: 'test' | 'replace'; path: string; value: string }> = [
+    const body: JsonPatchOp[] = [
       ...guards,
       { op: 'test', path: '/spec/operatingMode', value: 'Suspended' },
       { op: 'test', path: `${containerPath}/name`, value: image.observedName },
@@ -369,6 +384,7 @@ export class SandboxApi {
         body.push({ op: 'test', path, value: image.observedImage }, { op: 'replace', path, value: image.targetImage })
       }
     }
+    body.push(...runtimeClassOps(image.runtimeClass))
     body.push({ op: 'replace', path: '/spec/operatingMode', value: 'Running' })
     try {
       return await this.http.json<Sandbox>({
