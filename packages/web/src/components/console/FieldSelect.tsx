@@ -12,6 +12,10 @@ export interface FieldSelectOption<T extends string> {
   tag?: string
   /** A hover hint on the option, spelling out what choosing it means. */
   title?: string
+  /** A muted line under the label in the open menu. */
+  description?: string
+  /** Shown but not choosable. */
+  disabled?: boolean
 }
 
 const OptionTag = ({ tag }: { tag: string }) => (
@@ -25,7 +29,8 @@ export function FieldSelect<T extends string>({
   onChange,
   ariaLabel,
   disabled = false,
-  inline = false
+  inline = false,
+  menuWidth = 200
 }: {
   value: T
   options: readonly FieldSelectOption<T>[]
@@ -33,6 +38,8 @@ export function FieldSelect<T extends string>({
   ariaLabel: string
   disabled?: boolean
   inline?: boolean
+  /** The open menu's minimum width; options with descriptions need more than the default. */
+  menuWidth?: number
 }) {
   const current = options.find((o) => o.value === value)
   const triggerClass = inline
@@ -46,9 +53,9 @@ export function FieldSelect<T extends string>({
     <AnchoredFlyout
       ariaLabel={ariaLabel}
       align="start"
-      width={200}
+      width={menuWidth}
       matchTriggerWidth={!inline}
-      estimatedHeight={12 + options.length * 34}
+      estimatedHeight={12 + options.reduce((h, o) => h + (o.description ? 52 : 34), 0)}
       triggerClassName={inline ? 'inline-flex' : 'flex w-full'}
       trigger={({ open, menuId, toggle }) => (
         <button
@@ -124,7 +131,9 @@ function FieldSelectMenu<T extends string>({
   onDismiss: () => void
 }) {
   const listRef = useRef<HTMLDivElement>(null)
-  const items = () => [...(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])]
+  const items = () => [
+    ...(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled)') ?? [])
+  ]
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -166,11 +175,21 @@ function FieldSelectMenu<T extends string>({
           aria-checked={o.value === value}
           tabIndex={-1}
           title={o.title}
-          className={`fopt focus-visible:bg-(--surface-hover) focus-visible:outline-none ${o.value === value ? 'on' : ''}`}
+          disabled={o.disabled}
+          className={`fopt focus-visible:bg-(--surface-hover) focus-visible:outline-none disabled:cursor-default disabled:opacity-55 disabled:hover:bg-transparent ${o.value === value ? 'on' : ''} ${o.description ? 'py-[7px]' : ''}`}
           onClick={() => onPick(o.value)}
         >
           {o.icon}
-          <span className="min-w-0 flex-1 truncate">{o.label}</span>
+          {o.description ? (
+            <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+              <span className="truncate">{o.label}</span>
+              <span className="font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary) whitespace-normal">
+                {o.description}
+              </span>
+            </span>
+          ) : (
+            <span className="min-w-0 flex-1 truncate">{o.label}</span>
+          )}
           {o.tag && <OptionTag tag={o.tag} />}
           <span className="flex w-4 flex-none items-center justify-center">
             {o.value === value && <Icon name="check" size={15} color="var(--brand)" />}
