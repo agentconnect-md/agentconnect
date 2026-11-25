@@ -420,7 +420,7 @@ function AmberBanner({
       className="mb-[18px] flex items-start gap-3 rounded-[10px] border border-(--status-paused) bg-(--status-paused-soft) px-4 py-3.5"
     >
       <span className="flex h-7 w-7 flex-none items-center justify-center rounded-lg bg-(--status-paused)">
-        <Icon name={icon} size={16} color="#fff" />
+        <Icon name={icon} size={16} color="var(--gray-900)" />
       </span>
       <div className="min-w-0 flex-1">
         <div className="font-sans text-[13px] font-semibold leading-normal">{title}</div>

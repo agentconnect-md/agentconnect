@@ -511,7 +511,11 @@ const POLL_MAX_ATTEMPTS = 120
 const BALANCE_TONE = {
   brand: { card: 'bg-(--brand-soft) border-(--brand)', chip: 'bg-(--brand)', glyph: '#fff' },
   red: { card: 'bg-(--status-error-soft) border-(--status-error)', chip: 'bg-(--status-error)', glyph: '#fff' },
-  amber: { card: 'bg-(--status-paused-soft) border-(--status-paused)', chip: 'bg-(--status-paused)', glyph: '#fff' },
+  amber: {
+    card: 'bg-(--status-paused-soft) border-(--status-paused)',
+    chip: 'bg-(--status-paused)',
+    glyph: 'var(--gray-900)'
+  },
   blue: { card: 'bg-(--status-info-soft) border-(--status-info)', chip: 'bg-(--status-info)', glyph: '#fff' }
 } as const
 
