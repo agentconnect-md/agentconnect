@@ -431,7 +431,9 @@ definition is delivered today.
   streams per session instead. A cut stream is reopened by the client, as Streamable HTTP
   allows. POSTs follow the existing request limits.
 - The proxy terminates TLS for the relay origin with the daemon CA that sessions already
-  trust.
+  trust. Both pinned runtimes' MCP clients honor `HTTPS_PROXY` and this trust without extra
+  variables. Codex needs `SSL_CERT_FILE` to name the full bundle of system roots plus the CA;
+  `NODE_EXTRA_CA_CERTS` alone is not enough for it (§12.1).
 - A runtime that bypasses the proxy reaches the relay with the placeholder and is refused
   with 401. Whether a client honors the proxy is a usability question, never an exposure
   (§12.3).
@@ -449,7 +451,7 @@ For each request to the relay origin, the proxy does the following:
    - **Needs approval and Always ask:** the proxy reads the call id from `params._meta`
      (`claudecode/toolUseId` or `callId`) and looks up the approval record (§7.4). It
      accepts the call only when all of these hold:
-     - the record exists and has not been used;
+     - the record exists, after waiting up to two seconds for it (§7.4), and has not been used;
      - the record has not expired;
      - its tool equals `params.name`;
      - its argument digest equals the digest of `params.arguments`;
@@ -484,7 +486,9 @@ runtime's name normalization applied.
 The daemon applies session settings as follows:
 
 - **Always allow:** adds a `permissions.allow` rule, so a manual mode does not ask.
-- **Blocked:** adds a `permissions.deny` rule, as defense in depth.
+- **Blocked:** adds a `permissions.deny` rule, as defense in depth. It adds no
+  `autoMode.hard_deny` entry: those are prose rules the classifier reads, not an enforcement
+  point beside the proxy, the relay and `permissions.deny`.
 - **Needs approval and Always ask:** never use `_meta["anthropic/requiresUserInteraction"]`,
   because it would also force a person in Auto mode. They use `permissions.ask` rules
   instead, added only where the table calls for one.
@@ -495,8 +499,16 @@ the row in force when the permission request or `tool_call` arrives.
 A person's approval follows the existing permission-request answer rules: the turn's
 caller or an agent editor, including the Slack approval DM of
 [slack-approval-dm.md](slack-approval-dm.md). A permission card for an approval-gated tool
-offers only once-options (allow once, reject). Claude already offers only these, and an
-"always" answer would produce no record for later calls.
+keeps only the options whose ACP kind is `allow_once` or `reject_once`, so core carries no
+runtime's option ids. Claude already offers only these; Codex also offers session and
+"always" options, which this rule removes, since an "always" answer would produce no record
+for later calls. The settle path refuses an answer naming an option the card did not offer,
+rather than relying on the card to omit it.
+
+Codex's MCP approval request (`_meta.is_mcp_tool_approval: true`) carries no `rawInput`.
+The daemon takes the arguments from that call's `tool_call` event, which precedes it, and the
+card renders that same value, the one the digest reads. An approval request whose call id
+had no `tool_call` creates no record and is answered with a rejection.
 
 ### 7.4 Approval records
 
@@ -504,10 +516,34 @@ A record is `{ agentId, toolCallId, tool, argsDigest, source, expiresAt }`.
 
 - It is kept in the daemon's memory for two minutes, bounded per agent, and dropped on
   expiry or use.
-- `argsDigest` is the SHA-256 of the canonical JSON (sorted keys) of the arguments ACP showed
-  for that id: Claude's `rawInput`, Codex's `rawInput.arguments`.
-- A record is created only by a row of §7.3 that yields one. For Claude Auto, a later
-  `tool_call_update` that reports the call failed or was refused deletes the record.
+- `argsDigest` is the SHA-256 of the canonical JSON of the arguments, after JSON.parse
+  (JavaScript number rules) and with keys sorted recursively. The same function digests
+  `params.arguments` at the proxy. Hashing bytes would refuse approved calls: Codex forwards
+  the model's own text (`2.50`, `-0.0`, keys in the model's order) while ACP shows a
+  re-serialization (`2.5`, `0`).
+- Integers beyond 2^53 that differ only in low digits share a digest. That is safe only
+  because §7.2 step 4 forwards the re-serialization of the same parse, so the upstream
+  receives the value that was shown and digested. The cost: a restricted grant rounds such
+  integers in transit, while an unrestricted grant stays byte-transparent.
+- **A `person` record** is bound to the answered card. Its digest is computed from the
+  arguments the card showed (Claude's `request_permission.rawInput`; Codex's
+  `tool_call.rawInput.arguments`) and never changes afterwards, so a later change fails
+  closed. The record is written before the answer is returned to the runtime, so the call
+  cannot reach the proxy ahead of it.
+- **A Codex `runtime-review` record** takes its digest from `tool_call.rawInput.arguments`
+  when the Guardian's approval arrives.
+- A record is created only by a row of §7.3 that yields one.
+- **Two channels.** Records are written from ACP, while calls arrive at the proxy, and in a
+  pod or an executor the two travel different paths. A call whose record has not arrived
+  waits up to two seconds for a matching record for its call id, then is refused. The Codex
+  Guardian's call was measured 4 ms after its approval update.
+- **Claude Auto:** the `tool_call` arrives with `rawInput: {}` and the arguments follow in
+  partial `tool_call_update`s. Only this `runtime-review` record refreshes its digest, from
+  every update for that id,
+  so the call matches only the arguments last shown. It is deleted when an update reports
+  `status: "failed"` or `_meta.claudeCode.nonExecutionKind` starting with `automode-` (the
+  classifier refusal, about 1–2 s after the `tool_call`). A model-level refusal emits no
+  `tool_call`, so no record exists.
 
 ## 8. Compatibility and rollout
 
@@ -676,6 +712,15 @@ console's responsive rules in `packages/web/STYLE.md`.
 `params._meta`: Claude as `claudecode/toolUseId`, Codex as `callId`. Its `arguments` equaled
 the `rawInput` that ACP showed for that id (Codex: `rawInput.arguments`).
 
+**Second check** (2026-11-25): `claude-agent-acp` 0.109.0 and `codex-acp`
+2.12.0-agentconnect.1 (`codex` 0.171.0).
+
+| Check                                                                                                                   | Result                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arguments: a 43 KB argument, deep nesting with tricky numbers and key order, non-ASCII (NFD, U+2028, zero-width, emoji) | Equal on both harnesses after JSON.parse and sorted keys; call ids still matched. Codex's server bytes differ from ACP's re-serialization (numbers, key order), so bytes must not be hashed. Neither runtime normalizes Unicode between ACP and the request.                                                     |
+| Claude Auto classifier refusal (forced with `autoMode.hard_deny`)                                                       | The call never reached the server. ACP showed `tool_call` (`rawInput: {}`), partial `rawInput` updates, then `status: "failed"` with `decisionReasonType: "classifier"` 1.66 s later, and an update with `nonExecutionKind: "automode-blocked"`. An allowed call reached the server 1.9 s after its `tool_call`. |
+| MCP client through an HTTPS proxy with a custom CA                                                                      | Both harnesses sent `CONNECT` through the proxy, trusted the CA, and carried initialize, tools/list, a GET stream and tools/call with the `Authorization` header intact. Without the proxy both failed closed. Codex needs `SSL_CERT_FILE` as the full bundle; `NODE_EXTRA_CA_CERTS` alone is refused.           |
+
 ### 12.2 Alternatives
 
 | Approach                                                                  | Why not                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -686,13 +731,19 @@ the `rawInput` that ACP showed for that id (Codex: `rawInput.arguments`).
 
 ### 12.3 Remaining before the approval stage ships
 
-- Claude's and Codex's MCP HTTP clients honoring the proxy variables and the trust bundle,
-  in every execution strategy. A client that does not still fails closed, with a 401 at the
+Argument equality, the Claude Auto refusal signal, and proxy and trust handling were
+confirmed on the host strategy (§12.1, second check). Remaining:
+
+- A run on a real daemon with a chat card: Needs approval in a manual mode (approve and
+  reject), in Claude Auto and Codex Auto review, and Always ask. It re-confirms the Codex
+  Auto review and `workspace-write` rows of the first check on `codex-acp` 2.12.0, and that a
+  refusal from the Claude classifier's own judgment (not a `hard_deny` rule) emits the same
+  two signals the deletion rule relies on.
+- The proxy route under srt, in a pool pod, a VM and an executor, including the trust
+  variable each strategy sets: the daemon also sets `CODEX_CA_CERTIFICATE`, which Codex
+  reads first and which the VM path names for Codex, while the second check exercised
+  `SSL_CERT_FILE`. A client that bypasses the proxy still fails closed, with a 401 at the
   relay.
-- `params.arguments` equal to ACP `rawInput` (Codex: `rawInput.arguments`) for large,
-  deeply nested and non-ASCII arguments. A mismatch refuses an approved call.
-- A run on a real daemon with a chat card.
-- A Claude Auto classifier refusal: the call is never sent, and the record is deleted.
 
 ## 13. Delivery
 
