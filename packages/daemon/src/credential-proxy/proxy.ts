@@ -223,8 +223,12 @@ function providerKeyId(agentId: string, slot: ProviderSlot): string {
   return `${agentId}\n${slot.id}\n${slot.provider}\n${slotHostKey(slot)}\n${slot.pathPrefix ?? ''}`
 }
 
-/** Which credentials a listener exchanges: an executor tunnel's socket carries one kind, every other listener all of them, MCP grants included. */
-type ListenerScope = 'codehost' | 'provider' | 'both'
+/** Which credentials a listener exchanges: a tunnel's socket carries one kind, every other listener all of them, MCP grants included. */
+type ListenerScope = 'codehost' | 'provider' | 'mcp-grant' | 'both'
+
+const carriesCodehost = (scope: ListenerScope): boolean => scope === 'codehost' || scope === 'both'
+const carriesProvider = (scope: ListenerScope): boolean => scope === 'provider' || scope === 'both'
+const carriesMcpGrant = (scope: ListenerScope): boolean => scope === 'mcp-grant' || scope === 'both'
 
 /** One served MCP grant and where its relay answers. */
 interface ServedMcpGrant {
@@ -278,6 +282,8 @@ export class CredentialProxy {
   private readonly tunnelSockets = new Map<string, { path: string; server: Server }>()
   /** An executor's or VM's provider tunnel per agent: the same binding, and a CONNECT only to that agent's provider slots. */
   private readonly providerTunnelSockets = new Map<string, { path: string; server: Server }>()
+  /** A pod's, VM's or executor's mcp-grant tunnel per agent: the same binding, and a CONNECT only to that agent's MCP relays. */
+  private readonly mcpGrantTunnelSockets = new Map<string, { path: string; server: Server }>()
   private socketDir: string | undefined
   private mitmCa: MitmCA | undefined
   private loopbackPort: number | undefined
@@ -324,15 +330,19 @@ export class CredentialProxy {
   async stop(): Promise<void> {
     const servers = [
       ...(this.loopback ? [this.loopback] : []),
-      ...[...this.agentSockets.values(), ...this.tunnelSockets.values(), ...this.providerTunnelSockets.values()].map(
-        (s) => s.server
-      )
+      ...[
+        ...this.agentSockets.values(),
+        ...this.tunnelSockets.values(),
+        ...this.providerTunnelSockets.values(),
+        ...this.mcpGrantTunnelSockets.values()
+      ].map((s) => s.server)
     ]
     await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
     this.loopback = undefined
     this.agentSockets.clear()
     this.tunnelSockets.clear()
     this.providerTunnelSockets.clear()
+    this.mcpGrantTunnelSockets.clear()
     if (this.mitmCa) disposeMitmCASync(this.mitmCa)
     this.mitmCa = undefined
   }
@@ -375,6 +385,24 @@ export class CredentialProxy {
     return [...new Set(this.slots(agentId).map((slot) => routeAuthority(slotHostname(slot), slot.port)))]
   }
 
+  /** The socket an mcp-grant tunnel reaches for this agent: its MCP grant placeholders alone, and a CONNECT to nothing but its {@link mcpGrantTunnelRoutes}. */
+  mcpGrantTunnelSocketFor(agentId: string): string {
+    return this.agentSocket(this.mcpGrantTunnelSockets, agentId, '-m', () =>
+      this.server(
+        agentId,
+        (port, host) => this.mcpGrantTunnelRoutes(agentId).includes(routeAuthority(host, port)),
+        'mcp-grant'
+      )
+    )
+  }
+
+  /** The `host:port` authorities an agent's restricted MCP grants' relays answer on. */
+  mcpGrantTunnelRoutes(agentId: string): string[] {
+    return [
+      ...new Set(this.mcpGrants(agentId).map((grant) => routeAuthority(grant.origin.hostname, grant.origin.port)))
+    ]
+  }
+
   private agentSocket(
     sockets: Map<string, { path: string; server: Server }>,
     agentId: string,
@@ -399,7 +427,12 @@ export class CredentialProxy {
   /** Retire an agent's routes with the agent: its listeners close and their sockets go. */
   release(agentId: string): void {
     for (const id of this.providerKeys.keys()) if (id.startsWith(`${agentId}\n`)) this.providerKeys.delete(id)
-    for (const sockets of [this.agentSockets, this.tunnelSockets, this.providerTunnelSockets]) {
+    for (const sockets of [
+      this.agentSockets,
+      this.tunnelSockets,
+      this.providerTunnelSockets,
+      this.mcpGrantTunnelSockets
+    ]) {
       const route = sockets.get(agentId)
       if (!route) continue
       sockets.delete(agentId)
@@ -547,11 +580,11 @@ export class CredentialProxy {
         reachable(port, host.toLowerCase().replace(/^\[(.*)\]$/, '$1')) && !this.deniedLiteral(host),
       mitmCA: this.mitmCa!,
       shouldTerminateTLS: (host, port) =>
-        (scope !== 'provider' &&
+        (carriesCodehost(scope) &&
           this.served(boundAgent).some((instance) => instanceHost(instance, host.toLowerCase(), port) !== undefined)) ||
-        (scope !== 'codehost' &&
+        (carriesProvider(scope) &&
           this.servedSlots(boundAgent).some((slot) => slotServes(slot, host.toLowerCase(), port))) ||
-        (scope === 'both' &&
+        (carriesMcpGrant(scope) &&
           this.servedMcpGrants(boundAgent).some(
             (grant) => grant.origin.hostname === host.toLowerCase() && grant.origin.port === port
           )),
@@ -577,7 +610,7 @@ export class CredentialProxy {
     const hostname = (info?.target?.host ?? url.hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1')
     const port = info?.target?.port ?? (url.port ? Number(url.port) : url.protocol === 'http:' ? 80 : 443)
     const relay =
-      scope === 'both' && this.servedMcpGrants(boundAgent).some((grant) => grant.origin.hostname === hostname)
+      carriesMcpGrant(scope) && this.servedMcpGrants(boundAgent).some((grant) => grant.origin.hostname === hostname)
     const decision = (relay && (await this.mcpGrantDecision(request, info, boundAgent, hostname, port))) || undefined
     if (decision) return decision
     const decided = await this.decideCredential(request, info, boundAgent, scope, url, hostname, port)
@@ -691,9 +724,10 @@ export class CredentialProxy {
   ): Promise<RequestDecision> {
     // Judged by name on any port, so a placeholder sent in cleartext is refused below rather than forwarded.
     const codeHost =
-      scope !== 'provider' && this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname))
+      carriesCodehost(scope) &&
+      this.served(boundAgent).some((instance) => instanceHostnames(instance).includes(hostname))
     const providerHost =
-      scope !== 'codehost' && this.servedSlots(boundAgent).some((slot) => slotHostname(slot) === hostname)
+      carriesProvider(scope) && this.servedSlots(boundAgent).some((slot) => slotHostname(slot) === hostname)
     if (!codeHost && !providerHost) return { action: 'allow' }
     const carried = codeHost ? carriedPlaceholders(request) : undefined
     const keyed = providerHost ? providerKeyPlaceholders(request.headers) : []

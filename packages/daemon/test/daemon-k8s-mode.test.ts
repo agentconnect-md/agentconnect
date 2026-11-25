@@ -7,6 +7,7 @@ import {
   AGENT_WAKE_FEATURE,
   AUTO_MERGE_SESSION_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  MCP_TOOL_APPROVAL_V1_FEATURE,
   RUNTIME_PROBE_FEATURE
 } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
@@ -468,6 +469,70 @@ describe('daemon --k8s mode', () => {
       expect((k8sDaemon as any).sandboxMechanism).toBeUndefined()
       const pod = { available: false, reason: 'a k8s runtime is isolated by its own pod' }
       expect((k8sDaemon as any).strategyTable()).toEqual({ host: { available: true }, srt: pod, microsandbox: pod })
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it("advertises MCP approvals, and asks a restricted agent's pods for the mcp-grant tunnel to its own socket", async () => {
+    let planeOptions: any
+    const rootDir = root({ declared: { runtimes: [{ id: 'claude' }] } })
+    const k8sDaemon = daemon({
+      root: rootDir,
+      k8s: true,
+      onPlaneStart: (options) => (planeOptions = options),
+      plane: { spawnFor: () => ({}) }
+    })
+    try {
+      await k8sDaemon.start()
+      const d = k8sDaemon as any
+      expect(d.registrationFeatures()).toContain(MCP_TOOL_APPROVAL_V1_FEATURE)
+      d.agents.set('bot-a', {
+        id: 'bot-a',
+        name: 'bot-a',
+        runtime: 'claude',
+        integrations: [],
+        mcpServers: ['probe'],
+        dir: join(rootDir, 'agents', 'bot-a'),
+        workspace: { mode: 'scratch', path: '/agents/bot-a/workspace' }
+      })
+      d.orgForAgent = () => 'org-a'
+      expect(planeOptions.tunnelsFor('bot-a')).not.toContain('mcp-grant')
+      d.cpMcpDefs.upsert(
+        'org-a',
+        'probe',
+        {
+          transport: 'http',
+          url: 'https://relay.example.test/mcp/00000000-0000-4000-8000-000000000001',
+          headers: [{ name: 'Authorization', value: 'Bearer mcpg_pool_key' }],
+          args: [],
+          env: []
+        },
+        Date.now(),
+        'bot-a',
+        { allow: [], approval: ['write_note'], ask: [], block: [] }
+      )
+      expect(planeOptions.tunnelsFor('bot-a')).toContain('mcp-grant')
+      expect(planeOptions.tunnelListenOptions('bot-a', 'mcp-grant')).toEqual({
+        routes: ['relay.example.test:443'],
+        ca: d.credentialProxy.ca.certPem
+      })
+      expect(planeOptions.tunnelSocketPath('mcp-grant', 'bot-a')).toBe(
+        d.credentialProxy.proxy.mcpGrantTunnelSocketFor('bot-a')
+      )
+      // Its pod launch carries the relay route for the pod's shim to apply, and stays unattached until that shim reports it.
+      d.opts.hostFactory = undefined
+      const { host } = d.buildAcpHost(d.agents.get('bot-a'), d.cfg, {
+        hostKey: agentHostKey('bot-a'),
+        strategy: 'host',
+        cwd: '/agents/bot-a/workspace'
+      })
+      expect(JSON.stringify(host.opts.env)).not.toContain('mcpg_pool_key')
+      expect(host.opts.mcpGrant.noProxy.split(',')).not.toContain('relay.example.test')
+      host.opts.mcpGrant.routed('unserved')
+      expect(d.mcpGrantHostRoutes.get(agentHostKey('bot-a'))?.refusal).toBe(
+        "its sandbox pod's shim does not carry the mcp-grant route; upgrade that shim to use this provider"
+      )
     } finally {
       await k8sDaemon.stop()
     }

@@ -52,6 +52,7 @@ import {
   type AcpSandboxLaunch,
   type SpawnDriver,
   type CodehostSpawn,
+  type McpGrantSpawn,
   type ProviderSpawn,
   type SpawnFile,
   type SpawnedRuntime
@@ -734,6 +735,8 @@ export class AcpHost {
       codehost?: CodehostSpawn
       /** The provider-key env a shim driver swaps in once its shim serves `provider`. */
       provider?: ProviderSpawn
+      /** The relay route a shim driver applies once its shim serves `mcp-grant`, and reports. */
+      mcpGrant?: McpGrantSpawn
       /** Disposable compatibility probes suppress raw child stderr so a harness
        * cannot print credential material or host paths outside our sanitizer. */
       suppressChildStderr?: boolean
@@ -857,6 +860,7 @@ export class AcpHost {
       ...(this.opts.clearDirs?.length ? { clearDirs: this.opts.clearDirs } : {}),
       ...(this.opts.codehost ? { codehost: this.opts.codehost } : {}),
       ...(this.opts.provider ? { provider: this.opts.provider } : {}),
+      ...(this.opts.mcpGrant ? { mcpGrant: this.opts.mcpGrant } : {}),
       ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
       ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {}),
       ...(this.opts.hostKey ? { hostKey: this.opts.hostKey } : {})

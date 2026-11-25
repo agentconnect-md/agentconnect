@@ -62,7 +62,8 @@ describe('shim entry options', () => {
       agent: '/d/hs/x/agent.sock',
       mcp: '/d/hs/x/mcp.sock',
       codehost: '/d/hs/x/codehost.sock',
-      provider: '/d/hs/x/provider.sock'
+      provider: '/d/hs/x/provider.sock',
+      'mcp-grant': '/d/hs/x/mcp-grant.sock'
     })
     expect(host.paths.mcpBridgeEntry).toBe('/d/dist/shim/mcp-bridge.js')
   })

@@ -51,6 +51,19 @@ export interface ProviderSpawn {
   env: Record<string, string>
 }
 
+/** Whether a shim-routed launch reaches the credential proxy's mcp-grant route: `unserved` when its shim serves no mcp-grant listener, `conflict` when the runtime names another HTTPS proxy. */
+export type McpGrantRouteOutcome = 'routed' | 'unserved' | 'conflict'
+
+/** What a VM, pod or executor launch asks for a restricted MCP grant's relay (mcp-tool-permissions.md §7.2): the shim's listener, reported back since the provider is attached only beside it. */
+export interface McpGrantSpawn {
+  /** The session's NO_PROXY, with no entry that sends the relay around the proxy. */
+  noProxy: string
+  /** A hosted VM's: its shim keeps the trust files its executor's seed names, as for `codehost`. */
+  guestTrust?: boolean
+  /** Told after each bind how the launch was routed. */
+  routed: (outcome: McpGrantRouteOutcome) => void
+}
+
 export interface SpawnRequest {
   command: string
   args: string[]
@@ -73,6 +86,8 @@ export interface SpawnRequest {
   codehost?: CodehostSpawn
   /** Applied the same way, only when the shim reported a `provider` listener. */
   provider?: ProviderSpawn
+  /** Applied the same way, only when the shim reported an `mcp-grant` listener. */
+  mcpGrant?: McpGrantSpawn
 }
 
 /** A launched ACP runtime, reduced to what the protocol layer actually needs. */

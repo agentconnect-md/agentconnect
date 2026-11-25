@@ -7,7 +7,7 @@ import { ShimFileSink } from '../shim/channels.js'
 import { withStartupPhase } from '../session/startup-progress.js'
 import type { ChannelBinder } from './channel-binder.js'
 import type { Launch } from './launch-registry.js'
-import { applyProxySpawn, type CodehostListener } from './codehost-spawn.js'
+import { applyProxySpawn, mcpGrantRouteOf, type CodehostListener } from './codehost-spawn.js'
 import { createRemoteRuntime } from './remote-runtime.js'
 import {
   agentSandboxSubject,
@@ -31,6 +31,8 @@ export interface RemoteShimDriverDeps<L extends Launch = Launch> {
   codehostFor?: (subject: SandboxSubject) => CodehostListener | undefined
   /** The `provider` listener, asked for once the launch's slot is known; a launch's provider env applies only beside one. */
   providerFor?: (subject: SandboxSubject) => Promise<CodehostListener | undefined>
+  /** The `mcp-grant` listener, asked for once the launch's grants are known; a restricted MCP grant is attached only beside it. */
+  mcpGrantFor?: (subject: SandboxSubject) => Promise<CodehostListener | undefined>
 }
 
 /** Runs an ACP runtime through a shim it dials: bind at the launch's generation, write its files, open the runtime, hold the sandbox until it exits. */
@@ -70,12 +72,15 @@ export class RemoteShimDriver<L extends Launch = Launch> implements SpawnDriver 
       this.deps.metrics.channel('bound')
       const session = this.deps.binder.sessionFor(subject)
       if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)
-      // Decided after the bind, since only the shim that will run the runtime can say whether it serves `codehost` or `provider`.
+      // Decided after the bind, since only the shim that will run the runtime can say which proxy tunnels it serves.
       const provider = request.provider ? await this.deps.providerFor?.(subject) : undefined
+      const mcpGrant = request.mcpGrant ? await this.deps.mcpGrantFor?.(subject) : undefined
       const launch = applyProxySpawn(request, {
         ...(request.codehost ? { codehost: this.deps.codehostFor?.(subject) } : {}),
-        ...(provider ? { provider } : {})
+        ...(provider ? { provider } : {}),
+        ...(mcpGrant ? { mcpGrant } : {})
       })
+      request.mcpGrant?.routed(mcpGrantRouteOf(launch, mcpGrant))
       if (request.codehost && launch.env.AC_CODEHOST_CREDENTIAL === undefined)
         this.deps.log.warn(
           `credential proxy: a session of agent "${agentId}" has no code-host credential: its shim serves no usable codehost listener`

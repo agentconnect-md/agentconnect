@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { MCP_TOOL_APPROVAL_V1_FEATURE, type AgentSpec } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { agentHostKey } from '../src/acp/host-key.js'
+import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
 import { openPlaceholder, loadPlaceholderKey } from '../src/credential-proxy/placeholder.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
@@ -72,7 +72,7 @@ describe('a daemon holding a daemon-custody MCP grant', () => {
     expect(env.HTTPS_PROXY).toBe(d.credentialProxy.proxy.loopbackUrl())
     expect(env.NO_PROXY?.split(',')).not.toContain('relay.example.test')
     expect(JSON.stringify(env)).not.toContain(KEY)
-    expect(d.mcpGrantRoutedHosts.has(agentHostKey(AGENT))).toBe(true)
+    expect(d.mcpGrantHostRoutes.get(agentHostKey(AGENT))).toEqual({ refusal: undefined })
     const agent = d.agents.get(AGENT)
     const granted = d.sessionMcpGrant(agent, 'session-1', 'probe', d.mcpDefsForAgent(AGENT).probe)
     expect(JSON.stringify(granted)).not.toContain(KEY)
@@ -88,11 +88,72 @@ describe('a daemon holding a daemon-custody MCP grant', () => {
     )
   })
 
-  it('keeps the provider off a session whose shim carries no mcp-grant route', async () => {
+  it('hands a VM session the placeholder, and keeps the provider off an srt session placed on an executor', async () => {
     const { d } = await restrictedAgent()
     d.sessionStrategies.set('session-vm', 'microsandbox')
-    const granted = d.sessionMcpGrant(d.agents.get(AGENT), 'session-vm', 'probe', d.mcpDefsForAgent(AGENT).probe)
-    expect(granted).toEqual({ refused: expect.stringContaining("its VM's shim does not carry the mcp-grant route") })
+    const vm = d.sessionMcpGrant(d.agents.get(AGENT), 'session-vm', 'probe', d.mcpDefsForAgent(AGENT).probe)
+    expect(vm.headers[0].value).toMatch(/^Bearer acph1_/)
+    const realPlane = d.executorPlane
+    try {
+      d.executorPlane = {
+        placementOf: (key: string) =>
+          key === 'session-srt' ? { strategy: 'srt', executorDaemonId: 'executor-example' } : undefined
+      }
+      const srt = d.sessionMcpGrant(d.agents.get(AGENT), 'session-srt', 'probe', d.mcpDefsForAgent(AGENT).probe)
+      expect(srt).toEqual({ refused: expect.stringContaining('the srt shim of daemon executor-example') })
+    } finally {
+      d.executorPlane = realPlane
+    }
+  })
+
+  it('routes an executor-placed host session through its shim’s mcp-grant tunnel, attached only once that shim reports it', async () => {
+    const { d, root } = await restrictedAgent()
+    const agent = d.agents.get(AGENT)
+    const sessionKey = 'slack:T1:C1:1700000000.000100'
+    const placed = {
+      agentId: AGENT,
+      sessionKey,
+      leaf: 'leaf-example',
+      subject: `${AGENT}/session-example`,
+      executorDaemonId: 'executor-example',
+      strategy: 'host'
+    }
+    const realPlane = d.executorPlane
+    try {
+      d.executorPlane = {
+        placementOf: (key: string) => (key === sessionKey ? placed : undefined),
+        homeFor: () => '/home/agent/executor-home',
+        rootsFor: () => ({ runtimeRoot: '/home/agent/executor-run', missingHelpers: [] }),
+        codexStateFor: () => undefined,
+        runtimeDefFor: () => undefined,
+        codehostProxyFor: () => undefined,
+        spawnFor: () => ({})
+      }
+      const hostKey = sessionHostKey(AGENT, sessionKey)
+      const { host } = d.buildAcpHost(agent, d.cfg, { hostKey, strategy: 'host', cwd: agent.workspace.path })
+      // The launch holds no route until its shim answers; the spawn applies it and reports back.
+      expect(host.opts.env.HTTPS_PROXY).toBeUndefined()
+      expect(JSON.stringify(host.opts.env)).not.toContain(KEY)
+      expect(host.opts.mcpGrant.noProxy.split(',')).not.toContain('relay.example.test')
+      expect(d.mcpGrantHostRoutes.get(hostKey)?.refusal).toContain('the host shim of daemon executor-example')
+      host.opts.mcpGrant.routed('unserved')
+      expect(d.mcpGrantHostRoutes.get(hostKey)?.refusal).toBe(
+        'the host shim of daemon executor-example does not carry the mcp-grant route; upgrade that shim to use this provider'
+      )
+      host.opts.mcpGrant.routed('routed')
+      expect(d.mcpGrantHostRoutes.get(hostKey)).toEqual({ refusal: undefined })
+      // Its shim is asked for the tunnel to the agent's own mcp-grant socket; an srt session's is not.
+      expect(d.tunnelsForPlaced(AGENT, placed)).toContain('mcp-grant')
+      expect(d.tunnelsForPlaced(AGENT, { ...placed, strategy: 'microsandbox' })).toContain('mcp-grant')
+      expect(d.tunnelsForPlaced(AGENT, { ...placed, strategy: 'srt' })).not.toContain('mcp-grant')
+      expect(d.tunnelListenOptions(AGENT, 'mcp-grant')).toEqual({
+        routes: ['relay.example.test:443'],
+        ca: d.credentialProxy.ca.certPem
+      })
+      expect(d.tunnelSocketPath(root, 'mcp-grant', AGENT)).toBe(d.credentialProxy.proxy.mcpGrantTunnelSocketFor(AGENT))
+    } finally {
+      d.executorPlane = realPlane
+    }
   })
 
   it('without its credential proxy advertises no approvals, so it is sent a runtime-custody grant instead', async () => {

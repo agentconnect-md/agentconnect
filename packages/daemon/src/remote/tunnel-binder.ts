@@ -1,4 +1,4 @@
-import { TunnelProxy, type TunnelProxyDeps } from '../shim/tunnel-proxy.js'
+import { ShimPredatesTunnelError, TunnelProxy, type TunnelProxyDeps } from '../shim/tunnel-proxy.js'
 import type { TunnelListening, TunnelListenOptions, TunnelName } from '../shim/tunnel.js'
 import { sandboxSubjectAgentId } from './sandbox-subject.js'
 
@@ -24,7 +24,7 @@ export interface TunnelBinderDeps {
  * longer exists.
  */
 export class TunnelBinder {
-  private readonly proxies = new Map<string, { generation: number; proxy: TunnelProxy }>()
+  private readonly proxies = new Map<string, { generation: number; proxy: TunnelProxy; predated: Set<TunnelName> }>()
 
   constructor(private readonly deps: TunnelBinderDeps) {}
 
@@ -51,13 +51,22 @@ export class TunnelBinder {
           greeting: (tunnel) => this.deps.tunnelGreeting?.(subject, tunnel),
           listenOptions: (tunnel) => this.deps.tunnelListenOptions?.(agentId, tunnel),
           log: this.deps.log
-        })
+        }),
+        predated: new Set()
       }
       this.proxies.set(subject, entry)
     }
+    const current = entry
     // Sequential: the list is short, and one failing tunnel must not lose the report of the others.
     for (const tunnel of wanted) {
-      await entry.proxy.ensure(tunnel).catch((err: unknown) => {
+      await current.proxy.ensure(tunnel).catch((err: unknown) => {
+        // An older shim is expected, and the session that needed the tunnel names it, so this is said once per incarnation.
+        if (err instanceof ShimPredatesTunnelError) {
+          if (!current.predated.has(tunnel))
+            this.deps.log.info(`k8s: sandbox ${subject} has no ${tunnel} tunnel — ${err.message}`)
+          current.predated.add(tunnel)
+          return
+        }
         this.deps.log.warn(`k8s: sandbox ${subject} has no ${tunnel} tunnel — ${(err as Error).message}`)
       })
     }

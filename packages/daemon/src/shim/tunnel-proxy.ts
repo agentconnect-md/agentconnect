@@ -1,6 +1,6 @@
 import { createConnection, type Socket } from 'node:net'
 import { ShimChannelLostError } from './channels.js'
-import type { ShimCapability, ShimEvent } from './protocol.js'
+import type { ShimCapability, ShimEvent, ShimFeature } from './protocol.js'
 import {
   ACK_EVERY_FRAMES,
   decodeTunnelData,
@@ -10,7 +10,9 @@ import {
   MAX_CODEHOST_STREAMS,
   MAX_DAEMON_BYTES_IN_FLIGHT,
   MAX_DAEMON_FRAMES_IN_FLIGHT,
+  MAX_MCP_GRANT_STREAMS,
   MAX_PROVIDER_STREAMS,
+  MCP_GRANT_TUNNEL_FEATURE,
   MAX_TUNNEL_CHUNK_BYTES,
   TunnelListeningSchema,
   type ProxyTunnelName,
@@ -25,7 +27,9 @@ const STREAM_IDLE_MS: Readonly<Record<TunnelName, number | null>> = {
   mcp: null,
   codehost: 5 * 60_000,
   // A model stream can sit silent for minutes while the model thinks, and a client keeps its connection for the next turn.
-  provider: 30 * 60_000
+  provider: 30 * 60_000,
+  // An MCP server's GET stream idles for a whole session; the proxy caps those at four per session instead (mcp-tool-permissions.md §7.2).
+  'mcp-grant': null
 }
 
 /** How long a binary stream gathers reads before framing them, unless a whole chunk is waiting sooner. */
@@ -38,12 +42,21 @@ const MAX_TUNNEL_STREAMS = 32
 const STREAM_CAPS: Readonly<Record<ProxyTunnelName | 'helpers', number>> = {
   helpers: MAX_TUNNEL_STREAMS,
   codehost: MAX_CODEHOST_STREAMS,
-  provider: MAX_PROVIDER_STREAMS
+  provider: MAX_PROVIDER_STREAMS,
+  'mcp-grant': MAX_MCP_GRANT_STREAMS
 }
 
 /** The budget a tunnel's streams count against. */
 function streamBudget(tunnel: TunnelName): ProxyTunnelName | 'helpers' {
   return isProxyTunnel(tunnel) ? tunnel : 'helpers'
+}
+
+/** The bound shim does not advertise the feature a tunnel needs, so it was not asked to serve it. */
+export class ShimPredatesTunnelError extends Error {
+  constructor(readonly tunnel: TunnelName) {
+    super(`the sandbox's shim does not serve the ${tunnel} tunnel`)
+    this.name = 'ShimPredatesTunnelError'
+  }
 }
 
 export interface TunnelProxyDeps {
@@ -57,6 +70,8 @@ export interface TunnelProxyDeps {
     onAttach: (listener: () => void) => void
     offAttach: (listener: () => void) => void
     onLost: (listener: (reason: string) => void) => void
+    /** Whether the bound shim advertised a feature; absent reads as none. */
+    hasFeature?: (feature: ShimFeature) => boolean
     /** Whether the bound channel carries binary frames, sends one, one-way, and delivers the shim's. */
     carriesData?: () => boolean
     sendData?: (frame: Uint8Array) => void
@@ -153,6 +168,9 @@ export class TunnelProxy {
    */
   async ensure(tunnel: TunnelName): Promise<void> {
     if (this.stopped) throw new Error(`agent ${this.deps.session.agentId} has no live shim channel`)
+    // An older shim's schema refuses the name, so only one that advertised the tunnel is asked.
+    if (tunnel === 'mcp-grant' && this.deps.session.hasFeature?.(MCP_GRANT_TUNNEL_FEATURE) !== true)
+      throw new ShimPredatesTunnelError(tunnel)
     const options = this.deps.listenOptions?.(tunnel)
     // A proxy tunnel is asked again when its routes changed, as when a provider slot moved to another endpoint.
     if (this.listening.has(tunnel) && this.listenedWith.get(tunnel) === JSON.stringify(options ?? null)) return

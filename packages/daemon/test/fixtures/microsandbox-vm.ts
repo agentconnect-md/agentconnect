@@ -10,7 +10,7 @@ import type { MicrosandboxManager } from '../../src/microsandbox/driver.js'
 import { startGuestShim, type GuestShim } from '../../src/microsandbox/shim.js'
 import { ShimClient } from '../../src/shim/client.js'
 import { resolveCommandInPath } from '../../src/shim/path-resolve.js'
-import { DEFAULT_SHIM_LISTEN_PORT, SHIM_SEED_ENV } from '../../src/shim/protocol.js'
+import { DEFAULT_SHIM_LISTEN_PORT, SHIM_SEED_ENV, type ShimFeature } from '../../src/shim/protocol.js'
 import { ShimServer } from '../../src/shim/server.js'
 import { TunnelHost } from '../../src/shim/tunnel-host.js'
 
@@ -59,6 +59,8 @@ export function fakeVm(
     refuseTunnels?: readonly string[]
     /** A hosted VM's: the seed its executor started the shim with, beneath every launch's env. */
     seedEnv?: Record<string, string>
+    /** Features this shim advertises beyond the skill ones. */
+    features?: readonly ShimFeature[]
   } = {}
 ) {
   const execs: Array<{ cmd: string; args: string[]; env: string[]; user: string | null; stdin: string }> = []
@@ -111,7 +113,7 @@ export function fakeVm(
         void held.released.then(() => tunnels.handleData(frame))
       },
       workspaceRoot: '/workspace',
-      features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3'],
+      features: ['cluster-skills-v1', 'cluster-skills-v2', 'cluster-skills-v3', ...(options.features ?? [])],
       backoff: new Backoff({ baseMs: 5, jitter: () => 0 }),
       log: silent
     })

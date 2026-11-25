@@ -8,7 +8,7 @@
  * `docker/runtime-sandbox.Dockerfile`, and changing one without the other breaks the pod.
  */
 
-export type SandboxTunnelName = 'agent' | 'mcp' | 'codehost' | 'provider'
+export type SandboxTunnelName = 'agent' | 'mcp' | 'codehost' | 'provider' | 'mcp-grant'
 
 /** The preset id the DSH preset directory supplies — the roster reads it from the directory NAME. */
 export const SANDBOX_DSH_PRESET_ID = 'standard-no-search'
@@ -58,7 +58,9 @@ export function shimPaths(runtimeRoot = DEFAULT_SHIM_RUNTIME_ROOT, helperRoot = 
       // Served as a loopback proxy rather than at this path; the session's trust bundle is written beside it.
       codehost: `${runtimeRoot}/codehost.sock`,
       // The same loopback proxy as codehost, for provider routes.
-      provider: `${runtimeRoot}/provider.sock`
+      provider: `${runtimeRoot}/provider.sock`,
+      // The same loopback proxy again, for a restricted MCP grant's relay.
+      'mcp-grant': `${runtimeRoot}/mcp-grant.sock`
     })
   })
 }

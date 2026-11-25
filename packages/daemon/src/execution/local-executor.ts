@@ -122,15 +122,16 @@ export class LocalExecutor {
       log: deps.log,
       metrics: noopClusterMetrics,
       codehostFor: (subject) => this.tunnels.listeningAt(subject, 'codehost')?.proxy,
-      providerFor: (subject) => this.providerListener(subject)
+      providerFor: (subject) => this.proxyListener(subject, 'provider'),
+      mcpGrantFor: (subject) => this.proxyListener(subject, 'mcp-grant')
     })
   }
 
-  /** The `provider` listener of the subject's bound shim, asked for again since its slot is registered as the launch is built. */
-  private async providerListener(subject: string) {
+  /** A proxy tunnel's listener on the subject's bound shim, asked for again since a slot or grant is registered as the launch is built. */
+  private async proxyListener(subject: string, tunnel: 'provider' | 'mcp-grant') {
     const session = this.binder.sessionFor(subject)
     if (session) await this.tunnels.ensure(subject, session)
-    return this.tunnels.listeningAt(subject, 'provider')?.proxy
+    return this.tunnels.listeningAt(subject, tunnel)?.proxy
   }
 
   /** The driver a host launches into this environment with. */

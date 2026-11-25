@@ -19,8 +19,10 @@ import {
   MAX_BINARY_CHUNK_BYTES,
   MAX_CODEHOST_STREAMS,
   MAX_IN_FLIGHT_FRAMES,
+  MAX_MCP_GRANT_STREAMS,
   MAX_PROVIDER_STREAMS,
   MAX_TUNNEL_CHUNK_BYTES,
+  PROXY_TUNNELS,
   SANDBOX_TUNNEL_PATHS,
   TunnelPayloadSchema,
   type ProxyTunnelName,
@@ -66,7 +68,7 @@ interface QueuedConnect {
   timer: NodeJS.Timeout
 }
 
-/** The one loopback proxy a shim serves for both proxy tunnels, so a session needs a single `HTTPS_PROXY`. */
+/** The one loopback proxy a shim serves for every proxy tunnel, so a session needs a single `HTTPS_PROXY`. */
 interface ProxyListener {
   server: Server
   port: number
@@ -173,6 +175,7 @@ export interface TunnelHostDeps {
   connectAnswerMs?: number
   maxCodehostStreams?: number
   maxProviderStreams?: number
+  maxMcpGrantStreams?: number
   /** Under `srt`: the code-host names the boundary routes to the codehost socket, which a `codehost` listen then serves. */
   srtCodehostDomains?: string[]
   log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -209,7 +212,7 @@ export class TunnelHost {
   /** Connections the proxy listener sent straight out, which never touch the channel. */
   private readonly direct = new Set<Socket>()
   /** CONNECTs waiting at each full proxy tunnel, oldest first. */
-  private readonly waiting: Record<ProxyTunnelName, QueuedConnect[]> = { codehost: [], provider: [] }
+  private readonly waiting: Record<ProxyTunnelName, QueuedConnect[]> = { codehost: [], provider: [], 'mcp-grant': [] }
   private closed = false
 
   constructor(private readonly deps: TunnelHostDeps) {
@@ -217,7 +220,8 @@ export class TunnelHost {
     this.maxStreams = deps.maxStreams ?? MAX_TUNNEL_STREAMS
     this.maxProxyStreams = {
       codehost: deps.maxCodehostStreams ?? MAX_CODEHOST_STREAMS,
-      provider: deps.maxProviderStreams ?? MAX_PROVIDER_STREAMS
+      provider: deps.maxProviderStreams ?? MAX_PROVIDER_STREAMS,
+      'mcp-grant': deps.maxMcpGrantStreams ?? MAX_MCP_GRANT_STREAMS
     }
   }
 
@@ -364,7 +368,7 @@ export class TunnelHost {
     return path
   }
 
-  /** Serve `codehost` and `provider` as one loopback HTTP proxy on an ephemeral port, since a host shim shares the machine's loopback with other shims. */
+  /** Serve every proxy tunnel as one loopback HTTP proxy on an ephemeral port, since a host shim shares the machine's loopback with other shims. */
   private async listenProxy(
     tunnel: ProxyTunnelName,
     routes: string[] | undefined,
@@ -443,7 +447,7 @@ export class TunnelHost {
       server,
       port: 0,
       token: randomBytes(24).toString('base64url'),
-      routes: { codehost: new Set(), provider: new Set() }
+      routes: { codehost: new Set(), provider: new Set(), 'mcp-grant': new Set() }
     }
     server.on('connect', (request: IncomingMessage, socket: Socket, head: Buffer) =>
       this.proxyConnect(listener, request, socket, head)
@@ -472,7 +476,7 @@ export class TunnelHost {
     const authority = connectAuthority(`${target.hostname}:${target.port || 80}`)
     const named = connectAuthority(request.headers.host) ?? connectAuthority(`${request.headers.host}:80`)
     if (!authority || named?.key !== authority.key) return refuse(400)
-    if (listener.routes.codehost.has(authority.key) || listener.routes.provider.has(authority.key)) return refuse(403)
+    if (PROXY_TUNNELS.some((tunnel) => listener.routes[tunnel].has(authority.key))) return refuse(403)
 
     const socket = request.socket
     if (!this.direct.has(socket)) {
@@ -496,13 +500,13 @@ export class TunnelHost {
     request.pipe(upstream)
   }
 
-  /** A code-host or provider CONNECT goes into its tunnel as the daemon's proxy expects it; any other host is reached directly, as the session would without a proxy. */
+  /** A code-host, provider or MCP relay CONNECT goes into its tunnel as the daemon's proxy expects it; any other host is reached directly, as the session would without a proxy. */
   private proxyConnect(listener: ProxyListener, request: IncomingMessage, socket: Socket, head: Buffer): void {
     socket.on('error', () => socket.destroy())
     if (this.closed) return refuseConnect(socket, 503, 'Service Unavailable')
     const authority = connectAuthority(request.url)
     if (!authority) return refuseConnect(socket, 400, 'Bad Request')
-    const tunnel = (['codehost', 'provider'] as const).find((name) => listener.routes[name].has(authority.key))
+    const tunnel = PROXY_TUNNELS.find((name) => listener.routes[name].has(authority.key))
     if (!tunnel) return this.connectDirect(authority, socket, head)
     this.tunnelConnect(tunnel, authority, socket, head)
   }

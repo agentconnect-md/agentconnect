@@ -1,6 +1,6 @@
-// A VM's or executor's launch switch to the credential proxy, made once its shim has reported a `codehost` or `provider` listener.
+// A VM's, pod's or executor's launch switch to the credential proxy, made once its shim has reported a `codehost`, `provider` or `mcp-grant` listener.
 import { posix, win32 } from 'node:path'
-import type { SpawnFile, SpawnRequest } from '../acp/spawn-driver.js'
+import type { McpGrantRouteOutcome, SpawnFile, SpawnRequest } from '../acp/spawn-driver.js'
 import { proxyTrustEnv } from '../credential-proxy/ca.js'
 import { CODEX_CA_ENV, SESSION_TRUST_ENV, sessionAuthorityFiles } from '../credential-proxy/trust-bundle.js'
 import type { TunnelListening } from '../shim/tunnel.js'
@@ -8,10 +8,11 @@ import { mergeGitConfigEnv, proxyCredentialResetLines } from '../workspace/git-i
 
 export type CodehostListener = NonNullable<TunnelListening['proxy']>
 
-/** The listeners a bound shim reported, one loopback proxy serving both tunnels when it reports both. */
+/** The listeners a bound shim reported, one loopback proxy serving every tunnel it reports. */
 export interface SpawnListeners {
   codehost?: CodehostListener
   provider?: CodehostListener
+  mcpGrant?: CodehostListener
 }
 
 /** The `HTTPS_PROXY` URL naming a shim's proxy listener, with its proxy credential. */
@@ -42,7 +43,7 @@ function requestedTrustFiles(env: Record<string, string>): string[] {
 
 /** Apply each available proxy route, refusing a required code-host route before files or the runtime are created. */
 export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners): SpawnRequest {
-  const { codehost, provider, ...launch } = request
+  const { codehost, provider, mcpGrant, ...launch } = request
   const own = launch.env.HTTPS_PROXY || launch.env.https_proxy
   const usable = (listener: CodehostListener | undefined): listener is CodehostListener =>
     listener !== undefined && (!own || own === codehostProxyUrl(listener))
@@ -59,11 +60,15 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
       : 'the bound environment reported no code-host proxy listener'
     throw new Error(`code-host proxy required: ${reason}`)
   }
-  const listener = withCodehost ?? (provider && usable(listeners.provider) ? listeners.provider : undefined)
+  const listener =
+    withCodehost ??
+    (provider && usable(listeners.provider) ? listeners.provider : undefined) ??
+    (mcpGrant && usable(listeners.mcpGrant) ? listeners.mcpGrant : undefined)
   if (!listener) return launch
   const url = codehostProxyUrl(listener)
-  // Provider routes ride the same listener; a shim that reported another one is not pointed at twice.
+  // Provider and relay routes ride the same listener; a shim that reported another one is not pointed at twice.
   const withProvider = provider && listeners.provider && codehostProxyUrl(listeners.provider) === url
+  const withMcpGrant = mcpGrant && listeners.mcpGrant && codehostProxyUrl(listeners.mcpGrant) === url
   // The launch already routed through this listener (an executor session's codehost env) keeps that route and its trust request.
   const routed = own === url
   const noProxy = [
@@ -71,12 +76,15 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
     '127.0.0.1',
     '::1',
     (withCodehost ? (codehost!.env.NO_PROXY ?? codehost!.env.no_proxy) : undefined) ??
+      (withMcpGrant ? mcpGrant.noProxy : undefined) ??
       launch.env.NO_PROXY ??
       launch.env.no_proxy
   ]
     .filter((entry) => entry)
     .join(',')
-  const codexCa = withProvider && launch.env[CODEX_CA_ENV] !== listener.trustBundle ? launch.env[CODEX_CA_ENV] : ''
+  // Codex reads its own variable before SSL_CERT_FILE, so a model or relay route names the bundle there, keeping what it named as an authority.
+  const codexRoute = withProvider || withMcpGrant
+  const codexCa = codexRoute && launch.env[CODEX_CA_ENV] !== listener.trustBundle ? launch.env[CODEX_CA_ENV] : ''
   // The files the launch's trust variables named (a VM's microsandbox authority, a session's own), which the shim merges where they are.
   const authorities = [
     ...new Set([
@@ -86,7 +94,9 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
     ])
   ].filter((file) => file !== listener.trustBundle)
   // A hosted VM's seed names its executor's trust files, which only its shim can name.
-  const guest = withCodehost !== undefined && codehost?.guestTrust === true && !routed
+  const guest =
+    ((withCodehost !== undefined && codehost?.guestTrust === true) || (withMcpGrant && mcpGrant.guestTrust === true)) &&
+    !routed
   const files = withCodehost ? withProxyCredentialReset(launch.files, launch.env.GIT_CONFIG_GLOBAL, url) : launch.files
   return {
     ...launch,
@@ -100,7 +110,8 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
             ...mergeGitConfigEnv(launch.env, codehost!.env)
           }
         : {}),
-      ...(withProvider ? { ...provider!.env, [CODEX_CA_ENV]: listener.trustBundle } : {}),
+      ...(withProvider ? provider!.env : {}),
+      ...(codexRoute ? { [CODEX_CA_ENV]: listener.trustBundle } : {}),
       ...(routed
         ? {}
         : {
@@ -122,4 +133,12 @@ export function applyProxySpawn(request: SpawnRequest, listeners: SpawnListeners
         : {})
     }
   }
+}
+
+/** How an applied launch reaches the mcp-grant listener: through it, past it under another proxy, or not at all for want of one. */
+export function mcpGrantRouteOf(launch: SpawnRequest, listener: CodehostListener | undefined): McpGrantRouteOutcome {
+  if (!listener) return 'unserved'
+  const url = codehostProxyUrl(listener)
+  const { HTTPS_PROXY: upper, https_proxy: lower } = launch.env
+  return upper === url && (lower === undefined || lower === url) ? 'routed' : 'conflict'
 }

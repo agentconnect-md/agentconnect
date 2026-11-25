@@ -8,6 +8,8 @@ export interface DaemonTunnelSockets {
   codehost: (agentId: string) => string | undefined
   /** The agent's own credential-proxy provider socket, or undefined when the proxy serves that agent no provider slot. */
   provider: (agentId: string) => string | undefined
+  /** The agent's own credential-proxy mcp-grant socket, or undefined when the proxy serves that agent no restricted MCP grant. */
+  mcpGrant?: (agentId: string) => string | undefined
 }
 
 /** The daemon socket a tunnel's streams dial for an agent; undefined for a tunnel this daemon does not serve it. */
@@ -25,6 +27,8 @@ export function daemonTunnelSocketPath(
       return sockets.codehost(agentId)
     case 'provider':
       return sockets.provider(agentId)
+    case 'mcp-grant':
+      return sockets.mcpGrant?.(agentId)
     default: {
       // A name added to the schema fails to compile here instead of dialling a plausible socket.
       const unhandled: never = tunnel

@@ -1,29 +1,37 @@
 import { z } from 'zod'
 import { SANDBOX_TUNNEL_PATHS as SANDBOX_TUNNEL_PATH_SOURCE } from './sandbox-paths.js'
 
-/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: agent and mcp as in-pod sockets, codehost and provider through one loopback proxy. */
-export const TunnelNameSchema = z.enum(['agent', 'mcp', 'codehost', 'provider'])
+/** The daemon-side servers a sandbox may reach, a closed set so a compromised runtime reaches only these: agent and mcp as in-pod sockets, codehost, provider and mcp-grant through one loopback proxy. */
+export const TunnelNameSchema = z.enum(['agent', 'mcp', 'codehost', 'provider', 'mcp-grant'])
 export type TunnelName = z.infer<typeof TunnelNameSchema>
 
 /** The tunnels a shim serves through its loopback proxy listener, each with its own routes and stream budget. */
-export type ProxyTunnelName = 'codehost' | 'provider'
+export type ProxyTunnelName = 'codehost' | 'provider' | 'mcp-grant'
+
+/** Every proxy tunnel, in the order a CONNECT's authority is matched against their routes. */
+export const PROXY_TUNNELS: readonly ProxyTunnelName[] = ['codehost', 'provider', 'mcp-grant']
 
 /** Whether a tunnel is served through the loopback proxy listener rather than at an in-pod socket. */
 export function isProxyTunnel(tunnel: TunnelName): tunnel is ProxyTunnelName {
-  return tunnel === 'codehost' || tunnel === 'provider'
+  return (PROXY_TUNNELS as readonly TunnelName[]).includes(tunnel)
 }
+
+/** The shim feature that says its proxy listener serves `mcp-grant`; an older shim's schema refuses the name, so it is never asked (mcp-tool-permissions.md §8). */
+export const MCP_GRANT_TUNNEL_FEATURE = 'mcp-grant-tunnel-v1'
 
 /** Bytes per chunk in either direction. One `shim/request` or `shim/event` carries at most one
  *  chunk, so this has to leave room under `MAX_FRAME_BYTES` (256 KiB) after base64 expansion. */
 export const MAX_TUNNEL_CHUNK_BYTES = 32 * 1024
 /** Bytes per binary data frame, which carries no base64 and so fits a whole socket read under `MAX_FRAME_BYTES`. */
 export const MAX_BINARY_CHUNK_BYTES = 128 * 1024
-/** The most authorities one `codehost` or `provider` listen forwards. */
+/** The most authorities one proxy tunnel's listen forwards. */
 export const MAX_CODEHOST_ROUTES = 64
 /** Concurrent `codehost` streams per sandbox, apart from the helper tunnels' own budget so a busy clone cannot starve `mcp` or `agent`. */
 export const MAX_CODEHOST_STREAMS = 16
 /** Concurrent `provider` streams per sandbox, its own budget: each session holds a few long-lived model connections (subagents, pooled keep-alives), so it is wider than a clone burst's. */
 export const MAX_PROVIDER_STREAMS = 64
+/** Concurrent `mcp-grant` streams per sandbox, its own budget: the proxy caps a session's GET streams at four, and its POSTs are short. */
+export const MAX_MCP_GRANT_STREAMS = 32
 /** Chunks a shim may have unacknowledged on one stream before it pauses the in-pod socket (8 × 32 KiB); both sides derive the ack cadence from it, so it moves only with the shim. */
 export const MAX_IN_FLIGHT_FRAMES = 8
 /** Daemon data frames one stream may have unanswered before the daemon pauses its socket (32 × 32 KiB); the shim answers each frame, so the daemon alone sets it. */
@@ -73,7 +81,7 @@ export function decodeTunnelData(frame: Buffer): { streamId: string; seq: number
 export const TunnelListenSchema = z.object({
   op: z.literal('listen'),
   tunnel: TunnelNameSchema,
-  // `codehost` and `provider` only: the `host:port` authorities the listener forwards into this tunnel, and the CA the session trusts for them.
+  // Proxy tunnels only: the `host:port` authorities the listener forwards into this tunnel, and the CA the session trusts for them.
   routes: z.array(z.string().min(1).max(270)).max(MAX_CODEHOST_ROUTES).optional(),
   ca: z
     .string()
@@ -85,7 +93,7 @@ export const TunnelListenSchema = z.object({
   // The daemon takes this tunnel's shim-sent bytes as binary data frames; an older shim strips the field and sends `chunk` events.
   binaryData: z.boolean().optional()
 })
-/** What the daemon sends with a `codehost` or `provider` listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
+/** What the daemon sends with a proxy tunnel's listen: the routes, and the CA certificate alone, which the shim merges with its own machine's roots. */
 export type TunnelListenOptions = { routes: string[]; ca: string }
 
 /**
@@ -124,7 +132,7 @@ export const TunnelPayloadSchema = z.discriminatedUnion('op', [
 ])
 export type TunnelPayload = z.infer<typeof TunnelPayloadSchema>
 
-/** What a `listen` reports back: the path the pod serves, and for `codehost` or `provider` the loopback proxy a session is pointed at. */
+/** What a `listen` reports back: the path the pod serves, and for a proxy tunnel the loopback proxy a session is pointed at. */
 export const TunnelListeningSchema = z.object({
   socketPath: z.string().min(1),
   proxy: z

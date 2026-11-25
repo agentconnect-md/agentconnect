@@ -164,7 +164,8 @@ describe('the daemon socket each tunnel reaches', () => {
     agent: '/daemon/agent.sock',
     mcp: '/daemon/mcp.sock',
     codehost: (agentId: string) => `/daemon/codehost/${agentId}.sock`,
-    provider: (agentId: string) => `/daemon/provider/${agentId}.sock`
+    provider: (agentId: string) => `/daemon/provider/${agentId}.sock`,
+    mcpGrant: (agentId: string) => `/daemon/mcp-grant/${agentId}.sock`
   }
 
   it('names every tunnel explicitly, each its own socket', () => {
@@ -173,7 +174,8 @@ describe('the daemon socket each tunnel reaches', () => {
       '/daemon/agent.sock',
       '/daemon/mcp.sock',
       '/daemon/codehost/agent-a.sock',
-      '/daemon/provider/agent-a.sock'
+      '/daemon/provider/agent-a.sock',
+      '/daemon/mcp-grant/agent-a.sock'
     ])
     expect(new Set(paths).size).toBe(TunnelNameSchema.options.length)
   })

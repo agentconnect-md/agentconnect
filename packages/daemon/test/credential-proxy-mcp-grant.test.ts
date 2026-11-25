@@ -400,10 +400,10 @@ describe('a session’s grant definition', () => {
     expect(placeholderHeaders([...headers, { name: 'X-Copy', value: KEY }], KEY, 'acph1_x.y')).toBeUndefined()
   })
 
-  it('stays off a session whose shim carries no mcp-grant route, naming that shim', () => {
+  it('stays off an srt session placed on an executor, naming that shim; every other shim is asked at spawn', () => {
     expect(mcpGrantShimRefusal({ strategy: 'host' })).toBeUndefined()
     expect(mcpGrantShimRefusal({ strategy: 'srt' })).toBeUndefined()
-    expect(mcpGrantShimRefusal({ strategy: 'microsandbox' })).toContain("its VM's shim")
+    expect(mcpGrantShimRefusal({ strategy: 'microsandbox' })).toBeUndefined()
     expect(
       mcpGrantShimRefusal({ strategy: 'host', placed: { strategy: 'srt', executorDaemonId: 'exec-daemon' } })
     ).toContain('the srt shim of daemon exec-daemon')
