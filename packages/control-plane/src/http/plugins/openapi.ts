@@ -68,6 +68,7 @@ export const Tag = {
   Agents: 'Agents',
   Workspace: 'Agent workspace',
   Sessions: 'Sessions',
+  Artifacts: 'Artifacts',
   Integrations: 'Integrations',
   Bots: 'Bots',
   Mcp: 'MCP providers',
@@ -113,6 +114,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   { name: Tag.Agents, description: 'Agent definitions — CRUD and connect/launch.' },
   { name: Tag.Workspace, description: 'Read an agent’s daemon-local workspace (files, git status/pull).' },
   { name: Tag.Sessions, description: 'Conversation sessions and their message history.' },
+  {
+    name: Tag.Artifacts,
+    description:
+      'Versioned deliverables agents publish: metadata, a revision’s manifest, and short-lived signed downloads. Bytes never pass through the Control Plane.'
+  },
   { name: Tag.Integrations, description: 'IM-platform integrations (Slack / Telegram / Discord) and their channels.' },
   { name: Tag.Bots, description: 'Durable platform bot identities.' },
   {

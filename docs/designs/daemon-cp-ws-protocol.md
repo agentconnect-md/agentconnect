@@ -793,6 +793,55 @@ filter is passed through to either CP unchanged. See
 [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md)
 §2.2/§2.5 for the predicate and the rest of the rolling-upgrade rules.
 
+### 7.8 `artifact/*` (D→C, REQ → REP) — artifact publish, fetch and list
+
+The daemon side of [artifacts.md](artifacts.md) §5.3 and §7. Every frame is a
+daemon-initiated request, sent only to a CP that lists `artifacts-v1`
+(`ARTIFACTS_FEATURE`) in `register/ok.serverFeatures`; the CP advertises it only when it
+has a transfer bucket. Bytes never ride this socket: the CP signs and records, the daemon
+moves the bytes to and from the bucket. Schemas are in
+`packages/protocol/src/frames/artifact.ts`.
+
+| Request                     | Reply                          | Purpose                                                                           |
+| --------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
+| `artifact/publish/begin`    | `artifact/publish/begin/ok`    | Record a pending revision (a new artifact without `artifactId`); one PUT per file |
+| `artifact/publish/complete` | `artifact/publish/complete/ok` | HEAD every object for its size and checksum, then mark the revision ready         |
+| `artifact/fetch`            | `artifact/fetch/ok`            | The manifest and one GET per file of a ready revision the session reaches         |
+| `artifact/list`             | `artifact/list/ok`             | A page of 25 artifacts the session reaches, each with its latest revision         |
+
+- **Begin** carries `agentId`, `sessionId`, optional `artifactId`, `title` (required to
+  create; an append keeps the artifact's title), `manifest` (`entry` and up to 200 files of
+  `path`, hex `sha256`, `bytes`, `mediaType`; 50 MB in total), `idempotencyKey`, `network`
+  (`TransferNetwork`) and an optional `initiator` (`console` user, `chat` member on one of
+  the agent's bots, `cron` or `hook`). The reply is either `state: 'pending'` with
+  `uploads` (`path`, `url`, exact signed `headers`) in manifest order, or, for a key that
+  already reached a ready revision, `state: 'ready'` with the complete result. A retried
+  begin under the same key re-signs the same pending revision; the same key with another
+  manifest is refused.
+- **Complete** carries `agentId`, `artifactId` and `revision`, and answers the ready
+  revision: `artifactId`, `revision`, `title`, `linkPath`
+  (`/<org slug>/artifacts/<id>?revision=<n>`), `link` on the console origin when the CP
+  knows it, and `audience` (`visibility`, `externalProvider`, `owned`).
+- **Authorization.** Each frame needs a daemon placed on the agent. Begin, fetch and list
+  also need a session of that agent whose content is not deleted (an unknown session is a
+  retryable refusal). An append also needs the agent to have produced revision 1 and the
+  session to reach the artifact (§7.2). Fetch and list answer only what the session
+  reaches; a private session's reach is resolved for a `user:` owner only.
+- **Storage.** Each PUT signs `content-length`, `x-amz-checksum-sha256` and
+  `x-amz-tagging: ac-cache=live` under
+  `src/<org>/artifact/<artifactId>/<revision>/<path>`.
+- **Paths** are relative POSIX: no absolute path, `.` or `..` segment, `.git` component,
+  backslash or control character, no two paths equal after NFC and case folding, no file
+  inside another file, and the entry is one of the files. Empty files are not carried.
+- **Refusals** are `error` replies whose `details.reason` is an `ArtifactRefusalReason`:
+  `transfer-unavailable`, `session-unknown`, `session-denied`, `not-found` (absent or not
+  reachable), `not-producer`, `too-large`, `idempotency-conflict`, `title-required`, or
+  `incomplete` (with `details.paths`).
+- **Transcript marker.** A publication's transcript row ends in
+  `[artifact: <artifactId> r<revision> "<title>"]`, the title a JSON string;
+  `formatArtifactMarker` and `parseArtifactMarker` in the protocol package build and read
+  it.
+
 ---
 
 ## 8. Capability scoping & fleet control
@@ -1039,6 +1088,7 @@ have dedicated schemas under `packages/protocol/src/frames/`.
 | `channel/agents`                                          | D→C           | correlated reply                                      | resolve collaboration directory metadata                                      |
 | `session/admit`                                           | D→C           | correlated reply (`session/admit/result`)             | admit a new session for its organization, or refuse it at an enforced limit   |
 | `history-retention/confirm`                               | D→C           | correlated reply (`history-retention/confirm/result`) | re-confirm the orgs a retention sweep is about to reclaim for                 |
+| `artifact/*`                                              | D→C           | correlated replies (`…/ok`)                           | publish, fetch and list artifacts over CP-signed URLs (§7.8)                  |
 | `error`, `ack`                                            | either        | correlated replies                                    | provide generic protocol outcomes                                             |
 
 `session/admit/result` is `{ admitted: true, counted, enforcing }`, where an older CP omits

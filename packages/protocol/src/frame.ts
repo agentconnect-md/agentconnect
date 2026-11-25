@@ -237,6 +237,16 @@ import {
   WorkspaceUploadOk,
   WorkspaceUploadReq
 } from './frames/file-transfer.js'
+import {
+  ArtifactFetchOk,
+  ArtifactFetchReq,
+  ArtifactListOk,
+  ArtifactListReq,
+  ArtifactPublishBeginOk,
+  ArtifactPublishBeginReq,
+  ArtifactPublishCompleteOk,
+  ArtifactPublishCompleteReq
+} from './frames/artifact.js'
 import { TaskListReq, TaskList } from './frames/task.js'
 import {
   AssistantActivityReadReq,
@@ -643,6 +653,15 @@ export const FRAME_SCHEMAS = {
   'image/original/resolve/ok': SharedImageResolveOk,
   'session/file/put': SessionFilePutReq,
   'session/file/put/ok': SessionFilePutOk,
+  // ── artifacts (artifacts.md §5.3; D→C REQ → REP behind `artifacts-v1`, presigned URLs only) ──
+  'artifact/publish/begin': ArtifactPublishBeginReq,
+  'artifact/publish/begin/ok': ArtifactPublishBeginOk,
+  'artifact/publish/complete': ArtifactPublishCompleteReq,
+  'artifact/publish/complete/ok': ArtifactPublishCompleteOk,
+  'artifact/fetch': ArtifactFetchReq,
+  'artifact/fetch/ok': ArtifactFetchOk,
+  'artifact/list': ArtifactListReq,
+  'artifact/list/ok': ArtifactListOk,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitdiff': WorkspaceGitDiffReq,
@@ -1054,6 +1073,14 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('image/original/resolve/ok', FRAME_SCHEMAS['image/original/resolve/ok']),
   frame('session/file/put', FRAME_SCHEMAS['session/file/put']),
   frame('session/file/put/ok', FRAME_SCHEMAS['session/file/put/ok']),
+  frame('artifact/publish/begin', FRAME_SCHEMAS['artifact/publish/begin']),
+  frame('artifact/publish/begin/ok', FRAME_SCHEMAS['artifact/publish/begin/ok']),
+  frame('artifact/publish/complete', FRAME_SCHEMAS['artifact/publish/complete']),
+  frame('artifact/publish/complete/ok', FRAME_SCHEMAS['artifact/publish/complete/ok']),
+  frame('artifact/fetch', FRAME_SCHEMAS['artifact/fetch']),
+  frame('artifact/fetch/ok', FRAME_SCHEMAS['artifact/fetch/ok']),
+  frame('artifact/list', FRAME_SCHEMAS['artifact/list']),
+  frame('artifact/list/ok', FRAME_SCHEMAS['artifact/list/ok']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitdiff', FRAME_SCHEMAS['workspace/gitdiff']),
