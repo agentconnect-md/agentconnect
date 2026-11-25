@@ -1,69 +1,92 @@
 import { isDeepStrictEqual } from 'node:util'
+import type { McpToolDecisions } from '@agentconnect.md/protocol'
 import type { McpServerDef } from '../config/config-schema.js'
 
-/** One CP definition plus the marker that orders it. `issuedAt` is the epoch
- *  millis of the grant it was projected from; absent means "unordered". */
+/** One CP definition plus the marker that orders it: the epoch millis of its grant, absent meaning "unordered". */
 interface Entry {
   def: McpServerDef
   issuedAt?: number
+  /** An agent-scoped definition's decision table (mcp-tool-permissions.md §7.1). */
+  toolDecisions?: McpToolDecisions
 }
 
-/** Keeps CP MCP definitions tenant-scoped while layering them over daemon-local definitions. */
+/** One CP definition as the reconnect snapshot carries it. */
+export type CpMcpDefTuple = [
+  orgId: string,
+  name: string,
+  def: McpServerDef,
+  issuedAt: number | undefined,
+  agentId?: string,
+  toolDecisions?: McpToolDecisions
+]
+
+const VIEW_SEPARATOR = '\u0001'
+
+/** The view an agent resolves MCP definitions in: its organization, narrowed to the agent; ids never contain the separator. */
+export function mcpView(orgId: string | undefined, agentId?: string): string | undefined {
+  if (!orgId) return undefined
+  return agentId ? `${orgId}${VIEW_SEPARATOR}${agentId}` : orgId
+}
+
+/** The organization and agent a view names. */
+export function parseMcpView(view: string | undefined): { orgId?: string; agentId?: string } {
+  if (!view) return {}
+  const at = view.indexOf(VIEW_SEPARATOR)
+  return at < 0 ? { orgId: view } : { orgId: view.slice(0, at), agentId: view.slice(at + 1) }
+}
+
+/** Keeps CP MCP definitions tenant-scoped, with an agent's own definitions layered over its organization's. */
 export class CpMcpDefs {
+  /** Keyed by layer: an organization's view, or one agent's within it. */
   private cp = new Map<string, Map<string, Entry>>()
 
   constructor(private readonly local: Record<string, McpServerDef>) {}
 
-  /**
-   * Apply one CP definition, refusing a STRICTLY OLDER one.
-   *
-   * A proxy def is versioned by its grant, and grant rotation deliberately keeps
-   * the retiring and the fresh grant both active until the fresh one is
-   * distributed — so a definition projected inside that window (a `duty/fetch`
-   * bundle, or a slower live push) can arrive after the fresh key and would
-   * otherwise reinstate a key the relay is about to revoke, silently breaking
-   * this agent's tools until the next unrelated update. Same monotonic discipline
-   * as the external-memory registry's revision fence.
-   *
-   * Equal-or-newer applies: a relay-base change carries the same grant instant and
-   * must still converge. An absent marker on either side is "unordered" and
-   * applies, which is exactly the pre-marker behavior for an older CP.
-   */
-  upsert(orgId: string, name: string, def: McpServerDef, issuedAt?: number): boolean {
-    const definitions = this.cp.get(orgId) ?? new Map<string, Entry>()
+  /** Apply one CP definition, refusing a strictly older one, so a rotation's retiring key is never reinstated. */
+  upsert(
+    orgId: string,
+    name: string,
+    def: McpServerDef,
+    issuedAt?: number,
+    agentId?: string,
+    toolDecisions?: McpToolDecisions
+  ): boolean {
+    const layer = mcpView(orgId, agentId)!
+    const definitions = this.cp.get(layer) ?? new Map<string, Entry>()
     const previous = definitions.get(name)
     if (previous?.issuedAt !== undefined && issuedAt !== undefined && issuedAt < previous.issuedAt) return false
-    if (previous && isDeepStrictEqual(previous.def, def) && previous.issuedAt === issuedAt) return false
-    definitions.set(name, { def, ...(issuedAt !== undefined ? { issuedAt } : {}) })
-    this.cp.set(orgId, definitions)
+    const next = entry(def, issuedAt, toolDecisions)
+    if (previous && isDeepStrictEqual(previous, next)) return false
+    definitions.set(name, next)
+    this.cp.set(layer, definitions)
     return true
   }
 
-  remove(orgId: string, name: string): boolean {
-    const definitions = this.cp.get(orgId)
+  /** Drop one definition; with `agentId`, only that agent's own, so the agent falls back to its organization's. */
+  remove(orgId: string, name: string, agentId?: string): boolean {
+    const layer = mcpView(orgId, agentId)!
+    const definitions = this.cp.get(layer)
     if (!definitions?.delete(name)) return false
-    if (definitions.size === 0) this.cp.delete(orgId)
+    if (definitions.size === 0) this.cp.delete(layer)
     return true
   }
 
-  /** Full-replace from the reconnect snapshot. Deliberately NOT fenced — the CP
-   *  wins on reconcile and this is the backstop that repairs any regression — but
-   *  it RECORDS each marker, so a live push or a bundle that raced the snapshot
-   *  is compared against what the snapshot installed rather than against nothing. */
-  converge(entries: Array<[string, string, McpServerDef, number | undefined]>): boolean {
+  /** Full-replace from the reconnect snapshot. Deliberately NOT fenced — the CP wins on reconcile — but it records each marker, so a later push is compared against it. */
+  converge(entries: CpMcpDefTuple[]): boolean {
     const next = new Map<string, Map<string, Entry>>()
-    for (const [orgId, name, def, issuedAt] of entries) {
-      const definitions = next.get(orgId) ?? new Map<string, Entry>()
-      definitions.set(name, { def, ...(issuedAt !== undefined ? { issuedAt } : {}) })
-      next.set(orgId, definitions)
+    for (const [orgId, name, def, issuedAt, agentId, toolDecisions] of entries) {
+      const layer = mcpView(orgId, agentId)!
+      const definitions = next.get(layer) ?? new Map<string, Entry>()
+      definitions.set(name, entry(def, issuedAt, toolDecisions))
+      next.set(layer, definitions)
     }
     if (
       next.size === this.cp.size &&
-      [...next].every(([orgId, definitions]) => {
-        const current = this.cp.get(orgId)
+      [...next].every(([layer, definitions]) => {
+        const current = this.cp.get(layer)
         return (
           current?.size === definitions.size &&
-          [...definitions].every(([name, entry]) => isDeepStrictEqual(current.get(name), entry))
+          [...definitions].every(([name, value]) => isDeepStrictEqual(current.get(name), value))
         )
       })
     ) {
@@ -73,25 +96,57 @@ export class CpMcpDefs {
     return true
   }
 
-  effective(orgId: string | undefined): Record<string, McpServerDef> {
-    const scoped = orgId ? (this.cp.get(orgId) ?? new Map<string, Entry>()) : new Map<string, Entry>()
-    return { ...this.local, ...Object.fromEntries([...scoped].map(([name, entry]) => [name, entry.def])) }
+  /** Local definitions, then the organization's, then the agent's own: each later layer wins a name. */
+  effective(orgId: string | undefined, agentId?: string): Record<string, McpServerDef> {
+    const org = this.layer(mcpView(orgId))
+    const own = agentId ? this.layer(mcpView(orgId, agentId)) : new Map<string, Entry>()
+    return {
+      ...this.local,
+      ...Object.fromEntries([...org].map(([name, value]) => [name, value.def])),
+      ...Object.fromEntries([...own].map(([name, value]) => [name, value.def]))
+    }
   }
 
-  /** Whether THIS org's view of `name` comes from a CP push rather than daemon-local config.
-   *  A local definition is one server shared by every organization on this daemon; a CP one is
-   *  that organization's alone. The Apps host keys its connections on the difference. */
+  /** Whether THIS org's view of `name` comes from a CP push rather than daemon-local config. */
   isOrgScoped(orgId: string | undefined, name: string): boolean {
     return orgId !== undefined && this.cp.get(orgId)?.has(name) === true
   }
 
-  /** Every organization this daemon currently holds CP definitions for — what the Apps host warms
-   *  over when a push lands, since a CP definition's connection cannot be opened before it exists. */
+  /** Who owns the definition a view resolves `name` to: the agent's view, the organization, or nobody for a daemon-local one every organization shares. */
+  scopeOf(view: string | undefined, name: string): string | undefined {
+    const { orgId, agentId } = parseMcpView(view)
+    if (agentId && this.layer(mcpView(orgId, agentId)).has(name)) return mcpView(orgId, agentId)
+    return this.isOrgScoped(orgId, name) ? orgId : undefined
+  }
+
+  /** The decision table of an agent's own definition, when it has one. */
+  toolDecisions(orgId: string | undefined, agentId: string, name: string): McpToolDecisions | undefined {
+    return this.layer(mcpView(orgId, agentId)).get(name)?.toolDecisions
+  }
+
+  /** Every organization this daemon currently holds CP definitions for. */
   orgs(): string[] {
-    return [...this.cp.keys()]
+    return [...new Set([...this.cp.keys()].map((layer) => parseMcpView(layer).orgId!))]
+  }
+
+  /** Every view a CP definition can be resolved in: each organization, and each agent with definitions of its own. */
+  views(): string[] {
+    return [...new Set([...this.orgs(), ...this.cp.keys()])]
   }
 
   localDefinitions(): Record<string, McpServerDef> {
     return { ...this.local }
+  }
+
+  private layer(view: string | undefined): Map<string, Entry> {
+    return (view ? this.cp.get(view) : undefined) ?? new Map<string, Entry>()
+  }
+}
+
+function entry(def: McpServerDef, issuedAt: number | undefined, toolDecisions: McpToolDecisions | undefined): Entry {
+  return {
+    def,
+    ...(issuedAt !== undefined ? { issuedAt } : {}),
+    ...(toolDecisions !== undefined ? { toolDecisions } : {})
   }
 }

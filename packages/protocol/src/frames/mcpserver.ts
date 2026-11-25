@@ -15,6 +15,12 @@ import { z } from 'zod'
  * SECURITY: `env`/`headers` may carry that bearer grant key — NEVER log this frame.
  */
 
+const ToolNames = z.array(z.string().min(1).max(256)).max(1_000).default([])
+
+/** A restricted definition's per-tool decisions (mcp-tool-permissions.md §7.1); the policy, not a secret. */
+export const McpToolDecisions = z.object({ allow: ToolNames, approval: ToolNames, ask: ToolNames, block: ToolNames })
+export type McpToolDecisions = z.infer<typeof McpToolDecisions>
+
 /** The `{name, value}[]` shape shared by MCP env + headers (mirrors the daemon's local McpServerDef). */
 const NameValueList = z.array(z.object({ name: z.string(), value: z.string() })).default([])
 
@@ -28,6 +34,8 @@ const NameValueList = z.array(z.object({ name: z.string(), value: z.string() }))
 export const McpServerSpec = z
   .object({
     orgId: z.string().min(1).max(64).optional(),
+    // One agent's own definition, layered over its organization's (mcp-tool-permissions.md §7.1); sent only to daemons advertising `mcp-agent-defs-v1`.
+    agentId: z.string().min(1).max(64).optional(),
     name: z.string(),
     /**
      * Monotonic ordering marker: epoch millis of the ACTIVE GRANT this definition
@@ -63,7 +71,9 @@ export const McpServerSpec = z
      * Optional so a CP predating it pushes definitions that decode unchanged, and absent reads as
      * `false` — the runtime-attached behavior every existing definition already has.
      */
-    ui: z.boolean().optional()
+    ui: z.boolean().optional(),
+    // The decision table of an agent-scoped definition; the relay enforces it until approvals ship.
+    toolDecisions: McpToolDecisions.optional()
   })
   .superRefine((def, ctx) => {
     if (def.transport === 'stdio' && !def.command)
@@ -78,5 +88,10 @@ export const McpServerUpsert = McpServerSpec
 export type McpServerUpsert = z.infer<typeof McpServerUpsert>
 
 /** C→D EVT (`mcpserver/remove`) — drop a pushed MCP server def by name. */
-export const McpServerRemove = z.object({ orgId: z.string().min(1).max(64).optional(), name: z.string() })
+export const McpServerRemove = z.object({
+  orgId: z.string().min(1).max(64).optional(),
+  // Set: remove only that agent's own definition, so the agent falls back to its organization's.
+  agentId: z.string().min(1).max(64).optional(),
+  name: z.string()
+})
 export type McpServerRemove = z.infer<typeof McpServerRemove>
