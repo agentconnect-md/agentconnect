@@ -8,6 +8,7 @@ import { parseUserTurnBody } from '@/lib/user-turn-body'
 import type { SessionMessageTurnFacts } from '@agentconnect.md/protocol'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { sharedFileMarker, type SharedFile } from '@/lib/shared-file'
+import { parseArtifactMarker, type ArtifactMarker } from '@/lib/artifact'
 import {
   elicitCard,
   capabilityCard,
@@ -159,7 +160,8 @@ export function msgStepBody(m: SessionMessageDto, toolSessionId?: string, platfo
       ...(platform ? { platform } : {})
     }
   }
-  const shared = k === 'text' ? sharedFileMarker(m.text) : null
+  const published = k === 'text' ? parseArtifactMarker(m.text) : null
+  const shared = k === 'text' && !published ? sharedFileMarker(m.text) : null
   // A delivered session message shows its body; its header facts and the agent's guidance fold beneath it.
   const sessionMessage = k === 'text' ? parseUserTurnBody(m.body)?.sessionMessage : undefined
   const taskLink = k === 'text' ? taskLinkOfBody(m.body) : null
@@ -170,11 +172,12 @@ export function msgStepBody(m: SessionMessageDto, toolSessionId?: string, platfo
     weight: 400,
     textColor: 'var(--text-primary)',
     codeColor: 'var(--text-secondary)',
-    text: shared ? shared.caption : m.text,
+    text: published ? published.caption.trimEnd() : shared ? shared.caption : m.text,
     code: '',
     files: [],
     time: formatTranscriptRowTime(m),
     ...(platform ? { platform } : {}),
+    ...(published ? { artifact: published.artifact } : {}),
     // The download names the session that shared the file, which in a merged conversation is the row's source.
     ...(shared ? { file: shared.file, ...(toolSessionId ? { toolSessionId } : {}) } : {}),
     ...(sessionMessage ? { sessionMessage } : {}),
@@ -217,6 +220,8 @@ export interface FmtStep {
   image?: SessionImage
   // A file the agent shared, parsed off the row's trailing marker and rendered as a download chip.
   file?: SharedFile
+  // An artifact revision the agent published, parsed off the row's trailing marker and rendered as its card.
+  artifact?: ArtifactMarker
   // A shared image card (webchat-generated-images.md) and the canonical post that names it.
   sharedImage?: SharedImageState
   postId?: string
@@ -303,7 +308,11 @@ export function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     ...(stp.demoted ? { demoted: true } : {}),
     ...(stp.taskLink ? { taskLink: stp.taskLink } : {}),
     ...(platform ? { platform } : {}),
-    ...(stp.sharedImage ? sharedImageFields(stp) : stp.kind === 'done' ? sharedFileFields(stp) : {}),
+    ...(stp.sharedImage
+      ? sharedImageFields(stp)
+      : stp.kind === 'done'
+        ? (artifactFields(stp) ?? sharedFileFields(stp))
+        : {}),
     // The live frame carries no body, so attach enough of a row for ToolBodyDetail to fetch the full one on open.
     ...(stp.kind === 'tool' && stp.toolCallId
       ? {
@@ -338,6 +347,12 @@ export function sharedImageFields(stp: SessionStep): Partial<FmtStep> {
     ...(stp.postId ? { postId: stp.postId } : {}),
     ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
   }
+}
+
+// A live step that ends in an artifact marker (a webchat or AHP reply): its caption and the card's revision.
+export function artifactFields(stp: SessionStep): Partial<FmtStep> | null {
+  const published = parseArtifactMarker(stp.text)
+  return published ? { text: published.caption.trimEnd(), artifact: published.artifact } : null
 }
 
 // A live shared-file step (a document shareFile posted as its own message): the chip's file comes off the marker, like a history row's.

@@ -8480,5 +8480,42 @@
       "cancelled": "已取消，没有填写任何内容。",
       "expired": "已过期，没有填写任何内容。"
     }
+  },
+  "Artifacts": {
+    "card": {
+      "revision": "r{number}",
+      "files": "{count, plural, other {# 个文件}}",
+      "newer": "有更新的修订版本（r{number}）",
+      "agedOut": "此修订版本已不再保留",
+      "unavailable": "无法打开。它可能已被删除，或你没有访问权限。",
+      "open": "打开",
+      "download": "下载",
+      "downloadFailed": "下载失败，请重试。"
+    },
+    "viewer": {
+      "revision": "修订版本 {number}",
+      "revisionShort": "r{number}",
+      "revisions": "修订版本",
+      "download": "下载",
+      "zipping": "正在打包…",
+      "downloadFailed": "下载失败，请重试。",
+      "updated": "更新于 {time}",
+      "externalProvider": "外部",
+      "revisionGone": "修订版本 {missing} 已不再保留，现显示最新修订版本（r{number}）。",
+      "newerAvailable": "有更新的修订版本（r{number}）。",
+      "viewLatest": "查看最新版本",
+      "loadFailed": "无法加载此 Artifact，请稍后重试。",
+      "noPreview": "此文件类型无法预览",
+      "pdfUnsupported": "此浏览器无法在这里显示 PDF。"
+    },
+    "page": {
+      "kind": "ARTIFACT",
+      "unavailableTitle": "Artifact 不可用",
+      "unavailablePre": "Artifact ",
+      "unavailablePost": " 无法打开。它可能已被删除，或你没有访问权限。",
+      "backHome": "返回首页",
+      "search": "搜索",
+      "loadFailed": "无法加载此 Artifact，请稍后重试。"
+    }
   }
 }

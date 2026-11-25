@@ -825,6 +825,36 @@ download link — and is told not to repeat the file as Markdown. Peers in a mul
 conversation see the caption and card or chip as transcript only; a shared file never
 wakes another agent or feeds its content to another agent's model.
 
+### Artifacts in the console
+
+An agent's artifact publication leaves a card in the session page of webchat and
+chat-platform sessions alike, below the caption the agent wrote. The card is pinned to the
+revision it announced and shows the entry's type icon (page, document, image, PDF, code or
+other file), the title, `r<n>`, the revision's size, **Open** and **Download**. A card whose
+revision is older than the artifact's latest says a newer revision is available; one whose
+revision is no longer kept says so and still opens the artifact. A card for an artifact the
+viewer cannot open, whether it was deleted or they are outside its audience, says only that
+it is unavailable: the console cannot tell those apart and must not imply which it is.
+
+**Open** goes to the artifact's own page, `/<org slug>/artifacts/<id>?revision=<n>`, the same
+link the agent writes. The URL names the revision shown, so a reload or a shared link keeps
+it; without one the latest opens, and a revision that is no longer kept opens the latest
+with a notice. The header holds the title, a revision menu listing every kept revision with
+its time and producing agent (choosing one updates the URL), and **Download**; the info line
+names the producing agent, the audience in the session audience's words, and when the
+revision was published. An older revision notes that a newer one exists and offers to switch.
+
+The console renders a revision from its bytes, fetched through the signed address after the
+access check; nothing renders on the store's origin. A page runs as `srcdoc` in a frame
+sandboxed with `allow-scripts` alone (no same-origin, forms, popups or top navigation) and may
+make outbound requests. Images show from typed `blob:` URLs, except SVG, which shows from a
+`data:` URL so it stays inert even opened in its own tab. A PDF uses the browser's viewer, with
+a download where the browser embeds none. Markdown renders with the console's Markdown view,
+its local images taken from the revision's own files. Source, text, JSON and CSV are
+highlighted. Anything else shows its name and size with **Download**. **Download** saves a
+single-file revision as itself under its manifest name and zips a multi-file revision in the
+browser, named after the title. On a phone the page is the full-screen viewer.
+
 ### Publishing files to an explicit destination
 
 `sendMessage` with `action: "postMessage"` accepts up to ten `attachments`. Each item

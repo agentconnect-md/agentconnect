@@ -91,6 +91,7 @@ import { isUpgradeAvailable } from '@/lib/version'
 import { cpBase } from '@/lib/endpoints'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 import type { SessionFileArea } from '@/lib/shared-file'
+import type { ArtifactDto, ArtifactFileUrlDto, ArtifactRevisionDto } from '@/lib/artifact'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
  *  `code` carries the CP's machine-readable denial reason when the endpoint
@@ -3464,6 +3465,24 @@ export function fetchSessionSharedFile(sessionId: string, sha256: string, name: 
   const q = new URLSearchParams({ name })
   return apiGet<SessionSharedFileDto>(
     `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/shared-files/${encodeURIComponent(sha256)}?${q.toString()}`
+  )
+}
+
+/** An artifact and its ready revisions; 404 when it is gone or the viewer is not in its audience (artifacts.md §6.3). */
+export function getArtifact(artifactId: string): Promise<ArtifactDto> {
+  return apiGet<ArtifactDto>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}`)
+}
+
+/** One ready revision with its manifest. */
+export function getArtifactRevision(artifactId: string, revision: number): Promise<ArtifactRevisionDto> {
+  return apiGet<ArtifactRevisionDto>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/revisions/${revision}`)
+}
+
+/** A short-lived signed GET for one manifest file, signed as an `octet-stream` attachment so the console renders the bytes itself. */
+export function getArtifactFileUrl(artifactId: string, revision: number, path: string): Promise<ArtifactFileUrlDto> {
+  const q = new URLSearchParams({ path })
+  return apiGet<ArtifactFileUrlDto>(
+    `${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/revisions/${revision}/file?${q.toString()}`
   )
 }
 
