@@ -305,6 +305,8 @@ export function effectiveSessionIsolation(
 }
 
 const PULL_TIMEOUT_MS = 4500
+/** How long a finished pull of a checkout serves the next session that would pull it again. */
+const PULL_REUSE_MS = 30_000
 const REVIEW_FETCH_TIMEOUT_MS = 60_000
 const LS_REMOTE_TIMEOUT_MS = 10_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
@@ -335,6 +337,11 @@ export class WorkspaceManager {
   // and two sessions starting together must share one of them. A separate map because the clone it
   // performs keys `cloneInFlight` by the very same path.
   private readonly secondaryInFlight = new Map<string, Promise<SecondaryWorkspaceRoot | undefined>>()
+  // A checkout's pull, single-flight like its clone: sessions of one agent may prepare side by side (the daemon's
+  // workspace scheduler), and each new session pulls the same primary and secondary checkouts. One pull serves every
+  // session that asks while it runs, and one that finished moments ago serves the next.
+  private readonly pullInFlight = new Map<string, Promise<void>>()
+  private readonly pulledAt = new Map<string, number>()
   /** The `always` roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
   /** Each session's selected repositories (decision 19) beside the selected roots readied for it, keyed by session. */
@@ -1676,6 +1683,19 @@ export class WorkspaceManager {
 
   /** Best-effort sync of one root's checkout to its configured remote branch; never block/throw on offline (design §4.3). */
   async pullRoot(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
+    const key = `${agentId}\u0000${cwd}`
+    const inFlight = this.pullInFlight.get(key)
+    if (inFlight) return await inFlight
+    if (Date.now() - (this.pulledAt.get(key) ?? -Infinity) < PULL_REUSE_MS) return
+    const pull = this.pullRootNow(agentId, root, cwd).finally(() => {
+      this.pulledAt.set(key, Date.now())
+      this.pullInFlight.delete(key)
+    })
+    this.pullInFlight.set(key, pull)
+    return await pull
+  }
+
+  private async pullRootNow(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     // github-app: warm the credential cache OUTSIDE the pull budget — a cold cache costs a CP round trip.
     if (root.githubApp) await preWarmGitCred(agentId, 'pull', additionalRepositoryOf(root)).catch(() => undefined)
     // Abort-driven budget: the signal KILLS the git child at the deadline, so a wedged pull cannot hold .git/index.lock.
