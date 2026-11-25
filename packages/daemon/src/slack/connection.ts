@@ -31,6 +31,7 @@ import {
   slackEnvelopeExternallyShared,
   slackExternalReason,
   slackFullMember,
+  slackMarkdownPlainText,
   slackMemberExternalReason,
   slackMessageSender
 } from '@agentconnect.md/message'
@@ -907,9 +908,9 @@ interface MemberStanding {
   fullMember: boolean
 }
 
-/** Send Markdown verbatim for Slack to render, retaining the same text as the notification fallback. */
+/** Send Markdown verbatim for Slack to render, with its plain text as the notification fallback. */
 function markdownBlock(text: string): { text: string; blocks: { type: 'markdown'; text: string }[] } {
-  return { text, blocks: [{ type: 'markdown', text }] }
+  return { text: slackMarkdownPlainText(text), blocks: [{ type: 'markdown', text }] }
 }
 
 /** Slack Web API platform errors carry rejected OAuth scopes in `data.needed`.
@@ -2152,7 +2153,8 @@ export class SlackConnection implements PlatformConnection {
         await this.app.client.chat.update({
           channel,
           ts,
-          text,
+          // Callers pass the reply's Markdown body; the fallback stays the plain text the post had.
+          text: slackMarkdownPlainText(text),
           blocks,
           unfurl_links: false,
           unfurl_media: false,

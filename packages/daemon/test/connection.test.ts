@@ -2158,9 +2158,22 @@ describe('SlackConnection chat.postMessage boundary', () => {
     await conn.postMessage('C1', text, '100.1')
 
     expect(calls[0]).toMatchObject({
-      text,
+      text: 'Recent commits:\n| Author | Summary |\n|---|---|\n| alice | fix ci |\nDone.',
       blocks: [{ type: 'markdown', text }]
     })
+  })
+
+  it('sends plain text as the notification fallback of a markdown reply', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(async (payload) => (calls.push(payload), { ts: 't1' })) as any
+    )
+    const text = '**Done:** see [the PR](https://github.com/o/r/pull/1), <@U1>'
+
+    await conn.postMessage('C1', text, '100.1')
+
+    expect(calls[0]).toMatchObject({ text: 'Done: see the PR, <@U1>', blocks: [{ type: 'markdown', text }] })
   })
 
   it('posts linked trailing context with the reply and disables unfurls on the initial post', async () => {

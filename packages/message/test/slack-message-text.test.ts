@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractSlackMessageText } from '../src/slack-message-text.js'
+import { extractSlackMessageText, slackMarkdownPlainText } from '../src/slack-message-text.js'
 
 describe('extractSlackMessageText', () => {
   it('preserves the source URL and embedded content of a forwarded Slack message', () => {
@@ -78,5 +78,56 @@ describe('extractSlackMessageText', () => {
     expect(
       extractSlackMessageText({ attachments: [{ text: 'see snake_case_name' }, { text: 'see snakecasename' }] })
     ).toBe('see snake_case_name\nsee snakecasename')
+  })
+})
+
+describe('slackMarkdownPlainText', () => {
+  it('drops Markdown delimiters and keeps the words, link labels and Slack addresses', () => {
+    expect(
+      slackMarkdownPlainText(
+        '## Status\n**The release is ready.** **Asked by:** <@U0123ABCD|Ana>\n• Budget: ~~10~~ 12 hours, [tracking issue](https://example.com/issues/1) _soon_'
+      )
+    ).toBe('Status\nThe release is ready. Asked by: <@U0123ABCD|Ana>\n• Budget: 10 12 hours, tracking issue soon')
+  })
+
+  it('keeps code content as written and drops only its fences', () => {
+    expect(slackMarkdownPlainText('Run `a **b**` then:\n```sh\nls **/*.ts\n```\nDone.')).toBe(
+      'Run a **b** then:\nls **/*.ts\nDone.'
+    )
+  })
+
+  it('leaves plain text, Slack links and emoji untouched', () => {
+    const text = '🔴 Priority: High · :link: <https://example.com/t|Tenant> · snake_case_name · 2 * 3'
+    expect(slackMarkdownPlainText(text)).toBe(text)
+  })
+
+  it('reads a markdown reply once when the fallback is its plain text', () => {
+    const markdown =
+      '**Acme Freight** (Live)\n\n**Problem:** the export sent the wrong time. [Order](https://example.com/o/1)'
+    expect(
+      extractSlackMessageText({
+        text: slackMarkdownPlainText(markdown),
+        blocks: [{ type: 'markdown', text: markdown }]
+      })
+    ).toBe(markdown)
+  })
+
+  it.each([
+    'Edit `__init__.py` and rerun.',
+    'Run:\n```py\nif __name__ == "__main__":\n  main()\n```',
+    'Run `a **b**` then:\n```sh\nls **/*.ts\n```\nDone.',
+    'Use `[label](url)` syntax for links.',
+    'Set `~~strike~~` or `2 * 3 * 4` here.'
+  ])('reads a markdown reply with Markdown-like code once: %j', (markdown) => {
+    expect(
+      extractSlackMessageText({
+        text: slackMarkdownPlainText(markdown),
+        blocks: [{ type: 'markdown', text: markdown }]
+      })
+    ).toBe(markdown)
+  })
+
+  it('keeps Markdown-like text in a human mrkdwn message as written', () => {
+    expect(extractSlackMessageText({ text: 'see [x](y) and __init__' })).toBe('see [x](y) and __init__')
   })
 })

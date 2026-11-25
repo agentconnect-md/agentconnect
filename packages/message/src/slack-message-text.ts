@@ -259,6 +259,25 @@ function plainMrkdwn(value: string): string {
     .join('')
 }
 
+/** A Markdown link or image, `[label](url)`: the label stays, the URL goes. */
+const MARKDOWN_LINK_RE = /!?\[([^\]\n]*)\]\((?:[^()\s]|\([^()\s]*\))+\)/g
+
+/** Plain text of a `markdown` block for the notification fallback: Markdown delimiters go, words and Slack addresses stay. */
+export function slackMarkdownPlainText(markdown: string): string {
+  return markdown
+    .split(/(```[\s\S]*?```|`[^`\n]+`)/)
+    .map((part, i) => {
+      if (i % 2 === 1) return part.startsWith('```') ? part.replace(/^```[^\n]*\n?|\n?```$/g, '') : part.slice(1, -1)
+      return plainMrkdwn(
+        part
+          .replace(/^ {0,3}#{1,6}[ \t]+/gm, '')
+          .replace(MARKDOWN_LINK_RE, '$1')
+          .replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g, '$2')
+      )
+    })
+    .join('')
+}
+
 /** Join top-level text with visible blocks/attachments while removing the common
  * fallback-vs-layout duplication produced by Slack app messages. */
 function uniqueText(parts: string[]): string {
@@ -299,8 +318,20 @@ function referenceFilesText(value: unknown, body: string): string {
   )
 }
 
+// A Markdown reply's fallback is the plain text of its `markdown` blocks; it drops when those blocks are present.
+function fallbackText(text: string, blocks: unknown): string {
+  const markdown = Array.isArray(blocks)
+    ? join(blocks.map((value) => (record(value)?.type === 'markdown' ? blockText(value) : '')))
+    : ''
+  return markdown && canonical(text) === canonical(slackMarkdownPlainText(markdown)) ? '' : text
+}
+
 export function extractSlackMessageText(message: SlackTextBearingMessage): string {
   const attachments = Array.isArray(message.attachments) ? message.attachments.map(attachmentText) : []
-  const body = uniqueText([string(message.text), blocksText(message.blocks), ...attachments])
+  const body = uniqueText([
+    fallbackText(string(message.text), message.blocks),
+    blocksText(message.blocks),
+    ...attachments
+  ])
   return join([body, referenceFilesText(message.files, body)])
 }
