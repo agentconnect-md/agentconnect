@@ -1,4 +1,14 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -176,5 +186,23 @@ describe('forkMerge', () => {
     expect(who(target, 'http://127.0.0.1:8000')).toBe('fixture')
     expect(who(target, 'http://localhost:8000')).toBe('other')
     expect(readLevelDb(lsDir(target)).get('_http://127.0.0.1:8000\u0000\u0001big7')?.length).toBe(100_001)
+  })
+
+  it('skips a source it cannot read, still merges the others, and tries that source again next time', async () => {
+    const sibling = profile()
+    const master = profile()
+    const target = profile()
+    // A sibling browser mid-start: its cookie file does not open as a database.
+    writeFileSync(join(sibling, 'Default', 'Cookies'), 'not a database')
+    setCookie(master, 'site.example', 's', 'master', 100n)
+
+    const [skipped, merged] = await forkMerge(target, [sibling, master], options)
+
+    expect(skipped!.skipped).toBeTruthy()
+    expect(merged!.skipped).toBeUndefined()
+    expect(cookies(target)).toEqual({ s: 'master' })
+    const recorded = Object.keys(JSON.parse(readFileSync(join(target, BASELINE_FILE), 'utf8')).sources as object)
+    expect(recorded).not.toContain(realpathSync(sibling))
+    expect(recorded).toContain(realpathSync(master))
   })
 })

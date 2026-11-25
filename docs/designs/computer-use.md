@@ -815,8 +815,10 @@ then starts the browser. No extension and no DevTools protocol are involved.
   the master's live browser (measured), and gets an empty `First Run` file (§3.8), as does any profile the launcher
   creates empty.
 - **Sources.** Every other profile, running or not. A running source is read by copying its files (the SQLite file with
-  its journal, and the LevelDB directories, retried when a compaction races the copy); a running profile is never
-  written to. A source lags its browser by up to about 30 s, Chromium's cookie flush interval.
+  its journal, and the LevelDB directories, retried when a write or compaction races the copy); a running profile is
+  never written to. A source still unreadable after the retries, such as a sibling desktop's browser in its first
+  seconds, is skipped for this start with its baseline kept, so the browser starts and the next start takes it. A
+  source lags its browser by up to about 30 s, Chromium's cookie flush interval.
 - **Merge.** Cookies (SQLite) per unique key, localStorage (LevelDB) per origin, IndexedDB per origin directory. The rule
   is three-way: the target keeps, for each source, what it took at its previous fork (`ac-fork-baseline.json`); a source
   item is taken when it changed since that baseline, and otherwise the target keeps its own; a cookie that is in the

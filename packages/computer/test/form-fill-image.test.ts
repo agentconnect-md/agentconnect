@@ -36,6 +36,13 @@ const docker = (...args: string[]) => execFileSync('docker', args, { encoding: '
 const logs = () =>
   spawnSync('docker', ['logs', name], { encoding: 'utf8' }).stdout +
   spawnSync('docker', ['logs', name], { encoding: 'utf8' }).stderr
+// Each agent desktop's launcher log: why its browser did or did not start.
+const browserLogs = () =>
+  spawnSync(
+    'docker',
+    ['exec', name, 'sh', '-c', 'tail -n 40 /home/computer/.agentconnect/computer/desktops/*/browser.log 2>&1'],
+    { encoding: 'utf8' }
+  ).stdout
 
 async function until<T>(
   what: string,
@@ -50,7 +57,7 @@ async function until<T>(
     if (value !== undefined) return value
     if (Date.now() > deadline)
       throw new Error(
-        `timed out waiting for ${what}\n--- last results ---\n${results.slice(-3).join('\n')}\n--- container log ---\n${logs().slice(-6000)}`
+        `timed out waiting for ${what}\n--- last results ---\n${results.slice(-3).join('\n')}\n--- container log ---\n${logs().slice(-6000)}\n--- desktop browser logs ---\n${browserLogs().slice(-4000)}`
       )
     await sleep(500)
   }
