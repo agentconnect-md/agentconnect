@@ -281,6 +281,9 @@ export const INTEGRATION_REVOKED_FEATURE = 'integration-revoked-v1'
 /** CP answers `integration/room-grant`, opening a room a conversation-gated agent's own turn makes; a daemon asks only a CP advertising this. */
 export const ROOM_GRANT_FEATURE = 'room-grant-v1'
 
+/** CP records the bot senders a daemon or relay saw in a conversation (`integration/bot-sender`, `rc/bot-sender`); each sends only to a CP advertising this. */
+export const BOT_SENDERS_V1_FEATURE = 'bot-senders-v1'
+
 /** CP accepts `integration/tenant`, the tenant a daemon socket's own traffic named; the daemon sends it only to a CP advertising this. */
 export const INTEGRATION_TENANT_FEATURE = 'integration-tenant-v1'
 

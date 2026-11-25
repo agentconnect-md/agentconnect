@@ -34,9 +34,12 @@ const WIDTH = 248
 export function ChannelSettingsPopover({
   groups,
   name,
+  extra,
   disabled = false
 }: {
   groups: readonly ChannelSettingsGroup[]
+  /** A section of its own controls under the groups, mounted only while the popover is open. */
+  extra?: ReactNode
   /** The row's name, for assistive tech. */
   name: string
   /** Demo rows (no live integration) render the control inert. */
@@ -170,6 +173,12 @@ export function ChannelSettingsPopover({
               </div>
             </Fragment>
           ))}
+          {extra && (
+            <>
+              <div role="separator" className="mx-3 my-[6px] h-px bg-(--border-subtle) desktop:mx-[10px]" />
+              {extra}
+            </>
+          )}
           <div className="mt-[5px] flex flex-col gap-[6px] border-t border-(--border-subtle) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary) desktop:gap-[5px] desktop:px-[10px] desktop:py-[9px] desktop:text-[11.5px]">
             {error && (
               <div role="alert" className="flex items-start gap-[6px] text-(--status-error)">

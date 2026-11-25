@@ -252,6 +252,13 @@ export const IntegrationSessionMode = z.object({
 })
 export type IntegrationSessionMode = z.infer<typeof IntegrationSessionMode>
 
+// One conversation's blocked bot senders: a listed bot's posts activate no agent there, and every other bot's reach its Any-message agents.
+export const ChannelBlockedBotSenders = z.object({
+  channel: z.string(),
+  senders: z.array(z.string().min(1)).min(1)
+})
+export type ChannelBlockedBotSenders = z.infer<typeof ChannelBlockedBotSenders>
+
 /** Who is in a place (assistant-mode.md §5.3): only organization members, or possibly anyone else. */
 export const PlaceTrustLevel = z.enum(['internal', 'external'])
 export type PlaceTrustLevel = z.infer<typeof PlaceTrustLevel>
@@ -292,6 +299,8 @@ export const IntegrationCoreEnvelope = z.object({
   mutedChannels: z.array(z.string()).default([]),
   gated: z.boolean().default(false),
   sessionModes: z.array(IntegrationSessionMode).default([]),
+  // Sparse; absent reads as none blocked.
+  blockedBotSenders: z.array(ChannelBlockedBotSenders).optional(),
   // Conversations the platform detected as external (assistant-mode.md §5.3); every other enabled one is internal.
   externalChannels: z.array(z.string()).optional(),
   // Emitted unconditionally and stripped by readers that predate it; an empty bundle clears every binding.
@@ -475,6 +484,22 @@ export const IntegrationChannels = z.object({
   migrated: z.array(z.object({ from: z.string(), to: z.string() })).optional()
 })
 export type IntegrationChannels = z.infer<typeof IntegrationChannels>
+
+// A bot that posted in a conversation: its platform id with the name and avatar the platform gave. Control metadata, never message content.
+export const ChannelBotSender = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(120).optional(),
+  avatarUrl: z.string().url().max(2048).optional()
+})
+export type ChannelBotSender = z.infer<typeof ChannelBotSender>
+
+// D→C EVT (fire-and-forget): a direct integration saw another bot post in a conversation. A lost report heals on that bot's next post.
+export const IntegrationBotSender = z.object({
+  integrationId: z.string().uuid(),
+  channel: z.string().min(1),
+  sender: ChannelBotSender
+})
+export type IntegrationBotSender = z.infer<typeof IntegrationBotSender>
 
 /**
  * What a leave targets. Platforms disagree about what a bot can withdraw from, and

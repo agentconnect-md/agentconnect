@@ -1134,6 +1134,8 @@ export const IntegrationChannelDto = z.object({
     .nullable(),
   /** Which session a message here joins: one per thread, the conversation's one session, or the coordinator's pick (auto-session-mode.md). */
   sessionMode: ChannelSessionMode,
+  /** Bot sender ids whose posts activate no agent here; every other bot's reach an Any-message agent. */
+  blockedBotSenders: z.array(z.string()),
   /** Effective per-conversation owner for a shared bot (§10.1); null before convergence
    *  or when ownership does not apply. */
   agentId: z.string().nullable(),
@@ -2159,6 +2161,14 @@ export const SlackAppFinalizeBody = z.object({
   shareable: z.boolean().optional() // http multi-agent opt-in; coerced off for socket
 })
 
+/** A bot seen posting in a conversation: its platform id, and the name and avatar the platform gave. */
+export const ChannelBotSenderDto = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  avatarUrl: z.string().nullable()
+})
+export const ChannelBotSenderListDto = z.array(ChannelBotSenderDto)
+
 /** `PATCH /integrations/:id/channels/:channelId` — per-conversation trigger
  *  ('off' disables the conversation, §14) and/or the shared-bot default agent.
  *  At least one field; an active shared channel always has an owner. */
@@ -2169,11 +2179,18 @@ export const UpdateIntegrationChannelBody = z
     decisionBinding: ChannelDecisionGate.safeExtend({ decisionId: z.string().uuid() }).optional(),
     // `auto` is refused (409 SESSION_MODE_UNSUPPORTED) unless every connected daemon serving the conversation advertises it.
     sessionMode: ChannelSessionMode.optional(),
+    // Replaces the conversation's blocked bot senders: platform bot ids whose posts activate no agent here.
+    blockedBotSenders: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
     agentId: z.string().min(1).optional()
   })
-  .refine((b) => b.trigger !== undefined || b.sessionMode !== undefined || b.agentId !== undefined, {
-    message: 'provide trigger, sessionMode and/or agentId'
-  })
+  .refine(
+    (b) =>
+      b.trigger !== undefined ||
+      b.sessionMode !== undefined ||
+      b.blockedBotSenders !== undefined ||
+      b.agentId !== undefined,
+    { message: 'provide trigger, sessionMode, blockedBotSenders and/or agentId' }
+  )
   .refine((b) => (b.trigger === 'decision') === (b.decisionBinding !== undefined), {
     message: "decisionBinding is required with, and only with, trigger 'decision'",
     path: ['decisionBinding']

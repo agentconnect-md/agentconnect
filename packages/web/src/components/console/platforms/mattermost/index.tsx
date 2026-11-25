@@ -17,7 +17,8 @@ export const MATTERMOST_CHANNEL_LIST: WebChannelListSemantics = {
   roomGlyph: '#',
   leave: 'conversation',
   // Group DMs (`G`, `mpim`) behave like small private rooms with a room's session modes.
-  groupDmSessionModes: ['createNew', 'append', 'auto']
+  groupDmSessionModes: ['createNew', 'append', 'auto'],
+  otherBotPosts: true
 }
 
 export const mattermostModule: WebPlatformModule = {

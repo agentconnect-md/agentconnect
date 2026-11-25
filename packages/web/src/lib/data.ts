@@ -2343,6 +2343,8 @@ export interface IntegrationChannelRow {
   decision?: ChannelDecisionView | null
   /** Which session a message here joins: one per thread, the conversation's one session, or the coordinator's choice (`auto`). */
   sessionMode?: 'createNew' | 'append' | 'auto'
+  /** Platform bot ids whose posts activate no agent here. */
+  blockedBotSenders?: string[]
   /** Effective per-conversation owner for a shared bot. */
   agentId?: string | null
 }

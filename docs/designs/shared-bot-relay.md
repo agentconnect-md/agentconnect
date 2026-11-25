@@ -492,8 +492,10 @@ routing the deleted agent's conversations to it.
 Each target contains `agentId`, `daemonId`, and `integrationId`. A verified
 AgentConnect-authored final is admitted through the collaboration policy and
 hop/loop fences, then sent independently to every other participant. Unverified
-managed-bot echoes still fail closed, and third-party bots remain exact-mention
-only.
+managed-bot echoes still fail closed. A third-party bot's mention reaches only the
+agent it names; its unaddressed post reaches the conversation's `auto` routes and joined
+participants. A conversation's `blockedBotSenders` list, carried on `rc/bot-assign` and
+`rc/routes`, resolves a listed sender to no target at all, mention included.
 
 Channel membership changes trigger a coalesced Slack membership refresh. The
 relay reports the complete channel snapshot through `rc/bot-channels`; CP

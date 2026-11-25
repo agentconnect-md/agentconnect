@@ -586,6 +586,8 @@ export interface WebChannelListSemantics {
   dmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
   /** Session modes a group DM row offers, a small private room (auto-session-mode.md §3.2). Absent ⇒ none: the platform has no group DM of its own. */
   groupDmSessionModes?: readonly ('createNew' | 'append' | 'auto')[]
+  /** Other bots' posts reach an agent here, so a room can name the ones it ignores. Absent ⇒ the platform routes no bot sender. */
+  otherBotPosts?: boolean
   /** Confirmation before a default seat moves off a gated agent, whose only grant it is (body gets `owner`, `room`); absent ⇒ no warning. */
   ownerChangeWarning?: {
     title: WebChannelListMessage

@@ -17,12 +17,14 @@
 import {
   arbitrateSharedBot,
   arbitrateSharedBotResult,
+  botSenderBlocked,
   sharedBotScopeMatches,
   sharedBotSessionKey,
   type SharedBotArbitration
 } from '@agentconnect.md/activation-policy'
 import type {
   AttributedRoute,
+  ChannelBlockedBotSenders,
   RcAgentDirEntry,
   RcBotAssign,
   RcConversationDefault,
@@ -97,6 +99,8 @@ export interface BotAssignment {
   mutedChannels?: string[]
   /** The muted channels that are Off rather than a held decision: fenced like any mute, and an addressed message there gets the §14.3 notice. */
   offChannels?: string[]
+  /** Per conversation, the bot senders whose posts reach no agent of this bot. */
+  blockedBotSenders?: ChannelBlockedBotSenders[]
   /** §14.3: the relayId that posts this bot's CHANNEL gating notices (stamped by the CP from the connected roster). */
   noticeAuthority?: string
   /** §14.10: ms from receipt in which a gated member's own new room may still be opening. */
@@ -126,6 +130,7 @@ export type RoutesPatch = Pick<
   | 'gatedAgentIds'
   | 'mutedChannels'
   | 'offChannels'
+  | 'blockedBotSenders'
   | 'noticeAuthority'
   | 'roomOpeningMs'
   | 'conversationDefaults'
@@ -146,6 +151,7 @@ export function toRoutesPatch(r: RcRoutes): RoutesPatch {
     gatedAgentIds: r.gatedAgentIds,
     mutedChannels: r.mutedChannels,
     offChannels: r.offChannels,
+    blockedBotSenders: r.blockedBotSenders,
     ...(r.noticeAuthority ? { noticeAuthority: r.noticeAuthority } : {}),
     ...(r.roomOpeningMs ? { roomOpeningMs: r.roomOpeningMs } : {}),
     conversationDefaults: r.conversationDefaults
@@ -280,6 +286,7 @@ export class BotArbitrationRouter {
     a.gatedAgentIds = patch.gatedAgentIds
     a.mutedChannels = patch.mutedChannels
     a.offChannels = patch.offChannels
+    a.blockedBotSenders = patch.blockedBotSenders
     a.noticeAuthority = patch.noticeAuthority
     a.roomOpeningMs = patch.roomOpeningMs
     // An owner edit converges through here, so the defaults are replaced with the routes:
@@ -765,7 +772,7 @@ export class BotArbitrationRouter {
     admitsNewJoin?: (target: RouteTarget) => boolean
   ): ConversationTarget[] {
     const a = this.bots.get(botId)
-    if (!a || a.mutedChannels?.includes(msg.channel)) return []
+    if (!a || a.mutedChannels?.includes(msg.channel) || botSenderBlocked(a.blockedBotSenders, msg)) return []
     const key = sessionKeyOf(msg)
     const byConversation = this.participants.get(botId) ?? new Map<string, Map<string, RouteTarget>>()
     const remembered = byConversation.get(key) ?? new Map<string, RouteTarget>()
@@ -947,6 +954,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     gatedAgentIds: a.gatedAgentIds,
     mutedChannels: a.mutedChannels,
     offChannels: a.offChannels,
+    blockedBotSenders: a.blockedBotSenders,
     conversationDefaults: a.conversationDefaults,
     ownerAsDefault: a.ownerAsDefault,
     ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {}),

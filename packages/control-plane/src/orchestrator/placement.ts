@@ -32,6 +32,7 @@ import type {
   SecretsGrant,
   BindRule,
   IntegrationSpec,
+  ChannelBlockedBotSenders,
   IntegrationBindRule,
   IntegrationCoreEnvelope,
   ChatAuthority,
@@ -339,6 +340,15 @@ export async function chatAuthorityOf(
   return policy && policy.state !== 'disabled' ? 'editors' : 'participants'
 }
 
+/** Each conversation's blocked bot senders, sparse; a shared bot's sibling rows repeat one list, so the first non-empty row speaks for it. */
+export function blockedBotSenderEntries(channels: IntegrationChannelRecord[]): ChannelBlockedBotSenders[] {
+  const byChannel = new Map<string, string[]>()
+  for (const c of channels) {
+    if (c.blockedBotSenders.length > 0 && !byChannel.has(c.channelId)) byChannel.set(c.channelId, c.blockedBotSenders)
+  }
+  return [...byChannel].map(([channel, senders]) => ({ channel, senders }))
+}
+
 /** The direct-mode {@link IntegrationSpec} (gating and session modes read off `owner`); `null` ⇒ nothing deliverable. Token-bearing: NEVER log. */
 export async function integrationToSpec(
   platforms: CpPlatformRegistry,
@@ -376,6 +386,7 @@ export async function integrationToSpec(
     mutedChannels,
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner), owner?.coordinatorDisabled === true),
+    blockedBotSenders: blockedBotSenderEntries(channels),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
     chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)
@@ -408,6 +419,7 @@ export async function httpIntegrationToSpec(
     mutedChannels: [...mutedChannelIds(channels, gated), ...(gated ? [] : heldDecisionChannels(channels))],
     gated,
     sessionModes: sessionModeEntries(channels, forcedAppendKinds(i, owner), owner?.coordinatorDisabled === true),
+    blockedBotSenders: blockedBotSenderEntries(channels),
     externalChannels: externalChannelIds(channels),
     decisions: decisionBundleOf(channels),
     chatAuthority: await chatAuthorityOf(platforms, chatAuthority, i)

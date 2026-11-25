@@ -275,6 +275,8 @@ interface ConsoleData {
   /** Save a By decision gate (trigger + binding in one PATCH) and project the returned row. */
   setChannelDecision: (integrationId: string, channelId: string, gate: ChannelDecisionGate) => Promise<void>
   setChannelSessionMode: (integrationId: string, channelId: string, sessionMode: ChannelSessionMode) => Promise<void>
+  /** Replace the bots a conversation ignores; a shared bot's conversation moves on every install. */
+  setChannelBlockedBotSenders: (integrationId: string, channelId: string, senders: string[]) => Promise<void>
   /** Per-conversation default agent for a shared bot (PATCH), applied locally. */
   setChannelAgent: (integrationId: string, channelId: string, agentId: string) => Promise<void>
   /** Forget a conversation row without touching the platform. */
@@ -400,6 +402,7 @@ export function integrationRowFromDto(
       decisionBinding: c.decisionBinding ?? null,
       decision: c.decision ?? null,
       sessionMode: c.sessionMode,
+      blockedBotSenders: c.blockedBotSenders ?? [],
       agentId: c.agentId
     }))
   }
@@ -1513,6 +1516,35 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateSkillSources]
   )
 
+  const setChannelBlockedBotSenders = useCallback(
+    async (integrationId: string, channelId: string, senders: string[]) => {
+      const updated = await apiUpdateIntegrationChannel(integrationId, channelId, { blockedBotSenders: senders })
+      const blockedBotSenders = updated.blockedBotSenders ?? senders
+      settleInBackground(
+        mutateIntegrations(
+          (rows) => {
+            const source = rows?.find((row) => row.id === integrationId)
+            if (!rows || !source) return rows
+            // Bot-scoped on a shared bot, like the session mode below.
+            const botWide = realBots.some((bot) => bot.id === source.botId && bot.shareable)
+            return rows.map((row) =>
+              (botWide ? row.botId === source.botId : row.id === integrationId)
+                ? {
+                    ...row,
+                    channels: row.channels.map((channel) =>
+                      channel.channelId === channelId ? { ...channel, blockedBotSenders } : channel
+                    )
+                  }
+                : row
+            )
+          },
+          { revalidate: false }
+        )
+      )
+    },
+    [mutateIntegrations, realBots]
+  )
+
   // Flip one conversation's trigger. Shared bots project it bot-wide. Avoid a full
   // re-pull so the toggle does not flash.
   const setChannelSessionMode = useCallback(
@@ -1892,6 +1924,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       setChannelTrigger,
       setChannelDecision,
       setChannelSessionMode,
+      setChannelBlockedBotSenders,
       forgetChannel,
       leaveConversation,
       setChannelAgent,

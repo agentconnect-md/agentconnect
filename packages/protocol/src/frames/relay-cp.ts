@@ -11,7 +11,7 @@ import {
 } from '../code-host.js'
 import { COMPUTER_TURN_URLS_MAX, ComputerStunUrl, ComputerTurnUrl } from '../computer-viewer.js'
 import { ErrorFrame } from './error.js'
-import { BindMatch, IntegrationChannel } from './integration.js'
+import { BindMatch, ChannelBlockedBotSenders, ChannelBotSender, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
@@ -1185,6 +1185,8 @@ export const RcBotAssign = z.object({
   mutedChannels: z.array(z.string()).default([]),
   // The muted channels that are Off rather than a held decision: an addressed message there gets the §14.3 notice.
   offChannels: z.array(z.string()).default([]),
+  // Per conversation, the bot senders whose posts activate no agent of this bot there.
+  blockedBotSenders: z.array(ChannelBlockedBotSenders).optional(),
   // §14.3 gating notice in a CHANNEL: the relay that posts it, since a channel mention's two event copies may land on different pods; absent ⇒ no relay posts.
   noticeAuthority: z.string().uuid().optional(),
   // §14.10: ms left in which a gated member's own new room may still be opening, so an unrouted message in a room this bot owns is retried rather than refused.
@@ -1229,6 +1231,7 @@ export const RcRoutes = z.object({
   gatedAgentIds: z.array(z.string().uuid()).default([]), // §14 — see RcBotAssign.gatedAgentIds
   mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
   offChannels: z.array(z.string()).default([]), // see RcBotAssign.offChannels
+  blockedBotSenders: z.array(ChannelBlockedBotSenders).optional(), // see RcBotAssign.blockedBotSenders
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
   roomOpeningMs: z.number().int().positive().max(120_000).optional(), // §14.10 — see RcBotAssign.roomOpeningMs
   // Rides the hot update too: an owner edit converges through `syncRoutes` without a
@@ -1369,6 +1372,14 @@ export const RcBotConversation = z.object({
   conversation: IntegrationChannel
 })
 export type RcBotConversation = z.infer<typeof RcBotConversation>
+
+// R→C EVT (fire-and-forget): another bot posted in a conversation of a shared bot. A lost report heals on that bot's next post.
+export const RcBotSender = z.object({
+  botId: z.string().uuid(),
+  channel: z.string().min(1),
+  sender: ChannelBotSender
+})
+export type RcBotSender = z.infer<typeof RcBotSender>
 
 // R→C EVT (fire-and-forget) — durable thread-affinity REPORT leg (§10 step 3, the
 // 3-leg affinity dance). The relay tells the CP which agent now owns a (channel,
@@ -1654,6 +1665,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
   'rc/bot-conversation': RcBotConversation,
+  'rc/bot-sender': RcBotSender,
   'rc/bot-revoked': RcBotRevoked,
   'rc/bot-revoked/ok': RcBotRevokedOk,
   'rc/bot-credential-check': RcBotCredentialCheck,
@@ -1721,6 +1733,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
+  frameSchema('rc/bot-sender', RELAY_CP_SCHEMAS['rc/bot-sender']),
   frameSchema('rc/bot-revoked', RELAY_CP_SCHEMAS['rc/bot-revoked']),
   frameSchema('rc/bot-revoked/ok', RELAY_CP_SCHEMAS['rc/bot-revoked/ok']),
   frameSchema('rc/bot-credential-check', RELAY_CP_SCHEMAS['rc/bot-credential-check']),

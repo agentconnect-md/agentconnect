@@ -1999,6 +1999,12 @@
     "groupDm": "Group DM",
     "directMessage": "Direct message",
     "channelList": {
+      "ignoredBots": {
+        "label": "Ignored bots",
+        "placeholder": "Add a bot",
+        "remove": "Remove {name}",
+        "addId": "Add <code>{id}</code>"
+      },
       "nouns": {
         "channel": "channel",
         "channelPlural": "channels",

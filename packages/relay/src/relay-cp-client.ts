@@ -43,6 +43,7 @@ import {
   OWNER_DEFAULT_DECISION_V1_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_ACCESS_RECHECK_FEATURE,
+  BOT_SENDERS_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SCHEMAS,
   type RelayCpFrame,
@@ -71,6 +72,7 @@ import {
   type RcSetChannelAgent,
   type RcBotChannels,
   type RcBotConversation,
+  type RcBotSender,
   type RcBotCredentialCheck,
   type RcBotTenant,
   type RcBotRevoked,
@@ -597,6 +599,13 @@ export class RelayCpClient {
       return false
     }
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-channels', m)))
+    return true
+  }
+
+  /** Emit one seen bot sender; false when the link is down or the CP does not record them. */
+  emitBotSender(m: RcBotSender): boolean {
+    if (this.state !== 'READY' || !this.transport || !this.serverFeatures.has(BOT_SENDERS_V1_FEATURE)) return false
+    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/bot-sender', m)))
     return true
   }
 

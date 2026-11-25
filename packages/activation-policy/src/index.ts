@@ -35,6 +35,8 @@ export interface ActivationRule {
    *  purely additive rule set cannot express. Carried per rule so the ladder
    *  stays pure and every rung is fenced by the one scope filter. */
   mutedChannels?: string[]
+  /** Per conversation, the bot senders whose posts its integration never answers; carried per rule like `mutedChannels`. */
+  blockedBotSenders?: readonly BlockedBotSenders[]
   source: 'config' | 'cp'
   epoch?: number // cp layer only
   /** Platform this rule belongs to. Undefined = matches any platform
@@ -52,7 +54,23 @@ export interface ActivationMessageFacts {
   isDm: boolean
   mentionedBots: string[]
   conversationBotId?: string
-  sender: { isBot: boolean }
+  sender: { isBot: boolean; id?: string | undefined }
+}
+
+/** One conversation's blocked bot senders — structurally the wire `ChannelBlockedBotSenders`. */
+export interface BlockedBotSenders {
+  channel: string
+  senders: readonly string[]
+}
+
+/** Whether a bot's post is blocked in its conversation: a listed sender activates no agent there, mention included. */
+export function botSenderBlocked(
+  blocked: readonly BlockedBotSenders[] | undefined,
+  msg: { channel: string; sender: { isBot: boolean; id?: string | undefined } }
+): boolean {
+  const { id, isBot } = msg.sender
+  if (!isBot || id === undefined || !blocked) return false
+  return blocked.some((entry) => entry.channel === msg.channel && entry.senders.includes(id))
 }
 
 // ─── routeRules: arbitration ladder over the merged (local ∪ CP) rule set ───
@@ -75,6 +93,8 @@ function scopeMatches(r: ActivationRule, msg: ActivationMessageFacts): boolean {
   // a CP session placement. Threads inherit the enclosing channel's Off through the
   // same predicate the positive scope uses.
   if (r.mutedChannels?.some((muted) => channelInScope(muted, msg))) return false
+  // A blocked bot sender is fenced in the same one filter, so neither a mention nor a thread it posts in reaches the agent.
+  if (botSenderBlocked(r.blockedBotSenders, msg)) return false
   if (!channelInScope(r.scope.channel, msg)) return false
   if (r.scope.thread !== undefined && r.scope.thread !== msg.thread) return false
   return true
@@ -153,8 +173,8 @@ export function automaticAgents(msg: ActivationMessageFacts, rules: ActivationRu
  *
  * `explicitAgentId` short-circuits the ladder (webchat names its target). `verifiedAgentAuthor`
  * opens the implicit rungs to an AgentConnect-authored message (§2.3) with the author removed so
- * it can never wake itself — set it ONLY after authorship is verified; unverified bots, including
- * third-party ones, still stop at the explicit-mention rung.
+ * it can never wake itself — set it ONLY after authorship is verified. Any other bot's post reaches
+ * the mention, thread and `auto` rungs alone, and only on a platform whose manifest admits bot senders.
  */
 export function routeRules(
   msg: ActivationMessageFacts,
@@ -184,9 +204,9 @@ export function routeRules(
   ) {
     return pickRule(mention, 'mention')
   }
-  // Only a VERIFIED AgentConnect author continues into the implicit rungs (§2.3); every other bot
-  // stops here rather than falling through to dm/thread/keyword/auto.
-  if (msg.sender.isBot && verifiedAgentAuthor === undefined) return null
+  // A bot that is no verified AgentConnect author continues to thread affinity and `auto` only, never dm/keyword/decision.
+  const otherBot = msg.sender.isBot && verifiedAgentAuthor === undefined
+  if (otherBot && !manifestFor(msg.platform).botSenderRouting) return null
   // An unmatched channel mention belongs to someone else, so thread affinity must not claim it —
   // otherwise every daemon believes its own agent owns the thread. A 1:1 DM is already addressed
   // to this bot (group DMs normalize isDm=false and stay mention-gated). A verified author is
@@ -221,7 +241,7 @@ export function routeRules(
 
   // 4/5. kind precedence within the chosen layer (mention already handled).
   for (const kind of KIND_ORDER) {
-    if (kind === 'mention') continue
+    if (kind === 'mention' || (otherBot && kind !== 'auto')) continue
     const r = layer.find((x) => x.match.kind === kind)
     if (r) return pickRule(r, kind)
   }
@@ -472,6 +492,8 @@ export interface SharedBotAssignmentFacts {
    *  no missing route can suppress (continuity, the unscoped keyword slug,
    *  `defaultAgentId`), so a muted channel resolves to nothing. */
   mutedChannels?: string[] | undefined
+  /** Per conversation, the bot senders whose posts resolve to no target, mention included. */
+  blockedBotSenders?: readonly BlockedBotSenders[] | undefined
   /** Per-conversation defaults (linear-integration.md §6.2): a channel's own
    *  default agent, consulted after keyword and thread continuity and before the
    *  group's `defaultAgentId`. Also the grant a gated agent holds on such a
@@ -599,6 +621,7 @@ export function arbitrateSharedBotResult(
   // A channel switched Off resolves to no target at all — ahead of every rung, so
   // neither an @-mention nor an existing thread binding can reach into it.
   if (a.mutedChannels?.includes(msg.channel)) return none
+  if (botSenderBlocked(a.blockedBotSenders, msg)) return none
 
   // The author is removed ONCE, so every rung below inherits the exclusion — an agent
   // matching its own route would wake itself on its own reply, an unconditional self-loop.

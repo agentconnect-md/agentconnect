@@ -160,6 +160,7 @@ const channel = (
   trigger,
   dmUserId: null,
   sessionMode: 'createNew',
+  blockedBotSenders: [],
   triggerChosen: false,
   decisionBinding: null,
   decisionNeedsReview: false,
@@ -468,6 +469,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
         mutedChannels: ['oc_3'],
         gated: false,
         sessionModes: [],
+        blockedBotSenders: [],
         externalChannels: [],
         decisions: { bindings: [], definitions: [] },
         chatAuthority: 'participants'
@@ -558,6 +560,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
         mutedChannels: ['oc_2'],
         gated: false,
         sessionModes: [],
+        blockedBotSenders: [],
         externalChannels: [],
         decisions: { bindings: [], definitions: [] },
         chatAuthority: 'participants'

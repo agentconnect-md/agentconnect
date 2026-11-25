@@ -1,4 +1,5 @@
 // Agent-to-agent collaboration (A2A wake/reply/status): every delivery is DIRECT, never a visible post, and its CAS and admission orderings are load-bearing.
+import type { resolveAgentIntegration } from '../router/routing-rule.js'
 import { isAppendCoordinate, isCoordinatorCoordinate } from '../session/append-coordinate.js'
 import { deriveTitle } from '../session/derive-title.js'
 import { readCheckedTask } from '../assistant/checked-tasks.js'
@@ -424,10 +425,7 @@ export interface CollabRoutingHost {
   /** Peer directory names cached from `channelAgents`, the only local source for a remote label. */
   channelAgentNames(): ReadonlyMap<string, { name?: string; displayName?: string }>
   botUserIds(): Record<string, string>
-  resolveCpAgent(
-    agentId: string,
-    platform?: string
-  ): { integrationId: string; botUserId: string; platform: string; mutedChannels: string[] } | null
+  resolveCpAgent(agentId: string, platform?: string): ReturnType<typeof resolveAgentIntegration>
   transportScopeForIntegrationIds(integrationIds?: readonly string[]): string | undefined
   integrationIdForSessionTransport(
     agentId: string,

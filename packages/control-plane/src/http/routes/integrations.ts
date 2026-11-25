@@ -63,6 +63,7 @@ import {
   LeaveIntegrationConversationBody,
   IntegrationDto,
   IntegrationChannelDto,
+  ChannelBotSenderListDto,
   IntegrationListDto,
   ErrorDto,
   IdParam,
@@ -94,6 +95,7 @@ function toChannelDto(c: IntegrationChannelRecord, view?: DecisionView): Integra
     decisionBinding: c.trigger === 'decision' ? c.decisionBinding : null,
     decision: c.trigger === 'decision' ? decisionChannelView(c, view?.names ?? new Map(), view?.readiness?.(c)) : null,
     sessionMode: c.sessionMode,
+    blockedBotSenders: c.blockedBotSenders,
     agentId: c.agentId,
     externalReason: c.externalReason ?? null
   }
@@ -857,6 +859,30 @@ export function integrationRoutes(deps: HttpDeps) {
       return { ok: true, botScoped: true, ownerAgentId: ownerAgent.id }
     }
 
+    r.get(
+      '/integrations/:id/channels/:channelId/bot-senders',
+      {
+        schema: {
+          tags: [Tag.Integrations],
+          summary: 'List the bots seen in a conversation',
+          description:
+            "The other bots that have posted in a conversation, newest first, with the name and avatar the platform gave each. These are the senders a conversation's `blockedBotSenders` can name; a bot that has not posted yet is absent.",
+          operationId: 'listIntegrationChannelBotSenders',
+          params: IdParam.extend({ channelId: z.string().min(1) }),
+          response: { 200: ChannelBotSenderListDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const integration = await deps.repos.integration.get(orgIdOf(req), IntegrationId(req.params.id))
+        const agent = integration ? await deps.repos.agent.get(orgIdOf(req), integration.agentId) : null
+        // Derived visibility, as on the conversation list: a restricted agent's integration is hidden.
+        if (!integration || !agent || !canView(agent, ctxOf(req))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
+        }
+        return deps.repos.integrationChannel.listBotSenders(integration.botId, req.params.channelId)
+      }
+    )
+
     // Per-conversation trigger choice (@-mention vs any message). Persist, then push the
     // integration's recomputed bindRules to the owning daemon (integration/upsert,
     // best-effort — the reconcile roster converges an offline daemon later).
@@ -1044,6 +1070,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // remains authoritative.
           let updated: IntegrationChannelRecord | null = null
           let routesSynced = false
+          const blockedBotSenders = req.body.blockedBotSenders ? [...new Set(req.body.blockedBotSenders)] : undefined
           if (botScopedConversation) {
             updated = await deps.httpBot.updateConversation(
               bot.id,
@@ -1052,7 +1079,8 @@ export function integrationRoutes(deps: HttpDeps) {
                 ...(req.body.agentId !== undefined ? { agentId: req.body.agentId } : {}),
                 ...(req.body.trigger !== undefined ? { trigger: req.body.trigger } : {}),
                 ...(gate ? { decisionBinding: gate } : {}),
-                ...(req.body.sessionMode !== undefined ? { sessionMode: req.body.sessionMode } : {})
+                ...(req.body.sessionMode !== undefined ? { sessionMode: req.body.sessionMode } : {}),
+                ...(blockedBotSenders ? { blockedBotSenders } : {})
               },
               {
                 expectedOwnerAgentId: effectiveOwner!.id,
@@ -1097,6 +1125,13 @@ export function integrationRoutes(deps: HttpDeps) {
                 integration.id,
                 req.params.channelId,
                 req.body.sessionMode
+              )
+            }
+            if (updated && blockedBotSenders) {
+              updated = await deps.repos.integrationChannel.setBlockedBotSenders(
+                integration.id,
+                req.params.channelId,
+                blockedBotSenders
               )
             }
           }

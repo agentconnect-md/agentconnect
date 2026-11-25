@@ -32,6 +32,7 @@ import {
   IntegrationQQConfig,
   IntegrationWeChatConfig,
   IntegrationWeComConfig,
+  type ChannelBlockedBotSenders,
   type ChatAuthority,
   type DecisionBundle,
   type IntegrationSessionMode
@@ -95,6 +96,8 @@ export interface IntegrationCore {
    *  assembled by hand rather than parsed (a fixture, a caller mapping a
    *  partial spec) still reads as "nothing muted" when the field is absent. */
   mutedChannels: string[]
+  /** Per conversation, the bot senders whose posts activate no agent there. */
+  blockedBotSenders: ChannelBlockedBotSenders[]
   gated: boolean
   /** Conversations whose session mode departs from `createNew` (channel-session-mode.md).
    *  Sparse, and normalized to [] here so a hand-assembled integration reads as all-default. */
@@ -177,6 +180,7 @@ export function integrationCore(int: Integration): IntegrationCore {
     mode: core?.mode ?? 'direct',
     bindRules: core?.bindRules ?? [],
     mutedChannels: core?.mutedChannels ?? [],
+    blockedBotSenders: core?.blockedBotSenders ?? [],
     gated: core?.gated ?? false,
     sessionModes: core?.sessionModes ?? [],
     externalChannels: core?.externalChannels ?? [],

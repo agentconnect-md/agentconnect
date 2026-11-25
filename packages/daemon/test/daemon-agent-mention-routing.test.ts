@@ -750,17 +750,28 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // of them could author messages as any co-tenant.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     expect((await route(daemon, agentMessage({}, { authorAgentId: 'not-an-agent-here' }))).kind).toBe('rejected')
-    // A foreign app is not an AgentConnect author at all.
-    expect(
-      (
-        await route(
-          daemon,
-          agentMessage({ msgId: 'slack:C1:3:final', sender: { id: 'UX', isBot: true, appId: 'AOTHER' } })
-        )
-      ).kind
-    ).toBe('rejected')
     expect(calls).toHaveLength(0)
+    // A foreign app is not an AgentConnect author at all: its claim is ignored and it is another bot's ordinary post.
+    await route(daemon, agentMessage({ msgId: 'slack:C1:3:final', sender: { id: 'UX', isBot: true, appId: 'AOTHER' } }))
+    expect(calls.every((call) => call.callMeta === undefined)).toBe(true)
     await daemon.stop()
+  })
+
+  it("dispatches another bot's unaddressed post to an Any-message agent and to no mention-only one", async () => {
+    const post = { agentAuthorship: undefined, sender: { id: 'BALERTS', isBot: true, appId: 'AOTHER' } }
+    const any = await boot([{ id: 'bot-a' }, { id: 'bot-b', trigger: 'auto' }])
+    expect((await route(any.daemon, agentMessage(post))).kind).toBe('dispatched')
+    expect(any.calls.map((call) => [call.agentId, call.callMeta])).toEqual([['bot-b', undefined]])
+    // A post that mentions someone else is addressed, so it does not spread to the Any-message agent.
+    const addressed = agentMessage({ ...post, msgId: 'slack:C1:9:final', mentionedBots: ['USOMEONEELSE'] })
+    expect((await route(any.daemon, addressed)).kind).toBe('rejected')
+    expect(any.calls).toHaveLength(1)
+    await any.daemon.stop()
+
+    const mentionOnly = await boot([{ id: 'bot-a' }, { id: 'bot-b', trigger: 'mention' }])
+    expect((await route(mentionOnly.daemon, agentMessage(post))).kind).toBe('rejected')
+    expect(mentionOnly.calls).toHaveLength(0)
+    await mentionOnly.daemon.stop()
   })
 
   it('admits a delivery below the cap, rejects one at the cap, and rejects an unusable depth', async () => {

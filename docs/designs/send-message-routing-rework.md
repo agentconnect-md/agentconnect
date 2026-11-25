@@ -187,9 +187,11 @@ ladder a human message takes, with the author removed from the candidate set:
   slows down — it is unconditional. The author is excluded once, before any ordinary
   routing rung. The paired `toAgent + channel` exception above is driven by its internal
   envelope, not by routing the author's platform echo.
-- A third-party bot keeps its existing behavior: where supported, it may activate
-  an agent only through an explicit mention. The difference is verification, not
-  bot-ness — we know exactly which agent wrote a verified message and have already
+- A third-party bot is an ordinary sender, not a caller: where the platform admits bot
+  senders, its mention activates the agent it names, and its unaddressed post reaches a
+  conversation's Any-message agents and a thread's participants unless the conversation
+  blocks that sender. It never reaches the DM, keyword, decision or default-agent rungs.
+  The difference is verification, not bot-ness — we know exactly which agent wrote a verified message and have already
   checked its policy, so it is a participant rather than anonymous bot traffic.
 
 Every selected edge is still an agent call: it spends from the shared hop budget

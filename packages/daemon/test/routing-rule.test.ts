@@ -99,6 +99,7 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
         mode: 'direct',
         bindRules,
         mutedChannels: ['C9'],
+        blockedBotSenders: [],
         gated: true,
         sessionModes: [],
         externalChannels: [],
@@ -387,14 +388,16 @@ describe('resolveAgentIntegration', () => {
       integrationId: 'int1',
       botUserId: 'B1',
       platform: 'slack',
-      mutedChannels: []
+      mutedChannels: [],
+      blockedBotSenders: []
     })
     // falls back to the static botUserId when the map has no entry
     expect(resolveAgentIntegration(a, {})).toEqual({
       integrationId: 'int1',
       botUserId: 'STATIC',
       platform: 'slack',
-      mutedChannels: []
+      mutedChannels: [],
+      blockedBotSenders: []
     })
   })
 

@@ -319,7 +319,7 @@ import { OrgSsoSessionRule } from './org-sso/session.js'
 import { LogtoOrgSsoIdp } from './org-sso/idp.js'
 import { systemTxtLookup, type TxtLookup } from './org-sso/txt-lookup.js'
 import { WaitlistService } from './registry/waitlistService.js'
-import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
+import { AgentId, BotId, DaemonId, HookId, OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
@@ -4409,6 +4409,18 @@ export function buildContainer(
         await httpBot.reportConversation(m.botId, m.conversation)
       } catch (err) {
         http.log.error({ err, botId: m.botId }, 'relay: bot-conversation report failed')
+      }
+    },
+    // A bot seen posting in a shared bot's conversation. Swallow+log: the next post reports again.
+    onBotSender: async (m) => {
+      try {
+        await repos.integrationChannel.recordBotSender(BotId(m.botId), m.channel, {
+          id: m.sender.id,
+          name: m.sender.name ?? null,
+          avatarUrl: m.sender.avatarUrl ?? null
+        })
+      } catch (err) {
+        http.log.error({ err, botId: m.botId }, 'relay: bot-sender report failed')
       }
     },
     // Durable thread-affinity REPORT leg — persist + broadcast (rc/assign). Swallow+log:

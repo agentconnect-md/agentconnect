@@ -118,7 +118,7 @@ In `packages/protocol/src/platform-manifest.ts`, `manifestFor('mattermost')` set
 
 - `consoleContinuation: true` — mirrors Console continuation prompts back to Mattermost (`postAsAuthor`).
 - `membershipEnumeration: 'authoritative'` — `GET /api/v4/users/me/channels` lists the bot's complete joined channel set.
-- `botSenderRouting: true` — allows verified AgentConnect peer bots and explicit `@mention`s from third-party bots to enter the routing ladder.
+- `botSenderRouting: true` — allows verified AgentConnect peer bots, and third-party bots by `@mention` or by posting in an Any-message conversation, to enter the routing ladder.
 - `leaveGranularity: 'conversation'` — leaving withdraws from individual channels (`DELETE /api/v4/channels/{id}/members/{botUserId}`), not spaces.
 - `multiAgentShareable: false` — one bot credential serves at most one agent.
 - `ownerAsDefault: false`, `addressedByConstruction: false` — channels require explicit `@bot` mention or matching bind rules; DMs route directly.

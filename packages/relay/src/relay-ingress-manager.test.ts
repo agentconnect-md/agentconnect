@@ -890,6 +890,60 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled()
   })
 
+  it("forwards another bot's unaddressed post to the conversation's Any-message agents unless its sender is blocked there", async () => {
+    const { daemon, sendMsg } = online()
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon }))
+    const internals = internalsOf(manager)
+    const shared = channelAutoOwned()
+    shared.blockedBotSenders = [{ channel: 'C123', senders: ['BNOISY'] }]
+    internals.router.upsert(shared)
+    const post = (msgId: string, id: string, over: Partial<WireNormalizedMessage> = {}) =>
+      internals.forward(
+        BOT_ID,
+        followUp({
+          msgId,
+          thread: undefined,
+          sender: { id, isBot: true },
+          text: '[FIRING] disk',
+          mentionedBots: [],
+          ...over
+        })
+      )
+
+    await post('slack:C123:alert', 'BALERTS')
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+    expect(sendMsg.mock.calls[0]![0]).toMatchObject({ msgId: 'slack:C123:alert', agentId: AGENT_ID })
+
+    await post('slack:C123:noise', 'BNOISY')
+    await post('slack:C123:noise-mention', 'BNOISY', { text: '<@UBOT> hi', mentionedBots: ['UBOT'] })
+    expect(sendMsg).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports each bot sender once per name, a blocked one included, and never a person', async () => {
+    const { daemon } = online()
+    const reportBotSender = vi.fn(() => true)
+    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportBotSender }))
+    const internals = internalsOf(manager)
+    const shared = channelAutoOwned()
+    shared.blockedBotSenders = [{ channel: 'C123', senders: ['BNOISY'] }]
+    internals.router.upsert(shared)
+    const post = (msgId: string, sender: WireNormalizedMessage['sender']) =>
+      internals.forward(BOT_ID, followUp({ msgId, thread: undefined, sender, text: 'hi', mentionedBots: [] }))
+
+    await post('slack:C123:1', { id: 'BNOISY', isBot: true, name: 'Noisy' })
+    await post('slack:C123:2', { id: 'BNOISY', isBot: true, name: 'Noisy' })
+    await post('slack:C123:3', { id: 'UHUMAN', isBot: false })
+    expect(reportBotSender).toHaveBeenCalledTimes(1)
+    expect(reportBotSender).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      channel: 'C123',
+      sender: { id: 'BNOISY', name: 'Noisy' }
+    })
+
+    await post('slack:C123:4', { id: 'BNOISY', isBot: true, name: 'Renamed' })
+    expect(reportBotSender).toHaveBeenCalledTimes(2)
+  })
+
   it('names the bound Decision on a By decision delivery and skips a daemon that predates it', async () => {
     const decisionOwned = (): BotAssignment => {
       const a = channelOwned()
