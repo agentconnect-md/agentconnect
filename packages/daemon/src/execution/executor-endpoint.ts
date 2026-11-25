@@ -89,6 +89,21 @@ export class ExecutorEndpoints implements ShimEndpointProvider<ExecutorLaunch> {
     })
   }
 
+  /**
+   * Whether the executor still holds this launch, asked after its pipe would not open. Only a retired launch says no: an
+   * executor that restarted keeps the directory but not the key, so the pipe stays shut for good. Anything else, an
+   * unreachable executor or a control plane that could not be asked, may pass, so the dial keeps trying.
+   */
+  async stillHeld(launch: ExecutorLaunch): Promise<boolean> {
+    const result = await this.deps.prepare(launch).catch(() => undefined)
+    if (result?.status === 'ready') {
+      launch.generation = result.generation
+      launch.ready = result
+      return true
+    }
+    return !(result?.status === 'refused' && result.reason === 'launch_retired')
+  }
+
   /** One launch's `prepare` (§6, §7): a retired launch gets a new id, an unreachable executor the loss rule, and any other refusal fails the turn with the environment intact. */
   private async prepareLaunch(launch: ExecutorLaunch): Promise<ExecutorReady> {
     // Bounded: each pass either settles the launch or replaces what it is asking (a new launch id, another machine).

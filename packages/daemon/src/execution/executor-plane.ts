@@ -611,7 +611,13 @@ export class ExecutorPlane implements ExecutionPlane {
   ): Promise<ShimTransport> {
     const launch = this.registry.currentLaunch(spawnSubject(record))
     if (!launch) throw new Error(`session ${spawnSubject(record)} has no launch to dial`)
-    const socket = await this.endpoints.connect(launch)
+    const socket = await this.endpoints.connect(launch).catch(async (error: unknown) => {
+      // A restarted executor never opens this launch's pipe again, and the dialer would retry it forever: give the launch up so the next turn prepares a new one.
+      if (this.registry.currentLaunch(launch.subject) === launch && !(await this.endpoints.stillHeld(launch))) {
+        this.forgetLaunch(launch.subject, 'its executor no longer holds the environment')
+      }
+      throw error
+    })
     try {
       // The dialer is handed a connected socket instead of opening one, exactly as the local VM starter does.
       return (await ClientTransport.dial(url, {
