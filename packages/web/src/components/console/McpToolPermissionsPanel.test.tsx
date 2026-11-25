@@ -270,12 +270,12 @@ describe('McpToolPermissionsPanel catalog', () => {
     api.fetchMcpToolCatalog.mockResolvedValue(catalog({ failure: 'blocked_address' }))
     const view = await render(null)
     expect(view.querySelector('[data-testid="tool-catalog-failure"]')?.textContent).toBe(
-      "The last refresh failed: The server's address is blocked by the relay's network policy."
+      "The last refresh failed: The server's address is blocked by this deployment's network policy."
     )
     act(() => root?.unmount())
     api.fetchMcpToolCatalog.mockResolvedValue(catalog({ failure: 'relay_unavailable' }))
     expect((await render(null)).querySelector('[data-testid="tool-catalog-failure"]')?.textContent).toContain(
-      'No relay that can list tools is connected.'
+      "Tool listing isn't available right now."
     )
     act(() => root?.unmount())
     api.fetchMcpToolCatalog.mockResolvedValue(catalog({ failure: 'something_new' }))
@@ -356,11 +356,11 @@ describe('McpToolPermissionsPanel warnings', () => {
       relaysWithoutApprovals: 0
     }
     const view = await render(policy(), compat)
-    expect(view.textContent).toContain('1 daemon serving this agent cannot attach a restricted server (old-mac).')
-    expect(view.textContent).toContain('2 connected relays do not support tool permissions yet.')
+    expect(view.textContent).toContain("1 daemon serving this agent can't attach a restricted server (old-mac).")
+    expect(view.textContent).toContain("2 connected service instances don't support tool permissions yet.")
     await click(buttonByText('Full access'))
     expect(view.textContent).not.toContain('old-mac')
-    expect(view.textContent).not.toContain('connected relays')
+    expect(view.textContent).not.toContain('connected service instances')
   })
 
   const approvalCompat: ToolPolicyCompatibility = {
@@ -376,10 +376,10 @@ describe('McpToolPermissionsPanel warnings', () => {
     expect(view.querySelector('[data-testid="tool-policy-approval-relays"]')).toBeNull()
     await click(buttonByText('Approve writes'))
     expect(view.querySelector('[data-testid="tool-policy-approval-daemons"]')?.textContent).toBe(
-      '2 daemons serving this agent do not support approvals yet (pool-1, pool-2). Tools set to Needs approval or Always ask are refused there.'
+      "2 daemons serving this agent don't support approvals yet (pool-1, pool-2). Tools set to Needs approval or Always ask are refused there."
     )
     expect(view.querySelector('[data-testid="tool-policy-approval-relays"]')?.textContent).toBe(
-      "1 connected relay does not support approvals yet. This agent's calls through them to tools set to Needs approval or Always ask are refused until they are upgraded."
+      "1 connected service instance doesn't support approvals yet. This agent's calls through it to tools set to Needs approval or Always ask are refused until it's upgraded."
     )
     await click(buttonByText('Full access'))
     expect(view.querySelector('[data-testid="tool-policy-approval-daemons"]')).toBeNull()

@@ -4124,7 +4124,7 @@
           },
           "block": {
             "label": "Blocked",
-            "description": "The agent cannot see or use it."
+            "description": "The agent can't see or use it."
           }
         },
         "followsGroup": "Follows group",
@@ -4142,19 +4142,19 @@
           "failed": "The last refresh failed: {reason}"
         },
         "failures": {
-          "relay_unavailable": "No relay that can list tools is connected.",
-          "relay_timeout": "The relay did not answer in time.",
-          "unreachable": "The server could not be reached.",
+          "relay_unavailable": "Tool listing isn't available right now.",
+          "relay_timeout": "Timed out while fetching the tool list.",
+          "unreachable": "The server couldn't be reached.",
           "upstream_rejected": "The server refused the request. Check its credentials.",
-          "timeout": "The server did not answer in time.",
+          "timeout": "The server didn't answer in time.",
           "too_large": "The server's tool list is too large to read.",
-          "invalid_response": "The server answered with a tool list that could not be read.",
-          "blocked_address": "The server's address is blocked by the relay's network policy.",
-          "misconfigured": "The server's configuration on the relay is incomplete.",
-          "unknown_provider": "The relay does not know this server yet. Try again in a moment.",
+          "invalid_response": "The server returned a tool list that couldn't be read.",
+          "blocked_address": "The server's address is blocked by this deployment's network policy.",
+          "misconfigured": "This server's configuration in this deployment is incomplete.",
+          "unknown_provider": "This server isn't synced yet. Try again in a moment.",
           "other": "Listing tools failed ({code})."
         },
-        "noCatalog": "No tool list is available for this server. Group settings apply once the tool list is available; until then, name the tools to allow or block.",
+        "noCatalog": "No tool list is available for this server. Group settings apply once the tool list is available; until then, add tool names below to set their permissions.",
         "manualTitle": "Tools named by hand",
         "manualPlaceholder": "tool_name",
         "manualAdd": "Add tool",
@@ -4168,15 +4168,15 @@
           "resave": "Saving again applies the current settings to every listed tool."
         },
         "compat": {
-          "daemons": "{count, plural, one {# daemon serving this agent cannot} other {# daemons serving this agent cannot}} attach a restricted server ({names}). The agent loses this server there until they are upgraded.",
-          "relays": "{count, plural, one {# connected relay does} other {# connected relays do}} not support tool permissions yet. This agent's calls through them are refused until they are upgraded.",
-          "daemonsApprovals": "{count, plural, one {# daemon serving this agent does} other {# daemons serving this agent do}} not support approvals yet ({names}). Tools set to Needs approval or Always ask are refused there.",
-          "relaysApprovals": "{count, plural, one {# connected relay does} other {# connected relays do}} not support approvals yet. This agent's calls through them to tools set to Needs approval or Always ask are refused until they are upgraded."
+          "daemons": "{count, plural, one {# daemon serving this agent can't attach a restricted server ({names}). The agent loses this server there until it's upgraded.} other {# daemons serving this agent can't attach a restricted server ({names}). The agent loses this server there until they're upgraded.}}",
+          "relays": "{count, plural, one {# connected service instance doesn't support tool permissions yet. This agent's calls through it are refused until it's upgraded.} other {# connected service instances don't support tool permissions yet. This agent's calls through them are refused until they're upgraded.}}",
+          "daemonsApprovals": "{count, plural, one {# daemon serving this agent doesn't support approvals yet} other {# daemons serving this agent don't support approvals yet}} ({names}). Tools set to Needs approval or Always ask are refused there.",
+          "relaysApprovals": "{count, plural, one {# connected service instance doesn't support approvals yet. This agent's calls through it to tools set to Needs approval or Always ask are refused until it's upgraded.} other {# connected service instances don't support approvals yet. This agent's calls through them to tools set to Needs approval or Always ask are refused until they're upgraded.}}"
         },
         "runtimeWarnings": {
           "noAsking": "This agent's sessions start in {mode} mode, where {runtime} asks no one before a tool call. Tools set to Needs approval or Always ask are refused in that mode.",
           "reviewerOnly": "This agent's sessions start in {mode} mode, where {runtime}'s reviewer approves tool calls instead of a person. Tools set to Always ask are refused in that mode, and the reviewer approves tools set to Needs approval.",
-          "unsupported": "{runtime} cannot ask for approval before an MCP tool call yet. Tools set to Needs approval or Always ask are refused for this agent."
+          "unsupported": "{runtime} can't ask for approval before an MCP tool call yet. Tools set to Needs approval or Always ask are refused for this agent."
         },
         "saving": "Saving…",
         "returnToFull": "Return to Full access",
