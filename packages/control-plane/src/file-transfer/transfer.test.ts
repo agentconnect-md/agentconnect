@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { compositeSha256, type CredentialsProvider, type SourceCacheObjectHead } from '@agentconnect.md/object-store'
 import { FileTransferConfigSchema, type FileTransferConfig } from './config.js'
 import {
+  artifactObjectKey,
+  artifactRevisionPrefix,
   attachmentDisposition,
   createFileTransfer,
   FileTransferError,
@@ -83,6 +85,21 @@ describe('transfer keys', () => {
     expect(() => transferUploadKey('../x', AGENT, UPLOAD_ID)).toThrow()
     expect(() => transferUploadKey(ORG, AGENT, '../../etc')).toThrow()
     expect(() => transferUploadKey(ORG, '..', UPLOAD_ID)).toThrow()
+  })
+
+  it('builds artifact keys under src/<org>/artifact/<id>/<revision>/ and refuses a path that could leave them', () => {
+    const prefix = artifactRevisionPrefix(ORG, UPLOAD_ID, 3)
+    expect(prefix).toBe(`src/${ORG}/artifact/${UPLOAD_ID}/3`)
+    const key = artifactObjectKey(prefix, 'assets/app v2.js')
+    expect(key).toBe(`src/${ORG}/artifact/${UPLOAD_ID}/3/assets/app v2.js`)
+    expect(isTransferObjectKey(key)).toBe(true)
+    expect(isTransferObjectKey(prefix)).toBe(false)
+    for (const path of ['../x', 'a/../../b', '.git/config', 'a//b', '/abs']) {
+      expect(() => artifactObjectKey(prefix, path)).toThrow()
+    }
+    expect(() => artifactRevisionPrefix('../x', UPLOAD_ID, 1)).toThrow()
+    expect(() => artifactRevisionPrefix(ORG, 'not-a-uuid', 1)).toThrow()
+    expect(() => artifactRevisionPrefix(ORG, UPLOAD_ID, 0)).toThrow()
   })
 
   it('writes an RFC 6266 disposition with an ASCII fallback', () => {
@@ -227,6 +244,28 @@ describe('file transfer signing', () => {
     expect(get.host).toBe('store.example.test')
     expect(get.searchParams.get('response-content-disposition')).toBe(attachmentDisposition('app.bin'))
     expect(get.searchParams.get('response-content-type')).toBe('application/octet-stream')
+  })
+})
+
+describe('artifact signing', () => {
+  const key = artifactObjectKey(artifactRevisionPrefix(ORG, UPLOAD_ID, 1), 'report/index.html')
+
+  it('presigns a retained PUT for the exact length and checksum, and plain or attachment GETs', async () => {
+    const t = transfer({ exists: false })
+    const put = await t.signPut({ key, bytes: 5, sha256: SHA, network: 'cluster', retain: true })
+    expect(new URL(put.url).host).toBe('store.internal.example.test')
+    expect(new URL(put.url).pathname).toBe(`/ac-cache/src/${ORG}/artifact/${UPLOAD_ID}/1/report/index.html`)
+    expect(put.headers).toEqual({
+      'content-length': '5',
+      'x-amz-checksum-sha256': SHA,
+      'x-amz-tagging': 'ac-cache=live'
+    })
+    const get = new URL((await t.signGet({ key, network: 'public' })).url)
+    expect(get.host).toBe('store.example.test')
+    expect(get.searchParams.get('response-content-type')).toBeNull()
+    const download = new URL((await t.signDownload({ key, name: 'index.html' })).url)
+    expect(download.searchParams.get('response-content-disposition')).toBe(attachmentDisposition('index.html'))
+    expect(download.searchParams.get('response-content-type')).toBe('application/octet-stream')
   })
 })
 

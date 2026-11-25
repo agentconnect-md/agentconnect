@@ -31,6 +31,7 @@ import { effectiveSessionIsolation, WorkspaceManager } from '../workspace/worksp
 import { sessionInitiatedBy } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
 import { MemoryHomeUnavailableError } from '../memory/fs.js'
+import type { MemoryStandingIndex } from '../memory/types.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../shim/config-file-env.js'
 import { recallQueryFromBlocks } from '../memory/recall.js'
@@ -711,12 +712,15 @@ export class SessionManager {
     // home, a suspended sandbox — starts the session with no standing context and a warning; the memory tools answer
     // the same error, and the post-turn distillation waits in the capture outbox. Anything else still fails the turn.
     let memoryIndex = ''
+    let memoryOwnLayer: MemoryStandingIndex['own']
     let memoryGuidance = ''
     if (memoryEnabled) {
       try {
         const scope = await abortable(memScope, signal)
         await abortable(() => this.deps.memory.ensure(scope, agent.name), signal)
-        memoryIndex = (await abortable(() => this.deps.memory.standingContextAtSessionStart(scope), signal)).trim()
+        const indexes = await abortable(() => this.deps.memory.standingContextAtSessionStart(scope), signal)
+        memoryIndex = indexes.index.trim()
+        memoryOwnLayer = indexes.own
       } catch (err) {
         if (!(err instanceof MemoryHomeUnavailableError)) throw err
         this.deps.onMemoryHomeUnavailable?.(agentId, err)
@@ -809,6 +813,7 @@ export class SessionManager {
           onDemandClones: bare ? undefined : await this.workspaces.sessionOnDemandClones(agent, workspaceRequest),
           sessionFiles: bare ? undefined : await this.workspaces.sessionFileAreas(agent, workspaceRequest),
           memoryIndex,
+          ...(memoryOwnLayer ? { memoryOwnLayer } : {}),
           ...(memoryGuidance ? { memoryGuidance } : {}),
           usesMeta,
           taskInstructions: toolContext?.instructions,

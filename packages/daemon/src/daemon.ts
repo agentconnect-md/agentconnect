@@ -533,6 +533,7 @@ import { ApprovalRecords } from './mcp/approval-records.js'
 import { claudeMcpRules, McpApprovalGate, type GateRuntime } from './mcp/approval-gate.js'
 import {
   grantKeyOf,
+  mcpGrantOrigin,
   mcpGrantRouteRefusal,
   mcpGrantShimOf,
   mcpGrantShimRefusal,
@@ -1718,6 +1719,13 @@ type StrandedBackgroundWork = { rec: SessionRecord; tasks: string[]; thread?: st
 /** How often a respawn waiting on background work checks whether it has settled. */
 const BACKGROUND_QUIET_POLL_MS = 1_000
 
+/** A host launch's route to a restricted MCP grant's relay: undefined refusal once routed, and the relay hosts its launch covered. */
+type McpGrantHostRoute = { refusal: string | undefined; relays: readonly string[] }
+
+/** Why a host launched with no route to a restricted grant does not attach it. */
+const MCP_GRANT_NO_ROUTE =
+  'its runtime started without a route to the credential proxy, and attaches it once it restarts'
+
 const SHUTDOWN_NOTICE: TurnCutNotice = {
   replayed: '⚠️ The agent is restarting — this message will be picked up again.',
   lost: '⚠️ The agent is restarting — this turn was stopped; send your message again once it is back.'
@@ -1944,8 +1952,10 @@ export class Daemon {
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
   /** Approvals of restricted MCP calls the credential proxy checks (mcp-tool-permissions.md §7.4); memory only. */
   private readonly mcpApprovals = new ApprovalRecords()
-  /** Each host's route to the credential proxy for a restricted grant's placeholder: none refused, or why its launch has none (mcp-tool-permissions.md §8). */
-  private readonly mcpGrantHostRoutes = new Map<HostKey, { refusal: string | undefined }>()
+  /** Each host's route to the credential proxy for a restricted grant's placeholder: none refused, or why its launch has none, and the relays it was launched for (mcp-tool-permissions.md §8). */
+  private readonly mcpGrantHostRoutes = new Map<HostKey, McpGrantHostRoute>()
+  /** Hosts launched without a route to a relay the agent's restricted grants now reach: the idle sweep reclaims them at its first tick with nothing in flight. */
+  private readonly unroutedMcpGrantHosts = new WeakSet<AcpHost>()
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host, srt, VM or pool pod session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
   /** How each agent's host and install key slots read their key again on this machine, by slot id. */
@@ -5745,6 +5755,7 @@ export class Daemon {
       // reason:'not_local' — cross-daemon relay is P2).
       messageAgent: (req) => this.collab.messageAgent(req),
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
+      resolveAgentRef: (callerAgentId, ref) => this.cpCollab.resolveAgentRef(callerAgentId, ref),
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
       taskReach: (ctx) => this.taskReach(ctx),
@@ -6380,11 +6391,9 @@ export class Daemon {
               })
               servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
             }
-            // A placeholder works only where the host's launch routes the relay through the proxy.
-            const route = this.mcpGrantHostRoutes.get(this.hostKeyFor(agent.id, sessionKey))
-            const refusal = route
-              ? route.refusal
-              : 'its runtime started without a route to the credential proxy, and attaches it once it restarts'
+            // A placeholder works only where the launch of the host serving this session (a model session's own included) routes the relay through the proxy.
+            const route = this.mcpGrantHostRoutes.get(this.sessionOwnerKey(agent.id, sessionKey))
+            const refusal = route ? route.refusal : MCP_GRANT_NO_ROUTE
             const attached = configuredServers.filter((server) => {
               if (refusal === undefined || !restricted.has(server.name)) return true
               this.log.warn(`mcp: server "${server.name}" is not attached to agent "${agent.id}": ${refusal}`)
@@ -7576,6 +7585,50 @@ export class Daemon {
         ? [{ provider, url: def.url, key, decisions: toolDecisions }]
         : []
     })
+  }
+
+  /** The relay hosts an agent's restricted grants reach, as the proxy serves them. */
+  private mcpGrantRelays(agentId: string): string[] {
+    return [...new Set(this.mcpGrantRoutes(agentId).flatMap((route) => mcpGrantOrigin(route.url)?.hostname ?? []))]
+  }
+
+  /** Mark each live host of the agent whose launch had no route to a relay its restricted grants now reach, for the idle sweep to respawn (§7.2, §8). */
+  private markUnroutedMcpGrantHosts(agentId: string): void {
+    const relays = this.mcpGrantRelays(agentId)
+    if (relays.length === 0) return
+    const live = [
+      ...[...this.hosts].filter(([key]) => hostKeyAgentId(key) === agentId),
+      ...this.modelSessions
+        .startedHostsForAgent(agentId)
+        .map(({ sessionKey, host }) => [sessionHostKey(agentId, sessionKey), host] as const)
+    ]
+    for (const [owner, host] of live) {
+      const route = this.mcpGrantHostRoutes.get(owner)
+      if (!route || relays.every((relay) => route.relays.includes(relay)) || this.unroutedMcpGrantHosts.has(host))
+        continue
+      this.unroutedMcpGrantHosts.add(host)
+      this.log.info(`mcp: agent "${agentId}" respawns ${hostKeyLabel(owner)} once idle, to route its restricted grants`)
+    }
+  }
+
+  /** Release each pool session host launched without its restricted grants' route once nothing holds it; its next turn starts one with the route. */
+  private releaseUnroutedModelSessionHosts(): void {
+    for (const agentId of this.agents.keys()) {
+      if (this.drainingAgents.has(agentId)) continue
+      for (const { sessionKey, host } of this.modelSessions.startedHostsForAgent(agentId)) {
+        const owner = sessionHostKey(agentId, sessionKey)
+        if (!this.unroutedMcpGrantHosts.has(host) || this.hostHasLiveSdkWork(owner)) continue
+        const held = this.sessionAdmissionHold(sessionKey, owner)
+        if (held) {
+          this.log.debug(`idle: keeping model session host "${hostKeyLabel(owner)}" for its MCP route — ${held}`)
+          continue
+        }
+        this.log.info(`idle: releasing model session host "${hostKeyLabel(owner)}" (launched without its MCP route)`)
+        void this.modelSessions
+          .release(sessionKey)
+          .catch((err) => this.log.error(`idle: releasing "${hostKeyLabel(owner)}" failed: ${formatErr(err)}`))
+      }
+    }
   }
 
   /** How a session carries a restricted grant: the placeholder in its key's place, or why it stays off (§7.2, §8). */
@@ -10058,7 +10111,10 @@ export class Daemon {
             ...(remoteSession ? { placed: remoteSession } : {})
           })
         : undefined
-    const mcpGrantState = { refusal: mcpGrantShim && `${mcpGrantShim} has not reported its mcp-grant route` }
+    const mcpGrantState: McpGrantHostRoute = {
+      refusal: mcpGrantShim && `${mcpGrantShim} has not reported its mcp-grant route`,
+      relays: mcpGrantRoute || mcpGrantShim ? this.mcpGrantRelays(agent.id) : []
+    }
     const guestCodehost =
       (remoteSession ? hostedVm : micro || this.k8sPlane !== undefined) &&
       this.credentialProxy !== undefined &&
@@ -10414,11 +10470,11 @@ export class Daemon {
     // Filled right after construction, so the terminal reap can prove the host that exited is
     // still the memoized one before evicting anything.
     const constructed: { host?: AcpHost } = {}
-    if (!credentialless) {
-      this.mcpGrantHostRoutes.delete(opts.hostKey)
-      if (mcpGrantRoute) this.mcpGrantHostRoutes.set(opts.hostKey, { refusal: undefined })
-      else if (mcpGrantSpawn) this.mcpGrantHostRoutes.set(opts.hostKey, mcpGrantState)
-    }
+    // Every launch with tool credentials is recorded, a routeless one too, so a grant added later finds the hosts to respawn.
+    if (credentialless) this.mcpGrantHostRoutes.delete(opts.hostKey)
+    else if (mcpGrantRoute) this.mcpGrantHostRoutes.set(opts.hostKey, { ...mcpGrantState, refusal: undefined })
+    else if (mcpGrantSpawn) this.mcpGrantHostRoutes.set(opts.hostKey, mcpGrantState)
+    else this.mcpGrantHostRoutes.set(opts.hostKey, { ...mcpGrantState, refusal: MCP_GRANT_NO_ROUTE })
     // Reads the runtime's approvals of restricted MCP calls off ACP, unmasked, for the proxy to check (§7.3).
     const gateRuntime = this.gateRuntimeOf(runtimeEntry?.aliasOf ?? agent.runtime, launchRuntime)
     const approvalGate = new McpApprovalGate({
@@ -30554,6 +30610,7 @@ export class Daemon {
     this.hostStartedAt.delete(key)
     const launch = this.hostLaunch.get(key)
     this.hostLaunch.delete(key)
+    this.mcpGrantHostRoutes.delete(key)
     // The shared config files go with the agent's LAST host; another live host still reads them.
     const agentDir = this.agentHasOtherHosts(agentId, key) ? undefined : this.hostConfigFiles.get(agentId)?.agentDir
     if (agentDir) this.hostConfigFiles.delete(agentId)
@@ -32550,7 +32607,8 @@ export class Daemon {
           : await this.store.sessionLastActivityTs(sessionKey)
       const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0, this.hostPasses.settledAt(key) ?? 0)
       const staleRoots = this.staleRootHosts.has(host)
-      if (now - last <= ttl && !staleRoots) continue
+      const unrouted = this.unroutedMcpGrantHosts.has(host)
+      if (now - last <= ttl && !staleRoots && !unrouted) continue
       // Read admission after the store round trip; only this session's work holds its host.
       if (this.hosts.get(key) !== host) continue
       const held = this.hostStopping.has(key)
@@ -32576,7 +32634,8 @@ export class Daemon {
       // can't pin an idle host forever.
       if (this.hostHasLiveSdkWork(key)) {
         const age = now - (this.hostStartedAt.get(key) ?? now)
-        if (age <= maxLifetime) {
+        // A host reclaimed only for its MCP route never has its background work cut, whatever its age.
+        if (age <= maxLifetime || (unrouted && now - last <= ttl)) {
           this.log.info(`idle: host "${label}" has in-flight background work — deferring reclaim`)
           continue
         }
@@ -32586,12 +32645,13 @@ export class Daemon {
         )
       }
       this.log.info(
-        `idle: reclaiming host "${label}" (${staleRoots ? 'launched before a new always root' : `idle ${Math.round((now - last) / 1000)}s`}) → provisioned`
+        `idle: reclaiming host "${label}" (${staleRoots ? 'launched before a new always root' : unrouted ? 'launched without its MCP route' : `idle ${Math.round((now - last) / 1000)}s`}) → provisioned`
       )
       void this.stopHostByKey(key).catch((err) =>
         this.log.error(`idle: stop host "${label}" failed: ${formatErr(err)}`)
       )
     }
+    this.releaseUnroutedModelSessionHosts()
     await this.sweepIdleSandboxes(now, ttl)
   }
 
@@ -35276,6 +35336,7 @@ export class Daemon {
    */
   private onMcpDefsChanged(): void {
     this.runtimeFacts.emitFacts()
+    for (const agentId of this.agents.keys()) this.markUnroutedMcpGrantHosts(agentId)
     // A CP push is the only way a `ui: true` definition reaches this daemon, so it is also the
     // moment its connection can first be opened. Warming per known org keeps the dial off the path
     // of the next session's tool composition, which is synchronous.

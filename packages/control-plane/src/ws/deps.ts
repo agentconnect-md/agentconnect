@@ -2,6 +2,7 @@ import type { AgentCronService } from '../orchestrator/agentCrons.js'
 import type { FileTransferService } from '../file-transfer/service.js'
 import type { SharedImageService } from '../file-transfer/shared-image.js'
 import type { SessionFileService } from '../file-transfer/session-file.js'
+import type { ArtifactService } from '../artifacts/service.js'
 import type { AgentMemoryTransactionService } from '../agent-memory/transaction.service.js'
 /**
  * `DaemonWsDeps` — the dependency bundle every connection actor and frame
@@ -281,6 +282,8 @@ export interface DaemonWsDeps {
   sharedImages?: SharedImageService
   /** Shared-file snapshots (agent-authored-attachments.md §4.1); absent ⇒ `session/file/put` answers SCOPE_DENIED. */
   sessionFiles?: SessionFileService
+  /** Artifacts (artifacts.md §5.3); absent ⇒ `artifact/*` answers SCOPE_DENIED and `artifacts-v1` is not advertised. */
+  artifacts?: ArtifactService
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** Provider-neutral formal reviews: publication lease, operation ledger, outcome

@@ -23,6 +23,7 @@ import {
   DECISION_CHAIN_V1_FEATURE,
   WEBCHAT_IMAGES_FEATURE,
   SESSION_FILE_SNAPSHOT_FEATURE,
+  ARTIFACTS_FEATURE,
   MEMORY_TRANSACTION_V1_FEATURE,
   PROVIDER_CREDENTIALS_V1_FEATURE,
   REPO_CANDIDATES_V1_FEATURE,
@@ -202,6 +203,8 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       WEBCHAT_IMAGES_FEATURE,
       // agent-authored-attachments.md §4.1: this CP signs `session/file/put` and keeps snapshots for their session.
       ...(deps.sessionFiles ? [SESSION_FILE_SNAPSHOT_FEATURE] : []),
+      // artifacts.md §5.3: this CP answers `artifact/publish/begin|complete`, `artifact/fetch` and `artifact/list`.
+      ...(deps.artifacts ? [ARTIFACTS_FEATURE] : []),
       // webchat-preset-agentconnect-mcp.md §5.3: this CP slides an active remote MCP grant's expiry in place.
       ...(deps.webchatRemoteMcp ? [WEBCHAT_MCP_GRANT_RENEW_FEATURE] : []),
       SESSION_LIVE_TAIL_FEATURE,

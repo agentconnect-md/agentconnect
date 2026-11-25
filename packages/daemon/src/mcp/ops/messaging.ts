@@ -5,6 +5,7 @@ import type { MessageFile, MessageGateway, SendIdentity, SessionContext } from '
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import type { TaskReachDeps } from './task-reach.js'
 import type { InterceptedPost, PostInterception } from '../../assistant/drafts.js'
+import type { AgentRefResolution } from '../../cp/cp-collab-routes.js'
 import { optionalString, parseArgs, requiredString } from './args.js'
 import { assertChannelReachable } from './channel-reach.js'
 import { JoinRefused } from './join-ask.js'
@@ -368,6 +369,8 @@ export interface MessagingDeps extends GatewayDeps, TaskReachDeps, MessageAttach
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free: the reason {@link MessagingDeps.messageAgent} would refuse this wake locally, else null, so no post precedes it; absent ⇒ not gated. */
   preflightWake?: (req: MessageAgentReq) => string | null
+  /** Resolves a `callAgent` `toAgent` to an agent id from the collaboration directory; absent ⇒ taken as given. */
+  resolveAgentRef?: (callerAgentId: string, ref: string) => AgentRefResolution
   /** Backs `replyToSession`: a reply to one message the caller received, routed by that message's record (send-message-guide.md §9.4). */
   replyToSession: (req: ReplyToSessionReq) => Promise<ReplyToSessionResult>
   /** Backs a coordinator session's `sendMessage` (auto-session-mode.md §5.1); absent ⇒ unavailable. */

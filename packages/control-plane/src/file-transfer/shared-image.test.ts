@@ -33,6 +33,7 @@ function bucket(opts: { enabled?: boolean; stored?: boolean; seen?: unknown[] } 
       return { url: 'https://store.example.test/p', headers: { 'content-length': String(input.bytes) }, expiresAt: 1 }
     },
     signDownload: async () => ({ url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }),
+    signGet: async () => ({ url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }),
     storedDownload: async (input) => {
       seen.push({ storedDownload: input })
       return opts.stored === false ? undefined : { url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }

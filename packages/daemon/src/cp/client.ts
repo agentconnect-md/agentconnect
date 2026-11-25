@@ -183,6 +183,15 @@ import {
   SESSION_FILE_SNAPSHOT_FEATURE,
   type SessionFilePutOk,
   type SessionFilePutReq,
+  ARTIFACTS_FEATURE,
+  type ArtifactFetchOk,
+  type ArtifactFetchReq,
+  type ArtifactListOk,
+  type ArtifactListReq,
+  type ArtifactPublishBeginOk,
+  type ArtifactPublishBeginReq,
+  type ArtifactPublishCompleteOk,
+  type ArtifactPublishCompleteReq,
   WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
@@ -232,6 +241,8 @@ import type { Logger } from '../log.js'
 export { CP_SUBPROTOCOL, CP_WS_PATH } from '@agentconnect.md/protocol'
 
 const ACK_TIMEOUT_MS = 5000
+/** `artifact/publish/complete` HEADs every object of a revision before it answers, so it waits longer per send. */
+const ARTIFACT_COMPLETE_ACK_MS = 30_000
 /** The correlator's default five-try budget: what a wrapped turn-path request had in total before it waited out a handoff. */
 const TURN_PATH_BUDGET_MS = 5 * ACK_TIMEOUT_MS
 /** One deadline for a `memory/store` op, the shim carrier's per-op timeout; a safe re-send fits inside it. */
@@ -1289,6 +1300,55 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected session/file/put/ok, got ${rep.type}`, false)
     }
     return rep.payload as SessionFilePutOk
+  }
+
+  /** Whether the connected CP answers the `artifact/*` frames (artifacts.md §5.3); the artifact tools are offered only then. */
+  supportsArtifacts(): boolean {
+    return this.connected() && this.supportsServerFeature(ARTIFACTS_FEATURE)
+  }
+
+  /** Record a pending revision and presign one PUT per file, or the ready result a replayed key reached. */
+  async beginArtifactPublish(payload: ArtifactPublishBeginReq, orgId?: string): Promise<ArtifactPublishBeginOk> {
+    return (await this.artifactRequest('artifact/publish/begin', payload, orgId)) as ArtifactPublishBeginOk
+  }
+
+  /** Mark a revision ready once every PUT landed; the CP HEADs each object first. */
+  async completeArtifactPublish(
+    payload: ArtifactPublishCompleteReq,
+    orgId?: string
+  ): Promise<ArtifactPublishCompleteOk> {
+    return (await this.artifactRequest('artifact/publish/complete', payload, orgId)) as ArtifactPublishCompleteOk
+  }
+
+  /** Presign GETs for one ready revision the session reaches. */
+  async fetchArtifact(payload: ArtifactFetchReq, orgId?: string): Promise<ArtifactFetchOk> {
+    return (await this.artifactRequest('artifact/fetch', payload, orgId)) as ArtifactFetchOk
+  }
+
+  /** One page of the artifacts the session reaches. */
+  async listArtifacts(payload: ArtifactListReq, orgId?: string): Promise<ArtifactListOk> {
+    return (await this.artifactRequest('artifact/list', payload, orgId)) as ArtifactListOk
+  }
+
+  /** An `artifact/*` request to a CP that advertised `artifacts-v1`; a refusal rejects with its `details.reason`. */
+  private async artifactRequest(
+    type: 'artifact/publish/begin' | 'artifact/publish/complete' | 'artifact/fetch' | 'artifact/list',
+    payload: ArtifactPublishBeginReq | ArtifactPublishCompleteReq | ArtifactFetchReq | ArtifactListReq,
+    orgId?: string
+  ): Promise<unknown> {
+    this.requireReady(type)
+    if (!this.supportsServerFeature(ARTIFACTS_FEATURE)) {
+      throw new WireError('UNKNOWN_FRAME', `this control plane does not answer ${type}`, false)
+    }
+    const rep =
+      type === 'artifact/publish/complete'
+        ? await this.correlator.request(this.scopedFrame(type, payload, orgId), (e) => this.transport!.send(e), {
+            ackTimeoutMs: ARTIFACT_COMPLETE_ACK_MS,
+            maxTries: 2
+          })
+        : await this.request(type, payload, orgId)
+    if (rep.type !== `${type}/ok`) throw new WireError('INTERNAL', `expected ${type}/ok, got ${rep.type}`, false)
+    return rep.payload
   }
 
   /** Presign a browser GET for a cached shared-image original; `missing` when the bucket no longer holds it. */

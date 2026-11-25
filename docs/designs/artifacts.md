@@ -241,7 +241,8 @@ back rather than a second one.
 
 Manifest paths are relative POSIX paths. Absolute paths, `.` and `..` segments, `.git`
 components, backslashes, NUL, and two paths that collide after Unicode normalization or
-case folding are refused. The entry must be one of the paths.
+case folding are refused, as is a file inside another file's path. The entry must be one of the
+paths. Empty files are not carried: a PUT is signed for its checksum and a positive length.
 
 Because a multi-file site lives under a path prefix rather than at the root of its own
 origin, a root-relative reference such as `/assets/app.js` resolves to the store's root
@@ -448,7 +449,8 @@ the page itself, after the access check.
 
 ### 8.2 Links the agent writes
 
-The publish tool returns a console deep link pinned to that revision. The agent puts it in
+The publish tool returns a console deep link pinned to that revision
+(`/<org slug>/artifacts/<id>?revision=<n>`). The agent puts it in
 its reply; on a chat platform, publishing itself posts nothing.
 
 Opening it requires sign-in and the artifact's access check, then behaves like opening it
@@ -527,7 +529,8 @@ uses is open question P3.
   whole, naming the rule.
 - An organization has a total artifact size limit; once reached, new publications are
   refused and nothing old is evicted.
-- The numbers are open question P4.
+- A revision holds at most 200 files and 50 MB (`ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_BYTES` in
+  the protocol package); the organization total is open question P4.
 
 ## 11. Console
 

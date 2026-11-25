@@ -283,6 +283,50 @@ describe('CpCollabRoutes: org-scoped directory', () => {
   })
 })
 
+describe('CpCollabRoutes.resolveAgentRef: a callAgent target given by name', () => {
+  const directory = () =>
+    routes([
+      agent('caller', { name: 'test-runner' }),
+      agent('fixer', { name: 'release-helper', displayName: 'Release Helper' }),
+      agent('closed', { name: 'closed-door', callPolicy: 'selected', allowedCallerAgentIds: [] }),
+      agent('elsewhere', { name: 'far-away', orgId: OTHER_ORG }),
+      agent('twin-1', { name: 'twin-one', displayName: 'Twin' }),
+      agent('twin-2', { name: 'twin-two', displayName: 'Twin' })
+    ])
+
+  it('passes a known agent id through unchanged', () => {
+    expect(directory().resolveAgentRef('caller', 'fixer')).toEqual({ agentId: 'fixer' })
+    expect(directory().resolveAgentRef('caller', ' fixer ')).toEqual({ agentId: 'fixer' })
+  })
+
+  it('resolves a callable same-org name, its @handle or its display name to the id', () => {
+    const r = directory()
+    for (const ref of ['release-helper', 'Release-Helper', '@release-helper', 'Release Helper'])
+      expect(r.resolveAgentRef('caller', ref), ref).toEqual({ agentId: 'fixer' })
+    expect(r.resolveAgentRef('caller', 'test-runner')).toEqual({ agentId: 'caller' })
+  })
+
+  it('never resolves a name the caller may not call or that belongs to another org', () => {
+    const r = directory()
+    expect(r.resolveAgentRef('caller', 'closed-door')).toEqual({ unknown: true })
+    expect(r.resolveAgentRef('caller', 'far-away')).toEqual({ unknown: true })
+    expect(r.resolveAgentRef('caller', 'no-such-agent')).toEqual({ unknown: true })
+  })
+
+  it('reports a display name two callable agents share instead of picking one', () => {
+    expect(directory().resolveAgentRef('caller', 'twin')).toEqual({
+      ambiguous: [
+        { agentId: 'twin-1', name: 'twin-one' },
+        { agentId: 'twin-2', name: 'twin-two' }
+      ]
+    })
+  })
+
+  it('leaves the target as given when the caller is not in the snapshot', () => {
+    expect(directory().resolveAgentRef('stranger', 'release-helper')).toEqual({ agentId: 'release-helper' })
+  })
+})
+
 describe('CpCollabRoutes: conversation-scoped mention identities', () => {
   it('corrects an old CP false-positive botShared flag for a sole channel member', () => {
     const r = routes(

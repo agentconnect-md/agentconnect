@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { TransferNetwork } from '@agentconnect.md/protocol'
+import { artifactPathProblem, type TransferNetwork } from '@agentconnect.md/protocol'
 import {
   addressFor,
   amzDate,
@@ -23,7 +23,7 @@ const PENDING_TAGGING = 'ac-cache=pending'
 /** A tag no lifecycle rule collects: a session snapshot lives until the CP deletes it with its session. */
 const LIVE_TAGGING = 'ac-cache=live'
 
-/** A key under `src/<org>/transfer/`, built only here; `pending`-tagged unless it is a session snapshot the CP deletes itself. */
+/** A key under `src/<org>/transfer/` or `src/<org>/artifact/`, built only here; `pending`-tagged unless the CP deletes it itself. */
 export type TransferObjectKey = string & { readonly __transferObjectKey: true }
 
 const ORG_RE = /^[A-Za-z0-9_-]{1,64}$/
@@ -31,6 +31,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const ANY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TRANSFER_KEY_RE =
   /^src\/[A-Za-z0-9_-]{1,64}\/transfer\/(?:up\/[0-9a-f-]{36}\/[0-9a-f-]{36}|dl\/[0-9a-f]{64}|img\/[0-9a-f-]{36}\/[0-9a-f-]{36}|session\/[0-9a-f-]{36}\/[0-9a-f]{32}\/[0-9a-f]{64})$/
+const ARTIFACT_PREFIX_RE = /^src\/[A-Za-z0-9_-]{1,64}\/artifact\/[0-9a-f-]{36}\/[1-9]\d{0,8}$/
 const CHECKSUM_RE = /^[A-Za-z0-9+/]{43}=$/
 /** A cached download is reused only while it is well inside the 2-day `pending` lifecycle rule. */
 const CACHED_DOWNLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -81,8 +82,32 @@ export function sessionFileKey(org: string, agentId: string, sessionId: string, 
   return `src/${org}/transfer/session/${agentId}/${session}/${sha256Hex}` as TransferObjectKey
 }
 
+/** `src/<org>/artifact/<artifactId>/<revision>`: one signed-prefix artifact revision (artifacts.md §5.2). */
+export function artifactRevisionPrefix(org: string, artifactId: string, revision: number): string {
+  assertOrg(org)
+  if (!ANY_UUID_RE.test(artifactId)) throw new Error('artifact id must be a lower-case UUID')
+  if (!Number.isSafeInteger(revision) || revision < 1) throw new Error('revision must be a positive integer')
+  return `src/${org}/artifact/${artifactId}/${revision}`
+}
+
+/** One manifest file's key under its revision's prefix; the path keeps its name so relative references resolve. */
+export function artifactObjectKey(prefix: string, path: string): TransferObjectKey {
+  const key = `${prefix}/${path}`
+  if (!isTransferObjectKey(key)) throw new Error('not an artifact object key')
+  return key
+}
+
+function isArtifactObjectKey(key: string): boolean {
+  const [src, org, artifact, id, revision, ...path] = key.split('/')
+  return (
+    path.length > 0 &&
+    ARTIFACT_PREFIX_RE.test([src, org, artifact, id, revision].join('/')) &&
+    artifactPathProblem(path.join('/')) === undefined
+  )
+}
+
 export function isTransferObjectKey(key: unknown): key is TransferObjectKey {
-  return typeof key === 'string' && TRANSFER_KEY_RE.test(key)
+  return typeof key === 'string' && (TRANSFER_KEY_RE.test(key) || isArtifactObjectKey(key))
 }
 
 /** RFC 6266 attachment disposition with an ASCII fallback, as the CP's own download answers. */
@@ -190,6 +215,8 @@ export interface FileTransfer {
   deleteObject(key: TransferObjectKey): Promise<void>
   /** Presign the browser's GET that downloads the object as an attachment named `name`. */
   signDownload(input: { key: TransferObjectKey; name: string }): Promise<TransferUrl>
+  /** Presign a daemon's plain GET on the network it names; the caller checks authority, the reader the digest. */
+  signGet(input: { key: TransferObjectKey; network: TransferNetwork }): Promise<TransferUrl>
   /** Presign the GET of a shared image's original while the bucket holds exactly those bytes; no reuse cutoff applies. */
   storedDownload(input: {
     key: TransferObjectKey
@@ -439,6 +466,10 @@ export function createFileTransfer(deps: FileTransferDeps): FileTransfer {
     async storedDownload({ key, size, sha256, name }) {
       if (!headHolds(await objects.head(key), { bytes: size, sha256 })) return undefined
       return await signDownload({ key, name })
+    },
+
+    async signGet({ key, network }) {
+      return await sign({ method: 'GET', key, address: addressOn(network), lifetimeSeconds: urlSeconds })
     },
 
     signDownload

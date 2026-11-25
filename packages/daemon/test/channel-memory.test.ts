@@ -109,7 +109,7 @@ describe('channel-scoped memory overlay', () => {
     expect((await mem.read(base, 'topic.md')).content).toBe('- base version')
   })
 
-  it('injects the base index then the channel index', async () => {
+  it('injects the base index and the channel index as the file a write without a layer edits', async () => {
     const { mem } = provider()
     const base = { agentId: 'bot-a' }
     const a = chan('C1')
@@ -118,9 +118,10 @@ describe('channel-scoped memory overlay', () => {
     await mem.ensure(a, 'bot')
     await mem.write(a, 'MEMORY.md', '# channel index', undefined, 'tool')
 
-    const injected = await mem.standingContextAtSessionStart(a)
-    expect(injected.indexOf('# base index')).toBeGreaterThanOrEqual(0)
-    expect(injected.indexOf('# channel index')).toBeGreaterThan(injected.indexOf('# base index'))
+    expect(await mem.standingContextAtSessionStart(a)).toEqual({
+      index: '# base index',
+      own: { layer: 'here', index: '# channel index' }
+    })
   })
 
   it('the CP memory reader lists channel folders and routes reads to the selected channel', async () => {

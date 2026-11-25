@@ -291,6 +291,36 @@ export function validateSendMessageAction(
   return { action: named, delivery: rest }
 }
 
+/** `callAgent` resolves an agent's name to its id before any check reads `toAgent`; an unknown one fails before effects (send-message-guide.md §3.3). */
+function withResolvedAgentTarget(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: MessagingDeps
+): Record<string, unknown> {
+  if (args.action !== 'callAgent' || deps.resolveAgentRef === undefined) return args
+  let target: ReturnType<typeof parseAgentTarget>
+  try {
+    target = parseAgentTarget(args.toAgent)
+  } catch {
+    return args
+  }
+  if (target.toAgent === undefined) return args
+  const found = deps.resolveAgentRef(ctx.agentId, target.toAgent)
+  if ('agentId' in found) {
+    if (found.agentId === target.toAgent) return args
+    return { ...args, toAgent: target.needsReply ? { agentId: found.agentId, needsReply: true } : found.agentId }
+  }
+  const ref = JSON.stringify(target.toAgent)
+  const problem =
+    'ambiguous' in found
+      ? `${ref} names more than one agent you can call: ${found.ambiguous.map((a) => `${a.name} (${a.agentId})`).join(', ')}`
+      : `${ref} is neither the id nor the name of an agent you can call`
+  throw new ToolArgumentError([
+    `action \`callAgent\` takes \`toAgent\` as an agent id, and ${problem}. Nothing was sent and no agent was woken. ` +
+      'Call listAgents for the agents you can call and their ids, then retry with the id'
+  ])
+}
+
 /** `sendMessage`: validate the action, then hand its target-shaped arguments to the existing delivery path. */
 export async function sendMessage(
   ctx: SessionContext,
@@ -298,6 +328,7 @@ export async function sendMessage(
   deps: MessagingDeps
 ): Promise<unknown> {
   const reach = await taskReachOf(ctx, deps)
+  args = withResolvedAgentTarget(ctx, args, deps)
   const validated = validateSendMessageAction(ctx, args, reach)
   if (validated.taskId !== undefined) return await messageTask(ctx, validated.taskId, args, deps, reach)
   if (validated.peerSessionId !== undefined) return await callPeerSession(ctx, validated.peerSessionId, args, deps)

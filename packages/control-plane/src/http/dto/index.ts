@@ -5523,6 +5523,58 @@ export const SessionSharedFileDto = z.object({
   url: z.string(),
   expiresAt: z.string()
 })
+// ── Artifacts (artifacts.md §4, §8.1): metadata, one revision's manifest, and one file's signed GET ──
+export const ArtifactParams = z.object({ artifactId: z.string().uuid() })
+export const ArtifactRevisionParams = ArtifactParams.extend({ revision: z.coerce.number().int().positive() })
+export const ArtifactFileQuery = z.object({ path: z.string().min(1).max(1024) })
+const ArtifactProducerDto = z.object({ agentId: z.string(), name: z.string() })
+export const ArtifactManifestFileDto = z.object({
+  path: z.string(),
+  sha256: z.string(),
+  bytes: z.number().int(),
+  mediaType: z.string()
+})
+export const ArtifactRevisionSummaryDto = z.object({
+  number: z.number().int(),
+  entry: z.string(),
+  entryMediaType: z.string(),
+  fileCount: z.number().int(),
+  totalBytes: z.number().int(),
+  producedBy: ArtifactProducerDto,
+  producedInSessionId: z.string(),
+  createdAt: z.string()
+})
+export const ArtifactDto = z.object({
+  id: z.string(),
+  title: z.string(),
+  audience: z.object({
+    visibility: z.enum(['private', 'org', 'external', 'editors']),
+    externalProvider: z.string().nullable(),
+    editorsAgentId: z.string().nullable()
+  }),
+  /** Null for an artifact organization owners manage; `userId` is null for an owner known only by a platform identity. */
+  owner: z
+    .object({
+      userId: z.string().nullable(),
+      displayName: z.string().nullable(),
+      email: z.string().nullable(),
+      platform: z.string().nullable()
+    })
+    .nullable(),
+  viewerIsOwner: z.boolean(),
+  originSessionId: z.string().nullable(),
+  latestRevision: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** Ready revisions, newest first. */
+  revisions: z.array(ArtifactRevisionSummaryDto)
+})
+export const ArtifactRevisionDto = ArtifactRevisionSummaryDto.extend({
+  artifactId: z.string(),
+  latestRevision: z.number().int(),
+  manifest: z.object({ entry: z.string(), files: z.array(ArtifactManifestFileDto) })
+})
+export const ArtifactFileUrlDto = ArtifactManifestFileDto.extend({ url: z.string(), expiresAt: z.string() })
 /** Screenshot storage an organization used (computer-use.md §9): bytes written in the window and held now. */
 export const ComputerScreenshotUsageDto = z.object({
   from: z.string(),

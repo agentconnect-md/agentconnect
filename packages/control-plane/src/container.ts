@@ -347,6 +347,7 @@ import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
 import { createSessionFileService } from './file-transfer/session-file.js'
+import { createArtifactService } from './artifacts/service.js'
 import { createFileTransfer, isTransferObjectKey, transferPendingMinimumDays } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
@@ -1199,6 +1200,25 @@ export function buildContainer(
         snapshots: repos.sessionFileSnapshot,
         sessions: repos.session,
         now: () => clock.now()
+      })
+    : undefined
+  // Artifacts (artifacts.md §5.3): signed-prefix storage in the transfer bucket, so only with a bucket.
+  const artifacts = fileTransferBucket
+    ? createArtifactService({
+        transfer: fileTransferBucket.transfer,
+        artifacts: repos.artifact,
+        sessions: repos.session,
+        users: repos.user,
+        agents: repos.agent,
+        crons: repos.cron,
+        hooks: repos.hook,
+        orgs: repos.org,
+        // Lazy over `wsDeps` (assigned below), whose resolver tells a linked chat member from an unlinked one.
+        readAccess: (req, expectedOrgId) =>
+          wsDeps.readAccess?.(req, expectedOrgId) ??
+          Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
+        ...(webAppUrl ? { webAppUrl } : {}),
+        log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
       })
     : undefined
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
@@ -2869,6 +2889,7 @@ export function buildContainer(
       hookSecret: repos.hookSecret,
       relay: repos.relay,
       session: repos.session,
+      artifact: repos.artifact,
       sessionUsage: repos.sessionUsage,
       orgSessionPolicy: repos.orgSessionPolicy,
       agentApiEntry: repos.agentApiEntry,
@@ -3025,6 +3046,7 @@ export function buildContainer(
     ...(fileTransfer ? { fileTransfer } : {}),
     sharedImages,
     ...(sessionFiles ? { sessionFiles } : {}),
+    ...(artifacts ? { artifacts } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
@@ -3979,6 +4001,7 @@ export function buildContainer(
     ...(fileTransfer ? { fileTransfer } : {}),
     sharedImages,
     ...(sessionFiles ? { sessionFiles } : {}),
+    ...(artifacts ? { artifacts } : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     codeHostReviewBroker,
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),

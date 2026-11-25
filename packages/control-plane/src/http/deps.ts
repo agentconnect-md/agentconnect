@@ -3,6 +3,7 @@ import type { FileTransferService } from '../file-transfer/service.js'
 import type { CapabilityRequestService } from '../capability/capability-request.service.js'
 import type { SharedImageService } from '../file-transfer/shared-image.js'
 import type { SessionFileService } from '../file-transfer/session-file.js'
+import type { ArtifactService } from '../artifacts/service.js'
 /**
  * `http/deps.ts` — the dependency bundle the C2 BFF routes receive (design §2.1,
  * §2.4). Routes consume repository **ports** and cross-component services, never
@@ -252,6 +253,8 @@ export interface HttpDeps {
     /** Relay liveness reads — gates hook creation on "the pool exists" (409). */
     relay: RelayRepo
     session: SessionRepo
+    /** Agent-published artifacts and their revisions (artifacts.md §4). */
+    artifact: import('../persistence/ports.js').ArtifactRepo
     /** Per-session token usage → the `/usage` dashboard aggregates. */
     sessionUsage: SessionUsageRepo
     /** Per-organization session policies a deployment-level service delivers (org-session-policy.md). */
@@ -655,4 +658,6 @@ export interface HttpDeps {
   sharedImages?: SharedImageService
   /** Shared-file snapshots (agent-authored-attachments.md §4.1); absent ⇒ every snapshot read is not found. */
   sessionFiles?: Pick<SessionFileService, 'download'>
+  /** Artifacts (artifacts.md §8.1); absent ⇒ every artifact read is not found. */
+  artifacts?: Pick<ArtifactService, 'fileDownload'>
 }

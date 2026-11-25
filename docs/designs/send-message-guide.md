@@ -432,6 +432,18 @@ Do not delegate them blindly to the old target inference or platform-post classi
 Likewise, `callAgent` with `sessionId` is an explicit peer call, not the old
 `sessionId` origin-reply branch, which no longer exists. Action dispatch must precede legacy target inference.
 
+`callAgent` names its target by agent id, and the guides keep teaching the id. Before any
+check reads `toAgent`, the daemon resolves a value that is not a known id against the
+organization's collaboration directory: the one agent the caller may call whose name
+(case-insensitive, with or without a leading `@`), or failing that whose display name,
+matches is the target, so the self-call rule and the wake both see its id. A value that
+matches no agent the caller may call, or matches more than one, is an argument error before
+any effect: it says `toAgent` takes the agent id, names the candidates when there are
+several, and points to `listAgents`. Such a value never reaches the wake, where it used to
+come back as `not_allowed` and read as a call-policy refusal. A name the caller's call policy
+excludes resolves to nothing, as it is absent from `listAgents`. Without a directory entry
+for the caller, the value is passed as given and the wake fails closed as before.
+
 The daemon validates `action` even when a caller bypasses the advertised schema.
 A harness may reject a missing required property before reaching the daemon; its
 error wording is outside the daemon's control. The advertised description and
@@ -777,20 +789,21 @@ where the runtime enforces them, without adding a new fallback in the adapter.
 
 ### 7.3 Arguments and target resolution
 
-| Behavior                          | Before                                                                                                                   | Required after                                                                                              | Ref  |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ---- |
-| Strict branch keys                | Reject mixed targets, unknown keys, caller identity overrides, and removed fields such as `correlationId`                | Same strict target payload after validating/removing `action`; no silently ignored fields                   | M    |
-| Agent target encoding             | Bare id, structured object, and a JSON-stringified structured object are accepted                                        | Preserve all three, while guides recommend a real object                                                    | M    |
-| `needsReply` values               | Boolean or case-insensitive `"true"`/`"false"`; absent/null means no new request                                         | Preserve accepted values; no top-level alias, default change, or clearing of sticky session obligations     | M, S |
-| String parsing                    | Required strings are nonempty; optional strings are nullish, and optional empty strings are not globally normalized away | Reuse existing parsers for retained fields; do not silently tighten or reinterpret them during flattening   | M, T |
-| User target validation            | Nonempty strings/arrays; aliases such as `U1` and `<@U1>` count as duplicates; arrays require channel                    | Preserve validation and mention rendering                                                                   | M    |
-| `thread` / `attachment` placement | `thread` only on bare channel; attachments only on user/channel branches                                                 | Preserve, including rejection on agent/session/task actions                                                 | M    |
-| Channel names                     | `resolveChannelArg` resolves a name on the selected bot when unambiguous                                                 | Preserve after action validation; ids and unresolved names retain existing behavior                         | O    |
-| Posting platform default          | Explicit `platform` wins; otherwise current platform, except DM uses `directMessagePlatformFor`                          | Preserve capability-driven default; do not hardcode Slack or apply it to channel-user posts                 | M, G |
-| Posting bot default               | Explicit integration, else current session's integration on that platform, else first candidate                          | Preserve existing selection; `sendMessage` does not opt into the resolver's optional bot-selection question | G, M |
-| Missing connection                | Unknown platform/integration or no live gateway refuses; no implicit alternative bot                                     | Preserve errors and target selection                                                                        | G    |
-| DM support                        | Both DM and channel-user forms require the DM capability; opening a DM also probes the selected live gateway             | Preserve both checks                                                                                        | M, G |
-| Existing-thread support           | Current update registry permits Slack; own-thread comparison and readable-root verification run before posting           | Preserve current checks and refusal; never silently post at root instead                                    | M, G |
+| Behavior                          | Before                                                                                                                   | Required after                                                                                                                      | Ref  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| Strict branch keys                | Reject mixed targets, unknown keys, caller identity overrides, and removed fields such as `correlationId`                | Same strict target payload after validating/removing `action`; no silently ignored fields                                           | M    |
+| Agent target encoding             | Bare id, structured object, and a JSON-stringified structured object are accepted                                        | Preserve all three, while guides recommend a real object                                                                            | M    |
+| `needsReply` values               | Boolean or case-insensitive `"true"`/`"false"`; absent/null means no new request                                         | Preserve accepted values; no top-level alias, default change, or clearing of sticky session obligations                             | M, S |
+| String parsing                    | Required strings are nonempty; optional strings are nullish, and optional empty strings are not globally normalized away | Reuse existing parsers for retained fields; do not silently tighten or reinterpret them during flattening                           | M, T |
+| User target validation            | Nonempty strings/arrays; aliases such as `U1` and `<@U1>` count as duplicates; arrays require channel                    | Preserve validation and mention rendering                                                                                           | M    |
+| `thread` / `attachment` placement | `thread` only on bare channel; attachments only on user/channel branches                                                 | Preserve, including rejection on agent/session/task actions                                                                         | M    |
+| Channel names                     | `resolveChannelArg` resolves a name on the selected bot when unambiguous                                                 | Preserve after action validation; ids and unresolved names retain existing behavior                                                 | O    |
+| Agent names                       | A name in `toAgent` was taken as an id and came back `not_allowed`, like a call-policy refusal                           | Resolve the one callable same-org agent of that name to its id; an unknown or ambiguous name is an argument error before any effect | M    |
+| Posting platform default          | Explicit `platform` wins; otherwise current platform, except DM uses `directMessagePlatformFor`                          | Preserve capability-driven default; do not hardcode Slack or apply it to channel-user posts                                         | M, G |
+| Posting bot default               | Explicit integration, else current session's integration on that platform, else first candidate                          | Preserve existing selection; `sendMessage` does not opt into the resolver's optional bot-selection question                         | G, M |
+| Missing connection                | Unknown platform/integration or no live gateway refuses; no implicit alternative bot                                     | Preserve errors and target selection                                                                                                | G    |
+| DM support                        | Both DM and channel-user forms require the DM capability; opening a DM also probes the selected live gateway             | Preserve both checks                                                                                                                | M, G |
+| Existing-thread support           | Current update registry permits Slack; own-thread comparison and readable-root verification run before posting           | Preserve current checks and refusal; never silently post at root instead                                                            | M, G |
 
 ### 7.4 Authority, sessions, and feedback
 
