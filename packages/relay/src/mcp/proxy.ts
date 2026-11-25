@@ -10,10 +10,12 @@ import { isIP } from 'node:net'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { McpBindingTable } from './binding-table.js'
 import {
+  approvalSource,
   filterJsonBody,
   filterMessage,
   judgeRequest,
   SseToolsListFilter,
+  TOOL_APPROVAL_HEADER,
   TOOLS_LIST_BUFFER_LIMIT,
   type ToolDecisions
 } from './tool-policy.js'
@@ -49,7 +51,7 @@ const STRIP_REQUEST_HEADERS = new Set([
   'host',
   'authorization', // replaced by the upstream's injected headers
   'content-length', // recomputed by the outbound request
-  'x-ac-tool-approval' // the daemon's approval marker for the relay, never the upstream's
+  TOOL_APPROVAL_HEADER // the daemon's approval marker for the relay, never the upstream's
 ])
 // Hop-by-hop + the upstream's own auth challenge, which must never reach the caller (see the 401/403 arm).
 const STRIP_RESPONSE_HEADERS = new Set([
@@ -260,10 +262,10 @@ function registerGrantProxy(app: FastifyInstance, deps: GrantProxyDeps): void {
         let body = req.body as Buffer | undefined
         let listIds: ReadonlySet<string> = new Set()
         if (up.policy && req.method.toUpperCase() === 'POST') {
-          const judgment = judgeRequest(body, up.policy)
+          const judgment = judgeRequest(body, up.policy, approvalSource(req.headers[TOOL_APPROVAL_HEADER]))
           if (judgment.refused.length > 0) {
             const names = judgment.refused.map((name) => JSON.stringify(name.slice(0, 128))).join(', ')
-            deps.log.info(`${deps.logPrefix}: refused blocked tool ${names} for ${deps.noun} ${resourceId}`)
+            deps.log.info(`${deps.logPrefix}: refused tool ${names} for ${deps.noun} ${resourceId}`)
           }
           if (judgment.kind === 'respond') {
             return judgment.json === undefined

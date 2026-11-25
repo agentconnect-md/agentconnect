@@ -25,9 +25,9 @@ function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex')
 }
 
-/** The table a restricted grant is judged by; approval-gated names stay Blocked until this relay handles approvals. */
+/** The table a restricted grant is judged by; the CP sends approval-gated names only for a `daemon`-custody grant. */
 function decisionsOf(policy: NonNullable<RcMcpAssign['toolPolicies']>[number]): ToolDecisions {
-  return { allow: new Set(policy.allow) }
+  return { allow: new Set(policy.allow), approval: new Set(policy.approval), ask: new Set(policy.ask) }
 }
 
 /** The pool-wide MCP proxy bindings `rc/mcp-assign` delivers, matched by grant-key hash; headers are the upstream credential — NEVER logged. */

@@ -1,6 +1,6 @@
 // Live convergence of one MCP provider's daemon definitions: shared and agent-scoped (mcp-tool-permissions.md §5.4, §8).
 import { MCP_AGENT_DEFS_V1_FEATURE } from '@agentconnect.md/protocol'
-import type { AgentRecord, McpAgentGrantRecord, McpProviderRecord } from '../persistence/ports.js'
+import type { AgentRecord, McpAgentGrantRecord, McpGrantCustody, McpProviderRecord } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 import type { HttpDeps } from './deps.js'
 import { NoConnection } from '../orchestrator/outbound.js'
@@ -11,6 +11,7 @@ import {
   relayHttpOrigin,
   type GrantView
 } from '../orchestrator/mcpProvider.js'
+import { grantCustodyFor } from '../orchestrator/mcpAgentGrants.js'
 
 export interface McpDefConvergeOptions {
   /** The daemons to converge; absent ⇒ every daemon serving an agent that enables the provider. */
@@ -69,17 +70,17 @@ export function makeMcpDefSync(deps: HttpDeps, log?: Log): McpDefSync {
           : undefined)
       const catalog =
         base && restricted.size > 0 ? ((await deps.repos.mcpToolCatalog.get(orgId, provider.id))?.tools ?? []) : []
-      const agentGrants = new Map<string, McpAgentGrantRecord>()
-      const agentGrantOf = async (agentId: string) => {
-        if (!agentGrants.has(agentId)) {
-          const active = await deps.repos.mcpGrant.activeForAgent(orgId, provider.id, agentId)
-          const grant = currentMcpGrant(active.filter((g) => g.custody === 'runtime'))
-          if (grant) agentGrants.set(agentId, grant)
-        }
-        return agentGrants.get(agentId)
+      // Converge never mints: its callers hold the provider chain, and the policy write mints what serving daemons need.
+      const agentGrants = new Map<string, McpAgentGrantRecord[]>()
+      const agentGrantOf = async (agentId: string, custody: McpGrantCustody) => {
+        if (!agentGrants.has(agentId))
+          agentGrants.set(agentId, await deps.repos.mcpGrant.activeForAgent(orgId, provider.id, agentId))
+        return currentMcpGrant(agentGrants.get(agentId)!.filter((g) => g.custody === custody))
       }
       for (const daemonId of targets) {
-        const capable = deps.control.daemonFeatures(daemonId)?.includes(MCP_AGENT_DEFS_V1_FEATURE) === true
+        const features = deps.control.daemonFeatures(daemonId)
+        const capable = features?.includes(MCP_AGENT_DEFS_V1_FEATURE) === true
+        const custody = grantCustodyFor(features)
         const here = restricted.get(daemonId) ?? []
         if (base && sharedGrant && shared.has(daemonId)) {
           const spec = mcpProxyDef(provider, sharedGrant, base)
@@ -87,7 +88,7 @@ export function makeMcpDefSync(deps: HttpDeps, log?: Log): McpDefSync {
         }
         if (capable) {
           for (const agent of here) {
-            const grant = base ? await agentGrantOf(agent.id) : undefined
+            const grant = base ? await agentGrantOf(agent.id, custody) : undefined
             if (!base || !grant) continue
             const spec = mcpAgentDef(provider, grant, base, agent.id, policies.get(agent.id)!, catalog)
             await send(daemonId, () => deps.control.mcpServerUpsert(daemonId, spec))

@@ -1330,7 +1330,11 @@ export const AgentMcpToolPoliciesDto = z.object({
     // Daemons serving the agent without agent definitions: a restricted provider is not attached there.
     daemonsWithoutAgentDefinitions: z.array(z.string()),
     // Connected relays without tool policies: a restricted agent's calls through them are refused.
-    relaysWithoutToolPolicies: z.number().int().nonnegative()
+    relaysWithoutToolPolicies: z.number().int().nonnegative(),
+    // Daemons serving the agent without approvals: approval-gated tools are refused there.
+    daemonsWithoutApprovals: z.array(z.string()),
+    // Connected relays without approvals: approval-gated calls through them are refused.
+    relaysWithoutApprovals: z.number().int().nonnegative()
   })
 })
 

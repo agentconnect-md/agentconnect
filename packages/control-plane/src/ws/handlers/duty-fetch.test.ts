@@ -158,7 +158,7 @@ describe('handleDutyFetch', () => {
 
     await handleDutyFetch(frame, conn, fakeDeps({ agent: AGENT_RECORD, holdsAgent: true, agentBundle }))
 
-    expect(agentBundle).toHaveBeenCalledWith(AGENT_RECORD)
+    expect(agentBundle).toHaveBeenCalledWith(AGENT_RECORD, undefined)
     expect(conn.replyTo).toHaveBeenCalledWith(frame, 'duty/fetch/ok', { bundle: BUNDLE })
     expect(conn.sendError).not.toHaveBeenCalled()
   })
@@ -234,5 +234,7 @@ describe('handleDutyFetch', () => {
       fakeDeps({ agent: AGENT_RECORD, holdsAgent: true, agentBundle }, scopes)
     )
     expect((capable.replyTo.mock.calls[0]![2] as { bundle: typeof BUNDLE }).bundle.mcpServers).toEqual([shared, own])
+    // The bundle is projected for the asking member, whose features pick each agent grant's custody (§5.6).
+    expect(agentBundle).toHaveBeenLastCalledWith(AGENT_RECORD, ['mcp-agent-defs-v1'])
   })
 })

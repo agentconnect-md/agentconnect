@@ -39,6 +39,7 @@ import type {
 } from '../persistence/ports.js'
 import { OrgId } from '../domain/ids.js'
 import { currentMcpGrant, mcpAgentDef, mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
+import { grantCustodyFor, type McpAgentGrantMinter } from './mcpAgentGrants.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 
 /** Minimal relay-roster view both projectors pick a proxy base from. */
@@ -58,9 +59,11 @@ export interface McpDefinitionDeps {
   policies?: Pick<AgentMcpToolPolicyRepo, 'listForOrg'>
   /** Catalog snapshots, for the Blocked names a definition lists; absent ⇒ none. */
   catalogs?: Pick<McpToolCatalogRepo, 'get'>
+  /** Mints a restricted agent's missing grant of the receiving daemon's custody (§5.6); absent ⇒ such an agent gets no definition. */
+  mintAgentGrant?: McpAgentGrantMinter
 }
 
-/** The features to project a bundle with when its receiving daemon is only known at send time; {@link mcpDefsForPeer} then narrows it. */
+/** The features for a bundle no daemon receives as projected; it mints nothing, and a bundle that is sent is projected for its peer instead. */
 export const MCP_DEFS_ANY_PEER: readonly string[] = [MCP_AGENT_DEFS_V1_FEATURE]
 
 /** The definitions one daemon may receive: agent-scoped ones only where it advertises `mcp-agent-defs-v1` (§8). */
@@ -139,10 +142,13 @@ export async function mcpDefsForAgents(
       const restricted = agentDefs ? enablers.filter((agent) => policyOf.has(agent.id)) : []
       if (restricted.length === 0) continue
       const catalog = (await deps.catalogs?.get(OrgId(orgId), provider.id))?.tools ?? []
+      // The receiving daemon's custody picks the grant; a missing one is minted only for a real peer (§5.6).
+      const custody = grantCustodyFor(features)
+      const mint = features === MCP_DEFS_ANY_PEER ? undefined : deps.mintAgentGrant
       for (const agent of restricted) {
-        const grant = currentMcpGrant(
-          (await deps.grants.activeForAgent(OrgId(orgId), provider.id, agent.id)).filter((g) => g.custody === 'runtime')
-        )
+        const active = await deps.grants.activeForAgent(OrgId(orgId), provider.id, agent.id)
+        const grant =
+          currentMcpGrant(active.filter((g) => g.custody === custody)) ?? (await mint?.(provider, agent.id, custody))
         if (grant) specs.push(mcpAgentDef(provider, grant, relayBaseUrl, agent.id, policyOf.get(agent.id)!, catalog))
       }
     }

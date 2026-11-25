@@ -94,10 +94,9 @@ describe('McpBindingTable — restricted agent grants', () => {
     assign(t)
     expect(t.resolve(PID, 'shared')).toEqual({ upstreamUrl: 'https://a', headers })
     const restricted = t.resolve(PID, 'agent')
-    expect(restricted?.policy?.allow.has('read_note')).toBe(true)
-    // Approval-gated names stay Blocked until this relay handles approvals.
-    expect(restricted?.policy?.allow.has('write_note')).toBe(false)
-    expect(restricted?.policy?.allow.has('delete_note')).toBe(false)
+    expect(restricted?.policy?.allow).toEqual(new Set(['read_note']))
+    expect(restricted?.policy?.approval).toEqual(new Set(['write_note']))
+    expect(restricted?.policy?.ask).toEqual(new Set(['delete_note']))
   })
 
   it('keeps a provider while a restricted grant remains, and drops it when none of either kind does', () => {

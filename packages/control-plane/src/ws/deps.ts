@@ -233,7 +233,7 @@ export interface DaemonWsDeps {
   /** Assembles one agent's complete installable definition for `duty/fetch` —
    *  the same bundle an `agent/activate` carries; absent ⇒ the fetch answers
    *  empty and the member installs nothing. */
-  agentBundle?: (agent: AgentRecord) => Promise<DutyAgentBundle>
+  agentBundle?: (agent: AgentRecord, features: readonly string[] | undefined) => Promise<DutyAgentBundle>
   /** Stamps `lastRunAt` from the `cron/report` EVT (daemon-scoped, latest-wins). */
   cron: CronRepo
   /** An agent's own crons (`cron/self`) and a one-shot's retirement after its run; absent ⇒ refused and not advertised. */

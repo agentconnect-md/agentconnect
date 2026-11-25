@@ -1,7 +1,12 @@
 // Per-agent MCP tool policies: read with drift, save with save-time expansion, and return to Full access (mcp-tool-permissions.md §5).
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
-import { MCP_AGENT_DEFS_V1_FEATURE, MCP_TOOL_LIST_MAX, MCP_TOOL_POLICY_V1_FEATURE } from '@agentconnect.md/protocol'
+import {
+  MCP_AGENT_DEFS_V1_FEATURE,
+  MCP_TOOL_APPROVAL_V1_FEATURE,
+  MCP_TOOL_LIST_MAX,
+  MCP_TOOL_POLICY_V1_FEATURE
+} from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
@@ -10,6 +15,7 @@ import { AgentId, type OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { grantKeyHash } from '../../orchestrator/mcpProvider.js'
+import { grantCustodyFor } from '../../orchestrator/mcpAgentGrants.js'
 import { expandToolPolicy, toolPolicyDrift, type ToolPolicyDrift } from '../../orchestrator/mcpToolPolicy.js'
 import { resolveUpstreamHeaders } from '../../orchestrator/mcpUpstreamHeaders.js'
 import { serializeByProvider } from '../provider-chain.js'
@@ -87,7 +93,7 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'List an agent’s MCP tool policies',
           description:
-            'Every per-tool policy this agent holds, one per restricted MCP provider; a provider without one has Full access. Each carries its group decisions, overrides, the decision table expanded when it was saved, and `drift` against the current catalog snapshot (null without one): tools a re-save would no longer block, tools whose decision would change, and names the upstream no longer lists. Drift never changes the table. `compatibility` names the daemons serving the agent that cannot attach a restricted provider and counts the connected relays that refuse restricted calls. Gated by the agent’s visibility.',
+            'Every per-tool policy this agent holds, one per restricted MCP provider; a provider without one has Full access. Each carries its group decisions, overrides, the decision table expanded when it was saved, and `drift` against the current catalog snapshot (null without one): tools a re-save would no longer block, tools whose decision would change, and names the upstream no longer lists. Drift never changes the table. `compatibility` names the daemons serving the agent that cannot attach a restricted provider or that refuse approval-gated tools, and counts the connected relays that refuse restricted calls or approval-gated ones. Gated by the agent’s visibility.',
           operationId: 'listAgentMcpToolPolicies',
           params: AgentParams,
           response: { 200: AgentMcpToolPoliciesDto, 404: ErrorDto }
@@ -104,7 +110,11 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
             daemonsWithoutAgentDefinitions: daemons.filter(
               (d) => deps.control.daemonFeatures(d)?.includes(MCP_AGENT_DEFS_V1_FEATURE) !== true
             ),
-            relaysWithoutToolPolicies: deps.relayControl.relaysLacking(MCP_TOOL_POLICY_V1_FEATURE)
+            relaysWithoutToolPolicies: deps.relayControl.relaysLacking(MCP_TOOL_POLICY_V1_FEATURE),
+            daemonsWithoutApprovals: daemons.filter(
+              (d) => grantCustodyFor(deps.control.daemonFeatures(d)) !== 'daemon'
+            ),
+            relaysWithoutApprovals: deps.relayControl.relaysLacking(MCP_TOOL_APPROVAL_V1_FEATURE)
           }
         }
       }
@@ -119,7 +129,7 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Set an agent’s MCP tool policy',
           description:
-            'Restrict one MCP provider for this agent: a decision (`allow`, `approval`, `ask`, `block`) for each tool group (`readOnly`, `write`, `other`) plus per-tool `overrides`. The decision table is expanded now from the provider’s catalog snapshot and the overrides, and is never re-expanded by a later catalog refresh; without a snapshot it is the overrides alone. Tools in no list are blocked. Until approvals ship, `approval` and `ask` tools are refused too. The first save gives the agent its own grant for the provider. Requires editing the agent and viewing the provider.',
+            'Restrict one MCP provider for this agent: a decision (`allow`, `approval`, `ask`, `block`) for each tool group (`readOnly`, `write`, `other`) plus per-tool `overrides`. The decision table is expanded now from the provider’s catalog snapshot and the overrides, and is never re-expanded by a later catalog refresh; without a snapshot it is the overrides alone. Tools in no list are blocked. `approval` and `ask` tools are callable once approved where the serving daemon and the relay both support approvals, and are refused everywhere else. The first save gives the agent its own grant for the provider, one for each kind of daemon serving it. Requires editing the agent and viewing the provider.',
           operationId: 'setAgentMcpToolPolicy',
           params: PolicyParams,
           body: SaveAgentMcpToolPolicyBody,
@@ -147,9 +157,15 @@ export function agentMcpToolPolicyRoutes(deps: HttpDeps) {
             const catalog = await deps.repos.mcpToolCatalog.get(orgId, provider.id)
             const table = expandToolPolicy(req.body.groups, req.body.overrides, catalog?.tools ?? [])
             if (Object.values(table).some((names) => names.length > MCP_TOOL_LIST_MAX)) return 'too_large' as const
+            // Each serving daemon's custody, minted when missing and never promoted (§5.6); a projection mints for later ones.
+            const servers = await deps.agentDelivery.daemonsFor(agent)
+            const needed = new Set(servers.map((d) => grantCustodyFor(deps.control.daemonFeatures(d))))
+            if (needed.size === 0) needed.add('runtime')
             const grants = await deps.repos.mcpGrant.activeForAgent(orgId, provider.id, agent.id)
-            if (!grants.some((g) => g.custody === 'runtime'))
-              await deps.repos.mcpGrant.mintForAgent(orgId, provider.id, agent.id, 'runtime')
+            for (const custody of needed) {
+              if (!grants.some((g) => g.custody === custody))
+                await deps.repos.mcpGrant.mintForAgent(orgId, provider.id, agent.id, custody)
+            }
             const { policy, created } = await deps.repos.agentMcpToolPolicy.save(orgId, {
               agentId: agent.id,
               mcpProviderId: provider.id,

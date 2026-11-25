@@ -2,9 +2,22 @@
 import { Transform, type TransformCallback } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 
-/** The tools a restricted grant may call; every other name, approval-gated ones included until approvals ship, is Blocked. */
+/** A restricted grant's table: `allow` passes, `approval` and `ask` need the daemon's approval header, any other name is Blocked. */
 export interface ToolDecisions {
   allow: ReadonlySet<string>
+  approval: ReadonlySet<string>
+  ask: ReadonlySet<string>
+}
+
+/** The header a daemon adds to a call it approved (mcp-tool-permissions.md §7.2); the relay strips it before the upstream. */
+export const TOOL_APPROVAL_HEADER = 'x-ac-tool-approval'
+
+/** Who approved a call, as `X-AC-Tool-Approval` carries it; `ask` tools accept only `person`. */
+export type ApprovalSource = 'person' | 'runtime-review'
+
+/** A header value as an approval source; a repeated or unknown value approves nothing. */
+export function approvalSource(header: string | string[] | undefined): ApprovalSource | undefined {
+  return header === 'person' || header === 'runtime-review' ? header : undefined
 }
 
 /** The most a filtered `tools/list` response, or one of its SSE events, may buffer. */
@@ -25,24 +38,42 @@ const idKey = (id: unknown): string => JSON.stringify(id ?? null)
 
 const hasId = (message: Message): boolean => 'id' in message && message.id !== undefined
 
-function blockedResult(name: string): Message {
-  return { content: [{ type: 'text', text: `The tool "${name}" is blocked for this agent.` }], isError: true }
+type Refusal = { name: string; reason: 'blocked' | 'unapproved' }
+
+function refusalResult({ name, reason }: Refusal): Message {
+  const text =
+    reason === 'blocked'
+      ? `The tool "${name}" is blocked for this agent.`
+      : `The tool "${name}" requires approval, and this call was not approved.`
+  return { content: [{ type: 'text', text }], isError: true }
+}
+
+/** Whether `tools/list` keeps a tool: every name the table does not block. */
+function listed(decisions: ToolDecisions, name: string): boolean {
+  return decisions.allow.has(name) || decisions.approval.has(name) || decisions.ask.has(name)
 }
 
 function rpcError(id: unknown, code: number, message: string): Message {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }
 }
 
-/** The tool a call names, when it is not allowed; undefined when the message is anything but a refused call. */
-function refusedTool(message: Message, decisions: ToolDecisions): string | undefined {
+/** Why a call is refused; undefined when the message is anything but a refused call. */
+function refusal(
+  message: Message,
+  decisions: ToolDecisions,
+  approval: ApprovalSource | undefined
+): Refusal | undefined {
   if (message.method !== 'tools/call') return undefined
   const name = isMessage(message.params) ? message.params.name : undefined
-  if (typeof name === 'string' && decisions.allow.has(name)) return undefined
-  return typeof name === 'string' ? name : '(unnamed)'
+  if (typeof name !== 'string') return { name: '(unnamed)', reason: 'blocked' }
+  if (decisions.allow.has(name)) return undefined
+  if (decisions.ask.has(name)) return approval === 'person' ? undefined : { name, reason: 'unapproved' }
+  if (decisions.approval.has(name)) return approval ? undefined : { name, reason: 'unapproved' }
+  return { name, reason: 'blocked' }
 }
 
-/** Judge one POST body: refuse calls outside the table here, and forward what was judged rather than the original bytes. */
-export function judgeRequest(body: Buffer | undefined, decisions: ToolDecisions): Judgment {
+/** Judge one POST body: refuse calls outside the table, or gated calls without an approval, and forward what was judged rather than the original bytes. */
+export function judgeRequest(body: Buffer | undefined, decisions: ToolDecisions, approval?: ApprovalSource): Judgment {
   if (!body || body.length === 0) return { kind: 'forward', body: '', listIds: new Set(), refused: [] }
   let parsed: unknown
   try {
@@ -55,14 +86,15 @@ export function judgeRequest(body: Buffer | undefined, decisions: ToolDecisions)
   if (messages.length === 0 || !messages.every(isMessage)) {
     return { kind: 'respond', status: 400, json: rpcError(null, -32600, 'invalid request'), refused: [] }
   }
-  const refusals = messages.map((message) => refusedTool(message as Message, decisions))
-  const refused = refusals.filter((name): name is string => name !== undefined)
+  // One approval header cannot vouch for several calls, so a batch member is judged as if none were sent.
+  const refusals = messages.map((message) => refusal(message as Message, decisions, batch ? undefined : approval))
+  const refused = refusals.filter((r): r is Refusal => r !== undefined).map((r) => r.name)
   if (refused.length > 0) {
     const answers = (messages as Message[]).flatMap((message, i) => {
       if (!hasId(message)) return []
-      const name = refusals[i]
-      if (name !== undefined) return [{ jsonrpc: '2.0', id: message.id, result: blockedResult(name) }]
-      return [rpcError(message.id, -32600, 'batch rejected: it contains a tool call blocked for this agent')]
+      const r = refusals[i]
+      if (r !== undefined) return [{ jsonrpc: '2.0', id: message.id, result: refusalResult(r) }]
+      return [rpcError(message.id, -32600, 'batch rejected: it contains a tool call refused for this agent')]
     })
     if (answers.length === 0) return { kind: 'respond', status: 202, refused }
     return { kind: 'respond', status: 200, json: batch ? answers : answers[0], refused }
@@ -74,7 +106,7 @@ export function judgeRequest(body: Buffer | undefined, decisions: ToolDecisions)
   return { kind: 'forward', body: JSON.stringify(parsed), listIds, refused: [] }
 }
 
-/** Keep only allowed tools in a response to one of `listIds`; anything that cannot be filtered becomes an error, never unfiltered data. */
+/** Keep only tools the table does not block in a response to one of `listIds`; anything that cannot be filtered becomes an error, never unfiltered data. */
 export function filterMessage(message: unknown, decisions: ToolDecisions, listIds: ReadonlySet<string>): unknown {
   if (!isMessage(message) || !hasId(message) || !listIds.has(idKey(message.id)) || !('result' in message)) {
     return message
@@ -84,7 +116,7 @@ export function filterMessage(message: unknown, decisions: ToolDecisions, listId
     return rpcError(message.id, -32603, 'tools/list result could not be filtered')
   }
   const tools = result.tools.filter(
-    (tool) => isMessage(tool) && typeof tool.name === 'string' && decisions.allow.has(tool.name)
+    (tool) => isMessage(tool) && typeof tool.name === 'string' && listed(decisions, tool.name)
   )
   return { ...message, result: { ...result, tools } }
 }

@@ -37,11 +37,11 @@ export const handleDutyFetch: Handler = async (frame, conn, deps) => {
     conn.replyTo(frame, 'duty/fetch/ok', {})
     return
   }
-  const bundle = await deps.agentBundle(agent)
-  rememberScopes(conn.daemonId, deps, bundle)
-  // Workspace dual-encoded per the asking member's advertised features (§8).
+  // Workspace dual-encoded, and MCP grants picked, per the asking member's advertised features (§8).
   const state = deps.connReg.get(conn.daemonId)
   const features = state?.capabilities?.features
+  const bundle = await deps.agentBundle(agent, features)
+  rememberScopes(conn.daemonId, deps, bundle)
   // An integration the member cannot take is removed rather than sent, so no earlier copy of it survives there.
   for (const i of bundle.integrations)
     if (!integrationDeliverableToPeer(i, features))
