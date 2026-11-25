@@ -5755,6 +5755,7 @@ export class Daemon {
       // reason:'not_local' — cross-daemon relay is P2).
       messageAgent: (req) => this.collab.messageAgent(req),
       preflightWake: (req) => this.collab.wakeRejectionReason(req),
+      resolveAgentRef: (callerAgentId, ref) => this.cpCollab.resolveAgentRef(callerAgentId, ref),
       replyToSession: (req) => this.collab.replyToSession(req),
       continueSubsession: (req) => this.collab.continueSubsession(req),
       taskReach: (ctx) => this.taskReach(ctx),

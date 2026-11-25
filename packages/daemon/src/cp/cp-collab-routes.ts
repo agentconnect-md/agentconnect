@@ -62,6 +62,10 @@ export function isSyntheticA2aChannel(channel: string): boolean {
   return channel.startsWith('a2a:')
 }
 
+/** How a `callAgent` `toAgent` resolved: an agent id, no callable agent, or several callable agents of that name. */
+export type AgentRefResolution =
+  { agentId: string } | { unknown: true } | { ambiguous: { agentId: string; name: string }[] }
+
 export class CpCollabRoutes {
   private generation = -1
   private readonly channels = new Map<string, Map<string, CollabResolved>>()
@@ -188,6 +192,26 @@ export class CpCollabRoutes {
     if (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(targetAgentId)) return false
     if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(callerAgentId)) return false
     return true
+  }
+
+  /** A `callAgent` target as given: a known id passes, else the one callable same-org agent of that name (send-message-guide.md §3.3). */
+  resolveAgentRef(callerAgentId: string, ref: string): AgentRefResolution {
+    const caller = this.byAgent.get(callerAgentId)
+    const id = ref.trim()
+    // No caller entry means no snapshot to resolve against; the wake path fails that closed as before.
+    if (!caller || this.byAgent.has(ref)) return { agentId: ref }
+    if (this.byAgent.has(id)) return { agentId: id }
+    const wanted = id.replace(/^@+/, '').toLowerCase()
+    const callable = [...this.byAgent.values()].filter(
+      (a) => a.orgId === caller.orgId && this.admits(callerAgentId, a.agentId)
+    )
+    const named = (field: 'name' | 'displayName') =>
+      callable.filter((a) => a[field] !== undefined && a[field].trim().toLowerCase() === wanted)
+    const bySlug = named('name')
+    const matches = bySlug.length > 0 ? bySlug : named('displayName')
+    if (matches.length === 1) return { agentId: matches[0]!.agentId }
+    if (matches.length === 0) return { unknown: true }
+    return { ambiguous: matches.map((a) => ({ agentId: a.agentId, name: a.name ?? a.displayName ?? a.agentId })) }
   }
 
   /** The placement of `agentId` in `(orgId,platform,channel)`, or undefined. */
