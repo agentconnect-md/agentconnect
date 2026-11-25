@@ -142,7 +142,18 @@ function externalSessionIsVisible(
   if (resource.visibility !== 'external' || resource.externalResolution !== 'settled' || !resource.externalScopeId) {
     return false
   }
-  return snapshot.allowedScopes.some((scope) => scope.id === resource.externalScopeId)
+  return externalScopeIsAllowed(provider, resource.externalScopeId, snapshot)
+}
+
+/** A provider decision admits a recorded scope: its provider has a durable policy and the scope is allowed; sessions and artifacts share it. */
+export function externalScopeIsAllowed(
+  provider: string | null | undefined,
+  scopeId: string | null | undefined,
+  snapshot: SessionExternalAccessSnapshot | undefined
+): boolean {
+  if (!provider || !scopeId || !snapshot) return false
+  if (!snapshot.policies.some((policy) => policy.provider === provider)) return false
+  return snapshot.allowedScopes.some((scope) => scope.id === scopeId)
 }
 
 // Shared in-memory decisions for role, resource, and session authority.

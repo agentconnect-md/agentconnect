@@ -108,6 +108,7 @@ import type { ControlLease, LeaseComputer, LeaseStep } from '../domain/computerL
 import type { LeaseWaiter } from '../domain/computerLeaseQueue.js'
 import type { ComputerAllocation, ComputerPoolPhase } from '../domain/computerPool.js'
 import type { SessionKey } from '../domain/sessionKey.js'
+import type { ArtifactAudience, ArtifactReachSession, ArtifactViewer } from '../authorization/artifact-policy.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
 import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
@@ -1019,6 +1020,116 @@ export interface SessionFileSnapshotRepo {
   /** Rows to release: their session's content is purged, or the session row has been gone since before `missingBefore`. */
   reapable(missingBefore: Date, limit: number): Promise<SessionFileSnapshotRecord[]>
   delete(id: string): Promise<void>
+}
+
+/** One file of an artifact revision (artifacts.md §4); `path` is relative POSIX (§5.4). */
+export interface ArtifactManifestFile {
+  path: string
+  /** Lower-case hex SHA-256 of the bytes. */
+  sha256: string
+  bytes: number
+  mediaType: string
+}
+
+/** What one revision holds: its entry path, which is one of `files`. */
+export interface ArtifactManifest {
+  entry: string
+  files: ArtifactManifestFile[]
+}
+
+export type ArtifactStorageMode = 'signed' | 'public'
+export type ArtifactRevisionState = 'pending' | 'ready'
+
+/** An agent-published deliverable (artifacts.md §4); its audience was copied from the session at creation. */
+export interface ArtifactRecord extends ArtifactAudience {
+  id: string
+  title: string
+  originSessionId: string | null
+  /** The newest ready revision's number; 0 until the first one is ready. */
+  latestRevision: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+/** One immutable publication of an artifact (artifacts.md §4). */
+export interface ArtifactRevisionRecord {
+  id: string
+  artifactId: string
+  number: number
+  manifest: ArtifactManifest
+  storageMode: ArtifactStorageMode
+  storagePrefix: string
+  producedByAgentId: string
+  producedByAgentName: string
+  producedInSessionId: string
+  initiatedBy: string | null
+  totalBytes: number
+  fileCount: number
+  state: ArtifactRevisionState
+  idempotencyKey: string
+  createdAt: Date
+}
+
+/** A new artifact; its id is minted by the repository. */
+export interface NewArtifact extends ArtifactAudience {
+  title: string
+  originSessionId: string | null
+}
+
+/** A revision to record as pending; its size and file count come from the manifest. */
+export interface NewArtifactRevision {
+  manifest: ArtifactManifest
+  storageMode: ArtifactStorageMode
+  /** The revision's key prefix, minted once its artifact id and number are known. */
+  storagePrefix: (at: { artifactId: string; number: number }) => string
+  producedByAgentId: string
+  producedByAgentName: string
+  producedInSessionId: string
+  initiatedBy: string | null
+  idempotencyKey: string
+}
+
+export interface ArtifactPublishResult {
+  artifact: ArtifactRecord
+  revision: ArtifactRevisionRecord
+  /** True when the idempotency key had already recorded this revision. */
+  replayed: boolean
+}
+
+/** Newest-updated first; the cursor is the last row of the previous page. */
+export interface ArtifactPageQuery {
+  limit: number
+  cursor?: { updatedAt: Date; id: string }
+}
+
+export interface ArtifactRepo {
+  /** Create an artifact with pending revision 1; a replayed key returns what that agent recorded under it. */
+  create(artifact: NewArtifact, revision: NewArtifactRevision): Promise<ArtifactPublishResult>
+  /** Append a pending revision; null when the artifact is gone, and a key already used on another artifact throws `ArtifactIdempotencyConflictError`. */
+  appendRevision(
+    orgId: string,
+    artifactId: string,
+    revision: NewArtifactRevision
+  ): Promise<ArtifactPublishResult | null>
+  /** Mark a revision ready and advance `latestRevision`; idempotent, null when the revision is gone. */
+  markReady(orgId: string, artifactId: string, number: number): Promise<ArtifactRecord | null>
+  get(orgId: string, id: string): Promise<ArtifactRecord | null>
+  getRevision(orgId: string, artifactId: string, number: number): Promise<ArtifactRevisionRecord | null>
+  /** Ready revisions, newest first. */
+  listRevisions(orgId: string, artifactId: string): Promise<ArtifactRevisionRecord[]>
+  rename(orgId: string, id: string, title: string): Promise<ArtifactRecord | null>
+  /** Move between `private` and `org` only (artifacts.md §6.3); null when the artifact is gone or has another audience. */
+  setVisibility(orgId: string, id: string, visibility: 'private' | 'org'): Promise<ArtifactRecord | null>
+  /** Delete the rows; the caller deletes the objects first (artifacts.md §10.1). */
+  delete(orgId: string, id: string): Promise<boolean>
+  /** Artifacts with a ready revision that `viewer` can view (`canViewArtifact`). */
+  listVisible(viewer: ArtifactViewer, page: ArtifactPageQuery): Promise<ArtifactRecord[]>
+  /** Artifacts with a ready revision an agent in `session` can reach (`agentCanReachArtifact`). */
+  listReachable(
+    session: ArtifactReachSession,
+    sessionOwner: ArtifactViewer | undefined,
+    page: ArtifactPageQuery
+  ): Promise<ArtifactRecord[]>
 }
 
 export interface ComputerScreenshotRepo {
