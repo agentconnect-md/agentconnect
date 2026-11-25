@@ -5,9 +5,9 @@ export function isAntigravityRuntimeDef(runtime: RuntimeDef): boolean {
   return /(?:^|[\\/])agy(?:\.exe)?$/i.test(runtime.command) && runtime.args[0] === 'acp'
 }
 
-// Native 1.5.14 omits the MCP transport declaration but handles streamable HTTP.
+// These verified releases omit the MCP transport declaration but handle Streamable HTTP.
 export function antigravityMcpFallback(id?: string, name?: string, version?: string) {
-  if (id === 'antigravity-acp' && name === 'Antigravity ACP Server' && version === '1.5.14') {
+  if (id === 'antigravity-acp' && name === 'Antigravity ACP Server' && (version === '1.5.14' || version === '1.5.17')) {
     return { http: true, sse: false }
   }
   return undefined
