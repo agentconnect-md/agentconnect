@@ -337,11 +337,9 @@ export class WorkspaceManager {
   // and two sessions starting together must share one of them. A separate map because the clone it
   // performs keys `cloneInFlight` by the very same path.
   private readonly secondaryInFlight = new Map<string, Promise<SecondaryWorkspaceRoot | undefined>>()
-  // A checkout's pull, single-flight like its clone: sessions of one agent may prepare side by side (the daemon's
-  // workspace scheduler), and each new session pulls the same primary and secondary checkouts. One pull serves every
-  // session that asks while it runs, and one that finished moments ago serves the next.
-  private readonly pullInFlight = new Map<string, Promise<void>>()
-  private readonly pulledAt = new Map<string, number>()
+  // A checkout's pull, single-flight per target (remote and branch): the sessions asking while it runs share it, and one that just succeeded serves the next.
+  private readonly pullInFlight = new Map<string, { target: string; pull: Promise<void> }>()
+  private readonly pulled = new Map<string, { target: string; at: number }>()
   /** The `always` roots prepared for an agent's current sessions — what the synchronous hand-out reads. */
   private readonly readyRoots = new Map<string, SecondaryWorkspaceRoot[]>()
   /** Each session's selected repositories (decision 19) beside the selected roots readied for it, keyed by session. */
@@ -1684,18 +1682,28 @@ export class WorkspaceManager {
   /** Best-effort sync of one root's checkout to its configured remote branch; never block/throw on offline (design §4.3). */
   async pullRoot(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     const key = `${agentId}\u0000${cwd}`
-    const inFlight = this.pullInFlight.get(key)
-    if (inFlight) return await inFlight
-    if (Date.now() - (this.pulledAt.get(key) ?? -Infinity) < PULL_REUSE_MS) return
-    const pull = this.pullRootNow(agentId, root, cwd).finally(() => {
-      this.pulledAt.set(key, Date.now())
-      this.pullInFlight.delete(key)
-    })
-    this.pullInFlight.set(key, pull)
-    return await pull
+    const target = `${root.cloneUrl}\u0000${root.branch}`
+    // One pull of a checkout at a time: a pull of another branch or remote waits its turn rather than taking this one's answer.
+    for (let running = this.pullInFlight.get(key); running; running = this.pullInFlight.get(key)) {
+      await running.pull
+      if (running.target === target) return
+    }
+    const now = Date.now()
+    for (const [pulledKey, last] of this.pulled) if (now - last.at >= PULL_REUSE_MS) this.pulled.delete(pulledKey)
+    if (this.pulled.get(key)?.target === target) return
+    const pull = this.pullRootNow(agentId, root, cwd)
+      .then((synced) => {
+        // Only a pull that reached the remote serves later sessions; a failed one is retried by the next.
+        if (synced) this.pulled.set(key, { target, at: Date.now() })
+        else this.pulled.delete(key)
+      })
+      .finally(() => this.pullInFlight.delete(key))
+    this.pullInFlight.set(key, { target, pull })
+    await pull
   }
 
-  private async pullRootNow(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
+  /** Whether the checkout was synced to its remote branch. */
+  private async pullRootNow(agentId: string, root: WorkspaceRoot, cwd: string): Promise<boolean> {
     // github-app: warm the credential cache OUTSIDE the pull budget — a cold cache costs a CP round trip.
     if (root.githubApp) await preWarmGitCred(agentId, 'pull', additionalRepositoryOf(root)).catch(() => undefined)
     // Abort-driven budget: the signal KILLS the git child at the deadline, so a wedged pull cannot hold .git/index.lock.
@@ -1708,8 +1716,10 @@ export class WorkspaceManager {
         ...pullTarget.env
       })
       await syncWorkspaceRef(git, pullTarget.remote, root.branch)
+      return true
     } catch {
       // offline / timed out / refused (a local commit the remote lacks, an edit the sync would rewrite): proceed with the on-disk checkout
+      return false
     } finally {
       clearTimeout(timer)
     }
