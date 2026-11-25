@@ -164,8 +164,24 @@ export function RecentSessionsCard({
                 className={`row click grid-cols-[1fr_auto] gap-3 ${rowClassName ?? ''}`}
               >
                 <span className="min-w-0">
-                  <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                    {s.title}
+                  <span className="flex items-center gap-[7px]">
+                    {s.unread && (
+                      <span
+                        role="img"
+                        aria-label={t('unread')}
+                        title={t('unread')}
+                        className="h-[7px] w-[7px] flex-none rounded-full bg-(--brand)"
+                      />
+                    )}
+                    <span
+                      className={
+                        s.unread
+                          ? 'block truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)'
+                          : 'block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)'
+                      }
+                    >
+                      {s.title}
+                    </span>
                   </span>
                   {/* Agents left, integration right. The two used to run together as
                     one left-packed strip, which left a multi-agent row nowhere to put

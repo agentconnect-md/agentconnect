@@ -72,6 +72,11 @@ function channelWrapperClasses(markup: string): string {
 }
 
 describe('RecentSessionsCard', () => {
+  it('marks only an unread row with the dot', () => {
+    expect(card([session({ unread: true })])).toContain('aria-label="Unread"')
+    expect(card([session()])).not.toContain('aria-label="Unread"')
+  })
+
   it('lets a long channel label ellipsize instead of overflowing the row', () => {
     const long = '#platform-infra-oncall-handoff-and-escalations-archive'
     const markup = card([session({ channel: long })])

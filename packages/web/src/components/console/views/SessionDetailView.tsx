@@ -188,6 +188,7 @@ import { TaskBrief } from '@/components/console/TaskBrief'
 import { SendButton } from '@/components/console/SendButton'
 import { SessionShareDialog, type ShareVisibility } from '@/components/console/SessionShareDialog'
 import { useIsMobile } from '@/lib/use-is-mobile'
+import { useMarkSessionsRead } from '@/lib/use-mark-sessions-read'
 import { moveComposerDraft, readComposerDraft, writeComposerDraft } from '@/lib/composer-draft'
 import { RootThreadFooter, TaskThreadFooter } from '@/components/console/ThreadFooter'
 import {
@@ -2075,6 +2076,8 @@ export default function SessionDetailView() {
         : session,
     [session, railCurrentKey, railCurrentMemberIds]
   )
+  // What is on screen is read for this member, on every device (the Control Plane keeps ids and a stamp).
+  useMarkSessionsRead(railCurrentMemberIds ?? (id ? [id] : []), session?.lastActivityAt)
   // The busy flag for the dock's WORKSPACE panels, which follow header focus rather than the open
   // session (§3.4): in a merged conversation it is the focused participant's turn that writes the
   // checkout those panels read, so keying them to the open session would refresh the wrong worktree's

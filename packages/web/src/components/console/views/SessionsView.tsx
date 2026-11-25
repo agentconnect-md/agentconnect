@@ -784,6 +784,14 @@ export default function SessionsView() {
                   Title + status and time form the first row; agent + channel share
                   the full-width second row. The session title stays the visual lead. */}
               <span className="flex min-w-0 items-center gap-2 desktop:hidden">
+                {s.unread && (
+                  <span
+                    role="img"
+                    aria-label={t('unread')}
+                    title={t('unread')}
+                    className="h-[7px] w-[7px] flex-none rounded-full bg-(--brand)"
+                  />
+                )}
                 <span className="min-w-0 truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
                   {s.title}
                 </span>
@@ -825,6 +833,14 @@ export default function SessionsView() {
               {/* ── desktop arrangement (≥769px): the 6 grid cells ────────────── */}
               <div className="hidden min-w-0 desktop:block">
                 <div className="flex min-w-0 items-center gap-[6px]">
+                  {s.unread && (
+                    <span
+                      role="img"
+                      aria-label={t('unread')}
+                      title={t('unread')}
+                      className="h-[7px] w-[7px] flex-none rounded-full bg-(--brand)"
+                    />
+                  )}
                   <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                     {s.title}
                   </span>

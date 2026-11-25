@@ -512,6 +512,8 @@ export interface SessionDto {
   visibility?: SessionVisibility | null
   /** Live wait state (slack-approval-dm.md §7); absent on a CP that predates it. */
   activityState?: SessionActivityState | null
+  /** A webchat session with activity after the caller last had it open. */
+  unread?: boolean
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
@@ -2429,6 +2431,7 @@ export function sessionFromDto(d: SessionDto): Session {
     ...(d.hookKind ? { hookKind: d.hookKind } : {}),
     // Absent on legacy/pre-feature rows — the views treat undefined as 'org'.
     ...(d.visibility != null ? { visibility: d.visibility } : {}),
+    ...(d.unread ? { unread: true as const } : {}),
     duration: PLACEHOLDER,
     tokens: fmtCountCompact(usage?.totalTokens),
     cost: fmtCost(usage?.costAmount, usage?.costCurrency),
@@ -2795,7 +2798,9 @@ export async function fetchConversations(
       : {}
     const identity = {
       ...(conversation.key !== null ? { conversationKey: conversation.key } : {}),
-      memberSessionIds
+      memberSessionIds,
+      // A conversation is unread while any member the caller has opened shows newer activity.
+      ...(members.some((member) => member.unread) ? { unread: true as const } : {})
     }
     if (memberSessionIds.length <= 1) return { ...rep, ...identity, ...purge }
     return {
@@ -2925,6 +2930,11 @@ export function putSessionExternalAccess(
   orgId?: string
 ): Promise<SessionExternalAccessDto> {
   return apiPut<SessionExternalAccessDto>(`${orgBase(orgId)}/session-access/${provider}`, { enabled })
+}
+
+/** Tells the CP the caller has these sessions open now; it stores ids and a timestamp, and skips ids it cannot resolve. */
+export function markSessionsRead(sessionIds: string[], orgId?: string): Promise<void> {
+  return apiPut<void>(`${orgBase(orgId)}/sessions/read-state`, { sessionIds: sessionIds.slice(0, 50) })
 }
 
 // One page of a session's transcript, proxied live from the daemon recorded on

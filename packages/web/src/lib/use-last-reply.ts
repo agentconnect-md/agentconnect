@@ -1,7 +1,7 @@
 'use client'
 
 import useSWR from 'swr'
-import { fetchSessionMessages, type SessionMessageDto } from '@/lib/api'
+import { fetchSessionMessages, type SessionMessageDto, type SessionThreadSummaryDto } from '@/lib/api'
 import { MOCK_MODE, type Session } from '@/lib/data'
 
 // ponytail: one newest page per visible row; a daemon-side "last reply" read replaces this if Home's fan-out gets heavy.
@@ -19,11 +19,21 @@ export function replyExcerpt(text: string): string {
     .slice(0, EXCERPT_CHARS)
 }
 
-/** The newest non-empty text row one of `agentIds` authored, as an excerpt; null when the page holds none. */
-export function lastAgentReply(messages: SessionMessageDto[], agentIds: ReadonlySet<string>): string | null {
-  const replies = messages
-    .filter((m) => m.kind.toLowerCase() === 'text' && agentIds.has(m.sender))
-    .sort((a, b) => b.seq - a.seq)
+/** The newest non-empty reply one of `agentIds` authored, on the timeline or in a thread it answers in, as an excerpt; null when the page holds none. */
+export function lastAgentReply(
+  messages: SessionMessageDto[],
+  agentIds: ReadonlySet<string>,
+  threads: SessionThreadSummaryDto[] = []
+): string | null {
+  const replies = [
+    ...messages
+      .filter((m) => m.kind.toLowerCase() === 'text' && agentIds.has(m.sender))
+      .map((m) => ({ at: Date.parse(m.ts), seq: m.seq, text: m.text })),
+    // A coordinator's answer lands in the thread of the task it handed the work to, not on its own timeline.
+    ...threads
+      .filter((t) => t.lastReply?.excerpt && agentIds.has(t.lastReply.sender))
+      .map((t) => ({ at: Date.parse(t.lastReplyAt ?? ''), seq: 0, text: t.lastReply!.excerpt! }))
+  ].sort((a, b) => (b.at || 0) - (a.at || 0) || b.seq - a.seq)
   for (const reply of replies) {
     const excerpt = replyExcerpt(reply.text)
     if (excerpt) return excerpt
@@ -38,11 +48,15 @@ export function useLastReply(session: Session, enabled: boolean): string | null 
   )
   const { data } = useSWR(
     enabled && !MOCK_MODE && agentIds.length > 0
-      ? ['session-last-reply', session.id, session.lastActivityAt ?? '', agentIds.join(',')]
+      ? // ponytail: a task's reply does not move the coordinator's own stamp, so `unread` is what re-reads it; the CP's effective activity on the row if that ever misses.
+        ['session-last-reply', session.id, session.lastActivityAt ?? '', agentIds.join(','), !!session.unread]
       : null,
     () =>
-      fetchSessionMessages(session.id, { limit: TAIL_LIMIT })
-        .then((page) => lastAgentReply(page.messages, new Set(agentIds)))
+      fetchSessionMessages(session.id, {
+        limit: TAIL_LIMIT,
+        ...(session.coordinator ? { view: 'roots' as const } : {})
+      })
+        .then((page) => lastAgentReply(page.messages, new Set(agentIds), page.threads))
         .catch(() => null),
     { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false, keepPreviousData: true }
   )

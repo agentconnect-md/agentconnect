@@ -1518,6 +1518,8 @@ export interface Session {
   hookKind?: HookKind
   /** Session-level visibility (lock badge / detail toggle); absent on mock and pre-feature rows, read as 'org'. */
   visibility?: 'private' | 'org' | 'external' | 'editors'
+  /** A webchat session with activity after the signed-in member last had it open. */
+  unread?: boolean
   duration: string
   tokens: string
   cost: string

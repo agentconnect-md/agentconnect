@@ -214,6 +214,7 @@ model User {
   memberships                      Membership[]
   createdOrgs                       Org[]                      @relation("OrgCreatedBy")
   apiKeys                          ApiKey[]
+  sessionReadStates                SessionReadState[]
   createdAgents                    Agent[]                    @relation("AgentCreatedBy")
   modifiedAgents                   Agent[]                    @relation("AgentModifiedBy")
   createdIntegrations              Integration[]
@@ -1618,6 +1619,7 @@ model SessionMeta {
   webchatTargetedBy      WebchatConversation[]      @relation("WebchatTargetSession")
   pullRequest            SessionPullRequest?
   pullRequestCapture     SessionPullRequestCapture?
+  readStates             SessionReadState[]
 
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
@@ -1636,6 +1638,20 @@ model SessionMeta {
   @@index([daemonId])
   @@index([orgId, externalProvider, externalScopeId])
   @@map("session_meta")
+}
+
+// One member's read watermark for a session: activity after `readAt` is unread in the console. Ids and a stamp only.
+model SessionReadState {
+  userId    String
+  sessionId String
+  readAt    DateTime @db.Timestamptz(3)
+
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session SessionMeta @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, sessionId])
+  @@index([sessionId])
+  @@map("session_read_state")
 }
 
 // Where one agent's session key last ran (session-executors.md §7): the newer of a relayed ready `prepare` and a reported verdict. Ids and a stamp only.
