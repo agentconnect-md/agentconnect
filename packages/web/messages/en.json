@@ -5692,6 +5692,9 @@
         "optionMeta": "{price} / mo",
         "optionCurrent": "{meta} · current",
         "contactNote": "Priced by contract — session limit, credits, retention and org SSO.",
+        "salesPaused": "Plan purchases and upgrades are paused for now. You can still switch to Free at renewal, cancel a scheduled change and buy top-ups.",
+        "salesPausedFree": "Paid plans are paused for now. You can still buy top-ups.",
+        "paused": "Paused",
         "contactUs": "Contact us",
         "contract": {
           "badge": "Contract",

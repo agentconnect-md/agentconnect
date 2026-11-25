@@ -5692,6 +5692,9 @@
         "optionMeta": "{price} / 月",
         "optionCurrent": "{meta} · 当前",
         "contactNote": "按合同定价——会话上限、额度、保留期和组织 SSO。",
+        "salesPaused": "套餐购买和升级暂时暂停。你仍可在续期时切换到 Free、取消已安排的变更，以及充值。",
+        "salesPausedFree": "付费套餐暂时暂停销售。你仍可以充值。",
+        "paused": "已暂停",
         "contactUs": "联系我们",
         "contract": {
           "badge": "合同",
