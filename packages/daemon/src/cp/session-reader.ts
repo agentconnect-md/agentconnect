@@ -25,6 +25,7 @@ import {
   parseSharedImageJson,
   transcriptChannelKey,
   type LocalStore,
+  type SessionListRow,
   type SessionRecord,
   type ThreadRootRow,
   type TranscriptEventCursor,
@@ -691,6 +692,74 @@ export function previewAppBody(body: string): string | null {
   })
 }
 
+/** The console's list items for these session rows: titles (a first-message fallback for an untitled row), display names and links. */
+export async function projectSessionRows(
+  store: LocalStore,
+  rows: SessionListRow[],
+  threadUrlFor?: (session: SessionRecord) => string | undefined,
+  scope?: SessionReadScope
+): Promise<SessionListPage['sessions']> {
+  // Title = the ingress/runtime/tool title, else a fallback derived from the
+  // session's FIRST user message. Before the agent has a meaningful request to
+  // name, this keeps the console better than "Session <id>".
+  // firstMessageText only runs for untitled rows (`||` short-circuits).
+  const enriched = []
+  for (const r of rows) {
+    const rawTitle =
+      r.title ||
+      deriveTitle(
+        await store.firstMessageText({
+          transcriptChannel: transcriptChannelKey(r.channel, r.transportScope),
+          coordinate: r.thread,
+          sessionKey: r.key,
+          agentId: r.agentId,
+          ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
+        })
+      )
+    enriched.push({ r, rawTitle })
+  }
+  // Display names for every channel + triggering sender + `<@U…>` mention in a
+  // title we know one for (daemon-resolved + cached; absent ids just stay raw).
+  const names = await store.getDisplayNames(
+    enriched.flatMap(({ r, rawTitle }) => [
+      r.channel,
+      ...(r.triggeredBy ? [r.triggeredBy] : []),
+      ...mentionedUserIds(rawTitle)
+    ])
+  )
+  const sessions = enriched.map(({ r, rawTitle }) => {
+    const usage = parseUsage(r.usage)
+    const channelName = names.get(r.channel)
+    const triggeredByName = r.triggeredBy ? names.get(r.triggeredBy) : undefined
+    // Titles (explicit OR the first-message fallback) can carry raw `<@U…>`
+    // mentions — rewrite to `@name` like the transcript does.
+    const title = rawTitle ? substituteUserMentions(rawTitle, names) : undefined
+    // A link captured by the ingress wins. The strategy fallback keeps links
+    // derivable from live platform identity (Slack workspace URLs) available
+    // for legacy rows without moving platform branches into this reader.
+    const threadUrl = r.threadUrl ?? threadUrlFor?.(r)
+    return {
+      // The console addresses what it is shown, and the CP stores the row under this id
+      // (session-concept.md §1.1). A row from before the column answers with its ACP id,
+      // which is exactly what such a session was reported under.
+      sessionId: r.sessionId ?? r.acpSessionId!,
+      ...(r.originSessionId ? { parentSessionId: r.originSessionId } : {}),
+      // store `platform` is a free string; the daemon only ever writes a valid Platform.
+      sessionKey: { platform: r.platform as Platform, channel: r.channel, thread: r.thread },
+      agentId: r.agentId,
+      status: r.state,
+      lastActivityAt: new Date(r.updatedAt).toISOString(),
+      ...(usage ? { usage } : {}),
+      ...(title ? { title } : {}),
+      ...(r.triggeredBy ? { triggeredBy: r.triggeredBy } : {}),
+      ...(channelName ? { channelName } : {}),
+      ...(triggeredByName ? { triggeredByName } : {}),
+      ...(threadUrl ? { threadUrl } : {})
+    }
+  })
+  return sessions
+}
+
 export function createSessionReader(
   store: LocalStore,
   threadUrlFor?: (session: SessionRecord) => string | undefined,
@@ -698,66 +767,7 @@ export function createSessionReader(
 ): SessionReader {
   return {
     async list(req, scope) {
-      const rows = await store.listSessions(req.agentId)
-      // Title = the ingress/runtime/tool title, else a fallback derived from the
-      // session's FIRST user message. Before the agent has a meaningful request to
-      // name, this keeps the console better than "Session <id>".
-      // firstMessageText only runs for untitled rows (`||` short-circuits).
-      const enriched = []
-      for (const r of rows) {
-        const rawTitle =
-          r.title ||
-          deriveTitle(
-            await store.firstMessageText({
-              transcriptChannel: transcriptChannelKey(r.channel, r.transportScope),
-              coordinate: r.thread,
-              sessionKey: r.key,
-              agentId: r.agentId,
-              ...(scope?.orgId !== undefined ? { orgId: scope.orgId } : {})
-            })
-          )
-        enriched.push({ r, rawTitle })
-      }
-      // Display names for every channel + triggering sender + `<@U…>` mention in a
-      // title we know one for (daemon-resolved + cached; absent ids just stay raw).
-      const names = await store.getDisplayNames(
-        enriched.flatMap(({ r, rawTitle }) => [
-          r.channel,
-          ...(r.triggeredBy ? [r.triggeredBy] : []),
-          ...mentionedUserIds(rawTitle)
-        ])
-      )
-      const sessions = enriched.map(({ r, rawTitle }) => {
-        const usage = parseUsage(r.usage)
-        const channelName = names.get(r.channel)
-        const triggeredByName = r.triggeredBy ? names.get(r.triggeredBy) : undefined
-        // Titles (explicit OR the first-message fallback) can carry raw `<@U…>`
-        // mentions — rewrite to `@name` like the transcript does.
-        const title = rawTitle ? substituteUserMentions(rawTitle, names) : undefined
-        // A link captured by the ingress wins. The strategy fallback keeps links
-        // derivable from live platform identity (Slack workspace URLs) available
-        // for legacy rows without moving platform branches into this reader.
-        const threadUrl = r.threadUrl ?? threadUrlFor?.(r)
-        return {
-          // The console addresses what it is shown, and the CP stores the row under this id
-          // (session-concept.md §1.1). A row from before the column answers with its ACP id,
-          // which is exactly what such a session was reported under.
-          sessionId: r.sessionId ?? r.acpSessionId!,
-          ...(r.originSessionId ? { parentSessionId: r.originSessionId } : {}),
-          // store `platform` is a free string; the daemon only ever writes a valid Platform.
-          sessionKey: { platform: r.platform as Platform, channel: r.channel, thread: r.thread },
-          agentId: r.agentId,
-          status: r.state,
-          lastActivityAt: new Date(r.updatedAt).toISOString(),
-          ...(usage ? { usage } : {}),
-          ...(title ? { title } : {}),
-          ...(r.triggeredBy ? { triggeredBy: r.triggeredBy } : {}),
-          ...(channelName ? { channelName } : {}),
-          ...(triggeredByName ? { triggeredByName } : {}),
-          ...(threadUrl ? { threadUrl } : {})
-        }
-      })
-      return { sessions }
+      return { sessions: await projectSessionRows(store, await store.listSessions(req.agentId), threadUrlFor, scope) }
     },
     async history(req, scope) {
       const rec = await sessionForRead(store, req.agentId, req.sessionId)
