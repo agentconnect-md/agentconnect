@@ -71,6 +71,10 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    it does not widen the older chat API credential profile.
 3. **The MCP proxy** (`relay/src/mcp`, `centralized-tool-management.md`): the relay injects upstream
    credentials while proxying; an upstream URL is an SSRF primitive, so egress must be validated.
+   For a restricted agent grant (`mcp-tool-permissions.md`) the relay parses MCP: a blocked `tools/call`
+   must never reach the upstream, `tools/list` must never return a blocked tool unfiltered, and the
+   upstream must receive exactly the message the relay judged. Catalog fetches (`rc/mcp-catalog`) use
+   the same binding and egress guard.
 4. **CP REST/SSE** (`control-plane/src/http/`): browser sessions (OIDC JWT via JWKS), personal API
    keys, OAuth access tokens, and the MCP surface. Pipeline: `humanAuth` -> `org-scope` (path org
    membership, key org binding, OAuth scope confinement) -> `authorization/policy.ts` (`can()`,

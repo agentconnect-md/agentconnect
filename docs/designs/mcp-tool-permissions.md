@@ -380,9 +380,9 @@ buffered.
 **`open_connector`.** The relay already terminates MCP for these providers. The same checks
 guard `callTool` and filter `listTools`.
 
-**Logging.** A refused call logs at info with the provider id, tool name and reason, never
-the grant key or the arguments. It increments
-`relay_mcp_tool_denied_total{providerId, reason}`.
+**Logging.** A refused call logs at info with the provider id and tool name, never the grant
+key or the arguments. The relay has no general metrics surface today, so a refusal counter
+waits for one.
 
 The relay reads no annotations and holds no table other than the CP's. Group logic and drift
 live in the CP, so a relay never loosens access on its own.

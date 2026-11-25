@@ -784,6 +784,55 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     ).toBe(true)
   })
 
+  it('carries restricted agent grants with deduplicated tool tables, and refuses an inconsistent table', () => {
+    const base = { providerId: RELAY_ID, upstreamUrl: 'https://x', grantKeyHashes: ['shared'] }
+    const ok = decodeRelayCpFrame(
+      envelope('rc/mcp-assign', {
+        ...base,
+        toolPolicies: [{ allow: ['read_note'] }, { allow: [], approval: ['write_note'], ask: ['delete_note'] }],
+        restrictedGrants: [
+          { grantKeyHash: 'agent-a', policy: 0 },
+          { grantKeyHash: 'agent-b', policy: 1 }
+        ]
+      })
+    )
+    if (!ok.ok || ok.frame.type !== 'rc/mcp-assign') throw new Error('expected rc/mcp-assign')
+    expect(ok.frame.payload.toolPolicies?.[0]).toEqual({ allow: ['read_note'], approval: [], ask: [] })
+    expect(ok.frame.payload.restrictedGrants).toHaveLength(2)
+    // An older CP's frame, without the fields, still decodes.
+    expect(decodeRelayCpFrame(envelope('rc/mcp-assign', base)).ok).toBe(true)
+    // A grant pointing past the tables, or one that is both restricted and unrestricted, never decodes.
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/mcp-assign', { ...base, toolPolicies: [], restrictedGrants: [{ grantKeyHash: 'a', policy: 0 }] })
+      ).ok
+    ).toBe(false)
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/mcp-assign', {
+          ...base,
+          toolPolicies: [{ allow: [] }],
+          restrictedGrants: [{ grantKeyHash: 'shared', policy: 0 }]
+        })
+      ).ok
+    ).toBe(false)
+  })
+
+  it('round-trips rc/mcp-catalog and its reply, which carries tools or a failure but never both', () => {
+    expect(decodeRelayCpFrame(envelope('rc/mcp-catalog', { providerId: RELAY_ID })).ok).toBe(true)
+    const tools = decodeRelayCpFrame(
+      envelope('rc/mcp-catalog/ok', {
+        tools: [{ name: 'read_note', readOnlyHint: true, interactive: false }]
+      })
+    )
+    if (!tools.ok || tools.frame.type !== 'rc/mcp-catalog/ok') throw new Error('expected rc/mcp-catalog/ok')
+    expect(tools.frame.payload.tools?.[0]?.name).toBe('read_note')
+    expect(decodeRelayCpFrame(envelope('rc/mcp-catalog/ok', { failure: 'upstream_rejected' })).ok).toBe(true)
+    expect(decodeRelayCpFrame(envelope('rc/mcp-catalog/ok', {})).ok).toBe(false)
+    expect(decodeRelayCpFrame(envelope('rc/mcp-catalog/ok', { tools: [], failure: 'timeout' })).ok).toBe(false)
+    expect(decodeRelayCpFrame(envelope('rc/mcp-catalog/ok', { failure: 'some-host.example' })).ok).toBe(false)
+  })
+
   it('round-trips revision-fenced external-memory relay bindings', () => {
     const grantHash = 'a'.repeat(64)
     const assign = decodeRelayCpFrame(

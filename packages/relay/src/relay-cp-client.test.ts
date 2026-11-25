@@ -12,6 +12,7 @@ import {
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  MCP_TOOL_POLICY_V1_FEATURE,
   GITHUB_APP_WEBHOOK_V1_FEATURE,
   GITEA_V1_FEATURE,
   AZURE_DEVOPS_HOOKS_V1_FEATURE,
@@ -232,7 +233,8 @@ describe('RelayCpClient', () => {
         HOOK_GITHUB_INSTALLATION_V1_FEATURE,
         HOOK_INSTRUCTIONS_V1_FEATURE,
         RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
-        GITHUB_APP_WEBHOOK_V1_FEATURE
+        GITHUB_APP_WEBHOOK_V1_FEATURE,
+        MCP_TOOL_POLICY_V1_FEATURE
       ]
     })
 
@@ -1262,6 +1264,39 @@ describe('RelayCpClient reconnect snapshots', () => {
     await flush()
     expect(onSnapshotBegin).toHaveBeenCalledWith({ kind: 'mcp', snapshotId })
     expect(onSnapshotEnd).toHaveBeenCalledWith({ kind: 'mcp', snapshotId, withheld: [DAEMON_ID] })
+  })
+})
+
+describe('RelayCpClient MCP catalog requests', () => {
+  it('advertises the tool-policy feature and answers rc/mcp-catalog on the same correlation', async () => {
+    const onMcpCatalog = vi.fn(async () => ({ tools: [{ name: 'read_note', interactive: false }] }))
+    const { client, transport } = makeClient({ onMcpCatalog })
+    await handshakeToReady(client, transport)
+    expect((transport.lastReq('rc/register')!.payload as { features: string[] }).features).toContain(
+      MCP_TOOL_POLICY_V1_FEATURE
+    )
+    const request = buildRelayCpFrame('rc/mcp-catalog', { providerId: DAEMON_ID })
+    transport.inject(request)
+    await flush()
+    expect(onMcpCatalog).toHaveBeenCalledWith({ providerId: DAEMON_ID })
+    const reply = transport.lastReq('rc/mcp-catalog/ok')!
+    expect(reply.corr).toBe(request.id)
+    expect(reply.payload).toEqual({ tools: [{ name: 'read_note', interactive: false }] })
+  })
+
+  it('answers with a failure code when the handler throws, and with an error when nothing serves it', async () => {
+    const failing = makeClient({ onMcpCatalog: vi.fn(async () => Promise.reject(new Error('boom'))) })
+    await handshakeToReady(failing.client, failing.transport)
+    failing.transport.inject(buildRelayCpFrame('rc/mcp-catalog', { providerId: DAEMON_ID }))
+    await flush()
+    expect(failing.transport.lastReq('rc/mcp-catalog/ok')!.payload).toEqual({ failure: 'unreachable' })
+
+    const bare = makeClient()
+    await handshakeToReady(bare.client, bare.transport)
+    const request = buildRelayCpFrame('rc/mcp-catalog', { providerId: DAEMON_ID })
+    bare.transport.inject(request)
+    await flush()
+    expect(bare.transport.lastReq('error')).toMatchObject({ corr: request.id })
   })
 })
 

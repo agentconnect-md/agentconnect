@@ -81,12 +81,15 @@ import {
   type RcCollabRoutes,
   type RcMcpAssign,
   type RcMcpUnassign,
+  type RcMcpCatalog,
+  type RcMcpCatalogOk,
   type RcMemoryConnectionAssign,
   type RcMemoryConnectionUnassign,
   type RcGithubAppAssign,
   type RcGithubAppUnassign,
   GITHUB_APP_WEBHOOK_V1_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
+  MCP_TOOL_POLICY_V1_FEATURE,
   type RcSnapshotBegin,
   type RcSnapshotEnd,
   type ErrorCode
@@ -183,6 +186,8 @@ export interface RelayCpClientDeps {
   onMcpAssign?: (a: RcMcpAssign) => void
   /** Called on a CP `rc/mcp-unassign` EVT — drop a whole provider or retire one grant hash. */
   onMcpUnassign?: (a: RcMcpUnassign) => void
+  /** Answers a CP `rc/mcp-catalog` REQ with the provider's tools or a failure code (mcp-tool-permissions.md §4). */
+  onMcpCatalog?: (req: RcMcpCatalog) => Promise<RcMcpCatalogOk>
   /** Purpose-separated daemon-private memory plugin proxy bindings. */
   onMemoryConnectionAssign?: (a: RcMemoryConnectionAssign) => void
   onMemoryConnectionUnassign?: (a: RcMemoryConnectionUnassign) => void
@@ -824,7 +829,9 @@ export class RelayCpClient {
           // Prunes its MCP, hook and memory tables at the end of a replay snapshot instead of keeping stale entries.
           RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
           // Verifies organization GitHub Apps' webhooks with the secrets the CP sends it.
-          GITHUB_APP_WEBHOOK_V1_FEATURE
+          GITHUB_APP_WEBHOOK_V1_FEATURE,
+          // Judges restricted agent grants against their tool tables and answers rc/mcp-catalog.
+          MCP_TOOL_POLICY_V1_FEATURE
         ]
       })
     )
@@ -950,6 +957,10 @@ export class RelayCpClient {
         this.deps.onMcpUnassign?.(frame.payload as RcMcpUnassign)
         return
       }
+      case 'rc/mcp-catalog': {
+        void this.answerMcpCatalog(frame.id, frame.payload as RcMcpCatalog)
+        return
+      }
       case 'rc/memoryconnection-assign': {
         this.deps.onMemoryConnectionAssign?.(frame.payload as RcMemoryConnectionAssign)
         return
@@ -979,6 +990,15 @@ export class RelayCpClient {
         // anything else is an unexpected EVT — ignore rather than close (forward-compat).
         this.deps.log.debug(`relay: ignoring unexpected ${frame.type}`)
     }
+  }
+
+  /** Reply on the connection the request rode; a relay without a handler says so rather than leaving the CP waiting. */
+  private async answerMcpCatalog(corr: string, req: RcMcpCatalog): Promise<void> {
+    const handler = this.deps.onMcpCatalog
+    if (!handler) return this.sendError(corr, 'UNKNOWN_FRAME', 'rc/mcp-catalog not served', false)
+    const transport = this.transport
+    const result = await handler(req).catch((): RcMcpCatalogOk => ({ failure: 'unreachable' }))
+    if (this.transport === transport) this.reply(corr, 'rc/mcp-catalog/ok', result)
   }
 
   private decodeErrorCode(msg: string): ErrorCode {
