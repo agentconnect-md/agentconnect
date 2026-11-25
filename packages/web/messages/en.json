@@ -8482,5 +8482,42 @@
       "cancelled": "Cancelled. Nothing was filled.",
       "expired": "Expired. Nothing was filled."
     }
+  },
+  "Artifacts": {
+    "card": {
+      "revision": "r{number}",
+      "files": "{count, plural, one {# file} other {# files}}",
+      "newer": "Newer revision available (r{number})",
+      "agedOut": "This revision is no longer kept",
+      "unavailable": "Unavailable. It may have been deleted, or you don’t have access.",
+      "open": "Open",
+      "download": "Download",
+      "downloadFailed": "Download failed. Try again."
+    },
+    "viewer": {
+      "revision": "Revision {number}",
+      "revisionShort": "r{number}",
+      "revisions": "Revisions",
+      "download": "Download",
+      "zipping": "Zipping…",
+      "downloadFailed": "Download failed. Try again.",
+      "updated": "Updated {time}",
+      "externalProvider": "External",
+      "revisionGone": "Revision {missing} is no longer kept, so the latest revision (r{number}) is shown.",
+      "newerAvailable": "A newer revision (r{number}) is available.",
+      "viewLatest": "View latest",
+      "loadFailed": "This artifact couldn’t be loaded. Try again later.",
+      "noPreview": "No preview for this file type",
+      "pdfUnsupported": "This browser can’t show the PDF here."
+    },
+    "page": {
+      "kind": "ARTIFACT",
+      "unavailableTitle": "Artifact unavailable",
+      "unavailablePre": "Artifact ",
+      "unavailablePost": " can’t be opened. It may have been deleted, or you may not have access.",
+      "backHome": "Back to home",
+      "search": "Search",
+      "loadFailed": "This artifact couldn’t be loaded. Try again later."
+    }
   }
 }

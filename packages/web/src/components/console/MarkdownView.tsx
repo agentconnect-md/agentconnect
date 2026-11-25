@@ -1,19 +1,8 @@
 'use client'
 
-// Rendered-markdown preview shared by the workspace file browser and memory viewer.
-// Split into its own module so react-markdown + remark-gfm are loaded lazily (via
-// next/dynamic) and never ship in the main console bundle.
-//
-// Frontmatter is handled the way GitHub does it — `remark-frontmatter` keeps the
-// `---` block out of the prose rules and it renders as a keyed table (see
-// `frontmatter.ts`), instead of turning the whole header into a setext heading.
-//
-// Safety: react-markdown escapes raw HTML and sanitizes URLs by default, so
-// untrusted agent-authored files can't inject scripts. A caller may opt in to
-// resolving a link as an in-app action or marking it unavailable; every unresolved
-// URL keeps the existing opener-isolated new-tab behavior.
+// Lazy-loaded Markdown preview: frontmatter as a table, raw HTML escaped, URLs sanitized unless a caller resolves them.
 
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkFrontmatter from 'remark-frontmatter'
 import { frontmatterTableHandler } from '@/components/console/frontmatter'
@@ -22,15 +11,22 @@ export type MarkdownLinkResolution = { kind: 'action'; onActivate: () => void } 
 
 export default function MarkdownView({
   content,
-  resolveLink
+  resolveLink,
+  resolveImage
 }: {
   content: string
   resolveLink?: (href: string) => MarkdownLinkResolution | undefined
+  /** A caller-made `blob:` URL for an image source, used instead of the source; anything else keeps the default sanitizing. */
+  resolveImage?: (src: string) => string | undefined
 }) {
   return (
     <div className="md-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkFrontmatter]}
+        urlTransform={(url, key, node) =>
+          (resolveImage && key === 'src' && node.tagName === 'img' ? resolveImage(url) : undefined) ??
+          defaultUrlTransform(url)
+        }
         remarkRehypeOptions={{ handlers: { yaml: frontmatterTableHandler } }}
         components={{
           a: ({ children, node: _node, href, title, ...props }) => {

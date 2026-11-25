@@ -1,0 +1,169 @@
+// Artifacts in the console (artifacts.md §8.1, §9, §11): the transcript marker, how an entry renders, and paths inside a revision.
+
+/** One revision's file, as the manifest lists it. */
+export interface ArtifactManifestFile {
+  path: string
+  sha256: string
+  bytes: number
+  mediaType: string
+}
+
+export interface ArtifactRevisionSummary {
+  number: number
+  entry: string
+  entryMediaType: string
+  fileCount: number
+  totalBytes: number
+  producedBy: { agentId: string; name: string }
+  producedInSessionId: string
+  createdAt: string
+}
+
+export type ArtifactVisibility = 'private' | 'org' | 'external' | 'editors'
+
+/** `GET /artifacts/:artifactId`; revisions are the ready ones, newest first. */
+export interface ArtifactDto {
+  id: string
+  title: string
+  audience: { visibility: ArtifactVisibility; externalProvider: string | null; editorsAgentId: string | null }
+  owner: { userId: string | null; displayName: string | null; email: string | null; platform: string | null } | null
+  viewerIsOwner: boolean
+  originSessionId: string | null
+  latestRevision: number
+  createdAt: string
+  updatedAt: string
+  revisions: ArtifactRevisionSummary[]
+}
+
+/** `GET /artifacts/:artifactId/revisions/:revision`. */
+export interface ArtifactRevisionDto extends ArtifactRevisionSummary {
+  artifactId: string
+  latestRevision: number
+  manifest: { entry: string; files: ArtifactManifestFile[] }
+}
+
+/** `GET /artifacts/:artifactId/revisions/:revision/file`: a short-lived GET signed as an `octet-stream` attachment. */
+export interface ArtifactFileUrlDto extends ArtifactManifestFile {
+  url: string
+  expiresAt: string
+}
+
+export interface ArtifactMarker {
+  artifactId: string
+  revision: number
+  title: string
+}
+
+// Mirror of protocol's parseArtifactMarker (frames/artifact.ts is not a bundler-safe leaf); artifact.test.ts pins it.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const MARKER_RE = /(?:^|\n)\[artifact: ([0-9a-f-]{36}) r([1-9]\d{0,8}) ("(?:[^"\\\n]|\\.)*")\]$/
+
+/** The marker on a row's last line and the caption before it, or null when the row ends in none. */
+export function parseArtifactMarker(text: string): { caption: string; artifact: ArtifactMarker } | null {
+  const match = MARKER_RE.exec(text)
+  if (!match) return null
+  const [whole, artifactId, revision, quoted] = match as unknown as [string, string, string, string]
+  if (!UUID_RE.test(artifactId)) return null
+  let title: unknown
+  try {
+    title = JSON.parse(quoted)
+  } catch {
+    return null
+  }
+  if (typeof title !== 'string') return null
+  const caption = text.slice(0, text.length - whole.length)
+  return { caption, artifact: { artifactId, revision: Number(revision), title } }
+}
+
+/** The console path of one artifact, pinned to a revision when one is given (artifacts.md §8.2). */
+export function artifactPath(artifactId: string, revision?: number): string {
+  const base = `/artifacts/${encodeURIComponent(artifactId)}`
+  return revision === undefined ? base : `${base}?revision=${revision}`
+}
+
+/** How an entry opens (artifacts.md §9), which also picks the card's icon. */
+export type ArtifactKind = 'page' | 'document' | 'image' | 'pdf' | 'code' | 'other'
+
+const TEXT_TYPES = new Set([
+  'application/json',
+  'application/ld+json',
+  'application/xml',
+  'application/javascript',
+  'application/ecmascript',
+  'application/typescript',
+  'application/x-sh',
+  'application/x-yaml',
+  'application/yaml',
+  'application/toml',
+  'application/sql',
+  'application/x-ndjson'
+])
+const MARKDOWN_RE = /\.(md|markdown)$/i
+
+export function artifactKind(mediaType: string, path: string): ArtifactKind {
+  const type = mediaType.toLowerCase().split(';')[0]!.trim()
+  if (type === 'text/html' || type === 'application/xhtml+xml') return 'page'
+  if (type === 'text/markdown' || type === 'text/x-markdown' || MARKDOWN_RE.test(path)) return 'document'
+  if (type.startsWith('image/')) return 'image'
+  if (type === 'application/pdf') return 'pdf'
+  if (type.startsWith('text/') || TEXT_TYPES.has(type) || type.endsWith('+json') || type.endsWith('+xml')) return 'code'
+  return 'other'
+}
+
+export const ARTIFACT_KIND_ICON: Record<ArtifactKind, string> = {
+  page: 'app-window',
+  document: 'file-text',
+  image: 'image',
+  pdf: 'book-open',
+  code: 'file-code',
+  other: 'file'
+}
+
+/** The last segment of a manifest path, the name a single-file download saves under. */
+export function artifactFileName(path: string): string {
+  return path.split('/').pop() || path
+}
+
+/** A zip's file name from the artifact title: characters file systems refuse become `-`. */
+export function artifactZipName(title: string): string {
+  const base = title
+    .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
+    .slice(0, 120)
+    .trim()
+  return `${base || 'artifact'}.zip`
+}
+
+/** A reference inside an entry resolved to a manifest path beside it, or null for an absolute, external or escaping one. */
+export function resolveArtifactRef(entry: string, ref: string): string | null {
+  const bare = ref.split(/[?#]/, 1)[0] ?? ''
+  if (!bare || bare.startsWith('/') || bare.startsWith('\\') || /^[a-z][a-z0-9+.-]*:/i.test(bare)) return null
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(bare)
+  } catch {
+    return null
+  }
+  const segments = entry.split('/').slice(0, -1)
+  for (const segment of decoded.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      if (!segments.length) return null
+      segments.pop()
+    } else segments.push(segment)
+  }
+  return segments.length ? segments.join('/') : null
+}
+
+const MD_INLINE_IMAGE_RE = /!\[(?:[^\]\\\n]|\\.)*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))/g
+const MD_DEFINITION_RE = /^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]+)>|(\S+))/gm
+
+/** The sources a Markdown text's images may name: inline images and reference definitions, which the renderer confirms. */
+export function markdownImageRefs(markdown: string): string[] {
+  const refs = new Set<string>()
+  for (const re of [MD_INLINE_IMAGE_RE, MD_DEFINITION_RE])
+    for (const match of markdown.matchAll(re)) refs.add((match[1] ?? match[2])!)
+  return [...refs]
+}

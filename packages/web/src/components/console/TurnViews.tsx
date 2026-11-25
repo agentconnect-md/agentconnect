@@ -11,6 +11,7 @@ import { askedApprovalIds } from '@/components/console/approval-placement'
 import { AgentIconView, PlatformMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { SharedFileChip } from '@/components/console/SharedFileChip'
+import { ArtifactCard } from '@/components/console/artifact/ArtifactCard'
 import { SharedImageCard } from '@/components/console/SharedImageCard'
 import { SessionMessageCaption, UserTurnDetails } from '@/components/console/UserTurnDetails'
 import type { McpAppRpc, SessionMessageTurnFacts } from '@agentconnect.md/protocol'
@@ -568,6 +569,11 @@ function SaidStep({
           {st.file && (
             <div className={st.text ? 'mt-2' : ''}>
               <SharedFileChip file={st.file} agentId={turn.agentId} sessionId={st.toolSessionId ?? sessionId} />
+            </div>
+          )}
+          {st.artifact && (
+            <div className={st.text ? 'mt-2' : ''}>
+              <ArtifactCard marker={st.artifact} />
             </div>
           )}
           {st.sessionMessage && !st.text && <UserTurnDetails body={{ sessionMessage: st.sessionMessage }} />}

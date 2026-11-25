@@ -33,6 +33,11 @@ export const consoleKeys = {
     consoleKey(orgId, 'organization-knowledge', includeArchived ? 'include-archived' : 'active'),
   organizationKnowledgeEntry: (orgId: string | null | undefined, id: string) =>
     consoleKey(orgId, 'organization-knowledge-entry', id),
+  /** One artifact's metadata, shared by every card and the viewer that names it. */
+  artifact: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'artifact', id),
+  /** One revision's manifest; a revision never changes, so this never needs revalidating. */
+  artifactRevision: (orgId: string | null | undefined, id: string, revision: number) =>
+    consoleKey(orgId, 'artifact-revision', id, String(revision)),
   /** The Handbook: research's status and the organization record's three entries. */
   organizationRecord: (orgId: string | null | undefined) => consoleKey(orgId, 'organization-record'),
   /** One capability request, as its page shows it. */

@@ -24,6 +24,9 @@ import type { McpAppCsp } from '@agentconnect.md/protocol'
  */
 export const MCP_APP_SANDBOX = 'allow-scripts allow-forms'
 
+/** An artifact page's frame (artifacts.md §5.5): opaque origin and no forms; it carries no CSP, since pages may make outbound requests (D20). */
+export const ARTIFACT_FRAME_SANDBOX = 'allow-scripts'
+
 /**
  * One directive's source list: the keywords this host always allows, plus the domains the
  * resource declared, normalized to `https` so a bare hostname can never mean plain http.
