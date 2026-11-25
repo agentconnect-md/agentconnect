@@ -32,6 +32,7 @@ function signer(signed: string[]): FileTransfer {
       throw new Error('unused')
     },
     uploadedFileUrl: async () => undefined,
+    signGet: async () => ({ url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }),
     storedDownload: async () => undefined,
     holds: async () => false,
     deleteObject: async () => {},

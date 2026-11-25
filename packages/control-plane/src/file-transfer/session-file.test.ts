@@ -45,6 +45,7 @@ function bucket(opts: { held?: boolean; enabled?: boolean; seen?: unknown[]; fai
       return { url: 'https://store.example.test/p', headers: { 'x-amz-tagging': 'ac-cache=live' }, expiresAt: 1 }
     },
     signDownload: async () => ({ url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }),
+    signGet: async () => ({ url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }),
     storedDownload: async (input) => {
       seen.push({ storedDownload: input })
       return opts.held === false ? undefined : { url: 'https://store.example.test/g', headers: {}, expiresAt: 2 }
