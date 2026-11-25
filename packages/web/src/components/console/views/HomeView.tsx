@@ -96,6 +96,9 @@ const CHIP =
 // and rows keep their natural height.
 const DASH_ROW = 'desktop:h-[63px] desktop:content-center desktop:py-0'
 
+type RecentScope = 'mine' | 'all'
+const RECENT_SCOPE_KEY = 'ac.home.recent-scope'
+
 // Leftover height under the composer, measured against the SCROLL CONTAINER — never
 // against the dashboard's own box, so a taller grid can't feed back into the row
 // count and oscillate. Returns null when it can't/shouldn't cap (mobile, no scroller).
@@ -127,7 +130,7 @@ export default function HomeView() {
   const t = useTranslations('Home')
   const permissionT = useTranslations('Common.permissionModes')
   const locale = useLocale()
-  const { user } = useProfile()
+  const { user, me } = useProfile()
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions, usage24h, getAgent, loading, memberSets, orgSetIds } = useConsoleData()
@@ -496,17 +499,32 @@ export default function HomeView() {
     () => [...agents].sort((a, b) => (sessionsByAgent.get(b.id) ?? 0) - (sessionsByAgent.get(a.id) ?? 0)),
     [agents, sessionsByAgent]
   )
+  // Recent opens on the member's own web chats: a channel session is already read where it happened.
+  const [recentScope, setRecentScope] = useState<RecentScope>('mine')
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(RECENT_SCOPE_KEY) === 'all') setRecentScope('all')
+    } catch {}
+  }, [])
+  const pickRecentScope = (scope: RecentScope) => {
+    setRecentScope(scope)
+    try {
+      localStorage.setItem(RECENT_SCOPE_KEY, scope)
+    } catch {}
+  }
+  const mine = recentScope === 'mine'
   // Recent leaves tasks and memory dream sessions out, as All sessions does; the shared window keeps them for lookups by id and search.
   const { sessions: recentRows, isLoading: recentRowsLoading } = useSessionList(MOCK_MODE ? null : activeOrg?.id, {
     excludeTasks: true,
-    excludeDreams: true
+    excludeDreams: true,
+    ...(mine ? { platform: 'webchat', ...(me?.userId ? { triggeredBy: me.userId } : {}) } : {})
   })
   const recentSessions = useMemo(
     () =>
       MOCK_MODE
-        ? allSessions.filter((s) => !s.subsession && s.platform !== 'dream')
+        ? allSessions.filter((s) => !s.subsession && s.platform !== 'dream' && (!mine || s.platform === 'webchat'))
         : recentRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
-    [allSessions, getAgent, recentRows]
+    [allSessions, getAgent, mine, recentRows]
   )
 
   // How many rows each dashboard card draws — see `dashboard-rows.ts` for the identity
@@ -951,6 +969,27 @@ export default function HomeView() {
           limit={sessionRows}
           rowClassName={DASH_ROW}
           className={aligned ? undefined : 'desktop:self-start'}
+          lastReply
+          tabs={
+            <span className="pillbar -my-1 flex-none p-[2px]">
+              <button
+                type="button"
+                aria-pressed={mine}
+                className={mine ? 'pill on px-[9px] py-[3px] text-[12px]' : 'pill px-[9px] py-[3px] text-[12px]'}
+                onClick={() => pickRecentScope('mine')}
+              >
+                {t('dashboard.scopeMine')}
+              </button>
+              <button
+                type="button"
+                aria-pressed={!mine}
+                className={mine ? 'pill px-[9px] py-[3px] text-[12px]' : 'pill on px-[9px] py-[3px] text-[12px]'}
+                onClick={() => pickRecentScope('all')}
+              >
+                {t('dashboard.scopeAll')}
+              </button>
+            </span>
+          }
         />
 
         <div className="flex flex-col gap-4">
