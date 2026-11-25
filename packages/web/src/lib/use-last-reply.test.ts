@@ -22,6 +22,18 @@ describe('lastAgentReply', () => {
     expect(lastAgentReply(page, agents)).toBe('Opened the PR')
   })
 
+  it('reads a coordinator answer from the thread of the task it handed off to', () => {
+    const page = [{ ...row(3, 'agent-1', 'sendMessage', 'tool'), ts: '2026-01-01T00:00:01.000Z' }]
+    const threads = [
+      {
+        rootId: 'root-1',
+        lastReplyAt: '2026-01-01T00:00:40.000Z',
+        lastReply: { sender: 'agent-1', excerpt: 'Finished the task' }
+      }
+    ] as never
+    expect(lastAgentReply(page, agents, threads)).toBe('Finished the task')
+  })
+
   it('is null when no agent has answered', () => {
     expect(lastAgentReply([row(1, 'user-1', 'hi')], agents)).toBeNull()
   })

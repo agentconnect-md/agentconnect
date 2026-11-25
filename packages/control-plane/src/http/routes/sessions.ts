@@ -516,13 +516,11 @@ function sessionDto(
   agentNames: ReadonlyMap<string, string>,
   channelNames: ReadonlyMap<string, string>,
   triggerUsers: ReadonlyMap<string, string>,
-  readAt?: ReadonlyMap<string, Date>
+  unread?: ReadonlySet<string>
 ) {
   const hook = hookMetadataForSession(hookMetadata, s)
   const display = sessionDisplayMetadata(s, hook, channelNames)
   const triggeredByUserId = triggerUsers.get(s.id)
-  // Only webchat is read here; a channel session is read on its own platform, so it never counts as unread.
-  const seenAt = s.platform === 'webchat' ? readAt?.get(s.id) : undefined
   return {
     sessionId: s.id,
     sessionKey: {
@@ -556,7 +554,7 @@ function sessionDto(
     externalResolution: s.externalResolution,
     contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,
     activityState: s.activityState,
-    ...(seenAt && s.lastActivityAt > seenAt ? { unread: true } : {})
+    ...(unread?.has(s.id) ? { unread: true } : {})
   }
 }
 
@@ -721,8 +719,9 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     }
 
-    const readAtOf = (req: FastifyRequest, sessions: readonly { id: string; platform: string | null }[]) =>
-      deps.repos.session.readAtFor(
+    // Only webchat is read here; a channel session is read on its own platform, so it never counts as unread.
+    const unreadOf = (req: FastifyRequest, sessions: readonly { id: string; platform: string | null }[]) =>
+      deps.repos.session.unreadAmong(
         ctxOf(req).userId,
         sessions.filter((session) => session.platform === 'webchat').map((session) => session.id)
       )
@@ -1142,16 +1141,16 @@ export function sessionRoutes(deps: HttpDeps) {
 
         if (!grouped) {
           const page = await deps.repos.session.listPage({ ...query, viewer })
-          const [hookMetadata, channelNames, triggerUsers, readAt] = await Promise.all([
+          const [hookMetadata, channelNames, triggerUsers, unread] = await Promise.all([
             hookMetadataForSessions(deps, page.sessions, orgOf(req)),
             channelNamesForSessions(deps, page.sessions, orgOf(req)),
             triggerUsersOf(req, page.sessions),
-            readAtOf(req, page.sessions)
+            unreadOf(req, page.sessions)
           ])
           const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
           return {
             sessions: page.sessions.map((session) =>
-              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers, readAt)
+              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers, unread)
             ),
             total: page.total,
             nextCursor,
@@ -1163,11 +1162,11 @@ export function sessionRoutes(deps: HttpDeps) {
 
         const page = await deps.repos.session.listConversationPage({ ...query, viewer })
         const allRows = page.conversations.flatMap((c) => c.sessions)
-        const [hookMetadata, channelNames, triggerUsers, readAt] = await Promise.all([
+        const [hookMetadata, channelNames, triggerUsers, unread] = await Promise.all([
           hookMetadataForSessions(deps, allRows, orgOf(req)),
           channelNamesForSessions(deps, allRows, orgOf(req)),
           triggerUsersOf(req, allRows),
-          readAtOf(req, allRows)
+          unreadOf(req, allRows)
         ])
         // The grouped cursor is the last conversation's REPRESENTATIVE row —
         // emit-at-max makes resumption stateless (§5.2).
@@ -1180,7 +1179,7 @@ export function sessionRoutes(deps: HttpDeps) {
             channel: c.key.channel,
             thread: c.key.thread,
             sessions: c.sessions.map((session) =>
-              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers, readAt)
+              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers, unread)
             ),
             memberSessionIds: c.memberSessionIds
           })),

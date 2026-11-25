@@ -3957,7 +3957,7 @@ export const SessionDto = z.object({
   contentPurgedAt: z.string().nullable(),
   /** Live wait state from `agent/activity` (slack-approval-dm.md §7); `awaiting_permission` feeds the console bell. */
   activityState: ActivityStateEnum,
-  /** A webchat session with activity after the caller last had it open; absent means read. */
+  /** A webchat session with activity, its own or a task's it owns, after the caller last had it open; absent means read. */
   unread: z.boolean().optional()
 })
 export const SessionListDto = z.array(SessionDto)

@@ -20,6 +20,7 @@ const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const LAUNCH = '10101010-1111-4111-8111-111111111111'
 const WEBCHAT = '4691f21b-3911-4d7f-a45d-28ce75d79337'
 const SLACK = '5791f21b-3911-4d7f-a45d-28ce75d79338'
+const TASK = '6891f21b-3911-4d7f-a45d-28ce75d79339'
 const PAST = '2026-07-05T00:00:00.000Z'
 const FUTURE = '2999-01-01T00:00:00.000Z'
 
@@ -104,6 +105,23 @@ describe('session read state', () => {
     expect(members.filter((s) => s.unread).map((s) => s.sessionId)).toEqual([WEBCHAT])
   })
 
+  it('counts activity in a task the session owns', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedLaunch(prisma, LAUNCH, AGENT, DAEMON)
+    running = buildHttpApp(prisma)
+    await report(WEBCHAT, 'webchat', PAST)
+    await report(TASK, 'webchat', PAST)
+    await prisma.sessionMeta.update({ where: { id: WEBCHAT }, data: { visibility: 'org' } })
+    await prisma.sessionMeta.update({ where: { id: TASK }, data: { taskParentSessionId: WEBCHAT } })
+    await markRead(running, [WEBCHAT])
+    expect(await unreadIds(running)).toEqual([])
+
+    // The coordinator's own row stays put; the reply lands in the task it handed the work to.
+    await prisma.sessionMeta.update({ where: { id: TASK }, data: { lastActivityAt: new Date(FUTURE) } })
+    expect(await unreadIds(running)).toEqual([WEBCHAT])
+  })
+
   it('never moves a watermark back', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
@@ -113,7 +131,7 @@ describe('session read state', () => {
     const user = (await prisma.user.findFirstOrThrow()).id
     await repo.markRead(user, [WEBCHAT as never], new Date(FUTURE))
     await repo.markRead(user, [WEBCHAT as never], new Date(PAST))
-    expect((await repo.readAtFor(user, [WEBCHAT])).get(WEBCHAT)?.toISOString()).toBe(FUTURE)
+    expect((await prisma.sessionReadState.findFirstOrThrow()).readAt.toISOString()).toBe(FUTURE)
   })
 
   it('rejects an empty or oversized batch', async () => {

@@ -1422,10 +1422,23 @@ export class PgSessionRepo implements SessionRepo {
       DO UPDATE SET "readAt" = GREATEST("session_read_state"."readAt", EXCLUDED."readAt")`
   }
 
-  async readAtFor(userId: string, sessionIds: string[]): Promise<Map<string, Date>> {
-    if (sessionIds.length === 0) return new Map()
-    const rows = await this.db.sessionReadState.findMany({ where: { userId, sessionId: { in: sessionIds } } })
-    return new Map(rows.map((row) => [row.sessionId, row.readAt]))
+  async unreadAmong(userId: string, sessionIds: string[]): Promise<Set<string>> {
+    if (sessionIds.length === 0) return new Set()
+    // A coordinator hands its work to task sessions, so their activity is the conversation's too (auto-session-mode.md §6.2).
+    const rows = await this.db.$queryRaw<{ id: string }[]>`
+      SELECT s."id"
+      FROM "session_read_state" r
+      JOIN "session_meta" s ON s."id" = r."sessionId"
+      WHERE r."userId" = ${userId}
+        AND s."id" = ANY(${sessionIds}::text[])
+        AND GREATEST(
+          s."lastActivityAt",
+          COALESCE(
+            (SELECT max(t."lastActivityAt") FROM "session_meta" t WHERE t."taskParentSessionId" = s."id"),
+            s."lastActivityAt"
+          )
+        ) > r."readAt"`
+    return new Set(rows.map((row) => row.id))
   }
 
   async orgHasAny(orgId: OrgId): Promise<boolean> {
