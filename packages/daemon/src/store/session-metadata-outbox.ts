@@ -89,8 +89,7 @@ export class SessionMetadataOutbox {
   }
 
   async sessionListProjection(sessionId: string, agentId: string): Promise<SessionListItem | undefined> {
-    // The one row the console list shows under this id: listing the agent's whole history to keep one item read every
-    // session it ever had, on every status change.
+    // One row, not the agent's whole list: this runs on every status change.
     const row = await this.host.store().getListedSession(agentId, sessionId)
     if (!row) return undefined
     return (await projectSessionRows(this.host.store(), [row], (session) => this.host.sessionThreadUrl(session)))[0]

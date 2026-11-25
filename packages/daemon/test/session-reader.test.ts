@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
+import { LocalStore, sessionKey, transcriptChannelKey, type SessionRecord } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { createSessionReader, previewAppBody, projectSessionRows } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
@@ -195,12 +195,13 @@ describe('SessionReader', () => {
 
   it("projects one session from its own row exactly as the agent's list shows it", async () => {
     const s = await store()
-    const row = (channel: string, over: Record<string, unknown>) => ({
+    const row = (channel: string, over: Partial<SessionRecord>): SessionRecord => ({
       key: sessionKey('slack', channel, 'T', AGENT),
       agentId: AGENT,
       platform: 'slack',
       channel,
       thread: 'T',
+      acpSessionId: null,
       state: 'idle' as const,
       lastDeliveredTs: null,
       updatedAt: 1,

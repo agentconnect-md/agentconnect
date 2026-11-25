@@ -3169,11 +3169,9 @@ export class LocalStore {
         standingDigest TEXT, toolDigests TEXT, retentionKeptAt INTEGER, retentionRecheckAt INTEGER,
         workspaceReclaimedAt INTEGER
       );
-      -- A session is looked up by its agent and one of its ids, and an agent's sessions are listed newest first:
-      -- without these each of those reads the whole table, which grows with every session ever recorded.
+      -- A session is looked up by its agent and one of its ids; without these each lookup reads the whole table.
       CREATE INDEX IF NOT EXISTS sessions_agent_session ON sessions (agentId, sessionId);
       CREATE INDEX IF NOT EXISTS sessions_agent_acp_session ON sessions (agentId, acpSessionId);
-      CREATE INDEX IF NOT EXISTS sessions_agent_updated ON sessions (agentId, updatedAt);
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
       -- daemon restart and is applied when the session row is eventually created.
@@ -4072,17 +4070,19 @@ export class LocalStore {
     )
   }
 
-  /** The one row {@link listSessions} would list an agent's session under, by the id the list shows
-   *  (the outward id, or the ACP id of a row from before it), without reading the agent's others. */
+  /** The row {@link listSessions} shows under this id: the outward id, else the ACP id of a row from before it. */
   async getListedSession(agentId: string, sessionId: string): Promise<SessionListRow | undefined> {
+    // Two equality seeks, one per index: an OR, or an ACP-id filter beside the outward id, has the planner walk the agent's rows.
+    const byOutwardId = (await this.db
+      .prepare('SELECT * FROM sessions WHERE agentId = ? AND sessionId = ? ORDER BY updatedAt DESC')
+      .all(agentId, sessionId)) as unknown as SessionListRow[]
+    const listed = byOutwardId.find((r) => r.acpSessionId !== null)
+    if (listed) return listed
     return (await this.db
       .prepare(
-        `SELECT * FROM sessions
-          WHERE agentId = ? AND acpSessionId IS NOT NULL
-            AND (sessionId = ? OR (sessionId IS NULL AND acpSessionId = ?))
-          ORDER BY updatedAt DESC LIMIT 1`
+        'SELECT * FROM sessions WHERE agentId = ? AND acpSessionId = ? AND sessionId IS NULL ORDER BY updatedAt DESC LIMIT 1'
       )
-      .get(agentId, sessionId, sessionId)) as unknown as SessionListRow | undefined
+      .get(agentId, sessionId)) as unknown as SessionListRow | undefined
   }
 
   /** All sessions that have an ACP id (i.e. are addressable by sessionId), newest
