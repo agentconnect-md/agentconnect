@@ -3,7 +3,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  RERUNS,
   SUITES,
+  caseDescriptions,
   needsAttention,
   readAddons,
   readGames,
@@ -12,6 +14,7 @@ import {
   readThreadChatter,
   readWebchatAddressed,
   renderMarkdown,
+  singleTrialMisses,
   summarizeCells
 } from './nightly/summary.ts'
 
@@ -86,13 +89,11 @@ const env = { ...process.env, PROMPTFOO_DISABLE_TELEMETRY: process.env.PROMPTFOO
 if (!env.AGENTCONNECT_EVAL_SUBJECT_ROOT?.trim()) {
   env.AGENTCONNECT_EVAL_SUBJECT_ROOT = join(repositoryRoot, 'evals/subjects/claude')
   env.AGENTCONNECT_EVAL_ROOT_AGENT = 'eval-root'
-  env.AGENTCONNECT_EVAL_SPECIALIST_AGENT = 'eval-specialist'
   env.AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS = 'eval-root'
 }
 const missing = [
   'AGENTCONNECT_EVAL_SUBJECT_ROOT',
   'AGENTCONNECT_EVAL_ROOT_AGENT',
-  'AGENTCONNECT_EVAL_SPECIALIST_AGENT',
   'AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS'
 ].filter((name) => !env[name]?.trim())
 if (missing.length > 0) usage(`missing environment: ${missing.join(', ')}`)
@@ -126,18 +127,52 @@ const vitest = (file, summaryPath, name) => {
   if (existsSync(summaryPath)) copyFileSync(summaryPath, join(runDir, `${name}.json`))
   return readJson(summaryPath)
 }
-const probe = (only, modelVar, outVar, name) => {
-  const output = join(runDir, `${name}.json`)
+const probe = (only, prefix, name, rerunIds) => {
+  const output = join(runDir, `${name}${rerunIds ? '-rerun' : ''}.json`)
   run('pnpm', ['--filter', '@agentconnect.md/daemon', 'test:runtime-matrix'], {
     ...env,
     AC_RUNTIME_MATRIX_ONLY: only,
     AC_RUNTIME_MATRIX_TARGETS: options.probeRuntime,
-    [modelVar]: options.probeModel,
-    [outVar]: output
+    [`${prefix}_MODEL`]: options.probeModel,
+    [`${prefix}_OUT`]: output,
+    ...(rerunIds ? { [`${prefix}_SCENARIOS`]: rerunIds.join(','), [`${prefix}_REPS`]: String(RERUNS) } : {})
   })
   return readJson(output)
 }
 const gameArgs = ['--repeat', String(options.gameRepeat), '--filter-providers', 'real-agents']
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Promptfoo selects tests by description, so a rerun maps the missed case ids back to theirs.
+const rerunGames = (name, first, caseIds, extraEnv) => {
+  const descriptions = caseDescriptions(first)
+  const pattern = caseIds
+    .map((id) => descriptions.get(id))
+    .filter(Boolean)
+    .map(escapeRegExp)
+  if (pattern.length === 0) return undefined
+  return promptfoo(
+    'evals/run-collaboration.mjs',
+    join(runDir, `${name}-rerun.json`),
+    ['--repeat', String(RERUNS), '--filter-providers', 'real-agents', '--filter-pattern', `^(?:${pattern.join('|')})$`],
+    extraEnv
+  )
+}
+
+// The first promptfoo document per game suite, which a rerun reads case descriptions from.
+const documents = {}
+
+// Suites that run each cell once; a miss there is rerun before it may raise an alert.
+const SINGLE_TRIAL_RERUNS = {
+  counting: (ids) => readGames('counting', rerunGames('counting', documents.counting, ids)),
+  relay: (ids) =>
+    readGames(
+      'relay',
+      rerunGames('relay', documents.relay, ids, { AGENTCONNECT_EVAL_GAME_CONFIG: 'evals/relayconfig.yaml' })
+    ),
+  'coordinator-probe': (ids) =>
+    readProbe('coordinator-probe', probe('coordinator', 'AC_RUNTIME_MATRIX_COORDINATOR', 'coordinator-probe', ids)),
+  'send-message-probe': (ids) =>
+    readProbe('send-message-probe', probe('sendMessage', 'AC_RUNTIME_MATRIX_SENDMESSAGE', 'send-message-probe', ids))
+}
 
 const SUITE_RUNNERS = {
   addons: () =>
@@ -145,18 +180,18 @@ const SUITE_RUNNERS = {
   counting: () =>
     readGames(
       'counting',
-      promptfoo('evals/run-collaboration.mjs', join(runDir, 'counting.json'), [
+      (documents.counting = promptfoo('evals/run-collaboration.mjs', join(runDir, 'counting.json'), [
         ...gameArgs,
         '--filter-pattern',
         'counting'
-      ])
+      ]))
     ),
   relay: () =>
     readGames(
       'relay',
-      promptfoo('evals/run-collaboration.mjs', join(runDir, 'relay.json'), gameArgs, {
+      (documents.relay = promptfoo('evals/run-collaboration.mjs', join(runDir, 'relay.json'), gameArgs, {
         AGENTCONNECT_EVAL_GAME_CONFIG: 'evals/relayconfig.yaml'
-      })
+      }))
     ),
   'night-collection': () =>
     readNightCollection(
@@ -183,25 +218,9 @@ const SUITE_RUNNERS = {
       )
     ),
   'coordinator-probe': () =>
-    readProbe(
-      'coordinator-probe',
-      probe(
-        'coordinator',
-        'AC_RUNTIME_MATRIX_COORDINATOR_MODEL',
-        'AC_RUNTIME_MATRIX_COORDINATOR_OUT',
-        'coordinator-probe'
-      )
-    ),
+    readProbe('coordinator-probe', probe('coordinator', 'AC_RUNTIME_MATRIX_COORDINATOR', 'coordinator-probe')),
   'send-message-probe': () =>
-    readProbe(
-      'send-message-probe',
-      probe(
-        'sendMessage',
-        'AC_RUNTIME_MATRIX_SENDMESSAGE_MODEL',
-        'AC_RUNTIME_MATRIX_SENDMESSAGE_OUT',
-        'send-message-probe'
-      )
-    )
+    readProbe('send-message-probe', probe('sendMessage', 'AC_RUNTIME_MATRIX_SENDMESSAGE', 'send-message-probe'))
 }
 
 const suites = []
@@ -209,6 +228,11 @@ const trials = []
 for (const name of options.suites) {
   console.error(`eval:nightly: running ${name}`)
   const suiteTrials = SUITE_RUNNERS[name]()
+  const missed = SINGLE_TRIAL_RERUNS[name] ? singleTrialMisses(suiteTrials) : []
+  if (missed.length > 0) {
+    console.error(`eval:nightly: rerunning ${missed.join(', ')} ${RERUNS} more times`)
+    suiteTrials.push(...SINGLE_TRIAL_RERUNS[name](missed).map((trial) => ({ ...trial, rerun: true })))
+  }
   suites.push({
     suite: name,
     results: suiteTrials.length > 0,
