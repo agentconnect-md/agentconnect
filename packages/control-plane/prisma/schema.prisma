@@ -5288,6 +5288,79 @@ model SessionFileSnapshot {
   @@map("session_file_snapshot")
 }
 
+enum ArtifactStorageMode {
+  signed // read through short-lived per-file signed URLs (artifacts.md §5.2)
+  public // anonymous reads under a random public prefix (artifacts.md §5.2)
+}
+
+enum ArtifactRevisionState {
+  pending // recorded, bytes still uploading; never shown
+  ready // every file uploaded
+}
+
+// An agent-published deliverable (artifacts.md §4): metadata only, the bytes live in the transfer bucket.
+model Artifact {
+  id               String            @id @db.Uuid
+  // No foreign keys: the rows outlive the organization, session, agent and scope so the reaper still finds the objects.
+  orgId            String
+  title            String            @db.Text
+  // session-visibility.md §2 form; null means organization owners manage it (artifacts.md §6.1).
+  ownerIdentity    String?
+  // Copied from the session at creation and never followed (artifacts.md §6.2); private with no owner is organization owners only.
+  visibility       SessionVisibility
+  // The copied source scope, set exactly when visibility is external (a CHECK in the migration).
+  externalProvider String?
+  externalScopeId  String?           @db.Uuid
+  // The agent whose editors are the audience, set exactly when visibility is editors (a CHECK in the migration).
+  editorsAgentId   String?           @db.Uuid
+  // The session it was created in; a back link only, which may dangle after a purge.
+  originSessionId  String?
+  // The newest ready revision's number; 0 until the first revision is ready.
+  latestRevision   Int               @default(0)
+  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime          @default(now()) @db.Timestamptz(3)
+
+  revisions ArtifactRevision[]
+
+  @@index([orgId, updatedAt(sort: Desc), id(sort: Desc)])
+  @@index([orgId, externalProvider, externalScopeId])
+  @@index([orgId, editorsAgentId])
+  @@index([orgId, ownerIdentity])
+  @@index([originSessionId])
+  @@map("artifact")
+}
+
+// One immutable publication of an artifact (artifacts.md §4).
+model ArtifactRevision {
+  id                  String                @id @db.Uuid
+  artifactId          String                @db.Uuid
+  number              Int
+  // Entry path and each file's relative path, sha256, bytes and mediaType (ArtifactManifest).
+  manifest            Json
+  storageMode         ArtifactStorageMode
+  storagePrefix       String
+  // No foreign keys, so the revision outlives the agent and the session; the name snapshot keeps the producer readable.
+  producedByAgentId   String                @db.Uuid
+  producedByAgentName String
+  producedInSessionId String
+  // The identity that started the publishing turn; null for a turn with none.
+  initiatedBy         String?
+  totalBytes          Int
+  fileCount           Int
+  state               ArtifactRevisionState @default(pending)
+  // A retried publish returns the revision recorded under the same key (artifacts.md §5.3).
+  idempotencyKey      String
+  createdAt           DateTime              @default(now()) @db.Timestamptz(3)
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, number])
+  // Per producing agent, which covers the first publish whose artifact id the daemon does not know yet.
+  @@unique([producedByAgentId, idempotencyKey])
+  @@index([producedInSessionId])
+  @@map("artifact_revision")
+}
+
 // Screenshot bytes written per organization and UTC day, kept for Cloud metering after the screenshots expire.
 model ComputerScreenshotUsage {
   orgId String
