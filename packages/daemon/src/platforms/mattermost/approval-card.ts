@@ -1,7 +1,7 @@
 // Mattermost's approval-card facet (§7.3): Markdown prompt + signed interactive attachment buttons forwarded by Relay (or pure-WS `A-XXXXXXXX` numbered replies), patched in place when settled.
 import { randomBytes } from 'node:crypto'
 import { MATTERMOST_CARD_NOTE_MAX, MATTERMOST_PLATFORM } from '@agentconnect.md/protocol'
-import { permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
+import { appendPermCommand, permToolLabel, type SubsessionNoticeOutcome } from '../../slack/render.js'
 import type {
   ApprovalCardAsk,
   ApprovalCardContext,
@@ -221,7 +221,11 @@ export const mattermostApprovalCards: ApprovalCardFacet = {
     const body = [
       ...(ask.subsession ? [intro(ask.subsession)] : []),
       ...(ask.context ? [contextIntro(ask.context)] : []),
-      `🔒 **Permission requested** — ${formatPermLabel(permToolLabel(ask.params))}`
+      appendPermCommand(
+        `🔒 **Permission requested** — ${formatPermLabel(permToolLabel(ask.params))}`,
+        ask.params,
+        formatPermLabel
+      )
     ].join('\n\n')
     const fallback = clampMattermostText(
       sanitizeMattermostPlainText(`Permission requested: ${permToolLabel(ask.params)}`),
@@ -302,7 +306,11 @@ export const mattermostApprovalCards: ApprovalCardFacet = {
     const text = [
       ...(settled.subsession ? [intro(settled.subsession)] : []),
       ...(settled.context ? [contextIntro(settled.context)] : []),
-      `🔒 **Permission** — ${formatPermLabel(permToolLabel(settled.params))}\n${decision}`
+      appendPermCommand(
+        `🔒 **Permission** — ${formatPermLabel(permToolLabel(settled.params))}\n${decision}`,
+        settled.params,
+        formatPermLabel
+      )
     ].join('\n\n')
     return {
       render: () => ({ text, clearAttachments: true, retireTag: true })

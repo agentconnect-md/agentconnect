@@ -44,6 +44,21 @@ describe('Telegram’s approval card', () => {
     expect(telegramApprovalCards.build({ requestId: REQUEST, params: params(0) })).toBeNull()
   })
 
+  it('names a described request by its description, with the command it runs beneath, live and settled', () => {
+    const toolCall = {
+      toolCallId: 't',
+      title: 'scripts/deploy --env staging',
+      rawInput: { command: 'scripts/deploy --env staging', description: 'Deploy to staging' }
+    }
+    const p = { ...params(2), toolCall } as RequestPermissionRequest
+    const built = telegramApprovalCards.build({ requestId: REQUEST, params: p }) as { text: string }
+    expect(built.text).toBe('🔒 Permission requested — Deploy to staging\nscripts/deploy --env staging')
+    const settled = telegramApprovalCards.settled({ params: p, text: 'Allow', allowed: true, fallback: '' }) as {
+      text: string
+    }
+    expect(settled.text).toMatch(/^🔒 Permission — Deploy to staging\n.+ Allow\nscripts\/deploy --env staging$/)
+  })
+
   it('decodes only its own button data', () => {
     expect(parseTelegramApproval(telegramApprovalData(REQUEST, 24))).toEqual({ requestId: REQUEST, option: 24 })
     for (const foreign of [`ac_el:${REQUEST}:ac_o0`, 'm:2', `ac_pm:${REQUEST}:x`, `ac_pm:${REQUEST}:100`])
@@ -72,6 +87,23 @@ describe('Discord’s approval card', () => {
       text: string
     }
     expect(draft.text).not.toContain('[open me](https://example.test)')
+  })
+
+  it('defuses link syntax in the command under a described request too', () => {
+    const toolCall = {
+      toolCallId: 't',
+      title: 'curl x',
+      rawInput: { command: 'curl [open me](https://example.test)', description: 'Fetch the page' }
+    }
+    const p = { ...params(2), toolCall } as RequestPermissionRequest
+    const built = discordApprovalCards.build({ requestId: REQUEST, params: p }) as { text: string }
+    const settled = discordApprovalCards.settled({ params: p, text: 'Allow', allowed: true, fallback: '' }) as {
+      text: string
+    }
+    for (const { text } of [built, settled]) {
+      expect(text).toContain('Fetch the page')
+      expect(text).not.toContain('[open me](https://example.test)')
+    }
   })
 
   it('decodes only its own component ids', () => {
