@@ -4073,6 +4073,101 @@
           "readOnly": "Only editors of this agent can change this",
           "saving": "Saving…"
         }
+      },
+      "toolPermissions": {
+        "restricted": "Restricted",
+        "summaryFull": "Every tool is allowed.",
+        "summaryAllowed": "{count} allowed",
+        "summaryApproval": "{count} need approval",
+        "summaryAsk": "{count} always ask",
+        "summaryRestBlocked": "the rest blocked",
+        "edit": "Edit permissions",
+        "title": "Tool permissions",
+        "presetLabel": "Access",
+        "presets": {
+          "full": "Full access",
+          "readOnly": "Read-only",
+          "custom": "Custom"
+        },
+        "presetHints": {
+          "full": "Every tool is allowed, including tools the server adds later.",
+          "readOnly": "Read-only tools are allowed. Write/delete tools and unlabeled tools are blocked.",
+          "custom": "Choose a decision for each group, and override single tools."
+        },
+        "groups": {
+          "readOnly": "Read-only tools",
+          "write": "Write/delete tools",
+          "other": "Other tools"
+        },
+        "groupDecision": "Decision for {group}",
+        "toolDecision": "Decision for {tool}",
+        "decisions": {
+          "allow": {
+            "label": "Always allow",
+            "description": "The agent uses it without asking."
+          },
+          "approval": {
+            "label": "Needs approval",
+            "description": "The agent asks before each use, except in a mode with automatic review."
+          },
+          "ask": {
+            "label": "Always ask",
+            "description": "A person approves each use, even in a mode with automatic review."
+          },
+          "block": {
+            "label": "Blocked",
+            "description": "The agent cannot see or use it."
+          }
+        },
+        "decisionPending": "{description} Available when approvals ship.",
+        "followsGroup": "Follows group",
+        "overridden": "{count} overridden",
+        "interactive": "Interactive",
+        "destructive": "Destructive",
+        "showMore": "Show more",
+        "showLess": "Show less",
+        "catalog": {
+          "loading": "Reading the tool list…",
+          "refreshing": "Listing tools…",
+          "listed": "Tools listed {when}",
+          "neverListed": "Tools not listed yet",
+          "refresh": "Refresh list",
+          "failed": "The last refresh failed: {reason}"
+        },
+        "failures": {
+          "relay_unavailable": "No relay that can list tools is connected.",
+          "relay_timeout": "The relay did not answer in time.",
+          "unreachable": "The server could not be reached.",
+          "upstream_rejected": "The server refused the request. Check its credentials.",
+          "timeout": "The server did not answer in time.",
+          "too_large": "The server's tool list is too large to read.",
+          "invalid_response": "The server answered with a tool list that could not be read.",
+          "blocked_address": "The server's address is blocked by the relay's network policy.",
+          "misconfigured": "The server's configuration on the relay is incomplete.",
+          "unknown_provider": "The relay does not know this server yet. Try again in a moment.",
+          "other": "Listing tools failed ({code})."
+        },
+        "noCatalog": "No tool list is available for this server. Group settings apply once the tool list is available; until then, name the tools to allow or block.",
+        "manualTitle": "Tools named by hand",
+        "manualPlaceholder": "tool_name",
+        "manualAdd": "Add tool",
+        "manualRemove": "Remove {tool}",
+        "manualDuplicate": "{tool} is already listed.",
+        "manualTooLong": "A tool name has at most 256 characters.",
+        "drift": {
+          "newTools": "{count, plural, one {# new tool is} other {# new tools are}} blocked until you review them.",
+          "changedTools": "{count, plural, one {# tool now has} other {# tools now have}} a different decision under these settings.",
+          "missingTools": "{count, plural, one {# saved tool is} other {# saved tools are}} no longer listed by the server.",
+          "resave": "Saving again applies the current settings to every listed tool."
+        },
+        "compat": {
+          "daemons": "{count, plural, one {# daemon serving this agent cannot} other {# daemons serving this agent cannot}} attach a restricted server ({names}). The agent loses this server there until they are upgraded.",
+          "relays": "{count, plural, one {# connected relay does} other {# connected relays do}} not support tool permissions yet. This agent's calls through them are refused until they are upgraded."
+        },
+        "saving": "Saving…",
+        "returnToFull": "Return to Full access",
+        "confirmFull": "Allow every tool of {provider} for this agent again?",
+        "keepRestrictions": "Keep restrictions"
       }
     }
   },

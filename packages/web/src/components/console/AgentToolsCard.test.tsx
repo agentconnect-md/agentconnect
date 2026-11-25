@@ -7,21 +7,27 @@ import type { DaemonRow } from '@/lib/data'
 
 const mocks = vi.hoisted(() => ({
   mcpProviders: [
-    { name: 'grafana', visibility: 'org' },
-    { name: 'linear', visibility: 'org' }
+    { id: 'p-grafana', name: 'grafana', visibility: 'org' },
+    { id: 'p-linear', name: 'linear', visibility: 'org' }
   ] as unknown[],
-  saved: [] as string[]
+  saved: [] as string[],
+  policies: [] as unknown[]
 }))
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     updateAgent: vi.fn(async () => undefined),
     mcpProviders: mocks.mcpProviders,
-    connectorsEnabled: false
+    connectorsEnabled: false,
+    daemons: [{ daemonId: 'd-old', name: 'old-mac' }]
   })
 }))
 vi.mock('@/lib/api', () => ({
   fetchAgentDto: vi.fn(async () => ({ mcpServers: mocks.saved })),
+  fetchAgentMcpToolPolicies: vi.fn(async () => ({
+    policies: mocks.policies,
+    compatibility: { daemonsWithoutAgentDefinitions: ['d-old'], relaysWithoutToolPolicies: 0 }
+  })),
   fetchConnectorCatalog: vi.fn(async () => ({ providers: [] })),
   repoLabel: (r: unknown) => String(r),
   repoWebUrl: () => undefined
@@ -31,6 +37,18 @@ vi.mock('@/components/console/McpServersCard', () => ({
   CreateMcpProviderModal: () => null,
   EditMcpProviderModal: ({ provider }: { provider: { name: string } }) => <div>edit-mcp:{provider.name}</div>,
   EditConnectorModal: ({ provider }: { provider: { name: string } }) => <div>edit-connector:{provider.name}</div>
+}))
+vi.mock('@/components/console/McpToolPermissionsPanel', () => ({
+  McpToolPermissionsPanel: (props: {
+    providerName: string
+    policy: { providerId: string } | null
+    compatibility: { daemonsWithoutAgentDefinitions: string[] }
+  }) => (
+    <div>
+      permissions:{props.providerName}:{props.policy ? 'restricted' : 'full'}:
+      {props.compatibility.daemonsWithoutAgentDefinitions.join(',')}
+    </div>
+  )
 }))
 
 import { AgentToolsCard } from './AgentToolsCard'
@@ -67,6 +85,7 @@ afterEach(() => {
   root = undefined
   host = undefined
   mocks.saved = []
+  mocks.policies = []
 })
 
 describe('AgentToolsCard', () => {
@@ -154,5 +173,49 @@ describe('AgentToolsCard', () => {
     } finally {
       mocks.mcpProviders = saved
     }
+  })
+
+  // Each registry row says whether the agent has Full access to its tools or a restriction, with the saved counts.
+  it('shows each registry server as Full access or Restricted with its decision counts', async () => {
+    mocks.saved = ['grafana', 'linear']
+    mocks.policies = [
+      {
+        providerId: 'p-linear',
+        providerName: 'linear',
+        groups: { readOnly: 'allow', write: 'block', other: 'block' },
+        overrides: {},
+        allowTools: ['a', 'b', 'c'],
+        approvalTools: [],
+        askTools: [],
+        catalogFetchedAt: null,
+        updatedBy: null,
+        updatedAt: '2026-11-01T00:00:00.000Z',
+        drift: null
+      }
+    ]
+    await render(undefined)
+    const lines = [...host!.querySelectorAll('[data-testid="tool-permissions-line"]')].map((l) => l.textContent)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toContain('Full access')
+    expect(lines[0]).toContain('Every tool is allowed.')
+    expect(lines[1]).toContain('Restricted')
+    expect(lines[1]).toContain('3 allowed · the rest blocked')
+  })
+
+  it('opens the permissions panel for an editor, with daemon names resolved', async () => {
+    mocks.saved = ['grafana']
+    await render(undefined)
+    const edit = [...host!.querySelectorAll('button')].find((b) => b.textContent === 'Edit permissions')
+    await act(async () => {
+      edit!.click()
+    })
+    expect(host!.textContent).toContain('permissions:grafana:full:old-mac')
+  })
+
+  it('shows the permission status read-only to a caller who cannot edit the agent', async () => {
+    mocks.saved = ['grafana']
+    const text = await render(undefined, false)
+    expect(text).toContain('Full access')
+    expect(text).not.toContain('Edit permissions')
   })
 })

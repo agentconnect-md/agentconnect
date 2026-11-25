@@ -1,8 +1,15 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { fetchAgentDto, type McpProviderCreatedDto, type McpProviderDto } from '@/lib/api'
+import {
+  fetchAgentDto,
+  fetchAgentMcpToolPolicies,
+  type AgentMcpToolPoliciesDto,
+  type AgentMcpToolPolicyDto,
+  type McpProviderCreatedDto,
+  type McpProviderDto
+} from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import { MOCK_MODE, type DaemonRow } from '@/lib/data'
 import { mcpCandidates, mcpCapsFor, mcpKindLabel, mcpServersForRuntime } from '@/components/console/McpServersField'
@@ -11,29 +18,10 @@ import { ConnectorsModal } from '@/components/console/ConnectorsModal'
 import { CreateMcpProviderModal, EditConnectorModal, EditMcpProviderModal } from '@/components/console/McpServersCard'
 import { ProviderMark, useConnectorIcons } from '@/components/console/ToolTile'
 import { Scrim } from '@/components/console/Scrim'
+import { McpToolPermissionsPanel } from '@/components/console/McpToolPermissionsPanel'
+import { Icon } from '@/components/ui'
 
-/**
- * Leads the agent's Tools & Skills tab: the MCP servers this agent has attached,
- * one row each, plus the header's Add menu offering the ones it hasn't (via
- * `mcpServersForRuntime`/`mcpKindLabel`). MCP is agent-scoped — this is the
- * surface where it's picked; the daemon detail view no longer lists MCP servers.
- *
- * The agent model stores an explicit allow-list (`mcpServers`) and the daemon
- * attaches ONLY the names in it (an empty list ⇒ no servers), so the rows ARE the
- * saved list — attaching appends a name, the row's × removes it, and both persist
- * through `updateAgent`. Saved names the daemon no longer reports — or whose
- * transport the current runtime can't attach — still render as dimmed rows so they
- * can be removed (they are never offered in the Add menu); this is the only place
- * to clear a stale name.
- *
- * The Add menu's quick-add items open the org registry's OWN dialogs
- * (`CreateMcpProviderModal`, `ConnectorsModal`) rather than a second create form,
- * and a server created through the first is attached to this agent immediately.
- *
- * Daemons are live-only, so an agent with no resolved daemon — a mock one, one
- * out of the fleet, or one placed on a pool or a group rather than a member —
- * contributes no daemon-reported servers. The org registry still does.
- */
+/** The agent's attached MCP servers (the saved `mcpServers` allow-list, stale names dimmed so they can be removed), the Add menu, and each registry server's tool permissions. */
 export function AgentToolsCard({
   agentId,
   runtime,
@@ -49,7 +37,8 @@ export function AgentToolsCard({
   onBusyChange?: (busy: boolean) => void
 }) {
   const t = useTranslations('Agents.detail.tools')
-  const { updateAgent, mcpProviders, connectorsEnabled } = useConsoleData()
+  const tp = useTranslations('Agents.detail.toolPermissions')
+  const { updateAgent, mcpProviders, connectorsEnabled, daemons } = useConsoleData()
   const [creating, setCreating] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [editing, setEditing] = useState<McpProviderDto | null>(null)
@@ -85,29 +74,28 @@ export function AgentToolsCard({
     onBusyChange?.(saving)
   }, [saving, onBusyChange])
   const fetched = useRef(false)
+  // Per-provider tool policies; null until read, or when this CP predates them.
+  const [toolPolicies, setToolPolicies] = useState<AgentMcpToolPoliciesDto | null>(null)
+  const [permissionsFor, setPermissionsFor] = useState<McpProviderDto | null>(null)
+  const loadToolPolicies = useCallback(() => {
+    fetchAgentMcpToolPolicies(agentId).then(setToolPolicies, () => setToolPolicies(null))
+  }, [agentId])
 
-  // Always fetch the saved allow-list (even with no eligible servers) so saved
-  // names the daemon no longer reports — or whose transport the current runtime
-  // can't attach — can still be shown and removed; without it a consolidated
-  // Tools card offers no way to clear a stale name.
+  // The saved allow-list is read even with nothing eligible, so stale names stay removable.
   useEffect(() => {
     if (fetched.current) return
-    // Only DEMO agents lack a spec to fetch — `canEdit` is also false for a real
-    // agent the caller may see but not change, and `GET /agents/:id` is view-gated,
-    // so that case fetches like any other and just renders without the mutation
-    // controls. Short-circuiting it would claim an empty roster it never checked.
+    // Only demo agents lack a spec; a real agent the caller cannot edit is still view-gated readable.
     if (!canEdit && MOCK_MODE) {
       setEnabled(['grafana', 'linear'])
       return
     }
     fetched.current = true
     fetchAgentDto(agentId).then(
-      // The saved allow-list IS the effective set (empty ⇒ no servers), so the
-      // rows mirror it 1:1 rather than defaulting an empty list to all-on.
       (dto) => setEnabled(dto.mcpServers ?? []),
       (e) => setErr(e instanceof Error ? e.message : String(e))
     )
-  }, [agentId, canEdit])
+    loadToolPolicies()
+  }, [agentId, canEdit, loadToolPolicies])
 
   const attach = async (name: string, next: boolean) => {
     if (!canEdit || enabled === null || saving) return
@@ -207,7 +195,14 @@ export function AgentToolsCard({
                   }
                   onRemove={canEdit && !saving ? () => void attach(name, false) : undefined}
                   removeTitle={t('removeFromAgent')}
-                />
+                >
+                  {provider && toolPolicies && (
+                    <ToolPermissionsLine
+                      policy={toolPolicies.policies.find((p) => p.providerId === provider.id) ?? null}
+                      onEdit={canEdit ? () => setPermissionsFor(provider) : undefined}
+                    />
+                  )}
+                </AttachedRow>
               )
             })}
           </div>
@@ -254,12 +249,72 @@ export function AgentToolsCard({
           </div>
         </Scrim>
       )}
+      {permissionsFor && toolPolicies && (
+        <Scrim onEscape={() => setPermissionsFor(null)}>
+          <div className="modal max-w-[720px]" role="dialog" aria-label={tp('title')}>
+            <McpToolPermissionsPanel
+              agentId={agentId}
+              providerId={permissionsFor.id}
+              providerName={permissionsFor.name}
+              policy={toolPolicies.policies.find((p) => p.providerId === permissionsFor.id) ?? null}
+              compatibility={{
+                daemonsWithoutAgentDefinitions: toolPolicies.compatibility.daemonsWithoutAgentDefinitions.map(
+                  (id) => daemons.find((d) => d.daemonId === id)?.name ?? id
+                ),
+                relaysWithoutToolPolicies: toolPolicies.compatibility.relaysWithoutToolPolicies
+              }}
+              onClose={() => setPermissionsFor(null)}
+              onSaved={loadToolPolicies}
+            />
+          </div>
+        </Scrim>
+      )}
       {browsing && (
         <Scrim onEscape={() => setBrowsing(false)}>
           <div className="modal max-w-[920px]">
             <ConnectorsModal onClose={() => setBrowsing(false)} onCreated={attachCreated} />
           </div>
         </Scrim>
+      )}
+    </div>
+  )
+}
+
+/** A registry server's tool permissions under its attached row: Full access or Restricted with per-decision counts. */
+function ToolPermissionsLine({ policy, onEdit }: { policy: AgentMcpToolPolicyDto | null; onEdit?: () => void }) {
+  const t = useTranslations('Agents.detail.toolPermissions')
+  const summary = policy
+    ? [
+        t('summaryAllowed', { count: policy.allowTools.length }),
+        ...(policy.approvalTools.length > 0 ? [t('summaryApproval', { count: policy.approvalTools.length })] : []),
+        ...(policy.askTools.length > 0 ? [t('summaryAsk', { count: policy.askTools.length })] : []),
+        t('summaryRestBlocked')
+      ].join(' · ')
+    : t('summaryFull')
+  return (
+    <div
+      data-testid="tool-permissions-line"
+      className="-mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pr-4 pb-3 pl-[57px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)"
+    >
+      <Icon name="shield-check" size={13} className="flex-none" />
+      <span
+        className={
+          policy
+            ? 'badge flex-none bg-(--brand-soft) text-(--brand-soft-text)'
+            : 'badge flex-none bg-(--surface-active) text-(--text-secondary)'
+        }
+      >
+        {policy ? t('restricted') : t('presets.full')}
+      </span>
+      <span className="min-w-0">{summary}</span>
+      {onEdit && (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="ml-auto cursor-pointer border-0 bg-transparent p-0 font-sans text-[12px] font-medium leading-normal text-(--text-link) hover:underline"
+        >
+          {t('edit')}
+        </button>
       )}
     </div>
   )

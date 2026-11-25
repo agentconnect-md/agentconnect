@@ -6818,6 +6818,87 @@ export async function updateMcpProviderSharing(id: string, body: SharingInput): 
   return apiPut<McpProviderDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(id)}/sharing`, body)
 }
 
+// ── per-agent MCP tool permissions (mcp-tool-permissions.md §3, §10) ─────────
+export type McpToolDecision = 'allow' | 'approval' | 'ask' | 'block'
+export type McpToolGroup = 'readOnly' | 'write' | 'other'
+export type McpToolGroupDecisions = Record<McpToolGroup, McpToolDecision>
+
+/** One agent's saved policy for one provider; no policy means Full access. */
+export interface AgentMcpToolPolicyDto {
+  providerId: string
+  providerName: string
+  groups: McpToolGroupDecisions
+  overrides: Record<string, McpToolDecision>
+  /** The decision table expanded at save time; every other name is blocked. */
+  allowTools: string[]
+  approvalTools: string[]
+  askTools: string[]
+  catalogFetchedAt: string | null
+  updatedBy: string | null
+  updatedAt: string
+  /** What a re-save would change against the current catalog; null without a catalog snapshot. */
+  drift: { newTools: string[]; changedTools: string[]; missingTools: string[] } | null
+}
+
+export interface AgentMcpToolPoliciesDto {
+  policies: AgentMcpToolPolicyDto[]
+  compatibility: {
+    /** Daemon ids serving the agent that cannot attach a restricted provider. */
+    daemonsWithoutAgentDefinitions: string[]
+    /** Connected relays that refuse a restricted agent's calls. */
+    relaysWithoutToolPolicies: number
+  }
+}
+
+export interface McpCatalogToolDto {
+  name: string
+  title?: string
+  description?: string
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
+  interactive: boolean
+  group: McpToolGroup
+}
+
+export interface McpToolCatalogDto {
+  tools: McpCatalogToolDto[]
+  groups: Record<McpToolGroup, number>
+  /** Null until a fetch succeeds; a later failure keeps the previous tools. */
+  fetchedAt: string | null
+  /** The last fetch's closed failure code, e.g. `unreachable` or `relay_unavailable`. */
+  failure: string | null
+}
+
+const agentToolPolicyPath = (agentId: string) => `${orgBase()}/agents/${encodeURIComponent(agentId)}/mcp-tool-policies`
+
+export async function fetchAgentMcpToolPolicies(agentId: string): Promise<AgentMcpToolPoliciesDto> {
+  return apiGet<AgentMcpToolPoliciesDto>(agentToolPolicyPath(agentId))
+}
+
+export async function saveAgentMcpToolPolicy(
+  agentId: string,
+  providerId: string,
+  body: { groups: McpToolGroupDecisions; overrides: Record<string, McpToolDecision> }
+): Promise<AgentMcpToolPolicyDto> {
+  return apiPut<AgentMcpToolPolicyDto>(`${agentToolPolicyPath(agentId)}/${encodeURIComponent(providerId)}`, body)
+}
+
+// Back to Full access: the agent falls back to the provider's shared definition.
+export async function deleteAgentMcpToolPolicy(agentId: string, providerId: string): Promise<void> {
+  await apiDelete<void>(`${agentToolPolicyPath(agentId)}/${encodeURIComponent(providerId)}`)
+}
+
+export async function fetchMcpToolCatalog(providerId: string): Promise<McpToolCatalogDto> {
+  return apiGet<McpToolCatalogDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(providerId)}/tools`)
+}
+
+// Asks a relay to list the provider's tools now; the CP waits up to 15 s.
+export async function refreshMcpToolCatalog(providerId: string): Promise<McpToolCatalogDto> {
+  return apiPost<McpToolCatalogDto>(`${orgBase()}/mcp-providers/${encodeURIComponent(providerId)}/tools/refresh`, {})
+}
+
 // ── shared-skills sources (docs/designs/shared-skills.md) ────────────────────
 // Org-level skills sources the daemon installs via `npx skills`. Pure metadata —
 // nothing secret. The daemon fetches content directly from the source.

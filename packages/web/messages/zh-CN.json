@@ -4073,6 +4073,101 @@
           "readOnly": "仅此 Agent 的编辑者可以修改",
           "saving": "正在保存…"
         }
+      },
+      "toolPermissions": {
+        "restricted": "受限",
+        "summaryFull": "允许使用所有工具。",
+        "summaryAllowed": "允许 {count} 个",
+        "summaryApproval": "{count} 个需审批",
+        "summaryAsk": "{count} 个每次询问",
+        "summaryRestBlocked": "其余已阻止",
+        "edit": "编辑权限",
+        "title": "工具权限",
+        "presetLabel": "访问级别",
+        "presets": {
+          "full": "完全访问",
+          "readOnly": "只读",
+          "custom": "自定义"
+        },
+        "presetHints": {
+          "full": "允许使用所有工具，包括服务器以后新增的工具。",
+          "readOnly": "允许只读工具，阻止写入/删除工具和未标注的工具。",
+          "custom": "为每个分组选择决定，并可单独覆盖某个工具。"
+        },
+        "groups": {
+          "readOnly": "只读工具",
+          "write": "写入/删除工具",
+          "other": "其他工具"
+        },
+        "groupDecision": "{group}的决定",
+        "toolDecision": "{tool} 的决定",
+        "decisions": {
+          "allow": {
+            "label": "始终允许",
+            "description": "Agent 无需询问即可使用。"
+          },
+          "approval": {
+            "label": "需要审批",
+            "description": "Agent 每次使用前都会询问，自动审查模式下除外。"
+          },
+          "ask": {
+            "label": "每次询问",
+            "description": "每次使用都由人工批准，自动审查模式下也是如此。"
+          },
+          "block": {
+            "label": "已阻止",
+            "description": "Agent 无法看到或使用它。"
+          }
+        },
+        "decisionPending": "{description}审批功能上线后可用。",
+        "followsGroup": "跟随分组",
+        "overridden": "已覆盖 {count} 个",
+        "interactive": "交互式",
+        "destructive": "破坏性",
+        "showMore": "展开",
+        "showLess": "收起",
+        "catalog": {
+          "loading": "正在读取工具列表…",
+          "refreshing": "正在列出工具…",
+          "listed": "工具列表更新于{when}",
+          "neverListed": "尚未获取工具列表",
+          "refresh": "刷新列表",
+          "failed": "上次刷新失败：{reason}"
+        },
+        "failures": {
+          "relay_unavailable": "没有已连接的 Relay 可以列出工具。",
+          "relay_timeout": "Relay 未能及时响应。",
+          "unreachable": "无法连接到服务器。",
+          "upstream_rejected": "服务器拒绝了请求，请检查其凭据。",
+          "timeout": "服务器未能及时响应。",
+          "too_large": "服务器的工具列表过大，无法读取。",
+          "invalid_response": "服务器返回的工具列表无法读取。",
+          "blocked_address": "服务器地址被 Relay 的网络策略阻止。",
+          "misconfigured": "此服务器在 Relay 上的配置不完整。",
+          "unknown_provider": "Relay 暂时还不知道此服务器，请稍后重试。",
+          "other": "列出工具失败（{code}）。"
+        },
+        "noCatalog": "此服务器暂无工具列表。获取到工具列表后分组设置才会生效；在此之前，请手动填写要允许或阻止的工具。",
+        "manualTitle": "手动填写的工具",
+        "manualPlaceholder": "tool_name",
+        "manualAdd": "添加工具",
+        "manualRemove": "移除 {tool}",
+        "manualDuplicate": "{tool} 已在列表中。",
+        "manualTooLong": "工具名称最多 256 个字符。",
+        "drift": {
+          "newTools": "{count, plural, other {# 个新工具}}在你审核之前保持阻止。",
+          "changedTools": "按当前设置，{count, plural, other {# 个工具}}的决定会发生变化。",
+          "missingTools": "{count, plural, other {# 个已保存的工具}}已不在服务器的列表中。",
+          "resave": "再次保存会将当前设置应用到所有列出的工具。"
+        },
+        "compat": {
+          "daemons": "服务此 Agent 的 {count, plural, other {# 个 Daemon}}无法附加受限的服务器（{names}）。升级之前，Agent 在这些 Daemon 上将无法使用此服务器。",
+          "relays": "{count, plural, other {# 个已连接的 Relay}}尚不支持工具权限。升级之前，此 Agent 经由它们的调用都会被拒绝。"
+        },
+        "saving": "正在保存…",
+        "returnToFull": "恢复完全访问",
+        "confirmFull": "要重新允许此 Agent 使用 {provider} 的所有工具吗？",
+        "keepRestrictions": "保留限制"
       }
     }
   },
