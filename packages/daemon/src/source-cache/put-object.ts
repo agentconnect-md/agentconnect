@@ -104,3 +104,49 @@ export function putStagedFile(input: PutStagedFileInput): Promise<{ bytes: numbe
     })
   })
 }
+
+/** PUT an in-memory body to a presigned URL with exactly the signed headers; resolves on 200, never echoes the URL. */
+export function putObjectBytes(input: {
+  bytes: Buffer
+  url: URL
+  headers: Record<string, string>
+  timeoutMs: number
+  request?: PutRequestFn
+}): Promise<void> {
+  const send = input.request ?? ((input.url.protocol === 'https:' ? httpsRequest : httpRequest) as PutRequestFn)
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) {
+        req.destroy()
+        reject(error)
+      } else resolve()
+    }
+    const req = send(input.url, { method: 'PUT', headers: input.headers }, (res) => {
+      const chunks: Buffer[] = []
+      let kept = 0
+      res.on('data', (chunk: Buffer) => {
+        if (kept < MAX_ERROR_BODY_BYTES) chunks.push(chunk)
+        kept += chunk.length
+      })
+      res.on('error', (err) => finish(new PutObjectError('upload-failed', err.message)))
+      res.on('end', () => {
+        if (res.statusCode === 200) return finish()
+        const body = Buffer.concat(chunks).toString('utf8').slice(0, MAX_ERROR_BODY_BYTES)
+        const code = /<Code>([A-Za-z0-9.]{1,64})<\/Code>/.exec(body)?.[1]
+        finish(new PutObjectError('upload-refused', `HTTP ${res.statusCode ?? 0}${code ? ` ${code}` : ''}`))
+      })
+    })
+    req.on('error', (err: NodeJS.ErrnoException) =>
+      finish(new PutObjectError('upload-failed', err.code ?? 'request error'))
+    )
+    const timer = setTimeout(
+      () => finish(new PutObjectError('upload-failed', `timed out after ${input.timeoutMs}ms`)),
+      input.timeoutMs
+    )
+    req.end(input.bytes)
+  })
+}

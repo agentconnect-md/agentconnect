@@ -18,7 +18,7 @@ import { taskReachOf, type TaskReachDeps } from './task-reach.js'
 export type { GuideExample }
 
 /** The tools a guide documents; the entry point is shared so other tools can join later. */
-export const GUIDED_TOOLS = ['sendMessage'] as const
+export const GUIDED_TOOLS = ['sendMessage', 'publishArtifact'] as const
 
 export const GET_TOOL_GUIDE_ARGS = z.strictObject({
   tool: requiredEnum('tool', GUIDED_TOOLS),
@@ -28,12 +28,17 @@ export const GET_TOOL_GUIDE_ARGS = z.strictObject({
 export const GET_TOOL_GUIDE_TOOL: ToolDescriptor = {
   name: 'getToolGuide',
   description:
-    'Read the rules and runnable examples for an AgentConnect tool. Use it before an unfamiliar sendMessage call ' +
-    'or after a sendMessage argument error, then retry. Omit action for an overview of every action.',
+    'Read the rules and runnable examples for an AgentConnect tool. Use it before an unfamiliar sendMessage or ' +
+    'publishArtifact call or after an argument error, then retry. For sendMessage, omit action for an overview of ' +
+    'every action.',
   inputSchema: obj(
     {
       tool: { type: 'string', enum: [...GUIDED_TOOLS] },
-      action: { type: 'string', enum: [...SEND_MESSAGE_ACTIONS], description: 'One sendMessage action, in full.' }
+      action: {
+        type: 'string',
+        enum: [...SEND_MESSAGE_ACTIONS],
+        description: 'One sendMessage action, in full; not used for other tools.'
+      }
     },
     ['tool']
   )
@@ -364,5 +369,46 @@ export function sendMessageGuide(
   }
 }
 
-export const getToolGuide: ToolHandler<TaskReachDeps> = async (ctx, args, deps) =>
-  sendMessageGuide(ctx, parseArgs(GET_TOOL_GUIDE_ARGS, args).action, await taskReachOf(ctx, deps))
+/** When to publish an artifact rather than share a file, and how revisions, links and fetches work (artifacts.md §2.1, §7). */
+export function artifactGuide(offered: boolean): Record<string, unknown> {
+  return {
+    tool: 'publishArtifact',
+    ...(offered ? {} : { availability: 'Unavailable here: this session is not offered the artifact tools.' }),
+    rules: [
+      'An artifact is a deliverable people open in the console, come back to, and share: a report, an HTML page, a ' +
+        'Markdown document, a chart, a PDF. shareFile instead drops one file into this conversation. Both may be used ' +
+        'for the same result.',
+      'Work in your session outputs (`files:outputs/…`), then publish the file or directory. Nothing is published ' +
+        'implicitly, and outputs are cleaned up with the workspace; the published revision is kept.',
+      'A new artifact needs `title`. To change it later, publish again with its `artifactId`: each publication is a ' +
+        'new revision of the same artifact. You can revise only artifacts you created.',
+      'A directory publishes every regular file in it (`.git` is left out) as one revision and needs `entry`, the ' +
+        'file that opens first. Up to 200 files and 50 MB per revision. Empty files, links and special files are ' +
+        'refused by name. The console opens the entry file alone, so make an HTML page self-contained.',
+      'Give the person the returned `link` in your reply, and say who can open it from `whoCanOpen`. On a chat ' +
+        'platform publishing posts nothing by itself; in the console the conversation also shows a card.',
+      'fetchArtifact downloads a revision into `files:outputs/<name>/` (replacing an earlier fetch there) so you ' +
+        'can keep working after the workspace was cleaned up; listArtifacts shows what this conversation can reach.'
+    ],
+    examples: [
+      {
+        use: 'Publish a generated report',
+        arguments: { path: 'files:outputs/q3-report.html', title: 'Q3 revenue report' }
+      },
+      {
+        use: 'Publish a directory with an entry page',
+        arguments: { path: 'files:outputs/dashboard', title: 'Build dashboard', entry: 'index.html' }
+      },
+      {
+        use: 'Publish the next revision of an artifact you created',
+        arguments: { path: 'files:outputs/q3-report.html', artifactId: '00000000-0000-4000-8000-000000000001' }
+      }
+    ] satisfies GuideExample[]
+  }
+}
+
+export const getToolGuide: ToolHandler<TaskReachDeps> = async (ctx, args, deps) => {
+  const { tool, action } = parseArgs(GET_TOOL_GUIDE_ARGS, args)
+  if (tool === 'publishArtifact') return artifactGuide(ctx.tools.some((t) => t.name === 'publishArtifact'))
+  return sendMessageGuide(ctx, action, await taskReachOf(ctx, deps))
+}

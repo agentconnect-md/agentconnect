@@ -12,6 +12,7 @@ import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
 import { CAPABILITY_REQUEST_TOOLS } from '../src/mcp/ops/capability-requests.js'
 import { AGENT_CRON_TOOLS } from '../src/mcp/ops/agent-crons.js'
+import { ARTIFACT_TOOLS } from '../src/mcp/ops/artifacts.js'
 import { allPortPlatforms, readPortsFor, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -174,7 +175,8 @@ const advertised: ToolDescriptor[] = [
   STOP_TASK_TOOL,
   UPDATE_TASK_TOOL,
   ...CAPABILITY_REQUEST_TOOLS,
-  ...AGENT_CRON_TOOLS
+  ...AGENT_CRON_TOOLS,
+  ...ARTIFACT_TOOLS
 ]
 
 interface ObjectSchemaView {
