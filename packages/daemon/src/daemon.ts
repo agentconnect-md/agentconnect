@@ -2853,12 +2853,7 @@ export class Daemon {
   private activeDispatchesByAgent = new Map<string, Set<Promise<void>>>()
   private activeDispatchDoneByKey = new Map<string, Promise<void>>()
   private workspaceDispatchFences = new Map<string, Promise<void>>()
-  /** Per-agent workspace work. Preparation (managed-cache resolution,
-   * clone/pull, immutable snapshots, skill reconciliation) and CP editor/Dream/Git
-   * writes are exclusive, so no two authorities mutate the same root concurrently;
-   * sessions with their own isolation prepare side by side in their own
-   * directories (workspace/agent-workspace-scheduler.ts). Session abort only
-   * fences the caller; admitted I/O stays registered until it has settled. */
+  /** Per-agent workspace work: mutations of the agent's roots run alone, isolated sessions prepare side by side, and admitted I/O stays registered until it settles. */
   private readonly workspacePreparations = new AgentWorkspaceScheduler(PARALLEL_SESSION_PREPARATIONS)
   // Connection-specific half of the same lease. Unlike `pending[].conn`, this is
   // acquired immediately when dispatchOne captures replyConn, before its first
@@ -9676,8 +9671,8 @@ export class Daemon {
     operation: () => Promise<T>,
     expectedWarmHost?: AcpHost,
     allowAgentDrain = false,
-    /** A session with its own isolation prepares in its own directory, beside the agent's other such sessions. */
-    ownDirectory = false
+    /** The isolated session this prepares, beside the agent's other such sessions; unset for work on the agent's own roots. */
+    ownSessionKey?: string
   ): Promise<T> {
     // SessionManager's abort fence intentionally cannot cancel filesystem/network
     // work already admitted here. Register every session preparation and eager
@@ -9693,8 +9688,8 @@ export class Daemon {
       this.assertCurrentWorkspacePreparation(agent, expectedWarmHost, allowAgentDrain)
       return operation()
     }
-    return ownDirectory
-      ? this.workspacePreparations.shared(agent.id, guarded)
+    return ownSessionKey !== undefined
+      ? this.workspacePreparations.shared(agent.id, ownSessionKey, guarded)
       : this.workspacePreparations.exclusive(agent.id, guarded)
   }
 
@@ -9714,8 +9709,19 @@ export class Daemon {
         () => this.runAgentWorkspacePreparation(agent, request),
         expectedWarmHost,
         allowAgentDrain,
-        request?.isolation === 'session'
+        request?.isolation === 'session' && !this.clusterConversionDue(agent) ? request.sessionKey : undefined
       )
+    )
+  }
+
+  /** Whether a pool agent's next preparation replaces its checkout and retires its other session pods, which must run alone. */
+  private clusterConversionDue(agent: Agent): boolean {
+    if (!this.k8sPlane) return false
+    const { workspaces } = this
+    return workspaces.clusterConversionDue(
+      agent,
+      workspaces.readMaterialization(agent),
+      workspaces.materializationKey(agent)
     )
   }
 
@@ -9741,7 +9747,7 @@ export class Daemon {
           }),
         undefined,
         allowAgentDrain,
-        true
+        sessionKey
       )
     )
   }

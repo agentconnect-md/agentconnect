@@ -1,20 +1,17 @@
-// Who may touch an agent's workspace at once. Work on the agent's own roots or authority (a reconciled generation, a
-// prefetch, a rename, a published file, a shared-isolation session) is exclusive: it waits for everything admitted before
-// it and holds off everything after it. A session with its own isolation prepares in its own directory, so up to
-// `sharedLimit` of those run side by side; the agent roots they start from are guarded inside the workspace manager.
-// Admission is first come, first served: a session queued behind an exclusive operation waits for it, so a reconciled
-// generation is never overtaken by stale work.
+// Per-agent admission, first come first served: exclusive work runs alone, and up to `sharedLimit` sessions with their own isolation prepare side by side, one preparation per session.
 
 type Kind = 'exclusive' | 'shared'
 
 interface Waiter {
   kind: Kind
+  /** The session a shared operation prepares; two of one session never overlap. */
+  sessionKey?: string
   start: () => void
 }
 
 interface AgentLane {
   queue: Waiter[]
-  runningShared: number
+  runningSessions: Set<string>
   runningExclusive: boolean
   /** Settles when the lane has no queued or running work left. */
   idle?: { promise: Promise<void>; resolve: () => void }
@@ -26,11 +23,11 @@ export class AgentWorkspaceScheduler {
   constructor(private readonly sharedLimit: number) {}
 
   exclusive<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
-    return this.admit(agentId, 'exclusive', operation)
+    return this.admit(agentId, 'exclusive', undefined, operation)
   }
 
-  shared<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
-    return this.admit(agentId, 'shared', operation)
+  shared<T>(agentId: string, sessionKey: string, operation: () => Promise<T>): Promise<T> {
+    return this.admit(agentId, 'shared', sessionKey, operation)
   }
 
   /** Whether the agent has queued or running workspace work. */
@@ -53,24 +50,30 @@ export class AgentWorkspaceScheduler {
     while (this.lanes.size > 0) await Promise.all([...this.lanes.keys()].map((agentId) => this.idle(agentId)))
   }
 
-  private admit<T>(agentId: string, kind: Kind, operation: () => Promise<T>): Promise<T> {
+  private admit<T>(
+    agentId: string,
+    kind: Kind,
+    sessionKey: string | undefined,
+    operation: () => Promise<T>
+  ): Promise<T> {
     let lane = this.lanes.get(agentId)
     if (!lane) {
-      lane = { queue: [], runningShared: 0, runningExclusive: false }
+      lane = { queue: [], runningSessions: new Set(), runningExclusive: false }
       this.lanes.set(agentId, lane)
     }
     const admitted = lane
     return new Promise<T>((resolve, reject) => {
       admitted.queue.push({
         kind,
+        ...(sessionKey === undefined ? {} : { sessionKey }),
         start: () => {
-          if (kind === 'exclusive') admitted.runningExclusive = true
-          else admitted.runningShared += 1
+          if (sessionKey === undefined) admitted.runningExclusive = true
+          else admitted.runningSessions.add(sessionKey)
           // Started on the next microtask, as a chained tail would: callers register what they report before the work begins.
           const run = Promise.resolve().then(operation)
           run.then(resolve, reject).finally(() => {
-            if (kind === 'exclusive') admitted.runningExclusive = false
-            else admitted.runningShared -= 1
+            if (sessionKey === undefined) admitted.runningExclusive = false
+            else admitted.runningSessions.delete(sessionKey)
             this.pump(agentId, admitted)
           })
         }
@@ -82,12 +85,14 @@ export class AgentWorkspaceScheduler {
   private pump(agentId: string, lane: AgentLane): void {
     while (lane.queue.length > 0 && !lane.runningExclusive) {
       const next = lane.queue[0]!
-      if (next.kind === 'exclusive' && lane.runningShared > 0) break
-      if (next.kind === 'shared' && lane.runningShared >= this.sharedLimit) break
+      if (next.kind === 'exclusive' && lane.runningSessions.size > 0) break
+      if (next.kind === 'shared' && lane.runningSessions.size >= this.sharedLimit) break
+      // A session's retry waits for its own stale preparation, which an aborted caller leaves running in the same directory.
+      if (next.sessionKey !== undefined && lane.runningSessions.has(next.sessionKey)) break
       lane.queue.shift()
       next.start()
     }
-    if (lane.queue.length === 0 && !lane.runningExclusive && lane.runningShared === 0) {
+    if (lane.queue.length === 0 && !lane.runningExclusive && lane.runningSessions.size === 0) {
       if (this.lanes.get(agentId) === lane) this.lanes.delete(agentId)
       lane.idle?.resolve()
     }
