@@ -67,7 +67,7 @@ import type { CpIntegrationRegistry } from './cp-integration-registry.js'
 import type { CpCronRegistry } from './cp-cron.js'
 import type { CpCollabRoutes } from './cp-collab-routes.js'
 import type { CpMemoryConnectionRegistry } from './memory-connection-registry.js'
-import type { CpMcpDefs } from '../mcp/cp-mcp-defs.js'
+import type { CpMcpDefs, CpMcpDefTuple } from '../mcp/cp-mcp-defs.js'
 import type { CpRoutingLayer } from '../router/cp-routing-layer.js'
 import type { RemoteWebchatGrantManager } from '../mcp/remote-webchat-grant.js'
 import { RESERVED_MCP_SERVER_NAME } from '../mcp/resolve-servers.js'
@@ -369,7 +369,9 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
       ?.converge(
         (snap.mcpServers ?? [])
           .filter((s) => s.name !== RESERVED_MCP_SERVER_NAME)
-          .flatMap(({ orgId, name, issuedAt, ...def }) => (orgId ? [[orgId, name, def, issuedAt] as const] : []))
+          .flatMap(({ orgId, name, issuedAt, agentId, toolDecisions, ...def }): CpMcpDefTuple[] =>
+            orgId ? [[orgId, name, def, issuedAt, agentId, toolDecisions]] : []
+          )
       )
   ) {
     host.onMcpDefsChanged()
@@ -877,23 +879,27 @@ export function applyMcpServerUpsert(host: ConfigApplyCoreHost & ConfigApplyRegi
   }
   // `issuedAt` is the ordering marker, not part of the definition the runtime
   // spawns with — strip it out of `def` at every apply site.
-  const { orgId, name, issuedAt, ...def } = spec
+  const { orgId, name, issuedAt, agentId, toolDecisions, ...def } = spec
   if (!orgId) return
-  if (host.cpMcpDefs()?.upsert(orgId, name, def, issuedAt)) {
+  if (host.cpMcpDefs()?.upsert(orgId, name, def, issuedAt, agentId, toolDecisions)) {
     host.onMcpDefsChanged()
     // NEVER log def values — an http proxy def's headers carry the bearer grant key.
-    host.log().info(`mcp: applied CP server def "${name}" for organization ${orgId}`)
+    host
+      .log()
+      .info(`mcp: applied CP server def "${name}" for ${agentId ? `agent ${agentId}` : `organization ${orgId}`}`)
   }
 }
 
 export function applyMcpServerRemove(
   host: ConfigApplyCoreHost & ConfigApplyRegistryHost,
-  { orgId, name }: McpServerRemove
+  { orgId, agentId, name }: McpServerRemove
 ): void {
   if (!orgId) return
-  if (host.cpMcpDefs()?.remove(orgId, name)) {
+  if (host.cpMcpDefs()?.remove(orgId, name, agentId)) {
     host.onMcpDefsChanged()
-    host.log().info(`mcp: removed CP server def "${name}" for organization ${orgId}`)
+    host
+      .log()
+      .info(`mcp: removed CP server def "${name}" for ${agentId ? `agent ${agentId}` : `organization ${orgId}`}`)
   }
 }
 

@@ -90,27 +90,10 @@ export interface AppToolCall {
 }
 
 export interface McpAppsHostDeps {
-  /**
-   * The servers visible to ONE ORGANIZATION — daemon-local config overlaid with whatever the CP
-   * pushed for that org — read through a function so a config reload or a CP push is picked up
-   * without rebuilding the host. Only `ui` ones are ever dialed.
-   *
-   * Org-scoped rather than daemon-wide because a CP definition is: two organizations may each
-   * have a server named `charts` pointing at different relay proxies under different grants, and a
-   * single map keyed by name alone would let one org's connection answer the other's calls.
-   * `undefined` is the daemon-local-only view, which is what a session with no CP org has.
-   */
-  defs: (orgId: string | undefined) => Record<string, McpServerDef>
-  /**
-   * Whether this org's view of `name` is that ORG'S OWN definition rather than daemon-local config.
-   *
-   * It decides what a connection is keyed by, and getting it wrong is invisible: a daemon-local
-   * server is ONE server every organization shares, so keying it per org would dial it once per
-   * org and — worse — leave a session that warmed it under one scope unable to find it under
-   * another. A CP definition genuinely is per-org and must not be shared. Absent ⇒ everything is
-   * treated as local, which is a daemon with no CP.
-   */
-  orgScoped?: (orgId: string | undefined, name: string) => boolean
+  /** The servers one view sees — an organization, or one agent within it — as local config overlaid with CP definitions; `undefined` is local only, and only `ui` servers are dialed. */
+  defs: (view: string | undefined) => Record<string, McpServerDef>
+  /** Who owns the definition a view resolves `name` to — an agent's view, an organization, or nobody for a daemon-local server every organization shares; it keys the connection. */
+  scopeOf?: (view: string | undefined, name: string) => string | undefined
   log?: Logger
   /** The host's own version, sent as client info. */
   version?: string
@@ -165,9 +148,9 @@ export class McpAppsHost {
 
   constructor(private readonly deps: McpAppsHostDeps) {}
 
-  /** The scope a connection for (org, name) is held under — see {@link McpAppsHostDeps.orgScoped}. */
-  private scopeOf(orgId: string | undefined, server: string): string | undefined {
-    return connScope(this.deps.orgScoped?.(orgId, server) === true, orgId)
+  /** The scope a connection for (view, name) is held under — see {@link McpAppsHostDeps.scopeOf}. */
+  private scopeOf(view: string | undefined, server: string): string | undefined {
+    return this.deps.scopeOf?.(view, server)
   }
 
   /**

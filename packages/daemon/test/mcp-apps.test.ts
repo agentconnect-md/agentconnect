@@ -219,7 +219,7 @@ describe('McpAppsHost — org scoping of CP-pushed definitions', () => {
     let current = def('old')
     const host = new McpAppsHost({
       defs: () => ({ charts: current }),
-      orgScoped: () => false,
+      scopeOf: () => undefined,
       log: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() } as never
     })
 
@@ -278,7 +278,7 @@ describe('McpAppsHost — org scoping of CP-pushed definitions', () => {
     const shared = new McpAppsHost({
       defs: () => local,
       // Nothing is org-scoped here: `clock` is daemon-local for every organization.
-      orgScoped: () => false,
+      scopeOf: () => undefined,
       log: { warn: vi.fn(), debug: vi.fn(), info: vi.fn(), error: vi.fn() } as never
     })
     for (const org of ['org-a', 'org-b', undefined]) {

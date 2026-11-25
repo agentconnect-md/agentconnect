@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CpMcpDefs } from '../src/mcp/cp-mcp-defs.js'
+import { CpMcpDefs, mcpView, parseMcpView } from '../src/mcp/cp-mcp-defs.js'
 import type { McpServerDef } from '../src/config/config-schema.js'
 
 const httpDef = (url: string): McpServerDef => ({ transport: 'http', args: [], env: [], url, headers: [] })
@@ -127,5 +127,63 @@ describe('CpMcpDefs — CP-pushed defs layered over local config', () => {
       expect(m.upsert('org-a', 'p', retiring, retiringAt)).toBe(false)
       expect(m.effective('org-a').p).toEqual(fresh)
     })
+  })
+})
+
+describe('CpMcpDefs — agent-scoped definitions (mcp-tool-permissions.md §7.1)', () => {
+  const decisions = { allow: ['read_note'], approval: [], ask: [], block: ['write_note'] }
+
+  it('layers an agent’s own definition over its organization’s for that agent alone', () => {
+    const m = new CpMcpDefs({})
+    m.upsert('org-a', 'notion', httpDef('https://relay/mcp/p1#shared'))
+    m.upsert('org-a', 'notion', httpDef('https://relay/mcp/p1#agent'), undefined, 'agent-1', decisions)
+    expect(m.effective('org-a', 'agent-1').notion?.url).toBe('https://relay/mcp/p1#agent')
+    expect(m.effective('org-a', 'agent-2').notion?.url).toBe('https://relay/mcp/p1#shared')
+    expect(m.effective('org-a').notion?.url).toBe('https://relay/mcp/p1#shared')
+    // Another organization never sees it, even for the same agent id.
+    expect(m.effective('org-b', 'agent-1').notion).toBeUndefined()
+    expect(m.toolDecisions('org-a', 'agent-1', 'notion')).toEqual(decisions)
+  })
+
+  it('removing the agent’s definition falls back to the organization’s, and leaves the organization’s alone', () => {
+    const m = new CpMcpDefs({})
+    m.upsert('org-a', 'notion', httpDef('https://relay/mcp/p1#shared'))
+    m.upsert('org-a', 'notion', httpDef('https://relay/mcp/p1#agent'), undefined, 'agent-1')
+    expect(m.remove('org-a', 'notion', 'agent-1')).toBe(true)
+    expect(m.effective('org-a', 'agent-1').notion?.url).toBe('https://relay/mcp/p1#shared')
+    expect(m.remove('org-a', 'notion', 'agent-1')).toBe(false)
+  })
+
+  it('treats a changed decision table as a change, and converges agent entries with the rest', () => {
+    const m = new CpMcpDefs({})
+    expect(m.upsert('org-a', 'notion', httpDef('https://r/a'), 1, 'agent-1', decisions)).toBe(true)
+    expect(m.upsert('org-a', 'notion', httpDef('https://r/a'), 1, 'agent-1', decisions)).toBe(false)
+    expect(m.upsert('org-a', 'notion', httpDef('https://r/a'), 1, 'agent-1', { ...decisions, allow: [] })).toBe(true)
+    // An older grant never replaces the agent's newer key either.
+    expect(m.upsert('org-a', 'notion', httpDef('https://r/old'), 0, 'agent-1')).toBe(false)
+    expect(m.converge([['org-a', 'notion', httpDef('https://r/shared'), 1]])).toBe(true)
+    expect(m.effective('org-a', 'agent-1').notion?.url).toBe('https://r/shared')
+    expect(
+      m.converge([
+        ['org-a', 'notion', httpDef('https://r/shared'), 1],
+        ['org-a', 'notion', httpDef('https://r/a'), 1, 'agent-1', decisions]
+      ])
+    ).toBe(true)
+    expect(m.effective('org-a', 'agent-1').notion?.url).toBe('https://r/a')
+  })
+
+  it('names the owner of each definition a view resolves, which is what keys a hosted connection', () => {
+    const m = new CpMcpDefs({ clock: stdioDef('clock') })
+    m.upsert('org-a', 'charts', httpDef('https://r/charts'))
+    m.upsert('org-a', 'notion', httpDef('https://r/notion'), undefined, 'agent-1')
+    const view = mcpView('org-a', 'agent-1')
+    expect(m.scopeOf(view, 'notion')).toBe(view)
+    // A shared definition stays keyed by the organization, so agents keep sharing its connection.
+    expect(m.scopeOf(view, 'charts')).toBe('org-a')
+    expect(m.scopeOf(mcpView('org-a', 'agent-2'), 'charts')).toBe('org-a')
+    expect(m.scopeOf(view, 'clock')).toBeUndefined()
+    expect(m.views().sort()).toEqual(['org-a', view].sort())
+    expect(m.orgs()).toEqual(['org-a'])
+    expect(parseMcpView(view)).toEqual({ orgId: 'org-a', agentId: 'agent-1' })
   })
 })

@@ -117,6 +117,7 @@ import {
   KNOWLEDGE_RECORD_FEATURE,
   type KnowledgeRecordWriterKind,
   MEMORY_PERSON_LAYER_FEATURE,
+  MCP_AGENT_DEFS_V1_FEATURE,
   MEMORY_PLACE_CLEAR_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_EXECUTORS_V1_FEATURE,
@@ -1246,7 +1247,7 @@ import {
   type AgentMoveStageMetadata
 } from './agents/write-agent.js'
 import { CpIntegrationRegistry } from './cp/cp-integration-registry.js'
-import { CpMcpDefs } from './mcp/cp-mcp-defs.js'
+import { CpMcpDefs, mcpView, parseMcpView } from './mcp/cp-mcp-defs.js'
 import { CpMemoryConnectionRegistry, type MemoryPluginConnector } from './cp/memory-connection-registry.js'
 import { MemoryCaptureOutbox } from './memory-plugin/outbox.js'
 import { managedDistillCapture, withManagedDistill } from './memory/managed-distill-outbox.js'
@@ -5195,11 +5196,14 @@ export class Daemon {
     this.appsHost = new McpAppsHost({
       // Org-scoped: daemon-local config overlaid with what the CP pushed for that organization,
       // which is the same view `resolveAgentMcpServers` resolves against.
-      defs: (orgId) => this.cpMcpDefs?.effective(orgId) ?? this.mcpServerDefs,
+      defs: (view) => {
+        const { orgId, agentId } = parseMcpView(view)
+        return this.cpMcpDefs?.effective(orgId, agentId) ?? this.mcpServerDefs
+      },
       // A daemon-local server is one server every organization shares; only a CP-pushed one is
       // that organization's alone. Keying them the same way would dial a local server once per
       // org and hide the warmed one from every session that did not warm it.
-      orgScoped: (orgId, name) => this.cpMcpDefs?.isOrgScoped(orgId, name) === true,
+      scopeOf: (view, name) => this.cpMcpDefs?.scopeOf(view, name),
       log: this.log,
       version: DAEMON_VERSION,
       resolveStdioCommand: (command, entries) =>
@@ -6264,7 +6268,7 @@ export class Daemon {
         }
         // Read cached Apps descriptors without dialing; their tools use the bridge, never a second runtime connection.
         const enabledApps = agent.mcpServers.filter((name) => name !== ADMIN_MCP_SERVER_NAME)
-        if (!narrowed) tools.push(...this.appsHost.cachedToolsFor(this.orgForAgent(agent.id), enabledApps))
+        if (!narrowed) tools.push(...this.appsHost.cachedToolsFor(this.mcpViewFor(agent.id), enabledApps))
         // Computer use (computer-use.md §5.2): only for an agent that enabled it, on a runtime that shows the model images.
         const computers = !narrowed && !isGettingToKnowCoordinate(thread) && this.offersComputerTools(agent)
         if (computers) tools.push(...COMPUTER_TOOLS)
@@ -6302,7 +6306,7 @@ export class Daemon {
               enabled: agent.mcpServers,
               defs: this.mcpDefsForAgent(agent.id),
               caps: this.runtimeFacts.mcpCapabilities(agent.runtime),
-              hostsUiServer: (name) => this.appsHost.isUiServer(this.orgForAgent(agent.id), name),
+              hostsUiServer: (name) => this.appsHost.isUiServer(this.mcpViewFor(agent.id), name),
               session: { channel, thread, key: sessionKey },
               warn: (warning) => warnings.push(warning)
             })
@@ -10530,6 +10534,8 @@ export class Daemon {
       KNOWLEDGE_RECORD_FEATURE,
       MEMORY_PERSON_LAYER_FEATURE,
       MEMORY_PLACE_CLEAR_FEATURE,
+      // Layers agent-scoped MCP definitions over its organization's (mcp-tool-permissions.md §7.1).
+      MCP_AGENT_DEFS_V1_FEATURE,
       ...(this.dreamOperationsAllowed() ? [ORGANIZATION_SUGGESTION_REVIEW_FEATURE] : []),
       SESSION_VISIBILITY_FEATURE,
       SLACK_SESSION_AUDIENCE_FEATURE,
@@ -27035,7 +27041,7 @@ export class Daemon {
     const orgId = this.orgForAgent(ctx.agentId)
     if (!split) return undefined
     const host = this.appsHost
-    const scope = orgId
+    const scope = this.mcpViewFor(ctx.agentId)
     if (!host?.isUiServer(scope, split.server)) return undefined
     const call = await host.call(scope, split.server, split.tool, args)
     if (!call.card) {
@@ -27220,7 +27226,7 @@ export class Daemon {
       this.appSurface.answer(reply ?? app.stream, appId, callId, outcome)
     try {
       const host = this.appsHost
-      const scope = app.orgId
+      const scope = mcpView(app.orgId, app.agentId)
       // Native forms use Console APIs, never MCP tool or resource RPCs.
       if (app.native && rpc.method !== 'ui/message') {
         answer({ ok: false, error: 'This configuration only accepts completion messages' })
@@ -35059,8 +35065,13 @@ export class Daemon {
     return this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId)
   }
 
+  /** The view an agent's MCP definitions and Apps host connections resolve in. */
+  private mcpViewFor(agentId: string): string | undefined {
+    return mcpView(this.orgForAgent(agentId), agentId)
+  }
+
   private mcpDefsForAgent(agentId: string): Record<string, import('./config/config-schema.js').McpServerDef> {
-    return this.cpMcpDefs?.effective(this.orgForAgent(agentId)) ?? this.mcpServerDefs
+    return this.cpMcpDefs?.effective(this.orgForAgent(agentId), agentId) ?? this.mcpServerDefs
   }
 
   /**
@@ -35073,7 +35084,7 @@ export class Daemon {
     // A CP push is the only way a `ui: true` definition reaches this daemon, so it is also the
     // moment its connection can first be opened. Warming per known org keeps the dial off the path
     // of the next session's tool composition, which is synchronous.
-    for (const orgId of this.cpMcpDefs?.orgs() ?? []) this.appsHost.warm(orgId)
+    for (const view of this.cpMcpDefs?.views() ?? []) this.appsHost.warm(view)
   }
 
   private externalMemoryAdmission(agentId: string): { assertReady(connectionId: string): void } {
