@@ -47,9 +47,12 @@ export interface NightCollectionRefereeConfig {
   doctor: WebchatSeat
 }
 
+// The referee names the players, as a real one would; the arena has no control plane for a child to list them.
+const PLAYERS = NIGHT_ALIASES.filter((alias) => alias !== 'referee').join(', ')
+
 const instruction = (task: string, marker: string): string =>
-  `${task} Answer with a single line that starts exactly with \`${marker}\` — nothing before it. ` +
-  `Do not contact anyone else and do not post anywhere.`
+  `${task} The players are ${PLAYERS}. Answer with a single line that starts exactly with \`${marker}\` — ` +
+  `nothing before it. Do not contact anyone else and do not post anywhere.`
 
 /**
  * The deterministic referee brain. Wake-driven only (a model referee has no
