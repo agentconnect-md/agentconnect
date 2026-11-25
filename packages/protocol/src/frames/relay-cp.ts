@@ -11,7 +11,7 @@ import {
 } from '../code-host.js'
 import { COMPUTER_TURN_URLS_MAX, ComputerStunUrl, ComputerTurnUrl } from '../computer-viewer.js'
 import { ErrorFrame } from './error.js'
-import { BindMatch, ChannelBlockedBotSenders, IntegrationChannel } from './integration.js'
+import { BindMatch, ChannelBlockedBotSenders, ChannelBotSender, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
@@ -1373,6 +1373,14 @@ export const RcBotConversation = z.object({
 })
 export type RcBotConversation = z.infer<typeof RcBotConversation>
 
+// R→C EVT (fire-and-forget): another bot posted in a conversation of a shared bot. A lost report heals on that bot's next post.
+export const RcBotSender = z.object({
+  botId: z.string().uuid(),
+  channel: z.string().min(1),
+  sender: ChannelBotSender
+})
+export type RcBotSender = z.infer<typeof RcBotSender>
+
 // R→C EVT (fire-and-forget) — durable thread-affinity REPORT leg (§10 step 3, the
 // 3-leg affinity dance). The relay tells the CP which agent now owns a (channel,
 // thread) `sessionKey` the first time it routes that thread, and again on a
@@ -1657,6 +1665,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
   'rc/bot-conversation': RcBotConversation,
+  'rc/bot-sender': RcBotSender,
   'rc/bot-revoked': RcBotRevoked,
   'rc/bot-revoked/ok': RcBotRevokedOk,
   'rc/bot-credential-check': RcBotCredentialCheck,
@@ -1724,6 +1733,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
+  frameSchema('rc/bot-sender', RELAY_CP_SCHEMAS['rc/bot-sender']),
   frameSchema('rc/bot-revoked', RELAY_CP_SCHEMAS['rc/bot-revoked']),
   frameSchema('rc/bot-revoked/ok', RELAY_CP_SCHEMAS['rc/bot-revoked/ok']),
   frameSchema('rc/bot-credential-check', RELAY_CP_SCHEMAS['rc/bot-credential-check']),

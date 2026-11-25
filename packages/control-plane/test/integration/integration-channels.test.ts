@@ -35,7 +35,7 @@ import { PgDutyGroupRepo } from '../../src/persistence/repositories/duty-group.r
 import { systemClock } from '../../src/domain/clock.js'
 import { handleIntegrationChannels } from '../../src/ws/handlers/index.js'
 import { convergeIntegrationGating } from '../../src/orchestrator/integrationPush.js'
-import { IntegrationId } from '../../src/domain/ids.js'
+import { BotId, IntegrationId } from '../../src/domain/ids.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
@@ -2014,6 +2014,41 @@ describe('PATCH /integrations/:id/channels/:channelId — blocked bot senders', 
     const cleared = await running.app.inject({ method: 'PATCH', url, payload: { blockedBotSenders: [] } })
     expect(cleared.json()).toMatchObject({ trigger: 'any', blockedBotSenders: [] })
     expect(spy.upserts.at(-1)!.u.core!.blockedBotSenders).toEqual([])
+  })
+})
+
+describe('GET /integrations/:id/channels/:channelId/bot-senders', () => {
+  it('lists the bots seen in the conversation newest first, keeping a name an unnamed sighting does not carry', async () => {
+    await seedDaemon(prisma, DAEMON)
+    running = buildHttpApp(prisma)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'alerts' }])
+    const repo = new PgIntegrationChannelRepo(prisma)
+    const { botId } = (await prisma.integration.findUniqueOrThrow({ where: { id } })) as { botId: string }
+    const url = `${ORG}/integrations/${id}/channels/C1/bot-senders`
+
+    expect((await running.app.inject({ method: 'GET', url })).json()).toEqual([])
+
+    await repo.recordBotSender(BotId(botId), 'C1', { id: 'B1', name: 'Alert feed', avatarUrl: null })
+    await repo.recordBotSender(BotId(botId), 'C1', { id: 'B2', name: null, avatarUrl: null })
+    await repo.recordBotSender(BotId(botId), 'C2', { id: 'B3', name: 'Elsewhere', avatarUrl: null })
+    await repo.recordBotSender(BotId(botId), 'C1', {
+      id: 'B1',
+      name: null,
+      avatarUrl: 'https://img.example.test/g.png'
+    })
+
+    const res = await running.app.inject({ method: 'GET', url })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([
+      { id: 'B1', name: 'Alert feed', avatarUrl: 'https://img.example.test/g.png' },
+      { id: 'B2', name: null, avatarUrl: null }
+    ])
+    const missing = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/integrations/${randomUUID()}/channels/C1/bot-senders`
+    })
+    expect(missing.statusCode).toBe(404)
   })
 })
 

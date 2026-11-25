@@ -1099,6 +1099,7 @@ export interface IntegrationChannelDto {
   decisionBinding?: import('@agentconnect.md/protocol').ChannelDecisionBinding | null
   decision?: ChannelDecisionView | null
   sessionMode: ChannelSessionMode
+  blockedBotSenders?: string[] // platform bot ids whose posts activate no agent here
   agentId: string | null // effective shared-conversation owner; null before convergence / when not applicable
 }
 
@@ -1113,9 +1114,17 @@ export interface ChannelDecisionView {
 }
 
 /** One conversation PATCH: a By decision trigger always travels with its complete gate. */
-export type IntegrationChannelPatch =
+export type IntegrationChannelPatch = { blockedBotSenders?: string[] } & (
   | { trigger?: ChannelTrigger; decisionBinding?: never; sessionMode?: ChannelSessionMode; agentId?: string }
   | { trigger: 'decision'; decisionBinding: ChannelDecisionGate; sessionMode?: ChannelSessionMode; agentId?: string }
+)
+
+/** A bot seen posting in a conversation: its platform id, and the name and avatar the platform gave. */
+export interface ChannelBotSenderDto {
+  id: string
+  name: string | null
+  avatarUrl: string | null
+}
 
 // `/integrations` list/create row — control-plane metadata only, NEVER tokens.
 export interface IntegrationDto {
@@ -5748,6 +5757,17 @@ export async function updateIntegrationChannel(
   return apiPatch<IntegrationChannelDto>(
     `${orgBase(orgId)}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}`,
     patch
+  )
+}
+
+/** The other bots seen posting in a conversation, newest first. */
+export async function listChannelBotSenders(
+  integrationId: string,
+  channelId: string,
+  orgId?: string
+): Promise<ChannelBotSenderDto[]> {
+  return apiGet<ChannelBotSenderDto[]>(
+    `${orgBase(orgId)}/integrations/${encodeURIComponent(integrationId)}/channels/${encodeURIComponent(channelId)}/bot-senders`
   )
 }
 

@@ -52,6 +52,7 @@ import {
   type IntegrationChannels,
   type IntegrationRevoked,
   type IntegrationTenant,
+  type IntegrationBotSender,
   type IntegrationRevokedOk,
   type IntegrationRoomGrant,
   type IntegrationRoomGrantOk,
@@ -185,6 +186,7 @@ import {
   WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
+  BOT_SENDERS_V1_FEATURE,
   ROOM_GRANT_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   KNOWLEDGE_RECORD_FEATURE,
@@ -1136,6 +1138,16 @@ export class CpClient {
     this.transport?.send(
       encode(this.scopedFrame('integration/channels', snapshot, this.deps.orgForIntegration?.(snapshot.integrationId)))
     )
+  }
+
+  /** D→C `integration/bot-sender` EVT; false when it was not sent (not ready, or a CP not advertising {@link BOT_SENDERS_V1_FEATURE}). */
+  emitIntegrationBotSender(payload: IntegrationBotSender): boolean {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return false
+    if (!this.supportsServerFeature(BOT_SENDERS_V1_FEATURE) || !this.transport) return false
+    this.transport.send(
+      encode(this.scopedFrame('integration/bot-sender', payload, this.deps.orgForIntegration?.(payload.integrationId)))
+    )
+    return true
   }
 
   /** D→C `integration/tenant` EVT; false when it was not sent (not ready, or a CP not advertising {@link INTEGRATION_TENANT_FEATURE}). */

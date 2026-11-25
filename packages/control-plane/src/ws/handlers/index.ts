@@ -37,6 +37,7 @@ import { handleDaemonRuntimes } from './daemon-runtimes.js'
 import { handleMemoryConnections } from './memory-connections.js'
 import { handleUsageReport } from './usage-report.js'
 import { handleIntegrationChannels } from './integration-channels.js'
+import { handleIntegrationBotSender } from './integration-bot-sender.js'
 import { handleIntegrationRevoked } from './integration-revoked.js'
 import { handleIntegrationTenant } from './integration-tenant.js'
 import { handleIntegrationRoomGrant } from './integration-room-grant.js'
@@ -122,6 +123,7 @@ export class FrameRouter {
       'facts/memory-connections': handleMemoryConnections,
       'usage/report': handleUsageReport,
       'integration/channels': handleIntegrationChannels,
+      'integration/bot-sender': handleIntegrationBotSender,
       'integration/revoked': handleIntegrationRevoked,
       'integration/tenant': handleIntegrationTenant,
       'integration/room-grant': handleIntegrationRoomGrant,
@@ -217,6 +219,7 @@ export {
   handleMemoryConnections,
   handleUsageReport,
   handleIntegrationChannels,
+  handleIntegrationBotSender,
   handleIntegrationRevoked,
   handleIntegrationTenant,
   handleIntegrationRoomGrant,

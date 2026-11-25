@@ -40,6 +40,7 @@ import type {
   RdMsgIm,
   RcBotChannels,
   RcBotConversation,
+  RcBotSender,
   RcBotCredentialCheck,
   RcBotRevoked,
   RcBotTenant,
@@ -151,6 +152,8 @@ export interface RelayIngressManagerDeps {
   /** Report one observed direct conversation to the CP (→ `rc/bot-conversation`).
    *  Best-effort: loss self-heals on the counterpart's next DM. */
   reportBotConversation: (m: RcBotConversation) => boolean
+  /** Report another bot seen posting in a conversation (→ `rc/bot-sender`); false when it was not sent. Absent ⇒ never reported. */
+  reportBotSender?: (m: RcBotSender) => boolean
   /** Report a workspace uninstall / token revocation (→ `rc/bot-revoked`) so the CP
    *  marks the Bot + its installs revoked. Returns `false` when the CP link wasn't
    *  READY, so the manager can retry on reconnect ({@link
@@ -206,6 +209,9 @@ interface RelayPlatformEntry {
   pool: IngressPool<RelayBotIngress>
   demux: DemuxIndex
 }
+
+/** How many reported bot senders the manager remembers before it forgets them all and reports afresh. */
+const MAX_BOT_SENDER_LATCHES = 5000
 
 export class RelayIngressManager {
   private readonly router = new BotArbitrationRouter()
@@ -387,6 +393,8 @@ export class RelayIngressManager {
   /** Per-conversation direct-report latch (`botId:channel`) — scoped to the CURRENT
    *  bot assignment. Rows belong to the installs of that moment. */
   private readonly observedConversationsReported = new Set<string>()
+  // Bot senders already reported, by bot, conversation, sender and name, so a renamed bot reports again.
+  private readonly botSendersReported = new Set<string>()
 
   private clearConversationReportLatches(botId: string): void {
     const prefix = `${botId}:`
@@ -1329,6 +1337,8 @@ export class RelayIngressManager {
     }
     const sessionKey = sessionKeyOf(msg)
     const assignment = this.router.get(botId)
+    // Before any rung can drop it: a blocked sender is still one the console must be able to name.
+    if (msg.sender.isBot && msg.sender.id !== assignment?.botUserId) this.reportBotSender(botId, msg)
     const hasGatedMembers = (assignment?.gatedAgentIds?.length ?? 0) > 0
     // Direct-conversation discovery must NOT depend on arbitration: every install
     // needs its own visible trigger row, whether the message routes or not.
@@ -1576,6 +1586,20 @@ export class RelayIngressManager {
    * re-reports harmlessly). Channel rows need no report here — membership snapshots
    * already carry them, and neither of these kinds appears in one.
    */
+  private reportBotSender(botId: string, msg: WireNormalizedMessage): void {
+    const { id, name, avatarUrl } = msg.sender
+    const latch = `${botId}:${msg.channel}:${id}:${name ?? ''}`
+    if (this.botSendersReported.has(latch)) return
+    const sent = this.deps.reportBotSender?.({
+      botId,
+      channel: msg.channel,
+      sender: { id, ...(name ? { name } : {}), ...(avatarUrl ? { avatarUrl } : {}) }
+    })
+    if (!sent) return
+    if (this.botSendersReported.size >= MAX_BOT_SENDER_LATCHES) this.botSendersReported.clear()
+    this.botSendersReported.add(latch)
+  }
+
   private async reportObservedConversation(botId: string, msg: WireNormalizedMessage): Promise<void> {
     const latch = `${botId}:${msg.channel}`
     if (this.observedConversationsReported.has(latch)) return

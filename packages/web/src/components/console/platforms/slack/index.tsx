@@ -54,6 +54,7 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     dmSessionModes: ['createNew', 'append'],
     // A group DM is a small private room, with a room's modes.
     groupDmSessionModes: ['createNew', 'append', 'auto'],
+    otherBotPosts: true,
     // The web client opens any conversation kind under the bot's workspace.
     conversationUrl: ({ channelId, workspaceId }) =>
       workspaceId

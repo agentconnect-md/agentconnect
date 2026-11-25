@@ -39,6 +39,8 @@ import { SelfAgentTag } from '@/components/console/SelfAgentTag'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 import { autoSessionModeSupported } from '@/lib/session-mode'
+import { listChannelBotSenders } from '@/lib/api'
+import { IgnoredBotsInput } from '@/components/console/IgnoredBotsInput'
 import type { WebChannelListMessage } from '@/components/console/platforms/contract'
 
 type ChannelListTranslator = (key: string, values?: Record<string, string | number>) => string
@@ -83,8 +85,11 @@ function RowSettings({
   coordinatorOff = false,
   routed = false,
   onTrigger,
-  onSessionMode
+  onSessionMode,
+  ignoredBots
 }: {
+  /** The conversation's ignored-bots control, where its platform routes other bots' posts. */
+  ignoredBots?: ReactNode
   /** The row's By decision pill owns the trigger (its × leaves it), so only the session mode stays here. */
   gateOwnsTrigger?: boolean
   /** The agent is in assistant mode: a place that can hold one session keeps it (assistant-mode.md §5.2). */
@@ -240,7 +245,13 @@ function RowSettings({
           <Icon name="zap" size={14} color="var(--text-tertiary)" />
         </span>
       )}
-      <ChannelSettingsPopover groups={groups} name={rowLabel(channel)} disabled={disabled} />
+      <ChannelSettingsPopover
+        groups={groups}
+        name={rowLabel(channel)}
+        disabled={disabled}
+        // An Off conversation answers no one, so there is no bot to single out.
+        extra={off ? undefined : ignoredBots}
+      />
     </span>
   )
 }
@@ -851,6 +862,7 @@ export function IntegrationChannelList({
   const channels = useDisplayRows(storedChannels, platform)
   const {
     setChannelSessionMode,
+    setChannelBlockedBotSenders,
     setChannelAgent,
     forgetChannel,
     leaveConversation,
@@ -1086,6 +1098,15 @@ export function IntegrationChannelList({
                 routed={shareable && managedByRouting(c)}
                 onTrigger={(next) => pickTrigger(c, next)}
                 onSessionMode={(mode) => setChannelSessionMode(integrationId!, c.channelId, mode)}
+                ignoredBots={
+                  integrationId && c.kind !== 'im' && channelListSemantics(platform).otherBotPosts ? (
+                    <IgnoredBotsInput
+                      blocked={c.blockedBotSenders ?? []}
+                      load={() => listChannelBotSenders(integrationId, c.channelId)}
+                      onChange={(next) => setChannelBlockedBotSenders(integrationId, c.channelId, next)}
+                    />
+                  ) : undefined
+                }
               />
             )}
             {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the

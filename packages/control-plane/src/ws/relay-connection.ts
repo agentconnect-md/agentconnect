@@ -31,6 +31,7 @@ import type {
   RcRunReport,
   RcBotChannels,
   RcBotConversation,
+  RcBotSender,
   RcBotRevoked,
   RcBotCredentialCheck,
   RcBotTenant,
@@ -51,6 +52,7 @@ import {
   fragmentFrame,
   BOT_CREDENTIAL_CHECK_FEATURE,
   BOT_TENANT_FEATURE,
+  BOT_SENDERS_V1_FEATURE,
   COMPUTER_MEDIA_USAGE_FEATURE,
   RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
   WEBCHAT_ACCESS_RECHECK_FEATURE,
@@ -96,6 +98,8 @@ export interface RelayConnDeps {
   /** Apply an incremental direct-conversation report (resource-visibility §14.3):
    *  fan a visibility-defaulted row across the bot's installs. Fire-and-forget. */
   onBotConversation: (m: RcBotConversation) => Promise<void>
+  /** Remember a bot seen posting in a shared bot's conversation. Fire-and-forget. */
+  onBotSender?: (m: RcBotSender) => Promise<void>
   /** Record a DELIVERED §14.3 DM gating notice and re-stamp the pool's latch.
    *  Fire-and-forget. */
   /** Apply a workspace uninstall / token revocation (`rc/bot-revoked`): mark the
@@ -232,6 +236,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/bot-conversation':
           await this.deps.onBotConversation(frame.payload)
           return
+        case 'rc/bot-sender':
+          await this.deps.onBotSender?.(frame.payload)
+          return
         case 'rc/bot-revoked':
           await this.handleBotRevoked(frame, frame.payload)
           return
@@ -290,6 +297,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/set-channel-agent' ||
           type === 'rc/bot-channels' ||
           type === 'rc/bot-conversation' ||
+          type === 'rc/bot-sender' ||
           type === 'rc/bot-revoked' ||
           type === 'rc/bot-credential-check' ||
           type === 'rc/bot-tenant' ||
@@ -355,6 +363,7 @@ export class RelayConnection implements RelayChannel {
         FOLLOW_UP_WATCH_FEATURE,
         BOT_CREDENTIAL_CHECK_FEATURE,
         BOT_TENANT_FEATURE,
+        ...(this.deps.onBotSender ? [BOT_SENDERS_V1_FEATURE] : []),
         // Frames its MCP, hook and memory replays as snapshots, so the relay prunes instead of clearing.
         RELAY_PROJECTION_SNAPSHOT_V1_FEATURE,
         ...(this.deps.verifyWebchatAccess ? [WEBCHAT_ACCESS_RECHECK_FEATURE] : []),

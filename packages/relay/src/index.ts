@@ -259,6 +259,7 @@ async function main(): Promise<void> {
     setChannelAgent: (botId, channelId, agentId) => client.emitSetChannelAgent({ botId, channelId, agentId }),
     reportBotChannels: (m) => client.emitBotChannels(m),
     reportBotConversation: (m) => client.emitBotConversation(m),
+    reportBotSender: (m) => client.emitBotSender(m),
     reportBotRevoked: (m) => client.reportBotRevoked(m),
     reportBotCredentialCheck: (m) => client.reportBotCredentialCheck(m),
     credentialCheckSupported: () => client.advertisedFeature(BOT_CREDENTIAL_CHECK_FEATURE),

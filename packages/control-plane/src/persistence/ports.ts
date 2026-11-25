@@ -6902,6 +6902,16 @@ export function isDirectConversationKind(kind: ConversationKind | undefined): bo
 }
 
 /** One conversation the integration's bot participates in, as reported by the daemon. */
+/** How many seen bot senders one conversation keeps. */
+export const BOT_SENDERS_PER_CHANNEL = 50
+
+/** A bot seen posting in a conversation: its platform id with the name and avatar last reported. */
+export interface ChannelBotSenderRecord {
+  id: string
+  name: string | null
+  avatarUrl: string | null
+}
+
 export interface IntegrationChannelRecord {
   integrationId: IntegrationId
   channelId: string
@@ -7047,6 +7057,10 @@ export interface IntegrationChannelRepo {
     channelId: string,
     sessionMode: ChannelSessionMode
   ): Promise<IntegrationChannelRecord | null>
+  /** Remember a bot that posted in one of `botId`'s conversations, refreshing its name and avatar; the newest {@link BOT_SENDERS_PER_CHANNEL} are kept. */
+  recordBotSender(botId: BotId, channelId: string, sender: ChannelBotSenderRecord): Promise<void>
+  /** The bots seen posting in the conversation, newest first. */
+  listBotSenders(botId: BotId, channelId: string): Promise<ChannelBotSenderRecord[]>
   /** Replace the conversation's blocked bot senders; returns null when the row doesn't exist. */
   setBlockedBotSenders(
     integrationId: IntegrationId,

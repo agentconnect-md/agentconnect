@@ -52,6 +52,7 @@ import type {
   IntegrationStatus,
   IntegrationChannelRepo,
   IntegrationChannelRecord,
+  ChannelBotSenderRecord,
   IntegrationChannelNameRecord,
   ConversationCoordinate,
   ReportedChannel,
@@ -70,6 +71,7 @@ import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { openConversationSessionMode, openConversationTrigger } from '../../domain/conversation-defaults.js'
+import { BOT_SENDERS_PER_CHANNEL } from '../ports.js'
 
 // The bot row plus its joined creator and current installs (for `agentIds` /
 // `inUseByAgentId`). A shareable bot fans out to many active integrations, so we
@@ -1394,6 +1396,40 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       select: { trigger: true }
     })
     return row !== null && row.trigger !== 'off'
+  }
+
+  async recordBotSender(botId: BotId, channelId: string, sender: ChannelBotSenderRecord): Promise<void> {
+    const data = { name: sender.name, avatarUrl: sender.avatarUrl }
+    await this.db.botChannelSender.upsert({
+      where: { botId_channelId_senderId: { botId, channelId, senderId: sender.id } },
+      create: { botId, channelId, senderId: sender.id, ...data },
+      // An unnamed sighting keeps the name an earlier one gave.
+      update: {
+        ...(sender.name !== null ? { name: sender.name } : {}),
+        ...(sender.avatarUrl !== null ? { avatarUrl: sender.avatarUrl } : {}),
+        updatedAt: new Date()
+      }
+    })
+    const stale = await this.db.botChannelSender.findMany({
+      where: { botId, channelId },
+      orderBy: { updatedAt: 'desc' },
+      skip: BOT_SENDERS_PER_CHANNEL,
+      select: { senderId: true }
+    })
+    if (stale.length > 0) {
+      await this.db.botChannelSender.deleteMany({
+        where: { botId, channelId, senderId: { in: stale.map((row) => row.senderId) } }
+      })
+    }
+  }
+
+  async listBotSenders(botId: BotId, channelId: string): Promise<ChannelBotSenderRecord[]> {
+    const rows = await this.db.botChannelSender.findMany({
+      where: { botId, channelId },
+      orderBy: { updatedAt: 'desc' },
+      take: BOT_SENDERS_PER_CHANNEL
+    })
+    return rows.map((row) => ({ id: row.senderId, name: row.name, avatarUrl: row.avatarUrl }))
   }
 
   async setBlockedBotSenders(

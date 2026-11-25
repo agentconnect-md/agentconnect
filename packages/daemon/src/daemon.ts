@@ -17156,6 +17156,27 @@ export class Daemon {
     )
   }
 
+  // Bot senders already reported, by integration, conversation, sender and name, so a renamed bot reports again.
+  private readonly botSendersReported = new Set<string>()
+
+  /** Tell the CP another bot posted here, once per name, so the console can name a blocked or blockable sender. */
+  private reportBotSender(msg: NormalizedMessage, srcIntegrationIds?: readonly string[]): void {
+    // One connection is one bot, so its first integration speaks for it.
+    const integrationId = srcIntegrationIds?.[0]
+    if (!integrationId || msg.source !== 'user') return
+    const { id, name, avatarUrl } = msg.sender
+    const latch = `${integrationId}:${msg.channel}:${id}:${name ?? ''}`
+    if (this.botSendersReported.has(latch)) return
+    const sent = this.cpClient?.emitIntegrationBotSender({
+      integrationId,
+      channel: msg.channel,
+      sender: { id, ...(name ? { name } : {}), ...(avatarUrl ? { avatarUrl } : {}) }
+    })
+    if (!sent) return
+    if (this.botSendersReported.size >= 5000) this.botSendersReported.clear()
+    this.botSendersReported.add(latch)
+  }
+
   /**
    * The full platform ingress ladder — suppression, per-connection dedup, thread
    * canonicalization, command interception, trigger routing, gating — returning
@@ -17168,6 +17189,7 @@ export class Daemon {
     srcIntegrationIds?: string[]
   ): Promise<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const agentAuthored = this.isAgentBotMessage(msg)
+    if (msg.sender.isBot && !agentAuthored) this.reportBotSender(msg, srcIntegrationIds)
     await this.observedChannelsSync.clearRetractionOnTraffic(msg, srcIntegrationIds)
     msg.transportScope ??= this.transportScopeForIntegrationIds(srcIntegrationIds)
     const ingressConnection = srcIntegrationIds?.map((id) => this.anyConnForIntegration(id)).find(Boolean)

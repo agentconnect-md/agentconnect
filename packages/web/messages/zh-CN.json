@@ -1999,6 +1999,12 @@
     "groupDm": "群组私信",
     "directMessage": "私信",
     "channelList": {
+      "ignoredBots": {
+        "label": "忽略的机器人",
+        "placeholder": "添加机器人",
+        "remove": "移除 {name}",
+        "addId": "添加 <code>{id}</code>"
+      },
       "nouns": {
         "channel": "频道",
         "channelPlural": "频道",

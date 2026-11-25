@@ -2967,6 +2967,7 @@ model Bot {
   decisionRouting BotDecisionRouting?
   // Places its platform found external; they outlive every integration (resource-visibility.md §14.9).
   externalPlaces BotExternalPlace[]
+  channelSenders BotChannelSender[]
 
   // One Bot per external app identity per platform — the relay demux fence, and
   // cross-org global because a workspace binds to exactly one org. A row that
@@ -3195,6 +3196,21 @@ model IntegrationChannel {
   @@index([agentId])
   @@index([decisionId])
   @@map("integration_channel")
+}
+
+// A bot that posted in one of this bot's conversations: what the console names a blocked or blockable sender by. Control metadata, never message content.
+model BotChannelSender {
+  botId     String   @db.Uuid
+  channelId String
+  senderId  String
+  name      String?
+  avatarUrl String?
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@id([botId, channelId, senderId])
+  @@map("bot_channel_sender")
 }
 
 // A place the bot's platform detected external, kept per bot so a later integration of the bot seeds it Off (resource-visibility.md §14.9).

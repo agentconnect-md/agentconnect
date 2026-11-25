@@ -2096,6 +2096,14 @@ export const SlackAppFinalizeBody = z.object({
   shareable: z.boolean().optional() // http multi-agent opt-in; coerced off for socket
 })
 
+/** A bot seen posting in a conversation: its platform id, and the name and avatar the platform gave. */
+export const ChannelBotSenderDto = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  avatarUrl: z.string().nullable()
+})
+export const ChannelBotSenderListDto = z.array(ChannelBotSenderDto)
+
 /** `PATCH /integrations/:id/channels/:channelId` — per-conversation trigger
  *  ('off' disables the conversation, §14) and/or the shared-bot default agent.
  *  At least one field; an active shared channel always has an owner. */

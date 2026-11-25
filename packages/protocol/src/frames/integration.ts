@@ -485,6 +485,22 @@ export const IntegrationChannels = z.object({
 })
 export type IntegrationChannels = z.infer<typeof IntegrationChannels>
 
+// A bot that posted in a conversation: its platform id with the name and avatar the platform gave. Control metadata, never message content.
+export const ChannelBotSender = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(120).optional(),
+  avatarUrl: z.string().url().max(2048).optional()
+})
+export type ChannelBotSender = z.infer<typeof ChannelBotSender>
+
+// D→C EVT (fire-and-forget): a direct integration saw another bot post in a conversation. A lost report heals on that bot's next post.
+export const IntegrationBotSender = z.object({
+  integrationId: z.string().uuid(),
+  channel: z.string().min(1),
+  sender: ChannelBotSender
+})
+export type IntegrationBotSender = z.infer<typeof IntegrationBotSender>
+
 /**
  * What a leave targets. Platforms disagree about what a bot can withdraw from, and
  * the difference is not cosmetic — so the caller has to say which it means rather
