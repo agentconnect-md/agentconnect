@@ -36,7 +36,8 @@ function effectBoundary(reach?: TaskReach): { deps: OpsDeps; touched: string[] }
         key === 'computerTool' ||
         key === 'log' ||
         key === 'then' ||
-        key === 'taskReach'
+        key === 'taskReach' ||
+        key === 'resolveAgentRef'
       )
         return undefined
       touched.push(String(key))
@@ -468,6 +469,81 @@ describe('callAgent', () => {
       deps
     )
     expect(calls[0]).toMatchObject({ toAgentId: 'peer-1', needsReply: true, postless: true })
+  })
+})
+
+describe('callAgent with an agent name in toAgent', () => {
+  const resolveAgentRef = (_caller: string, ref: string) =>
+    ref === 'release-helper'
+      ? { agentId: 'peer-1' }
+      : ref === 'me'
+        ? { agentId: 'agent-self' }
+        : ref === 'twin'
+          ? {
+              ambiguous: [
+                { agentId: 'twin-1', name: 'twin-one' },
+                { agentId: 'twin-2', name: 'twin-two' }
+              ]
+            }
+          : ref === 'peer-1'
+            ? { agentId: 'peer-1' }
+            : { unknown: true as const }
+
+  it('wakes the named agent by its id, keeping needsReply', async () => {
+    const { deps, calls } = wakeDeps()
+    const named = { ...deps, resolveAgentRef } as OpsDeps
+    await executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'release-helper', message: 'm' }, named)
+    await executeTool(
+      ctx,
+      'sendMessage',
+      { action: 'callAgent', toAgent: { agentId: 'release-helper', needsReply: true }, message: 'm' },
+      named
+    )
+    await executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'peer-1', message: 'm' }, named)
+    expect(calls.map((c) => [c.toAgentId, c.needsReply])).toEqual([
+      ['peer-1', undefined],
+      ['peer-1', true],
+      ['peer-1', undefined]
+    ])
+  })
+
+  it('applies the self-call rule to the caller’s own name', async () => {
+    const { deps, calls } = wakeDeps()
+    const text = await executeTool(ctx, 'sendMessage', { action: 'callAgent', toAgent: 'me', message: 'm' }, {
+      ...deps,
+      resolveAgentRef
+    } as OpsDeps).then(
+      () => '',
+      (err: Error) => err.message
+    )
+    expect(text).toContain('action `callAgent` with your own agent id needs `channel`')
+    expect(calls).toEqual([])
+  })
+
+  it('refuses an unknown or ambiguous name before any effect, never as a policy refusal', async () => {
+    for (const [toAgent, problem] of [
+      ['release-bot', '"release-bot" is neither the id nor the name of an agent you can call'],
+      ['twin', '"twin" names more than one agent you can call: twin-one (twin-1), twin-two (twin-2)']
+    ] as const) {
+      const { deps, calls } = wakeDeps()
+      const preflightWake = vi.fn(() => 'not_allowed')
+      const error = (await executeTool(
+        ctx,
+        'sendMessage',
+        { action: 'callAgent', toAgent, channel: 'C_OTHER', message: 'the private body' },
+        { ...deps, resolveAgentRef, preflightWake } as OpsDeps
+      ).then(
+        () => undefined,
+        (err: Error) => err
+      )) as Error | undefined
+      expect(error?.message).toContain(`action \`callAgent\` takes \`toAgent\` as an agent id, and ${problem}.`)
+      expect(error?.message).toContain('Nothing was sent and no agent was woken')
+      expect(error?.message).toContain('Call listAgents for the agents you can call and their ids')
+      expect(error?.message).not.toContain('not_allowed')
+      expect(error?.message).not.toContain('the private body')
+      expect(calls).toEqual([])
+      expect(preflightWake).not.toHaveBeenCalled()
+    }
   })
 })
 
