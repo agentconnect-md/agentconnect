@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
-import { createSessionReader, previewAppBody } from '../src/cp/session-reader.js'
+import { createSessionReader, previewAppBody, projectSessionRows } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 import { TranscriptRecorder } from '../src/session/transcript-recorder.js'
 import { canonicalPostId } from '../src/messages/post-id.js'
@@ -190,6 +190,40 @@ describe('SessionReader', () => {
     expect(bare.channelName).toBeUndefined()
     expect(bare.triggeredBy).toBeUndefined()
     expect(bare.triggeredByName).toBeUndefined()
+    await s.close()
+  })
+
+  it("projects one session from its own row exactly as the agent's list shows it", async () => {
+    const s = await store()
+    const row = (channel: string, over: Record<string, unknown>) => ({
+      key: sessionKey('slack', channel, 'T', AGENT),
+      agentId: AGENT,
+      platform: 'slack',
+      channel,
+      thread: 'T',
+      state: 'idle' as const,
+      lastDeliveredTs: null,
+      updatedAt: 1,
+      ...over
+    })
+    await s.upsertSession(row('C1', { acpSessionId: 'acp-1', sessionId: 'sid-1', updatedAt: 3 }))
+    // A row from before the outward id: listed, and looked up, under its ACP id.
+    await s.upsertSession(row('C2', { acpSessionId: 'acp-legacy', updatedAt: 2 }))
+    await (s as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): Promise<unknown> } } }).db
+      .prepare('UPDATE sessions SET sessionId = NULL WHERE key = ?')
+      .run(sessionKey('slack', 'C2', 'T', AGENT))
+    // No runtime yet: the list leaves it out, so the one-row read does too.
+    await s.upsertSession(row('C3', { acpSessionId: null, sessionId: 'sid-3' }))
+    await s.upsertSession({ ...row('C4', { acpSessionId: 'acp-4', sessionId: 'sid-4' }), agentId: OTHER_AGENT })
+    await s.setSessionTitle(sessionKey('slack', 'C1', 'T', AGENT), 'Roll back the deploy')
+
+    const { sessions } = await createSessionReader(s).list({ agentId: AGENT })
+    for (const id of ['sid-1', 'acp-legacy']) {
+      const one = await projectSessionRows(s, [(await s.getListedSession(AGENT, id))!])
+      expect(one).toEqual([sessions.find((x) => x.sessionId === id)])
+    }
+    expect(await s.getListedSession(AGENT, 'sid-3')).toBeUndefined()
+    expect(await s.getListedSession(AGENT, 'sid-4')).toBeUndefined()
     await s.close()
   })
 

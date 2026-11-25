@@ -18,7 +18,7 @@ import type { LoadedAgent } from '../agents/load-agents.js'
 import { pinnedDecisionTarget } from '../decisions/model-selection.js'
 import { chatSettingsAllowed } from '../agents/chat-actions.js'
 import type { CpClient } from '../cp/client.js'
-import { createSessionReader } from '../cp/session-reader.js'
+import { projectSessionRows } from '../cp/session-reader.js'
 import {
   SESSION_METADATA_DEFER_MS,
   SESSION_METADATA_FAILURES_BEFORE_DEFER,
@@ -89,9 +89,11 @@ export class SessionMetadataOutbox {
   }
 
   async sessionListProjection(sessionId: string, agentId: string): Promise<SessionListItem | undefined> {
-    return (
-      await createSessionReader(this.host.store(), (session) => this.host.sessionThreadUrl(session)).list({ agentId })
-    ).sessions.find((s) => s.sessionId === sessionId)
+    // The one row the console list shows under this id: listing the agent's whole history to keep one item read every
+    // session it ever had, on every status change.
+    const row = await this.host.store().getListedSession(agentId, sessionId)
+    if (!row) return undefined
+    return (await projectSessionRows(this.host.store(), [row], (session) => this.host.sessionThreadUrl(session)))[0]
   }
 
   /**
