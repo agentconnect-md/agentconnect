@@ -1413,6 +1413,21 @@ export class PgSessionRepo implements SessionRepo {
     return this.hydrate(perAgent)
   }
 
+  async markRead(userId: string, sessionIds: SessionId[], at: Date): Promise<void> {
+    if (sessionIds.length === 0) return
+    await this.db.$executeRaw`
+      INSERT INTO "session_read_state" ("userId", "sessionId", "readAt")
+      SELECT ${userId}, id, ${at} FROM unnest(${sessionIds}::text[]) AS id
+      ON CONFLICT ("userId", "sessionId")
+      DO UPDATE SET "readAt" = GREATEST("session_read_state"."readAt", EXCLUDED."readAt")`
+  }
+
+  async readAtFor(userId: string, sessionIds: string[]): Promise<Map<string, Date>> {
+    if (sessionIds.length === 0) return new Map()
+    const rows = await this.db.sessionReadState.findMany({ where: { userId, sessionId: { in: sessionIds } } })
+    return new Map(rows.map((row) => [row.sessionId, row.readAt]))
+  }
+
   async orgHasAny(orgId: OrgId): Promise<boolean> {
     const row = await this.db.sessionMeta.findFirst({ where: { orgId }, select: { id: true } })
     return row !== null

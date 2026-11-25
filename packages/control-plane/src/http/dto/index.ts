@@ -3956,7 +3956,9 @@ export const SessionDto = z.object({
    *  that remains, and the console marks the row instead of offering a replay. */
   contentPurgedAt: z.string().nullable(),
   /** Live wait state from `agent/activity` (slack-approval-dm.md §7); `awaiting_permission` feeds the console bell. */
-  activityState: ActivityStateEnum
+  activityState: ActivityStateEnum,
+  /** A webchat session with activity after the caller last had it open; absent means read. */
+  unread: z.boolean().optional()
 })
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({
@@ -4140,6 +4142,9 @@ export const SessionDetailDto = z.object({
   startedAt: z.string(), // ISO-8601
   endedAt: z.string().nullable()
 })
+
+/** `PUT /sessions/read-state`: the sessions the caller has open now. */
+export const MarkSessionsReadBody = z.object({ sessionIds: z.array(z.string().min(1)).min(1).max(50) }).strict()
 
 /** `PUT /sessions/:id/visibility` (session-visibility.md §4.3). */
 export const SetSessionVisibilityBody = z.object({ visibility: MutableSessionVisibilityEnum }).strict()

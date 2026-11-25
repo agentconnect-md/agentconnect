@@ -2266,6 +2266,10 @@ export interface SessionRepo {
    *  (no visibility predicate), safe to return to any org member: it reveals nothing
    *  about sessions the caller can't see. Drives the getting-started conversation step. */
   orgHasAny(orgId: OrgId): Promise<boolean>
+  /** Move a member's read watermark on these sessions up to `at`; it never moves back. The caller has already checked the member may view them. */
+  markRead(userId: string, sessionIds: SessionId[], at: Date): Promise<void>
+  /** A member's read watermarks among `sessionIds`; a session they never opened has none. */
+  readAtFor(userId: string, sessionIds: string[]): Promise<Map<string, Date>>
   /** The most recently active session of one agent, org-fenced. For the shared-checkout PR link: an
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */

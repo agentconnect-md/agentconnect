@@ -736,6 +736,7 @@
       "imageTooLarge": "Image too large to preview or download here ({size})."
     },
     "list": {
+      "unread": "Unread",
       "allAgents": "All agents",
       "allIntegrations": "All integrations",
       "allChannels": "All channels",
@@ -1777,6 +1778,7 @@
       "allSessions": "All sessions",
       "scopeMine": "My chats",
       "scopeAll": "All",
+      "unread": "Unread",
       "noSessions": "No sessions yet. Ask an agent above to start one.",
       "agentsTitle": "Agents you use",
       "allAgents": "All agents",

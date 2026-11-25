@@ -736,6 +736,7 @@
       "imageTooLarge": "图片过大（{size}），无法在此预览或下载。"
     },
     "list": {
+      "unread": "未读",
       "allAgents": "所有 Agent",
       "allIntegrations": "所有集成",
       "allChannels": "所有频道",
@@ -1777,6 +1778,7 @@
       "allSessions": "全部会话",
       "scopeMine": "我的对话",
       "scopeAll": "全部",
+      "unread": "未读",
       "noSessions": "暂无会话，在上方给 Agent 发条消息即可开始。",
       "agentsTitle": "常用 Agent",
       "allAgents": "全部 Agent",

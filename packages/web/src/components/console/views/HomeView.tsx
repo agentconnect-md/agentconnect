@@ -21,6 +21,7 @@ import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { useConsoleData } from '@/lib/data-context'
 import { useSessionList } from '@/lib/use-session-list'
+import { unreadFirst } from '@/lib/use-mark-sessions-read'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
 import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
@@ -519,11 +520,14 @@ export default function HomeView() {
     excludeDreams: true,
     ...(mine ? { platform: 'webchat', ...(me?.userId ? { triggeredBy: me.userId } : {}) } : {})
   })
+  // ponytail: unread floats within the loaded page only; an `unread` list filter on the CP if one ever hides past row 50.
   const recentSessions = useMemo(
     () =>
-      MOCK_MODE
-        ? allSessions.filter((s) => !s.subsession && s.platform !== 'dream' && (!mine || s.platform === 'webchat'))
-        : recentRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined)),
+      unreadFirst(
+        MOCK_MODE
+          ? allSessions.filter((s) => !s.subsession && s.platform !== 'dream' && (!mine || s.platform === 'webchat'))
+          : recentRows.map((s) => enrichSessionWithAgent(s, s.agentId ? getAgent(s.agentId) : undefined))
+      ),
     [allSessions, getAgent, mine, recentRows]
   )
 

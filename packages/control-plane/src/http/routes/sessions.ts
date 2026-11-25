@@ -95,6 +95,7 @@ import {
   SessionSandboxKeepAliveDto,
   type SessionPullRequestDtoT,
   SetSessionVisibilityBody,
+  MarkSessionsReadBody,
   SessionVisibilityDto,
   SetSessionExternalAccessBody,
   SessionExternalAccessDto
@@ -514,11 +515,14 @@ function sessionDto(
   hookMetadata: Map<string, HookSessionMetadata>,
   agentNames: ReadonlyMap<string, string>,
   channelNames: ReadonlyMap<string, string>,
-  triggerUsers: ReadonlyMap<string, string>
+  triggerUsers: ReadonlyMap<string, string>,
+  readAt?: ReadonlyMap<string, Date>
 ) {
   const hook = hookMetadataForSession(hookMetadata, s)
   const display = sessionDisplayMetadata(s, hook, channelNames)
   const triggeredByUserId = triggerUsers.get(s.id)
+  // Only webchat is read here; a channel session is read on its own platform, so it never counts as unread.
+  const seenAt = s.platform === 'webchat' ? readAt?.get(s.id) : undefined
   return {
     sessionId: s.id,
     sessionKey: {
@@ -551,7 +555,8 @@ function sessionDto(
     externalProvider: s.externalProvider,
     externalResolution: s.externalResolution,
     contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,
-    activityState: s.activityState
+    activityState: s.activityState,
+    ...(seenAt && s.lastActivityAt > seenAt ? { unread: true } : {})
   }
 }
 
@@ -716,6 +721,11 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     }
 
+    const readAtOf = (req: FastifyRequest, sessions: readonly { id: string; platform: string | null }[]) =>
+      deps.repos.session.readAtFor(
+        ctxOf(req).userId,
+        sessions.filter((session) => session.platform === 'webchat').map((session) => session.id)
+      )
     const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
       const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
       if (!session) return null
@@ -1132,15 +1142,16 @@ export function sessionRoutes(deps: HttpDeps) {
 
         if (!grouped) {
           const page = await deps.repos.session.listPage({ ...query, viewer })
-          const [hookMetadata, channelNames, triggerUsers] = await Promise.all([
+          const [hookMetadata, channelNames, triggerUsers, readAt] = await Promise.all([
             hookMetadataForSessions(deps, page.sessions, orgOf(req)),
             channelNamesForSessions(deps, page.sessions, orgOf(req)),
-            triggerUsersOf(req, page.sessions)
+            triggerUsersOf(req, page.sessions),
+            readAtOf(req, page.sessions)
           ])
           const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
           return {
             sessions: page.sessions.map((session) =>
-              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers)
+              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers, readAt)
             ),
             total: page.total,
             nextCursor,
@@ -1152,10 +1163,11 @@ export function sessionRoutes(deps: HttpDeps) {
 
         const page = await deps.repos.session.listConversationPage({ ...query, viewer })
         const allRows = page.conversations.flatMap((c) => c.sessions)
-        const [hookMetadata, channelNames, triggerUsers] = await Promise.all([
+        const [hookMetadata, channelNames, triggerUsers, readAt] = await Promise.all([
           hookMetadataForSessions(deps, allRows, orgOf(req)),
           channelNamesForSessions(deps, allRows, orgOf(req)),
-          triggerUsersOf(req, allRows)
+          triggerUsersOf(req, allRows),
+          readAtOf(req, allRows)
         ])
         // The grouped cursor is the last conversation's REPRESENTATIVE row —
         // emit-at-max makes resumption stateless (§5.2).
@@ -1168,7 +1180,7 @@ export function sessionRoutes(deps: HttpDeps) {
             channel: c.key.channel,
             thread: c.key.thread,
             sessions: c.sessions.map((session) =>
-              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers)
+              sessionDto(session, hookMetadata, agentNames, channelNames, triggerUsers, readAt)
             ),
             memberSessionIds: c.memberSessionIds
           })),
@@ -1178,6 +1190,37 @@ export function sessionRoutes(deps: HttpDeps) {
           accessIssues: access.accessIssues,
           ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
         }
+      }
+    )
+
+    r.put(
+      '/sessions/read-state',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Mark sessions read',
+          description:
+            'Records that the caller has these sessions open now: each one’s activity up to this moment is read for them, on every device, and later activity on a webchat session lists it with `unread: true`. Send the member sessions of the conversation on screen, again whenever it shows new activity and once more on leaving it. The mark never moves back, and ids the caller cannot view are skipped. Stores ids and a timestamp only.',
+          operationId: 'markSessionsRead',
+          body: MarkSessionsReadBody,
+          response: { 204: z.null() }
+        }
+      },
+      async (req, reply) => {
+        const rows = await Promise.all(
+          [...new Set(req.body.sessionIds)].map((id) => deps.repos.session.get(orgOf(req), SessionId(id)))
+        )
+        const sessions = rows.filter((row) => row !== null)
+        const access = await sessionAccess.forSessions(req, sessions)
+        const viewable = sessions.filter((session) =>
+          canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds)
+        )
+        await deps.repos.session.markRead(
+          ctxOf(req).userId,
+          viewable.map((session) => SessionId(session.id)),
+          new Date(deps.clock.now())
+        )
+        return reply.code(204).send(null)
       }
     )
 
