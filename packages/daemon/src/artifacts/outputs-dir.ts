@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { promises as nodeFs } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { sessionFileName } from '@agentconnect.md/protocol'
-import { DirHandle, UnsafePathError, withDescent } from '../shim/safe-descent.js'
+import { DirHandle, MissingPathError, UnsafePathError, withDescent } from '../shim/safe-descent.js'
 import { containedWorkspacePath, WorkspaceViolationError } from '../workspace/workspace-files.js'
 import { removeTree } from '../workspace/remove-tree.js'
 import type { SaveAttachmentTarget } from '../mcp/ops/save-attachment.js'
@@ -23,7 +23,9 @@ export async function replaceOutputsDir(
   fill: (put: ArtifactFilePut) => Promise<void>
 ): Promise<ReplaceOutputsResult> {
   const segments = [...target.segments, OUTPUTS]
-  const staging = `.${dirName}.fetch-${randomUUID().slice(0, 8)}`
+  const nonce = randomUUID().slice(0, 8)
+  const staging = `.${dirName}.fetch-${nonce}`
+  const backup = `.${dirName}.prev-${nonce}`
   const done: ReplaceOutputsResult = {
     ok: true,
     path: join(target.root, ...segments, dirName),
@@ -31,7 +33,7 @@ export async function replaceOutputsDir(
   }
   if (target.kind === 'pinned') {
     try {
-      await withDescent(target.root, segments, (outputs) => replacePinned(outputs, staging, dirName, fill), {
+      await withDescent(target.root, segments, (outputs) => replacePinned(outputs, staging, backup, dirName, fill), {
         createMissing: true
       })
       return done
@@ -64,8 +66,14 @@ export async function replaceOutputsDir(
       await fs.mkdir(dirname(file))
       await fs.writeFile(file, bytes)
     })
-    await fs.rmTree(join(outputs, dirName))
-    await fs.rename(stagingPath, join(outputs, dirName))
+    await swapIn(
+      {
+        exists: async (name) => (await fs.stat(join(outputs, name))) !== 'missing',
+        rename: (from, to) => fs.rename(join(outputs, from), join(outputs, to)),
+        remove: (name) => fs.rmTree(join(outputs, name))
+      },
+      { staging, backup, dirName }
+    )
     return done
   } catch (err) {
     await fs.rmTree(stagingPath).catch(() => undefined)
@@ -77,32 +85,69 @@ export async function replaceOutputsDir(
 async function replacePinned(
   outputs: DirHandle,
   staging: string,
+  backup: string,
   dirName: string,
   fill: (put: ArtifactFilePut) => Promise<void>
 ): Promise<void> {
   const stage = await outputs.childDirOrCreate(staging)
   try {
-    await fill(async (path, bytes) => {
-      const parts = path.split('/')
-      const leaf = parts.pop()!
-      const open: DirHandle[] = []
-      try {
-        let dir = stage
-        for (const part of parts) {
-          dir = await dir.childDirOrCreate(part)
-          open.push(dir)
+    try {
+      await fill(async (path, bytes) => {
+        const parts = path.split('/')
+        const leaf = parts.pop()!
+        const open: DirHandle[] = []
+        try {
+          let dir = stage
+          for (const part of parts) {
+            dir = await dir.childDirOrCreate(part)
+            open.push(dir)
+          }
+          await nodeFs.writeFile(dir.childPath(leaf), bytes, { flag: 'wx', mode: 0o600 })
+        } finally {
+          for (const handle of open.reverse()) await handle.close()
         }
-        await nodeFs.writeFile(dir.childPath(leaf), bytes, { flag: 'wx', mode: 0o600 })
-      } finally {
-        for (const handle of open.reverse()) await handle.close()
-      }
-    })
+      })
+    } finally {
+      await stage.close()
+    }
+    await swapIn(
+      {
+        exists: async (name) =>
+          await outputs.lstatChild(name).then(
+            () => true,
+            (err: unknown) => {
+              if (err instanceof MissingPathError) return false
+              throw err
+            }
+          ),
+        rename: (from, to) => nodeFs.rename(outputs.childPath(from), outputs.childPath(to)),
+        remove: (name) => removeTree(outputs.childPath(name))
+      },
+      { staging, backup, dirName }
+    )
   } catch (err) {
-    await stage.close()
     await removeTree(outputs.childPath(staging)).catch(() => undefined)
     throw err
   }
-  await stage.close()
-  await removeTree(outputs.childPath(dirName))
-  await nodeFs.rename(outputs.childPath(staging), outputs.childPath(dirName))
+}
+
+interface SwapOps {
+  exists(name: string): Promise<boolean>
+  rename(from: string, to: string): Promise<void>
+  remove(name: string): Promise<void>
+}
+
+/** Move the staged directory into place, keeping the earlier fetch as a backup until it is there; a failed move puts it back. */
+async function swapIn(ops: SwapOps, names: { staging: string; backup: string; dirName: string }): Promise<void> {
+  const { staging, backup, dirName } = names
+  const had = await ops.exists(dirName)
+  if (had) await ops.rename(dirName, backup)
+  try {
+    await ops.rename(staging, dirName)
+  } catch (err) {
+    // A failed restore leaves the backup in place, still recoverable, rather than deleting anything.
+    if (had) await ops.rename(backup, dirName).catch(() => undefined)
+    throw err
+  }
+  if (had) await ops.remove(backup).catch(() => undefined)
 }

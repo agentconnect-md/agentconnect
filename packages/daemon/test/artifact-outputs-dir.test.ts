@@ -84,6 +84,31 @@ describe.each(arms)('replaceOutputsDir (%s)', (_arm, targetFor) => {
   })
 })
 
+describe('replaceOutputsDir swap', () => {
+  it('puts the earlier fetch back when moving the new one into place fails', async () => {
+    const root = scratch()
+    const base: SaveAttachmentTarget = {
+      kind: 'workspace-fs',
+      fs: localWorkspaceFs,
+      root,
+      segments: ['files'],
+      canonicalDir: canonicalWorkspacePath
+    }
+    await replaceOutputsDir(base, 'r', async (put) => put('a.txt', Buffer.from('kept')))
+    // The channel drops on the install rename, after the earlier fetch was moved aside.
+    const fs = Object.create(localWorkspaceFs) as typeof localWorkspaceFs
+    fs.rename = async (from, to) => {
+      if (from.includes('.r.fetch-')) throw new Error('channel lost')
+      return localWorkspaceFs.rename(from, to)
+    }
+    await expect(
+      replaceOutputsDir({ ...base, fs }, 'r', async (put) => put('a.txt', Buffer.from('new')))
+    ).rejects.toThrow('channel lost')
+    expect(readFileSync(join(root, 'files', 'outputs', 'r', 'a.txt'), 'utf8')).toBe('kept')
+    expect(readdirSync(join(root, 'files', 'outputs'))).toEqual(['r'])
+  })
+})
+
 describe('putObjectBytes', () => {
   it('PUTs the body with exactly the signed headers and refuses a non-200 answer', async () => {
     const seen: { method?: string; headers: Record<string, unknown>; body: string }[] = []
