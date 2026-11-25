@@ -96,6 +96,7 @@ function fakeDeps(pageSessions: ReturnType<typeof pageRow>[] = []) {
         listPage,
         listConversationPage: vi.fn(async () => ({ conversations: [], total: 0, hasMore: false })),
         orgHasAny: vi.fn(async () => true),
+        unreadAmong: vi.fn(async () => new Set<string>()),
         listExternalScopes: vi.fn(async () => []),
         getExternalScopes: vi.fn(async () => []),
         getExternalAccessPolicy: vi.fn(async () => null)

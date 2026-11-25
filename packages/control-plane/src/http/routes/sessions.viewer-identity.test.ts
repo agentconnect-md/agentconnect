@@ -101,6 +101,7 @@ function fakeDeps(overrides: {
           return row.orgId === orgId ? row : null
         }),
         orgHasAny: vi.fn(async () => true),
+        unreadAmong: vi.fn(async () => new Set<string>()),
         listExternalScopes: vi.fn(async () => []),
         getExternalScopes: vi.fn(async () => []),
         getExternalAccessPolicy: vi.fn(async () => null),

@@ -71,6 +71,7 @@ function fakeDeps(sessions: ReturnType<typeof row>[]) {
         listFacets: vi.fn(async () => ({ agents: [], integrations: [], channels: [], triggers: [] })),
         listConversationPage: vi.fn(async () => ({ conversations: [], total: 0, hasMore: false })),
         orgHasAny: vi.fn(async () => true),
+        unreadAmong: vi.fn(async () => new Set<string>()),
         listExternalScopes: vi.fn(async () => []),
         getExternalScopes: vi.fn(async () => []),
         getExternalAccessPolicy: vi.fn(async () => null)
