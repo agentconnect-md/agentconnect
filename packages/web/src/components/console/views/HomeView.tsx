@@ -974,7 +974,6 @@ export default function HomeView() {
           rowClassName={DASH_ROW}
           className={aligned ? undefined : 'desktop:self-start'}
           lastReply
-          showChannel={!mine}
           tabs={
             <span className="pillbar -my-1 flex-none p-[2px]">
               <button

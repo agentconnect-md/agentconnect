@@ -107,7 +107,6 @@ export function RecentSessionsCard({
   limit = 6,
   className,
   showAgent = true,
-  showChannel = true,
   lastReply = false,
   tabs,
   rowClassName
@@ -121,8 +120,6 @@ export function RecentSessionsCard({
   className?: string
   /** Agent detail already scopes to one agent — hide the redundant icon+name there. */
   showAgent?: boolean
-  /** A list already scoped to one integration hides the mark every row would repeat. */
-  showChannel?: boolean
   /** Reads each row's last agent reply from its daemon and draws it on the second line. */
   lastReply?: boolean
   tabs?: ReactNode
@@ -206,7 +203,7 @@ export function RecentSessionsCard({
                       </span>
                     )}
                     {lastReply && <LastReply session={s} />}
-                    {showChannel && s.channel && (
+                    {s.channel && (
                       // Shrinkable on purpose (no `flex-none`): a long #channel or
                       // schedule name has to give way and ellipsize inside the row
                       // rather than run past it. `ml-auto` only spends space the row
