@@ -155,6 +155,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
 
     // Shared relay+daemon push (also used by the connectors create flow).
     const { pushAssign, pushUnassign } = makeMcpPush(deps)
+    // A relay can list the tools once it holds the binding; the outcome is recorded, never awaited here.
+    const refreshCatalog = (orgId: OrgId, providerId: string) => deps.mcpToolCatalog?.schedule(orgId, providerId)
 
     // Every LIVE publication resolves the injected credential the same way. Reading the static
     // header set would publish an oauth2 provider's binding with no Authorization at all —
@@ -320,6 +322,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         }
         if (created.provider.auth !== 'oauth2' && req.body.headers.length > 0)
           await headersSaved(orgOf(req), created.provider, ctxOf(req).userId)
+        if (created.provider.auth !== 'oauth2') refreshCatalog(orgOf(req), created.provider.id)
         return reply
           .code(201)
           .send({ ...toDto(created.provider, ctxOf(req), req.body.headers), grantKey: created.grant.key })
@@ -382,6 +385,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           if (grant) await pushAssign(provider, await upstreamFor(provider, orgOf(req))(), grant, orgOf(req))
         })
         if (req.body.headers !== undefined) await headersSaved(orgOf(req), provider, ctxOf(req).userId)
+        if (req.body.url !== undefined || req.body.headers !== undefined) refreshCatalog(orgOf(req), provider.id)
         return toDto(provider, ctxOf(req), headers)
       }
     )

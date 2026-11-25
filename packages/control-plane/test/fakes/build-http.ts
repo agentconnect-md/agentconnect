@@ -131,6 +131,7 @@ import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
 import { PlacementResolver } from '../../src/orchestrator/placementResolver.js'
 import { RelayRoster } from '../../src/orchestrator/relayRoster.js'
 import { RelayControlSender } from '../../src/orchestrator/relayControl.js'
+import { McpToolCatalogService } from '../../src/orchestrator/mcpToolCatalog.js'
 import { HttpBotOrchestrator } from '../../src/orchestrator/httpBot.js'
 import { CollabRoutesService } from '../../src/orchestrator/collabRoutes.service.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
@@ -728,6 +729,7 @@ export function buildHttpApp(
     agentDelivery,
     placementResolver,
     relayControl,
+    mcpToolCatalog: new McpToolCatalogService({ relays: relayReg, catalogs: new PgMcpToolCatalogRepo(prisma), clock }),
     relayRoster: new RelayRoster(new PgRelayRepo(prisma), sender, clock, configOverrides?.RELAY_STALE_MS ?? 0),
     httpBot: new HttpBotOrchestrator(
       botRepo,
@@ -1134,6 +1136,8 @@ export function buildHttpApp(
     linearCredentialReconciler,
     close: async () => {
       await app.close()
+      // A scheduled catalog refresh must not write into the next test's truncated database.
+      await deps.mcpToolCatalog?.settle()
     }
   }
 }

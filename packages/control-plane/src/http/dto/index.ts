@@ -87,7 +87,8 @@ import {
   TransferSha256,
   SessionFileArea,
   HOOK_INSTRUCTIONS_MAX,
-  AgentApiProtocol
+  AgentApiProtocol,
+  McpCatalogTool
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
@@ -1302,6 +1303,22 @@ export const AgentMcpToolPolicyDto = z.object({
   drift: z
     .object({ newTools: z.array(z.string()), changedTools: z.array(z.string()), missingTools: z.array(z.string()) })
     .nullable()
+})
+
+const McpToolGroupEnum = z.enum(['readOnly', 'write', 'other'])
+
+/** A provider's catalog snapshot (§4): each tool with the group a policy sorts it into, per-group counts, and the last failure. */
+export const McpToolCatalogDto = z.object({
+  tools: z.array(McpCatalogTool.extend({ group: McpToolGroupEnum })),
+  // Null until a fetch succeeds; a later failure keeps the previous tools and this time.
+  fetchedAt: z.string().nullable(),
+  // A closed code: the relay's (`unreachable`, `timeout`, …) or the CP's `relay_unavailable` / `relay_timeout`.
+  failure: z.string().nullable(),
+  groups: z.object({
+    readOnly: z.number().int().nonnegative(),
+    write: z.number().int().nonnegative(),
+    other: z.number().int().nonnegative()
+  })
 })
 
 /** Every policy of an agent, plus the peers that cannot enforce one yet (§8). */

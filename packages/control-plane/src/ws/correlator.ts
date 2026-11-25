@@ -1,28 +1,26 @@
-/**
- * `ReqRep` — request/reply correlation + retransmit (design §4.5, protocol §4.3).
- *
- * Holds an `id → pending` map for CP-issued REQs (`route/assign`,
- * `agent/launch`, `daemon/drain`, …). On timeout it retransmits the **same `id`**
- * up to `maxTries`, all driven by the injected `Clock` so retries are
- * deterministic in tests (advance the FakeClock by `ackTimeoutMs`). Whether a
- * retransmit is safe to apply twice is the receiving handler's concern, not
- * something this correlator guarantees. `settle(rep)` resolves on a correlated
- * REP and rejects with a {@link ProtocolError} on a correlated `error` frame.
- *
- * Phase 2 only needs `settle` wired (auth/register are CP REPLIES, not REQs);
- * the `request` path is exercised in Phase 3, but is implemented here so the
- * connection FSM routes REPs through one place.
- */
-import { encode, type AnyFrame } from '@agentconnect.md/protocol'
+// `ReqRep`: request/reply correlation with Clock-driven same-id retransmit (design §4.5, protocol §4.3).
+import type { AnyFrame, ErrorFrame } from '@agentconnect.md/protocol'
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import { ProtocolError } from '../domain/errors.js'
 
-interface Pending {
+/** The envelope fields correlation reads; both the daemon and the relay wire satisfy it. */
+export interface CorrelatedFrame {
+  id: string
+  type: string
+  corr?: string | undefined
+  orgId?: string | undefined
+  payload: unknown
+}
+
+/** The peer never answered within the request's tries; a {@link ProtocolError} so existing callers are unchanged. */
+export class RequestTimeout extends ProtocolError {}
+
+interface Pending<F> {
   id: string
   /** The REQ as issued — a correlated reply is fenced against its type and org (frame-scope). */
   request: { type: string; orgId?: string | undefined }
   encoded: string
-  resolve: (frame: AnyFrame) => void
+  resolve: (frame: F) => void
   reject: (err: unknown) => void
   tries: number
   maxTries: number
@@ -35,8 +33,8 @@ export interface RequestOpts {
   ackTimeoutMs?: number
 }
 
-export class ReqRep {
-  private pending = new Map<string, Pending>()
+export class ReqRep<F extends CorrelatedFrame = AnyFrame> {
+  private pending = new Map<string, Pending<F>>()
 
   constructor(
     private readonly clock: Clock,
@@ -44,15 +42,11 @@ export class ReqRep {
     private readonly maxTries = 5
   ) {}
 
-  /**
-   * Send a REQ envelope via `write` and await its correlated REP. Retransmits
-   * the identical bytes on each `ackTimeoutMs` lapse until a REP/error arrives
-   * or `maxTries` is exhausted (then rejects with INTERNAL).
-   */
-  request(frame: AnyFrame, write: (encoded: string) => void, opts: RequestOpts = {}): Promise<AnyFrame> {
-    const encoded = encode(frame)
-    return new Promise<AnyFrame>((resolve, reject) => {
-      const entry: Pending = {
+  /** Send a REQ via `write` and await its REP, resending the same bytes each `ackTimeoutMs` until `maxTries` (then {@link RequestTimeout}). */
+  request(frame: F, write: (encoded: string) => void, opts: RequestOpts = {}): Promise<F> {
+    const encoded = JSON.stringify(frame)
+    return new Promise<F>((resolve, reject) => {
+      const entry: Pending<F> = {
         id: frame.id,
         request: { type: frame.type, ...(frame.orgId ? { orgId: frame.orgId } : {}) },
         encoded,
@@ -67,12 +61,12 @@ export class ReqRep {
     })
   }
 
-  private arm(entry: Pending, write: (encoded: string) => void, ackTimeoutMs: number): void {
+  private arm(entry: Pending<F>, write: (encoded: string) => void, ackTimeoutMs: number): void {
     entry.timer = this.clock.setTimeout(() => {
       if (!this.pending.has(entry.id)) return
       if (entry.tries >= entry.maxTries) {
         this.pending.delete(entry.id)
-        entry.reject(new ProtocolError('INTERNAL', `no ack after ${entry.maxTries} tries for ${entry.id}`))
+        entry.reject(new RequestTimeout('INTERNAL', `no ack after ${entry.maxTries} tries for ${entry.id}`))
         return
       }
       entry.tries += 1
@@ -81,15 +75,11 @@ export class ReqRep {
     }, ackTimeoutMs)
   }
 
-  /**
-   * Settle the pending REQ a REP/error correlates to (`frame.corr` === REQ id).
-   * Returns true if it matched a pending entry (so the FSM knows not to dispatch
-   * it as a fresh inbound frame).
-   */
-  settle(frame: AnyFrame): boolean {
+  /** Settle the pending REQ a REP/error correlates to; true when one matched, so the FSM does not dispatch the frame. */
+  settle(frame: F): boolean {
     const corr = frame.corr
     if (!corr) return false
-    if (frame.type === 'error') return this.reject(corr, ProtocolError.fromFrame(frame.payload))
+    if (frame.type === 'error') return this.reject(corr, ProtocolError.fromFrame(frame.payload as ErrorFrame))
     const entry = this.pending.get(corr)
     if (!entry) return false
     this.pending.delete(corr)

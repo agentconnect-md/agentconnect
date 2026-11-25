@@ -92,6 +92,8 @@ async function seedWorld(app: HttpApp, name = 'docs') {
     payload: { name, url: 'https://mcp.example.test/mcp' }
   })
   expect(created.statusCode).toBe(201)
+  // The create's catalog refresh finds no relay that can answer, and must land before a test writes the snapshot.
+  await app.deps.mcpToolCatalog!.settle()
   return created.json() as { id: string; grantKey: string }
 }
 
@@ -287,6 +289,25 @@ describe('agent MCP tool policies — grant lifecycle', () => {
     expect((await app.app.inject({ method: 'DELETE', url: policyUrl(agentId, provider.id) })).statusCode).toBe(204)
     expect(control.specs.at(-1)).toEqual({ daemonId: OLDER, mcpServers: ['docs'] })
     expect(control.revisions.at(-1)).toBe(await stored())
+  })
+
+  it('a failed first fetch is no snapshot: the table is the overrides alone and drift is null', async () => {
+    const { app } = makeApp()
+    const provider = await seedWorld(app)
+    await seedDaemon(prisma, CAPABLE)
+    const agentId = await placedAgent(CAPABLE, ['docs'])
+    expect(await app.deps.repos.mcpToolCatalog.get(OrgId(DEFAULT_ORG_ID), provider.id)).toMatchObject({
+      tools: [],
+      fetchedAt: null,
+      failure: 'relay_unavailable'
+    })
+    const saved = await app.app.inject({
+      method: 'PUT',
+      url: policyUrl(agentId, provider.id),
+      payload: { ...READ_ONLY, overrides: { search: 'allow' } }
+    })
+    expect(saved.statusCode).toBe(200)
+    expect(saved.json()).toMatchObject({ allowTools: ['search'], catalogFetchedAt: null, drift: null })
   })
 
   it('DELETE restores the shared definition, removes the agent’s own, then revokes and unassigns its grant', async () => {

@@ -66,7 +66,13 @@ import type { Transport } from './transport.js'
 import type { RelayAuthService } from '../registry/relayAuthService.js'
 import type { RelayRepo } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
-import type { RelayChannel, RelayRegistry } from './relay-registry.js'
+import type { RelayChannel, RelayRegistry, RelayReplyOf, RelayRequestType } from './relay-registry.js'
+import { ReqRep, type RequestOpts } from './correlator.js'
+import { ConnectionClosed } from './registry.js'
+import { ProtocolError } from '../domain/errors.js'
+
+/** One try, past the relay's own 10-second catalog budget (mcp-tool-permissions.md §4). */
+export const RELAY_REQUEST_TIMEOUT_MS = 15_000
 
 type RelayState = 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'CLOSED'
 
@@ -168,11 +174,14 @@ export class RelayConnection implements RelayChannel {
   state: RelayState = 'AUTHENTICATING'
   relayId = ''
   features: readonly string[] = []
+  private readonly correlator: ReqRep<RelayCpFrame>
 
   constructor(
     private readonly transport: Transport,
     private readonly deps: RelayConnDeps
-  ) {}
+  ) {
+    this.correlator = new ReqRep<RelayCpFrame>(deps.clock, RELAY_REQUEST_TIMEOUT_MS, 1)
+  }
 
   /** Begin: wire transport callbacks (the gate opens at AUTHENTICATING). */
   start(): void {
@@ -187,10 +196,13 @@ export class RelayConnection implements RelayChannel {
   private async onText(text: string): Promise<void> {
     const decoded = decodeRelayCpFrame(text)
     if (!decoded.ok) {
+      // A malformed answer to a CP request fails that request instead of drawing an error frame.
+      if (decoded.corr && this.correlator.reject(decoded.corr, new ProtocolError('BAD_PAYLOAD', decoded.msg))) return
       this.sendError(decoded.id, this.decodeErrorCode(decoded.msg), decoded.msg)
       return
     }
     const frame = decoded.frame
+    if (this.settleReply(frame)) return
     if (!this.isLegalInState(frame.type)) {
       this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`)
       return
@@ -271,6 +283,21 @@ export class RelayConnection implements RelayChannel {
     } catch {
       if (this.state !== 'CLOSED') this.close(1011, 'SERVER_INTERNAL')
     }
+  }
+
+  /** Settle a READY relay's `<type>/ok` or `error` answering a pending CP request; an uncorrelated reply falls through to the state gate. */
+  private settleReply(frame: RelayCpFrame): boolean {
+    if (this.state !== 'READY' || !frame.corr) return false
+    const requested = this.correlator.requested(frame.corr)
+    if (!requested) return false
+    if (frame.type !== 'error' && frame.type !== `${requested.type}/ok`) {
+      this.correlator.reject(
+        frame.corr,
+        new ProtocolError('PROTOCOL_STATE', `${frame.type} does not answer ${requested.type}`)
+      )
+      return true
+    }
+    return this.correlator.settle(frame)
   }
 
   private isLegalInState(type: string): boolean {
@@ -614,6 +641,18 @@ export class RelayConnection implements RelayChannel {
     this.write(JSON.stringify(buildRelayCpFrame(type, payload, { corr: req.id })), type)
   }
 
+  /** {@link RelayChannel} — a correlated C→R request answered by `<type>/ok`; one try unless `opts` says otherwise. */
+  async request<T extends RelayRequestType>(
+    type: T,
+    payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>,
+    opts: RequestOpts = {}
+  ): Promise<RelayReplyOf<T>> {
+    if (this.state !== 'READY') throw new ProtocolError('PROTOCOL_STATE', `${type} needs a READY relay`)
+    const frame = buildRelayCpFrame(type, payload)
+    const rep = await this.correlator.request(frame, (text) => this.write(text, type), { maxTries: 1, ...opts })
+    return rep.payload as RelayReplyOf<T>
+  }
+
   /** {@link RelayChannel} — fire-and-forget C→R EVT (no corr), e.g. `rc/daemon-revoke`. */
   send<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): void {
     this.write(JSON.stringify(buildRelayCpFrame(type, payload)), type)
@@ -647,14 +686,14 @@ export class RelayConnection implements RelayChannel {
 
   close(code: number, reason: string): void {
     this.state = 'CLOSED'
+    this.correlator.rejectAll(new ConnectionClosed())
     this.transport.close(code, reason)
   }
 
   private onClose(): void {
     this.state = 'CLOSED'
-    // Drop from the registry only if still ours (a late close from a superseded old
-    // socket must not evict the live one). The durable `relay` row ages out of the
-    // roster via the sweeper (bounded failover window, §13).
+    this.correlator.rejectAll(new ConnectionClosed())
+    // Drop from the registry only if still ours; the durable `relay` row ages out via the sweeper (§13).
     if (this.relayId) {
       this.deps.relayReg.remove(this.relayId, this)
       this.deps.onRelayGone?.()

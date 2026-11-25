@@ -8091,11 +8091,11 @@ export interface AgentMcpToolPolicyRepo {
   delete(orgId: OrgId, agentId: string, providerId: string): Promise<boolean>
 }
 
-/** One provider's catalog snapshot (§4). `tools` is metadata, never content. */
+/** One provider's catalog snapshot (§4). `tools` is metadata, never content; `fetchedAt` is null until a fetch succeeds. */
 export interface McpToolCatalogRecord {
   mcpProviderId: string
   tools: McpCatalogTool[]
-  fetchedAt: Date
+  fetchedAt: Date | null
   failure: string | null
 }
 
@@ -8103,6 +8103,8 @@ export interface McpToolCatalogRecord {
 export interface McpToolCatalogRepo {
   get(orgId: OrgId, providerId: string): Promise<McpToolCatalogRecord | null>
   put(orgId: OrgId, providerId: string, snapshot: Omit<McpToolCatalogRecord, 'mcpProviderId'>): Promise<void>
+  /** Record a failed fetch, keeping any previous tools and `fetchedAt`. */
+  recordFailure(orgId: OrgId, providerId: string, failure: string): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

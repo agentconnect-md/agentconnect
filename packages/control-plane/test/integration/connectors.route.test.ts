@@ -4,7 +4,8 @@
  * assert the composed profile name, the open_connector provider row, org-unique 409,
  * and api-key rollback. Absent connectors ⇒ the routes 404.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { MCP_TOOL_POLICY_V1_FEATURE } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -360,6 +361,37 @@ describe('connectors routes', () => {
     const reconnectSave = saves[1]?.body as { connectionName: string; values: { apiKey: string } }
     expect(reconnectSave.connectionName).toBe(composeProfileName(DEFAULT_ORG_ID, DEFAULT_OWNER_ID, 'prod'))
     expect(reconnectSave.values.apiKey).toBe('sk_rotated')
+  })
+
+  it('fetches the tool catalog through a relay after an api-key connection is saved and re-saved', async () => {
+    const { client } = stubConnectors()
+    const app = appWith(client)
+    const request = vi.fn(async () => ({ tools: [{ name: 'list_charges', readOnlyHint: true, interactive: false }] }))
+    app.relayReg.add({
+      relayId: 'relay-catalog',
+      features: [MCP_TOOL_POLICY_V1_FEATURE],
+      send: () => {},
+      close: () => {},
+      request: request as never
+    })
+    const created = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections`,
+      payload: { service: 'stripe', connectionName: 'prod', authType: 'api_key', values: { apiKey: 'sk_x' } }
+    })
+    expect(created.statusCode).toBe(201)
+    const id = created.json().id as string
+    await app.deps.mcpToolCatalog!.settle()
+    expect(request).toHaveBeenCalledWith('rc/mcp-catalog', { providerId: id })
+    expect((await app.deps.repos.mcpToolCatalog.get(OrgId(DEFAULT_ORG_ID), id))?.tools).toHaveLength(1)
+
+    await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/connectors/connections/${id}/reconnect`,
+      payload: { authType: 'api_key', values: { apiKey: 'sk_rotated' } }
+    })
+    await app.deps.mcpToolCatalog!.settle()
+    expect(request).toHaveBeenCalledTimes(2)
   })
 
   it('reconnects a connection provisioned under the older profile scheme, using its stored alias', async () => {

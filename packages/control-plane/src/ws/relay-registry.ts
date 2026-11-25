@@ -10,6 +10,17 @@
  */
 import type { RelayCpFrameType, RELAY_CP_SCHEMAS } from '@agentconnect.md/protocol'
 import type { z } from 'zod'
+import type { RequestOpts } from './correlator.js'
+
+/** A C→R request type whose relay answers with `<type>/ok`. */
+export type RelayRequestType = {
+  [T in RelayCpFrameType]: `${T}/ok` extends RelayCpFrameType ? T : never
+}[RelayCpFrameType]
+
+/** The decoded `<type>/ok` payload answering a C→R request. */
+export type RelayReplyOf<T extends RelayRequestType> = z.infer<
+  (typeof RELAY_CP_SCHEMAS)[Extract<`${T}/ok`, RelayCpFrameType>]
+>
 
 /** The minimal channel the registry / revoke-sender holds — no `ws` knowledge. */
 export interface RelayChannel {
@@ -18,6 +29,12 @@ export interface RelayChannel {
   readonly features?: readonly string[]
   /** Fire-and-forget C→R EVT (e.g. `rc/daemon-revoke`). */
   send<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): void
+  /** Correlated C→R request; rejects on a relay `error`, a timeout, or the socket closing. Absent on test fakes. */
+  request?<T extends RelayRequestType>(
+    type: T,
+    payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>,
+    opts?: RequestOpts
+  ): Promise<RelayReplyOf<T>>
   close(code: number, reason: string): void
 }
 

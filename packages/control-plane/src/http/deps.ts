@@ -142,6 +142,7 @@ import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { AgentSpecAssembler } from '../orchestrator/agentSpecAssembler.js'
 import type { RelayControlSender } from '../orchestrator/relayControl.js'
+import type { McpToolCatalogService } from '../orchestrator/mcpToolCatalog.js'
 import type { HttpBotOrchestrator } from '../orchestrator/httpBot.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
@@ -227,6 +228,8 @@ export interface HttpDeps {
   extension?: import('../extension.js').ControlPlaneExtension
   /** Capability requests: the request page, its list, and the console's settle, decline, reopen and forward (capability-requests.md §4.5). */
   capabilityRequests?: CapabilityRequestService
+  /** Provider tool catalogs fetched through a relay (mcp-tool-permissions.md §4); absent, refresh answers 503. */
+  mcpToolCatalog?: McpToolCatalogService
   providerCredentialsChanged?: (orgId: OrgId, provider: ProviderKeyProvider) => void
   /** Secret-free startup snapshot served to the prebuilt browser image. */
   runtimeConfig: RuntimeConfigRouteDeps

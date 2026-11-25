@@ -364,6 +364,7 @@ import { replayMcpTo } from './orchestrator/mcpReplay.js'
 import { replaySnapshot } from './orchestrator/relaySnapshot.js'
 import { makeMcpPush } from './http/mcp-push.js'
 import { makeOauthRebind } from './http/provider-chain.js'
+import { McpToolCatalogService } from './orchestrator/mcpToolCatalog.js'
 import { McpProviderOauthService } from './mcp-oauth/service.js'
 import { McpProviderTokenService } from './mcp-oauth/token-service.js'
 import { McpOauthRefresher } from './mcp-oauth/refresher.js'
@@ -2780,8 +2781,16 @@ export function buildContainer(
       api: giteaApi
     }
   })
+  // Catalogs are fetched only through this process's relays: the CP never presents an upstream credential (§4).
+  const mcpToolCatalog = new McpToolCatalogService({
+    relays: relayReg,
+    catalogs: repos.mcpToolCatalog,
+    clock,
+    log: { warn: (o, m) => http.log.warn(o, m) }
+  })
   const httpDeps: HttpDeps = {
     capabilityRequests,
+    mcpToolCatalog,
     providerCredentialsChanged: (orgId, provider) => {
       for (const peer of connReg.reachableDaemons()) {
         if (!peer.capabilities?.features?.includes(PROVIDER_CREDENTIALS_V1_FEATURE)) continue
@@ -3027,6 +3036,7 @@ export function buildContainer(
     const provider = await repos.mcpProvider.get(orgId, providerId)
     if (!provider) return
     await mcpOauthRebind(orgId, providerId, provider.name)
+    mcpToolCatalog.schedule(orgId, providerId)
     // The relay binding is live, so a request waiting for this connection completes now (capability-requests.md §4.6).
     const userId = (await repos.mcpProviderOauth.get(orgId, providerId))?.connectedByUserId ?? null
     const profile = userId ? await repos.user.getProfile(userId).catch(() => null) : null
@@ -4574,6 +4584,7 @@ export function buildContainer(
         ...(sessionPullRequestFeedback ? [sessionPullRequestFeedback.settle()] : []),
         followUpWatch.settle(),
         capabilityRequests.settle(),
+        mcpToolCatalog.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()
