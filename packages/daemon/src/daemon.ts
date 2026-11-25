@@ -464,7 +464,7 @@ import {
   materializeConfigFiles
 } from './shim/config-file-env.js'
 import { DEFAULT_SHIM_RUNTIME_ROOT, shimPaths } from './shim/sandbox-paths.js'
-import type { CodehostSpawn, ProviderSpawn, SpawnFile } from './acp/spawn-driver.js'
+import type { CodehostSpawn, McpGrantSpawn, ProviderSpawn, SpawnFile } from './acp/spawn-driver.js'
 import { writeSecretsShim } from './cp/secrets-shim.js'
 import {
   AgentChannelServer,
@@ -533,6 +533,8 @@ import { ApprovalRecords } from './mcp/approval-records.js'
 import { claudeMcpRules, McpApprovalGate, type GateRuntime } from './mcp/approval-gate.js'
 import {
   grantKeyOf,
+  mcpGrantRouteRefusal,
+  mcpGrantShimOf,
   mcpGrantShimRefusal,
   placeholderHeaders,
   type McpGrantRoute
@@ -1942,8 +1944,8 @@ export class Daemon {
   private credentialProxy?: { proxy: CredentialProxy; ca: ProxyCa }
   /** Approvals of restricted MCP calls the credential proxy checks (mcp-tool-permissions.md §7.4); memory only. */
   private readonly mcpApprovals = new ApprovalRecords()
-  /** Hosts whose launch routes the relay through the credential proxy, so a restricted grant's placeholder can be exchanged. */
-  private readonly mcpGrantRoutedHosts = new Set<HostKey>()
+  /** Each host's route to the credential proxy for a restricted grant's placeholder: none refused, or why its launch has none (mcp-tool-permissions.md §8). */
+  private readonly mcpGrantHostRoutes = new Map<HostKey, { refusal: string | undefined }>()
   /** Each agent's provider key slots the credential proxy serves, by slot id; registered as a host, srt, VM or pool pod session launches. */
   private readonly providerSlots = new Map<string, Map<string, ProviderSlot>>()
   /** How each agent's host and install key slots read their key again on this machine, by slot id. */
@@ -4305,7 +4307,11 @@ export class Daemon {
       tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
       tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
       // A VM's sessions reach the credential proxy through its shim, which keeps microsandbox's own authority in their bundle at spawn.
-      extraTunnelsFor: (agentId) => [...this.codehostTunnelFor(agentId), ...this.providerTunnelFor(agentId)],
+      extraTunnelsFor: (agentId) => [
+        ...this.codehostTunnelFor(agentId),
+        ...this.providerTunnelFor(agentId),
+        ...this.mcpGrantTunnelFor(agentId)
+      ],
       tunnelListenOptions: (agentId, tunnel) => this.tunnelListenOptions(agentId, tunnel),
       log: this.log,
       clock: this.clock
@@ -4477,11 +4483,12 @@ export class Daemon {
           orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
           servesAgent: (agentId) => this.servesAgent(agentId),
           // Which daemon sockets this agent's pod needs (see tunnelsForAgent); an unknown id, the member's own probe, gets none.
-          // Plus `codehost` and `provider` for an agent the credential proxy serves them, which a pod image's shim from before each refuses.
+          // Plus `codehost`, `provider` and `mcp-grant` for an agent the credential proxy serves them, which a pod image's shim from before each refuses.
           tunnelsFor: (agentId) => [
             ...this.tunnelsForAgent(agentId),
             ...this.codehostTunnelFor(agentId),
-            ...this.providerTunnelFor(agentId)
+            ...this.providerTunnelFor(agentId),
+            ...this.mcpGrantTunnelFor(agentId)
           ],
           tunnelSocketPath: (tunnel, agentId) => this.tunnelSocketPath(root, tunnel, agentId),
           tunnelGreeting: (subject, tunnel) => this.agentTunnelGreeting(subject, tunnel),
@@ -6374,12 +6381,13 @@ export class Daemon {
               servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
             }
             // A placeholder works only where the host's launch routes the relay through the proxy.
-            const routed = this.mcpGrantRoutedHosts.has(this.hostKeyFor(agent.id, sessionKey))
+            const route = this.mcpGrantHostRoutes.get(this.hostKeyFor(agent.id, sessionKey))
+            const refusal = route
+              ? route.refusal
+              : 'its runtime started without a route to the credential proxy, and attaches it once it restarts'
             const attached = configuredServers.filter((server) => {
-              if (routed || !restricted.has(server.name)) return true
-              this.log.warn(
-                `mcp: server "${server.name}" is not attached to agent "${agent.id}": its runtime started without a route to the credential proxy, and attaches it once it restarts`
-              )
+              if (refusal === undefined || !restricted.has(server.name)) return true
+              this.log.warn(`mcp: server "${server.name}" is not attached to agent "${agent.id}": ${refusal}`)
               return false
             })
             servers.push(
@@ -7549,9 +7557,9 @@ export class Daemon {
     throw new Error(`the credential proxy holds no ${ask.provider} credential`)
   }
 
-  /** mcp-tool-permissions.md §5.6: a `daemon`-custody grant comes here only while the proxy keeps it from runtimes; a pool's pod shims carry no mcp-grant route yet. */
+  /** mcp-tool-permissions.md §5.6: a `daemon`-custody grant comes here only while the proxy keeps it from runtimes; a pool's pods reach it through their shims' mcp-grant tunnel. */
   private mcpApprovalsActive(): boolean {
-    return this.credentialProxy !== undefined && !this.k8s
+    return this.credentialProxy !== undefined
   }
 
   /** An agent's own MCP definitions whose grant only this daemon holds, with their decision tables. */
@@ -9141,14 +9149,25 @@ export class Daemon {
     return this.credentialProxy !== undefined && (this.providerSlots.get(agentId)?.size ?? 0) > 0
   }
 
-  /** A placed session's tunnels: the pod's two, `codehost` on its executor's host, srt or VM strategy and `provider` on host, for an agent the credential proxy serves them. */
+  /** `mcp-grant` for a known agent with a restricted MCP grant, which its pod's, VM's or executor's sessions reach the relay by (mcp-tool-permissions.md §7.2). */
+  private mcpGrantTunnelFor(agentId: string): TunnelName[] {
+    return this.agents.has(agentId) && this.credentialProxyMcpGrants(agentId) ? ['mcp-grant'] : []
+  }
+
+  /** Whether the proxy serves a restricted MCP grant of this agent. */
+  private credentialProxyMcpGrants(agentId: string): boolean {
+    return (this.credentialProxy?.proxy.mcpGrantTunnelRoutes(agentId).length ?? 0) > 0
+  }
+
+  /** A placed session's tunnels: the pod's two, `codehost` on its executor's host, srt or VM strategy, `provider` on host and `mcp-grant` on host or VM, for an agent the credential proxy serves them. */
   private tunnelsForPlaced(agentId: string, placed: PlacedSession | undefined): TunnelName[] {
     const helpers = this.tunnelsForAgent(agentId)
     if (helpers.length === 0 || !placed || !['host', 'srt', 'microsandbox'].includes(placed.strategy)) return helpers
     return [
       ...helpers,
       ...(this.credentialProxyCodeHosts(agentId) ? (['codehost'] as const) : []),
-      ...(placed.strategy === 'host' ? this.providerTunnelFor(agentId) : [])
+      ...(placed.strategy === 'host' ? this.providerTunnelFor(agentId) : []),
+      ...(placed.strategy === 'srt' ? [] : this.mcpGrantTunnelFor(agentId))
     ]
   }
 
@@ -9171,11 +9190,15 @@ export class Daemon {
       provider: (id) =>
         this.credentialProxy && this.credentialProxyProviders(id)
           ? this.credentialProxy.proxy.providerTunnelSocketFor(id)
+          : undefined,
+      mcpGrant: (id) =>
+        this.credentialProxy && this.credentialProxyMcpGrants(id)
+          ? this.credentialProxy.proxy.mcpGrantTunnelSocketFor(id)
           : undefined
     })
   }
 
-  /** What a `codehost` or `provider` listen carries: the agent's routes for it and the CA certificate alone, which the shim merges with its own machine's roots. */
+  /** What a proxy tunnel's listen carries: the agent's routes for it and the CA certificate alone, which the shim merges with its own machine's roots. */
   private tunnelListenOptions(agentId: string, tunnel: TunnelName): TunnelListenOptions | undefined {
     if (!this.credentialProxy) return undefined
     const proxy = this.credentialProxy.proxy
@@ -9184,7 +9207,9 @@ export class Daemon {
         ? proxy.tunnelRoutes(agentId)
         : tunnel === 'provider'
           ? proxy.providerTunnelRoutes(agentId)
-          : []
+          : tunnel === 'mcp-grant'
+            ? proxy.mcpGrantTunnelRoutes(agentId)
+            : []
     return routes.length > 0 ? { routes, ca: this.credentialProxy.ca.certPem } : undefined
   }
 
@@ -10021,6 +10046,19 @@ export class Daemon {
         : undefined
     // A VM (here or placed on an executor) or pool pod session gets the placeholder at spawn, only once its own shim reports a codehost listener.
     const hostedVm = remoteSession?.strategy === 'microsandbox'
+    // A pod, VM or executor host session reaches the relay through its shim's mcp-grant listener, switched at spawn once that shim serves one (§7.2, §8).
+    const mcpGrantShim =
+      this.credentialProxy !== undefined &&
+      !credentialless &&
+      !localProxyRoute &&
+      this.mcpGrantRoutes(agent.id).length > 0
+        ? mcpGrantShimOf({
+            strategy: opts.strategy,
+            k8s: this.k8sPlane !== undefined,
+            ...(remoteSession ? { placed: remoteSession } : {})
+          })
+        : undefined
+    const mcpGrantState = { refusal: mcpGrantShim && `${mcpGrantShim} has not reported its mcp-grant route` }
     const guestCodehost =
       (remoteSession ? hostedVm : micro || this.k8sPlane !== undefined) &&
       this.credentialProxy !== undefined &&
@@ -10189,6 +10227,7 @@ export class Daemon {
     if (launchFilesRoot !== undefined) configFileState = undefined
     // The variables a shim-routed launch swaps in for its real key once its shim serves a provider listener.
     const providerSpawn: Partial<ProviderSpawn> = {}
+    let mcpGrantSpawn: McpGrantSpawn | undefined
     let launchConfigFiles: { dir: string; files: SpawnFile[] } | undefined
     let cliStateDirs: string[] = []
     let cliStateFiles: SpawnFile[] = []
@@ -10342,6 +10381,16 @@ export class Daemon {
         const noProxy = this.credentialProxy.proxy.sessionNoProxy(agent.id, launch.env.NO_PROXY ?? launch.env.no_proxy)
         Object.assign(codehostSpawn.env, { NO_PROXY: noProxy, no_proxy: noProxy })
       }
+      if (
+        mcpGrantShim &&
+        this.credentialProxy &&
+        !mcpGrantShimRefusal({ strategy: opts.strategy, ...(remoteSession ? { placed: remoteSession } : {}) })
+      )
+        mcpGrantSpawn = {
+          noProxy: this.credentialProxy.proxy.sessionNoProxy(agent.id, launch.env.NO_PROXY ?? launch.env.no_proxy),
+          ...(hostedVm ? { guestTrust: true } : {}),
+          routed: (outcome) => (mcpGrantState.refusal = mcpGrantRouteRefusal(mcpGrantShim, outcome))
+        }
       // The grant is computed once per host and lives only in the child's argv; name it here so a
       // session that later fails a Git write can be matched against what its host was given.
       const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
@@ -10366,8 +10415,9 @@ export class Daemon {
     // still the memoized one before evicting anything.
     const constructed: { host?: AcpHost } = {}
     if (!credentialless) {
-      this.mcpGrantRoutedHosts.delete(opts.hostKey)
-      if (mcpGrantRoute) this.mcpGrantRoutedHosts.add(opts.hostKey)
+      this.mcpGrantHostRoutes.delete(opts.hostKey)
+      if (mcpGrantRoute) this.mcpGrantHostRoutes.set(opts.hostKey, { refusal: undefined })
+      else if (mcpGrantSpawn) this.mcpGrantHostRoutes.set(opts.hostKey, mcpGrantState)
     }
     // Reads the runtime's approvals of restricted MCP calls off ACP, unmasked, for the proxy to check (§7.3).
     const gateRuntime = this.gateRuntimeOf(runtimeEntry?.aliasOf ?? agent.runtime, launchRuntime)
@@ -10447,6 +10497,7 @@ export class Daemon {
       clearDirs: [...(launchConfigFiles ? [launchConfigFiles.dir] : []), ...cliStateDirs],
       ...(codehostSpawn ? { codehost: codehostSpawn } : {}),
       ...(providerSpawn.env ? { provider: { env: providerSpawn.env } } : {}),
+      ...(mcpGrantSpawn ? { mcpGrant: mcpGrantSpawn } : {}),
       inheritProcessEnv: launch.inheritProcessEnv,
       runtimeId: runtimeEntry?.aliasOf ?? agent.runtime,
       isolateAccountApps: cfg.security.isolateAccountApps,

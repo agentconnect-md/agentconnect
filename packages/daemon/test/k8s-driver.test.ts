@@ -1031,6 +1031,43 @@ describe('cluster spawn driver', () => {
     expect(acp.env.HTTPS_PROXY).toBeUndefined()
   })
 
+  // A restricted MCP grant's relay is routed through the pod shim's mcp-grant listener, and the outcome told to the daemon.
+  it("routes a launch's relay beside the pod shim's mcp-grant listener, and reports it routed", async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const listener = { port: 41_237, token: 'listener-token-example', trustBundle: '/run/agentconnect/proxy-trust.pem' }
+    const mcpGrantFor = vi.fn(async () => listener)
+    const routed = vi.fn()
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served), mcpGrantFor })
+    await instance.launch({
+      ...(launchRequest as object),
+      mcpGrant: { noProxy: 'localhost,127.0.0.1,::1', routed }
+    } as never)
+    expect(mcpGrantFor).toHaveBeenCalledWith('agent-a')
+    const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
+    expect(acp.env).toMatchObject({
+      HTTPS_PROXY: 'http://codehost:listener-token-example@127.0.0.1:41237',
+      NO_PROXY: 'localhost,127.0.0.1,::1,localhost,127.0.0.1,::1',
+      CODEX_CA_CERTIFICATE: listener.trustBundle
+    })
+    expect(routed).toHaveBeenCalledWith('routed')
+  })
+
+  it('reports a pod whose image shim serves no mcp-grant listener unserved, and asks for none without a grant', async () => {
+    const served: Array<{ capability: string; payload: unknown }> = []
+    const { api } = fakeApi()
+    const mcpGrantFor = vi.fn(async () => undefined)
+    const routed = vi.fn()
+    const { instance } = driver(api, { connectChannel: async () => answeringConnection(served), mcpGrantFor })
+    await instance.launch({ ...(launchRequest as object), mcpGrant: { noProxy: 'localhost', routed } } as never)
+    const acp = served.find((request) => request.capability === 'acp')!.payload as { env: Record<string, string> }
+    expect(acp.env.HTTPS_PROXY).toBeUndefined()
+    expect(routed).toHaveBeenCalledWith('unserved')
+    mcpGrantFor.mockClear()
+    await instance.launch(launchRequest)
+    expect(mcpGrantFor).not.toHaveBeenCalled()
+  })
+
   it('fails the launch when a file cannot be materialized, releasing the hold', async () => {
     const served: Array<{ capability: string; payload: unknown }> = []
     const { api } = fakeApi()

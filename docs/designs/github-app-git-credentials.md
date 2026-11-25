@@ -878,6 +878,11 @@ the proxy's CA certificate:
   tunnel's kind of placeholder and CONNECTs only to that tunnel's routes, so a
   code-host placeholder is refused on `provider` and a provider placeholder on
   `codehost`.
+- The `mcp-grant` tunnel of a restricted MCP grant's relay rides the same
+  listener in a pool pod, a VM and an executor's host or VM session, ends at
+  its own agent socket, and is served only by a shim that advertises
+  `mcp-grant-tunnel-v1` ([mcp-tool-permissions.md](mcp-tool-permissions.md) §7.2).
+  Its streams have no idle cut; the proxy caps a session's GET streams at four.
 - An `srt` session placed on an executor reaches the same tunnel through `srt`.
   Its `prepare` names the agent's code-host names, and the executor starts
   the boundary with `mitmProxy` routing them to a Unix socket in the shim's

@@ -29,6 +29,7 @@ import { ShimBundleClient } from '../src/shim/bundle-client.js'
 import { ShimServer } from '../src/shim/server.js'
 import type { GitExecPayload } from '../src/shim/git-exec.js'
 import type { ShimFeature } from '../src/shim/protocol.js'
+import { MCP_GRANT_TUNNEL_FEATURE } from '../src/shim/tunnel.js'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim, SandboxFence } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
@@ -384,6 +385,35 @@ describe('k8s runtime plane assembly', () => {
       expect(await plane.suspendIdle('agent-a')).toBe('suspended')
       expect(plane.servesTunnel!('agent-a', 'codehost')).toBe(false)
       await expect(runner.raw(['status'])).rejects.toMatchObject({ reason: 'sandbox-unavailable' })
+    }
+  )
+
+  it.each([true, false])(
+    'asks a pod for the mcp-grant tunnel only when its shim advertises it (advertised: %s)',
+    async (advertised) => {
+      const listener = { port: 41238, token: 'example-listener-token', trustBundle: '/pod/codehost-trust.pem' }
+      const plane = await planeUnderTest(fakeApi(), 15_000, undefined, {
+        tunnelsFor: () => ['mcp-grant'],
+        tunnelSocketPath: () => '/daemon/mcp-grant.sock',
+        tunnelListenOptions: () => ({ routes: ['relay.example.test:443'], ca: 'example certificate' })
+      })
+      const listens: unknown[] = []
+      const ensuring = plane.ensureChannel('agent-a')
+      shimAgainst(shimPort(plane), {
+        ...(advertised ? { features: [MCP_GRANT_TUNNEL_FEATURE] } : {}),
+        handle: async (capability, payload) => {
+          if (capability !== 'tunnel') throw new Error(`unexpected capability ${capability}`)
+          listens.push(payload)
+          return { socketPath: '127.0.0.1:41238', proxy: listener }
+        }
+      })
+      await ensuring
+      expect(plane.servesTunnel!('agent-a', 'mcp-grant')).toBe(advertised)
+      expect(listens).toEqual(
+        advertised
+          ? [expect.objectContaining({ op: 'listen', tunnel: 'mcp-grant', routes: ['relay.example.test:443'] })]
+          : []
+      )
     }
   )
 

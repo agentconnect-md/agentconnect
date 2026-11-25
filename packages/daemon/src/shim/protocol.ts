@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { TunnelNameSchema } from './tunnel.js'
+import { MCP_GRANT_TUNNEL_FEATURE, TunnelNameSchema } from './tunnel.js'
 
 /** WS subprotocol and path the daemon uses when dialing the sandbox shim. */
 export const SHIM_SUBPROTOCOL = 'agentconnect.shim.v1'
@@ -53,7 +53,7 @@ export const SHIM_STDIN_LIFELINE_ENV = 'AC_SHIM_STDIN_LIFELINE'
 /** Comma-separated: the code-host names an `srt` boundary routes to this shim's codehost socket, set by the executor that started it. */
 export const SHIM_CODEHOST_DOMAINS_ENV = 'AC_SHIM_CODEHOST_DOMAINS'
 
-/** `cluster-skills-v2` widens the manifest; `source-cache-bundle-v1` serves `bundle`; each `skill-git-*` feature serves its `skills-git*` grant. */
+/** `cluster-skills-v2` widens the manifest; `source-cache-bundle-v1` serves `bundle`; each `skill-git-*` feature serves its `skills-git*` grant; `mcp-grant-tunnel-v1` serves the `mcp-grant` tunnel. */
 export const ShimFeatureSchema = z.enum([
   'cluster-skills-v1',
   'cluster-skills-v2',
@@ -62,7 +62,8 @@ export const ShimFeatureSchema = z.enum([
   'skill-git-in-pod-v1',
   'skill-git-writeback-v1',
   'skill-git-gitlab-proxy-v1',
-  'workspace-transfer-v1'
+  'workspace-transfer-v1',
+  MCP_GRANT_TUNNEL_FEATURE
 ])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
 

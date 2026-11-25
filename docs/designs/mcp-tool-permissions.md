@@ -422,7 +422,10 @@ definition is delivered today.
   the provider and the relay origin. It joins the existing kinds, code-host tokens and
   provider API keys. The name keeps it apart from the proxy's existing `mcp` helper channel.
 - It rides the listeners and tunnels those kinds already use in every execution strategy.
-  Executor tunnels gain an `mcp-grant` scope.
+  A pool pod's, VM's or executor's shim gains an `mcp-grant` tunnel on its one loopback
+  listener, advertised as the shim feature `mcp-grant-tunnel-v1`, and the holder ends it at
+  an agent socket of the `mcp-grant` scope. An `srt` boundary on an executor routes only
+  code hosts to its shim, so such a session does not get the provider.
 - Only sessions of an agent with a `daemon` grant get a route for the relay origin. The
   proxy passes any request without its placeholder through unjudged, as it does for other
   hosts, so agents without a policy and unrestricted grants are unaffected.
@@ -555,7 +558,7 @@ Each mixed-version case fails closed:
 | Daemon without `mcp-agent-defs-v1`         | Drops the restricted provider from that agent's projected `AgentSpec.mcpServers`, so the shared definition is never attached to it            | The restricted agent loses the provider on that daemon                                                                                                                           |
 | Relay without `mcp-tool-approval-v1`       | Sends `approval` and `ask` names as Blocked                                                                                                   | Approval-gated tools are refused through that relay                                                                                                                              |
 | Daemon without `mcp-tool-approval-v1`      | Delivers the `runtime` grant, whose relay table has `approval` and `ask` names as Blocked (§5.6), and sends them as Blocked in the definition | Approval-gated tools are refused at the relay, even with a forged header                                                                                                         |
-| Runtime shim without the `mcp-grant` scope | Nothing; the daemon reads the shim's version                                                                                                  | The daemon attaches the provider to none of that shim's sessions and reports which shim needs an upgrade; a placeholder could not reach the proxy, and the key must not leave it |
+| Runtime shim without the `mcp-grant` scope | Nothing; the daemon reads the shim's advertised features                                                                                      | The daemon attaches the provider to none of that shim's sessions and reports which shim needs an upgrade; a placeholder could not reach the proxy, and the key must not leave it |
 
 `mcp-tool-approval-v1` belongs to stage 6 alone (§13), so the CP and the console can tell a
 peer that enforces allow and block from one that also handles approvals.

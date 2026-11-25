@@ -64,6 +64,8 @@ export interface K8sDriverDeps {
   codehostFor?: (subject: string) => CodehostListener | undefined
   /** The `provider` listener, asked for once the launch's slots are registered; a launch's provider env needs it. */
   providerFor?: (subject: string) => Promise<CodehostListener | undefined>
+  /** The `mcp-grant` listener, asked for at spawn; a restricted MCP grant is attached only beside it. */
+  mcpGrantFor?: (subject: string) => Promise<CodehostListener | undefined>
   clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** How long to wait for a pod to become Ready and its shim to bind. */
@@ -137,7 +139,8 @@ export class K8sDriver implements SpawnDriver {
       log: deps.log,
       metrics: this.metrics,
       ...(deps.codehostFor ? { codehostFor: deps.codehostFor } : {}),
-      ...(deps.providerFor ? { providerFor: deps.providerFor } : {})
+      ...(deps.providerFor ? { providerFor: deps.providerFor } : {}),
+      ...(deps.mcpGrantFor ? { mcpGrantFor: deps.mcpGrantFor } : {})
     })
   }
 

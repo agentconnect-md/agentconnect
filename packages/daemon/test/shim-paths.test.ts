@@ -30,7 +30,8 @@ describe('shimPaths', () => {
         agent: '/run/agentconnect/agent.sock',
         mcp: '/run/agentconnect/mcp.sock',
         codehost: '/run/agentconnect/codehost.sock',
-        provider: '/run/agentconnect/provider.sock'
+        provider: '/run/agentconnect/provider.sock',
+        'mcp-grant': '/run/agentconnect/mcp-grant.sock'
       }
     })
     expect(DEFAULT_SHIM_PATHS).toEqual(shimPaths())
@@ -45,14 +46,15 @@ describe('shimPaths', () => {
     const flat = (value: object): string[] =>
       Object.values(value).flatMap((entry) => (typeof entry === 'string' ? [entry] : flat(entry as object)))
     const all = flat(paths)
-    expect(all).toHaveLength(15)
+    expect(all).toHaveLength(16)
     expect(all.every((path) => path.startsWith('/tmp/rt/') || path.startsWith('/srv/helpers/'))).toBe(true)
     expect(all.some((path) => path.includes('/run/agentconnect') || path.includes('/opt/agentconnect'))).toBe(false)
     expect(paths.tunnels).toEqual({
       agent: '/tmp/rt/agent.sock',
       mcp: '/tmp/rt/mcp.sock',
       codehost: '/tmp/rt/codehost.sock',
-      provider: '/tmp/rt/provider.sock'
+      provider: '/tmp/rt/provider.sock',
+      'mcp-grant': '/tmp/rt/mcp-grant.sock'
     })
     expect(paths.gitConfigDir).toBe('/tmp/rt/git')
     expect(paths.configFilesDir).toBe('/tmp/rt/config-files')

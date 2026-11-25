@@ -244,18 +244,20 @@ describe('shim channel', () => {
 describe('tunnels', () => {
   it('names a closed set of sockets rather than allowing any path', () => {
     // One name per daemon server, each mapped to its fixed socket: `gh` shares agent.sock, and codehost and provider reach only the agent's own credential-proxy sockets.
-    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['agent', 'codehost', 'mcp', 'provider'])
+    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['agent', 'codehost', 'mcp', 'mcp-grant', 'provider'])
     expect(TunnelNameSchema.options.slice().sort()).toEqual(Object.keys(SANDBOX_TUNNEL_PATHS).sort())
     const sockets = {
       agent: '/d/agent.sock',
       mcp: '/d/mcp.sock',
       codehost: (agentId: string) => `/d/proxy-${agentId}.sock`,
-      provider: (agentId: string) => `/d/provider-${agentId}.sock`
+      provider: (agentId: string) => `/d/provider-${agentId}.sock`,
+      mcpGrant: (agentId: string) => `/d/mcp-grant-${agentId}.sock`
     }
     expect(daemonTunnelSocketPath('agent', 'a', sockets)).toBe('/d/agent.sock')
     expect(daemonTunnelSocketPath('mcp', 'a', sockets)).toBe('/d/mcp.sock')
     expect(daemonTunnelSocketPath('codehost', 'a', sockets)).toBe('/d/proxy-a.sock')
     expect(daemonTunnelSocketPath('provider', 'a', sockets)).toBe('/d/provider-a.sock')
+    expect(daemonTunnelSocketPath('mcp-grant', 'a', sockets)).toBe('/d/mcp-grant-a.sock')
     // A generic "tunnel any socket" grant would let a compromised runtime reach whatever
     // the daemon happens to be listening on.
     expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'anything' }).success).toBe(false)

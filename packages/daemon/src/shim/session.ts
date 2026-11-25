@@ -1,6 +1,6 @@
 import { ShimChannel, type ShimRequestOptions } from './channels.js'
 import type { ShimConnection } from './connection.js'
-import type { ShimCapability, ShimEvent } from './protocol.js'
+import type { ShimCapability, ShimEvent, ShimFeature } from './protocol.js'
 import { parseShimFrame } from './protocol.js'
 
 /**
@@ -138,6 +138,11 @@ export class ShimSession {
 
   hasCapability(capability: ShimCapability): boolean {
     return this.connection?.binding.grants.includes(capability) === true
+  }
+
+  /** Whether the attached connection's shim advertised `feature`. */
+  hasFeature(feature: ShimFeature): boolean {
+    return this.connection?.features?.includes(feature) === true
   }
 
   /** Whether the attached connection carries binary frames. */

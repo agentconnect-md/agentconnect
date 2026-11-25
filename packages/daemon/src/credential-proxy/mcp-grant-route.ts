@@ -1,5 +1,6 @@
 // A restricted MCP grant's route through the proxy (mcp-tool-permissions.md §7.2): its origin, and the judgment of each POST, ported from the relay's §6.2 check.
 import type { McpToolDecisions } from '@agentconnect.md/protocol'
+import type { McpGrantRouteOutcome } from '../acp/spawn-driver.js'
 import type { ApprovalSource } from '../mcp/approval-records.js'
 
 /** The header that tells the relay who approved a gated call; the proxy drops any a client sent. */
@@ -148,17 +149,32 @@ export async function judgeMcpGrantPost(
   return { kind: 'forward', body: JSON.stringify(parsed), ...(approval ? { approval } : {}), refused: [] }
 }
 
-/** Why a session's runtime cannot reach the proxy's mcp-grant route: a VM's or executor's shim tunnels carry no mcp-grant scope (§8). */
-export function mcpGrantShimRefusal(session: {
+/** Where a session's runtime runs, for the shim checks below. */
+interface GrantSession {
   strategy: string
+  k8s?: boolean
   placed?: { strategy: string; executorDaemonId: string }
-}): string | undefined {
-  const shim = session.placed
-    ? `the ${session.placed.strategy} shim of daemon ${session.placed.executorDaemonId}`
-    : session.strategy === 'microsandbox'
-      ? "its VM's shim"
-      : undefined
-  return shim && `${shim} does not carry the mcp-grant route; upgrade that shim to use this provider`
+}
+
+/** The shim a session reaches the proxy's mcp-grant route through, as a warning names it; undefined for a host or srt session here, which reaches the proxy itself. */
+export function mcpGrantShimOf(session: GrantSession): string | undefined {
+  if (session.placed) return `the ${session.placed.strategy} shim of daemon ${session.placed.executorDaemonId}`
+  if (session.k8s) return "its sandbox pod's shim"
+  return session.strategy === 'microsandbox' ? "its VM's shim" : undefined
+}
+
+/** Why a session can never reach the mcp-grant route: an srt boundary on an executor routes only code hosts to its shim (§8); every other shim is asked at spawn. */
+export function mcpGrantShimRefusal(session: GrantSession): string | undefined {
+  if (!session.placed || ['host', 'microsandbox'].includes(session.placed.strategy)) return undefined
+  return `${mcpGrantShimOf(session)} does not carry the mcp-grant route for a session there`
+}
+
+/** Why a shim-routed launch has no relay route once its shim answered; undefined when it has one (§8). */
+export function mcpGrantRouteRefusal(shim: string, outcome: McpGrantRouteOutcome): string | undefined {
+  if (outcome === 'routed') return undefined
+  return outcome === 'unserved'
+    ? `${shim} does not carry the mcp-grant route; upgrade that shim to use this provider`
+    : `its runtime names its own HTTPS proxy, which would bypass ${shim}`
 }
 
 /** A definition's headers with the placeholder in place of its grant key; undefined when the key sits anywhere else. */

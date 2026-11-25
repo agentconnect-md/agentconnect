@@ -213,7 +213,7 @@ describe('a local VM session through its shim codehost listener', () => {
     const local = new LocalExecutor({
       launcher: microsandboxLauncher({ manager: () => fake.manager }),
       generations: { nextSandboxGeneration: async () => 1 },
-      tunnelSocketPath: (tunnel) => (tunnel === 'provider' ? undefined : sockets[tunnel]),
+      tunnelSocketPath: (tunnel) => (tunnel === 'provider' || tunnel === 'mcp-grant' ? undefined : sockets[tunnel]),
       extraTunnelsFor: () => extraTunnels,
       tunnelListenOptions: (_agentId, tunnel) => {
         listens(tunnel)

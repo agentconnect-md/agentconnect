@@ -16,6 +16,7 @@ import { ShimServer } from './server.js'
 import { probeSkillGitInPod } from './skill-git-feature.js'
 import { SKILL_GIT_GITLAB_FEATURE, SKILL_GIT_IN_POD_FEATURE, SKILL_GIT_WRITEBACK_FEATURE } from './skill-protocol.js'
 import { TunnelHost } from './tunnel-host.js'
+import { MCP_GRANT_TUNNEL_FEATURE } from './tunnel.js'
 import { stageWorkspaceFile } from './fd-workspace-files.js'
 
 if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-runtime-offline') {
@@ -137,7 +138,8 @@ async function main(): Promise<number> {
       'cluster-skills-v3',
       ...(bundleStaging ? [SOURCE_CACHE_BUNDLE_FEATURE, WORKSPACE_TRANSFER_FEATURE] : []),
       ...(skillGit.ok ? [SKILL_GIT_IN_POD_FEATURE, SKILL_GIT_GITLAB_FEATURE] : []),
-      ...(skillWriteBack ? [SKILL_GIT_WRITEBACK_FEATURE] : [])
+      ...(skillWriteBack ? [SKILL_GIT_WRITEBACK_FEATURE] : []),
+      MCP_GRANT_TUNNEL_FEATURE
     ],
     log
   })

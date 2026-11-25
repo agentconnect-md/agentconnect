@@ -1,6 +1,6 @@
 import { isAbsolute, normalize } from 'node:path'
 import type { Binding } from './binding.js'
-import type { ShimFrame } from './protocol.js'
+import type { ShimFeature, ShimFrame } from './protocol.js'
 
 /** Verifies a presented token and reports which pod it was issued to. Satisfied by
  *  the Kubernetes client's TokenReview; injected so tests need no API server. */
@@ -25,6 +25,8 @@ export interface ShimConnection {
   /** The pod's workspace mount as the shim reported it; absent on legacy shims. Pod-reported
    *  and only ever used to build paths sent back INTO that pod, never on this filesystem. */
   workspaceRoot?: string
+  /** The optional surfaces the shim advertised and this daemon supports; absent on legacy shims. */
+  features?: readonly ShimFeature[]
   send(frame: ShimFrame): void
   /** Send a binary frame, one-way, and observe the shim's; absent when the transport carries text only. */
   sendData?(frame: Uint8Array): void

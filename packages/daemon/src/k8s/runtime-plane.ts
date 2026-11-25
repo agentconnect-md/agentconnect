@@ -428,6 +428,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       if (session?.isAttached()) await tunnels.ensure(subject, session)
       return tunnels.listeningAt(subject, 'provider')?.proxy
     },
+    // The same for a restricted MCP grant's relay; a shim that predates `mcp-grant` reports none, and the grant stays off.
+    mcpGrantFor: async (subject) => {
+      const session = driver.sessionFor(subject)
+      if (session?.isAttached()) await tunnels.ensure(subject, session)
+      return tunnels.listeningAt(subject, 'mcp-grant')?.proxy
+    },
     connectChannel: (record, podIp, timeoutMs) =>
       dialer.connect(shimEndpoint(podIp, settings.shimPort), record, timeoutMs),
     revokeChannel: (subject) => {
