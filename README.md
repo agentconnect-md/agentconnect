@@ -23,11 +23,13 @@
   <a href="https://work.weixin.qq.com"><img src="https://api.iconify.design/ant-design/wechat-work-outlined.svg?color=%230082EF" width="16" height="16" alt="WeCom" title="WeCom" /></a>&nbsp;&nbsp;
   <a href="https://www.wechat.com"><img src="https://cdn.simpleicons.org/wechat" width="16" height="16" alt="WeChat" title="WeChat" /></a>&nbsp;&nbsp;
   <a href="https://im.qq.com"><img src="packages/web/public/brands/qq.svg" width="16" height="16" alt="QQ" title="QQ" /></a>&nbsp;&nbsp;
+  <a href="https://mattermost.com"><img src="https://cdn.simpleicons.org/mattermost" width="16" height="16" alt="Mattermost" title="Mattermost" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
   <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://about.gitea.com"><img src="https://cdn.simpleicons.org/gitea" width="16" height="16" alt="Gitea" title="Gitea" /></a>&nbsp;&nbsp;
   <a href="https://azure.microsoft.com/products/devops"><img src="https://api.iconify.design/codicon/azure-devops.svg?color=%230078D4" width="16" height="16" alt="Azure DevOps" title="Azure DevOps" /></a>&nbsp;&nbsp;
   <a href="https://linear.app"><img src="https://cdn.simpleicons.org/linear" width="16" height="16" alt="Linear" title="Linear" /></a>&nbsp;&nbsp;
+  <a href="https://en.wikipedia.org/wiki/Email"><img src="https://api.iconify.design/mdi/email-outline.svg?color=%236B7280" width="16" height="16" alt="Email" title="Email" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   <br />
   <strong>WITH</strong>&nbsp;&nbsp;
@@ -77,8 +79,8 @@
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Microsoft Teams, Google Chat, Discord, Telegram, Lark,
-WeCom, WeChat, and more, with integrations for GitHub, GitLab, Gitea, Azure DevOps, and
-Linear. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible
+WeCom, WeChat, Mattermost, and more, with integrations for GitHub, GitLab, Gitea, Azure DevOps,
+Linear, and email. Bring Claude Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible
 agent into the conversations and workflows your team already has open. Use Jev
 for agent routing and model selection.
 
@@ -135,8 +137,9 @@ Teams use it to:
   other ACP-compatible runtime run side by side, and changing one does not
   rebuild the workflow around it.
 - **Keep work where it happens.** Link agents to bots in Slack, Microsoft Teams,
-  Google Chat, Discord, Telegram, Lark, WeCom, WeChat, and more, or to repositories,
-  issues, and workflows on GitHub, GitLab, Gitea, Azure DevOps, and Linear.
+  Google Chat, Discord, Telegram, Lark, WeCom, WeChat, Mattermost, and more; to
+  repositories, issues, and workflows on GitHub, GitLab, Gitea, Azure DevOps, and
+  Linear; or to an email address.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
 - **Decide when and how agents act.** Use reusable Decisions powered by
