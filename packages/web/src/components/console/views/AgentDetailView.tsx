@@ -3479,6 +3479,7 @@ function AgentDetail() {
           <AgentToolsCard
             agentId={da.id}
             runtime={da.runtime}
+            permissionMode={da.permissionMode}
             daemon={owningDaemon}
             canEdit={!da.name.startsWith(MOCK_PREFIX) && da.canEdit}
           />

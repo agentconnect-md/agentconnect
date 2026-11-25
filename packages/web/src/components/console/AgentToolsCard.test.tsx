@@ -11,7 +11,13 @@ const mocks = vi.hoisted(() => ({
     { id: 'p-linear', name: 'linear', visibility: 'org' }
   ] as unknown[],
   saved: [] as string[],
-  policies: [] as unknown[]
+  policies: [] as unknown[],
+  compatibility: {
+    daemonsWithoutAgentDefinitions: ['d-old'],
+    relaysWithoutToolPolicies: 0,
+    daemonsWithoutApprovals: [] as string[],
+    relaysWithoutApprovals: 0
+  }
 }))
 
 vi.mock('@/lib/data-context', () => ({
@@ -19,14 +25,17 @@ vi.mock('@/lib/data-context', () => ({
     updateAgent: vi.fn(async () => undefined),
     mcpProviders: mocks.mcpProviders,
     connectorsEnabled: false,
-    daemons: [{ daemonId: 'd-old', name: 'old-mac' }]
+    daemons: [
+      { daemonId: 'd-old', name: 'old-mac' },
+      { daemonId: 'd-pool', name: 'pool-1' }
+    ]
   })
 }))
 vi.mock('@/lib/api', () => ({
   fetchAgentDto: vi.fn(async () => ({ mcpServers: mocks.saved })),
   fetchAgentMcpToolPolicies: vi.fn(async () => ({
     policies: mocks.policies,
-    compatibility: { daemonsWithoutAgentDefinitions: ['d-old'], relaysWithoutToolPolicies: 0 }
+    compatibility: mocks.compatibility
   })),
   fetchConnectorCatalog: vi.fn(async () => ({ providers: [] })),
   repoLabel: (r: unknown) => String(r),
@@ -42,11 +51,16 @@ vi.mock('@/components/console/McpToolPermissionsPanel', () => ({
   McpToolPermissionsPanel: (props: {
     providerName: string
     policy: { providerId: string } | null
-    compatibility: { daemonsWithoutAgentDefinitions: string[] }
+    compatibility: { daemonsWithoutAgentDefinitions: string[]; daemonsWithoutApprovals: string[] }
+    runtimeGate: { refusal: { reason: string }; runtime: string; mode: string } | null
   }) => (
     <div>
-      permissions:{props.providerName}:{props.policy ? 'restricted' : 'full'}:
-      {props.compatibility.daemonsWithoutAgentDefinitions.join(',')}
+      <span>
+        permissions:{props.providerName}:{props.policy ? 'restricted' : 'full'}:
+        {props.compatibility.daemonsWithoutAgentDefinitions.join(',')}
+      </span>
+      <span data-testid="compat">{JSON.stringify(props.compatibility)}</span>
+      <span data-testid="gate">{JSON.stringify(props.runtimeGate)}</span>
     </div>
   )
 }))
@@ -58,12 +72,25 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let host: HTMLDivElement | undefined
 let root: Root | undefined
 
-async function render(daemon: DaemonRow | undefined, canEdit = true): Promise<string> {
+async function render(
+  daemon: DaemonRow | undefined,
+  canEdit = true,
+  runtime = 'claude',
+  permissionMode = ''
+): Promise<string> {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   await act(async () => {
-    root!.render(<AgentToolsCard agentId="a1" runtime="claude" daemon={daemon} canEdit={canEdit} />)
+    root!.render(
+      <AgentToolsCard
+        agentId="a1"
+        runtime={runtime}
+        permissionMode={permissionMode}
+        daemon={daemon}
+        canEdit={canEdit}
+      />
+    )
   })
   return host.textContent ?? ''
 }
@@ -86,6 +113,8 @@ afterEach(() => {
   host = undefined
   mocks.saved = []
   mocks.policies = []
+  mocks.compatibility.daemonsWithoutApprovals = []
+  mocks.compatibility.relaysWithoutApprovals = 0
 })
 
 describe('AgentToolsCard', () => {
@@ -217,5 +246,54 @@ describe('AgentToolsCard', () => {
     const text = await render(undefined, false)
     expect(text).toContain('Full access')
     expect(text).not.toContain('Edit permissions')
+  })
+
+  const openPanel = async () => {
+    const edit = [...host!.querySelectorAll('button')].find((b) => b.textContent === 'Edit permissions')
+    await act(async () => {
+      edit!.click()
+    })
+  }
+
+  // A daemon or relay that cannot attach a restricted server at all already has its own warning.
+  it('names approval-lacking daemons and relays only once', async () => {
+    mocks.saved = ['grafana']
+    mocks.compatibility.daemonsWithoutApprovals = ['d-old', 'd-pool']
+    mocks.compatibility.relaysWithoutApprovals = 0
+    await render(undefined)
+    await openPanel()
+    expect(JSON.parse(host!.querySelector('[data-testid="compat"]')!.textContent!)).toEqual({
+      daemonsWithoutAgentDefinitions: ['old-mac'],
+      relaysWithoutToolPolicies: 0,
+      daemonsWithoutApprovals: ['pool-1'],
+      relaysWithoutApprovals: 0
+    })
+  })
+
+  it('passes the runtime gate of a Codex agent in Full access, and none for Claude in Manual', async () => {
+    mocks.saved = ['grafana']
+    await render(undefined, true, 'codex-acp', 'agent-full-access')
+    await openPanel()
+    expect(JSON.parse(host!.querySelector('[data-testid="gate"]')!.textContent!)).toEqual({
+      refusal: { reason: 'noAsking', refused: ['approval', 'ask'] },
+      runtime: 'Codex',
+      mode: 'Full access'
+    })
+    act(() => root?.unmount())
+    host?.remove()
+    await render(undefined, true, 'claude', 'default')
+    await openPanel()
+    expect(host!.querySelector('[data-testid="gate"]')!.textContent).toBe('null')
+  })
+
+  // A blank mode is the runtime's default, Auto review for Codex.
+  it('reads a blank Codex mode as Auto review', async () => {
+    mocks.saved = ['grafana']
+    await render(undefined, true, 'codex', '')
+    await openPanel()
+    expect(JSON.parse(host!.querySelector('[data-testid="gate"]')!.textContent!)).toMatchObject({
+      refusal: { reason: 'reviewerOnly' },
+      mode: 'Auto review'
+    })
   })
 })

@@ -11,26 +11,34 @@ import {
   type McpProviderDto
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { MOCK_MODE, type DaemonRow } from '@/lib/data'
+import { MOCK_MODE, agentPermissionDisplay, agentPermissionMode, runtimeLabel, type DaemonRow } from '@/lib/data'
+import { approvalRefusal } from '@/lib/mcp-tool-permissions'
 import { mcpCandidates, mcpCapsFor, mcpKindLabel, mcpServersForRuntime } from '@/components/console/McpServersField'
 import { AttachedEmpty, AttachedNote, AttachedRow, AttachMenu } from '@/components/console/AttachedList'
 import { ConnectorsModal } from '@/components/console/ConnectorsModal'
 import { CreateMcpProviderModal, EditConnectorModal, EditMcpProviderModal } from '@/components/console/McpServersCard'
 import { ProviderMark, useConnectorIcons } from '@/components/console/ToolTile'
 import { Scrim } from '@/components/console/Scrim'
-import { McpToolPermissionsPanel } from '@/components/console/McpToolPermissionsPanel'
+import {
+  McpToolPermissionsPanel,
+  type RuntimeApprovalGate,
+  type ToolPolicyCompatibility
+} from '@/components/console/McpToolPermissionsPanel'
 import { Icon } from '@/components/ui'
 
 /** The agent's attached MCP servers (the saved `mcpServers` allow-list, stale names dimmed so they can be removed), the Add menu, and each registry server's tool permissions. */
 export function AgentToolsCard({
   agentId,
   runtime,
+  permissionMode,
   daemon,
   canEdit,
   onBusyChange
 }: {
   agentId: string
   runtime: string
+  /** The agent's stored permission mode; '' means the runtime's default. */
+  permissionMode: string
   daemon: DaemonRow | undefined
   canEdit: boolean
   /** Reports a write in flight, so a host dialog can hold its own completion until the row settles. */
@@ -77,6 +85,12 @@ export function AgentToolsCard({
   // Per-provider tool policies; null until read, or when this CP predates them.
   const [toolPolicies, setToolPolicies] = useState<AgentMcpToolPoliciesDto | null>(null)
   const [permissionsFor, setPermissionsFor] = useState<McpProviderDto | null>(null)
+  const refusal = approvalRefusal(runtime, agentPermissionMode(daemon, runtime, permissionMode))
+  const runtimeGate: RuntimeApprovalGate | null = refusal && {
+    refusal,
+    runtime: runtimeLabel(runtime),
+    mode: agentPermissionDisplay(daemon, runtime, permissionMode)
+  }
   const loadToolPolicies = useCallback(() => {
     fetchAgentMcpToolPolicies(agentId).then(setToolPolicies, () => setToolPolicies(null))
   }, [agentId])
@@ -257,12 +271,8 @@ export function AgentToolsCard({
               providerId={permissionsFor.id}
               providerName={permissionsFor.name}
               policy={toolPolicies.policies.find((p) => p.providerId === permissionsFor.id) ?? null}
-              compatibility={{
-                daemonsWithoutAgentDefinitions: toolPolicies.compatibility.daemonsWithoutAgentDefinitions.map(
-                  (id) => daemons.find((d) => d.daemonId === id)?.name ?? id
-                ),
-                relaysWithoutToolPolicies: toolPolicies.compatibility.relaysWithoutToolPolicies
-              }}
+              compatibility={namedCompatibility(toolPolicies.compatibility, daemons)}
+              runtimeGate={runtimeGate}
               onClose={() => setPermissionsFor(null)}
               onSaved={loadToolPolicies}
             />
@@ -278,6 +288,24 @@ export function AgentToolsCard({
       )}
     </div>
   )
+}
+
+/** The panel's compatibility warnings with daemon names; a peer that cannot enforce a restriction at all is not named again for approvals. */
+function namedCompatibility(
+  compat: AgentMcpToolPoliciesDto['compatibility'],
+  daemons: readonly Pick<DaemonRow, 'daemonId' | 'name'>[]
+): ToolPolicyCompatibility {
+  const name = (id: string) => daemons.find((d) => d.daemonId === id)?.name ?? id
+  const withoutDefinitions = new Set(compat.daemonsWithoutAgentDefinitions)
+  return {
+    daemonsWithoutAgentDefinitions: compat.daemonsWithoutAgentDefinitions.map(name),
+    relaysWithoutToolPolicies: compat.relaysWithoutToolPolicies,
+    daemonsWithoutApprovals: (compat.daemonsWithoutApprovals ?? [])
+      .filter((id) => !withoutDefinitions.has(id))
+      .map(name),
+    // A relay without tool policies lacks approvals too, and its own warning already covers it.
+    relaysWithoutApprovals: Math.max(0, (compat.relaysWithoutApprovals ?? 0) - compat.relaysWithoutToolPolicies)
+  }
 }
 
 /** A registry server's tool permissions under its attached row: Full access or Restricted with per-decision counts. */

@@ -13,7 +13,11 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/api', () => api)
 
-import { McpToolPermissionsPanel, type ToolPolicyCompatibility } from './McpToolPermissionsPanel'
+import {
+  McpToolPermissionsPanel,
+  type RuntimeApprovalGate,
+  type ToolPolicyCompatibility
+} from './McpToolPermissionsPanel'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -61,7 +65,8 @@ const onClose = vi.fn()
 
 async function render(
   saved: AgentMcpToolPolicyDto | null,
-  compatibility: ToolPolicyCompatibility | null = null
+  compatibility: ToolPolicyCompatibility | null = null,
+  runtimeGate: RuntimeApprovalGate | null = null
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -74,6 +79,7 @@ async function render(
         providerName="linear"
         policy={saved}
         compatibility={compatibility}
+        runtimeGate={runtimeGate}
         onClose={onClose}
         onSaved={onSaved}
       />
@@ -164,18 +170,53 @@ describe('McpToolPermissionsPanel presets and decisions', () => {
     })
   })
 
-  it('offers the approval decisions disabled until approvals ship', async () => {
+  it('offers all four decisions with their descriptions', async () => {
     await render(policy())
     const options = await openSelect('Decision for Write/delete tools')
+    expect(options.map((o) => o.disabled)).toEqual([false, false, false, false])
     const byLabel = (label: string) => options.find((o) => o.textContent?.startsWith(label))!
-    expect(byLabel('Always allow').disabled).toBe(false)
-    expect(byLabel('Blocked').disabled).toBe(false)
-    expect(byLabel('Needs approval').disabled).toBe(true)
-    expect(byLabel('Always ask').disabled).toBe(true)
-    expect(byLabel('Needs approval').textContent).toContain('Available when approvals ship.')
+    expect(byLabel('Needs approval').textContent).toContain(
+      'The agent asks before each use, except in a mode with automatic review.'
+    )
     expect(byLabel('Always ask').textContent).toContain(
       'A person approves each use, even in a mode with automatic review.'
     )
+  })
+
+  it('saves Needs approval for a group and Always ask for one tool', async () => {
+    const view = await render(policy())
+    await pick('Decision for Write/delete tools', 'Needs approval')
+    await click(view.querySelector('[data-testid="tool-group-write"] button[aria-expanded]'))
+    const trigger = view.querySelector('button[aria-label="Decision for delete_issue"]')
+    expect(trigger?.textContent).toContain('Follows group')
+    expect(trigger?.textContent).toContain('Needs approval')
+    await pick('Decision for delete_issue', 'Always ask')
+    await save()
+    expect(api.saveAgentMcpToolPolicy).toHaveBeenCalledWith('a1', 'p1', {
+      groups: { readOnly: 'allow', write: 'approval', other: 'block' },
+      overrides: { delete_issue: 'ask' }
+    })
+  })
+
+  it.each([
+    ['Approve writes', 'approval'],
+    ['Ask for writes', 'ask']
+  ] as const)('applies the %s preset and saves its groups', async (label, decision) => {
+    await render(policy({ overrides: { delete_issue: 'allow' } }))
+    await click(buttonByText(label))
+    await save()
+    expect(api.saveAgentMcpToolPolicy).toHaveBeenCalledWith('a1', 'p1', {
+      groups: { readOnly: 'allow', write: decision, other: decision },
+      overrides: {}
+    })
+  })
+
+  it('reads a saved policy as the preset whose groups it has', async () => {
+    await render(policy({ groups: { readOnly: 'allow', write: 'ask', other: 'ask' } }))
+    expect(buttonByText('Ask for writes')?.getAttribute('aria-checked')).toBe('true')
+    act(() => root?.unmount())
+    await render(policy({ groups: { readOnly: 'allow', write: 'approval', other: 'block' } }))
+    expect(buttonByText('Custom')?.getAttribute('aria-checked')).toBe('true')
   })
 
   it('badges interactive and destructive tools, and excerpts long descriptions', async () => {
@@ -243,7 +284,7 @@ describe('McpToolPermissionsPanel catalog', () => {
     )
   })
 
-  it('lets a person name tools by hand without a catalog, offering only allow and block', async () => {
+  it('lets a person name tools by hand without a catalog, with every decision', async () => {
     api.fetchMcpToolCatalog.mockResolvedValue(catalog({ tools: [], groups: { readOnly: 0, write: 0, other: 0 } }))
     api.refreshMcpToolCatalog.mockResolvedValue(catalog({ tools: [], failure: 'unreachable' }))
     const view = await render(null)
@@ -257,16 +298,17 @@ describe('McpToolPermissionsPanel catalog', () => {
     })
     await click(buttonByText('Add tool'))
     const options = await openSelect('Decision for search_docs')
-    expect(options.filter((o) => !o.disabled).map((o) => o.textContent?.split('The ')[0])).toEqual([
+    expect(options.filter((o) => !o.disabled).map((o) => o.textContent?.split(/The |A person/)[0])).toEqual([
       'Always allow',
+      'Needs approval',
+      'Always ask',
       'Blocked'
     ])
-    expect(options).toHaveLength(2)
-    await click(options[0])
+    await click(options[2])
     await save()
     expect(api.saveAgentMcpToolPolicy).toHaveBeenCalledWith('a1', 'p1', {
       groups: { readOnly: 'allow', write: 'block', other: 'block' },
-      overrides: { search_docs: 'allow' }
+      overrides: { search_docs: 'ask' }
     })
   })
 })
@@ -307,12 +349,79 @@ describe('McpToolPermissionsPanel warnings', () => {
   })
 
   it('warns about peers that cannot enforce a restriction, only while restricted', async () => {
-    const compat = { daemonsWithoutAgentDefinitions: ['old-mac'], relaysWithoutToolPolicies: 2 }
+    const compat = {
+      daemonsWithoutAgentDefinitions: ['old-mac'],
+      relaysWithoutToolPolicies: 2,
+      daemonsWithoutApprovals: [],
+      relaysWithoutApprovals: 0
+    }
     const view = await render(policy(), compat)
     expect(view.textContent).toContain('1 daemon serving this agent cannot attach a restricted server (old-mac).')
     expect(view.textContent).toContain('2 connected relays do not support tool permissions yet.')
     await click(buttonByText('Full access'))
     expect(view.textContent).not.toContain('old-mac')
     expect(view.textContent).not.toContain('connected relays')
+  })
+
+  const approvalCompat: ToolPolicyCompatibility = {
+    daemonsWithoutAgentDefinitions: [],
+    relaysWithoutToolPolicies: 0,
+    daemonsWithoutApprovals: ['pool-1', 'pool-2'],
+    relaysWithoutApprovals: 1
+  }
+
+  it('warns about peers without approvals only once the table gates a tool on one', async () => {
+    const view = await render(policy(), approvalCompat)
+    expect(view.querySelector('[data-testid="tool-policy-approval-daemons"]')).toBeNull()
+    expect(view.querySelector('[data-testid="tool-policy-approval-relays"]')).toBeNull()
+    await click(buttonByText('Approve writes'))
+    expect(view.querySelector('[data-testid="tool-policy-approval-daemons"]')?.textContent).toBe(
+      '2 daemons serving this agent do not support approvals yet (pool-1, pool-2). Tools set to Needs approval or Always ask are refused there.'
+    )
+    expect(view.querySelector('[data-testid="tool-policy-approval-relays"]')?.textContent).toBe(
+      "1 connected relay does not support approvals yet. This agent's calls through them to tools set to Needs approval or Always ask are refused until they are upgraded."
+    )
+    await click(buttonByText('Full access'))
+    expect(view.querySelector('[data-testid="tool-policy-approval-daemons"]')).toBeNull()
+  })
+
+  it('counts a hand-named approval tool, but not a group decision without a catalog', async () => {
+    api.fetchMcpToolCatalog.mockResolvedValue(catalog({ tools: [], groups: { readOnly: 0, write: 0, other: 0 } }))
+    api.refreshMcpToolCatalog.mockResolvedValue(catalog({ tools: [] }))
+    const view = await render(policy({ groups: { readOnly: 'allow', write: 'ask', other: 'ask' } }), approvalCompat)
+    expect(view.querySelector('[data-testid="tool-policy-approval-daemons"]')).toBeNull()
+    act(() => root?.unmount())
+    const named = await render(policy({ overrides: { search_docs: 'approval' } }), approvalCompat)
+    expect(named.querySelector('[data-testid="tool-policy-approval-daemons"]')).not.toBeNull()
+  })
+
+  const fullAccess: RuntimeApprovalGate = {
+    refusal: { reason: 'noAsking', refused: ['approval', 'ask'] },
+    runtime: 'Codex',
+    mode: 'Full access'
+  }
+  const autoReview: RuntimeApprovalGate = {
+    refusal: { reason: 'reviewerOnly', refused: ['ask'] },
+    runtime: 'Codex',
+    mode: 'Auto review'
+  }
+
+  it('warns when the runtime mode refuses a decision the table uses', async () => {
+    const view = await render(policy(), null, fullAccess)
+    expect(view.querySelector('[data-testid="tool-policy-runtime"]')).toBeNull()
+    await click(buttonByText('Approve writes'))
+    expect(view.querySelector('[data-testid="tool-policy-runtime"]')?.textContent).toBe(
+      "This agent's sessions start in Full access mode, where Codex asks no one before a tool call. Tools set to Needs approval or Always ask are refused in that mode."
+    )
+  })
+
+  it('warns under Auto review for Always ask but not for Needs approval', async () => {
+    const view = await render(policy(), null, autoReview)
+    await click(buttonByText('Approve writes'))
+    expect(view.querySelector('[data-testid="tool-policy-runtime"]')).toBeNull()
+    await click(buttonByText('Ask for writes'))
+    expect(view.querySelector('[data-testid="tool-policy-runtime"]')?.textContent).toBe(
+      "This agent's sessions start in Auto review mode, where Codex's reviewer approves tool calls instead of a person. Tools set to Always ask are refused in that mode, and the reviewer approves tools set to Needs approval."
+    )
   })
 })

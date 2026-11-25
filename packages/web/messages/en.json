@@ -4087,11 +4087,15 @@
         "presets": {
           "full": "Full access",
           "readOnly": "Read-only",
+          "approveWrites": "Approve writes",
+          "askWrites": "Ask for writes",
           "custom": "Custom"
         },
         "presetHints": {
           "full": "Every tool is allowed, including tools the server adds later.",
           "readOnly": "Read-only tools are allowed. Write/delete tools and unlabeled tools are blocked.",
+          "approveWrites": "Read-only tools are allowed. Write/delete tools and unlabeled tools need approval before each use, except in a mode with automatic review.",
+          "askWrites": "Read-only tools are allowed. A person approves each use of write/delete tools and unlabeled tools, even in a mode with automatic review.",
           "custom": "Choose a decision for each group, and override single tools."
         },
         "groups": {
@@ -4119,7 +4123,6 @@
             "description": "The agent cannot see or use it."
           }
         },
-        "decisionPending": "{description} Available when approvals ship.",
         "followsGroup": "Follows group",
         "overridden": "{count} overridden",
         "interactive": "Interactive",
@@ -4162,7 +4165,14 @@
         },
         "compat": {
           "daemons": "{count, plural, one {# daemon serving this agent cannot} other {# daemons serving this agent cannot}} attach a restricted server ({names}). The agent loses this server there until they are upgraded.",
-          "relays": "{count, plural, one {# connected relay does} other {# connected relays do}} not support tool permissions yet. This agent's calls through them are refused until they are upgraded."
+          "relays": "{count, plural, one {# connected relay does} other {# connected relays do}} not support tool permissions yet. This agent's calls through them are refused until they are upgraded.",
+          "daemonsApprovals": "{count, plural, one {# daemon serving this agent does} other {# daemons serving this agent do}} not support approvals yet ({names}). Tools set to Needs approval or Always ask are refused there.",
+          "relaysApprovals": "{count, plural, one {# connected relay does} other {# connected relays do}} not support approvals yet. This agent's calls through them to tools set to Needs approval or Always ask are refused until they are upgraded."
+        },
+        "runtimeWarnings": {
+          "noAsking": "This agent's sessions start in {mode} mode, where {runtime} asks no one before a tool call. Tools set to Needs approval or Always ask are refused in that mode.",
+          "reviewerOnly": "This agent's sessions start in {mode} mode, where {runtime}'s reviewer approves tool calls instead of a person. Tools set to Always ask are refused in that mode, and the reviewer approves tools set to Needs approval.",
+          "unsupported": "{runtime} cannot ask for approval before an MCP tool call yet. Tools set to Needs approval or Always ask are refused for this agent."
         },
         "saving": "Saving…",
         "returnToFull": "Return to Full access",
