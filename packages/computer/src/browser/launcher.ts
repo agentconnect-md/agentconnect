@@ -305,6 +305,7 @@ async function owned(profile: string, child: ChildProcess): Promise<boolean> {
 }
 
 export function summarize(report: SourceReport): string {
+  if (report.skipped !== undefined) return `skipped: ${report.skipped}`
   const c = report.cookies
   return [
     report.firstFork ? 'first fork' : 'since last fork',

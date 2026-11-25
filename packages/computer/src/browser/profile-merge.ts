@@ -38,6 +38,8 @@ export interface SourceReport {
   cookies: { inserted: number; updated: number; kept: number; expired: number; deleted: number }
   localStorage: { taken: string[]; kept: number }
   indexedDb: { taken: string[]; kept: number }
+  // Set when this source could not be read or merged: its baseline is kept, so the next start tries it again.
+  skipped?: string
 }
 
 export interface ForkMergeOptions {
@@ -87,16 +89,16 @@ export async function forkMerge(
     const key = realpathSync(source)
     const previous = baselines.sources[key]
     const work = mkdtempSync(join(tmpdir(), 'ac-fork-'))
+    const report: SourceReport = {
+      source,
+      firstFork: previous === undefined,
+      cookies: { inserted: 0, updated: 0, kept: 0, expired: 0, deleted: 0 },
+      localStorage: { taken: [], kept: 0 },
+      indexedDb: { taken: [], kept: 0 }
+    }
     try {
       const snapshot = await takeSnapshot(source, work, sleep)
       const next: SourceBaseline = { cookies: {}, localStorage: {}, indexedDb: {} }
-      const report: SourceReport = {
-        source,
-        firstFork: previous === undefined,
-        cookies: { inserted: 0, updated: 0, kept: 0, expired: 0, deleted: 0 },
-        localStorage: { taken: [], kept: 0 },
-        indexedDb: { taken: [], kept: 0 }
-      }
       if (snapshot.cookies) {
         mergeCookies(snapshot.cookies, cookiesPath(target), previous?.cookies, next.cookies, report.cookies, now)
       }
@@ -111,8 +113,11 @@ export async function forkMerge(
         mergeIndexedDb(snapshot.indexedDb, indexedDbPath(target), previous?.indexedDb, next.indexedDb, report.indexedDb)
       }
       baselines.sources[key] = next
-      reports.push(report)
+    } catch (error) {
+      // One unreadable source, such as a sibling browser mid-start, must not keep this desktop's browser from starting.
+      report.skipped = (error as Error).message
     } finally {
+      reports.push(report)
       rmSync(work, { recursive: true, force: true })
     }
   }
@@ -153,11 +158,21 @@ async function takeSnapshot(source: string, work: string, sleep: (ms: number) =>
   const snapshot: Snapshot = { localStorage: new Map() }
   const cookies = cookiesPath(source)
   if (existsSync(cookies)) {
-    snapshot.cookies = join(work, 'Cookies')
-    cpSync(cookies, snapshot.cookies)
-    for (const suffix of ['-journal', '-wal']) {
-      if (existsSync(cookies + suffix)) cpSync(cookies + suffix, snapshot.cookies + suffix)
-    }
+    const copy = join(work, 'Cookies')
+    // A copy taken mid-write may not open; it is retried like LevelDB, and read once so the merge gets a sound one.
+    await retried(sleep, () => {
+      for (const suffix of ['', '-journal', '-wal']) {
+        rmSync(copy + suffix, { force: true })
+        if (existsSync(cookies + suffix)) cpSync(cookies + suffix, copy + suffix)
+      }
+      const db = openDb(copy)
+      try {
+        db.prepare('SELECT count(*) FROM cookies').get()
+      } finally {
+        db.close()
+      }
+    })
+    snapshot.cookies = copy
   }
   const localStorage = localStoragePath(source)
   if (existsSync(localStorage)) {
