@@ -1,4 +1,4 @@
-// The credential an agent's environment holds (github-app-git-credentials.md, Phase 2): a sealed placeholder the proxy verifies offline and exchanges for a code-host token or a provider API key.
+// The credential an agent's environment holds (github-app-git-credentials.md, Phase 2): a sealed placeholder the proxy verifies offline and exchanges for a code-host token, a provider API key or a restricted MCP grant.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -6,8 +6,8 @@ import { dirname, join } from 'node:path'
 /** Every placeholder starts with this, so the proxy tells it from a credential the agent brought itself. */
 export const PLACEHOLDER_PREFIX = 'acph1_'
 
-/** What a placeholder stands in for: a code-host token, or one provider API key slot. */
-export type PlaceholderKind = 'codehost' | 'provider'
+/** What a placeholder stands in for: a code-host token, one provider API key slot, or a `daemon`-custody MCP grant (mcp-tool-permissions.md §7.2). */
+export type PlaceholderKind = 'codehost' | 'provider' | 'mcp-grant'
 
 /** What a placeholder vouches for: the agent it was issued to, the hosts it may be presented to, and its kind (a code host when unset). */
 export interface PlaceholderClaims {
@@ -18,6 +18,10 @@ export interface PlaceholderClaims {
   slot?: string
   /** A skill Git child's code-host placeholder: it reads only the agent's private skill sources over Git. */
   skill?: true
+  /** The MCP definition an `mcp-grant` placeholder stands in for the grant of. */
+  mcpProvider?: string
+  /** The session an `mcp-grant` placeholder was issued to, which its stream cap counts by. */
+  session?: string
 }
 
 /** Claims as opened: the kind always set, a placeholder sealed before kinds existed reading as a code host's. */
@@ -49,12 +53,14 @@ function mac(key: Buffer, body: string): Buffer {
 export function sealPlaceholder(key: Buffer, claims: PlaceholderClaims): string {
   const kind = claims.kind ?? 'codehost'
   if (kind === 'provider' && !claims.slot) throw new Error('a provider placeholder needs its slot')
-  if (kind === 'provider' && claims.skill) throw new Error("a skill placeholder is a code host's")
+  if (kind !== 'codehost' && claims.skill) throw new Error("a skill placeholder is a code host's")
+  if (kind === 'mcp-grant' && !claims.mcpProvider) throw new Error('an mcp-grant placeholder needs its provider')
   const sealed = {
     a: claims.agentId,
     h: claims.hosts,
     k: kind,
     ...(kind === 'provider' ? { p: claims.slot } : {}),
+    ...(kind === 'mcp-grant' ? { m: claims.mcpProvider, ...(claims.session ? { n: claims.session } : {}) } : {}),
     ...(claims.skill ? { s: 1 } : {})
   }
   const body = Buffer.from(JSON.stringify(sealed)).toString('base64url')
@@ -76,12 +82,25 @@ export function openPlaceholder(key: Buffer, value: string): OpenedClaims | unde
       k?: unknown
       p?: unknown
       s?: unknown
+      m?: unknown
+      n?: unknown
     }
     if (typeof parsed.a !== 'string' || !Array.isArray(parsed.h)) return undefined
     const hosts = parsed.h.filter((host): host is string => typeof host === 'string')
     if (parsed.s !== undefined && (parsed.s !== 1 || parsed.k !== 'codehost')) return undefined
     if (parsed.k === undefined || parsed.k === 'codehost')
       return { agentId: parsed.a, hosts, kind: 'codehost', ...(parsed.s === 1 ? { skill: true as const } : {}) }
+    if (parsed.k === 'mcp-grant') {
+      if (typeof parsed.m !== 'string' || parsed.m === '') return undefined
+      if (parsed.n !== undefined && typeof parsed.n !== 'string') return undefined
+      return {
+        agentId: parsed.a,
+        hosts,
+        kind: 'mcp-grant',
+        mcpProvider: parsed.m,
+        ...(typeof parsed.n === 'string' ? { session: parsed.n } : {})
+      }
+    }
     if (parsed.k !== 'provider' || typeof parsed.p !== 'string' || parsed.p === '') return undefined
     return { agentId: parsed.a, hosts, kind: 'provider', slot: parsed.p }
   } catch {

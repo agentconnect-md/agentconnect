@@ -301,6 +301,9 @@ rl.on('line', async (line) => {
       })
       return
     }
+    // `AC_PROMPT_UPDATES` (a JSON array) is sent as session updates before the echo.
+    for (const update of JSON.parse(process.env.AC_PROMPT_UPDATES ?? '[]'))
+      send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: params.sessionId, update } })
     // send a session/update notification to the client
     send({
       jsonrpc: '2.0',

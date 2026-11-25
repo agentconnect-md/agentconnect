@@ -101,3 +101,31 @@ describe('resolveAgentMcpServers', () => {
     expect(servers[2]).not.toHaveProperty('headers')
   })
 })
+
+describe('a restricted grant (mcp-tool-permissions.md §7.2)', () => {
+  it('carries the placeholder in place of the key, or stays off with the reason', () => {
+    const warn = vi.fn()
+    const servers = resolveAgentMcpServers({
+      enabled: ['search', 'legacy'],
+      defs,
+      grant: (name) =>
+        name === 'search'
+          ? { headers: [{ name: 'Authorization', value: 'Bearer acph1_placeholder.mac' }] }
+          : { refused: "its VM's shim does not carry the mcp-grant route" },
+      session: { channel: 'C1', thread: 'T1', key: 'k1' },
+      warn
+    })
+    expect(servers).toEqual([
+      {
+        type: 'http',
+        name: 'search',
+        url: 'http://localhost:9000/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer acph1_placeholder.mac' }]
+      }
+    ])
+    expect(JSON.stringify(servers)).not.toContain('Bearer t')
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('legacy" is not attached to this session: its VM\'s shim')
+    )
+  })
+})

@@ -478,7 +478,8 @@ export function claudeSessionMeta(
   sharedWriteRoots: readonly string[] = [],
   readOnlyStateRoots: readonly string[] = [],
   model?: string,
-  repository?: ClaudeRepositoryRules
+  repository?: ClaudeRepositoryRules,
+  mcpRules?: ClaudePermissionRules
 ):
   | {
       claudeCode: {
@@ -511,6 +512,11 @@ export function claudeSessionMeta(
   const permissions: ClaudePermissionRules = {
     ...repository?.permissions,
     ...(deny.length > 0 ? { deny: [...deny, ...(repository?.permissions?.deny ?? [])] } : {})
+  }
+  // Restricted MCP tools' rules join the lists; Claude weighs deny over ask over allow, whichever list a rule came from.
+  for (const list of ['allow', 'ask', 'deny'] as const) {
+    const rules = mcpRules?.[list] ?? []
+    if (rules.length > 0) permissions[list] = [...(permissions[list] ?? []), ...rules]
   }
   const settings: ClaudeSessionSettings = {
     ...(protectedSettings ?? {}),
@@ -644,6 +650,8 @@ export class AcpHost {
   // mid-session `set_config_option` (e.g. setSessionModel) can plan against the
   // current options without a round-trip. Updated on new/load and each set.
   private sessionConfigs = new Map<string, SessionConfigOption[] | null | undefined>()
+  // A mode the runtime reported changing on its own (`current_mode_update`), newer than the cached options.
+  private reportedModes = new Map<string, string>()
   // ACP protocol version the agent negotiated at initialize (it echoes the version
   // we requested if supported, else downgrades to its own latest). Read via
   // acpProtocolVersion(); undefined until start() completes the handshake.
@@ -746,6 +754,8 @@ export class AcpHost {
       codexSessionPermissionProfiles?: (directories: readonly string[]) => Promise<Record<string, unknown> | undefined>
       /** The rules the repository checked out at a session's cwd grants it; Claude runtimes only. */
       claudeRepositoryRules?: (cwd: string) => Promise<ClaudeRepositoryRules | undefined>
+      /** The rules restricted MCP tools add for the mode a new session starts in (mcp-tool-permissions.md §7.3); Claude runtimes only. */
+      claudeMcpRules?: (mode: string | undefined) => ClaudePermissionRules | undefined
       /** Called once when the owned adapter process reaches terminal exit. The
        *  delegated host manager uses this to tear down its fenced cell. */
       onTerminal?: () => void
@@ -872,6 +882,7 @@ export class AcpHost {
         // Drop historical conversation/tool chunks replayed by session/load, but
         // keep metadata such as restored titles and usage snapshots.
         if (self.loadingSessions.has(ctx.params.sessionId) && !shouldForwardUpdateDuringLoad(ctx.params.update)) return
+        self.noteModeUpdate(ctx.params.sessionId, ctx.params.update)
         self.opts.onUpdate(ctx.params.sessionId, ctx.params.update)
       })
       .onRequest(methods.client.session.requestPermission, async (ctx) => {
@@ -1061,7 +1072,8 @@ export class AcpHost {
       this.opts.toolSandbox?.sharedWriteRoots,
       this.opts.toolSandbox?.readOnlyStateRoots,
       this.opts.configPrefs?.model,
-      rules && cwd !== undefined ? anchorRepositoryRules(rules, cwd) : undefined
+      rules && cwd !== undefined ? anchorRepositoryRules(rules, cwd) : undefined,
+      this.isClaudeRuntime() ? this.opts.claudeMcpRules?.(this.opts.configPrefs?.permissionMode) : undefined
     )
     const meta =
       claudeMeta ?? (this.canUseCustomInstructions ? customInstructionsMeta(systemPrompt, systemAppend) : undefined)
@@ -1109,6 +1121,7 @@ export class AcpHost {
       const configOptions = await this.applySessionConfig(res.sessionId, res.configOptions)
       this.refreshOptionCaches(configOptions)
       this.sessionConfigs.set(res.sessionId, configOptions)
+      this.reportedModes.delete(res.sessionId)
     } catch (err) {
       this.discardSession(res.sessionId)
       throw err
@@ -1173,6 +1186,20 @@ export class AcpHost {
     return this.lastEffortOptions
   }
 
+  /** The mode one live session is in now: a change the runtime reported, else the last reconciled selection. */
+  sessionPermissionMode(sessionId: string): string | undefined {
+    return this.reportedModes.get(sessionId) ?? permissionModeOptionsFrom(this.sessionConfigs.get(sessionId))?.current
+  }
+
+  /** Follow a runtime's own mode changes, which the cached options would otherwise miss. */
+  private noteModeUpdate(sessionId: string, update: SessionUpdate): void {
+    if (update.sessionUpdate === 'current_mode_update') this.reportedModes.set(sessionId, update.currentModeId)
+    else if (update.sessionUpdate === 'config_option_update') {
+      this.sessionConfigs.set(sessionId, update.configOptions)
+      this.reportedModes.delete(sessionId)
+    }
+  }
+
   /** The permission/approval mode selector for one live session, or the most recently
    *  reconciled selector when no session is supplied. */
   permissionModeOptions(sessionId?: string): PermissionModeOptions | null {
@@ -1225,6 +1252,7 @@ export class AcpHost {
     const options = await this.selectSessionConfig(sessionId, this.sessionConfigs.get(sessionId), category, value)
     if (!options) return false
     this.sessionConfigs.set(sessionId, options)
+    this.reportedModes.delete(sessionId)
     this.refreshOptionCaches(options)
     return true
   }
@@ -1323,6 +1351,7 @@ export class AcpHost {
     this.live.delete(sessionId)
     this.loadingSessions.delete(sessionId)
     this.sessionConfigs.delete(sessionId)
+    this.reportedModes.delete(sessionId)
     this.toolContexts.delete(sessionId)
   }
 
@@ -1384,6 +1413,7 @@ export class AcpHost {
       // null if this process never created one). Mirrors newSession().
       this.refreshOptionCaches(configOptions)
       this.sessionConfigs.set(sessionId, configOptions)
+      this.reportedModes.delete(sessionId)
       this.opts.log?.info(`acp: resumed session ${sessionId} via session/load`)
     } catch (err) {
       this.discardSession(sessionId)
@@ -1457,6 +1487,7 @@ export class AcpHost {
   discardSession(sessionId: string): void {
     this.live.delete(sessionId)
     this.sessionConfigs.delete(sessionId)
+    this.reportedModes.delete(sessionId)
     this.toolContexts.delete(sessionId)
   }
 

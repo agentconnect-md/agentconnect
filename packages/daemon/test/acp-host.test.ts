@@ -305,6 +305,29 @@ describe('AcpHost (against a fake ACP agent)', () => {
     await host.stop()
   })
 
+  // The approval gate reads the row in force when a call arrives, the runtime's own switches included (mcp-tool-permissions.md §7.3).
+  it('follows a mode the runtime reports changing mid-session, until the daemon selects one again', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: {
+          AC_PERMISSION_MODES: 'default,auto,bypassPermissions',
+          AC_PROMPT_UPDATES: JSON.stringify([{ sessionUpdate: 'current_mode_update', currentModeId: 'auto' }])
+        },
+        configPrefs: { permissionMode: 'default' }
+      }
+    )
+    await host.start()
+    const sessionId = await host.newSession('/tmp')
+    expect(host.sessionPermissionMode(sessionId)).toBe('default')
+    await host.prompt(sessionId, [{ type: 'text', text: 'hi' }])
+    expect(host.sessionPermissionMode(sessionId)).toBe('auto')
+    await host.setSessionPermissionMode(sessionId, 'bypassPermissions')
+    expect(host.sessionPermissionMode(sessionId)).toBe('bypassPermissions')
+    await host.stop()
+  })
+
   // The dream gate re-asserts the read-only mode the configured settings just applied (#2774).
   it('reports a mode the session already holds as in effect, and an unoffered one as not', async () => {
     const host = new AcpHost(

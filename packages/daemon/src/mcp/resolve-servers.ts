@@ -39,6 +39,8 @@ export function resolveAgentMcpServers(opts: {
   hostsUiServer?: (name: string) => boolean
   /** Sandbox launches normalize trusted commands before HOME is hidden. */
   resolveStdioCommand?: (command: string, env: McpServerDef['env']) => string
+  /** A restricted grant as this session carries it (mcp-tool-permissions.md §7.2): the placeholder in place of the key, or why it stays off. */
+  grant?: (name: string, def: McpServerDef) => { headers: McpServerDef['headers'] } | { refused: string } | undefined
   /** The session's coordinate, sent as X-AC-* headers to an http/sse server with `sessionHeaders`. */
   session?: { channel: string; thread: string; key: string }
   warn?: (msg: string) => void
@@ -61,7 +63,13 @@ export function resolveAgentMcpServers(opts: {
         `mcp: server "${name}" asks to be daemon-hosted, which this daemon does not do for it — attached without its interface`
       )
     }
+    const grant = opts.grant?.(name, def)
+    if (grant && 'refused' in grant) {
+      opts.warn?.(`mcp: server "${name}" is not attached to this session: ${grant.refused}`)
+      continue
+    }
     if (def.transport === 'stdio') {
+      if (grant) continue
       // The untagged variant IS the stdio one (ACP McpServer union).
       out.push({
         name,
@@ -85,7 +93,7 @@ export function resolveAgentMcpServers(opts: {
             { name: 'X-AC-Session', value: opts.session.key }
           ]
         : []
-    out.push({ type: def.transport, name, url: def.url!, headers: [...def.headers, ...session] })
+    out.push({ type: def.transport, name, url: def.url!, headers: [...(grant?.headers ?? def.headers), ...session] })
   }
   return out
 }
