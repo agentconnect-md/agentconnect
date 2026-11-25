@@ -39,6 +39,24 @@ with `shareFile`. An image becomes a shared image; every other file posts as a
 downloadable file under its own name, shown in the console as a chip rather than a card.
 _Avoid_: Attachment (which names a file the conversation received)
 
+### Artifacts
+
+**Artifact**:
+A deliverable an agent has explicitly published so people can open it in the console,
+ask for changes, and share it. It belongs to a person or the organization, not to the
+agent or the session, and outlives both.
+_Avoid_: Output (a working file in the session's directory), shared file
+
+**Revision**:
+The complete, unchangeable content of one publication of an artifact. Changing an
+artifact appends a revision.
+_Avoid_: Version (of the product), edit
+
+**Artifact share**:
+A link to one revision of an artifact, for anyone with the link (`public`) or for
+signed-in members (`org`). Revoking it ends access through that link.
+_Avoid_: Session share, share-by-link (the session feature)
+
 ### Session collaboration
 
 **Conversation**:
