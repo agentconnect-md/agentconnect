@@ -434,6 +434,35 @@ describe('webchat session-targeted continuation — mirror identity', () => {
     expect(blocks).toEqual([{ type: 'markdown', text: '[Ada via console] looks off?' }])
     await daemon.stop()
   })
+
+  // The console retires its copy of this message by words and time, since no row carries the relay's post id (#4443).
+  it("records the mirrored turn under the platform's message id, without the relay's post id", async () => {
+    const { daemon, d } = await boot(() => 'ok')
+    const events: RdChatEvent[] = []
+    const ack = await d.handleRelayMsg(
+      turn('what time is it', {
+        payload: {
+          op: 'turn',
+          text: 'what time is it',
+          user: 'owner',
+          post: { postId: '34343434-3434-4434-8434-343434343434', at: 1_790_000_000_000 }
+        }
+      }),
+      (e) => events.push(e)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+    const scope = (
+      daemon as never as { transportScopeForIntegrationIds(ids: string[]): string }
+    ).transportScopeForIntegrationIds(['int-a'])
+    const page = await d.store.transcriptPage(transcriptChannelKey('C1', scope), '100.1', null, 50, AGENT)
+    const human = (page.rows as Array<{ text: string; ts?: string; postId?: string }>).find(
+      (r) => r.text === 'what time is it'
+    )
+    expect(human).toMatchObject({ ts: '100.200000' })
+    expect(human?.postId ?? undefined).toBeUndefined()
+    await daemon.stop()
+  })
 })
 
 describe('webchat session-targeted continuation — author member id', () => {
