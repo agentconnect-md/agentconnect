@@ -557,4 +557,23 @@ describe('a session on another machine of the group', () => {
     await after.ensureChannel(SUBJECT)
     expect(after.mountFor(SUBJECT)).toBe(first.root)
   })
+  it('gives up a bound launch whose executor restarted, so the next bind prepares a new one there', async () => {
+    const first = await machine(EXECUTOR_A)
+    const byId = new Map([[EXECUTOR_A, first]])
+    const holder = holderPlane(HOLDER, new Relay(byId))
+    await holder.prepareAt(AGENT, KEY, [choice(EXECUTOR_A)])
+    await holder.ensureChannel(SUBJECT)
+    const applied = holder.shimGenerationFor(SUBJECT)!
+
+    // The executor restarts under the bound channel: a new port, and no key for the launch the holder keeps dialing.
+    await first.facet.stop()
+    const restarted = await machine(EXECUTOR_A, first.root)
+    byId.set(EXECUTOR_A, restarted)
+
+    // The holder's redial is refused, the executor answers that the launch is retired, and the launch is given up.
+    await vi.waitFor(() => expect(holder.shimGenerationFor(SUBJECT)).toBeUndefined(), WAIT)
+    await holder.ensureChannel(SUBJECT)
+    expect(holder.shimGenerationFor(SUBJECT)).toBeGreaterThan(applied)
+    expect(holder.mountFor(SUBJECT)).toBe(first.root)
+  })
 })

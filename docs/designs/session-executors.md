@@ -1238,8 +1238,11 @@ resumes from them on its next turn — a VM is started from its retained disk, a
 `host` environment is re-entered — while any turn still running at the instant of
 restart is lost, which is what a daemon restart already costs. Adopting live VMs or
 detached shims across a restart would change the backend's fencing rule and is not
-in scope. The keys die with the process too: a holder that lost its pipe re-dials,
-the handshake is refused, the launch is given up as lost, and the next one sends a
+in scope. The keys die with the process too, and the listener's port with it: a
+holder that lost its pipe re-dials, the connection or the handshake is refused, and
+the holder asks the executor about the launch with the same `prepare`. A
+`launch_retired` answer gives the launch up as lost; an executor or CP that cannot
+answer leaves the dial retrying. The next launch sends a
 `prepare` naming a new launch, which starts the shim again, allocates the next
 generation and returns a fresh key. The generation each environment applied and the
 launch it belonged to are both on disk (§6), so the restart neither loses the fence
