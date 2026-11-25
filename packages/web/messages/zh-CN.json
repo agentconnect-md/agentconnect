@@ -4098,8 +4098,8 @@
         "presetHints": {
           "full": "允许使用所有工具，包括服务器以后新增的工具。",
           "readOnly": "允许只读工具，阻止写入/删除工具和未标注的工具。",
-          "approveWrites": "允许只读工具。写入/删除工具和未标注的工具每次使用前都需要审批，自动审查模式下除外。",
-          "askWrites": "允许只读工具。写入/删除工具和未标注的工具每次使用都由人工批准，自动审查模式下也是如此。",
+          "approveWrites": "允许只读工具。写入/删除工具和未标注的工具每次使用前都需要审批，自动审核模式下除外。",
+          "askWrites": "允许只读工具。写入/删除工具和未标注的工具每次使用都由人工批准，自动审核模式下也是如此。",
           "custom": "为每个分组选择决定，并可单独覆盖某个工具。"
         },
         "groups": {
@@ -4116,11 +4116,11 @@
           },
           "approval": {
             "label": "需要审批",
-            "description": "Agent 每次使用前都会询问，自动审查模式下除外。"
+            "description": "Agent 每次使用前都会询问，自动审核模式下除外。"
           },
           "ask": {
             "label": "每次询问",
-            "description": "每次使用都由人工批准，自动审查模式下也是如此。"
+            "description": "每次使用都由人工批准，自动审核模式下也是如此。"
           },
           "block": {
             "label": "已阻止",
@@ -4136,25 +4136,25 @@
         "catalog": {
           "loading": "正在读取工具列表…",
           "refreshing": "正在列出工具…",
-          "listed": "工具列表更新于{when}",
+          "listed": "工具列表更新于 {when}",
           "neverListed": "尚未获取工具列表",
           "refresh": "刷新列表",
           "failed": "上次刷新失败：{reason}"
         },
         "failures": {
-          "relay_unavailable": "没有已连接的 Relay 可以列出工具。",
-          "relay_timeout": "Relay 未能及时响应。",
+          "relay_unavailable": "当前无法获取工具列表。",
+          "relay_timeout": "获取工具列表超时。",
           "unreachable": "无法连接到服务器。",
           "upstream_rejected": "服务器拒绝了请求，请检查其凭据。",
           "timeout": "服务器未能及时响应。",
           "too_large": "服务器的工具列表过大，无法读取。",
           "invalid_response": "服务器返回的工具列表无法读取。",
-          "blocked_address": "服务器地址被 Relay 的网络策略阻止。",
-          "misconfigured": "此服务器在 Relay 上的配置不完整。",
-          "unknown_provider": "Relay 暂时还不知道此服务器，请稍后重试。",
+          "blocked_address": "服务器地址被当前部署的网络策略阻止。",
+          "misconfigured": "此服务器在当前部署中的配置不完整。",
+          "unknown_provider": "此服务器尚未同步完成，请稍后重试。",
           "other": "列出工具失败（{code}）。"
         },
-        "noCatalog": "此服务器暂无工具列表。获取到工具列表后分组设置才会生效；在此之前，请手动填写要允许或阻止的工具。",
+        "noCatalog": "此服务器暂无工具列表。获取到工具列表后，分组设置才会生效；在此之前，可在下方手动添加工具并设置权限。",
         "manualTitle": "手动填写的工具",
         "manualPlaceholder": "tool_name",
         "manualAdd": "添加工具",
@@ -4169,13 +4169,13 @@
         },
         "compat": {
           "daemons": "服务此 Agent 的 {count, plural, other {# 个 Daemon}}无法附加受限的服务器（{names}）。升级之前，Agent 在这些 Daemon 上将无法使用此服务器。",
-          "relays": "{count, plural, other {# 个已连接的 Relay}}尚不支持工具权限。升级之前，此 Agent 经由它们的调用都会被拒绝。",
+          "relays": "{count, plural, other {# 个已连接的服务实例}}尚不支持工具权限。升级之前，此 Agent 经由它们的调用都会被拒绝。",
           "daemonsApprovals": "服务此 Agent 的 {count, plural, other {# 个 Daemon}}尚不支持审批（{names}）。设为“需要审批”或“每次询问”的工具在这些 Daemon 上会被拒绝。",
-          "relaysApprovals": "{count, plural, other {# 个已连接的 Relay}}尚不支持审批。升级之前，此 Agent 经由它们调用设为“需要审批”或“每次询问”的工具都会被拒绝。"
+          "relaysApprovals": "{count, plural, other {# 个已连接的服务实例}}尚不支持审批。升级之前，此 Agent 经由它们调用设为“需要审批”或“每次询问”的工具都会被拒绝。"
         },
         "runtimeWarnings": {
           "noAsking": "此 Agent 的会话以 {mode} 模式启动，在该模式下 {runtime} 调用工具前不会询问任何人。设为“需要审批”或“每次询问”的工具在该模式下会被拒绝。",
-          "reviewerOnly": "此 Agent 的会话以 {mode} 模式启动，在该模式下由 {runtime} 的审查器而不是人工批准工具调用。设为“每次询问”的工具在该模式下会被拒绝，设为“需要审批”的工具由审查器批准。",
+          "reviewerOnly": "此 Agent 的会话以 {mode} 模式启动，在该模式下由 {runtime} 的审核器而不是人工批准工具调用。设为“每次询问”的工具在该模式下会被拒绝，设为“需要审批”的工具由审核器批准。",
           "unsupported": "{runtime} 暂不支持在调用 MCP 工具前请求审批。此 Agent 设为“需要审批”或“每次询问”的工具都会被拒绝。"
         },
         "saving": "正在保存…",
@@ -5692,8 +5692,8 @@
         "optionMeta": "{price} / 月",
         "optionCurrent": "{meta} · 当前",
         "contactNote": "按合同定价——会话上限、额度、保留期和组织 SSO。",
-        "salesPaused": "套餐购买和升级暂时暂停。你仍可在续期时切换到 Free、取消已安排的变更，以及充值。",
-        "salesPausedFree": "付费套餐暂时暂停销售。你仍可以充值。",
+        "salesPaused": "套餐购买和升级已暂停。你仍可在续费时切换到 Free、取消已安排的变更，或充值。",
+        "salesPausedFree": "付费套餐已暂停销售。你仍可以充值。",
         "paused": "已暂停",
         "contactUs": "联系我们",
         "contract": {
