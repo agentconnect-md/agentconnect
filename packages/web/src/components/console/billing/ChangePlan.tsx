@@ -74,6 +74,14 @@ const isCurrent = (sub: BillingSubscription, o: BillingPlanOption) =>
 // Free is sold only by scheduling a cancellation; anything else must be on sale.
 const sellable = (o: BillingPlanOption) => o.purchasable || o.tierId === FREE_TIER_ID
 
+const paidSelfServe = (o: BillingPlanOption) => o.tierId !== FREE_TIER_ID && o.salesMode === 'self_serve'
+
+/** The catalog carries no pause flag, so sales read as paused when no paid self-serve option is on sale; one unpriced option alone is not enough. */
+export function salesPaused(plans: BillingPlans): boolean {
+  const paid = plans.options.filter(paidSelfServe)
+  return paid.length > 0 && paid.every((o) => !o.purchasable)
+}
+
 /** The next step up: the tier's next option by session limit, else the next tier's first option, else contact sales (null without a contract tier). */
 export function nextStepUp(sub: BillingSubscription, tiers: PlanTier[]): PlanTarget | null {
   const at = tiers.findIndex((t) => t.tierId === sub.tierId)
@@ -458,6 +466,7 @@ export function ChangePlanDialog({
       Math.max(...grants) === 0 ? t('topUpsOnly') : t('credits', { amount: range(grants, (g) => fmtCents(g / 10_000)) })
     const historyText = (days: number | null) => (days === null ? t('historyUnlimited') : t('historyDays', { days }))
     const catalogReady = !!plans && !catalog.error
+    const paused = catalogReady && salesPaused(plans)
 
     body = (
       <>
@@ -468,6 +477,11 @@ export function ChangePlanDialog({
           {close}
         </div>
         <div className="modalbody min-h-0 overscroll-contain max-desktop:p-4">
+          {paused && (
+            <div className="mb-3" data-plan-sales-paused="true">
+              <Note icon="circle-pause">{t(sub.tierId === FREE_TIER_ID ? 'salesPausedFree' : 'salesPaused')}</Note>
+            </div>
+          )}
           {catalog.error ? (
             <InlineError text={t('loadError', { error: (catalog.error as Error).message })} />
           ) : !catalogReady ? (
@@ -502,6 +516,11 @@ export function ChangePlanDialog({
                         {x.options.some((o) => isCurrent(sub, o)) && (
                           <span className="rounded-full bg-(--surface-active) px-1.5 text-[11px] leading-4 font-medium text-(--text-secondary)">
                             {t('current')}
+                          </span>
+                        )}
+                        {paused && x.options.some(paidSelfServe) && (
+                          <span className="rounded-full bg-(--status-paused-soft) px-1.5 text-[11px] leading-4 font-medium text-(--text-secondary)">
+                            {t('paused')}
                           </span>
                         )}
                       </span>

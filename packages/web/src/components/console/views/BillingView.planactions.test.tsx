@@ -642,6 +642,61 @@ describe('Change plan: first purchase from Free', () => {
   })
 })
 
+// The catalog as the service serves it with plan sales paused: no paid self-serve option on sale.
+const pausedOn = (tierId: string, keep?: string) => ({
+  options: catalogOn(tierId).options.map((o) => ({
+    ...o,
+    purchasable: o.purchasable && `${o.tierId}/${o.optionId}` === keep
+  }))
+})
+const pausedNote = () => dialog()!.querySelector('[data-plan-sales-paused]')?.textContent
+
+describe('Change plan: plan sales paused', () => {
+  it('says why nothing paid can be picked, marks the paid tiers and still schedules Free', async () => {
+    mocks.plans.mockImplementation(async () => pausedOn('pro'))
+    await render()
+    await openChangePlan()
+    expect(pausedNote()).toBe(
+      'Plan purchases and upgrades are paused for now. You can still switch to Free at renewal, cancel a scheduled change and buy top-ups.'
+    )
+    const badged = [...dialog()!.querySelectorAll('[data-plan-tier]')]
+      .filter((x) => x.textContent!.includes('Paused'))
+      .map((x) => x.getAttribute('data-plan-tier'))
+    expect(badged).toEqual(['pro', 'max'])
+    await click(dialog()!.querySelector('[data-plan-option="double"]'))
+    expect(buttonIn(dialog()!, 'Review change')!.disabled).toBe(true)
+    await click(dialog()!.querySelector('[data-plan-tier="free"]'))
+    await click(buttonIn(dialog()!, 'Review change'))
+    await click(buttonIn(dialog()!, 'Schedule'))
+    expect(mocks.schedule).toHaveBeenCalledWith('org_example', { tierId: 'free', optionId: 'standard' })
+  })
+
+  it('names only top-ups to an org on Free', async () => {
+    mocks.subscription.mockResolvedValue(FREE)
+    mocks.plans.mockImplementation(async () => pausedOn('free'))
+    await render()
+    await openChangePlan()
+    expect(pausedNote()).toBe('Paid plans are paused for now. You can still buy top-ups.')
+  })
+
+  it('says nothing while one paid option is still on sale', async () => {
+    mocks.plans.mockImplementation(async () => pausedOn('pro', 'max/standard'))
+    await render()
+    await openChangePlan()
+    expect(pausedNote()).toBeUndefined()
+    expect(dialog()!.textContent).not.toContain('Paused')
+  })
+
+  it('explains the pause behind Increase limit too', async () => {
+    mocks.plans.mockImplementation(async () => pausedOn('pro'))
+    await render()
+    expect(mocks.quote).not.toHaveBeenCalled()
+    await click(q('[data-plan-increase] button'))
+    expect(step()).toBe('choose')
+    expect(pausedNote()).toContain('paused for now')
+  })
+})
+
 describe('Increase limit', () => {
   it('opens Change plan on the next option of the same tier', async () => {
     await render()
