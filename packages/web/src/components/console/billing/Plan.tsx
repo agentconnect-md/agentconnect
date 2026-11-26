@@ -225,9 +225,9 @@ export function PlanCard({
   // A failed read hides only the sessions block; nothing else on the card depends on it.
   const usage = reads.usage.error ? undefined : reads.usage.data
   const trialEndsAt = sub?.trialEndsAt ?? null
-  const trialCancelled = !!trialEndsAt && sub?.scheduled?.tierId === FREE_TIER_ID
   // An unpaid pay-now blocks every other change, so its withdrawal takes Cancel trial's place.
   const trialPending = trialEndsAt && sub?.pendingChange?.kind === 'upgrade' ? sub.pendingChange : null
+  const cancelTrial = role === 'owner' && onChangePlan && !(trialPending && onCancelPending) ? onCancelTrial : undefined
   const billingDate = trialEndsAt
     ? t('trialEnds', { date: day(trialEndsAt) })
     : sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
@@ -238,7 +238,10 @@ export function PlanCard({
   // The window in force; an older service sends only the plan's.
   const keptDays = sub ? (sub.retention ? sub.retention.days : sub.retentionDays) : null
   return (
-    <div className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid" data-plan-card="true">
+    <div
+      className="card @container/plan flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
+      data-plan-card="true"
+    >
       <div className="cardhead h-[60px] justify-between gap-2 border-b-0">
         <span className="inline-flex min-w-0 items-center gap-2">
           <span className="cardtitle">{t('title')}</span>
@@ -264,13 +267,14 @@ export function PlanCard({
               <CancelPendingButton change={trialPending} trial onCancel={onCancelPending} />
             ) : (
               trialEndsAt &&
-              !trialCancelled &&
-              onCancelTrial && (
+              sub.scheduled &&
+              sub.scheduled.tierId !== FREE_TIER_ID &&
+              cancelTrial && (
                 <button
                   type="button"
                   className="lnk text-(--text-secondary)"
                   data-plan-cancel-trial="true"
-                  onClick={onCancelTrial}
+                  onClick={cancelTrial}
                 >
                   {t('trial.cancel')}
                 </button>
@@ -298,49 +302,36 @@ export function PlanCard({
         </div>
       ) : (
         <div className="flex flex-1 flex-col justify-end gap-1 px-[18px] pt-3 pb-1">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <div className="flex min-h-8 items-center gap-2">
             <span
-              className="min-w-0 font-sans text-[32px] font-semibold leading-none tracking-[-0.03em] wrap-anywhere desktop:text-[44px]"
+              className="min-w-0 font-sans text-[22px] leading-7 font-semibold tracking-tight wrap-anywhere desktop:text-[28px] desktop:leading-8"
               data-plan-name="true"
             >
-              {sub.tierName}
-              {sub.tierId !== FREE_TIER_ID && sub.optionName !== sub.tierName && (
-                <span className="ml-2.5 text-[16px] tracking-[-0.01em] text-(--text-secondary) desktop:text-[20px]">
-                  {sub.optionName}
-                </span>
-              )}
+              {sub.optionName === sub.tierName ? sub.tierName : planLabel(sub)}
             </span>
-            {trialEndsAt && (
-              <span data-plan-trial="true" className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+            {trialEndsAt ? (
+              <span data-plan-trial="true" className="badge shrink-0 bg-(--brand-soft) text-(--brand-soft-text)">
                 {t('trial.badge')}
               </span>
-            )}
-            <span
-              className="ms-auto font-sans text-[12px] leading-normal whitespace-nowrap text-(--text-tertiary)"
-              data-plan-price="true"
-            >
-              {trialEndsAt
-                ? t.rich(trialCancelled ? 'trial.priceCancelled' : 'trial.price', {
-                    price: fmtCents(sub.priceCents ?? 0),
-                    amount: (value) => (
-                      <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary)">
-                        {value}
-                      </strong>
-                    )
-                  })
-                : sub.priceCents === null
+            ) : (
+              <span
+                className="ms-auto shrink-0 font-sans text-[12px] leading-normal whitespace-nowrap text-(--text-tertiary)"
+                data-plan-price="true"
+              >
+                {sub.priceCents === null
                   ? t('contract')
                   : t.rich('price', {
                       price: fmtCents(sub.priceCents),
                       amount: (value) => (
-                        <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary) tabular-nums">
+                        <strong className="text-[19px] font-semibold tracking-tight text-(--text-primary) tabular-nums">
                           {value}
                         </strong>
                       )
                     })}
-            </span>
+              </span>
+            )}
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 font-sans text-[12px] leading-4 text-(--text-secondary)">
+          <div className="flex flex-wrap content-start gap-x-3 gap-y-1 font-sans text-[12px] leading-4 text-(--text-secondary) @max-[280px]/plan:min-h-9">
             {billingDate && (
               <span className="inline-flex items-center gap-1.5" data-plan-billing-date="true">
                 <Icon name="calendar-days" size={13} className="flex-none" />
@@ -355,12 +346,13 @@ export function PlanCard({
         </div>
       )}
       {sub && (
-        <div className="min-h-[52px] px-[18px] py-1 max-desktop:@min-[382px]:min-h-9 desktop:row-start-3 desktop:@min-[782px]:min-h-9">
-          {sub.scheduled && (
-            <ScheduledChange
+        <div className="min-h-13 px-[18px] py-1 @min-[360px]/plan:min-h-9 desktop:row-start-3">
+          {(trialEndsAt || sub.scheduled) && (
+            <PlanChangeStatus
+              key={sub.scheduled ? JSON.stringify([sub.scheduled.tierId, sub.scheduled.optionId]) : 'trial'}
               sub={sub}
-              scheduled={sub.scheduled}
-              onCancel={role === 'owner' ? onCancelScheduled : undefined}
+              onCancelScheduled={role === 'owner' ? onCancelScheduled : undefined}
+              onCancelTrial={cancelTrial}
             />
           )}
         </div>
@@ -376,60 +368,97 @@ export function PlanCard({
   )
 }
 
-/** A scheduled renewal change, inside the Plan card under the plan's name; owners can revoke it. */
-function ScheduledChange({
+function PlanChangeStatus({
   sub,
-  scheduled,
-  onCancel
+  onCancelScheduled,
+  onCancelTrial
 }: {
   sub: BillingSubscription
-  scheduled: BillingPlanRef
-  onCancel?: () => Promise<void>
+  onCancelScheduled?: () => Promise<void>
+  onCancelTrial?: () => void
 }) {
   const t = useTranslations('Billing.plan')
   const { day } = useUtcDates()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cancel = async () => {
-    if (!onCancel || busy) return
+  const cancelScheduled = async () => {
+    if (!onCancelScheduled || busy) return
     setBusy(true)
     setError(null)
     try {
-      await onCancel()
+      await onCancelScheduled()
     } catch (e) {
       setError(t('cancelScheduledError', { error: (e as Error).message }))
     }
     setBusy(false)
   }
-  const plan = planLabel(scheduled)
+  const { scheduled, trialEndsAt } = sub
+  const plan = scheduled ? planLabel(scheduled) : null
+  const trialCancelled = !!trialEndsAt && scheduled?.tierId === FREE_TIER_ID
+  const trialAction = !!trialEndsAt && !scheduled && onCancelTrial
+  const detail = trialCancelled
+    ? t('trial.noCharge')
+    : trialEndsAt && !scheduled && sub.priceCents !== null
+      ? t('trial.monthlyPrice', { price: fmtCents(sub.priceCents) })
+      : null
+  const message = trialEndsAt
+    ? trialCancelled
+      ? t('trial.cancelled')
+      : plan
+        ? t('trial.switching', { plan })
+        : t('trial.renews')
+    : plan &&
+      (sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan }))
   return (
     <div
-      data-plan-scheduled="true"
-      className="flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-1.5 desktop:@max-[540px]:gap-1.5 desktop:@max-[540px]:px-2"
+      data-plan-scheduled={scheduled ? true : undefined}
+      data-plan-trial-status={trialEndsAt ? true : undefined}
+      className={`flex min-h-7 items-center gap-2 rounded-lg px-2 py-1 @max-[360px]/plan:min-h-11 ${
+        trialEndsAt ? 'bg-(--surface-sunken)' : 'bg-(--status-info-soft)'
+      }`}
     >
-      <Icon
-        name="calendar-clock"
-        size={14}
-        color="var(--status-info)"
-        className="flex-none desktop:@max-[540px]:hidden"
-      />
-      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-4 wrap-anywhere">
-        {sub.trialEndsAt
-          ? scheduled.tierId === FREE_TIER_ID
-            ? t('trial.cancelled', { date: day(sub.trialEndsAt) })
-            : t('trial.switching', { plan, date: day(sub.trialEndsAt) })
-          : sub.paidThrough
-            ? t('switching', { plan, date: day(sub.paidThrough) })
-            : t('switchingAtRenewal', { plan })}
+      {!trialEndsAt && (
+        <Icon
+          name="calendar-clock"
+          size={14}
+          color="var(--status-info)"
+          className="flex-none desktop:@max-[260px]/plan:hidden"
+        />
+      )}
+      <div className="min-w-0 flex-1 font-sans text-[12.5px] leading-4 font-medium wrap-anywhere">
+        {trialEndsAt ? <strong className="font-semibold">{message}</strong> : message}
+        {detail && (
+          <span className="font-normal text-(--text-secondary) @max-[360px]/plan:block">
+            <span className="@max-[360px]/plan:hidden" aria-hidden="true">
+              &#32;·&#32;
+            </span>
+            {detail}
+          </span>
+        )}
         {error && (
           <span role="alert" className="mt-1 block font-normal text-(--status-error)">
             {error}
           </span>
         )}
-      </span>
-      {onCancel && (
-        <button type="button" className="lnk" disabled={busy} onClick={() => void cancel()}>
-          {sub.trialEndsAt && scheduled.tierId === FREE_TIER_ID ? t('trial.undo') : t('cancelScheduled')}
+      </div>
+      {trialAction && (
+        <button
+          type="button"
+          className="lnk max-w-[41%] text-end"
+          data-plan-cancel-trial="true"
+          onClick={onCancelTrial}
+        >
+          {t('trial.cancel')}
+        </button>
+      )}
+      {scheduled && onCancelScheduled && (
+        <button
+          type="button"
+          className="lnk max-w-[41%] text-end"
+          disabled={busy}
+          onClick={() => void cancelScheduled()}
+        >
+          {trialCancelled ? t('trial.undo') : trialEndsAt ? t('trial.undoSwitch') : t('cancelScheduled')}
         </button>
       )}
     </div>

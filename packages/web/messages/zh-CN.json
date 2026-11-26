@@ -5777,7 +5777,14 @@
           "replacesScheduled": "立即付费会取代试用结束时换到 {plan} 的预约。",
           "atEnd": "{date}（试用结束）",
           "firstCharge": "首次扣费",
-          "cancelNote": "不会扣费。{date} 之前可随时撤销。",
+          "cancelTitle": "取消试用？",
+          "cancelSummary": "你可以继续使用 <strong>{plan} 至 {date}</strong>。之后将切换到 <strong>{free}</strong>，无需支付订阅费。",
+          "monthlyLimit": "每月会话上限",
+          "historyRetention": "历史记录保留",
+          "historyWarning": "从 {date} 起，将删除超过 {days, plural, other {# 天}}的会话历史。",
+          "cancelNote": "你可以在 {date} 前前往账单页面撤销取消。",
+          "keep": "保留试用",
+          "confirmCancel": "确认取消",
           "confirmingCard": "正在确认信用卡…",
           "started": "试用已开始",
           "until": "{plan} 试用至 {date}。",
@@ -5789,11 +5796,13 @@
       "trial": {
         "badge": "试用中",
         "cancel": "取消试用",
-        "undo": "撤销",
-        "price": "<amount>免费</amount> · 之后 {price} / 月",
-        "priceCancelled": "<amount>免费</amount>试用",
-        "cancelled": "试用 {date} 结束 · 之后回到 Free，不会扣费",
-        "switching": "试用 {date} 结束时切换到 {plan}"
+        "undo": "撤销取消",
+        "undoSwitch": "撤销套餐切换",
+        "renews": "开始付费订阅",
+        "monthlyPrice": "{price}/月",
+        "cancelled": "试用结束后转为 Free",
+        "noCharge": "不收订阅费",
+        "switching": "切换到 {plan}"
       }
     }
   },
