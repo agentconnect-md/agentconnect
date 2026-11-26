@@ -107,6 +107,7 @@ artifacts exist.
 | D22 | The viewer has three places: the right dock, the left conversation pane, and a standalone page; it opens on the side opposite the card (§11.2)                       |
 | D23 | On desktop, the viewer opens by itself when the agent publishes in the session being watched                                                                         |
 | D24 | Rollout in five steps (§14)                                                                                                                                          |
+| D25 | An update names the revision it was built on; one built on a superseded revision is refused, and the agent merges and publishes again (§5.6)                         |
 
 Also settled, with details in their sections: single-file revisions are read through
 short-lived presigned URLs and HTML sites through a random public prefix (§5.2); the feature
@@ -128,13 +129,15 @@ The Control Plane stores metadata only, never file bytes.
 | `ownerIdentity`              | The owner as a namespaced identity, as `session_meta.ownerIdentity` (§6.1); nullable            |
 | `visibility`, audience scope | `private`, `org`, `external` with its recorded source scope, or `editors` with its agent (§6.2) |
 | `originSessionId`            | The session it was created in; used for the back link only, and may dangle after a purge        |
-| `latestRevision`             | Number of the newest revision                                                                   |
+| `latestRevision`             | Number of the newest ready revision; it only moves forward (§5.6)                               |
 
 **Revision**
 
 | Field                                    | Meaning                                                                       |
 | ---------------------------------------- | ----------------------------------------------------------------------------- |
-| `artifactId`, `number`                   | Numbered from 1                                                               |
+| `artifactId`, `number`                   | Numbered from 1 and increasing; a number can be skipped (§5.6)                |
+| `state`                                  | `pending` while its files upload, then `ready`; only a ready revision opens   |
+| `baseRevision`                           | The revision an update was built on; null for revision 1 and a replacement    |
 | `manifest`                               | Entry path, and each file's relative path, SHA-256, size and media type       |
 | `storageMode`, `storagePrefix`           | Where the bytes live and whether that prefix is publicly readable (§5.2)      |
 | `producedByAgentId`, agent name snapshot | The producer; the snapshot keeps the name readable after the agent is deleted |
@@ -223,13 +226,15 @@ in the operator's bucket indefinitely; publishing is the explicit act that puts 
    session files directory; `.git`, escapes and symlink escapes refused), lists the files,
    checks §10.2's limits and §5.4's path rules, and hashes every file.
 3. The daemon sends the manifest to the CP. The CP checks that the daemon is placed on the
-   agent, that the session belongs to the agent and that the organization's limit is not
-   reached, records a pending revision, and returns one PUT per file, signed for its length
-   and checksum.
+   agent, that the session belongs to the agent, that the organization's limit is not
+   reached and, for an update, that its base is still the latest revision (§5.6). It records
+   a pending revision under the next number and returns one PUT per file, signed for its
+   length and checksum.
 4. The daemon uploads. A sandboxed agent's files travel over the existing shim channel; the
    pod holds no credentials.
-5. The daemon reports completion; the CP marks the revision ready and returns the artifact
-   id, revision number and console link.
+5. The daemon reports completion. The CP checks every object against the manifest and, for
+   an update, checks the base again while holding the artifact's row lock (§5.6). It then
+   marks the revision ready and returns the artifact id, revision number and console link.
 
 Bytes go daemon → bucket → browser; the CP only signs and records, as for every other
 transfer. The publish, complete and fetch frames are advertised under a CP feature,
@@ -305,6 +310,76 @@ store: in the Compose HTTPS overlay the console and CP, the identity provider an
 share one host on different ports, and cookies are not separated by port; the chart puts
 the store on a sibling host of the same site. Settling this is open question P2, and step 2
 does not ship until it is settled.
+
+### 5.6 Concurrent updates
+
+People never edit an artifact's content, and only the agent that produced an artifact
+appends to it (§7.2). That agent serves many sessions, though, so two of them can fetch the
+same revision, change it separately and publish. Revisions are immutable, so no bytes are
+overwritten either way. What can be lost is a change: without a rule, the later revision
+becomes the latest without the other session's work, and nobody is told. So an update
+states what it was built on (D25).
+
+**The rule.** A publish to an existing artifact carries one of two things:
+
+- A **base revision**: the revision the agent fetched, or last published, and then changed.
+  The publish is accepted only while that revision is still the latest.
+- **Replace**: the content was not derived from the current revision and is meant to stand
+  in for it, such as a report a cron job regenerates. No base is compared.
+
+The CP checks twice:
+
+| When                                             | Check                                                                                            | Why                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| At step 3, before any PUT is signed              | A base equals `latestRevision`                                                                   | A publish that is already stale uploads nothing           |
+| At step 5, while holding the artifact's row lock | A base still equals `latestRevision`; a replacement finds no ready revision with a higher number | Two publishes that both passed step 3 cannot both succeed |
+
+Of two concurrent updates, the one that completes first becomes the latest and the other is
+refused. Revisions therefore become ready in number order, and `latestRevision` only moves
+forward. A number is taken at step 3, under the same row lock, which also gives each
+publish its own storage prefix. A publish that is refused at step 5, or abandoned, leaves
+its number unused, so numbers can skip.
+
+**What the refusal carries.** It names the rule and describes the revision that got there
+first: its number, the agent that produced it and when. The CP holds both manifests, so it
+also lists the paths added, changed and removed between the base and the latest, up to a
+cap. If the base is no longer kept (§10.1), only the latest is described.
+
+**What the agent does.** It fetches the latest revision, reapplies its own change to it,
+and publishes again with that revision as the base. A fetch lands in a directory of its own
+per revision (§7.1), so it never replaces the files the agent was working on. If the person
+wants their version to stand regardless, the agent publishes it as a replacement. Nothing
+is merged automatically: content never reaches the CP, and the agent is the one that knows
+what its change meant.
+
+**Other races.**
+
+- **Retries.** A replayed idempotency key is answered from the revision it recorded before
+  any comparison, so retrying a publish that already succeeded returns that revision, not a
+  refusal. A revision refused at step 5 is closed and its key released, so publishing the
+  same content again starts a new revision.
+- **Deletion.** Deleting an artifact wins over a publish still uploading to it: its
+  completion finds no artifact and is refused. PUTs signed before the deletion can still
+  land afterwards, so the deletion is recorded and the artifact's prefix is cleared once
+  more after those URLs have expired.
+- **Limits.** A pending revision's bytes count toward the organization total from step 3,
+  so concurrent publishes cannot pass the limit together.
+- **Title and audience.** These are single fields changed by people; the last write wins.
+
+**Compatibility.** The base and the replace mark travel in the publish frame behind a CP
+feature of their own, so a daemon sends them only to a CP that checks them. A publish that
+carries neither is treated as a replacement, which is what a daemon older than this rule
+sends.
+
+**The object store takes no part.** Three of its mechanisms were considered and left out:
+
+- _Bucket versioning_ versions one object at a time, while a revision is a set of files
+  that must agree. It is also a switch on the whole bucket, which the Source Cache and file
+  transfers share, and it turns every delete into a marker, which breaks D13.
+- _Conditional writes_ would add nothing: every PUT is already signed for its length and
+  checksum, under a prefix only that publish uses.
+- _Server-side copies of unchanged files_ would save upload bandwidth, not correctness. It
+  can be added later by having step 3 return PUTs only for the files that changed.
 
 ## 6. Ownership and audience
 
@@ -383,17 +458,18 @@ sees: an artifact is a deliverable the organization may still need, not a conver
 
 ### 7.1 Six tools
 
-| Tool    | Input                                                                             | Effect                                                                                                                          |
-| ------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Publish | Path (file or directory), title, entry file for a directory, optional artifact id | Creates an artifact, or appends a revision to the given one. Returns the id, revision number, console link and current audience |
-| Fetch   | Artifact id, optional revision                                                    | Puts that revision's files into the session's `outputs/`                                                                        |
-| List    | None                                                                              | The artifacts the agent may see, with their latest revision                                                                     |
-| Delete  | Artifact id                                                                       | Deletes the artifact: every revision, its bytes and its shares                                                                  |
-| Share   | Artifact id, revision, audience                                                   | Creates a share and returns its link                                                                                            |
-| Unshare | Share id                                                                          | Revokes one share                                                                                                               |
+| Tool    | Input                                                                                                                                              | Effect                                                                                                                          |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Publish | Path (file or directory), title, entry file for a directory, optional artifact id; with an artifact id, the base revision or a replace mark (§5.6) | Creates an artifact, or appends a revision to the given one. Returns the id, revision number, console link and current audience |
+| Fetch   | Artifact id, optional revision                                                                                                                     | Puts that revision's files into a directory of its own under the session's `outputs/`, and returns its number                   |
+| List    | None                                                                                                                                               | The artifacts the agent may see, with their latest revision                                                                     |
+| Delete  | Artifact id                                                                                                                                        | Deletes the artifact: every revision, its bytes and its shares                                                                  |
+| Share   | Artifact id, revision, audience                                                                                                                    | Creates a share and returns its link                                                                                            |
+| Unshare | Share id                                                                                                                                           | Revokes one share                                                                                                               |
 
 Fetch is what makes "the agent can always revise" hold: workspaces are reclaimed, and the
-stored copy is the reliable source.
+stored copy is the reliable source. Each fetched revision gets its own directory, so
+fetching a newer revision to merge with leaves the agent's working files alone (§5.6).
 
 ### 7.2 What an agent can reach
 
@@ -509,15 +585,16 @@ browser and components the console already has:
 
 ### 10.1 Retention
 
-| Case                            | Rule                                                                                            |
-| ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| The artifact                    | Never expires on its own; kept until deleted                                                    |
-| An older revision               | Removed once older than the session retention window (`sessions.retention`, 90 days by default) |
-| The latest revision             | Always kept                                                                                     |
-| A revision with an active share | Kept                                                                                            |
-| The session is purged           | No effect                                                                                       |
-| The agent is deleted            | No effect                                                                                       |
-| Deletion                        | Removes every revision, its bytes and its shares at once; not recoverable                       |
+| Case                               | Rule                                                                                            |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
+| The artifact                       | Never expires on its own; kept until deleted                                                    |
+| An older revision                  | Removed once older than the session retention window (`sessions.retention`, 90 days by default) |
+| The latest revision                | Always kept                                                                                     |
+| A revision with an active share    | Kept                                                                                            |
+| A revision that never became ready | Removed once its upload URLs have expired, plus a grace period; refused or abandoned alike      |
+| The session is purged              | No effect                                                                                       |
+| The agent is deleted               | No effect                                                                                       |
+| Deletion                           | Removes every revision, its bytes and its shares at once; not recoverable                       |
 
 The CP deletes the objects first and the rows second, so a failed delete is retried, as for
 session snapshots. `sessions.retention` is a daemon-side setting today; which value the CP
@@ -528,7 +605,7 @@ uses is open question P3.
 - A revision has a file-count and a total-size limit; a publish over either is refused as a
   whole, naming the rule.
 - An organization has a total artifact size limit; once reached, new publications are
-  refused and nothing old is evicted.
+  refused and nothing old is evicted. Pending revisions count toward it (§5.6).
 - A revision holds at most 200 files and 50 MB (`ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_BYTES` in
   the protocol package); the organization total is open question P4.
 
@@ -621,6 +698,8 @@ keeps its composer:
 | P2  | What is same-site with the store origin, and what a page opened there outside the sandbox can reach: the console's and the identity provider's cookies (the Compose HTTPS overlay shares one host across ports), the store's own administration console | Settle before step 2. Where the store is same-site with the console, serve `artifact-pub/` from a host that is not, or offer only single files and non-HTML entries |
 | P3  | Which retention value the CP applies to revisions                                                                                                                                                                                                       | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything                                              |
 | P4  | Limit values                                                                                                                                                                                                                                            | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan                                             |
+| P5  | Whether the daemon also checks that the session fetched or published the base it names. The refusal tells the agent the latest number, so an agent can name it without merging (§5.6)                                                                   | Not at first: the refusal tells the agent to fetch and reapply. Add the check if agents are seen skipping the merge                                                 |
+| P6  | Where a fetched revision lands. Today one directory per artifact under `outputs/` is replaced by each fetch, which would discard the working copy during a merge (§5.6)                                                                                 | One directory per revision under `outputs/`, named by the artifact and the revision number. The extra entries in the session's outputs list are accepted            |
 
 ## 14. Rollout
 
@@ -637,3 +716,7 @@ Each step can be verified on its own:
 Step 1 alone is a complete path; each later step adds to it. Multi-file pages change
 deployment configuration, so they are their own step and can be rolled back alone. Sharing
 and management do not block using artifacts.
+
+Step 1 shipped before §5.6 was written: there, two concurrent updates both succeed and the
+higher number is the latest. The base revision check follows as its own change and waits
+for no later step.
