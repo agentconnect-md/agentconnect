@@ -5306,7 +5306,6 @@ model SessionFileSnapshot {
 
 enum ArtifactStorageMode {
   signed // read through short-lived per-file signed URLs (artifacts.md §5.2)
-  public // anonymous reads under a random public prefix (artifacts.md §5.2)
 }
 
 enum ArtifactRevisionState {

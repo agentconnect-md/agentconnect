@@ -202,6 +202,7 @@ describe('publishArtifact', () => {
 
   it('maps every refusal reason to a sentence the agent can act on', async () => {
     const cases: [string, RegExp, Record<string, unknown>?][] = [
+      ['not-enabled', /artifacts are not enabled on this deployment\. Use shareFile/],
       ['transfer-unavailable', /artifact storage is unavailable right now.*use shareFile/],
       ['session-unknown', /does not know this session yet/],
       ['session-denied', /may not use artifacts/],

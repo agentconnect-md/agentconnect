@@ -213,6 +213,8 @@ async function turnFor(ctx: SessionContext, port: ArtifactPort, name: string): P
 
 /** What each `ArtifactRefusalReason` tells the agent; the CP's own message follows where it adds detail. */
 const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
+  'not-enabled': (name) =>
+    `${name}: artifacts are not enabled on this deployment. Use shareFile to hand the file over in this conversation instead.`,
   'transfer-unavailable': (name) =>
     `${name}: artifact storage is unavailable right now — try again shortly. If it persists, use shareFile to hand ` +
     'the file over in this conversation instead.',

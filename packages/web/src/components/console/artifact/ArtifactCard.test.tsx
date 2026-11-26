@@ -72,6 +72,7 @@ async function renderCard(revisionNumber: number) {
 }
 
 beforeEach(() => {
+  window.__AC_ENV = { ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' }
   api.getArtifact.mockReset()
   download.run.mockReset()
   container = document.createElement('div')
@@ -80,6 +81,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete window.__AC_ENV
   act(() => root.unmount())
   container.remove()
 })
@@ -122,5 +124,23 @@ describe('ArtifactCard', () => {
     expect(card.textContent).toContain('may have been deleted, or you don’t have access')
     expect(card.querySelector('a')).toBeNull()
     expect(card.querySelector('button')).toBeNull()
+  })
+
+  it('shows a neutral not-enabled state without reading anything on a deployment without artifacts', async () => {
+    window.__AC_ENV = {}
+    const card = await renderCard(1)
+    expect(card.dataset.state).toBe('not-enabled')
+    expect(card.textContent).toContain('Old title')
+    expect(card.textContent).toContain('Artifacts are not enabled on this deployment')
+    expect(card.querySelector('a')).toBeNull()
+    expect(card.querySelector('button')).toBeNull()
+    expect(api.getArtifact).not.toHaveBeenCalled()
+  })
+
+  it('shows the same state when the Control Plane answers that artifacts are not enabled', async () => {
+    api.getArtifact.mockRejectedValue(new ApiError('not enabled', 409, 'ARTIFACTS_NOT_ENABLED'))
+    const card = await renderCard(1)
+    expect(card.dataset.state).toBe('not-enabled')
+    expect(card.querySelector('a')).toBeNull()
   })
 })

@@ -19,8 +19,8 @@ async function authorize(
 ): Promise<Authorized | null> {
   const orgId = frameOrgId(frame, conn)
   if (!orgId || !deps.artifacts) {
-    conn.sendError(frame.id, 'SCOPE_DENIED', 'this deployment cannot store artifacts', false, {
-      reason: 'transfer-unavailable'
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'artifacts are not enabled on this deployment', false, {
+      reason: 'not-enabled'
     })
     return null
   }

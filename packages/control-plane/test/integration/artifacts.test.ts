@@ -510,4 +510,22 @@ describe('artifact read routes', () => {
     })
     expect(file.statusCode).toBe(404)
   })
+
+  it('refuses every route as not enabled, whatever the artifact, on a deployment without the feature', async () => {
+    const h = harness()
+    const { agent, sessionId } = await agentAndSession()
+    const done = await publish(h, agent, sessionId)
+    const off = buildHttpApp(prisma, { DEFAULT_OWNER_ID })
+    opened.push(off)
+    for (const url of [
+      `${ORG}/artifacts/${done.artifactId}`,
+      `${ORG}/artifacts/${done.artifactId}/revisions/1`,
+      `${ORG}/artifacts/${done.artifactId}/revisions/1/file?path=index.html`,
+      `${ORG}/artifacts/${randomUUID()}`
+    ]) {
+      const res = await off.app.inject({ method: 'GET', url })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ code: 'ARTIFACTS_NOT_ENABLED' })
+    }
+  })
 })

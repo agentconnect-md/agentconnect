@@ -273,7 +273,9 @@ export type ArtifactListOk = z.infer<typeof ArtifactListOk>
 
 /** `details.reason` of an `error` reply to an artifact frame; a string on the wire so a newer CP's reason still parses. */
 export const ArtifactRefusalReason = z.enum([
-  /** The deployment has no transfer bucket, or it is unavailable now (retryable). */
+  /** The deployment does not offer artifacts: it has no transfer bucket or no content domain (artifacts.md §12). */
+  'not-enabled',
+  /** The transfer bucket is unavailable now (retryable). */
   'transfer-unavailable',
   /** The CP has no row for the session yet (retryable). */
   'session-unknown',

@@ -658,6 +658,6 @@ export interface HttpDeps {
   sharedImages?: SharedImageService
   /** Shared-file snapshots (agent-authored-attachments.md §4.1); absent ⇒ every snapshot read is not found. */
   sessionFiles?: Pick<SessionFileService, 'download'>
-  /** Artifacts (artifacts.md §8.1); absent ⇒ every artifact read is not found. */
+  /** Artifacts (artifacts.md §8.1, §12); absent ⇒ every artifact route answers 409 ARTIFACTS_NOT_ENABLED. */
   artifacts?: Pick<ArtifactService, 'fileDownload'>
 }

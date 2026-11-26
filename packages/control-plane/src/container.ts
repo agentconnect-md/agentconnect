@@ -1202,25 +1202,27 @@ export function buildContainer(
         now: () => clock.now()
       })
     : undefined
-  // Artifacts (artifacts.md §5.3): signed-prefix storage in the transfer bucket, so only with a bucket.
-  const artifacts = fileTransferBucket
-    ? createArtifactService({
-        transfer: fileTransferBucket.transfer,
-        artifacts: repos.artifact,
-        sessions: repos.session,
-        users: repos.user,
-        agents: repos.agent,
-        crons: repos.cron,
-        hooks: repos.hook,
-        orgs: repos.org,
-        // Lazy over `wsDeps` (assigned below), whose resolver tells a linked chat member from an unlinked one.
-        readAccess: (req, expectedOrgId) =>
-          wsDeps.readAccess?.(req, expectedOrgId) ??
-          Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
-        ...(webAppUrl ? { webAppUrl } : {}),
-        log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
-      })
-    : undefined
+  // Artifacts (artifacts.md §12): offered only with both a transfer bucket and a content domain.
+  const artifactsContentDomain = config.ARTIFACTS_CONTENT_DOMAIN
+  const artifacts =
+    fileTransferBucket && artifactsContentDomain
+      ? createArtifactService({
+          transfer: fileTransferBucket.transfer,
+          artifacts: repos.artifact,
+          sessions: repos.session,
+          users: repos.user,
+          agents: repos.agent,
+          crons: repos.cron,
+          hooks: repos.hook,
+          orgs: repos.org,
+          // Lazy over `wsDeps` (assigned below), whose resolver tells a linked chat member from an unlinked one.
+          readAccess: (req, expectedOrgId) =>
+            wsDeps.readAccess?.(req, expectedOrgId) ??
+            Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
+          ...(webAppUrl ? { webAppUrl } : {}),
+          log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
+        })
+      : undefined
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
   const sharedImages = createSharedImageService({
     ...(fileTransferBucket ? { transfer: fileTransferBucket.transfer } : {}),
@@ -2840,6 +2842,7 @@ export function buildContainer(
     runtimeConfig: {
       webchatProtocol: config.WEBCHAT_PROTOCOL,
       ahp: { enabled: config.AHP_MODE === 'on', publicAccess: config.AHP_PUBLIC_ACCESS },
+      ...(artifacts && artifactsContentDomain ? { artifactsContentDomain } : {}),
       ...(opts.deploymentConfig || gitlab
         ? {
             ...(opts.deploymentConfig ? { deploymentRevision: opts.deploymentConfig.revision } : {}),

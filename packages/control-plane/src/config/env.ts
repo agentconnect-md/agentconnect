@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { SESSION_POLICY_WRITER_SA_NAME, USAGE_COLLECTOR_SA_NAME } from '@agentconnect.md/protocol'
 import { composeCpPlatformEnv } from '../platforms/env.js'
 import { effectiveOrgKeyPrefix, orgKeyPrefixConflict } from '../secrets/scope.js'
+import { contentDomainConflicts, contentDomainProblem, type KnownOrigin } from '../artifacts/content-domain.js'
 
 const HttpOriginSchema = z
   .string()
@@ -341,6 +342,13 @@ const CoreConfigShape = {
   S3_REGION: z.string().default('auto'),
   // Console file transfer bucket (source-cache-file-transfer.md §7): one JSON document, parsed by file-transfer/config.ts.
   AC_FILE_TRANSFER: z.string().optional(),
+  // Artifact content domain (artifacts.md §5.5, §12): the bare domain whose wildcard serves revisions; artifacts are off without it.
+  ARTIFACTS_CONTENT_DOMAIN: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .optional()
+    .transform((v) => v || undefined),
   // Computer screenshot storage (computer-use.md §9): one JSON document, parsed by computer-screenshots/config.ts.
   AC_COMPUTER_SCREENSHOTS: z.string().optional(),
   // Managed computer quotas, metered volume size and egress choices (computer-use.md §15.4, §15.5): parsed by computer-plan/config.ts.
@@ -459,10 +467,65 @@ function validateSessionAccess(
   }
 }
 
+type ContentDomainEnv = Pick<
+  AppConfig,
+  | 'ARTIFACTS_CONTENT_DOMAIN'
+  | 'PUBLIC_WEB_URL'
+  | 'CORS_ORIGIN'
+  | 'PUBLIC_CP_URL'
+  | 'PUBLIC_RELAY_URL'
+  | 'PUBLIC_MCP_URL'
+  | 'OIDC_ISSUER'
+  | 'LOGTO_MGMT_ENDPOINT'
+  | 'S3_ENDPOINT'
+  | 'S3_PUBLIC_BASE_URL'
+  | 'AC_FILE_TRANSFER'
+>
+
+/** Every origin the deployment knows, for the content domain's same-site check (artifacts.md §5.5). */
+function knownOrigins(config: ContentDomainEnv): KnownOrigin[] {
+  const origins: KnownOrigin[] = []
+  const add = (name: string, url: string | undefined) => void (url && origins.push({ name, url }))
+  add('PUBLIC_WEB_URL', config.PUBLIC_WEB_URL)
+  for (const entry of config.CORS_ORIGIN?.split(',') ?? []) if (entry.trim() !== '*') add('CORS_ORIGIN', entry.trim())
+  add('PUBLIC_CP_URL', config.PUBLIC_CP_URL)
+  add('PUBLIC_RELAY_URL', config.PUBLIC_RELAY_URL)
+  add('PUBLIC_MCP_URL', config.PUBLIC_MCP_URL)
+  add('OIDC_ISSUER', config.OIDC_ISSUER)
+  add('LOGTO_MGMT_ENDPOINT', config.LOGTO_MGMT_ENDPOINT)
+  add('S3_ENDPOINT', config.S3_ENDPOINT)
+  add('S3_PUBLIC_BASE_URL', config.S3_PUBLIC_BASE_URL)
+  // A malformed document fails its own parse at boot; only its endpoints are read here.
+  try {
+    const transfer = JSON.parse(config.AC_FILE_TRANSFER ?? 'null') as Record<string, unknown> | null
+    for (const key of ['endpoint', 'publicEndpoint'] as const) {
+      const value = transfer?.[key]
+      if (typeof value === 'string') add(`AC_FILE_TRANSFER.${key}`, value)
+    }
+  } catch {}
+  return origins
+}
+
+// A content domain the Public Suffix List cannot classify, or one same-site with a known origin, refuses to start.
+function validateContentDomain(config: ContentDomainEnv, ctx: z.RefinementCtx): void {
+  const domain = config.ARTIFACTS_CONTENT_DOMAIN
+  if (!domain) return
+  const issue = (message: string) =>
+    ctx.addIssue({ code: 'custom', path: ['ARTIFACTS_CONTENT_DOMAIN'], message: `ARTIFACTS_CONTENT_DOMAIN ${message}` })
+  const problem = contentDomainProblem(domain)
+  if (problem) return issue(problem)
+  if (!resolveWebAppUrl(config))
+    return issue('requires PUBLIC_WEB_URL, so the console origin it is checked against is known')
+  const conflicts = contentDomainConflicts(domain, knownOrigins(config))
+  if (conflicts.length)
+    issue(`must be a registrable domain of its own, never same-site with the deployment: ${conflicts.join('; ')}`)
+}
+
 /** Cross-field checks the flat schema can't express — fail-fast at boot, before
  *  the first secret write could silently land plaintext next to sealed rows. */
 const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
   .superRefine(validateSessionAccess)
+  .superRefine(validateContentDomain)
   .superRefine((config, ctx) => {
     if (config.WEBCHAT_PROTOCOL === 'ahp' && config.AHP_MODE !== 'on') {
       ctx.addIssue({ code: 'custom', path: ['WEBCHAT_PROTOCOL'], message: 'AHP Webchat requires AHP_MODE=on' })

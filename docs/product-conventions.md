@@ -836,6 +836,12 @@ revision is no longer kept says so and still opens the artifact. A card for an a
 viewer cannot open, whether it was deleted or they are outside its audience, says only that
 it is unavailable: the console cannot tell those apart and must not imply which it is.
 
+Artifacts are offered only on a deployment with both a transfer bucket and a content domain
+([artifacts.md](designs/artifacts.md) §12). Elsewhere the card for an existing publication,
+and the artifact's own page, say neutrally that artifacts are not enabled on this deployment:
+they read nothing, offer no **Open** or **Download**, and never suggest the artifact was
+deleted or is out of reach. The state lifts by itself once the deployment configures both.
+
 **Open** goes to the artifact's own page, `/<org slug>/artifacts/<id>?revision=<n>`, the same
 link the agent writes. The URL names the revision shown, so a reload or a shared link keeps
 it; without one the latest opens, and a revision that is no longer kept opens the latest
@@ -916,7 +922,8 @@ conversation, because it would retry and post them twice.
 
 ### Publishing an artifact (agent tools)
 
-Toward a control plane that serves artifacts, every session except a follow-up's check,
+Toward a control plane that serves artifacts, which needs a transfer bucket and a content
+domain, every session except a follow-up's check,
 organization research and a getting-to-know task gets three tools beside `shareFile`
 ([artifacts.md](designs/artifacts.md) §7). `publishArtifact` turns a file or a directory
 from the workspace or the session files into a versioned deliverable people open in the
@@ -943,7 +950,7 @@ conversation can reach.
 - **Fetch replaces one directory.** A fetch writes into `files:outputs/<title>-<id>/`,
   verifying each file's size and checksum, and replaces what an earlier fetch of the same
   artifact left there only after every file arrived; a failed fetch changes nothing.
-- **Refusals say what to do.** Missing storage, an unknown session, an artifact the
+- **Refusals say what to do.** Artifacts not enabled on the deployment, missing storage, an unknown session, an artifact the
   conversation cannot reach, one the agent did not create, an oversized file and an
   incomplete upload each get their own sentence.
 

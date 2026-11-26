@@ -85,12 +85,20 @@ describe('artifact/* handlers', () => {
     expect(artifacts.list).not.toHaveBeenCalled()
   })
 
-  it('refuses everything on a deployment without a bucket, naming the reason', async () => {
+  it('refuses every frame on a deployment where artifacts are not enabled, naming the reason', async () => {
     const { conn, c } = setup()
-    await handleArtifactPublishBegin(begin, c, { agent: { get: vi.fn() } } as unknown as DaemonWsDeps)
-    expect(conn.sendError).toHaveBeenCalledWith(begin.id, 'SCOPE_DENIED', expect.any(String), false, {
-      reason: 'transfer-unavailable'
-    })
+    const off = { agent: { get: vi.fn() } } as unknown as DaemonWsDeps
+    for (const [frame, handler] of [
+      [begin, handleArtifactPublishBegin],
+      [complete, handleArtifactPublishComplete],
+      [fetch, handleArtifactFetch],
+      [list, handleArtifactList]
+    ] as const) {
+      await handler(frame, c, off)
+      expect(conn.sendError).toHaveBeenLastCalledWith(frame.id, 'SCOPE_DENIED', expect.any(String), false, {
+        reason: 'not-enabled'
+      })
+    }
   })
 
   it('passes a refusal’s code, retryability, reason and details through', async () => {

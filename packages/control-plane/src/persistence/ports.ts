@@ -1037,7 +1037,7 @@ export interface ArtifactManifest {
   files: ArtifactManifestFile[]
 }
 
-export type ArtifactStorageMode = 'signed' | 'public'
+export type ArtifactStorageMode = 'signed'
 export type ArtifactRevisionState = 'pending' | 'ready'
 
 /** An agent-published deliverable (artifacts.md §4); its audience was copied from the session at creation. */

@@ -167,3 +167,13 @@ export function markdownImageRefs(markdown: string): string[] {
     for (const match of markdown.matchAll(re)) refs.add((match[1] ?? match[2])!)
   return [...refs]
 }
+
+/** The CP's refusal on a deployment that does not offer artifacts, told apart from a 404 by its code (artifacts.md §12). */
+export const ARTIFACTS_NOT_ENABLED = 'ARTIFACTS_NOT_ENABLED'
+
+/** The content domain revisions render under, published only while the deployment offers artifacts. */
+export function artifactsContentDomain(): string | undefined {
+  const domain =
+    typeof window === 'undefined' ? process.env.ARTIFACTS_CONTENT_DOMAIN : window.__AC_ENV?.ARTIFACTS_CONTENT_DOMAIN
+  return domain || undefined
+}

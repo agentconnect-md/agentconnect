@@ -168,6 +168,39 @@ spec:
           port: {{ .Values.controlPlane.port }}
 {{- end }}
 {{- /*
+Artifact content domain (`artifacts.contentDomain` set; docs/designs/artifacts.md §5.5): every
+revision renders at its own `<label>.<contentDomain>` origin, so the route carries the wildcard
+host with web as its ONLY backend. Never add the wildcard to the website route above: that route
+also sends /cp to the CP, which must never be reachable on a host that serves artifact pages.
+Wildcard DNS, a wildcard certificate and a gateway listener accepting `*.<contentDomain>` are
+provisioned at the edge, outside this chart.
+*/ -}}
+{{- if and .Values.route.enabled .Values.artifacts.contentDomain }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-artifacts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.route.gateway.name }}
+      namespace: {{ .Values.route.gateway.namespace }}
+      sectionName: {{ .Values.route.gateway.sectionName }}
+  hostnames:
+    - {{ printf "*.%s" (include "agentconnect.artifactsContentDomain" .) | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "agentconnect.fullname" . }}-web
+          port: {{ .Values.web.port }}
+{{- end }}
+{{- /*
 Relay routes, rendered only when relay.enabled. Public paths on
 the relay host (relay.host, else apiHost, else the website host):
   /mcp/:providerId              → relay pool (MCP reverse proxy; bearer grant key.
