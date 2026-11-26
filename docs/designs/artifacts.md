@@ -259,7 +259,9 @@ the chart and its own site block in Compose, with web as the only backend; it is
 to the console's route. Web's request proxy checks the `Host` first and covers every path on
 the content domain, including `_next` and the icon paths its matcher skips today: it answers
 only `/__ac/shim` and `/__ac/sw.js`, with their own strict headers and no cookies, and 404 for
-everything else. The identity provider's redirect URIs never include the content domain, so
+everything else. The shim carries `frame-ancestors` naming the console's origin. The worker
+script carries `Service-Worker-Allowed: /`, without which a script under `/__ac/` may only
+control `/__ac/`. The identity provider's redirect URIs never include the content domain, so
 a sign-in cannot complete on it even if a page were served by mistake.
 
 **One origin per revision.** Revision `r` of artifact `a` renders at
@@ -279,36 +281,56 @@ access is decided when the console fetches the bytes, not by the origin.
    `X-Frame-Options: SAMEORIGIN` for older browsers). `allow-top-navigation`, `allow-popups`
    and `allow-forms` stay withheld.
 2. The shim accepts messages only from the console's origin. It registers `/__ac/sw.js` with
-   scope `/` and hands it a message port to the console.
-3. The shim loads the entry in a nested frame of the same origin. Every request that frame
-   makes for that origin, including navigations, goes to the service worker, which asks the
-   console for the path over the port.
+   scope `/` and tells the console it is ready.
+3. The console answers with a message port bound to the revision and the path to open. The
+   shim hands the port to the worker and loads that path in a nested frame of the same origin
+   once the worker acknowledges the port, so the first navigation never races it. Every
+   request the nested frame makes for that origin, including navigations, goes to the worker,
+   which asks the console for the path over the port. The worker leaves `/__ac/` paths to the
+   network: a reload of the shim is itself in its scope.
 4. The console trusts nothing that arrives on the port: the shim, the worker and the
    artifact share one origin. It binds the port to the revision it embedded and answers only
    paths in that revision's manifest, fetching the bytes through their signed URLs, as for a
    download; the worker returns them typed by the manifest.
    A navigation to a path that is not in the manifest returns the entry, so a single-page app
-   with history routing works; any other missing path is a 404.
-5. The shim reports the nested frame's path. The console validates it against the manifest,
-   coalesces rapid changes so a page cannot flood its history, and keeps it in its own URL, so
-   back, forward and reload work.
-6. A browser stops an idle service worker, which loses its port. The worker asks its shim
-   for a new one on wake, and the shim hands it over again.
+   with history routing works; any other missing path is a 404. The worker passes a `Range`
+   header through, and the console answers it with a 206, taking the size from the manifest
+   and capping an open-ended range so media streams in pieces. It must also answer an
+   unranged request whole: Chromium opens media with `bytes=0-`, but WebKit's first requests
+   carry no range.
+5. The shim reports the nested frame's path. The console checks that it is a path outside
+   `/__ac/` (a history route need not be in the manifest), coalesces rapid changes so a page
+   cannot flood its history, and keeps it in its own URL, so back, forward and reload work.
+6. A worker loses its ports when the browser stops it while idle, and a port whose console
+   went away, after a reload or a closed tab, fails silently. So the worker drops a port once
+   its shim is gone, gives each request a timeout and one retry, and when it holds no live
+   port asks every shim of its origin for one (`clients.matchAll`, including uncontrolled
+   clients). That shim asks the console, which issues a fresh port bound to the same revision.
+   Any shim's port will do, because an origin is one revision.
 
 Multi-page sites, relative and root-relative references, ES modules and `fetch` of local
 files all work, because each revision is a whole origin.
 
-**Opened directly.** The worker answers only clients its shim introduced, and keeps no bytes;
-anything else falls through to the web service, which answers 404. So a content-domain
-address opened in its own tab shows nothing in every browser, whether or not that browser
-partitions service workers, and no artifact page ever runs outside the console's frame.
+**Opened directly.** The worker never answers a top-level navigation, and keeps no bytes, so
+a content-domain address opened in its own tab falls through to the web service, which
+answers 404, whether or not the browser partitions service workers. A worker cannot tell
+which frame created a client: the fetch event for the shim's own navigation of the nested
+frame carries no client id in any engine. So a foreign page that frames a content-domain
+address is stopped by a header instead: every navigation response the worker builds carries
+`Content-Security-Policy: frame-ancestors 'self' <console origin>`. With partitioned workers,
+as all three engines ship them, that foreign frame finds no worker and gets the 404 anyway;
+with partitioning off, the console's worker answered it, and only the header kept the page
+out. No artifact page runs outside the console's frame.
 
 **A browser without third-party service workers** gets the entry rendered as `srcdoc` in a
 sandboxed frame, as in step 1, with a notice that the rest of the site cannot load in that
-browser, and download stays available.
+browser, and download stays available. The shim tells the console when it has no
+`navigator.serviceWorker` or registration fails, as where a browser or a policy turns service
+workers off.
 
-Pages may make outbound requests (D20); no CSP is injected. With the console and share pages
-refusing foreign framing, what that leaves open is limited to the artifact and its viewer:
+Pages may make outbound requests (D20); no CSP limits what a page loads, and `frame-ancestors`
+is the only policy the worker adds. With the console and share pages refusing foreign
+framing, what that leaves open is limited to the artifact and its viewer:
 
 | Risk                 | Description                                                                                                                                                |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -643,12 +665,42 @@ the loopback address with a locally trusted certificate.
 
 ## 13. Open questions
 
-| #   | Question                                                                                                                                                                                                                                                          | Proposal                                                                                                                        |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | Manifest in the database or as an object in the bucket                                                                                                                                                                                                            | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
-| P2  | Do current Chrome, Safari and Firefox let the shim register a service worker in its partitioned third-party frame and route the nested frame's requests through it, including navigations, reload, a worker restarted after idling, and Range requests for media? | Prototype before building step 2; a browser that cannot gets the §5.5 fallback                                                  |
-| P3  | Which retention value the CP applies to revisions                                                                                                                                                                                                                 | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything          |
-| P4  | Limit values                                                                                                                                                                                                                                                      | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan         |
+| #   | Question                                               | Proposal                                                                                                                        |
+| --- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Manifest in the database or as an object in the bucket | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
+| P3  | Which retention value the CP applies to revisions      | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything          |
+| P4  | Limit values                                           | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan         |
+
+### 13.1 Settled: P2, the content domain in current engines
+
+The question was whether current browsers let the shim register a service worker in its
+partitioned third-party frame and route the nested frame's requests through it. They do. A
+prototype of §5.5 (`scripts/artifact-content-domain-check/`) ran on 2026-11-26 with the
+console on `http://127.0.0.1:<port>` and revisions on `http://a1r1.localhost:<port>`, which
+every engine treats as a secure context and as cross-site from the console.
+
+| Check                                                                                 | Chromium 159.0.8154.6 | Firefox 159.0     | WebKit 27.2                                   |
+| ------------------------------------------------------------------------------------- | --------------------- | ----------------- | --------------------------------------------- |
+| The worker registers in the sandboxed cross-site frame, partitioned by top-level site | Pass                  | Pass              | Pass                                          |
+| Link navigation, root-relative script, ES module and `fetch` through the port         | Pass                  | Pass              | Pass                                          |
+| History route returns the entry; a missing subresource is a 404                       | Pass                  | Pass              | Pass                                          |
+| Console reload and nested-frame reload                                                | Pass                  | Pass              | Pass                                          |
+| A lost port is replaced on request                                                    | Pass                  | Pass              | Pass                                          |
+| A stopped worker restarts and gets a new port                                         | Pass (stopped by CDP) | Pass (idle limit) | Not stopped: 5 minutes idle with live clients |
+| Media seek through `Range`                                                            | Pass                  | Pass              | Pass                                          |
+| A content address in its own tab is the server's 404                                  | Pass                  | Pass              | Pass                                          |
+| An artifact page framing the console is blocked                                       | Pass                  | Pass              | Pass                                          |
+
+With partitioning off, as in Playwright's defaults, a foreign page framing a content address
+got the artifact from the console's worker in Chromium and Firefox until the worker added
+`frame-ancestors`; §5.5 now requires it.
+
+These are Playwright 1.65.1's builds. Playwright turns Chromium's storage partitioning off
+and sets Firefox's `network.cookie.cookieBehavior` to 4 by default; the check restores both
+to the shipped defaults. Its WebKit is the Linux port, not Safari: Safari adds Intelligent
+Tracking Prevention, which can delete a site's script-writable storage after seven days
+without interaction. That costs only a registration, since the shim registers on every load,
+but step 2 still needs one manual pass in Safari on macOS and iOS.
 
 ## 14. Rollout
 
