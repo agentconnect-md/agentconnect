@@ -104,6 +104,17 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
    agent's GET is a short-lived bearer URL that may leave the cluster through the model provider.
 10. **Operator-supplied uploads and config**: agent/org icon uploads (`sharp`, `@resvg/resvg-js`),
     Slack manifests, integration credentials entered in the console or Setup Server.
+11. **Artifact pages** (`artifacts.md` §5.5, `web/src/proxy.ts`, `web/src/lib/artifact-content/`): an
+    HTML artifact is agent-authored and fully untrusted. Its target home is the content domain, a
+    registrable domain of its own and so cross-site from the console, at one origin per revision
+    (`a<artifact id>r<revision>.<content domain>`). Web answers a content host with `/__ac/shim` and
+    `/__ac/sw.js` and nothing else, and the shim's service worker asks the console for every file over
+    a `MessagePort`. The shim, the worker and the page share an origin, so they are one trust domain:
+    the page can run code in the shim's realm, take its revision's port and post as the shim. **Not
+    yet built** (#4442 phase 2, the viewer): the console still renders an HTML artifact as `srcdoc`
+    and never embeds the content domain, so no port exists and no artifact byte reaches it. Once it
+    does, the console frames the shim with `allow-scripts allow-same-origin` only, fetches each file
+    through a GET the CP presigns after the audience check, and its end of the port is the boundary.
 
 ## Invariants worth attacking
 
@@ -212,6 +223,39 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   and state. While a platform's session access sync is off, every member sees a Slack conversation's
   sessions, and with them a private channel's observations: an accepted consequence, not a finding.
 
+- **Artifact content domain** (`artifacts.md` §5.2, §5.5, §12): nothing renders on the bucket origin;
+  objects are private and read only through presigned GETs with the `attachment` download signature.
+  A content host answers only `/__ac/shim` and `/__ac/sw.js`, on every path including `_next` and the
+  icon paths, without cookies, and 404 for any other path, method or malformed label
+  (`content-host.ts`); that holds only while the content host's route has web as its only backend
+  (the chart's own HTTPRoute, the Caddy site block in `self-host-caddy-https.md`). The worker never
+  answers a top-level or non-frame navigation, `/__ac/`, another origin or a write, and serves
+  subresources only to nested frames and workers (`worker.ts` `fetchRoute`, `servesClient`). Every
+  navigation it builds carries `frame-ancestors 'self' <console origin>`: with two revisions open in
+  one browser, each worker sits in the console's partition and answers a frame the other revision's
+  page makes, and only that header keeps the page out. The CP refuses a content domain that is an IP
+  address, a single label, `localhost`, a public suffix, or same-site with any origin the deployment
+  knows (`control-plane/src/artifacts/content-domain.ts`, `config/env.ts`). An agent reaches only
+  artifacts the current session's whole audience may see (`authorization/artifact-policy.ts`
+  `agentCanReachArtifact`, applied in `artifacts/service.ts` and `artifact.repo.ts`). The CP
+  authenticates API calls by bearer token; its only cookies are one-shot `SameSite=Lax; HttpOnly` OAuth
+  binding cookies (Slack install, GitLab, MCP provider), which ride only on a top-level navigation the
+  artifact sandbox withholds, so a credentialed request from an artifact carries nothing the CP accepts.
+- **Artifact controls not yet built** (`artifacts.md` §5.5, §6.3, §7.3, §8.3; #4442 phases 2, 4 and 5):
+  these are design requirements with no code at this head; report one only against code that claims to
+  implement it. The viewer: the console sandboxes the shim frame without `allow-top-navigation`,
+  `allow-popups` or `allow-forms`; it binds each port to the revision it embedded and answers only that
+  revision's manifest paths, whatever the port asks, with that revision's entry for a navigation
+  outside the manifest; it takes shim messages only from the frame it embedded at the content origin
+  and coalesces path reports; and the console and share pages refuse every framer but their own origin
+  (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`), since the page can frame any site at its
+  real origin. Sharing and management: owner rights (a public share, rename, an audience change) need a
+  member identity; organization owners revoke and delete without viewing, and never widen or publicly
+  share what they cannot view; an agent changes only its own artifacts and shares, unshares or deletes
+  only with the authority of a member who started the turn; a share link returns its one revision and
+  nothing of the session. The rules exist as pure functions (`canActOnArtifact` in
+  `authorization/artifact-policy.ts`); the routes, tools and share pages that apply them do not.
+
 - **Session files** (`inbound-file-attachments.md` §2.4): a session's `uploads/` and `outputs/` sit
   beside its checkout. `shareFile`, `sendMessage` attachments and the console's `root: 'uploads' |
 'outputs'` scope must reach only those two areas (each its own fence root: a link-free canonical
@@ -308,6 +352,10 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   the public-by-design agent icon endpoint, and the two stated fail-open residuals of the tenant fence.
 - Model provider behaviour, the ACP adapters, the runtime images, dependency advisories with no
   reachable path, and the Linux-only nature of the shim and `host` executor.
+- The **accepted risks of an artifact page** (`artifacts.md` §5.5): it may load and send anything (D20),
+  so a page exfiltrating its own data or what the viewer types into it, tracking the viewer, drawing a
+  fake sign-in form inside its frame, or using the viewer's CPU is not a finding; nor is a page taking
+  its own revision's port, posting as its own shim, or asking the console for many ports.
 - `docs/`, `evals/`, `scripts/`, `charts/`, test fixtures and anything under `test/` are not entry points.
 
 ## Severity
@@ -353,6 +401,26 @@ REST on :8080, OpenAPI at `/api/v1/openapi.json`). The relay starts from `packag
 and the daemon from `packages/daemon/dist/index.js`; both expect a CP to dial. Pure ingress logic
 (signature verification, demux, frame scoping, authorization policy) is unit-testable without any of
 them, and that is where most of the boundaries above live.
+
+The artifact content domain has unit tests (`src/proxy.test.ts` and `src/lib/artifact-content/` in
+`pnpm --filter @agentconnect.md/web test`, and the CP's `artifacts/content-domain.test.ts` and
+`authorization/artifact-policy.test.ts` in `test:unit`) and a manual Playwright check outside the
+workspace and CI, `scripts/artifact-content-domain-check/` (it needs Playwright's browsers). Its console
+on `127.0.0.1` embeds revisions at `a…r1.localhost` and `a…r2.localhost`, which every engine treats as
+secure and cross-site; revision 1 carries a hostile site (`site/hostile/`) that tries to navigate the
+console tab, open popups, submit forms, read the console's DOM and storage, send credentialed requests
+to the console and a CP stand-in, reach revision 2's origin, ask the console over a stolen port for
+paths outside its manifest, post spoofed shim messages, install its own service worker and flood path
+reports. `--web` swaps in web's own shim and worker, but the console stays the harness's
+(`site/console.js`) in both modes, so H8, H9 and H11 test a stand-in until the viewer ships its port
+server, and H7 (web's console refusing to be framed) reports `PEND` until web sends `frame-ancestors`.
+Every other attempt must fail:
+
+```sh
+cd /src/scripts/artifact-content-domain-check && npm install --no-package-lock && npx playwright install
+node run.mjs chromium      # the prototype shim and worker; checks 0–8, then the hostile site H1–H11
+node run.mjs firefox --web # web's own shim and worker under `next start`; build web first
+```
 
 ## Reports and patches
 

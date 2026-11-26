@@ -42,6 +42,7 @@ describe('fetchRoute', () => {
   it('never answers a top-level navigation, /__ac/, another origin or a write', () => {
     expect(route('/about.html', 'navigate', 'document')).toBe('network')
     expect(route('/doc.pdf', 'navigate', 'object')).toBe('network')
+    expect(route('/doc.pdf', 'navigate', 'embed')).toBe('network')
     expect(route('/__ac/shim', 'navigate', 'iframe')).toBe('network')
     expect(route('/__ac/sw.js')).toBe('network')
     expect(route('https://cdn.example.test/lib.js')).toBe('network')
@@ -254,6 +255,15 @@ describe('workerMain', () => {
     expect(ok.headers.get('content-security-policy')).toBeNull()
     expect(h.requests).toEqual([{ id: 1, path: '/app.js', navigate: false, range: 'bytes=0-' }])
     expect((await h.fetch('/missing.json', { clientId: 'nested' })!).status).toBe(404)
+  })
+
+  it('asks the console for the pathname alone, as the browser encoded it', async () => {
+    const h = harness()
+    h.deliver(h.addShim('shim'), h.newPort())
+    h.windows.set('nested', client('nested', '/index.html', 'nested'))
+    for (const path of ['/a/../../b.html?x=1#h', '/hostile/..%2f..%2fb.html', '/%2e%2e/b.html', '//b.html'])
+      expect((await h.fetch(path, { clientId: 'nested' })!).status).toBe(404)
+    expect(h.requests.map((r) => r.path)).toEqual(['/b.html', '/hostile/..%2f..%2fb.html', '/b.html', '//b.html'])
   })
 
   it('drops the port of a vanished shim and asks every live shim for one', async () => {
