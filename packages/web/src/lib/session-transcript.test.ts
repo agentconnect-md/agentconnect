@@ -340,12 +340,39 @@ describe('the live overlay of a page backed by rows (webchat-transcript-refresh.
   it('retires a sent message by the post the relay named, wherever it was read', () => {
     const named = { ...prompt, postId: 'post-p', thread: 'root-1' }
     expect(retireLiveOverlay([named], [row(1, '@you', 'other words', { postId: 'post-p' })], agentId)).toEqual([])
-    // Its row not read yet, it stays, even beside a row with the same words.
+    // Its row not read yet, it stays, even beside another post's row with the same words.
     expect(
-      retireLiveOverlay([named], [row(1, '@you', 'and the totals?', { thread: 'root-1' })], agentId, {
+      retireLiveOverlay([named], [row(1, '@you', 'and the totals?', { thread: 'root-1', postId: 'post-q' })], agentId, {
         thread: 'root-1'
       })
     ).toEqual([named])
+  })
+
+  // #4443: a mirrored continuation's row is saved under the platform's message id, so no row ever carries the copy's post id.
+  it('retires a named message by its words when its row was saved without a post id', () => {
+    const named = { ...prompt, postId: 'post-p' }
+    const mirrored = (seq: number, text: string) => row(seq, 'user-1', text, { ts: `${(at + 3_000) / 1000}.000100` })
+    const reply = row(9, agentId, 'The total is 3')
+    expect(retireLiveOverlay([named], [mirrored(1, 'and the totals?'), reply], agentId)).toEqual([])
+    const sends = [1, 2, 3].map((n) => ({ ...named, turnId: `t${n}`, postId: `post-${n}`, text: `send ${n}` }))
+    expect(
+      retireLiveOverlay(
+        sends,
+        [1, 2, 3].map((n) => mirrored(n, `send ${n}`)),
+        agentId
+      )
+    ).toEqual([])
+    // Other words, or a row saved long before the send, leave it.
+    expect(retireLiveOverlay([named], [mirrored(1, 'other words')], agentId)).toEqual([named])
+    const old = row(1, 'user-1', 'and the totals?', { ts: String(at - 6 * 60_000) })
+    expect(retireLiveOverlay([named], [old], agentId)).toEqual([named])
+  })
+
+  it('keeps a webchat message to its post id: one row retires one copy, never a second with the same words', () => {
+    const first = { ...prompt, postId: 'post-1' }
+    const second = { ...prompt, turnId: 't2', postId: 'post-2' }
+    const saved = row(1, '@you', 'and the totals?', { postId: 'post-1' })
+    expect(retireLiveOverlay([first, second], [saved], agentId)).toEqual([second])
   })
 
   it('matches a message an older relay named no post for by its words, in the place it was read', () => {

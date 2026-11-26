@@ -54,11 +54,16 @@ through the rows within about a second, reasoning a block at a time.
 
 ## 3. Retiring a live copy
 
-A read retires live copies by identity, never by inference (`retireLiveOverlay`):
+A read retires live copies by identity wherever a row can carry one (`retireLiveOverlay`):
 
 - **A sent message** retires when a row carries its `postId`. The relay mints that id for every
-  turn and now returns it in the accepted ack, which the console stamps on its copy. A message an
-  older relay named no post for falls back to matching its row by words and time.
+  turn and now returns it in the accepted ack, which the console stamps on its copy. Two cases have
+  no such row and fall back to matching the row by words and time:
+  - A message an older relay named no post for matches any row.
+  - A message continued into a session that mirrors to a chat platform is saved under the
+    platform's message id, with no `postId`. Its named copy matches only a row that carries no
+    `postId`. A row that carries one is matched by identity alone, so a webchat conversation never
+    takes this path.
 - **A reply segment** retires when a row carries its `postId`.
 - **Anything else a lane streamed** retires on the first read that began after the lane's `done`.
   The reply's rows are written before `done`, so that read holds whatever the turn saved. Text the

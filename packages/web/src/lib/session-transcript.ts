@@ -150,7 +150,7 @@ export interface LiveRetireRead {
   readStartedAtMs?: number
 }
 
-/** Drop the live copies a read makes redundant: anything its rows carry by post id, and what a lane that ended before the read left (webchat-transcript-refresh.md §3). */
+/** Drop the live copies a read makes redundant: anything its rows carry by post id, a sent message its row cannot name, and what a lane that ended before the read left (webchat-transcript-refresh.md §3). */
 export function retireLiveOverlay(
   all: SessionStep[],
   rows: SessionMessageDto[],
@@ -163,11 +163,11 @@ export function retireLiveOverlay(
   // The lane ended before the read began, so the read holds everything the lane saved.
   const settled = (step: SessionStep) =>
     step.laneDoneAtMs !== undefined && read.readStartedAtMs !== undefined && step.laneDoneAtMs <= read.readStartedAtMs
-  const unnamed = matchUnnamedPrompts(all, read.promptRows ?? rows, agentId, here)
+  const byWords = matchPromptsByWords(all, read.promptRows ?? rows, agentId, here, postIds)
   const result = all.filter((step, index) => {
     if (step.postId && postIds.has(step.postId)) return false
     if (!here(step)) return true
-    if (step.kind === 'msg') return !unnamed.has(index)
+    if (step.kind === 'msg') return !byWords.has(index)
     // A local warning names no segment or post and stays; streamed text and wait notices go with their lane.
     if (step.kind === 'done') return !((step.segmentId || step.postId) && settled(step))
     if (step.kind === 'notice') return step.standing === true || !settled(step)
@@ -177,16 +177,21 @@ export function retireLiveOverlay(
   return result.length === all.length ? all : result
 }
 
-// Prompts the relay never named a post for (an older relay), matched to their rows by words and time.
-function matchUnnamedPrompts(
+// Prompts no row names: an unnamed one (an older relay) matches any row by words and time, a named one only a row saved without a post id (a mirrored continuation's).
+function matchPromptsByWords(
   all: SessionStep[],
   promptRows: SessionMessageDto[],
   agentId: string,
-  here: (step: SessionStep) => boolean
+  here: (step: SessionStep) => boolean,
+  claimed: ReadonlySet<string>
 ): Set<number> {
   const open = all.flatMap((step, index) =>
-    step.kind === 'msg' && !step.postId && here(step) && step.observedAtMs != null && Number.isFinite(step.observedAtMs)
-      ? [{ index, key: promptKey(step.text, step.image), at: step.observedAtMs }]
+    step.kind === 'msg' &&
+    !(step.postId && claimed.has(step.postId)) &&
+    here(step) &&
+    step.observedAtMs != null &&
+    Number.isFinite(step.observedAtMs)
+      ? [{ index, key: promptKey(step.text, step.image), at: step.observedAtMs, named: !!step.postId }]
       : []
   )
   const matched = new Set<number>()
@@ -198,7 +203,7 @@ function matchUnnamedPrompts(
     const key = promptKey(message.text, message.attachments?.[0])
     let best: { index: number; delta: number } | undefined
     for (const prompt of open) {
-      if (matched.has(prompt.index) || prompt.key !== key) continue
+      if (matched.has(prompt.index) || prompt.key !== key || (prompt.named && message.postId)) continue
       const delta = Math.abs(prompt.at - persistedAtMs)
       if (delta <= LIVE_TURN_CONFIRM_WINDOW_MS && (!best || delta < best.delta)) best = { index: prompt.index, delta }
     }

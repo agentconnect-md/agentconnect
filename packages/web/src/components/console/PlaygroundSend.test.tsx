@@ -3159,16 +3159,25 @@ describe('messages in a coordinator conversation’s threads (webchat-threads.md
     expect(getLiveSteps('s1').map((step) => step.postId)).toEqual(['post-2'])
   })
 
-  it('names a sent message by the post the relay’s ack gives, and retires it by that post alone', async () => {
+  it('names a sent message by the post the relay’s ack gives, and retires it by that post, not by another post’s words', async () => {
     const socket = await open(() => pgSend('s1', 'agent-1', 'plan the release', 'c1'))
     const { turnId } = frames(socket).at(-1) as { turnId: string }
     act(() => feed(socket, { type: 'ack', ack: { accepted: true, turnId, agentId: 'agent-1', postId: 'post-sent' } }))
     expect(getLiveSteps('s1')).toMatchObject([{ kind: 'msg', postId: 'post-sent' }])
-    // Another message with the same words is not this one.
+    // Another post with the same words is not this one.
     act(() =>
       reconcileLiveSteps(
         's1',
-        [{ seq: 1, ts: String(Date.now()), sender: 'user', kind: 'text', text: 'plan the release' }],
+        [
+          {
+            seq: 1,
+            ts: String(Date.now()),
+            sender: 'user',
+            kind: 'text',
+            text: 'plan the release',
+            postId: 'post-other'
+          }
+        ],
         'agent-1'
       )
     )
