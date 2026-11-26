@@ -247,13 +247,12 @@ type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
 const COMPOSER_CHIP =
   'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
-const COMPOSER_PILL =
-  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
-const COMPOSER_PILL_STATIC =
-  'inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
+const COMPOSER_TOOL =
+  'inline-flex size-[30px] flex-none cursor-pointer items-center justify-center rounded-sm text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-secondary) pointer-coarse:size-10'
+const COMPOSER_PARTICIPANT =
+  'inline-flex h-[30px] max-w-full min-w-0 items-center gap-[6px] rounded-sm px-[7px] font-sans text-[13px] font-medium leading-normal pointer-coarse:h-[38px]'
 // A continued conversation's roster chips pick the one member a send reaches.
-const COMPOSER_RECIPIENT =
-  'inline-flex h-7 min-w-0 cursor-pointer items-center gap-[7px] rounded-full border px-[10px] font-mono text-[11.5px] font-medium leading-normal disabled:cursor-not-allowed disabled:opacity-50'
+const COMPOSER_RECIPIENT = `${COMPOSER_PARTICIPANT} cursor-pointer border disabled:cursor-not-allowed disabled:opacity-50`
 const COMPOSER_RECIPIENT_ON = `${COMPOSER_RECIPIENT} border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text)`
 const COMPOSER_RECIPIENT_OFF = `${COMPOSER_RECIPIENT} border-transparent bg-transparent text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)`
 
@@ -304,7 +303,7 @@ const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
 const noOwnerIcon = () => undefined
 const EMPTY_CONTROLS: readonly ControlCommand[] = []
 // The textarea's text box, shared with the overlay that marks a leading command so both lay text out identically.
-const COMPOSER_TEXT = 'px-[15px] py-[13px] font-sans text-[14px] leading-[1.55]'
+const COMPOSER_TEXT = 'px-4 pt-[13px] pb-[6px] font-sans text-[14px] leading-[1.4] pointer-coarse:text-[16px]'
 // How often a running turn's rows are read when no transcript signal arrives.
 const TAIL_FALLBACK_MS = 15_000
 
@@ -464,7 +463,8 @@ function ComposerTextarea({
           ref={textareaRef}
           rows={1}
           onScroll={(e) => syncCommandMirror(overlayRef.current, e.currentTarget)}
-          className={`${COMPOSER_TEXT} relative block max-h-[min(30vh,240px)] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          className={`${COMPOSER_TEXT} relative block max-h-[min(30vh,220px)] min-h-[54px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) pointer-coarse:min-h-[56px] ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          aria-label={placeholder}
           placeholder={suggestion ?? placeholder}
           value={draft}
           onChange={(e) => {
@@ -558,7 +558,7 @@ function ComposerSendButton({
   return (
     <SendButton
       stop={stop}
-      className="-ml-1"
+      className={`h-[30px] w-[30px] [&>span]:size-[30px] enabled:hover:[&>span]:bg-(--brand-hover) ${stop ? 'rounded-full' : 'rounded-sm disabled:[&>span]:bg-(--surface-active) disabled:[&>span]:text-(--text-tertiary) [&>span]:rounded-sm [&_svg]:size-[14px]'}`}
       label={stop ? t('stopResponse') : t('sendMessage')}
       onClick={() => (stop ? onStop() : onSend())}
       disabled={!stop && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
@@ -4573,12 +4573,8 @@ export default function SessionDetailView() {
                 <RunningCommandsDock agentId={filesAgentId} sessionId={tasksSessionId} turnActive={focusBusy} />
               ) : null}
               <CloudCreditGate agent={owner} agentName={owner ? agentLabel(owner) : ''} />
-              {/* Composer card (design "achero"): textarea on top, a toolbar row below
-                  the divider — attach · model pill (fast toggle in its menu) · effort ·
-                  permission · context ring · send. Tokens/cost live in the header's
-                  Details popover, not here. */}
               <div
-                className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)"
+                className="relative min-w-0 rounded-[14px] border border-(--border-default) bg-(--surface-card) transition-colors focus-within:border-(--brand)"
                 inert={resumeDisabled}
                 aria-disabled={resumeDisabled}
                 onKeyDown={(event) => {
@@ -4589,7 +4585,7 @@ export default function SessionDetailView() {
               >
                 {resumeDisabled && (
                   <textarea
-                    className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
+                    className={`${COMPOSER_TEXT} absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[13px] border-0 bg-(--surface-sunken) text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed`}
                     aria-label={t('conversationUnavailableLabel')}
                     placeholder={resumePlaceholder}
                     disabled
@@ -4607,7 +4603,7 @@ export default function SessionDetailView() {
                 )}
                 {attachmentsEnabled && (
                   <AttachmentCards
-                    className="px-[15px] pt-3"
+                    className="px-4 pt-3"
                     cards={composerCards(pgFiles, pgImage)}
                     onRemove={(key) =>
                       key === INLINE_IMAGE_KEY
@@ -4638,12 +4634,12 @@ export default function SessionDetailView() {
                   loadEarlier={loadEarlierConversation}
                   loadedRows={visibleMsgs?.length ?? 0}
                 />
-                <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                <div className="relative flex items-end gap-[6px] pr-[9px] pb-[9px] pl-[10px]">
                   {attachmentsEnabled && (
-                    <div className="relative flex-none">
+                    <div className="relative flex-none self-start">
                       <button
                         type="button"
-                        className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                        className={COMPOSER_TOOL}
                         aria-label={t('attachFile')}
                         aria-haspopup="menu"
                         aria-expanded={attachMenuOpen}
@@ -4684,15 +4680,12 @@ export default function SessionDetailView() {
                       )}
                     </div>
                   )}
-                  {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-                      instead of wrapping into a second toolbar line. Except with a
-                      multi-agent roster: those chips are unbounded in count, so no
-                      amount of truncation bounds one line — let that case wrap. */}
+                  {/* Keep single-agent controls on one line on mobile and let multi-agent rosters wrap. */}
                   <div
                     className={
                       multiLive
-                        ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                        : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+                        ? 'flex min-h-[30px] min-w-0 flex-1 flex-wrap items-center gap-[6px]'
+                        : 'flex min-h-[30px] min-w-0 flex-1 items-center gap-[6px] desktop:flex-wrap'
                     }
                   >
                     {multiLive &&
@@ -4711,12 +4704,16 @@ export default function SessionDetailView() {
                         if (!pickRecipient) {
                           const removable = isPg && !p.primary && p.agentId !== session.agentId
                           return (
-                            <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
+                            <span
+                              key={p.agentId}
+                              className={`${COMPOSER_PARTICIPANT} text-(--text-primary)`}
+                              title={t('participant')}
+                            >
                               {chip}
                               {removable && (
                                 <button
                                   type="button"
-                                  className="-mr-1 inline-flex h-4 w-4 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="-mr-[5px] inline-flex size-[22px] flex-none cursor-pointer items-center justify-center rounded-sm text-(--text-tertiary) enabled:hover:bg-(--surface-hover) enabled:hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
                                   title={t('removeParticipant', { agent: p.name })}
                                   aria-label={t('removeParticipant', { agent: p.name })}
                                   disabled={pgBusy || pgQueue.length > 0}
@@ -4746,10 +4743,6 @@ export default function SessionDetailView() {
                           </button>
                         )
                       })}
-                    {/* h-7 w-7 like every other control on this row (and the Home composer's
-                        twin), so the dashed circle shares their 28px box instead of floating
-                        inside it. A lucide glyph, not a text "+": a text plus centres on its
-                        line box, which left it a hair low. */}
                     {isPg && addAgentOptions.length > 0 && (
                       <ComposerMenu
                         title={t('addAgents')}
@@ -4760,7 +4753,8 @@ export default function SessionDetailView() {
                         iconOnly
                         open={composerMenuOpen === 'addAgent'}
                         align="left"
-                        triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                        className="max-desktop:static"
+                        triggerClassName={COMPOSER_TOOL}
                         tooltips={false}
                         leading={<Icon name="plus" size={14} />}
                         onOpenChange={(open) => {
