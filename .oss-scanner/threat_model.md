@@ -110,11 +110,11 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
     (`a<artifact id>r<revision>.<content domain>`). Web answers a content host with `/__ac/shim` and
     `/__ac/sw.js` and nothing else, and the shim's service worker asks the console for every file over
     a `MessagePort`. The shim, the worker and the page share an origin, so they are one trust domain:
-    the page can run code in the shim's realm, take its revision's port and post as the shim. **Not
-    yet built** (#4442 phase 2, the viewer): the console still renders an HTML artifact as `srcdoc`
-    and never embeds the content domain, so no port exists and no artifact byte reaches it. Once it
-    does, the console frames the shim with `allow-scripts allow-same-origin` only, fetches each file
-    through a GET the CP presigns after the audience check, and its end of the port is the boundary.
+    the page can run code in the shim's realm, take its revision's port and post as the shim. The
+    console's viewer (`web/src/components/console/artifact/ArtifactSite.tsx`) frames the shim with
+    `allow-scripts allow-same-origin` only, fetches each file through a GET the CP presigns after the
+    audience check, and answers the worker from `port-server.ts`; its end of the port is the boundary.
+    Without a content domain configured, an HTML entry renders as an `allow-scripts` `srcdoc` frame.
 
 ## Invariants worth attacking
 
@@ -241,15 +241,20 @@ whatever authorized its trigger, and is meant to run in `microsandbox` or a pool
   authenticates API calls by bearer token; its only cookies are one-shot `SameSite=Lax; HttpOnly` OAuth
   binding cookies (Slack install, GitLab, MCP provider), which ride only on a top-level navigation the
   artifact sandbox withholds, so a credentialed request from an artifact carries nothing the CP accepts.
-- **Artifact controls not yet built** (`artifacts.md` §5.5, §6.3, §7.3, §8.3; #4442 phases 2, 4 and 5):
-  these are design requirements with no code at this head; report one only against code that claims to
-  implement it. The viewer: the console sandboxes the shim frame without `allow-top-navigation`,
-  `allow-popups` or `allow-forms`; it binds each port to the revision it embedded and answers only that
-  revision's manifest paths, whatever the port asks, with that revision's entry for a navigation
-  outside the manifest; it takes shim messages only from the frame it embedded at the content origin
-  and coalesces path reports; and the console and share pages refuse every framer but their own origin
-  (`frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`), since the page can frame any site at its
-  real origin. Sharing and management: owner rights (a public share, rename, an audience change) need a
+- **Artifact viewer** (`artifacts.md` §5.5): the console sandboxes the shim frame with
+  `allow-scripts allow-same-origin` only, so without `allow-top-navigation`, `allow-popups` or
+  `allow-forms` (`ArtifactSite.tsx` `ARTIFACT_SITE_SANDBOX`). Each port server is bound to the revision
+  it embedded and answers only that revision's manifest paths, whatever a port asks, with that
+  revision's entry for a navigation outside the manifest, and keeps at most `MAX_OPEN_PORTS` ports open
+  (`lib/artifact-content/port-server.ts`). The viewer takes shim messages only from the frame it
+  embedded at the content origin and coalesces path writes to the console URL (`viewer-path.ts`). Every
+  console response refuses a framer other than its own origin (`frame-ancestors 'self'`,
+  `X-Frame-Options: SAMEORIGIN`, `web/src/proxy.ts`), since the page can frame any site at its real
+  origin.
+- **Artifact controls not yet built** (`artifacts.md` §6.3, §7.3, §8.3; #4442 phases 4 and 5): these
+  are design requirements with no code at this head; report one only against code that claims to
+  implement it. Share pages refuse every framer but their own origin, as the console does. Sharing and
+  management: owner rights (a public share, rename, an audience change) need a
   member identity; organization owners revoke and delete without viewing, and never widen or publicly
   share what they cannot view; an agent changes only its own artifacts and shares, unshares or deletes
   only with the authority of a member who started the turn; a share link returns its one revision and
@@ -411,15 +416,15 @@ secure and cross-site; revision 1 carries a hostile site (`site/hostile/`) that 
 console tab, open popups, submit forms, read the console's DOM and storage, send credentialed requests
 to the console and a CP stand-in, reach revision 2's origin, ask the console over a stolen port for
 paths outside its manifest, post spoofed shim messages, install its own service worker and flood path
-reports. `--web` swaps in web's own shim and worker, but the console stays the harness's
-(`site/console.js`) in both modes, so H8, H9 and H11 test a stand-in until the viewer ships its port
-server, and H7 (web's console refusing to be framed) reports `PEND` until web sends `frame-ancestors`.
-Every other attempt must fail:
+reports and port requests. `--web` swaps in web's own shim and worker under `next start`, and the
+harness console runs web's own `port-server.ts` and `viewer-path.ts` (bundled from source by
+`server.mjs`), wired as `ArtifactSite.tsx` wires them, so the port checks (H8, H9, H11) test product
+code; it adds H7, web's console refusing to be framed. Every attempt must fail:
 
 ```sh
 cd /src/scripts/artifact-content-domain-check && npm install --no-package-lock && npx playwright install
 node run.mjs chromium      # the prototype shim and worker; checks 0–8, then the hostile site H1–H11
-node run.mjs firefox --web # web's own shim and worker under `next start`; build web first
+node run.mjs firefox --web # web's shim, worker and port server; build web first
 ```
 
 ## Reports and patches

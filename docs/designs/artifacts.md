@@ -698,12 +698,11 @@ got the artifact from the console's worker in Chromium and Firefox until the wor
 
 `node run.mjs <engine> --web` runs the same checks against web's own shim and worker
 (`packages/web/src/lib/artifact-content/`), served by `next start` with the content domain
-`localhost`.
+`localhost`, and its console runs web's own port server and viewer-path logic.
 
 Both modes end with the hostile-artifact checks H1–H11: revision 1 carries a site that tries every
-escape §5.5 withholds, and each attempt must fail. The console is the harness's in both modes, so the
-port checks (H8, H9, H11) test a stand-in until the viewer's port server exists, and H7, web's console
-refusing to be framed, reports pending until web sends `frame-ancestors`.
+escape §5.5 withholds, and each attempt must fail. In `--web` mode the port checks (H8, H9, H11) test
+the viewer's port server, and H7 requires web's console to refuse framing.
 `.oss-scanner/threat_model.md` lists the checks with the invariants they attack.
 
 These are Playwright 1.65.1's builds. Playwright turns Chromium's storage partitioning off

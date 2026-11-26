@@ -1,4 +1,4 @@
-// Prototype of artifacts.md §5.5: console on 127.0.0.1, content on <label>.localhost, one port; `web` forwards content to the real web service.
+// Prototype of artifacts.md §5.5: console on 127.0.0.1, content on <label>.localhost, one port; `web` forwards content to web and serves web's port server.
 import { createServer, request } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -13,8 +13,31 @@ export const OTHER_LABEL = LABEL.replace(/r1$/, 'r2')
 // What a signed-in console holds; no hostile check may read any of them.
 export const SECRETS = { token: 'console-token-7f3a', console: 'console-secret', cp: 'cp-secret' }
 
-export function startServer({ port = 0, ancestors = true, web } = {}) {
+// Web's port server and viewer-path logic for the console in --web mode, bundled from source as `window.AcProduct`.
+async function productBundle() {
+  const { build } = await import('esbuild')
+  const lib = fileURLToPath(new URL('../../packages/web/src/lib/artifact-content/', import.meta.url))
+  const out = await build({
+    stdin: {
+      contents: [
+        "export { createPortServer, servedPath, MAX_OPEN_PORTS } from './port-server'",
+        "export { createPathSync, readShimMessage, readViewerPath, VIEWER_PATH_PARAM } from './viewer-path'"
+      ].join('\n'),
+      resolveDir: lib,
+      loader: 'ts'
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: 'AcProduct',
+    target: 'es2022',
+    write: false
+  })
+  return out.outputFiles[0].text
+}
+
+export async function startServer({ port = 0, ancestors = true, web } = {}) {
   const log = []
+  const product = web ? await productBundle() : ''
   // A CP stand-in on its own origin: bearer auth only and CORS reflecting any origin without credentials, as the CP does.
   const cp = createServer((req, res) => {
     const auth = req.headers.authorization || ''
@@ -52,6 +75,7 @@ export function startServer({ port = 0, ancestors = true, web } = {}) {
         'X-Frame-Options': 'SAMEORIGIN'
       }
       if (url.pathname === '/') return send(200, 'text/html', read('console.html'), noFrame)
+      if (url.pathname === '/product.js') return send(200, 'text/javascript', product)
       if (url.pathname === '/console.js')
         return send(
           200,

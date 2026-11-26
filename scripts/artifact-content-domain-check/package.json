@@ -4,6 +4,7 @@
   "description": "Browser check for the artifact content domain (docs/designs/artifacts.md §5.5); not part of the workspace or CI",
   "type": "module",
   "devDependencies": {
+    "esbuild": "0.28.2",
     "playwright": "1.65.1"
   }
 }

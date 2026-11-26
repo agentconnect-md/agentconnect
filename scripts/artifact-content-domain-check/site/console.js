@@ -1,4 +1,4 @@
-// The console side: embeds the shim, binds each port to the revision, answers from an in-memory manifest.
+// The console side: embeds the shim, binds each port to the revision, answers from an in-memory manifest; --web runs web's port server.
 const enc = (s) => new TextEncoder().encode(s)
 
 function wav(seconds) {
@@ -81,13 +81,18 @@ const OTHER = {
   }
 }
 
+// Web's port-server.ts and viewer-path.ts, bundled by server.mjs in --web mode; absent in prototype mode.
+const product = window.AcProduct
 const params = new URLSearchParams(location.search)
+const P = product ? product.VIEWER_PATH_PARAM : 'p'
 const label = params.get('a') || 'a0123456789abcdef0123456789abcdefr1'
 const contentOrigin = `http://${label}.localhost:${location.port}`
 const MANIFEST = label.endsWith('r2') ? OTHER : MAIN
 const log = (window.__acLog = [])
 window.__acPorts = 0
+window.__acOpenPorts = 0
 window.__acPathMsgs = 0
+window.__acPathWrites = 0
 // The signed-in console's bearer token, which no artifact may read.
 localStorage.setItem('ac-token', '__TOKEN__')
 
@@ -110,14 +115,22 @@ async function start() {
     }
     MAIN.files['/hostile/config.json'] = { type: 'application/json', body: enc(JSON.stringify(config)) }
   }
+  if (product) productConsole()
   frame.src = `${contentOrigin}/__ac/shim`
   document.body.append(frame)
 }
 void start()
 
+function writePath(path) {
+  window.__acPathWrites++
+  if (path === null) params.delete(P)
+  else params.set(P, path)
+  history.replaceState(null, '', `?${params}`)
+}
+
 const live = []
 // Simulates a console that lost its ports without the shim noticing: the worker must time out and ask again.
-window.__acDropPorts = () => live.splice(0).forEach((p) => p.close())
+if (!product) window.__acDropPorts = () => live.splice(0).forEach((p) => p.close())
 
 function newPort() {
   const ch = new MessageChannel()
@@ -146,17 +159,73 @@ function newPort() {
   return ch.port2
 }
 
+// The prototype console's own message handling; --web uses productConsole's.
 window.addEventListener('message', (e) => {
-  if (e.source !== frame.contentWindow || e.origin !== contentOrigin) return
+  if (product || e.source !== frame.contentWindow || e.origin !== contentOrigin) return
   const d = e.data || {}
   if (d.t === 'ready')
-    frame.contentWindow.postMessage({ t: 'port', entry: params.get('p') || MANIFEST.entry }, contentOrigin, [newPort()])
+    frame.contentWindow.postMessage({ t: 'port', entry: params.get(P) || MANIFEST.entry }, contentOrigin, [newPort()])
   if (d.t === 'need-port') frame.contentWindow.postMessage({ t: 'port' }, contentOrigin, [newPort()])
   if (d.t === 'path' && typeof d.path === 'string' && d.path.startsWith('/') && !d.path.startsWith('/__ac/')) {
     window.__acPathMsgs++
-    params.set('p', d.path)
-    history.replaceState(null, '', `?${params}`)
+    writePath(d.path)
   }
   if (d.t === 'error') log.push({ error: d.message })
   if (d.t === 'unsupported') log.push({ unsupported: d.reason })
 })
+
+// --web: web's port server and path logic, wired as ArtifactSite.tsx wires them; channels are counted and logged, not changed.
+function productConsole() {
+  const { createPortServer, servedPath, readShimMessage, readViewerPath, createPathSync, MAX_OPEN_PORTS } = product
+  window.__acMaxPorts = MAX_OPEN_PORTS
+  const Native = window.MessageChannel
+  window.MessageChannel = class extends Native {
+    constructor() {
+      super()
+      window.__acPorts++
+      window.__acOpenPorts++
+      const own = this.port1
+      const close = own.close.bind(own)
+      let open = true
+      own.close = () => {
+        if (open) window.__acOpenPorts--
+        open = false
+        close()
+      }
+      own.addEventListener('message', (e) => {
+        const { path, navigate, range } = e.data || {}
+        log.push({ path, navigate, range })
+      })
+    }
+  }
+  const files = Object.entries(MANIFEST.files).map(([path, f]) => ({
+    path: path.slice(1),
+    mediaType: f.type,
+    bytes: f.body.length
+  }))
+  const entry = MANIFEST.entry.slice(1)
+  const server = createPortServer({ files, entry, load: async (f) => MANIFEST.files[`/${f.path}`].body.slice().buffer })
+  // Simulates a console that lost its ports without the shim noticing: the worker must time out and ask again.
+  window.__acDropPorts = () => server.close()
+
+  const entryPath = servedPath(entry)
+  const opened = readViewerPath(params.get(P)) ?? entryPath
+  let current = opened
+  const sync = createPathSync(writePath, opened === entryPath ? null : opened)
+  const send = (message) => frame.contentWindow?.postMessage(message, contentOrigin, [server.port()])
+  window.addEventListener('message', (event) => {
+    if (event.source !== frame.contentWindow || event.origin !== contentOrigin) return
+    const message = readShimMessage(event.data)
+    if (!message) return
+    if (message.t === 'ready') send({ t: 'port', entry: current })
+    else if (message.t === 'need-port') send({ t: 'port' })
+    else if (message.t === 'unsupported') log.push({ unsupported: message.reason })
+    else {
+      window.__acPathMsgs++
+      const next = readViewerPath(message.path)
+      if (next === null) return
+      current = next
+      sync.push(next === entryPath ? null : next)
+    }
+  })
+}
