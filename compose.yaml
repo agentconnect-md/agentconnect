@@ -136,6 +136,8 @@ services:
       - SESSION_POLICY_TOKEN
       # Opt-in console file transfer: a JSON bucket document the Control Plane signs URLs for (docs/designs/source-cache-file-transfer.md §7).
       - AC_FILE_TRANSFER
+      # Opt-in artifacts: the bare content domain whose wildcard serves revisions, with a site block of its own (docs/self-host-caddy-https.md).
+      - ARTIFACTS_CONTENT_DOMAIN
       # Opt-in Computer screenshot storage: a JSON bucket document like AC_FILE_TRANSFER plus retention (docs/designs/computer-use.md §9).
       - AC_COMPUTER_SCREENSHOTS
       # Opt-in TURN for the Computer viewer (docs/designs/computer-use.md §7.2); compose.turn.yaml runs coturn and sets the first two.

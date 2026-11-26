@@ -8495,6 +8495,7 @@
       "newer": "有更新的修订版本（r{number}）",
       "agedOut": "此修订版本已不再保留",
       "unavailable": "无法打开。它可能已被删除，或你没有访问权限。",
+      "notEnabled": "此部署未启用 Artifact。",
       "open": "打开",
       "download": "下载",
       "downloadFailed": "下载失败，请重试。"
@@ -8520,6 +8521,8 @@
       "unavailableTitle": "Artifact 不可用",
       "unavailablePre": "Artifact ",
       "unavailablePost": " 无法打开。它可能已被删除，或你没有访问权限。",
+      "notEnabledTitle": "未启用 Artifact",
+      "notEnabledBody": "此部署未启用 Artifact，因此无法在这里打开这个 Artifact。",
       "backHome": "返回首页",
       "search": "搜索",
       "loadFailed": "无法加载此 Artifact，请稍后重试。"

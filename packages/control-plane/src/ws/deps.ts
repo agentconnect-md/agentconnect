@@ -282,7 +282,7 @@ export interface DaemonWsDeps {
   sharedImages?: SharedImageService
   /** Shared-file snapshots (agent-authored-attachments.md §4.1); absent ⇒ `session/file/put` answers SCOPE_DENIED. */
   sessionFiles?: SessionFileService
-  /** Artifacts (artifacts.md §5.3); absent ⇒ `artifact/*` answers SCOPE_DENIED and `artifacts-v1` is not advertised. */
+  /** Artifacts (artifacts.md §12): set only with a bucket and a content domain; absent ⇒ `artifact/*` refuses `not-enabled`, `artifacts-v1` unadvertised. */
   artifacts?: ArtifactService
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService

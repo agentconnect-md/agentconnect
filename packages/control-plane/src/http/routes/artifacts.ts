@@ -18,6 +18,13 @@ import {
 import { Tag } from '../plugins/openapi.js'
 
 const notFound = { error: 'Not Found', statusCode: 404, message: 'artifact not found' }
+// Without a bucket and a content domain (artifacts.md §12); deployment-wide, so it reveals nothing about one artifact.
+const notEnabled = {
+  error: 'Conflict',
+  statusCode: 409,
+  code: 'ARTIFACTS_NOT_ENABLED',
+  message: 'artifacts are not enabled on this deployment'
+}
 
 function revisionSummary(revision: ArtifactRevisionRecord) {
   const entry = revision.manifest.files.find((f) => f.path === revision.manifest.entry)
@@ -79,13 +86,14 @@ export function artifactRoutes(deps: HttpDeps) {
           tags: [Tag.Artifacts],
           summary: 'Get an artifact',
           description:
-            'An artifact’s title, owner, audience and ready revisions, newest first, each with its entry file, size and the agent that produced it. The caller must be an organization member in the artifact’s audience; anything else, including an artifact whose first revision is not ready yet, is not found.',
+            'An artifact’s title, owner, audience and ready revisions, newest first, each with its entry file, size and the agent that produced it. The caller must be an organization member in the artifact’s audience; anything else, including an artifact whose first revision is not ready yet, is not found. Every artifact route answers 409 `ARTIFACTS_NOT_ENABLED` on a deployment without a transfer bucket and a content domain.',
           operationId: 'getArtifact',
           params: ArtifactParams,
-          response: { 200: ArtifactDto, 404: ErrorDto }
+          response: { 200: ArtifactDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
         const found = await visible(req, req.params.artifactId)
         if (!found) return reply.code(404).send(notFound)
         const { artifact, viewer } = found
@@ -128,10 +136,11 @@ export function artifactRoutes(deps: HttpDeps) {
             'One ready revision’s manifest: its entry path and every file’s relative path, SHA-256, size and media type. The caller must be an organization member in the artifact’s audience. Not found for a revision that is pending, was never published, or has been removed.',
           operationId: 'getArtifactRevision',
           params: ArtifactRevisionParams,
-          response: { 200: ArtifactRevisionDto, 404: ErrorDto }
+          response: { 200: ArtifactRevisionDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
         const found = await visibleRevision(req, req.params.artifactId, req.params.revision)
         if (!found) return reply.code(404).send(notFound)
         const { artifact, revision } = found
@@ -151,16 +160,16 @@ export function artifactRoutes(deps: HttpDeps) {
           tags: [Tag.Artifacts],
           summary: 'Get a signed download for an artifact file',
           description:
-            'A short-lived signed URL for one file of a ready revision, named by its manifest path. The object store serves it as an `application/octet-stream` attachment, so nothing renders on the store’s origin; the console fetches the bytes and renders them itself by the manifest’s media type. The caller must be an organization member in the artifact’s audience. Not found when the deployment has no transfer bucket or the path is not in the manifest.',
+            'A short-lived signed URL for one file of a ready revision, named by its manifest path. The object store serves it as an `application/octet-stream` attachment, so nothing renders on the store’s origin; the console fetches the bytes and renders them itself by the manifest’s media type. The caller must be an organization member in the artifact’s audience. Not found when the path is not in the manifest.',
           operationId: 'getArtifactFileUrl',
           params: ArtifactRevisionParams,
           querystring: ArtifactFileQuery,
-          response: { 200: ArtifactFileUrlDto, 404: ErrorDto }
+          response: { 200: ArtifactFileUrlDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
         const artifacts = deps.artifacts
-        if (!artifacts) return reply.code(404).send(notFound)
+        if (!artifacts) return reply.code(409).send(notEnabled)
         const found = await visibleRevision(req, req.params.artifactId, req.params.revision)
         const file = found?.revision.manifest.files.find((f) => f.path === req.query.path)
         if (!found || !file) return reply.code(404).send(notFound)

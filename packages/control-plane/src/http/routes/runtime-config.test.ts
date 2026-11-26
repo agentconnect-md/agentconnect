@@ -32,7 +32,8 @@ describe('runtime config route', () => {
       ahp: { enabled: false, publicAccess: false },
       revision: null,
       config: null,
-      fileTransfer: null
+      fileTransfer: null,
+      artifacts: { enabled: false, contentDomain: null }
     })
     await app.close()
   })
@@ -80,7 +81,8 @@ describe('runtime config route', () => {
         },
         gitlab: { instanceUrl: 'https://gitlab.example.test' }
       },
-      fileTransfer: null
+      fileTransfer: null,
+      artifacts: { enabled: false, contentDomain: null }
     })
   })
 
@@ -100,7 +102,8 @@ describe('runtime config route', () => {
       ahp: { enabled: false, publicAccess: false },
       revision: null,
       config: { auth: null, gitlab: { instanceUrl: 'https://gitlab.example.test' } },
-      fileTransfer: null
+      fileTransfer: null,
+      artifacts: { enabled: false, contentDomain: null }
     })
   })
 
@@ -115,7 +118,8 @@ describe('runtime config route', () => {
       ahp: { enabled: false, publicAccess: false },
       revision: null,
       config: null,
-      fileTransfer: null
+      fileTransfer: null,
+      artifacts: { enabled: false, contentDomain: null }
     })
   })
 
@@ -130,7 +134,18 @@ describe('runtime config route', () => {
       ahp: { enabled: false, publicAccess: false },
       revision: null,
       config: null,
-      fileTransfer: { maxBytes: 1024 }
+      fileTransfer: { maxBytes: 1024 },
+      artifacts: { enabled: false, contentDomain: null }
     })
+  })
+
+  it('tells the console artifacts are enabled and the content domain revisions render under', async () => {
+    const app = Fastify()
+    installZod(app)
+    await app.register(runtimeConfigRoutes({ artifactsContentDomain: 'example-usercontent.net' }), {
+      prefix: '/api/v1'
+    })
+    const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
+    expect(response.json().artifacts).toEqual({ enabled: true, contentDomain: 'example-usercontent.net' })
   })
 })

@@ -69,6 +69,8 @@ const KEYS = [
   // when uploads may go in parts. Served by the CP's runtime-config below; these env keys are the local-dev fallback.
   'FILE_TRANSFER_MAX_BYTES',
   'FILE_TRANSFER_PART_BYTES',
+  // The content domain artifact revisions render under, set only while the CP offers artifacts; the env key is the local-dev fallback.
+  'ARTIFACTS_CONTENT_DOMAIN',
   // Console feature flags this deployment turns on — a comma-separated list of ids
   // (lib/feature-flags.ts). Unset ⇒ none: a flagged surface ships in every build and appears
   // only where an environment asks for it, so one prebuilt image serves them all.
@@ -95,6 +97,7 @@ interface RuntimeConfigResponse {
     gitlab?: null | { instanceUrl: string }
   }
   fileTransfer?: null | { maxBytes: number; partBytes?: number }
+  artifacts?: { enabled: boolean; contentDomain: string | null }
   webchatProtocol?: 'legacy' | 'ahp'
   ahp?: { enabled: boolean; publicAccess: boolean }
 }
@@ -142,6 +145,8 @@ async function loadDeploymentEnv(): Promise<DeploymentEnv | null> {
   }
   if (body.fileTransfer) topology.FILE_TRANSFER_MAX_BYTES = String(body.fileTransfer.maxBytes)
   if (body.fileTransfer?.partBytes) topology.FILE_TRANSFER_PART_BYTES = String(body.fileTransfer.partBytes)
+  if (body.artifacts?.enabled && body.artifacts.contentDomain)
+    topology.ARTIFACTS_CONTENT_DOMAIN = body.artifacts.contentDomain
   if (body.config === null) return { config: null, topology }
 
   const env: Record<string, string> = {}
@@ -192,7 +197,11 @@ export const resolvePublicEnv = cache(async (): Promise<Record<string, string>> 
       }
       Object.assign(env, persisted.config)
     }
-    if (persisted) Object.assign(env, persisted.topology)
+    if (persisted) {
+      // The CP alone decides whether artifacts are offered, so a local fallback never outlives its answer.
+      delete env.ARTIFACTS_CONTENT_DOMAIN
+      Object.assign(env, persisted.topology)
+    }
   }
   return env
 })

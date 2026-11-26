@@ -44,7 +44,9 @@ export const RuntimeConfigDto = z
       .object({ maxBytes: z.number().int().positive(), partBytes: z.number().int().positive().optional() })
       .strict()
       .nullable()
-      .optional()
+      .optional(),
+    // Artifacts (artifacts.md §12): on only with a transfer bucket and a content domain, whose wildcard serves revisions.
+    artifacts: z.object({ enabled: z.boolean(), contentDomain: z.string().nullable() }).strict().optional()
   })
   .strict()
 
@@ -58,6 +60,8 @@ export interface RuntimeConfigRouteDeps {
   deploymentRevision?: number
   /** Set when this process signs console file transfers; read per request, since the bucket's lifecycle can change. */
   fileTransfer?: () => { maxBytes: number; partBytes?: number }
+  /** Set only when artifacts are offered: the content domain revisions render under. */
+  artifactsContentDomain?: string
 }
 
 /** Public, secret-free auth config consumed by the prebuilt Web image at startup. */
@@ -71,7 +75,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
           tags: [Tag.Deployment],
           summary: 'Get public runtime configuration',
           description:
-            'Returns the secret-free browser configuration loaded for this process: authentication, the GitLab instance the deployment talks to, and whether console file transfer is available with its per-file cap and, when uploads may go in parts, the largest part. A deployment change takes effect after restart.',
+            'Returns the secret-free browser configuration loaded for this process: authentication, the GitLab instance the deployment talks to, whether console file transfer is available with its per-file cap and, when uploads may go in parts, the largest part, and whether artifacts are enabled with the content domain their revisions render under. A deployment change takes effect after restart.',
           operationId: 'getRuntimeConfig',
           response: { 200: RuntimeConfigDto }
         }
@@ -82,7 +86,11 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
         ahp: { enabled: deps.ahp?.enabled ?? false, publicAccess: deps.ahp?.publicAccess ?? false },
         revision: deps.deploymentRevision ?? null,
         config: deps.publicRuntimeConfig ?? null,
-        fileTransfer: deps.fileTransfer?.() ?? null
+        fileTransfer: deps.fileTransfer?.() ?? null,
+        artifacts: {
+          enabled: deps.artifactsContentDomain !== undefined,
+          contentDomain: deps.artifactsContentDomain ?? null
+        }
       })
     )
   }

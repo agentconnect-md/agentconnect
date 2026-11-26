@@ -10,39 +10,52 @@ import { formatFileSize } from '@/components/console/FileBrowser'
 import { ApiError, getArtifact } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
-import { ARTIFACT_KIND_ICON, artifactKind, artifactPath, type ArtifactMarker } from '@/lib/artifact'
+import {
+  ARTIFACT_KIND_ICON,
+  ARTIFACTS_NOT_ENABLED,
+  artifactKind,
+  artifactPath,
+  artifactsContentDomain,
+  type ArtifactMarker
+} from '@/lib/artifact'
 import { useArtifactDownload } from './useArtifactDownload'
 
 const ACTION =
   'inline-flex flex-none items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-[10px] py-[5px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) no-underline transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) disabled:cursor-default disabled:opacity-55'
 
 /** What the card can say about its revision once the artifact has been read. */
-export type ArtifactCardState = 'loading' | 'latest' | 'newer' | 'aged-out' | 'unavailable'
+export type ArtifactCardState = 'loading' | 'latest' | 'newer' | 'aged-out' | 'unavailable' | 'not-enabled'
 
 export function ArtifactCard({ marker }: { marker: ArtifactMarker }) {
   const t = useTranslations('Artifacts.card')
   const { activeOrg, orgPath } = useOrgs()
   const { artifactId, revision } = marker
-  const read = useSWR(consoleKeys.artifact(activeOrg?.id, artifactId), ([, , , id]) => getArtifact(id), {
-    shouldRetryOnError: (err) => !(err instanceof ApiError && err.status === 404)
-  })
+  // A deployment without artifacts reads nothing (artifacts.md §12); a CP that says so mid-session gets the same state.
+  const enabled = artifactsContentDomain() !== undefined
+  const read = useSWR(
+    enabled ? consoleKeys.artifact(activeOrg?.id, artifactId) : null,
+    ([, , , id]) => getArtifact(id),
+    { shouldRetryOnError: (err) => !(err instanceof ApiError && (err.status === 404 || err.status === 409)) }
+  )
   const artifact = read.data
   const summary = artifact?.revisions.find((r) => r.number === revision)
   // The route answers 404 alike for a deleted artifact and one outside the viewer's audience.
   const state: ArtifactCardState =
-    read.error instanceof ApiError && read.error.status === 404
-      ? 'unavailable'
-      : !artifact
-        ? 'loading'
-        : !summary
-          ? 'aged-out'
-          : artifact.latestRevision > revision
-            ? 'newer'
-            : 'latest'
+    !enabled || (read.error instanceof ApiError && read.error.code === ARTIFACTS_NOT_ENABLED)
+      ? 'not-enabled'
+      : read.error instanceof ApiError && read.error.status === 404
+        ? 'unavailable'
+        : !artifact
+          ? 'loading'
+          : !summary
+            ? 'aged-out'
+            : artifact.latestRevision > revision
+              ? 'newer'
+              : 'latest'
   const title = artifact?.title ?? marker.title
   const kind = summary ? artifactKind(summary.entryMediaType, summary.entry) : null
   const download = useArtifactDownload(artifactId, revision, title)
-  const unavailable = state === 'unavailable'
+  const unavailable = state === 'unavailable' || state === 'not-enabled'
 
   const meta = [
     t('revision', { number: revision }),
@@ -59,7 +72,7 @@ export function ArtifactCard({ marker }: { marker: ArtifactMarker }) {
       <div className="flex min-w-0 items-center gap-3">
         <span className="flex h-9 w-9 flex-none items-center justify-center rounded-sm border border-(--border-subtle) bg-(--surface-sunken)">
           <Icon
-            name={unavailable ? 'file-x' : kind ? ARTIFACT_KIND_ICON[kind] : 'file'}
+            name={state === 'unavailable' ? 'file-x' : kind ? ARTIFACT_KIND_ICON[kind] : 'file'}
             size={17}
             color="var(--text-secondary)"
           />
@@ -77,7 +90,8 @@ export function ArtifactCard({ marker }: { marker: ArtifactMarker }) {
               </span>
             )}
             {state === 'aged-out' && <span className="font-medium text-(--text-secondary)">{t('agedOut')}</span>}
-            {unavailable && <span className="font-medium text-(--text-secondary)">{t('unavailable')}</span>}
+            {state === 'unavailable' && <span className="font-medium text-(--text-secondary)">{t('unavailable')}</span>}
+            {state === 'not-enabled' && <span className="font-medium text-(--text-secondary)">{t('notEnabled')}</span>}
           </div>
         </div>
       </div>

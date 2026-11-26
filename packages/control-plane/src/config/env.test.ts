@@ -228,3 +228,71 @@ describe('session policy enforcement switch', () => {
     expect(() => loadConfig({ ...base, SESSION_POLICY_ENFORCEMENT: 'false' })).toThrow()
   })
 })
+
+describe('artifact content domain (artifacts.md §5.5)', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+    API_KEY_PEPPER: 'a'.repeat(32),
+    PUBLIC_WEB_URL: 'https://console.example.test'
+  }
+  const bucket = (publicEndpoint: string) =>
+    JSON.stringify({
+      version: 1,
+      publicEndpoint,
+      region: 'us-east-1',
+      bucket: 'ac-cache',
+      credentials: { source: 'static', dir: '/creds', accessKeyIdKey: 'id', secretAccessKeyKey: 'secret' }
+    })
+
+  it('is off when unset, and normalizes a configured domain', () => {
+    expect(loadConfig(base).ARTIFACTS_CONTENT_DOMAIN).toBeUndefined()
+    expect(loadConfig({ ...base, ARTIFACTS_CONTENT_DOMAIN: '' }).ARTIFACTS_CONTENT_DOMAIN).toBeUndefined()
+    expect(
+      loadConfig({ ...base, ARTIFACTS_CONTENT_DOMAIN: ' Example-Usercontent.NET ' }).ARTIFACTS_CONTENT_DOMAIN
+    ).toBe('example-usercontent.net')
+  })
+
+  it.each(['192.0.2.10', 'usercontent', 'localhost', '*.example-usercontent.net'])(
+    'refuses to start with %s',
+    (domain) => {
+      expect(() => loadConfig({ ...base, ARTIFACTS_CONTENT_DOMAIN: domain })).toThrow(/ARTIFACTS_CONTENT_DOMAIN/)
+    }
+  )
+
+  it.each([
+    ['PUBLIC_WEB_URL', { PUBLIC_WEB_URL: 'https://console.example.test' }],
+    ['CORS_ORIGIN', { CORS_ORIGIN: 'https://other.example.net,https://app.example.test' }],
+    ['PUBLIC_CP_URL', { PUBLIC_CP_URL: 'https://api.example.test' }],
+    ['PUBLIC_RELAY_URL', { PUBLIC_RELAY_URL: 'https://relay.example.test' }],
+    ['PUBLIC_MCP_URL', { PUBLIC_MCP_URL: 'https://mcp.example.test' }],
+    ['OIDC_ISSUER', { OIDC_ISSUER: 'https://login.example.test/oidc' }],
+    ['OIDC_ISSUER', { LOGTO_ENDPOINT: 'https://login.example.test' }],
+    ['LOGTO_MGMT_ENDPOINT', { LOGTO_MGMT_ENDPOINT: 'https://login.example.test' }],
+    ['S3_ENDPOINT', { S3_ENDPOINT: 'https://s3.example.test' }],
+    ['S3_PUBLIC_BASE_URL', { S3_PUBLIC_BASE_URL: 'https://icons.example.test/bucket' }],
+    ['AC_FILE_TRANSFER.publicEndpoint', { AC_FILE_TRANSFER: bucket('https://store.example.test') }]
+  ])('refuses a content domain same-site with %s', (name, env) => {
+    const config = { ...base, PUBLIC_WEB_URL: 'https://console.example.net', ...env }
+    expect(() => loadConfig({ ...config, ARTIFACTS_CONTENT_DOMAIN: 'usercontent.example.test' })).toThrow(
+      new RegExp(`${name.replace('.', '\\.')} is same-site`)
+    )
+    expect(
+      loadConfig({ ...config, ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' }).ARTIFACTS_CONTENT_DOMAIN
+    ).toBe('example-usercontent.net')
+  })
+
+  it('accepts another registrable domain under a multi-label public suffix', () => {
+    const config = { ...base, PUBLIC_WEB_URL: 'https://console.example.co.uk' }
+    expect(loadConfig({ ...config, ARTIFACTS_CONTENT_DOMAIN: 'usercontent.co.uk' }).ARTIFACTS_CONTENT_DOMAIN).toBe(
+      'usercontent.co.uk'
+    )
+    expect(() => loadConfig({ ...config, ARTIFACTS_CONTENT_DOMAIN: 'usercontent.example.co.uk' })).toThrow(/same-site/)
+  })
+
+  it('needs the console origin to check against', () => {
+    const { PUBLIC_WEB_URL: _, ...noConsole } = base
+    expect(() => loadConfig({ ...noConsole, ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' })).toThrow(
+      /requires PUBLIC_WEB_URL/
+    )
+  })
+})

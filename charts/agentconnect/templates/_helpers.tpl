@@ -352,3 +352,15 @@ Call with (dict "root" $ "extraEnv" <that workload's extraEnv> "owner" "<values 
   value: {{ join "," . | quote }}
 {{- end }}
 {{- end }}
+
+{{/*
+The artifact content domain, refused unless it is a bare lower-case DNS name (the CP checks the rest at boot).
+*/}}
+{{- define "agentconnect.artifactsContentDomain" -}}
+{{- $domain := .Values.artifacts.contentDomain -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" $domain) -}}
+{{- fail "artifacts.contentDomain must be a bare lower-case domain such as example-usercontent.net, without `*.`, a scheme or a port" -}}
+{{- end -}}
+{{- $domain -}}
+{{- end -}}
+

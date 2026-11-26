@@ -83,6 +83,7 @@ async function renderView(search: string) {
 }
 
 beforeEach(() => {
+  window.__AC_ENV = { ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' }
   api.getArtifact.mockReset().mockResolvedValue(ARTIFACT)
   api.getArtifactRevision.mockReset().mockImplementation(async (_id: string, number: number) => ({
     ...summary(number, number === 3 ? 'Atlas' : 'Hermes'),
@@ -100,6 +101,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete window.__AC_ENV
   act(() => root.unmount())
   container.remove()
 })
@@ -161,5 +163,20 @@ describe('ArtifactView', () => {
     expect(container.textContent).toContain('Artifact unavailable')
     expect(container.textContent).toContain('may have been deleted, or you may not have access')
     expect(api.getArtifactRevision).not.toHaveBeenCalled()
+  })
+
+  it('says artifacts are not enabled, without reading anything, on a deployment without them', async () => {
+    window.__AC_ENV = {}
+    await renderView('?revision=2')
+    const notice = container.querySelector('[data-testid="artifacts-not-enabled"]')!
+    expect(notice.textContent).toContain('Artifacts are not enabled on this deployment')
+    expect(notice.querySelector('a')!.getAttribute('href')).toBe('/acme/home')
+    expect(api.getArtifact).not.toHaveBeenCalled()
+  })
+
+  it('says the same when the Control Plane answers that artifacts are not enabled', async () => {
+    api.getArtifact.mockRejectedValue(new ApiError('not enabled', 409, 'ARTIFACTS_NOT_ENABLED'))
+    await renderView('')
+    expect(container.querySelector('[data-testid="artifacts-not-enabled"]')).not.toBeNull()
   })
 })

@@ -8495,6 +8495,7 @@
       "newer": "Newer revision available (r{number})",
       "agedOut": "This revision is no longer kept",
       "unavailable": "Unavailable. It may have been deleted, or you don’t have access.",
+      "notEnabled": "Artifacts are not enabled on this deployment.",
       "open": "Open",
       "download": "Download",
       "downloadFailed": "Download failed. Try again."
@@ -8520,6 +8521,8 @@
       "unavailableTitle": "Artifact unavailable",
       "unavailablePre": "Artifact ",
       "unavailablePost": " can’t be opened. It may have been deleted, or you may not have access.",
+      "notEnabledTitle": "Artifacts are not enabled",
+      "notEnabledBody": "Artifacts are not enabled on this deployment, so this artifact can’t be opened here.",
       "backHome": "Back to home",
       "search": "Search",
       "loadFailed": "This artifact couldn’t be loaded. Try again later."
