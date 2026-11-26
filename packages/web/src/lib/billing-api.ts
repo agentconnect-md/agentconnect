@@ -285,6 +285,8 @@ export interface BillingPlanOption extends BillingPlanRef {
   scheduled: boolean
   /** Free-trial days this org may start on this option now; absent or null ⇒ offer no trial. */
   trialDays?: number | null
+  /** Credit granted once when that trial starts, microUSD; absent from an older service. */
+  trialGrantMicro?: number
 }
 
 export interface BillingPlans {
@@ -618,6 +620,8 @@ export function assertPlans(body: unknown): asserts body is BillingPlans {
     }
     // A malformed trial offer drops to no offer: the plain subscribe path is always safe.
     if (o.trialDays != null && !(isFiniteNumber(o.trialDays) && o.trialDays > 0)) delete o.trialDays
+    if (o.trialGrantMicro !== undefined && !(isFiniteNumber(o.trialGrantMicro) && o.trialGrantMicro >= 0))
+      delete o.trialGrantMicro
   }
 }
 

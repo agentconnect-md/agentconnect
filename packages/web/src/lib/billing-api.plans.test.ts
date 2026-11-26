@@ -220,6 +220,26 @@ describe('assertPlans', () => {
     }
   })
 
+  it('keeps the trial credit, reads absent as unknown, and drops a malformed one', () => {
+    const body: unknown = {
+      options: [
+        { ...OPTION, trialDays: 14, trialGrantMicro: 10_000_000 },
+        { ...OPTION, trialDays: 14, trialGrantMicro: 0 },
+        { ...OPTION }
+      ]
+    }
+    assertPlans(body)
+    expect(body.options.map((o) => o.trialGrantMicro)).toEqual([10_000_000, 0, undefined])
+    for (const trialGrantMicro of ['10', -1, Number.NaN, null]) {
+      const malformed: { options: Record<string, unknown>[] } = {
+        options: [{ ...OPTION, trialDays: 14, trialGrantMicro }]
+      }
+      expect(() => assertPlans(malformed)).not.toThrow()
+      expect(malformed.options[0]).toHaveProperty('trialDays', 14)
+      expect(malformed.options[0]).not.toHaveProperty('trialGrantMicro')
+    }
+  })
+
   it('refuses an unknown sales mode or a missing flag', () => {
     expect(() => assertPlans({ options: [{ ...OPTION, salesMode: 'auction' }] })).toThrow(BillingShapeError)
     expect(() => assertPlans({ options: [{ ...OPTION, current: undefined }] })).toThrow(BillingShapeError)
