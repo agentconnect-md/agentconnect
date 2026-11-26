@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync } from 'fflate'
+import { FakeClock } from '@agentconnect.md/connection'
 import {
   ArchiveStore,
   installedArchiveBin,
@@ -14,6 +15,7 @@ import {
   type ArchiveLaunch
 } from '../src/runtimes/archive-store.js'
 import { runtimeStoreDir } from '../src/paths.js'
+import { INSTALL_RETRY_BASE_MS } from '../src/runtimes/store-install.js'
 import type { ResolvedRuntimeEntry } from '../src/runtimes/registry.js'
 
 const URL_A = 'https://dl.example.test/agy-acp-server-RC01-linux-x86_64.zip'
@@ -168,6 +170,29 @@ describe('ArchiveStore', () => {
     const fetchImpl: ArchiveFetch = async () => new Response(null, { status: 404 })
     await expect(new ArchiveStore({ root: dir, fetchImpl }).ensure(launch())).rejects.toThrow(/HTTP 404/)
     expect(installedArchiveVersions(dir, 'antigravity-acp')).toEqual([])
+  })
+
+  it('retries a failed install once its backoff passes, and leaves no staging tree from the failure', async () => {
+    const dir = root()
+    const clock = new FakeClock()
+    const healthy = fakeFetch(PAR)
+    let attempts = 0
+    const fetchImpl: ArchiveFetch = async (url, init) => {
+      if (++attempts === 1) throw new Error('ENOSPC: no space left on device, write')
+      return healthy.fetchImpl(url, init)
+    }
+    const store = new ArchiveStore({ root: dir, fetchImpl, clock })
+
+    await expect(store.ensure(launch())).rejects.toThrow('ENOSPC')
+    expect(readdirSync(runtimeStoreDir(dir))).toEqual([])
+    // Inside the backoff every caller gets the failure without another fetch.
+    await expect(store.ensure(launch())).rejects.toThrow('ENOSPC')
+    expect(attempts).toBe(1)
+
+    clock.advance(INSTALL_RETRY_BASE_MS)
+    const installed = await store.ensure(launch())
+    expect(readFileSync(installed.bin, 'utf8')).toBe('#!par\n')
+    expect(attempts).toBe(2)
   })
 })
 

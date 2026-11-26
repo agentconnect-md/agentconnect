@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import type { Clock } from '@agentconnect.md/connection'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { runtimeStoreDir } from '../paths.js'
 import { resolveLocalInvocation } from './probe.js'
+import { InstallMemo, runtimeStagingDir } from './store-install.js'
 
 // An ACP adapter is the runtime's PARENT process, outside every inner tool sandbox, so it must not
 // load its code from anywhere the model can write. `npx -y <spec>` did exactly that: it resolved and
@@ -200,26 +201,24 @@ export interface RuntimeStoreOptions {
   root: string
   run?: NpmCommandRunner
   log?: { info(message: string): void; warn(message: string): void }
+  /** Times the retry backoff after a failed install. */
+  clock?: Clock
 }
 
 /** Installs daemon-supplied ACP adapters under the daemon root and reports where to launch them. */
 export class RuntimeStore {
-  private readonly inFlight = new Map<string, Promise<StoredRuntimePackage>>()
+  private readonly installs: InstallMemo<StoredRuntimePackage>
   private readonly run: NpmCommandRunner
 
   constructor(private readonly opts: RuntimeStoreOptions) {
     this.run = opts.run ?? execFileNpmCommand()
+    this.installs = new InstallMemo(opts.clock, opts.log)
   }
 
-  /** One install per package for this daemon's lifetime: two hosts starting at once share this promise. */
+  /** One install per package for this daemon's lifetime; concurrent callers share it and a failure is retried. */
   ensure(launch: NpxPackageLaunch): Promise<StoredRuntimePackage> {
     const key = `${launch.name}@${launch.range}${launch.bin ? `:${launch.bin}` : ''}`
-    const existing = this.inFlight.get(key)
-    if (existing) return existing
-    const run = this.install(launch)
-    this.inFlight.set(key, run)
-    void run.catch(() => {})
-    return run
+    return this.installs.run(key, () => this.install(launch))
   }
 
   private async install(launch: NpxPackageLaunch): Promise<StoredRuntimePackage> {
@@ -269,7 +268,7 @@ export class RuntimeStore {
 
   /** Install into a staging directory and rename, so a partial tree is never visible as an install. */
   private async installInto(tree: string, spec: string): Promise<void> {
-    const staging = join(runtimeStoreDir(this.opts.root), `.staging-${randomUUID().slice(0, 8)}`)
+    const staging = runtimeStagingDir(this.opts.root)
     mkdirSync(staging, { recursive: true })
     try {
       // Without a manifest of its own npm walks up and installs into whatever tree it finds first.
