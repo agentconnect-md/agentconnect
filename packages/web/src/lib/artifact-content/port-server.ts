@@ -68,13 +68,18 @@ export function replyType(mediaType: string): string {
 
 /** Fetched files by manifest path, least recently used dropped first once `limit` bytes are held. */
 export class ByteCache {
-  private readonly entries = new Map<string, { bytes: number; value: Promise<ArrayBuffer> }>()
+  private readonly entries = new Map<string, { bytes: number; value: Promise<ArrayBuffer>; settled: boolean }>()
   private total = 0
 
   constructor(private readonly limit: number) {}
 
   has(path: string): boolean {
     return this.entries.has(path)
+  }
+
+  /** Whether the file's bytes are held, not merely being fetched. */
+  holds(path: string): boolean {
+    return this.entries.get(path)?.settled === true
   }
 
   get size(): number {
@@ -90,10 +95,13 @@ export class ByteCache {
     }
     const value = load()
     if (bytes > this.limit) return value
-    const entry = { bytes, value }
-    value.catch(() => {
-      if (this.entries.get(path) === entry) this.drop(path)
-    })
+    const entry = { bytes, value, settled: false }
+    value.then(
+      () => (entry.settled = true),
+      () => {
+        if (this.entries.get(path) === entry) this.drop(path)
+      }
+    )
     this.entries.set(path, entry)
     this.total += bytes
     for (const oldest of this.entries.keys()) {
@@ -138,8 +146,8 @@ export function createPortServer(options: PortServerOptions): PortServer {
     const path = manifestPathOf(request.path, (p) => files.has(p)) ?? (request.navigate ? options.entry : null)
     const file = path === null ? undefined : files.get(path)
     if (!file) return plain(404)
-    // A fetch may outlast the worker's short deadline; the acknowledgement moves it to the long one.
-    if (!cache.has(file.path)) post({ id, ack: true }, [])
+    // A fetch, or waiting on one already in flight, may outlast the worker's short deadline; the ack moves it to the long one.
+    if (!cache.holds(file.path)) post({ id, ack: true }, [])
     let bytes: ArrayBuffer
     try {
       bytes = await read(file)

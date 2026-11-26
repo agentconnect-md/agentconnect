@@ -153,7 +153,7 @@ describe('createPortServer', () => {
     expect(load).toHaveBeenCalledTimes(1)
   })
 
-  it('shares one fetch between concurrent requests', async () => {
+  it('shares one fetch between concurrent requests and acknowledges each while it is in flight', async () => {
     const { server, load } = serve()
     const post = vi.fn()
     await Promise.all([
@@ -161,6 +161,8 @@ describe('createPortServer', () => {
       server.handle({ id: 2, path: '/index.html', navigate: false, range: null }, post)
     ])
     expect(load).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith({ id: 1, ack: true }, [])
+    expect(post).toHaveBeenCalledWith({ id: 2, ack: true }, [])
   })
 
   it('answers 502 when the bytes cannot be fetched, and fetches again next time', async () => {
