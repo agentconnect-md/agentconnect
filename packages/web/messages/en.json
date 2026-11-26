@@ -5622,7 +5622,16 @@
         "cancelConfirm": "Its invoice is voided and your plan stays as it is.",
         "cancelKeep": "Keep upgrade",
         "cancelBusy": "Cancelling…",
-        "cancelError": "Couldn't cancel the upgrade: {error}"
+        "cancelError": "Couldn't cancel the upgrade: {error}",
+        "trial": {
+          "title": "Your plan payment is waiting",
+          "body": "Your trial continues unchanged until the payment completes.",
+          "cancel": "Cancel payment",
+          "cancelTitle": "Cancel this payment?",
+          "cancelConfirm": "Its invoice is voided and your trial continues as it is.",
+          "cancelKeep": "Keep payment",
+          "cancelError": "Couldn't cancel the payment: {error}"
+        }
       },
       "limitReached": {
         "title": "Session limit reached",
@@ -5649,7 +5658,8 @@
           "expired": "expired"
         },
         "empty": "No plan credits right now.",
-        "footer": "Earliest-expiring credits are used first, then top-ups."
+        "footer": "Earliest-expiring credits are used first, then top-ups.",
+        "trialCredits": "Trial credits"
       },
       "cancelScheduled": "Cancel",
       "cancelScheduledError": "Couldn't cancel the scheduled change: {error}",
@@ -5663,7 +5673,8 @@
         "more": "Need more?",
         "contactSales": "Contact sales",
         "today": "+{amount} today",
-        "upgradeTo": "Upgrade to {tier}"
+        "upgradeTo": "Upgrade to {tier}",
+        "tryFree": "Try {tier} free for {days, plural, one {# day} other {# days}}"
       },
       "change": {
         "title": "Change plan",
@@ -5741,7 +5752,48 @@
           "scheduled": "Scheduled for {date}",
           "scheduledAtRenewal": "Scheduled for the next renewal",
           "done": "Done"
+        },
+        "trial": {
+          "badge": "Trial",
+          "offer": "{days}-day free trial",
+          "terms": "{days, plural, one {# day} other {# days}} free, then {price} / mo",
+          "start": "Start free trial",
+          "subscribeNow": "Subscribe now",
+          "payNow": "Pay now",
+          "switchOn": "Switch on {date}",
+          "switchTitle": "Switch at trial end",
+          "cancel": "Cancel trial",
+          "current": "{plan} · Trial",
+          "ends": "Trial ends",
+          "then": "Then",
+          "credits": "Trial credits",
+          "cardNote": "Card required — not charged today. Cancel anytime before {date}.",
+          "addCard": "Add card",
+          "label": "Trial",
+          "endsNow": "Ends now",
+          "forfeit": "Unused trial credits",
+          "includes": "Includes {amount} plan credits for this cycle.",
+          "replacesCancel": "Paying now also withdraws your trial cancellation.",
+          "replacesScheduled": "Paying now replaces your switch to {plan} at the end of the trial.",
+          "atEnd": "{date} (trial end)",
+          "firstCharge": "First charge",
+          "cancelNote": "You won't be charged. Undo anytime before {date}.",
+          "confirmingCard": "Confirming card…",
+          "started": "Trial started",
+          "until": "{plan} until {date}.",
+          "subscribed": "Subscribed to {plan}",
+          "noCredit": "This card already received trial credits on another organization, so none were added here. Add credits to pay for usage during the trial."
         }
+      },
+      "trialEnds": "Trial ends {date}",
+      "trial": {
+        "badge": "Trial",
+        "cancel": "Cancel trial",
+        "undo": "Undo",
+        "price": "<amount>Free</amount> · then {price} / month",
+        "priceCancelled": "<amount>Free</amount> trial",
+        "cancelled": "Trial ends {date} · back to Free, no charge",
+        "switching": "Switching to {plan} when the trial ends {date}"
       }
     }
   },

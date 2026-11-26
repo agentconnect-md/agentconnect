@@ -16,6 +16,7 @@ import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'rechar
 import {
   BillingError,
   BillingShapeError,
+  FREE_TIER_ID,
   PURCHASE_MAX_MICRO,
   PURCHASE_MIN_MICRO,
   cancelBillingSubscriptionChange,
@@ -31,6 +32,7 @@ import {
   type BillingDebit,
   type BillingDebitAgent,
   type BillingDebitModel,
+  type BillingPendingChange,
   type BillingPurchase,
   type BillingTransaction
 } from '@/lib/billing-api'
@@ -1159,6 +1161,20 @@ export default function BillingView() {
   const catalog = usePlanCatalog(planOwner)
   const increase = useIncreaseLimit(planOwner, plan.subscription.data, catalog.data)
   const [planDialog, setPlanDialog] = useState<ChangePlanStart | null>(null)
+  // Cancelling a trial schedules Free, so it needs Free's option from the catalog.
+  const freeOption = catalog.data?.options.find((o) => o.tierId === FREE_TIER_ID)
+  const cancelPending =
+    myRole === 'owner' && orgId
+      ? async (change: BillingPendingChange) => {
+          try {
+            await cancelBillingSubscriptionChange(orgId, change.id)
+          } catch (e) {
+            // Already paid or expired: the reread shows where it landed.
+            if (!(e instanceof BillingError && (e.status === 404 || e.status === 409))) throw e
+          }
+          await Promise.all([plan.subscription.mutate(), catalog.mutate()])
+        }
+      : undefined
   const openChangePlan = () => {
     const sub = plan.subscription.data
     if (sub) setPlanDialog({ target: { tierId: sub.tierId, optionId: sub.optionId } })
@@ -1466,19 +1482,7 @@ export default function BillingView() {
           {plansOffered && (
             <PlanBanners
               reads={plan}
-              onCancelPending={
-                myRole === 'owner'
-                  ? async (change) => {
-                      try {
-                        await cancelBillingSubscriptionChange(orgId, change.id)
-                      } catch (e) {
-                        // Already paid or expired: the reread shows where it landed.
-                        if (!(e instanceof BillingError && (e.status === 404 || e.status === 409))) throw e
-                      }
-                      await Promise.all([plan.subscription.mutate(), catalog.mutate()])
-                    }
-                  : undefined
-              }
+              onCancelPending={cancelPending}
               limitAction={
                 increase?.bannerLabel
                   ? { label: increase.bannerLabel, onClick: () => setPlanDialog({ target: increase.open }) }
@@ -1532,6 +1536,16 @@ export default function BillingView() {
                     await revokeBillingScheduledChange(orgId)
                     await Promise.all([plan.subscription.mutate(), catalog.mutate()])
                   }}
+                  onCancelTrial={
+                    freeOption
+                      ? () =>
+                          setPlanDialog({
+                            target: { tierId: FREE_TIER_ID, optionId: freeOption.optionId },
+                            review: true
+                          })
+                      : undefined
+                  }
+                  onCancelPending={cancelPending}
                   increase={
                     increase
                       ? {

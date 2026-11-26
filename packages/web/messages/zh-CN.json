@@ -5622,7 +5622,16 @@
         "cancelConfirm": "对应账单会作废，套餐保持不变。",
         "cancelKeep": "保留升级",
         "cancelBusy": "正在取消…",
-        "cancelError": "无法取消升级：{error}"
+        "cancelError": "无法取消升级：{error}",
+        "trial": {
+          "title": "套餐付款正在等待完成",
+          "body": "付款完成前，试用照常进行。",
+          "cancel": "放弃付款",
+          "cancelTitle": "放弃这笔付款？",
+          "cancelConfirm": "对应账单会作废，试用照常进行。",
+          "cancelKeep": "保留付款",
+          "cancelError": "无法放弃付款：{error}"
+        }
       },
       "limitReached": {
         "title": "已达会话上限",
@@ -5649,7 +5658,8 @@
           "expired": "已过期"
         },
         "empty": "当前没有套餐额度。",
-        "footer": "先使用最早到期的额度，再使用充值余额。"
+        "footer": "先使用最早到期的额度，再使用充值余额。",
+        "trialCredits": "试用额度"
       },
       "cancelScheduled": "取消",
       "cancelScheduledError": "无法取消已安排的变更：{error}",
@@ -5663,7 +5673,8 @@
         "more": "需要更多？",
         "contactSales": "联系销售",
         "today": "今天 +{amount}",
-        "upgradeTo": "升级到 {tier}"
+        "upgradeTo": "升级到 {tier}",
+        "tryFree": "免费试用 {tier} {days, plural, other {# 天}}"
       },
       "change": {
         "title": "更改套餐",
@@ -5741,7 +5752,48 @@
           "scheduled": "已安排在 {date} 生效",
           "scheduledAtRenewal": "已安排在下次续费时生效",
           "done": "完成"
+        },
+        "trial": {
+          "badge": "试用中",
+          "offer": "免费试用 {days} 天",
+          "terms": "免费 {days, plural, other {# 天}}，之后 {price} / 月",
+          "start": "开始免费试用",
+          "subscribeNow": "立即订阅",
+          "payNow": "立即付费",
+          "switchOn": "{date} 起切换",
+          "switchTitle": "试用结束时切换",
+          "cancel": "取消试用",
+          "current": "{plan} · 试用中",
+          "ends": "试用结束",
+          "then": "之后",
+          "credits": "试用额度",
+          "cardNote": "需要绑定信用卡，今天不扣费。{date} 之前可随时取消。",
+          "addCard": "添加信用卡",
+          "label": "试用",
+          "endsNow": "立即结束",
+          "forfeit": "未用完的试用额度",
+          "includes": "包含本周期 {amount} 套餐额度。",
+          "replacesCancel": "立即付费会同时撤销试用的取消。",
+          "replacesScheduled": "立即付费会取代试用结束时换到 {plan} 的预约。",
+          "atEnd": "{date}（试用结束）",
+          "firstCharge": "首次扣费",
+          "cancelNote": "不会扣费。{date} 之前可随时撤销。",
+          "confirmingCard": "正在确认信用卡…",
+          "started": "试用已开始",
+          "until": "{plan} 试用至 {date}。",
+          "subscribed": "已订阅 {plan}",
+          "noCredit": "这张卡已在其他组织领取过试用额度，因此这里没有发放。试用期间的用量需要先充值。"
         }
+      },
+      "trialEnds": "试用 {date} 结束",
+      "trial": {
+        "badge": "试用中",
+        "cancel": "取消试用",
+        "undo": "撤销",
+        "price": "<amount>免费</amount> · 之后 {price} / 月",
+        "priceCancelled": "<amount>免费</amount>试用",
+        "cancelled": "试用 {date} 结束 · 之后回到 Free，不会扣费",
+        "switching": "试用 {date} 结束时切换到 {plan}"
       }
     }
   },
