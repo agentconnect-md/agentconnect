@@ -1,25 +1,11 @@
-// Home's dashboard row budget.
-//
-// The dashboard is one left card (Recent) beside a stack of two (Agents you use,
-// Scheduled runs), and all three have to end on the same line with no half-drawn row
-// and no dead strip inside a card. That falls out of one identity: every row is pinned
-// to DASH_ROW_H and every card costs the same fixed chrome — its own two borders plus
-// the head (2 + 45) — so the right column's SECOND card, gutter included, costs
-// 2 + 45 + 16 = 63px, i.e. EXACTLY one row. The columns match when the left card shows
-// one row MORE than the right column shows in total:
-//
-//     47 + (n+1)·63  ==  (47 + a·63) + 16 + (47 + c·63)   for a + c == n
-//
-// Hence 63 as the row height, not a rounder number — it is what the second card's
-// chrome measures. Changing the grid's `gap-4`, the card border, or `.cardhead` padding
-// changes it.
+// The second card's 42px header, 2px border and 12px gutter cost one 56px row, so Recent draws one extra row to align both columns.
 
 /** Every dashboard row, in all three cards. */
-export const DASH_ROW_H = 63
+export const DASH_ROW_H = 56
 /** What a card costs before its first row: its own two borders plus the head. */
-export const CARD_CHROME_H = 47
-/** The gutter between the right column's two cards (the grid's `gap-4`). */
-export const CARD_GAP_H = 16
+export const CARD_CHROME_H = 44
+/** The gutter between the right column's two cards. */
+export const CARD_GAP_H = 12
 /** Row counts BEFORE the viewport is measured (and the growth baseline after) —
  *  a measured, taller viewport lifts them toward the real content, see below. */
 export const MAX_AGENT_ROWS = 4

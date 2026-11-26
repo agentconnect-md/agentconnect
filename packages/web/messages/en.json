@@ -1780,6 +1780,7 @@
       "scopeAll": "All",
       "unread": "Unread",
       "noSessions": "No sessions yet. Ask an agent above to start one.",
+      "noReply": "No reply available",
       "agentsTitle": "Agents you use",
       "allAgents": "All agents",
       "noAgents": "No agents yet.",

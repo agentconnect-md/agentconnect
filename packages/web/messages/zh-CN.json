@@ -1780,6 +1780,7 @@
       "scopeAll": "全部",
       "unread": "未读",
       "noSessions": "暂无会话，在上方给 Agent 发条消息即可开始。",
+      "noReply": "暂无可显示的回复",
       "agentsTitle": "常用 Agent",
       "allAgents": "全部 Agent",
       "noAgents": "暂无 Agent。",
