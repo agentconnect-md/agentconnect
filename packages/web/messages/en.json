@@ -5602,7 +5602,7 @@
       "noneTitle": "No plan yet",
       "noneBody": "This organization isn't on a plan.",
       "ownersChange": "Owners change the plan",
-      "price": "<amount>{price}</amount> / month",
+      "price": "{price} / month",
       "contract": "Contract pricing",
       "renews": "Renews {date}",
       "ends": "Ends {date}",

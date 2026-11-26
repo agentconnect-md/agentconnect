@@ -177,7 +177,6 @@ describe('BillingView plan layout', () => {
     await render()
     expect(q('[data-plan-name]')!.textContent).toBe('Pro Standard')
     expect(q('[data-plan-price]')!.textContent).toBe('$20 / month')
-    expect(q('[data-plan-price] strong')!.textContent).toBe('$20')
     expect(q('[data-plan-billing-date]')!.textContent).toBe('Renews Dec 4')
     expect(q('[data-plan-retention]')!.textContent).toBe('30-day history')
     const sessions = q('[data-plan-sessions]')!.textContent
