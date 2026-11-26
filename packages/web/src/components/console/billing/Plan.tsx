@@ -136,7 +136,15 @@ export interface IncreaseLink {
   onClick: () => void
 }
 
-function SessionsMeter({ usage, increase }: { usage: SessionMonthUsageDto; increase?: IncreaseLink }) {
+function SessionsMeter({
+  usage,
+  syncing,
+  increase
+}: {
+  usage: SessionMonthUsageDto
+  syncing: boolean
+  increase?: IncreaseLink
+}) {
   const t = useTranslations('Billing.plan')
   const { day, number } = useUtcDates()
   const tone = meterTone(usage.used, usage.limit)
@@ -150,7 +158,21 @@ function SessionsMeter({ usage, increase }: { usage: SessionMonthUsageDto; incre
           <span className={`font-semibold ${tone === 'red' ? 'text-(--red-600)' : 'text-(--text-primary)'}`}>
             {number(usage.used)}
           </span>
-          {usage.limit !== null && ` / ${number(usage.limit)}`}
+          {usage.limit !== null && ' / '}
+          {usage.limit !== null &&
+            (syncing ? (
+              // The limit shown is still the previous plan's while the new one is being applied.
+              <span
+                data-plan-limit-syncing="true"
+                className="inline-flex items-baseline gap-1 text-(--status-info)"
+                title={t('syncingHint')}
+              >
+                {number(usage.limit)}
+                <Icon name="refresh-cw" size={11} className="animate-spin self-center" />
+              </span>
+            ) : (
+              number(usage.limit)
+            ))}
         </span>
       </div>
       {tone && (
@@ -343,7 +365,13 @@ export function PlanCard({
           )}
         </div>
       )}
-      {usage && <SessionsMeter usage={usage} increase={role === 'owner' ? increase : undefined} />}
+      {usage && (
+        <SessionsMeter
+          usage={usage}
+          syncing={sub?.entitlementSync === 'syncing'}
+          increase={role === 'owner' ? increase : undefined}
+        />
+      )}
     </div>
   )
 }
