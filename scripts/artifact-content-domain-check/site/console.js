@@ -70,7 +70,7 @@ const MANIFEST = {
 }
 
 const params = new URLSearchParams(location.search)
-const label = params.get('a') || 'a1r1'
+const label = params.get('a') || 'a0123456789abcdef0123456789abcdefr1'
 const contentOrigin = `http://${label}.localhost:${location.port}`
 const log = (window.__acLog = [])
 window.__acPorts = 0
@@ -80,8 +80,13 @@ frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
 frame.src = `${contentOrigin}/__ac/shim`
 document.body.append(frame)
 
+const live = []
+// Simulates a console that lost its ports without the shim noticing: the worker must time out and ask again.
+window.__acDropPorts = () => live.splice(0).forEach((p) => p.close())
+
 function newPort() {
   const ch = new MessageChannel()
+  live.push(ch.port1)
   window.__acPorts++
   // Bound to this revision: only its manifest is answered, whatever arrives.
   ch.port1.onmessage = (e) => {
@@ -117,4 +122,5 @@ window.addEventListener('message', (e) => {
     history.replaceState(null, '', `?${params}`)
   }
   if (d.t === 'error') log.push({ error: d.message })
+  if (d.t === 'unsupported') log.push({ unsupported: d.reason })
 })

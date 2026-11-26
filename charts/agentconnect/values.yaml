@@ -54,7 +54,7 @@ mcpHost: ''
 # Artifacts (docs/designs/artifacts.md §5.5, §12): agent-published pages render on a wildcard
 # content domain of their own, one origin per revision (`<label>.<contentDomain>`).
 artifacts:
-  # The bare domain, e.g. `example-usercontent.net` (no `*.`, scheme or port). Set ⇒ the CP gets
+  # The bare domain, e.g. `example-usercontent.net` (no `*.`, scheme or port). Set ⇒ the CP and web get
   # ARTIFACTS_CONTENT_DOMAIN and the chart renders an HTTPRoute for `*.<contentDomain>` whose only
   # backend is the web service. It must be a registrable domain of its own: the CP refuses to
   # start when it is same-site with publicUrl, apiHost, mcpHost, the relay host, the identity

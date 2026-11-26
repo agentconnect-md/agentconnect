@@ -305,7 +305,8 @@ access is decided when the console fetches the bytes, not by the origin.
    went away, after a reload or a closed tab, fails silently. So the worker drops a port once
    its shim is gone, gives each request a timeout and one retry, and when it holds no live
    port asks every shim of its origin for one (`clients.matchAll`, including uncontrolled
-   clients). That shim asks the console, which issues a fresh port bound to the same revision.
+   clients). The console acknowledges a request as it starts answering it, so a large file
+   fetched whole waits on a longer deadline instead of counting as a dead port. That shim asks the console, which issues a fresh port bound to the same revision.
    Any shim's port will do, because an origin is one revision.
 
 Multi-page sites, relative and root-relative references, ES modules and `fetch` of local
@@ -694,6 +695,10 @@ every engine treats as a secure context and as cross-site from the console.
 With partitioning off, as in Playwright's defaults, a foreign page framing a content address
 got the artifact from the console's worker in Chromium and Firefox until the worker added
 `frame-ancestors`; §5.5 now requires it.
+
+`node run.mjs <engine> --web` runs the same checks against web's own shim and worker
+(`packages/web/src/lib/artifact-content/`), served by `next start` with the content domain
+`localhost`.
 
 These are Playwright 1.65.1's builds. Playwright turns Chromium's storage partitioning off
 and sets Firefox's `network.cookie.cookieBehavior` to 4 by default; the check restores both

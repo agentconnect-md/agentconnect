@@ -1,5 +1,5 @@
-// Prototype of artifacts.md §5.5: console on 127.0.0.1, content on <label>.localhost, one port.
-import { createServer } from 'node:http'
+// Prototype of artifacts.md §5.5: console on 127.0.0.1, content on <label>.localhost, one port; `web` forwards content to the real web service.
+import { createServer, request } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -7,7 +7,9 @@ import { dirname, join } from 'node:path'
 const here = dirname(fileURLToPath(import.meta.url))
 const read = (f) => readFileSync(join(here, 'site', f))
 
-export function startServer({ port = 0, ancestors = true } = {}) {
+export const LABEL = 'a0123456789abcdef0123456789abcdefr1'
+
+export function startServer({ port = 0, ancestors = true, web } = {}) {
   const log = []
   const server = createServer((req, res) => {
     const host = (req.headers.host || '').toLowerCase()
@@ -42,8 +44,17 @@ export function startServer({ port = 0, ancestors = true } = {}) {
       return send(
         200,
         'text/html',
-        `<iframe id="x" src="http://a1r1.localhost:${server.address().port}${target}"></iframe>`
+        `<iframe id="x" src="http://${LABEL}.localhost:${server.address().port}${target}"></iframe>`
       )
+    }
+    if (web && host.endsWith(`.localhost:${server.address().port}`)) {
+      // The real web service answers the content domain; Host passes through unchanged.
+      const upstream = request(new URL(req.url, web), { method: req.method, headers: req.headers }, (up) => {
+        res.writeHead(up.statusCode, up.headers)
+        up.pipe(res)
+      })
+      upstream.on('error', (e) => send(502, 'text/plain', String(e)))
+      return req.pipe(upstream)
     }
     if (/^a[0-9a-f]+r\d+\.localhost:\d+$/.test(host)) {
       const strict = { 'Content-Security-Policy': 'frame-ancestors ' + consoleOrigin, 'Referrer-Policy': 'no-referrer' }
@@ -69,5 +80,5 @@ export function startServer({ port = 0, ancestors = true } = {}) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { port } = await startServer({ port: Number(process.env.PORT || 8765) })
-  console.log(`console http://127.0.0.1:${port}/  content http://a1r1.localhost:${port}/__ac/shim`)
+  console.log(`console http://127.0.0.1:${port}/  content http://${LABEL}.localhost:${port}/__ac/shim`)
 }

@@ -94,7 +94,7 @@ describe('transfer keys', () => {
     expect(key).toBe(`src/${ORG}/artifact/${UPLOAD_ID}/3/assets/app v2.js`)
     expect(isTransferObjectKey(key)).toBe(true)
     expect(isTransferObjectKey(prefix)).toBe(false)
-    for (const path of ['../x', 'a/../../b', '.git/config', 'a//b', '/abs']) {
+    for (const path of ['../x', 'a/../../b', '.git/config', 'a//b', '/abs', '__ac/shim']) {
       expect(() => artifactObjectKey(prefix, path)).toThrow()
     }
     expect(() => artifactRevisionPrefix('../x', UPLOAD_ID, 1)).toThrow()

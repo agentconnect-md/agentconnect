@@ -392,7 +392,8 @@ artifacts:
   contentDomain: example-usercontent.net
 ```
 
-The chart passes it to the Control Plane as `ARTIFACTS_CONTENT_DOMAIN` and renders a
+The chart passes it to the Control Plane and the web service as `ARTIFACTS_CONTENT_DOMAIN`
+(web also gets `publicUrl`, the only origin that may frame a revision) and renders a
 separate HTTPRoute, `<release>-artifacts`, for `*.example-usercontent.net` whose only
 backend is the web service. The wildcard is never added to the website route, which also
 carries `/cp`. You provide, at your edge:

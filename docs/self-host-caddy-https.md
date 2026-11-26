@@ -238,7 +238,7 @@ Without one, artifacts are off: agents get no artifact tools and the console
 says artifacts are not enabled. What was already published is kept and comes
 back once a content domain is configured.
 
-Set it in `.env`; Compose passes it to the Control Plane:
+Set it in `.env`; Compose passes it to the Control Plane and the Web service:
 
 ```dotenv
 ARTIFACTS_CONTENT_DOMAIN=example-usercontent.net

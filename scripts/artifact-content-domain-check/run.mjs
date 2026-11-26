@@ -1,11 +1,14 @@
-// Browser check for docs/designs/artifacts.md §5.5; usage: npm install --no-package-lock && npx playwright install && node run.mjs <chromium|firefox|webkit> [--no-partition] [--no-ancestors]
-// WebKit needs Playwright's system libraries: run it in mcr.microsoft.com/playwright:v1.65.1-noble with --add-host a1r1.localhost:127.0.0.1 --add-host evil.localhost:127.0.0.1
+// Browser check for docs/designs/artifacts.md §5.5; usage: npm install --no-package-lock && npx playwright install && node run.mjs <chromium|firefox|webkit> [--no-partition] [--no-ancestors] [--web, after `pnpm --filter @agentconnect.md/web build`]
+// WebKit needs Playwright's system libraries: run it in mcr.microsoft.com/playwright:v1.65.1-noble with --add-host <label>.localhost:127.0.0.1 --add-host evil.localhost:127.0.0.1
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { chromium, firefox, webkit } from 'playwright'
-import { startServer } from './server.mjs'
+import { LABEL, startServer } from './server.mjs'
 
 const name = process.argv[2] || 'chromium'
 const noPartition = process.argv.includes('--no-partition')
 const noAncestors = process.argv.includes('--no-ancestors')
+const useWeb = process.argv.includes('--web')
 const engine = { chromium, firefox, webkit }[name]
 const results = []
 // Playwright 1.65.1's default --disable-features switch, which includes ThirdPartyStoragePartitioning.
@@ -32,9 +35,35 @@ const within = (p, ms = 3000) =>
     })
   ])
 
-const { server, log, port } = await startServer({ ancestors: !noAncestors })
+const webPort = Number(process.env.WEB_PORT || 3917)
+const { server, log, port } = await startServer({
+  ancestors: !noAncestors,
+  web: useWeb ? `http://127.0.0.1:${webPort}` : undefined
+})
 const consoleUrl = `http://127.0.0.1:${port}/`
-const content = `http://a1r1.localhost:${port}`
+const content = `http://${LABEL}.localhost:${port}`
+let web
+if (useWeb) {
+  // The content domain is `localhost` and the console this server's origin, as web reads them from its environment.
+  const cwd = fileURLToPath(new URL('../../packages/web/', import.meta.url))
+  const env = { ...process.env, ARTIFACTS_CONTENT_DOMAIN: 'localhost', PUBLIC_WEB_URL: consoleUrl.slice(0, -1) }
+  web = spawn('node_modules/.bin/next', ['start', '-p', String(webPort), '-H', '127.0.0.1'], {
+    cwd,
+    env,
+    stdio: 'ignore',
+    detached: true
+  })
+  for (let i = 0; ; i++) {
+    const up = await fetch(`http://127.0.0.1:${webPort}/__ac/shim`).then(
+      () => true,
+      () => false
+    )
+    if (up) break
+    if (i > 100) throw new Error('next start did not come up')
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  console.log(`web next start on ${webPort}`)
+}
 const launch = {}
 if (name === 'chromium' && !noPartition) {
   // Playwright disables storage partitioning by default; drop that switch to match Chrome.
@@ -59,7 +88,7 @@ const context = await browser.newContext()
 const page = await context.newPage()
 page.on('console', (m) => process.env.VERBOSE && console.log('  [console]', m.text()))
 
-const serverHits = () => log.filter((e) => e.host.startsWith('a1r1.') && !e.path.startsWith('/__ac/'))
+const serverHits = () => log.filter((e) => e.host.startsWith(`${LABEL}.`) && !e.path.startsWith('/__ac/'))
 const nested = () =>
   page
     .frames()
@@ -82,7 +111,6 @@ const waitNested = async (path, timeout = 10000) => {
 }
 const consoleLog = () => page.evaluate(() => window.__acLog)
 const h = (f) => f.evaluate(() => document.getElementById('h')?.textContent)
-const swInstance = (f) => f.evaluate(() => fetch('/data.json').then((r) => r.headers.get('X-AC-SW')))
 
 await page.goto(consoleUrl)
 
@@ -120,18 +148,6 @@ await step('2 subresources and navigations through the worker', async () => {
   }
 })
 
-await step('probe: what a navigation fetch event says about its initiator', async () => {
-  const st = await shim().evaluate(
-    () =>
-      new Promise(async (res) => {
-        const r = await navigator.serviceWorker.getRegistration('/')
-        navigator.serviceWorker.addEventListener('message', (e) => e.data?.t === 'state' && res(e.data))
-        r.active.postMessage({ t: 'debug-state' })
-      })
-  )
-  return { ok: true, note: JSON.stringify(st.navs) }
-})
-
 await step('3 history-route fallback; 404 for a missing subresource', async () => {
   await nested().click('#home')
   const f = await waitNested('/index.html')
@@ -143,6 +159,15 @@ await step('3 history-route fallback; 404 for a missing subresource', async () =
     note: `/app/settings -> ${await h(r)}, /missing.json -> ${missing}`
   }
 })
+
+// The prototype shim reports on load only; the web shim also reports history changes.
+if (useWeb)
+  await step('3b history.pushState in the nested frame reaches the console URL', async () => {
+    await nested().evaluate(() => history.pushState(null, '', '/app/pushed?tab=2'))
+    await sleep(500)
+    const p = new URL(page.url()).searchParams.get('p')
+    return { ok: p === '/app/pushed?tab=2', note: `console p=${p}` }
+  })
 
 const go = (path) => nested().evaluate((p) => (location.href = p), path)
 
@@ -176,9 +201,7 @@ await step('4b nested frame reload', async () => {
 
 await step('5a port lost without a restart (simulated)', async () => {
   const f = nested()
-  await shim().evaluate(() =>
-    navigator.serviceWorker.getRegistration('/').then((r) => r.active.postMessage({ t: 'debug-forget' }))
-  )
+  await page.evaluate(() => window.__acDropPorts())
   const portsBefore = await page.evaluate(() => window.__acPorts)
   const v = await f.evaluate(() =>
     fetch('/data.json')
@@ -191,7 +214,6 @@ await step('5a port lost without a restart (simulated)', async () => {
 
 await step('5b worker restart recovers', async () => {
   const f = nested()
-  const i1 = await swInstance(f)
   const portsBefore = await page.evaluate(() => window.__acPorts)
   let how
   if (name === 'chromium') {
@@ -209,19 +231,22 @@ await step('5b worker restart recovers', async () => {
     how = `waited ${wait / 1000} s idle`
   }
   const t0 = Date.now()
-  const i2 = await within(swInstance(f), 60000)
-  how += `, next fetch after ${Math.round((Date.now() - t0) / 1000)} s`
-  const v = await f.evaluate(() =>
-    fetch('/data.json')
-      .then((r) => r.json())
-      .then((d) => d.value)
+  const v = await within(
+    f.evaluate(() =>
+      fetch('/data.json')
+        .then((r) => r.json())
+        .then((d) => d.value)
+    ),
+    60000
   )
+  how += `, next fetch after ${Math.round((Date.now() - t0) / 1000)} s`
   const portsAfter = await page.evaluate(() => window.__acPorts)
-  const restarted = i1 !== i2
+  // A restarted worker holds no port, so it asks the console for one.
+  const restarted = portsAfter > portsBefore
   // WebKit keeps a worker with live clients running, so there may be no restart to recover from.
   return {
     ok: v === 'ok' && (restarted ? portsAfter > portsBefore : name === 'webkit'),
-    note: `${how}; instance ${i1} -> ${i2}; ports ${portsBefore} -> ${portsAfter}`
+    note: `${how}; ports ${portsBefore} -> ${portsAfter}`
   }
 })
 
@@ -265,7 +290,7 @@ await step('7a content address opened in its own tab is the server 404', async (
   // With partitioning on, the worker registered under the console is invisible to a first-party page.
   const partitionOk = noPartition || regs === 0
   return {
-    ok: res.status() === 404 && body.includes('content 404') && partitionOk,
+    ok: res.status() === 404 && body.includes(useWeb ? 'Not found' : 'content 404') && partitionOk,
     note: `status ${res.status()}; registrations visible first-party=${regs}`
   }
 })
@@ -283,7 +308,7 @@ await step('7b foreign top-level framing a content address', async () => {
     text = 'inaccessible: ' + String(e.message).slice(0, 40)
   }
   const rendered = typeof text === 'string' && text.includes('about') && !text.includes('404')
-  const sawServer = log.some((e) => e.host.startsWith('a1r1.') && e.path === '/about.html')
+  const sawServer = log.some((e) => e.host.startsWith(`${LABEL}.`) && e.path === '/about.html')
   return {
     ok: !rendered,
     note: `frame url=${fr?.url()}, rendered artifact=${rendered}, reached server=${sawServer}, text=${JSON.stringify(text).slice(0, 60)}`
@@ -316,6 +341,8 @@ await step('8 artifact page cannot frame the console', async () => {
 
 console.log(JSON.stringify({ engine: name, version: browser.version(), noPartition, noAncestors, results }))
 await within(browser.close(), 10000).catch(() => {})
+// next start forks next-server, so the whole process group goes.
+if (web) process.kill(-web.pid)
 server.closeAllConnections()
 server.close()
 process.exit(results.every((r) => r.ok) ? 0 : 1)

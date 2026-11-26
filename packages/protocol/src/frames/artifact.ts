@@ -29,6 +29,8 @@ export function artifactPathProblem(path: string): string | undefined {
   if (path.startsWith('/')) return 'the path is absolute'
   if (path.includes('\\')) return 'the path contains a backslash'
   if (CONTROL_RE.test(path)) return 'the path contains a control character'
+  // The shim and its worker own `/__ac/` on every revision origin (artifacts.md §5.5).
+  if (path.toLowerCase().startsWith('__ac/')) return 'the path is under `__ac/`, which is reserved'
   for (const segment of path.split('/')) {
     if (segment === '') return 'the path has an empty segment'
     if (segment === '.' || segment === '..') return 'the path has a `.` or `..` segment'

@@ -67,6 +67,15 @@ spec:
             - name: RELAY_URL
               value: {{ include "agentconnect.relayPublicUrl" . | quote }}
             {{- end }}
+            {{- with .Values.artifacts.contentDomain }}
+            # Artifact content domain (the -artifacts HTTPRoute): web answers only the shim and its worker there, framed by the console origin.
+            - name: ARTIFACTS_CONTENT_DOMAIN
+              value: {{ include "agentconnect.artifactsContentDomain" $ | quote }}
+            {{- if $.Values.publicUrl }}
+            - name: PUBLIC_WEB_URL
+              value: {{ trimSuffix "/" $.Values.publicUrl | quote }}
+            {{- end }}
+            {{- end }}
             {{- with (include "agentconnect.emailFrom" .) }}
             # Mirrors the CP's WAITLIST_FROM_EMAIL (both from `waitlistFromEmail`) so the
             # browser-side waitlist copy names the same verified sender the activation mail

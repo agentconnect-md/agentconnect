@@ -162,4 +162,12 @@ it('publishes the artifact content domain only while the CP offers artifacts, ov
   fetch.mockImplementation(async () => new Response(body({ enabled: false, contentDomain: null })))
   const fresh = await import('./public-env')
   expect(await fresh.resolvePublicEnv()).not.toHaveProperty('ARTIFACTS_CONTENT_DOMAIN')
+
+  // Web's own value serves the content host and never stands in for an unreachable CP.
+  vi.resetModules()
+  fetch.mockImplementation(async () => {
+    throw new Error('down')
+  })
+  const down = await import('./public-env')
+  expect(await down.resolvePublicEnv()).not.toHaveProperty('ARTIFACTS_CONTENT_DOMAIN')
 })
