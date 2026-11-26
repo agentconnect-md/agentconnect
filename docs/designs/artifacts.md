@@ -107,7 +107,7 @@ artifacts exist.
 | D22 | The viewer has three places: the right dock, the left conversation pane, and a standalone page; it opens on the side opposite the card (§11.2)                       |
 | D23 | On desktop, the viewer opens by itself when the agent publishes in the session being watched                                                                         |
 | D24 | Rollout in five steps (§14)                                                                                                                                          |
-| D25 | The content domain is served by the existing web service, which answers only the shim and its service worker on that domain; there is no separate artifact server    |
+| D26 | The content domain is served by the existing web service, which answers only the shim and its service worker on that domain; there is no separate artifact server    |
 
 Also settled, with details in their sections: every file is read through a short-lived
 presigned URL fetched by the console, and nothing in the bucket is publicly readable (§5.2);
@@ -241,14 +241,26 @@ or site, runs on the **content domain**.
 `*.example-usercontent.net`, never a subdomain of the console's site: a same-site host would
 receive and could set the console site's cookies. The managed service's content domain is
 also submitted to the Public Suffix List, so that every label under it is a separate site.
-The CP refuses to enable artifacts with a content domain that is same-site with the
-console's or the CP's public origin.
+The CP refuses to enable artifacts with a content domain that is same-site with any origin
+the deployment knows: the console, the CP and API host, the relay, the MCP host, the
+identity provider and the object store. The content domain must be a DNS name under a public
+suffix; an IP address, a single-label name or `localhost` is refused, since the Public
+Suffix List cannot classify it.
 
-**Who serves it.** The existing web service. Its request proxy checks the `Host` first: on
-the content domain it answers only `/__ac/shim` and `/__ac/sw.js`, with their own strict
-headers and no cookies, and 404 for every other path. No console page or API is ever served
-there. The identity provider's redirect URIs never include the content domain, so a sign-in
-cannot complete on it even if a page were served by mistake.
+Without a Public Suffix List entry, as on a self-hosted deployment, revisions are still
+separate origins, so their storage, service workers and DOM stay apart; what they share is
+the content domain's site, so one artifact could set a cookie the others receive. No
+artifact feature uses cookies on the content domain.
+
+**Who serves it.** The existing web service, behind a route of its own. The edge, not web,
+decides what reaches a host: the console's route sends `/cp` (and, in Compose, `/relay`) to
+other backends before web sees the request. So the content domain gets its own HTTPRoute in
+the chart and its own site block in Compose, with web as the only backend; it is never added
+to the console's route. Web's request proxy checks the `Host` first and covers every path on
+the content domain, including `_next` and the icon paths its matcher skips today: it answers
+only `/__ac/shim` and `/__ac/sw.js`, with their own strict headers and no cookies, and 404 for
+everything else. The identity provider's redirect URIs never include the content domain, so
+a sign-in cannot complete on it even if a page were served by mistake.
 
 **One origin per revision.** Revision `r` of artifact `a` renders at
 `https://a<artifact id without dashes>r<r>.<content domain>/`, so two artifacts, or two
@@ -258,35 +270,45 @@ access is decided when the console fetches the bytes, not by the origin.
 **How a page loads.**
 
 1. The console embeds `https://<label>.<content domain>/__ac/shim` in an iframe with
-   `sandbox="allow-scripts allow-same-origin"`. `allow-same-origin` is safe here because the
-   origin is cross-site to the console; it is what lets the shim register a service worker.
-   `allow-top-navigation`, `allow-popups` and `allow-forms` stay withheld.
+   `sandbox="allow-scripts allow-same-origin"`. `allow-same-origin` is what lets the shim
+   register a service worker; it does not let the page read the console, which is cross-site.
+   It does let the page frame other sites at their real origin, including the console under
+   a top-level page that is the console, where a browser's storage partitioning decides
+   whether that frame is signed in. So the console and the share pages refuse to be framed by
+   anything but their own origin (`Content-Security-Policy: frame-ancestors 'self'`, with
+   `X-Frame-Options: SAMEORIGIN` for older browsers). `allow-top-navigation`, `allow-popups`
+   and `allow-forms` stay withheld.
 2. The shim accepts messages only from the console's origin. It registers `/__ac/sw.js` with
    scope `/` and hands it a message port to the console.
 3. The shim loads the entry in a nested frame of the same origin. Every request that frame
    makes for that origin, including navigations, goes to the service worker, which asks the
    console for the path over the port.
-4. The console answers only paths in this revision's manifest. It fetches the bytes through
-   their signed URLs, as for a download, and the worker returns them typed by the manifest.
+4. The console trusts nothing that arrives on the port: the shim, the worker and the
+   artifact share one origin. It binds the port to the revision it embedded and answers only
+   paths in that revision's manifest, fetching the bytes through their signed URLs, as for a
+   download; the worker returns them typed by the manifest.
    A navigation to a path that is not in the manifest returns the entry, so a single-page app
    with history routing works; any other missing path is a 404.
-5. The shim reports the nested frame's path, and the console keeps it in its own URL, so
+5. The shim reports the nested frame's path. The console validates it against the manifest,
+   coalesces rapid changes so a page cannot flood its history, and keeps it in its own URL, so
    back, forward and reload work.
+6. A browser stops an idle service worker, which loses its port. The worker asks its shim
+   for a new one on wake, and the shim hands it over again.
 
 Multi-page sites, relative and root-relative references, ES modules and `fetch` of local
 files all work, because each revision is a whole origin.
 
-**Opened directly.** A content-domain address opened in its own tab reaches the web service
-with no service worker in that context (the worker was registered in the console's
-partitioned third-party context), and the web service answers 404. No artifact page ever
-runs outside the console's frame.
+**Opened directly.** The worker answers only clients its shim introduced, and keeps no bytes;
+anything else falls through to the web service, which answers 404. So a content-domain
+address opened in its own tab shows nothing in every browser, whether or not that browser
+partitions service workers, and no artifact page ever runs outside the console's frame.
 
 **A browser without third-party service workers** gets the entry rendered as `srcdoc` in a
 sandboxed frame, as in step 1, with a notice that the rest of the site cannot load in that
 browser, and download stays available.
 
-Pages may make outbound requests (D20); no CSP is injected. What that leaves open is limited
-to the artifact and its viewer:
+Pages may make outbound requests (D20); no CSP is injected. With the console and share pages
+refusing foreign framing, what that leaves open is limited to the artifact and its viewer:
 
 | Risk                 | Description                                                                                                                                                |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -604,33 +626,41 @@ domain. The CP advertises `artifacts-v1` to daemons, and the runtime configurati
 console the content domain, only then; otherwise agents get no artifact tools and the
 console shows no artifact surfaces. `shareFile` and session files are unaffected either way.
 
-| Deployment      | What the operator provides                                                                                                                                                                  |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Managed service | Provided: a wildcard content domain on its own registrable domain, on the Public Suffix List                                                                                                |
-| Helm chart      | `artifacts.contentDomain`; DNS and a wildcard certificate for it; the chart adds the wildcard host to the web service's HTTPRoute                                                           |
-| Compose         | The content-domain variable; DNS and a wildcard certificate for it. Caddy obtains a wildcard certificate only through a DNS challenge, so the operator configures their DNS provider for it |
-| Any deployment  | A transfer bucket ([source-cache-file-transfer.md](source-cache-file-transfer.md)); nothing in it becomes public                                                                            |
+The off state is a product choice: non-HTML entries and the `srcdoc` fallback need no content
+domain, but artifacts are offered whole or not at all. Turning artifacts off, or removing the
+content domain, keeps what was published: retention, deletion and organization-deletion
+cleanup keep running, and the artifacts come back when a content domain is configured again.
+A deployment that had step-1 artifacts loses them at step 2 unless it adds a content domain,
+which the release notes say. Local development and CI use a wildcard name that resolves to
+the loopback address with a locally trusted certificate.
+
+| Deployment      | What the operator provides                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Managed service | Provided: a wildcard content domain on its own registrable domain, on the Public Suffix List                                                                                                                                                                                                                                                                                                                                                                    |
+| Helm chart      | `artifacts.contentDomain`; DNS and a wildcard certificate for it; the chart renders a separate HTTPRoute for the wildcard host with web as its only backend, as it does for the MCP host                                                                                                                                                                                                                                                                        |
+| Compose         | The content-domain variable and a site block of its own; DNS and a wildcard certificate for it. With a public domain, Caddy obtains a wildcard certificate only through a DNS challenge, so the operator configures their DNS provider for it. The LAN overlay (`compose.logto.https.yaml`, `tls internal`) can serve a wildcard name from Caddy's internal CA when the LAN resolves it; on an IP address or single-label host it cannot, and artifacts are off |
+| Any deployment  | A transfer bucket ([source-cache-file-transfer.md](source-cache-file-transfer.md)); nothing in it becomes public                                                                                                                                                                                                                                                                                                                                                |
 
 ## 13. Open questions
 
-| #   | Question                                                                                                                                                             | Proposal                                                                                                                        |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | Manifest in the database or as an object in the bucket                                                                                                               | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
-| P2  | Do current Chrome, Safari and Firefox let the shim register a service worker in its partitioned third-party frame, and route the nested frame's requests through it? | Prototype before building step 2; a browser that cannot gets the §5.5 fallback                                                  |
-| P3  | Which retention value the CP applies to revisions                                                                                                                    | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything          |
-| P4  | Limit values                                                                                                                                                         | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan         |
+| #   | Question                                                                                                                                                                                                                                                          | Proposal                                                                                                                        |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Manifest in the database or as an object in the bucket                                                                                                                                                                                                            | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
+| P2  | Do current Chrome, Safari and Firefox let the shim register a service worker in its partitioned third-party frame and route the nested frame's requests through it, including navigations, reload, a worker restarted after idling, and Range requests for media? | Prototype before building step 2; a browser that cannot gets the §5.5 fallback                                                  |
+| P3  | Which retention value the CP applies to revisions                                                                                                                                                                                                                 | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything          |
+| P4  | Limit values                                                                                                                                                                                                                                                      | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan         |
 
 ## 14. Rollout
 
 Each step can be verified on its own:
 
-| Step | Scope                                                                                                                                                                                                                                                    | Unlocks                                                                                  |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 1    | Data model; publish, fetch and list tools; signed-prefix storage; the conversation card; the standalone viewer page; download                                                                                                                            | Agent publishes, person opens. Covers single-file HTML, Markdown, images, PDF and source |
-| 2    | The content domain: the configuration and its same-site check, the web service's `Host` branch, the shim and service worker, every HTML entry moved onto it, feature gating on the content domain, and a threat-model entry with a hostile-artifact test | Interactive multi-file pages                                                             |
-| 3    | In-session viewer: the dock's Artifacts tab, the left-pane viewer, opening by itself, revision switching                                                                                                                                                 | Viewing while revising                                                                   |
-| 4    | Sharing: `public` and `org` links, the share page, the agent's share and unshare tools                                                                                                                                                                   | Handing a revision to people outside the session                                         |
-| 5    | Management: the Artifacts page, deletion including the agent's delete tool, retention cleanup, limits                                                                                                                                                    | Long-term upkeep                                                                         |
+| Step | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Unlocks                                                                                  |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 1    | Data model; publish, fetch and list tools; signed-prefix storage; the conversation card; the standalone viewer page; download                                                                                                                                                                                                                                                                                                                                                                         | Agent publishes, person opens. Covers single-file HTML, Markdown, images, PDF and source |
+| 2    | The content domain: the configuration and its same-site check, its own route and site block, the web service's `Host` branch, the shim and service worker, every HTML entry moved onto it, `frame-ancestors 'self'` on the console and share pages, feature gating on the content domain, dropping the unused `public` storage mode, and a threat-model entry with a hostile-artifact test (framing the console, top navigation, popups, forms, other revisions' origins, paths outside the manifest) | Interactive multi-file pages                                                             |
+| 3    | In-session viewer: the dock's Artifacts tab, the left-pane viewer, opening by itself, revision switching                                                                                                                                                                                                                                                                                                                                                                                              | Viewing while revising                                                                   |
+| 4    | Sharing: `public` and `org` links, the share page, the agent's share and unshare tools                                                                                                                                                                                                                                                                                                                                                                                                                | Handing a revision to people outside the session                                         |
+| 5    | Management: the Artifacts page, deletion including the agent's delete tool, retention cleanup, limits                                                                                                                                                                                                                                                                                                                                                                                                 | Long-term upkeep                                                                         |
 
 Step 1 alone is a complete path; each later step adds to it. Step 2 changes deployment
 requirements: once it ships, a deployment without a content domain stops offering
