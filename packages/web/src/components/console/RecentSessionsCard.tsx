@@ -23,8 +23,7 @@ import {
   type Session
 } from '@/lib/data'
 
-/** Stacked faces past this many stop earning their width; the names line still
- *  carries every participant. */
+/** Cap visible faces while retaining every participant's name. */
 const ROSTER_FACES = 4
 
 export function Card({
@@ -107,7 +106,7 @@ export function RecentSessionsCard({
   limit = 6,
   className,
   showAgent = true,
-  lastReply = false,
+  replyPreview = false,
   tabs,
   rowClassName
 }: {
@@ -120,12 +119,10 @@ export function RecentSessionsCard({
   className?: string
   /** Agent detail already scopes to one agent — hide the redundant icon+name there. */
   showAgent?: boolean
-  /** Reads each row's last agent reply from its daemon and draws it on the second line. */
-  lastReply?: boolean
+  /** Show the last reply and group the agent and channel marks at the right edge. */
+  replyPreview?: boolean
   tabs?: ReactNode
-  /** Per-row utilities. Home pins every dashboard row to one shared height so its two
-   * columns end on the same line (see HomeView's row-budget note); other surfaces let
-   * the rows size to their content. */
+  /** Home supplies a fixed desktop row height to align the two dashboard columns. */
   rowClassName?: string
 }) {
   const t = useTranslations('Home.dashboard')
@@ -154,8 +151,7 @@ export function RecentSessionsCard({
             return (
               <Link
                 key={s.id}
-                // These rows are conversations, so a multi-participant one goes to
-                // the merged page rather than to whichever member represents it.
+                // Route multi-participant rows to the merged conversation.
                 href={
                   isMergedConversationRow(s)
                     ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey!)}`)
@@ -163,7 +159,7 @@ export function RecentSessionsCard({
                 }
                 className={`row click grid-cols-[1fr_auto] gap-x-3 ${rowClassName ?? ''}`}
               >
-                {/* `contents`: the title shares row one with the time, and the second line spans the full row so the integration lands on the card's right edge. */}
+                {/* The title shares a row with the time; the second line spans both columns. */}
                 <span className="contents">
                   <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-[7px]">
                     {s.unread && (
@@ -184,38 +180,34 @@ export function RecentSessionsCard({
                       {s.title}
                     </span>
                   </span>
-                  {/* Agents left, integration right. The two used to run together as
-                    one left-packed strip, which left a multi-agent row nowhere to put
-                    its extra faces without shoving the channel around; anchoring the
-                    integration to the row's right edge gives the roster the whole
-                    middle and lines the channels up down the card. With the agents
-                    hidden (agent detail, already scoped to one) there is nothing to
-                    split from, so the channel stays where it was. */}
-                  <span className="col-span-2 row-start-2 mt-[3px] flex min-w-0 items-center gap-[6px] text-(--text-tertiary)">
+                  <span
+                    className={`col-span-2 row-start-2 mt-[3px] flex min-w-0 items-center text-(--text-tertiary) ${replyPreview ? 'gap-3' : 'gap-[6px]'}`}
+                  >
+                    {replyPreview && <LastReply session={s} emptyText={t('noReply')} />}
                     {showAgent && (
-                      <span
-                        className={
-                          lastReply
-                            ? 'flex max-w-[45%] min-w-0 flex-none items-center gap-[6px]'
-                            : 'flex min-w-0 items-center gap-[6px]'
-                        }
-                      >
-                        <AgentFaces session={s} owner={owner} />
+                      <span className={`flex items-center gap-[6px] ${replyPreview ? 'flex-none' : 'min-w-0'}`}>
+                        <AgentFaces session={s} owner={owner} iconOnly={replyPreview} />
                       </span>
                     )}
-                    {lastReply && <LastReply session={s} />}
                     {s.channel && (
-                      // Shrinkable on purpose (no `flex-none`): a long #channel or
-                      // schedule name has to give way and ellipsize inside the row
-                      // rather than run past it. `ml-auto` only spends space the row
-                      // actually has, so the right anchor costs the label nothing.
-                      <span className={`flex min-w-0 items-center gap-[6px] ${showAgent ? 'ml-auto pl-1' : ''}`}>
+                      <span
+                        className={
+                          replyPreview
+                            ? 'flex flex-none'
+                            : `flex min-w-0 items-center gap-[6px] ${showAgent ? 'ml-auto pl-1' : ''}`
+                        }
+                        role={replyPreview ? 'img' : undefined}
+                        aria-label={replyPreview ? ch.label : undefined}
+                        title={replyPreview ? (unnamedPlaceHint(s, ch.label) ?? ch.label) : undefined}
+                      >
                         <span className="imark h-4 w-4 flex-none rounded-xs">
                           <PlatformMark platform={ch.platform} fillPct={90} />
                         </span>
-                        <span className="mono truncate text-[11px]" title={unnamedPlaceHint(s, ch.label)}>
-                          {ch.label}
-                        </span>
+                        {!replyPreview && (
+                          <span className="mono truncate text-[11px]" title={unnamedPlaceHint(s, ch.label)}>
+                            {ch.label}
+                          </span>
+                        )}
                       </span>
                     )}
                   </span>
@@ -232,36 +224,32 @@ export function RecentSessionsCard({
   )
 }
 
-/** The agent's last reply, one truncated line; draws nothing until the daemon answers. */
-function LastReply({ session }: { session: Session }) {
+function LastReply({ session, emptyText }: { session: Session; emptyText: string }) {
   const reply = useLastReply(session, true)
-  if (!reply) return null
   return (
-    <span title={reply} className="min-w-0 flex-1 truncate font-sans text-[11.5px] leading-normal">
-      {reply}
+    <span title={reply ?? undefined} className="min-w-0 flex-1 truncate font-sans text-[12px] leading-normal">
+      {reply ?? emptyText}
     </span>
   )
 }
 
-/**
- * The row's agent face(s). These rows are CONVERSATIONS, and a multi-participant
- * one carries its whole roster (merged-conversation-view.md §5.2) — the single
- * face + single name it used to draw could only ever name the representative,
- * which is whichever member happened to speak last. Stacked icons plus the full
- * name list say who is actually in the room; the names truncate rather than
- * dropping anyone, and the roster's own `name` is only a fallback (the wire
- * carries ids — see rosterParticipantName).
- */
-function AgentFaces({ session, owner }: { session: Session; owner?: Agent }) {
+// Keep the full conversation roster available even when only a few faces fit.
+function AgentFaces({ session, owner, iconOnly }: { session: Session; owner?: Agent; iconOnly: boolean }) {
   const { getAgent } = useConsoleData()
   const roster = session.participants ?? []
   if (roster.length <= 1) {
+    const name = session.agentName || '—'
     return (
       <>
-        <span className="av h-[15px] w-[15px] flex-none rounded-xs">
+        <span
+          className="av h-[15px] w-[15px] flex-none rounded-xs"
+          role={iconOnly ? 'img' : undefined}
+          aria-label={iconOnly ? name : undefined}
+          title={iconOnly ? name : undefined}
+        >
           <AgentIconView icon={owner?.icon} runtime={owner?.runtime ?? session.runtime ?? 'claude'} size={15} />
         </span>
-        <span className="truncate font-sans text-[11.5px] leading-normal">{session.agentName || '—'}</span>
+        {!iconOnly && <span className="truncate font-sans text-[11.5px] leading-normal">{name}</span>}
       </>
     )
   }
@@ -272,16 +260,23 @@ function AgentFaces({ session, owner }: { session: Session; owner?: Agent }) {
   const names = members.map((m) => m.name).join(', ')
   return (
     <>
-      <span className="flex flex-none items-center -space-x-[5px]">
+      <span
+        className={`flex flex-none items-center ${iconOnly ? '-space-x-[3px]' : '-space-x-[5px]'}`}
+        role={iconOnly ? 'img' : undefined}
+        aria-label={iconOnly ? names : undefined}
+        title={iconOnly ? names : undefined}
+      >
         {members.slice(0, ROSTER_FACES).map((m) => (
-          <span key={m.id} className="av h-[15px] w-[15px] flex-none rounded-xs" title={m.name}>
+          <span key={m.id} className="av h-[15px] w-[15px] flex-none rounded-xs" title={iconOnly ? undefined : m.name}>
             <AgentIconView icon={m.agent?.icon} runtime={m.agent?.runtime ?? ''} size={15} />
           </span>
         ))}
       </span>
-      <span title={names} className="truncate font-sans text-[11.5px] leading-normal">
-        {names}
-      </span>
+      {!iconOnly && (
+        <span title={names} className="truncate font-sans text-[11.5px] leading-normal">
+          {names}
+        </span>
+      )}
     </>
   )
 }
