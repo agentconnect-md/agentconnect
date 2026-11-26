@@ -43,7 +43,7 @@ function slackError(code: string): Error {
 }
 
 describe('a Slack profile read', () => {
-  it('carries the title, email, status and its expiry users.info reports', async () => {
+  it('carries the title, status and its expiry users.info reports, never the email', async () => {
     const conn = connWith({ info: async () => ({ user: ADA }) })
     expect(await conn.getUserProfile('U0ADA')).toEqual({
       id: 'U0ADA',
@@ -52,14 +52,13 @@ describe('a Slack profile read', () => {
       isBot: false,
       avatarUrl: 'https://example.com/ada.png',
       title: 'Backend Engineer',
-      email: 'ada@example.com',
       statusText: 'On holiday',
       statusEmoji: ':palm_tree:',
       statusExpiresAt: '2027-01-15T08:00:00.000Z'
     })
   })
 
-  it('leaves out an empty status, a status that never expires, and an email the scope withholds', async () => {
+  it('leaves out an empty status and a status that never expires', async () => {
     const conn = connWith({
       info: async () => ({
         user: { id: 'U0BOB', name: 'bob', profile: { status_text: '', status_emoji: '', status_expiration: 0 } }

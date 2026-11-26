@@ -2339,9 +2339,17 @@ describe('executeTool: reactions', () => {
 })
 
 describe('executeTool: lookupUserByEmail', () => {
+  /** A full member asking in a conversation confirmed internal, unless a test says otherwise. */
+  function directoryDeps(gw: MessageGateway, over: Partial<OpsDeps> = {}): OpsDeps {
+    return { ...deps(gw).deps, targetExternal: async () => false, ...over }
+  }
+  const guest: Partial<OpsDeps> = {
+    readLookups: () => ({ ...ASKER_WHO_MAY_WRITE.readLookups!('bot-a'), fullMember: async () => false })
+  }
+
   it('returns the profile of the member with that email, lower-cased before the lookup', async () => {
     const lookupUserByEmail = vi.fn(async () => ({ id: 'U7', realName: 'Ada Example', statusText: 'On holiday' }))
-    const { deps: d } = deps(fakeGateway({ lookupUserByEmail }))
+    const d = directoryDeps(fakeGateway({ lookupUserByEmail }))
 
     const res = await executeTool(ctx, 'lookupUserByEmail', { email: 'Ada@Example.com' }, d)
 
@@ -2354,7 +2362,7 @@ describe('executeTool: lookupUserByEmail', () => {
   })
 
   it('answers found: false when no member has the email', async () => {
-    const { deps: d } = deps(fakeGateway({ lookupUserByEmail: vi.fn(async () => undefined) }))
+    const d = directoryDeps(fakeGateway({ lookupUserByEmail: vi.fn(async () => undefined) }))
     expect(await executeTool(ctx, 'lookupUserByEmail', { email: 'nobody@example.com' }, d)).toEqual({
       platform: 'slack',
       found: false
@@ -2363,7 +2371,7 @@ describe('executeTool: lookupUserByEmail', () => {
 
   it('refuses something that is not an email before calling the platform', async () => {
     const lookupUserByEmail = vi.fn(async () => undefined)
-    const { deps: d } = deps(fakeGateway({ lookupUserByEmail }))
+    const d = directoryDeps(fakeGateway({ lookupUserByEmail }))
     await expect(executeTool(ctx, 'lookupUserByEmail', { email: 'Ada Example' }, d)).rejects.toThrow(
       /must be an email address/
     )
@@ -2371,10 +2379,61 @@ describe('executeTool: lookupUserByEmail', () => {
   })
 
   it('refuses on a connection that does not offer it', async () => {
-    const { deps: d } = deps(fakeGateway())
+    const d = directoryDeps(fakeGateway())
     await expect(executeTool(ctx, 'lookupUserByEmail', { email: 'ada@example.com' }, d)).rejects.toThrow(
       /email lookup is unavailable/
     )
+  })
+
+  it.each([
+    ['a guest or an outsider is asking', guest],
+    ['no person is behind the turn', { readAskers: async () => ({ people: [], nobody: true }) }],
+    ['the conversation is shared with another organization', { targetExternal: async () => true }],
+    ['the share cannot be confirmed', { targetExternal: undefined }]
+  ] satisfies [string, Partial<OpsDeps>][])('refuses before the platform call when %s', async (_why, over) => {
+    const lookupUserByEmail = vi.fn(async () => ({ id: 'U7' }))
+    const d = directoryDeps(fakeGateway({ lookupUserByEmail }), over)
+    await expect(executeTool(ctx, 'lookupUserByEmail', { email: 'ada@example.com' }, d)).rejects.toThrow(
+      /full members of this workspace.*Nothing was looked up/
+    )
+    expect(lookupUserByEmail).not.toHaveBeenCalled()
+  })
+
+  it('shares a profile read’s title and status with a full member, and withholds them from a guest', async () => {
+    const getUserProfile = vi.fn(async (u: string) => ({
+      id: u,
+      name: 'ada',
+      title: 'Backend Engineer',
+      statusText: 'On holiday',
+      statusEmoji: ':palm_tree:',
+      deleted: false
+    }))
+    const member = await executeTool(
+      ctx,
+      'getUserProfile',
+      { user: 'U7' },
+      directoryDeps(fakeGateway({ getUserProfile }))
+    )
+    expect(member).toMatchObject({ title: 'Backend Engineer', statusText: 'On holiday' })
+    expect(member).not.toHaveProperty('withheld')
+
+    const asGuest = await executeTool(
+      ctx,
+      'getUserProfile',
+      { user: 'U7' },
+      directoryDeps(fakeGateway({ getUserProfile }), guest)
+    )
+    expect(asGuest).toEqual({ platform: 'slack', id: 'U7', name: 'ada', withheld: expect.stringMatching(/left out/) })
+  })
+
+  it('answers a name-only profile read for anyone, with no note', async () => {
+    const d = directoryDeps(fakeGateway(), guest)
+    expect(await executeTool(ctx, 'getUserProfile', { user: 'U1' }, d)).toEqual({
+      platform: 'slack',
+      id: 'U1',
+      name: 'alice',
+      isBot: false
+    })
   })
 })
 

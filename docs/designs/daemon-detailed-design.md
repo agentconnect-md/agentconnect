@@ -1308,9 +1308,13 @@ the write, it is the only source of the ids and types the write needs.
 
 The manifest requests only scopes with implemented callers. `channels:join` backs channel
 reach, below. `users:read.email` backs `lookupUserByEmail` (`users.lookupByEmail`), the
-directory read that resolves a work email to a member, and the `email` a profile read returns;
-an installation granted before it was requested sees the tool refuse with `missing_scope`
-until the workspace re-authorizes. The unused `team:read` scope is no longer requested;
+directory read that resolves a work email to a member; no read hands the email itself to the
+agent. The lookup, and a profile read's title, status and `deleted`, pass `directoryReadAllowed`
+(`mcp/ops/place-gate.ts`): a person is asking, every asker is a full member of that bot's
+workspace (`workspaceMembers`), and the current conversation is confirmed internal; it fails
+closed (product-conventions.md "Reading the people directory"). An installation granted before
+the scope was requested sees the tool refuse with `missing_scope` until the workspace
+re-authorizes. The unused `team:read` scope is no longer requested;
 existing installations that already granted it still pass the scope check.
 
 **Channel reach.** Slack requires bot membership for `conversations.history` / `.replies` and

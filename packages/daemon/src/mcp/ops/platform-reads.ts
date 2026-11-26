@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { WORKSPACE_UPLOADS_DIR } from '@agentconnect.md/protocol'
-import type { PlatformThreadMessage } from '../../platforms/contract.js'
+import type { PlatformThreadMessage, PlatformUserProfile } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import { GETTING_TO_KNOW_DAYS, GETTING_TO_KNOW_MAX_MESSAGES, withinWindow } from '../../assistant/getting-to-know.js'
 import { isGettingToKnowCoordinate, isResearchCoordinate } from '../../session/subsession-coordinate.js'
@@ -15,6 +15,7 @@ import {
   type GatewayDeps
 } from './gateway.js'
 import type { AskDeps } from '../ask.js'
+import { DIRECTORY_CLOSED, directoryReadAllowed, type PlaceAccessDeps } from './place-gate.js'
 import { optionalBoundedInt, optionalString, parseArgs, requiredString } from './args.js'
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
@@ -345,34 +346,49 @@ export async function listChannelMembers(
   return { platform, channel, members: await gw.listMembers(channel) }
 }
 
+/** The profile fields the workspace directory adds beyond a name; shared only where {@link directoryReadAllowed} says. */
+const DIRECTORY_FIELDS = ['title', 'statusText', 'statusEmoji', 'statusExpiresAt', 'deleted'] as const
+
+const DIRECTORY_WITHHELD =
+  'title, status and deactivation are left out: they are shared only on a turn full members of this workspace ' +
+  'started, in a conversation not shared with another organization'
+
 export async function getUserProfile(
   ctx: SessionContext,
   args: Record<string, unknown>,
-  deps: PlatformReadDeps
+  deps: PlatformReadDeps & PlaceAccessDeps
 ): Promise<unknown> {
   const parsed = parseArgs(GET_USER_PROFILE_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'read this user profile'
   })
-  return { platform, ...(await gw.getUserProfile(parsed.user)) }
+  const profile = await gw.getUserProfile(parsed.user)
+  const held = DIRECTORY_FIELDS.filter((field) => profile[field] !== undefined)
+  if (held.length === 0 || (await directoryReadAllowed(ctx, platform, integrationId, deps)))
+    return { platform, ...profile }
+  const named: Partial<PlatformUserProfile> = { ...profile }
+  for (const field of held) delete named[field]
+  return { platform, ...named, withheld: DIRECTORY_WITHHELD }
 }
 
 /** Resolve a work email to a person on the session's platform; `found: false` is an answer, not a failure. */
 export async function lookupUserByEmail(
   ctx: SessionContext,
   args: Record<string, unknown>,
-  deps: PlatformReadDeps
+  deps: PlatformReadDeps & PlaceAccessDeps
 ): Promise<unknown> {
   const parsed = parseArgs(LOOKUP_USER_BY_EMAIL_ARGS, args)
   const platform = ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+  const { gw, integrationId } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
     ask: true,
     purpose: 'look up a user by email'
   })
   if (!gw.lookupUserByEmail)
     throw new Error(`email lookup is unavailable on this ${platformLabel(platform)} connection`)
+  if (!(await directoryReadAllowed(ctx, platform, integrationId, deps)))
+    throw new Error(`lookupUserByEmail: ${DIRECTORY_CLOSED} Nothing was looked up.`)
   const user = await gw.lookupUserByEmail(parsed.email.toLowerCase())
   return user ? { platform, found: true, user } : { platform, found: false }
 }

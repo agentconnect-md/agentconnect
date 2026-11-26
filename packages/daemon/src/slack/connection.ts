@@ -559,8 +559,6 @@ type SlackUserResult = {
     image_48?: string
     image_72?: string
     title?: string
-    /** Present only with `users:read.email`. */
-    email?: string
     status_text?: string
     status_emoji?: string
     /** Epoch seconds; 0 when the status does not expire. */
@@ -971,7 +969,6 @@ function slackUserProfile(u: SlackUserResult, fallbackId: string): PlatformUserP
     avatarUrl: p.image_72 ?? p.image_48,
     ...(timeZone ? { timeZone } : {}),
     ...(p.title ? { title: p.title } : {}),
-    ...(p.email ? { email: p.email } : {}),
     ...(p.status_text ? { statusText: p.status_text } : {}),
     ...(p.status_emoji ? { statusEmoji: p.status_emoji } : {}),
     ...(p.status_text && expires && !Number.isNaN(expires.getTime()) ? { statusExpiresAt: expires.toISOString() } : {}),

@@ -125,8 +125,6 @@ export interface PlatformUserProfile {
   timeZone?: string
   /** The job title the person's profile shows. */
   title?: string
-  /** Work email, only where the platform exposes it to this bot (Slack: `users:read.email`). */
-  email?: string
   /** The person's own status line and its emoji, e.g. `On holiday` / `:palm_tree:`. */
   statusText?: string
   statusEmoji?: string

@@ -373,6 +373,30 @@ async function workspaceMember(
   return !tellsWorkspaceMembers(platform) || (await lookups.fullMember(bot, userId).catch(() => false))
 }
 
+/** Why directory facts about people were not shared: the turn was not confirmed as full members' in an internal conversation. */
+export const DIRECTORY_CLOSED =
+  'facts about people from the workspace directory are shared only on a turn full members of this workspace ' +
+  'started, in a conversation not shared with another organization, and this turn could not be confirmed as one.'
+
+/** Directory facts about people (title, status, deactivation, an email lookup): only when a person is asking, every asker is a full member of that bot's workspace, and the current conversation is not shared outside; fails closed. */
+export async function directoryReadAllowed(
+  ctx: SessionContext,
+  platform: string,
+  integrationId: string | undefined,
+  deps: PlaceAccessDeps
+): Promise<boolean> {
+  const bot = ownBot(ctx, platform, integrationId)
+  if (bot === undefined) return false
+  const askers = deps.readAskers ? await deps.readAskers(ctx).catch(() => NOBODY) : NOBODY
+  if (askers.nobody || askers.people.length === 0) return false
+  const lookups = deps.readLookups?.(ctx.agentId) ?? CLOSED_LOOKUPS
+  for (const asker of askers.people) if (!(await workspaceMember(asker, platform, bot, lookups))) return false
+  // A webchat or console conversation has no platform share; its owner is the asker just judged.
+  if (ctx.integrationId === undefined) return true
+  if (!deps.targetExternal) return false
+  return !(await deps.targetExternal(ctx.agentId, ctx.integrationId, ctx.channel, ctx.isDm).catch(() => true))
+}
+
 /** The one choke point for every platform write: the current conversation always, elsewhere only where every asker may go; `draft` awaits approval, other refusals throw. */
 export async function judgePlaceWrite(
   ctx: SessionContext,
