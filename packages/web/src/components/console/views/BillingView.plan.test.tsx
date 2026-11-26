@@ -278,6 +278,7 @@ describe('BillingView plan layout', () => {
     expect(link.getAttribute('target')).toBe('_blank')
     expect(link.getAttribute('rel')).toContain('noopener')
     expect(q('[data-plan-syncing]')!.textContent).toBe('Limits updating')
+    expect(q('[data-plan-limit-syncing]')!.getAttribute('title')).toContain("previous plan's limits apply")
   })
 
   it('keeps the rest of the page when the plan read fails', async () => {
