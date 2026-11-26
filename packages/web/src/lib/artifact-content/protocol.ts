@@ -1,5 +1,10 @@
 // The messages between the console, the content-domain shim and its service worker (artifacts.md §5.5).
 
+/** The origin revision `revision` of artifact `artifactId` renders at. */
+export function artifactContentOrigin(artifactId: string, revision: number, domain: string): string {
+  return `https://a${artifactId.replaceAll('-', '').toLowerCase()}r${revision}.${domain}`
+}
+
 /** The shim document every revision origin serves; the console frames it. */
 export const SHIM_PATH = '/__ac/shim'
 /** The service worker script, registered by the shim with scope `/`. */

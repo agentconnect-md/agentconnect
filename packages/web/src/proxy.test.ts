@@ -56,6 +56,14 @@ describe('proxy on the content domain', () => {
     expect(proxy(request(host, '/_next/static/chunks/app.js')).status).toBe(404)
   })
 
+  it('sends no console framing headers on the content domain', () => {
+    for (const path of ['/__ac/shim', '/__ac/sw.js', '/agents']) {
+      const response = proxy(request(CONTENT, path))
+      expect(response.headers.get('x-frame-options')).toBeNull()
+      expect(response.headers.get('content-security-policy')).not.toContain("frame-ancestors 'self'")
+    }
+  })
+
   it('leaves the console host unchanged', () => {
     expect(proxy(request('console.example.test', '/agents')).headers.get('x-middleware-rewrite')).toBe(
       'https://console.example.test/-/agents'
@@ -67,11 +75,32 @@ describe('proxy on the content domain', () => {
   })
 })
 
+describe('proxy on the console', () => {
+  beforeEach(() => {
+    vi.stubEnv('ARTIFACTS_CONTENT_DOMAIN', DOMAIN)
+    vi.stubEnv('PUBLIC_WEB_URL', CONSOLE)
+  })
+  afterEach(() => vi.unstubAllEnvs())
+
+  it.each([
+    '/',
+    '/agents',
+    '/acme/artifacts/0b6d1d55-5f43-4c8e-9a51-2f0a8f5b1c3d',
+    '/login',
+    '/_next/static/chunks/app.js'
+  ])('refuses foreign framing of %s', (path) => {
+    const response = proxy(request('console.example.test', path))
+    expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self'")
+    expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN')
+  })
+})
+
 describe('proxy without a content domain', () => {
   afterEach(() => vi.unstubAllEnvs())
 
   it('treats every host as the console', () => {
     vi.stubEnv('ARTIFACTS_CONTENT_DOMAIN', '')
     expect(proxy(request(CONTENT, '/agents')).headers.get('x-middleware-rewrite')).toBe(`https://${CONTENT}/-/agents`)
+    expect(proxy(request(CONTENT, '/agents')).headers.get('x-frame-options')).toBe('SAMEORIGIN')
   })
 })

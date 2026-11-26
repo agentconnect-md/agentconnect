@@ -1,6 +1,6 @@
 'use client'
 
-// A revision's entry rendered from its bytes by media type (artifacts.md §5.5, §9): nothing renders on the store's origin.
+// A revision's entry by media type (artifacts.md §5.5, §9): HTML on the content domain, the rest from bytes; nothing renders on the store's origin.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import { useTranslations } from 'next-intl'
@@ -8,8 +8,8 @@ import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { formatFileSize } from '@/components/console/FileBrowser'
 import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
-import { ARTIFACT_FRAME_SANDBOX } from '@/lib/mcp-app-frame'
 import { fetchArtifactFile } from '@/lib/artifact-download'
+import { ArtifactSite, SrcdocPage } from './ArtifactSite'
 import {
   artifactFileName,
   artifactKind,
@@ -129,18 +129,28 @@ export function ArtifactBody({
   artifactId,
   revision,
   title,
-  download
+  download,
+  contentDomain,
+  path,
+  onPath
 }: {
   artifactId: string
   revision: ArtifactRevisionDto
   title: string
   /** The Download action offered where nothing renders in the console. */
   download: ReactNode
+  /** Where HTML runs; without one a page falls back to `srcdoc`. */
+  contentDomain?: string
+  /** The site page to open first, from the viewer's URL. */
+  path?: string | null
+  /** The site page shown, for the viewer's URL. */
+  onPath?: (path: string | null) => void
 }) {
   const t = useTranslations('Artifacts.viewer')
   const entry = revision.manifest.files.find((file) => file.path === revision.manifest.entry)
   const kind = entry ? artifactKind(entry.mediaType, entry.path) : 'other'
-  const loaded = useEntryBlob(artifactId, revision.number, kind === 'other' ? undefined : entry)
+  const site = kind === 'page' && contentDomain !== undefined
+  const loaded = useEntryBlob(artifactId, revision.number, kind === 'other' || site ? undefined : entry)
 
   if (kind === 'other' || !entry)
     return (
@@ -151,6 +161,19 @@ export function ArtifactBody({
         </span>
         {download}
       </ArtifactBodyNotice>
+    )
+  if (site)
+    return (
+      <ArtifactSite
+        key={`${artifactId}:${revision.number}`}
+        artifactId={artifactId}
+        revision={revision}
+        title={title}
+        domain={contentDomain}
+        path={path ?? null}
+        onPath={onPath}
+        download={download}
+      />
     )
   if (loaded.status === 'loading')
     return (
@@ -180,19 +203,10 @@ export function ArtifactBody({
   return <ArtifactSource blob={loaded.blob} name={entry.path} />
 }
 
-/** A page in a sandboxed `srcdoc` frame: opaque origin, no forms, popups or top navigation (artifacts.md §5.5). */
+/** A page as `srcdoc`, where no content domain is configured. */
 function ArtifactPage({ blob, title }: { blob: Blob; title: string }) {
   const html = useBlobText(blob)
-  if (html === null) return null
-  return (
-    <iframe
-      title={title}
-      sandbox={ARTIFACT_FRAME_SANDBOX}
-      srcDoc={html}
-      referrerPolicy="no-referrer"
-      className="block min-h-0 w-full flex-1 border-0 bg-white"
-    />
-  )
+  return html === null ? null : <SrcdocPage html={html} title={title} />
 }
 
 function ArtifactImage({ blob, title }: { blob: Blob; title: string }) {

@@ -8566,7 +8566,8 @@
       "viewLatest": "查看最新版本",
       "loadFailed": "无法加载此 Artifact，请稍后重试。",
       "noPreview": "此文件类型无法预览",
-      "pdfUnsupported": "此浏览器无法在这里显示 PDF。"
+      "pdfUnsupported": "此浏览器无法在这里显示 PDF。",
+      "siteFallback": "此浏览器无法在这里加载这个网站的其余部分，因此只显示首页。下载后可以查看所有页面。"
     },
     "page": {
       "kind": "ARTIFACT",

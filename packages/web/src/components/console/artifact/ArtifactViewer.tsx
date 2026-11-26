@@ -12,7 +12,7 @@ import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { platformLabel } from '@/lib/platform-labels'
-import type { ArtifactDto, ArtifactRevisionSummary } from '@/lib/artifact'
+import { artifactsContentDomain, type ArtifactDto, type ArtifactRevisionSummary } from '@/lib/artifact'
 import { ArtifactBody, ArtifactBodyNotice } from './ArtifactBody'
 import { useArtifactDownload } from './useArtifactDownload'
 
@@ -97,12 +97,17 @@ export function ArtifactViewer({
   artifact,
   revision,
   missing,
-  onRevision
+  onRevision,
+  path,
+  onPath
 }: {
   artifact: ArtifactDto
   revision: number
   missing?: number
   onRevision: (revision: number) => void
+  /** The site page to open first; see `ArtifactSite`. */
+  path?: string | null
+  onPath?: (path: string | null) => void
 }) {
   const t = useTranslations('Artifacts.viewer')
   const format = useFormatter()
@@ -196,6 +201,9 @@ export function ArtifactViewer({
             revision={read.data}
             title={artifact.title}
             download={downloadButton}
+            contentDomain={artifactsContentDomain()}
+            path={path ?? null}
+            onPath={onPath}
           />
         ) : read.error ? (
           <ArtifactBodyNotice icon="triangle-exclamation-point" tone="error">
