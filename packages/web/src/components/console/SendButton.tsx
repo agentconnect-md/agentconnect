@@ -1,6 +1,6 @@
 'use client'
 
-// A composer's send / stop control: send is a small brand square with an arrow, stop a plain square; both sit on a quiet button.
+// A composer's send / stop control: send is a small brand square with an arrow, stop a brand disc with a white square; both sit on a quiet button.
 
 import type { ButtonHTMLAttributes } from 'react'
 import { Icon } from '@/components/ui'
@@ -25,7 +25,9 @@ export function SendButton({
       {...rest}
     >
       {stop ? (
-        <Icon name="square" size={15} />
+        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-(--brand) group-disabled/send:bg-(--border-strong)">
+          <span className="h-2 w-2 rounded-[2px] bg-white" />
+        </span>
       ) : (
         <span className="flex h-4 w-4 items-center justify-center rounded-[4px] bg-(--brand) text-white group-disabled/send:bg-(--border-strong)">
           <Icon name="arrow-up" size={11} strokeWidth={3} />
