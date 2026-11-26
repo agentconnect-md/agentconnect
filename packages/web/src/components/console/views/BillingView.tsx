@@ -1503,7 +1503,7 @@ export default function BillingView() {
                   className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
                   data-balance-card="true"
                 >
-                  <div className="cardhead h-[60px] justify-between gap-3 border-b-0">
+                  <div className="cardhead h-14 justify-between gap-3 border-b-0">
                     <span className="inline-flex items-center gap-3">
                       <span className="cardtitle">{t('balance')}</span>
                       {statePill}
@@ -1518,11 +1518,11 @@ export default function BillingView() {
                       </span>
                     ) : null}
                   </div>
-                  <div className="flex flex-1 items-end gap-3 px-[18px] py-6 desktop:pt-2">
-                    <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
+                  <div className="flex items-end gap-3 self-start px-[18px] pt-3.5 pb-6">
+                    <span className="mono text-[36px] leading-10 font-semibold tracking-[-0.02em]">
                       {fmtMicroUsd(acct.balanceMicro)}
                     </span>
-                    <span className="mono pb-[5px] text-[12px] text-(--text-tertiary)">{t('usd')}</span>
+                    <span className="mono pb-[9px] text-[12px] leading-4 text-(--text-tertiary)">{t('usd')}</span>
                   </div>
                   {plan.subscription.data && (
                     <PlanCreditStrip sub={plan.subscription.data} balanceMicro={acct.balanceMicro} />

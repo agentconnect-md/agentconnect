@@ -151,8 +151,8 @@ function SessionsMeter({
   // Width is data, so it rides an inline style.
   const pct = usage.limit ? Math.min(100, (usage.used / usage.limit) * 100) : 100
   return (
-    <div data-plan-sessions="true" className="flex h-[76px] flex-col justify-center px-[18px] desktop:row-start-4">
-      <div className="flex items-baseline justify-between gap-3">
+    <div data-plan-sessions="true" className="flex h-[76px] flex-col px-[18px] pt-2 desktop:row-start-4">
+      <div className="flex h-4 items-center justify-between gap-3">
         <span className="eyebrow">{t('sessions')}</span>
         <span className="mono text-[12.5px] text-(--text-tertiary)">
           <span className={`font-semibold ${tone === 'red' ? 'text-(--red-600)' : 'text-(--text-primary)'}`}>
@@ -176,7 +176,7 @@ function SessionsMeter({
         </span>
       </div>
       {tone && (
-        <div className="mt-[9px] h-[7px] overflow-hidden rounded-[4px] border border-(--border-subtle) bg-(--surface-sunken)">
+        <div className="mt-3.5 h-[7px] overflow-hidden rounded-[4px] border border-(--border-subtle) bg-(--surface-sunken)">
           <span
             data-plan-meter={tone}
             className={`block h-full rounded-[4px] ${METER_FILL[tone]}`}
@@ -242,7 +242,7 @@ export function PlanCard({
       className="card @container/plan flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
       data-plan-card="true"
     >
-      <div className="cardhead h-[60px] justify-between gap-2 border-b-0">
+      <div className="cardhead h-14 justify-between gap-2 border-b-0">
         <span className="inline-flex min-w-0 items-center gap-2">
           <span className="cardtitle">{t('title')}</span>
           {sub?.entitlementSync === 'syncing' && (
@@ -301,45 +301,45 @@ export function PlanCard({
           </div>
         </div>
       ) : (
-        <div className="flex flex-1 flex-col justify-end gap-1 px-[18px] pt-3 pb-1">
-          <div className="flex min-h-8 items-center gap-2">
+        <div className="flex flex-1 flex-col px-[18px] pt-3.5 pb-3">
+          <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
             <span
-              className="min-w-0 font-sans text-[22px] leading-7 font-semibold tracking-tight wrap-anywhere desktop:text-[28px] desktop:leading-8"
+              className="min-w-0 font-sans text-[28px] leading-9 font-semibold tracking-[-0.025em] wrap-anywhere desktop:text-[36px] desktop:leading-10"
               data-plan-name="true"
             >
-              {sub.optionName === sub.tierName ? sub.tierName : planLabel(sub)}
+              {sub.tierName}
+              {sub.tierId !== FREE_TIER_ID && sub.optionName !== sub.tierName && (
+                <>
+                  {' '}
+                  <span className="font-medium text-(--text-tertiary)">{sub.optionName}</span>
+                </>
+              )}
             </span>
             {trialEndsAt ? (
-              <span data-plan-trial="true" className="badge shrink-0 bg-(--brand-soft) text-(--brand-soft-text)">
+              <span
+                data-plan-trial="true"
+                className="mb-2.5 inline-flex h-[19px] shrink-0 items-center rounded-[4px] bg-(--brand-soft) px-[7px] font-mono text-[10.5px] font-semibold tracking-[0.04em] text-(--brand-soft-text) uppercase"
+              >
                 {t('trial.badge')}
               </span>
             ) : (
               <span
-                className="ms-auto shrink-0 font-sans text-[12px] leading-normal whitespace-nowrap text-(--text-tertiary)"
+                className="ms-auto shrink-0 pb-2 font-sans text-[12.5px] leading-normal whitespace-nowrap text-(--text-tertiary)"
                 data-plan-price="true"
               >
-                {sub.priceCents === null
-                  ? t('contract')
-                  : t.rich('price', {
-                      price: fmtCents(sub.priceCents),
-                      amount: (value) => (
-                        <strong className="text-[19px] font-semibold tracking-tight text-(--text-primary) tabular-nums">
-                          {value}
-                        </strong>
-                      )
-                    })}
+                {sub.priceCents === null ? t('contract') : t('price', { price: fmtCents(sub.priceCents) })}
               </span>
             )}
           </div>
-          <div className="flex flex-wrap content-start gap-x-3 gap-y-1 font-sans text-[12px] leading-4 text-(--text-secondary) @max-[280px]/plan:min-h-9">
+          <div className="mt-3 flex flex-wrap content-start gap-x-[18px] gap-y-1 font-sans text-[12.5px] leading-4 text-(--text-secondary) @max-[280px]/plan:min-h-9">
             {billingDate && (
-              <span className="inline-flex items-center gap-1.5" data-plan-billing-date="true">
-                <Icon name="calendar-days" size={13} className="flex-none" />
+              <span className="inline-flex items-center gap-[7px]" data-plan-billing-date="true">
+                <Icon name="calendar-days" size={14} color="var(--text-tertiary)" className="flex-none" />
                 {billingDate}
               </span>
             )}
-            <span className="inline-flex items-center gap-1.5" data-plan-retention="true">
-              <Icon name="clock" size={13} className="flex-none" />
+            <span className="inline-flex items-center gap-[7px]" data-plan-retention="true">
+              <Icon name="clock" size={14} color="var(--text-tertiary)" className="flex-none" />
               {keptDays === null ? t('change.historyUnlimited') : t('change.historyDays', { days: keptDays })}
             </span>
           </div>
@@ -413,20 +413,10 @@ function PlanChangeStatus({
     <div
       data-plan-scheduled={scheduled ? true : undefined}
       data-plan-trial-status={trialEndsAt ? true : undefined}
-      className={`flex min-h-7 items-center gap-2 rounded-lg px-2 py-1 @max-[360px]/plan:min-h-11 ${
-        trialEndsAt ? 'bg-(--surface-sunken)' : 'bg-(--status-info-soft)'
-      }`}
+      className="flex min-h-9 items-center gap-2.5 rounded-lg border border-(--border-subtle) bg-(--surface-sunken) px-3 py-1 @max-[360px]/plan:min-h-11"
     >
-      {!trialEndsAt && (
-        <Icon
-          name="calendar-clock"
-          size={14}
-          color="var(--status-info)"
-          className="flex-none desktop:@max-[260px]/plan:hidden"
-        />
-      )}
-      <div className="min-w-0 flex-1 font-sans text-[12.5px] leading-4 font-medium wrap-anywhere">
-        {trialEndsAt ? <strong className="font-semibold">{message}</strong> : message}
+      <div className="min-w-0 flex-1 font-sans text-[12.5px] leading-4 wrap-anywhere">
+        <strong className="font-semibold">{message}</strong>
         {detail && (
           <span className="font-normal text-(--text-secondary) @max-[360px]/plan:block">
             <span className="@max-[360px]/plan:hidden" aria-hidden="true">
@@ -763,10 +753,10 @@ function PlanCreditsDialog({ rows, onClose }: { rows: PlanCreditRow[]; onClose: 
 function Stat({ label, value, soon = false }: { label: string; value: string; soon?: boolean }) {
   return (
     <span className="min-w-0">
-      <span className="eyebrow block truncate text-[10px]">{label}</span>
+      <span className="eyebrow block truncate leading-4">{label}</span>
       <span
         data-soon={soon ? 'true' : undefined}
-        className={`mono mt-1.5 block truncate text-[13.5px] font-semibold ${soon ? 'text-(--amber-500)' : 'text-(--text-primary)'}`}
+        className={`mono mt-2 block truncate text-[14px] leading-5 font-semibold ${soon ? 'text-(--amber-500)' : 'text-(--text-primary)'}`}
       >
         {value}
       </span>
@@ -790,7 +780,7 @@ export function PlanCreditStrip({ sub, balanceMicro }: { sub: BillingSubscriptio
         title={t('open')}
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
-        className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-center desktop:row-start-4 gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] text-left transition-colors hover:bg-(--surface-hover)"
+        className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-start desktop:row-start-4 gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] pt-2 text-left transition-colors hover:bg-(--surface-hover)"
       >
         <Stat label={t(sub.trialEndsAt ? 'trialCredits' : 'planCredits')} value={fmtMicroUsd(split.planMicro)} />
         <Stat label={t('topUps')} value={fmtMicroUsd(split.topUpMicro)} />
@@ -799,7 +789,7 @@ export function PlanCreditStrip({ sub, balanceMicro }: { sub: BillingSubscriptio
           value={fmtMicroUsd(next?.remainingMicro ?? 0)}
           soon={next !== null && expiresThisCycle(next.expiresAt, sub.paidThrough)}
         />
-        <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
+        <Icon name="chevron-right" size={14} color="var(--text-tertiary)" className="self-center" />
       </button>
       {open && <PlanCreditsDialog rows={planCreditRows(sub)} onClose={() => setOpen(false)} />}
     </>
