@@ -14,6 +14,7 @@ import {
   type GateRuntime
 } from '../src/mcp/approval-gate.js'
 import { ApprovalRecords, argumentsDigest } from '../src/mcp/approval-records.js'
+import { judgeMcpGrantPost } from '../src/credential-proxy/mcp-grant-route.js'
 
 // Every §7.3 row driven by the ACP shapes the live checks recorded (mcp-tool-permissions.md §12.1).
 
@@ -312,6 +313,43 @@ describe('Codex', () => {
     g.observe(SESSION, guardian('r1', 'exec-1', 'write_note', 'approved'))
     await g.permission(SESSION, codexRequest('exec-1'), async () => select('allow_once'))
     expect(records.get(AGENT, 'exec-1')).toBeUndefined()
+  })
+
+  it('passes the proxy with odd keys and the model’s own spellings, as the fourth live check sent them (§12.1)', async () => {
+    const { g, records } = gate('codex', { current: 'workspace-write' })
+    // ACP shows a re-serialization; the POST carries the model's text, in its own key order.
+    const shown = JSON.parse(
+      '{"2":"two","10":"ten","":"empty","__proto__":{"polluted":true},"\\u00e9":"nfc","e\\u0301":"nfd","sep":"[\\u2028]","n":[2.5,0,1e+21,12345678901234567000]}'
+    ) as unknown
+    const sent =
+      '{"":"empty","__proto__":{"polluted":true},"\\u00e9":"nfc","e\\u0301":"nfd","10":"ten","2":"two","sep":"[\\u2028]","n":[2.50,-0.0,1E21,12345678901234567890]}'
+    const post = (args: string) =>
+      `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write_note","arguments":${args},"_meta":{"callId":"exec-9"}}}`
+    g.observe(SESSION, codexToolCall('exec-9', 'write_note', shown))
+    await g.permission(SESSION, codexRequest('exec-9'), async () => select('allow_once'))
+    const approve = async (call: { toolCallId?: string; name: string; arguments: unknown }) =>
+      (
+        await records.take(
+          AGENT,
+          call.toolCallId!,
+          (r) => r.tool === call.name && r.argsDigest === argumentsDigest(call.arguments),
+          0
+        )
+      )?.source
+    // A body that lost `__proto__` is another call.
+    const dropped = await judgeMcpGrantPost(
+      post(sent.replace('"__proto__":{"polluted":true},', '')),
+      DECISIONS,
+      approve
+    )
+    expect(dropped).toMatchObject({ kind: 'respond', refused: ['write_note'] })
+    const judged = await judgeMcpGrantPost(post(sent), DECISIONS, approve)
+    expect(judged).toMatchObject({ kind: 'forward', approval: 'person' })
+    const forwarded = (JSON.parse((judged as { body: string }).body) as { params: { arguments: object } }).params
+    // Every key survives the re-serialization, `__proto__` and both twins among them.
+    expect(Object.keys(forwarded.arguments).sort()).toEqual(Object.keys(shown as object).sort())
+    expect(Object.keys(forwarded.arguments)).toContain('__proto__')
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
   })
 })
 
