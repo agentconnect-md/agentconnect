@@ -1,7 +1,7 @@
 # Artifacts
 
-**Status:** Draft, not implemented. Product decisions recorded 2026-11-24 (§3); the
-open questions are in §13 and the rollout in §14.
+**Status:** Step 1 implemented (#4442); the rest is a draft. Product decisions recorded
+2026-11-24 and 2026-11-26 (§3); the open questions are in §13 and the rollout in §14.
 
 **Builds on:** [agent-authored-attachments.md](agent-authored-attachments.md) (`shareFile`
 and the session snapshot), [source-cache-file-transfer.md](source-cache-file-transfer.md)
@@ -84,7 +84,7 @@ artifacts exist.
 | #   | Decision                                                                                                                                                             |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1  | Interactive pages made of many files are supported                                                                                                                   |
-| D2  | No new content domain or gateway: bytes are served from the object store's existing public origin                                                                    |
+| D2  | Artifacts require a wildcard content domain on a registrable domain of its own; without one the feature is off. The managed service provides one (§5.5, §12)         |
 | D3  | An agent can always revise the artifacts it produced                                                                                                                 |
 | D4  | Inside a session, a person can always view and download its artifacts in the console                                                                                 |
 | D5  | One revision can be shared as a link and the share revoked; the audience is chosen per share: `public` (anyone with the link) or `org` (signed-in members)           |
@@ -102,15 +102,16 @@ artifacts exist.
 | D17 | `shareFile` stays as it is                                                                                                                                           |
 | D18 | No organization-wide switch for public sharing                                                                                                                       |
 | D19 | A revision may be appended from a session whose audience is narrower than the artifact's; the person asking for it is responsible                                    |
-| D20 | Artifact pages may make outbound requests; isolation comes from the sandboxed frame (§5.5)                                                                           |
+| D20 | Artifact pages may make outbound requests; isolation comes from the content domain and the sandboxed frame (§5.5)                                                    |
 | D21 | When a member leaves the organization, their artifacts pass to the organization owners                                                                               |
 | D22 | The viewer has three places: the right dock, the left conversation pane, and a standalone page; it opens on the side opposite the card (§11.2)                       |
 | D23 | On desktop, the viewer opens by itself when the agent publishes in the session being watched                                                                         |
 | D24 | Rollout in five steps (§14)                                                                                                                                          |
+| D26 | The content domain is served by the existing web service, which answers only the shim and its service worker on that domain; there is no separate artifact server    |
 
-Also settled, with details in their sections: single-file revisions are read through
-short-lived presigned URLs and HTML sites through a random public prefix (§5.2); the feature
-requires an object store (§12); an agent's link pins its revision (§8.2); the audience is
+Also settled, with details in their sections: every file is read through a short-lived
+presigned URL fetched by the console, and nothing in the bucket is publicly readable (§5.2);
+the feature requires an object store and a content domain (§12); an agent's link pins its revision (§8.2); the audience is
 copied from the session at creation (§6.2); agent tools change and delete only that agent's
 artifacts (§7.2); an over-limit publish is refused rather than evicting old content (§10.2);
 a multi-file download is zipped in the browser (§8.1).
@@ -136,7 +137,7 @@ The Control Plane stores metadata only, never file bytes.
 | ---------------------------------------- | ----------------------------------------------------------------------------- |
 | `artifactId`, `number`                   | Numbered from 1                                                               |
 | `manifest`                               | Entry path, and each file's relative path, SHA-256, size and media type       |
-| `storageMode`, `storagePrefix`           | Where the bytes live and whether that prefix is publicly readable (§5.2)      |
+| `storageMode`, `storagePrefix`           | Where the bytes live (§5.2); every revision is `signed` today                 |
 | `producedByAgentId`, agent name snapshot | The producer; the snapshot keeps the name readable after the agent is deleted |
 | `producedInSessionId`, `initiatedBy`     | The session and the identity that started the turn that published it          |
 | `createdAt`, `totalBytes`, `fileCount`   | For retention and limits                                                      |
@@ -174,42 +175,24 @@ Where the manifest is stored is open question P1.
   HTML document, `allow-scripts allow-forms`, and a `<meta>` CSP. It withholds
   `allow-same-origin` because the console's sign-in state is in `localStorage`.
 
-### 5.2 Two storage modes
+### 5.2 Storage
 
-A presigned URL covers one object. `index.html` opens with its signature, but the
-`./app.js` it references is requested without one and refused; S3 has no way to sign a
-whole prefix for a limited time. So revisions are stored one of two ways:
-
-|          | Signed prefix                                                           | Public random prefix                                                                                        |
-| -------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Used for | A single-file revision; a multi-file revision whose entry is not HTML   | A multi-file revision whose entry is HTML                                                                   |
-| Read     | On every open the CP checks access and signs a short-lived URL per file | Anonymous reads, protected by a 256-bit random prefix that is handed to the page only after the check       |
-| Revoke   | Immediate: no new URLs are signed, old ones expire                      | On unshare or on narrowing the audience, the objects move to a new random prefix and the old one is deleted |
-
-Either way, files are stored under their manifest paths, not their digests, or relative
-references would not resolve. Each revision is a full copy; nothing is deduplicated
-across revisions.
-
-The public prefix has one weakness: someone who once had access and copied the underlying
-address keeps it until the prefix moves. The links people are given are always console
-addresses (§8); store addresses never appear in them.
+Every file is stored under its revision's prefix and its manifest path, and is read only
+through a presigned GET the CP signs after the access check (§8.1). Nothing in the bucket
+is publicly readable, its CORS rule still admits only the console origin, and the
+`attachment` / `octet-stream` download signature is unchanged: bytes never render on the
+bucket's origin. Each revision is a full copy; nothing is deduplicated across revisions.
 
 Objects are tagged `ac-cache=live`, which no lifecycle rule collects; the CP deletes them
 under §10, and when the organization is deleted. Keys are organization-scoped beside the
 existing transfer keys:
 
 ```
-<prefix>/src/<org>/artifact/<artifactId>/<revision>/<path>   signed prefix
-<prefix>/src/<org>/artifact-pub/<random>/<path>              public random prefix
+<prefix>/src/<org>/artifact/<artifactId>/<revision>/<path>
 ```
 
-The CP performs a prefix move: it copies the objects server-side to a new random prefix,
-switches the revision's row, then deletes the old prefix. Revocation is complete only once
-the old prefix is gone, so the pending deletion is recorded and retried until it succeeds.
-A move happens only on an explicit action (unshare, or narrowing the audience). Passive
-narrowing never moves a prefix: a viewer who loses channel membership under `external`,
-loses an edit grant under `editors`, or leaves the organization keeps any store address
-they already copied, but is refused every console and share route from then on.
+Revoking access is immediate: no new URLs are signed, and signed ones expire within their
+lifetime. A viewer who loses access stops getting URLs on their next open.
 
 Artifact bytes are kept until deleted, unlike session snapshots. For an organization whose
 daemons are self-hosted on a managed Control Plane, published deliverables therefore live
@@ -244,67 +227,100 @@ components, backslashes, NUL, and two paths that collide after Unicode normaliza
 case folding are refused, as is a file inside another file's path. The entry must be one of the
 paths. Empty files are not carried: a PUT is signed for its checksum and a positive length.
 
-Because a multi-file site lives under a path prefix rather than at the root of its own
-origin, a root-relative reference such as `/assets/app.js` resolves to the store's root
-and fails. Publishing therefore refuses an HTML entry that references local files by
-root-relative path, and the refusal tells the agent to build with relative paths. A
-single-page app must use hash routing; a server-side fallback to the entry file is not
-available.
+Paths under `__ac/` are reserved for the shim on the content domain (§5.5) and are refused.
+Because each revision renders at the root of its own origin, root-relative references such
+as `/assets/app.js` resolve inside the revision, and no build setting is required.
 
-### 5.5 Where a page runs, and what outbound requests leave open
+### 5.5 Where a page runs: the content domain
 
-**Single files keep the existing rule.** The console fetches a single-file revision's bytes
-through its signed URL (the console origin is in the CORS rule) and renders them itself:
-HTML as `srcdoc` in a sandboxed frame, as the MCP App card does; images and PDF from `blob:`
-URLs typed by the manifest; Markdown and source as text. The download URL keeps its
-`attachment` / `octet-stream` signature, so in step 1 nothing renders on the bucket's origin.
+Non-HTML entries render in the console from bytes it fetched (§9): images and PDF from typed
+`blob:` URLs, SVG from a `data:` URL, Markdown and source as text. An HTML entry, single file
+or site, runs on the **content domain**.
 
-**Multi-file HTML reverses that rule.** A site's relative references only resolve when the
-page is loaded from the store, so its entry opens in `<iframe sandbox="allow-scripts">`
-whose `src` is the store address under the public prefix. This reverses three standing
-statements, which change with step 2:
+**The content domain.** A wildcard domain on a registrable domain of its own, for example
+`*.example-usercontent.net`, never a subdomain of the console's site: a same-site host would
+receive and could set the console site's cookies. The managed service's content domain is
+also submitted to the Public Suffix List, so that every label under it is a separate site.
+The CP refuses to enable artifacts with a content domain that is same-site with any origin
+the deployment knows: the console, the CP and API host, the relay, the MCP host, the
+identity provider and the object store. The content domain must be a DNS name under a public
+suffix; an IP address, a single-label name or `localhost` is refused, since the Public
+Suffix List cannot classify it.
 
-- `source-cache-file-transfer.md` §3, "nothing renders on the bucket's origin": it then holds
-  for every prefix except `artifact-pub/`, whose objects are served with their manifest type.
-- `icon-uploads.md`, anonymous reads on `icon/*` alone: `artifact-pub/*` joins it.
-- The deployment docs (the chart README's bucket requirements and
-  `self-host-caddy-https.md`), CORS for the console origin alone: `GET` opens to any origin.
+Without a Public Suffix List entry, as on a self-hosted deployment, revisions are still
+separate origins, so their storage, service workers and DOM stay apart; what they share is
+the content domain's site, so one artifact could set a cookie the others receive. No
+artifact feature uses cookies on the content domain.
 
-Without `allow-same-origin` the framed page has an opaque origin and reaches no state of the
-console's origin or the store's.
+**Who serves it.** The existing web service, behind a route of its own. The edge, not web,
+decides what reaches a host: the console's route sends `/cp` (and, in Compose, `/relay`) to
+other backends before web sees the request. So the content domain gets its own HTTPRoute in
+the chart and its own site block in Compose, with web as the only backend; it is never added
+to the console's route. Web's request proxy checks the `Host` first and covers every path on
+the content domain, including `_next` and the icon paths its matcher skips today: it answers
+only `/__ac/shim` and `/__ac/sw.js`, with their own strict headers and no cookies, and 404 for
+everything else. The identity provider's redirect URIs never include the content domain, so
+a sign-in cannot complete on it even if a page were served by mistake.
 
-The sandboxed page's origin is `null`. Classic scripts, styles and images load regardless,
-but ES modules and `fetch` of a local JSON file need CORS, so the bucket's CORS rule admits
-any origin for `GET`. CORS is bucket-wide; every other object is still protected by its
-signature.
+**One origin per revision.** Revision `r` of artifact `a` renders at
+`https://a<artifact id without dashes>r<r>.<content domain>/`, so two artifacts, or two
+revisions of one artifact, never share an origin or its storage. The label is not secret:
+access is decided when the console fetches the bytes, not by the origin.
 
-Pages may make outbound requests (D20). The store cannot add response headers, so a later
-restriction could only be a `<meta>` CSP injected at publication, and only for revisions
-published after it.
+**How a page loads.**
 
-The frame withholds `allow-same-origin`, `allow-top-navigation`, `allow-popups` and
-`allow-forms`, so a page cannot read the console's sign-in state, call the CP as the
-viewer, read another artifact, navigate the tab away, or open a window. What outbound
-requests leave open is limited to the artifact and its viewer:
+1. The console embeds `https://<label>.<content domain>/__ac/shim` in an iframe with
+   `sandbox="allow-scripts allow-same-origin"`. `allow-same-origin` is what lets the shim
+   register a service worker; it does not let the page read the console, which is cross-site.
+   It does let the page frame other sites at their real origin, including the console under
+   a top-level page that is the console, where a browser's storage partitioning decides
+   whether that frame is signed in. So the console and the share pages refuse to be framed by
+   anything but their own origin (`Content-Security-Policy: frame-ancestors 'self'`, with
+   `X-Frame-Options: SAMEORIGIN` for older browsers). `allow-top-navigation`, `allow-popups`
+   and `allow-forms` stay withheld.
+2. The shim accepts messages only from the console's origin. It registers `/__ac/sw.js` with
+   scope `/` and hands it a message port to the console.
+3. The shim loads the entry in a nested frame of the same origin. Every request that frame
+   makes for that origin, including navigations, goes to the service worker, which asks the
+   console for the path over the port.
+4. The console trusts nothing that arrives on the port: the shim, the worker and the
+   artifact share one origin. It binds the port to the revision it embedded and answers only
+   paths in that revision's manifest, fetching the bytes through their signed URLs, as for a
+   download; the worker returns them typed by the manifest.
+   A navigation to a path that is not in the manifest returns the entry, so a single-page app
+   with history routing works; any other missing path is a 404.
+5. The shim reports the nested frame's path. The console validates it against the manifest,
+   coalesces rapid changes so a page cannot flood its history, and keeps it in its own URL, so
+   back, forward and reload work.
+6. A browser stops an idle service worker, which loses its port. The worker asks its shim
+   for a new one on wake, and the shim hands it over again.
 
-| Risk                 | Description                                                                                                                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Content exfiltration | A page steered by content the agent read, or a tampered third-party script, can send the artifact's own data, and what the viewer types into it, elsewhere                                  |
-| Viewer tracking      | A third party sees the viewer's IP address, browser and time of visit                                                                                                                       |
-| Phishing             | A page can draw a fake sign-in form. It appears inside the console, and a `public` share page sits on the product's own domain, which makes it more credible than an ordinary phishing page |
-| Viewer resource use  | For example, a mining script                                                                                                                                                                |
+Multi-page sites, relative and root-relative references, ES modules and `fetch` of local
+files all work, because each revision is a whole origin.
+
+**Opened directly.** The worker answers only clients its shim introduced, and keeps no bytes;
+anything else falls through to the web service, which answers 404. So a content-domain
+address opened in its own tab shows nothing in every browser, whether or not that browser
+partitions service workers, and no artifact page ever runs outside the console's frame.
+
+**A browser without third-party service workers** gets the entry rendered as `srcdoc` in a
+sandboxed frame, as in step 1, with a notice that the rest of the site cannot load in that
+browser, and download stays available.
+
+Pages may make outbound requests (D20); no CSP is injected. With the console and share pages
+refusing foreign framing, what that leaves open is limited to the artifact and its viewer:
+
+| Risk                 | Description                                                                                                                                                |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Content exfiltration | A page steered by content the agent read, or a tampered third-party script, can send the artifact's own data, and what the viewer types into it, elsewhere |
+| Viewer tracking      | A third party sees the viewer's IP address, browser and time of visit                                                                                      |
+| Phishing             | A page can draw a fake sign-in form inside the console's frame or on a `public` share page, which makes it more credible than an ordinary phishing page    |
+| Viewer resource use  | For example, a mining script                                                                                                                               |
 
 These are accepted for the first version with two mitigations: a `public` share page
 always frames the artifact with a "user-generated content" notice naming the source
 organization, and organization owners can revoke any public share and delete any artifact
 (§6.3).
-
-Someone who opens a store address directly in a new tab runs the page in the store's real
-origin, outside the sandbox. What that page can reach depends on what is same-site with the
-store: in the Compose HTTPS overlay the console and CP, the identity provider and the store
-share one host on different ports, and cookies are not separated by port; the chart puts
-the store on a sibling host of the same site. Settling this is open question P2, and step 2
-does not ship until it is settled.
 
 ## 6. Ownership and audience
 
@@ -371,8 +387,7 @@ An organization owner sees no other member's private artifact, as with private s
 and cannot widen it or share it publicly, since either would let them read it. They keep
 moderation: they see every active public share's metadata (title, owner, share time) in
 the Artifacts page and can revoke a share or delete an artifact without opening it. An
-artifact with no owner is managed by organization owners within the same limit. Narrowing
-an audience moves a public-prefix revision to a new prefix (§5.2).
+artifact with no owner is managed by organization owners within the same limit.
 
 When a member leaves the organization, their artifacts pass to the organization owners:
 the owner is cleared, and the private ones become visible to and manageable by organization
@@ -436,8 +451,8 @@ becomes necessary, the three tools can go through the existing tool approval
 
 ## 8. Opening and sharing
 
-The links people receive are always console addresses. Store addresses are used only by
-the page itself, after the access check.
+The links people receive are always console addresses. Signed store URLs are fetched only
+by the console itself, after the access check.
 
 ### 8.1 In a session
 
@@ -466,14 +481,13 @@ newer one exists the viewer offers to switch.
 - `org`: sign-in, then an organization membership check, then the same page.
 - The share page shows the artifact: title, content, download. It shows no session,
   conversation or workspace, and does not mention newer revisions.
-- Changing a share's audience keeps its link; narrowing `public` to `org` also moves a
-  public-prefix revision to a new prefix.
+- Changing a share's audience keeps its link.
 - A new revision does not move an existing share; sharing the new one is a new share.
-- Revoking a share invalidates its link at once and moves a public-prefix revision.
+- Revoking a share invalidates its link at once.
 - Before a share becomes `public`, the dialog says that copies already downloaded cannot
   be recalled.
-- Someone viewing a public share may also be signed in to the console, so HTML runs in the
-  sandboxed frame on the share page too.
+- Someone viewing a public share may also be signed in to the console, so HTML runs on the
+  content domain on the share page too (§5.5).
 
 ### 8.4 Files uploaded to a chat platform
 
@@ -488,7 +502,7 @@ browser and components the console already has:
 
 | Entry                                      | Opens as                     | With                                            |
 | ------------------------------------------ | ---------------------------- | ----------------------------------------------- |
-| HTML (single or multi-file)                | A running page               | A sandboxed iframe                              |
+| HTML (single or multi-file)                | A running page               | The content domain (§5.5)                       |
 | Markdown                                   | A rendered document          | The console's existing Markdown component       |
 | Image, SVG                                 | An image                     | `<img>` (SVG loaded as an image runs no script) |
 | PDF                                        | An embedded document         | The browser's PDF viewer                        |
@@ -499,8 +513,8 @@ browser and components the console already has:
   and companion files: the agent sets a PDF as the entry and includes the DOCX original in
   the same artifact. Opening shows the PDF, downloading includes the original, and the
   conversion runs in the agent's own environment.
-- **Local images a Markdown entry references** are swapped for their files' signed URLs at
-  render time.
+- **Local images a Markdown entry references** are loaded from the revision's files and shown
+  from `blob:` URLs (`data:` for SVG).
 - **Mobile** is mobile web reading: full-screen view and download. Some mobile browsers do
   not embed PDFs; the first version accepts that, and PDF.js can replace the native viewer
   later.
@@ -607,33 +621,48 @@ keeps its composer:
 
 ## 12. Deployment requirements
 
-| Deployment                       | Artifacts                                                                                                                                                                                       |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bundled object store             | Everything. The chart's setup script configures the public-prefix read policy and the CORS rule                                                                                                 |
-| External bucket (for example S3) | The operator configures anonymous reads for the public prefix and opens CORS `GET` to any origin. Without that, only what signed prefixes cover is available: single files and non-HTML entries |
-| No object store                  | Not available. `shareFile` and session files are unaffected                                                                                                                                     |
+Artifacts are offered only when the deployment has both a transfer bucket and a content
+domain. The CP advertises `artifacts-v1` to daemons, and the runtime configuration tells the
+console the content domain, only then; otherwise agents get no artifact tools and the
+console shows no artifact surfaces. `shareFile` and session files are unaffected either way.
+
+The off state is a product choice: non-HTML entries and the `srcdoc` fallback need no content
+domain, but artifacts are offered whole or not at all. Turning artifacts off, or removing the
+content domain, keeps what was published: retention, deletion and organization-deletion
+cleanup keep running, and the artifacts come back when a content domain is configured again.
+A deployment that had step-1 artifacts loses them at step 2 unless it adds a content domain,
+which the release notes say. Local development and CI use a wildcard name that resolves to
+the loopback address with a locally trusted certificate.
+
+| Deployment      | What the operator provides                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Managed service | Provided: a wildcard content domain on its own registrable domain, on the Public Suffix List                                                                                                                                                                                                                                                                                                                                                                    |
+| Helm chart      | `artifacts.contentDomain`; DNS and a wildcard certificate for it; the chart renders a separate HTTPRoute for the wildcard host with web as its only backend, as it does for the MCP host                                                                                                                                                                                                                                                                        |
+| Compose         | The content-domain variable and a site block of its own; DNS and a wildcard certificate for it. With a public domain, Caddy obtains a wildcard certificate only through a DNS challenge, so the operator configures their DNS provider for it. The LAN overlay (`compose.logto.https.yaml`, `tls internal`) can serve a wildcard name from Caddy's internal CA when the LAN resolves it; on an IP address or single-label host it cannot, and artifacts are off |
+| Any deployment  | A transfer bucket ([source-cache-file-transfer.md](source-cache-file-transfer.md)); nothing in it becomes public                                                                                                                                                                                                                                                                                                                                                |
 
 ## 13. Open questions
 
-| #   | Question                                                                                                                                                                                                                                                | Proposal                                                                                                                                                            |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | Manifest in the database or as an object in the bucket                                                                                                                                                                                                  | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds                                     |
-| P2  | What is same-site with the store origin, and what a page opened there outside the sandbox can reach: the console's and the identity provider's cookies (the Compose HTTPS overlay shares one host across ports), the store's own administration console | Settle before step 2. Where the store is same-site with the console, serve `artifact-pub/` from a host that is not, or offer only single files and non-HTML entries |
-| P3  | Which retention value the CP applies to revisions                                                                                                                                                                                                       | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything                                              |
-| P4  | Limit values                                                                                                                                                                                                                                            | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan                                             |
+| #   | Question                                                                                                                                                                                                                                                          | Proposal                                                                                                                        |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Manifest in the database or as an object in the bucket                                                                                                                                                                                                            | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
+| P2  | Do current Chrome, Safari and Firefox let the shim register a service worker in its partitioned third-party frame and route the nested frame's requests through it, including navigations, reload, a worker restarted after idling, and Range requests for media? | Prototype before building step 2; a browser that cannot gets the §5.5 fallback                                                  |
+| P3  | Which retention value the CP applies to revisions                                                                                                                                                                                                                 | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything          |
+| P4  | Limit values                                                                                                                                                                                                                                                      | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan         |
 
 ## 14. Rollout
 
 Each step can be verified on its own:
 
-| Step | Scope                                                                                                                                                                                                                                                        | Unlocks                                                                                  |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| 1    | Data model; publish, fetch and list tools; signed-prefix storage; the conversation card; the standalone viewer page; download                                                                                                                                | Agent publishes, person opens. Covers single-file HTML, Markdown, images, PDF and source |
-| 2    | Multi-file HTML, after P2: public random prefix, the bucket's read policy and CORS, prefix moves, the root-relative path check, the amended rules of §5.5, and a threat-model test of the public prefix, any-origin CORS, active content and the share route | Interactive multi-file pages                                                             |
-| 3    | In-session viewer: the dock's Artifacts tab, the left-pane viewer, opening by itself, revision switching                                                                                                                                                     | Viewing while revising                                                                   |
-| 4    | Sharing: `public` and `org` links, the share page, the agent's share and unshare tools                                                                                                                                                                       | Handing a revision to people outside the session                                         |
-| 5    | Management: the Artifacts page, deletion including the agent's delete tool, retention cleanup, limits                                                                                                                                                        | Long-term upkeep                                                                         |
+| Step | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Unlocks                                                                                  |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 1    | Data model; publish, fetch and list tools; signed-prefix storage; the conversation card; the standalone viewer page; download                                                                                                                                                                                                                                                                                                                                                                         | Agent publishes, person opens. Covers single-file HTML, Markdown, images, PDF and source |
+| 2    | The content domain: the configuration and its same-site check, its own route and site block, the web service's `Host` branch, the shim and service worker, every HTML entry moved onto it, `frame-ancestors 'self'` on the console and share pages, feature gating on the content domain, dropping the unused `public` storage mode, and a threat-model entry with a hostile-artifact test (framing the console, top navigation, popups, forms, other revisions' origins, paths outside the manifest) | Interactive multi-file pages                                                             |
+| 3    | In-session viewer: the dock's Artifacts tab, the left-pane viewer, opening by itself, revision switching                                                                                                                                                                                                                                                                                                                                                                                              | Viewing while revising                                                                   |
+| 4    | Sharing: `public` and `org` links, the share page, the agent's share and unshare tools                                                                                                                                                                                                                                                                                                                                                                                                                | Handing a revision to people outside the session                                         |
+| 5    | Management: the Artifacts page, deletion including the agent's delete tool, retention cleanup, limits                                                                                                                                                                                                                                                                                                                                                                                                 | Long-term upkeep                                                                         |
 
-Step 1 alone is a complete path; each later step adds to it. Multi-file pages change
-deployment configuration, so they are their own step and can be rolled back alone. Sharing
+Step 1 alone is a complete path; each later step adds to it. Step 2 changes deployment
+requirements: once it ships, a deployment without a content domain stops offering
+artifacts, including what step 1 enabled. Sharing
 and management do not block using artifacts.
