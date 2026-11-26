@@ -366,11 +366,12 @@ const hostile = async () => {
   await f.waitForFunction(() => window.attack?.ready, null, { timeout: 5000 })
   return { tab, f }
 }
+// A failed or stalled attack rejects, so step() records a failure instead of asserting on an empty result.
 const attack = (f, name) =>
   within(
     f.evaluate((n) => window.attack[n](), name),
     20000
-  ).catch((e) => ({ error: String(e.message).split('\n')[0] }))
+  )
 const stillConsole = (tab) => new URL(tab.url()).origin === consoleOrigin
 const portsOf = (tab) => tab.evaluate(() => window.__acPorts)
 
@@ -515,7 +516,7 @@ await step('H9 the console answers only revision 1 manifest paths, even on a sto
   const control = r['port /index.html (control)'] || ''
   const log1 = await tab.evaluate(() => window.__acLog.map((e) => e.path))
   return {
-    ok: fetchOk && (r.stolen !== 'yes' || (portOk && control.startsWith('200'))) && !leaks(r).length,
+    ok: fetched.length > 0 && fetchOk && r.stolen === 'yes' && portOk && control.startsWith('200') && !leaks(r).length,
     note: `port stolen=${r.stolen}; console was asked [${log1.filter((p) => !String(p).startsWith('/hostile/')).join(' ')}]; ${brief(r)}`
   }
 })
