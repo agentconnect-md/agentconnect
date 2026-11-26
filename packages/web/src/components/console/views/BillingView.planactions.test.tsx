@@ -931,7 +931,7 @@ describe('plan trial', () => {
     expect(step()).toBe('review')
     expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Cancel trial?')
     expect(dialog()!.textContent).toContain(
-      'You’ll keep Pro Standard until Dec 10. Then you’ll switch to Free with no subscription charge.'
+      "You'll keep Pro Standard until Dec 10. Then you'll switch to Free with no subscription charge."
     )
     expect(rows()).toEqual([['Monthly session limit', '5,000 → 1,000']])
     expect(notes()).toEqual(['History retentionStarting Dec 17, session history older than 7 days will be deleted.'])
@@ -1062,7 +1062,7 @@ describe('plan trial', () => {
     })
     await render()
     const banner = q('[data-plan-banner="pending"]')!
-    expect(banner.textContent).toContain('Your plan payment is waiting')
+    expect(banner.textContent).toContain('Your plan payment is pending')
     expect(banner.textContent).toContain('Your trial continues unchanged until the payment completes.')
     expect(q('[data-plan-cancel-trial]')).toBeNull()
     const withdraw = card().querySelector('[data-plan-pending-cancel]')!
