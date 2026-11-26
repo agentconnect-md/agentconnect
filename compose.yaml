@@ -274,6 +274,8 @@ services:
       - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
       - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
       - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      # Artifact content domain: web answers only the shim and its worker there, framed by PUBLIC_WEB_URL.
+      - ARTIFACTS_CONTENT_DOMAIN
       - LOGTO_ENDPOINT
       - LOGTO_APP_ID
       - LOGTO_API_RESOURCE

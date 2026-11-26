@@ -21,7 +21,17 @@ const SHA = 'a'.repeat(64)
 const file = (path: string, bytes = 10) => ({ path, sha256: SHA, bytes, mediaType: 'text/html' })
 
 describe('artifact path rules (artifacts.md §5.4)', () => {
-  it.each(['index.html', 'assets/app.js', 'a b/ü.md', '.well-known/x', 'dir.git/x', '..hidden'])('accepts %s', (p) => {
+  it.each([
+    'index.html',
+    'assets/app.js',
+    'a b/ü.md',
+    '.well-known/x',
+    'dir.git/x',
+    '..hidden',
+    'sub/__ac/x',
+    '__ac',
+    '__acx/y'
+  ])('accepts %s', (p) => {
     expect(artifactPathProblem(p)).toBeUndefined()
   })
 
@@ -37,6 +47,8 @@ describe('artifact path rules (artifacts.md §5.4)', () => {
     ['a/../b', /`\.`/],
     ['.git/config', /\.git/],
     ['sub/.GIT/HEAD', /\.git/],
+    ['__ac/shim', /reserved/],
+    ['__AC/sw.js', /reserved/],
     [`${'x'.repeat(256)}`, /segment/],
     [`${'a/'.repeat(400)}b`, /longer than/]
   ])('refuses %j', (p, why) => {
