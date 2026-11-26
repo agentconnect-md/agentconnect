@@ -184,12 +184,16 @@ export function PlanCard({
   role,
   onChangePlan,
   onCancelScheduled,
+  onCancelTrial,
+  onCancelPending,
   increase
 }: {
   reads: PlanReads
   role: string | null
   onChangePlan?: () => void
   onCancelScheduled?: () => Promise<void>
+  onCancelTrial?: () => void
+  onCancelPending?: (change: BillingPendingChange) => Promise<void>
   increase?: IncreaseLink
 }) {
   const t = useTranslations('Billing.plan')
@@ -198,8 +202,13 @@ export function PlanCard({
   const sub = subscription.data
   // A failed read hides only the sessions block; nothing else on the card depends on it.
   const usage = reads.usage.error ? undefined : reads.usage.data
-  const billingDate =
-    sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
+  const trialEndsAt = sub?.trialEndsAt ?? null
+  const trialCancelled = !!trialEndsAt && sub?.scheduled?.tierId === FREE_TIER_ID
+  // An unpaid pay-now blocks every other change, so its withdrawal takes Cancel trial's place.
+  const trialPending = trialEndsAt && sub?.pendingChange?.kind === 'upgrade' ? sub.pendingChange : null
+  const billingDate = trialEndsAt
+    ? t('trialEnds', { date: day(trialEndsAt) })
+    : sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
       ? t(sub.priceCents === null || sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', {
           date: day(sub.paidThrough)
         })
@@ -228,9 +237,27 @@ export function PlanCard({
           </span>
         )}
         {role === 'owner' && sub && onChangePlan && (
-          <Button size="sm" variant="secondary" onClick={onChangePlan}>
-            {t('change.title')}
-          </Button>
+          <span className="inline-flex items-center gap-3.5">
+            {trialPending && onCancelPending ? (
+              <CancelPendingButton change={trialPending} trial onCancel={onCancelPending} />
+            ) : (
+              trialEndsAt &&
+              !trialCancelled &&
+              onCancelTrial && (
+                <button
+                  type="button"
+                  className="lnk text-(--text-secondary)"
+                  data-plan-cancel-trial="true"
+                  onClick={onCancelTrial}
+                >
+                  {t('trial.cancel')}
+                </button>
+              )
+            )}
+            <Button size="sm" variant="secondary" onClick={onChangePlan}>
+              {t('change.title')}
+            </Button>
+          </span>
         )}
       </div>
       {subscription.error ? (
@@ -261,20 +288,34 @@ export function PlanCard({
                 </span>
               )}
             </span>
+            {trialEndsAt && (
+              <span data-plan-trial="true" className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                {t('trial.badge')}
+              </span>
+            )}
             <span
               className="ms-auto font-sans text-[12px] leading-normal whitespace-nowrap text-(--text-tertiary)"
               data-plan-price="true"
             >
-              {sub.priceCents === null
-                ? t('contract')
-                : t.rich('price', {
-                    price: fmtCents(sub.priceCents),
+              {trialEndsAt
+                ? t.rich(trialCancelled ? 'trial.priceCancelled' : 'trial.price', {
+                    price: fmtCents(sub.priceCents ?? 0),
                     amount: (value) => (
-                      <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary) tabular-nums">
+                      <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary)">
                         {value}
                       </strong>
                     )
-                  })}
+                  })
+                : sub.priceCents === null
+                  ? t('contract')
+                  : t.rich('price', {
+                      price: fmtCents(sub.priceCents),
+                      amount: (value) => (
+                        <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary) tabular-nums">
+                          {value}
+                        </strong>
+                      )
+                    })}
             </span>
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 font-sans text-[12px] leading-4 text-(--text-secondary)">
@@ -345,7 +386,13 @@ function ScheduledChange({
         className="flex-none desktop:@max-[540px]:hidden"
       />
       <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-4 wrap-anywhere">
-        {sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan })}
+        {sub.trialEndsAt
+          ? scheduled.tierId === FREE_TIER_ID
+            ? t('trial.cancelled', { date: day(sub.trialEndsAt) })
+            : t('trial.switching', { plan, date: day(sub.trialEndsAt) })
+          : sub.paidThrough
+            ? t('switching', { plan, date: day(sub.paidThrough) })
+            : t('switchingAtRenewal', { plan })}
         {error && (
           <span role="alert" className="mt-1 block font-normal text-(--status-error)">
             {error}
@@ -354,7 +401,7 @@ function ScheduledChange({
       </span>
       {onCancel && (
         <button type="button" className="lnk" disabled={busy} onClick={() => void cancel()}>
-          {t('cancelScheduled')}
+          {sub.trialEndsAt && scheduled.tierId === FREE_TIER_ID ? t('trial.undo') : t('cancelScheduled')}
         </button>
       )}
     </div>
@@ -431,62 +478,50 @@ function AmberBanner({
   )
 }
 
-/** An owner can withdraw an unpaid upgrade; a pending checkout is replaced by starting checkout again. */
-function PendingPaymentBanner({
+/** Withdraws an unpaid upgrade after a confirmation; a trial's pay-now reads as a payment, since the plan may not change. */
+function CancelPendingButton({
   change,
+  trial,
   onCancel
 }: {
   change: BillingPendingChange
-  onCancel?: (change: BillingPendingChange) => Promise<void>
+  trial: boolean
+  onCancel: (change: BillingPendingChange) => Promise<void>
 }) {
   const t = useTranslations('Billing.plan.pending')
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cancelable = change.kind === 'upgrade' && onCancel
+  const k = (key: 'cancel' | 'cancelTitle' | 'cancelConfirm' | 'cancelKeep' | 'cancelError') =>
+    trial ? (`trial.${key}` as const) : key
   const cancel = async () => {
-    if (!cancelable || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
       await onCancel(change)
       setConfirming(false)
     } catch (e) {
-      setError(t('cancelError', { error: (e as Error).message }))
+      setError(t(k('cancelError'), { error: (e as Error).message }))
     }
     setBusy(false)
   }
   return (
-    <AmberBanner data="pending" icon="clock" title={change.kind === 'upgrade' ? t('upgradeTitle') : t('checkoutTitle')}>
-      <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-        {change.payUrl ? t('body') : t('bodyNoLink')}
-      </div>
-      {(change.payUrl || cancelable) && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-          {change.payUrl && (
-            <a className="lnk flex w-fit" href={change.payUrl} target="_blank" rel="noopener noreferrer">
-              {t('pay')}
-              <Icon name="arrow-up-right" size={12} />
-            </a>
-          )}
-          {cancelable && (
-            <button
-              type="button"
-              className="lnk"
-              data-plan-pending-cancel="true"
-              aria-haspopup="dialog"
-              onClick={() => setConfirming(true)}
-            >
-              {t('cancel')}
-            </button>
-          )}
-        </div>
-      )}
-      {cancelable && confirming && (
+    <>
+      <button
+        type="button"
+        className="lnk"
+        data-plan-pending-cancel="true"
+        aria-haspopup="dialog"
+        onClick={() => setConfirming(true)}
+      >
+        {t(k('cancel'))}
+      </button>
+      {confirming && (
         <ConfirmationDialog
-          title={t('cancelTitle')}
-          confirmLabel={t('cancel')}
-          cancelLabel={t('cancelKeep')}
+          title={t(k('cancelTitle'))}
+          confirmLabel={t(k('cancel'))}
+          cancelLabel={t(k('cancelKeep'))}
           busy={busy}
           busyLabel={t('cancelBusy')}
           error={error}
@@ -496,8 +531,45 @@ function PendingPaymentBanner({
             setError(null)
           }}
         >
-          {t('cancelConfirm')}
+          {t(k('cancelConfirm'))}
         </ConfirmationDialog>
+      )}
+    </>
+  )
+}
+
+/** An owner can withdraw an unpaid upgrade; a pending checkout is replaced by starting checkout again. */
+function PendingPaymentBanner({
+  change,
+  trial,
+  onCancel
+}: {
+  change: BillingPendingChange
+  trial: boolean
+  onCancel?: (change: BillingPendingChange) => Promise<void>
+}) {
+  const t = useTranslations('Billing.plan.pending')
+  const cancelable = change.kind === 'upgrade' && onCancel
+  const upgrade = change.kind === 'upgrade'
+  return (
+    <AmberBanner
+      data="pending"
+      icon="clock"
+      title={upgrade && trial ? t('trial.title') : upgrade ? t('upgradeTitle') : t('checkoutTitle')}
+    >
+      <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+        {!change.payUrl ? t('bodyNoLink') : upgrade && trial ? t('trial.body') : t('body')}
+      </div>
+      {(change.payUrl || cancelable) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+          {change.payUrl && (
+            <a className="lnk flex w-fit" href={change.payUrl} target="_blank" rel="noopener noreferrer">
+              {t('pay')}
+              <Icon name="arrow-up-right" size={12} />
+            </a>
+          )}
+          {cancelable && <CancelPendingButton change={change} trial={trial} onCancel={onCancel} />}
+        </div>
       )}
     </AmberBanner>
   )
@@ -520,7 +592,13 @@ export function PlanBanners({
   const atLimit = usage !== undefined && usage.limit !== null && usage.used >= usage.limit
   return (
     <>
-      {change && <PendingPaymentBanner change={change} onCancel={onCancelPending} />}
+      {change && (
+        <PendingPaymentBanner
+          change={change}
+          trial={!!reads.subscription.data?.trialEndsAt}
+          onCancel={onCancelPending}
+        />
+      )}
       {atLimit && (
         <AmberBanner
           data="session-limit"
@@ -657,7 +735,7 @@ export function PlanCreditStrip({ sub, balanceMicro }: { sub: BillingSubscriptio
         onClick={() => setOpen(true)}
         className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-center desktop:row-start-4 gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] text-left transition-colors hover:bg-(--surface-hover)"
       >
-        <Stat label={t('planCredits')} value={fmtMicroUsd(split.planMicro)} />
+        <Stat label={t(sub.trialEndsAt ? 'trialCredits' : 'planCredits')} value={fmtMicroUsd(split.planMicro)} />
         <Stat label={t('topUps')} value={fmtMicroUsd(split.topUpMicro)} />
         <Stat
           label={next ? t('expiringOn', { date: day(next.expiresAt) }) : t('expiring')}

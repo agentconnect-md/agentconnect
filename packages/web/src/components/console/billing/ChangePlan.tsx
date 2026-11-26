@@ -128,7 +128,13 @@ export function useIncreaseLimit(
     : undefined
   // A quote past a schedule moves the provider subscription and back, so this passive preview asks only with nothing scheduled or in flight.
   const quotable =
-    !!orgId && !!sub && !!option && !sub.scheduled && !sub.pendingChange && changePath(sub, option) === 'immediate'
+    !!orgId &&
+    !!sub &&
+    !!option &&
+    !sub.scheduled &&
+    !sub.pendingChange &&
+    !sub.trialEndsAt &&
+    changePath(sub, option) === 'immediate'
   const quote = useSWR(
     quotable ? consoleKeys.billingUpgradeQuote(orgId, option.tierId, option.optionId) : null,
     () => quoteBillingUpgrade(orgId!, { tierId: option!.tierId, optionId: option!.optionId }),
@@ -142,19 +148,42 @@ export function useIncreaseLimit(
     return { next: null, title: t('more'), sub: t('contactSales'), bannerLabel: null, open }
   }
   const nextTier = tiers.find((x) => x.tierId === next.tierId)
+  const trialDays = trialOffer(sub, option)
   return {
     next,
-    title: t('title'),
+    title: trialDays ? t('tryFree', { tier: nextTier?.tierName ?? next.tierId, days: trialDays }) : t('title'),
     sub: quotable && quote.data ? t('today', { amount: fmtMicroUsd(quote.data.amountCents * 10_000) }) : null,
     bannerLabel: sub.tierId === FREE_TIER_ID ? t('upgradeTo', { tier: nextTier?.tierName ?? next.tierId }) : t('title'),
     open: next
   }
 }
 
-/** Where the dialog starts: on a plan to choose, or on a checkout the browser just came back from. */
-export type ChangePlanStart = { target: PlanTarget } | { changeId: string }
+/** Free-trial days the service offers this org on `o` now; null ⇒ no trial entry (an older service sends none). */
+export function trialOffer(sub: BillingSubscription, o: BillingPlanOption | undefined): number | null {
+  return sub.tierId === FREE_TIER_ID && o?.purchasable && o.trialDays ? o.trialDays : null
+}
+
+// A trial checkout's id, kept across the hosted page so the return reads as a trial before the plan reread lands.
+const TRIAL_CHECKOUT_KEY = 'ac.billing.trialCheckout'
+function markTrialCheckout(id: string) {
+  try {
+    sessionStorage.setItem(TRIAL_CHECKOUT_KEY, id)
+  } catch {}
+}
+function isTrialCheckout(id: string): boolean {
+  try {
+    return sessionStorage.getItem(TRIAL_CHECKOUT_KEY) === id
+  } catch {
+    return false
+  }
+}
+
+/** Where the dialog starts: on a plan to choose (or straight at its review), or on a checkout the browser just came back from. */
+export type ChangePlanStart = { target: PlanTarget; review?: boolean } | { changeId: string }
 
 type Step = 'choose' | 'review' | 'paying' | 'done'
+/** How a paid option is taken: a free trial from Free, or a switch at the trial's end; null is the plain path. */
+type Via = 'trial' | 'switch' | null
 type Outcome = { kind: 'stalled' } | { kind: 'expired' } | { kind: 'error'; message: string }
 
 // Cents as dollars and cents, the way the review rows print money. Display only.
@@ -168,6 +197,8 @@ const NOTE = {
   info: 'mt-2 flex items-start gap-[9px] rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2.5 font-sans text-[12px] font-normal leading-[1.6] text-(--text-secondary)',
   warn: 'mt-2 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-2.5 font-sans text-[12px] font-normal leading-[1.6] text-(--text-primary)'
 } as const
+
+const TIER_BADGE = 'rounded-full px-1.5 text-[11px] leading-4 font-medium'
 
 function ChoiceMark() {
   return (
@@ -221,7 +252,9 @@ export function ChangePlanDialog({
   const { day, number } = useUtcDates()
   const plans = catalog.data
   const tiers = plans ? planTiers(plans) : []
-  const [step, setStep] = useState<Step>('changeId' in start ? 'paying' : 'choose')
+  const [step, setStep] = useState<Step>('changeId' in start ? 'paying' : start.review ? 'review' : 'choose')
+  const [via, setVia] = useState<Via>(null)
+  const [trialCheckout] = useState(() => 'changeId' in start && isTrialCheckout(start.changeId))
   const [target, setTarget] = useState<PlanTarget>(
     'target' in start ? start.target : { tierId: sub.tierId, optionId: sub.optionId }
   )
@@ -303,8 +336,21 @@ export function ChangePlanDialog({
     if (step === 'choose' && visibleTier) selectedTierCard.current?.scrollIntoView({ block: 'nearest' })
   }, [step, visibleTier])
 
-  const path = option ? changePath(sub, option) : null
+  // In a trial every paid option is paid now or switched to at its end, the current one included; Free cancels it.
+  const trialEndsAt = sub.trialEndsAt ?? null
+  const trialCancelled = !!trialEndsAt && sub.scheduled?.tierId === FREE_TIER_ID
+  const pathFor = (v: Via): ChangePath | null =>
+    !option
+      ? null
+      : trialEndsAt
+        ? option.tierId === FREE_TIER_ID || v === 'switch'
+          ? 'scheduled'
+          : 'immediate'
+        : changePath(sub, option)
+  const path = pathFor(via)
   const same = !!option && isCurrent(sub, option)
+  const trialDays = trialOffer(sub, option)
+  const trialEnd = trialEndsAt ? day(trialEndsAt) : ''
   const combo = (label: string, sessions: number) => t('combo', { plan: label, sessions: number(sessions) })
   const toLabel = option ? combo(planLabel(option), option.sessionLimit) : ''
   const support = helpSupportUrl()
@@ -342,12 +388,13 @@ export function ChangePlanDialog({
     setTarget({ tierId: x.tierId, optionId: keep.optionId })
   }
 
-  const toReview = () => {
-    if (!option || same) return
+  const toReview = (v: Via = null) => {
+    if (!option || (same && !trialEndsAt)) return
+    setVia(v)
     setError(null)
     setRefreshed(false)
     setStep('review')
-    if (path === 'immediate') void requestQuote(false)
+    if (pathFor(v) === 'immediate') void requestQuote(false)
   }
 
   const back = () => {
@@ -362,12 +409,15 @@ export function ChangePlanDialog({
     if (path === 'checkout') {
       setBusy(true)
       try {
-        const { url } = await createBillingSubscriptionCheckout(orgId, {
+        const trial = via === 'trial'
+        const { changeId, url } = await createBillingSubscriptionCheckout(orgId, {
           tierId: option.tierId,
           optionId: option.optionId,
           idempotencyKey: crypto.randomUUID(),
-          returnPath
+          returnPath,
+          trial
         })
+        if (trial) markTrialCheckout(changeId)
         window.location.assign(url)
         // `busy` stays: the page is navigating away.
       } catch (e) {
@@ -381,6 +431,8 @@ export function ChangePlanDialog({
       try {
         await scheduleBillingChange(orgId, { tierId: option.tierId, optionId: option.optionId })
         changed.current()
+        // Cancelling a trial needs no result step: the Plan card's strip says what happens next.
+        if (trialEndsAt && option.tierId === FREE_TIER_ID) return onClose()
         setStep('done')
       } catch (e) {
         setError((e as Error).message)
@@ -490,6 +542,8 @@ export function ChangePlanDialog({
             <div role="group" aria-label={t('title')} className="grid grid-cols-2 gap-3 desktop:grid-cols-4">
               {tiers.map((x) => {
                 const custom = x.salesMode === 'contact_sales'
+                const current = x.options.some((o) => isCurrent(sub, o))
+                const offer = x.options.map((o) => trialOffer(sub, o)).find((d) => d !== null)
                 const prices = x.options.map((o) => o.priceCents ?? 0)
                 const minimum = Math.min(...prices)
                 const price = fmtCents(minimum)
@@ -513,9 +567,21 @@ export function ChangePlanDialog({
                         <span className="text-[14px] leading-4 font-semibold [overflow-wrap:anywhere]">
                           {x.tierName}
                         </span>
-                        {x.options.some((o) => isCurrent(sub, o)) && (
-                          <span className="rounded-full bg-(--surface-active) px-1.5 text-[11px] leading-4 font-medium text-(--text-secondary)">
+                        {current && trialEndsAt ? (
+                          <span className={`${TIER_BADGE} bg-(--brand-soft) text-(--brand-soft-text)`}>
+                            {t('trial.badge')}
+                          </span>
+                        ) : current ? (
+                          <span className={`${TIER_BADGE} bg-(--surface-active) text-(--text-secondary)`}>
                             {t('current')}
+                          </span>
+                        ) : null}
+                        {offer && (
+                          <span
+                            data-plan-trial-offer={offer}
+                            className={`${TIER_BADGE} bg-(--brand-soft) text-(--brand-soft-text)`}
+                          >
+                            {t('trial.offer', { days: offer })}
                           </span>
                         )}
                         {paused && x.options.some(paidSelfServe) && (
@@ -607,7 +673,9 @@ export function ChangePlanDialog({
           {catalogReady && (option || contact) && (
             <div role="status" className="min-w-0 flex-1 max-desktop:basis-full">
               <span className="block text-[11px] leading-4 text-(--text-secondary)">
-                {t(same ? 'currentPlan' : 'selectedPlan')}
+                {trialDays && option
+                  ? t('trial.terms', { days: trialDays, price: fmtCents(option.priceCents ?? 0) })
+                  : t(same ? 'currentPlan' : 'selectedPlan')}
               </span>
               <span className="block text-[13px] leading-5 font-medium [overflow-wrap:anywhere]">
                 {contact ? tier?.tierName : toLabel}
@@ -619,8 +687,32 @@ export function ChangePlanDialog({
           </Button>
           {contact ? (
             contactLink
+          ) : trialEndsAt && option?.tierId === FREE_TIER_ID ? (
+            <Button size="sm" disabled={trialCancelled} onClick={() => toReview()}>
+              {t('trial.cancel')}
+            </Button>
+          ) : trialEndsAt ? (
+            <>
+              {option && !same && !trialCancelled && sellable(option) && (
+                <Button size="sm" variant="secondary" onClick={() => toReview('switch')}>
+                  {t('trial.switchOn', { date: trialEnd })}
+                </Button>
+              )}
+              <Button size="sm" disabled={!option || !sellable(option)} onClick={() => toReview()}>
+                {t('trial.payNow')}
+              </Button>
+            </>
+          ) : trialDays ? (
+            <>
+              <Button size="sm" variant="secondary" onClick={() => toReview()}>
+                {t('trial.subscribeNow')}
+              </Button>
+              <Button size="sm" onClick={() => toReview('trial')}>
+                {t('trial.start')}
+              </Button>
+            </>
           ) : (
-            <Button size="sm" disabled={!option || same || !sellable(option)} onClick={toReview}>
+            <Button size="sm" disabled={!option || same || !sellable(option)} onClick={() => toReview()}>
               {t('reviewChange')}
               <Icon name="arrow-right" size={14} />
             </Button>
@@ -640,11 +732,35 @@ export function ChangePlanDialog({
           : `${number(sub.sessionLimit)} → ${number(option.sessionLimit)}`
     }
     const price = option.priceCents ?? 0
-    const due = path === 'checkout' ? price : path === 'scheduled' ? 0 : quote?.quote.amountCents
+    const startTrial = path === 'checkout' && via === 'trial' && !!trialDays
+    const payNow = path === 'immediate' && !!quote?.quote.endsTrial
+    const cancelTrial = !!trialEndsAt && path === 'scheduled' && option.tierId === FREE_TIER_ID
+    const switchAtEnd = !!trialEndsAt && path === 'scheduled' && !cancelTrial
+    const due = startTrial ? 0 : path === 'checkout' ? price : path === 'scheduled' ? 0 : quote?.quote.amountCents
     const creditsAdded = (grant: number) => (grant > 0 ? `+${fmtMicroUsd(grant)}` : fmtMicroUsd(0))
     const monthlyPrice = t('optionMeta', { price: usd(price) })
+    const forfeit = quote?.quote.forfeitMicro
     let rows: { k: string; v: string }[] | null
-    if (path === 'checkout')
+    // The trial's length is the service's; it ends that many days after the card is saved, so today's count is an estimate.
+    if (startTrial)
+      rows = [
+        { k: t('trial.ends'), v: day(new Date(Date.now() + trialDays * DAY_MS).toISOString()) },
+        { k: t('trial.then'), v: monthlyPrice }
+      ]
+    else if (payNow)
+      rows = [
+        { k: t('trial.label'), v: t('trial.endsNow') },
+        ...(forfeit != null ? [{ k: t('trial.forfeit'), v: `−${fmtMicroUsd(forfeit)}` }] : []),
+        { k: t('review.nextCharge'), v: t('review.nextChargeValue', { date: when, price: usd(price) }) }
+      ]
+    else if (cancelTrial) rows = [{ k: t('trial.ends'), v: trialEnd }, sessions]
+    else if (switchAtEnd)
+      rows = [
+        { k: t('review.takesEffect'), v: t('trial.atEnd', { date: trialEnd }) },
+        { k: t('trial.firstCharge'), v: t('review.nextChargeValue', { date: trialEnd, price: usd(price) }) },
+        sessions
+      ]
+    else if (path === 'checkout')
       rows = [
         { k: t('review.monthlyRenewal'), v: monthlyPrice },
         sessions,
@@ -673,19 +789,32 @@ export function ChangePlanDialog({
       sub.paidThrough !== null
     const holdDays = sub.retention?.shortenHoldDays ?? option.retentionDays
     const retry = path === 'immediate' && !quote && !!error
-    const cta =
-      path === 'scheduled'
-        ? t('review.schedule')
-        : path === 'checkout'
-          ? t('review.pay', { amount: usd(price) })
-          : quote
-            ? t('review.pay', { amount: usd(quote.quote.amountCents) })
-            : t('review.quoting')
+    const cta = startTrial
+      ? t('trial.addCard')
+      : cancelTrial
+        ? t('trial.cancel')
+        : path === 'scheduled'
+          ? t('review.schedule')
+          : path === 'checkout'
+            ? t('review.pay', { amount: usd(price) })
+            : quote
+              ? t('review.pay', { amount: usd(quote.quote.amountCents) })
+              : t('review.quoting')
     body = (
       <>
         <div className="modalhead shrink-0">
           <h2 id={titleId} className="flex-1 text-[17px] leading-normal font-semibold">
-            {now ? t('review.upgrade') : t('review.scheduleTitle')}
+            {startTrial
+              ? t('trial.start')
+              : payNow
+                ? t('trial.payNow')
+                : cancelTrial
+                  ? t('trial.cancel')
+                  : switchAtEnd
+                    ? t('trial.switchTitle')
+                    : now
+                      ? t('review.upgrade')
+                      : t('review.scheduleTitle')}
           </h2>
           {close}
         </div>
@@ -693,7 +822,9 @@ export function ChangePlanDialog({
           <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 rounded-lg border border-(--border-subtle) p-2">
             <dl className="px-2 py-1.5">
               <dt className="text-[12px] leading-4 text-(--text-secondary)">{t('currentPlan')}</dt>
-              <dd className="mt-1 text-[14px] leading-5 font-medium [overflow-wrap:anywhere]">{planLabel(sub)}</dd>
+              <dd className="mt-1 text-[14px] leading-5 font-medium [overflow-wrap:anywhere]">
+                {trialEndsAt ? t('trial.current', { plan: planLabel(sub) }) : planLabel(sub)}
+              </dd>
             </dl>
             <Icon name="arrow-right" size={16} color="var(--text-tertiary)" className="self-center" />
             <dl className="rounded-sm bg-(--surface-app) px-2 py-1.5">
@@ -710,7 +841,7 @@ export function ChangePlanDialog({
                 <dt className="text-[13px] leading-5 font-semibold">{t('review.dueToday')}</dt>
                 <dd className="ml-auto text-right">
                   <span className="text-[26px] leading-none font-semibold tracking-tight tabular-nums">{usd(due)}</span>
-                  {path === 'immediate' && (
+                  {path === 'immediate' && !payNow && (
                     <span className="block text-[11px] leading-4 text-(--text-secondary)">{t('review.prorated')}</span>
                   )}
                 </dd>
@@ -736,14 +867,26 @@ export function ChangePlanDialog({
               })}
             </Note>
           )}
+          {payNow && quote.quote.grantMicro > 0 && (
+            <Note>{t('trial.includes', { amount: fmtMicroUsd(quote.quote.grantMicro) })}</Note>
+          )}
           {path === 'immediate' && sub.scheduled && (
             <Note warn>
-              {sub.scheduled.tierId === FREE_TIER_ID
-                ? t('review.replacesCancel', { date: when })
-                : t('review.replacesScheduled', { plan: planLabel(sub.scheduled), date: when })}
+              {trialEndsAt
+                ? sub.scheduled.tierId === FREE_TIER_ID
+                  ? t('trial.replacesCancel')
+                  : t('trial.replacesScheduled', { plan: planLabel(sub.scheduled) })
+                : sub.scheduled.tierId === FREE_TIER_ID
+                  ? t('review.replacesCancel', { date: when })
+                  : t('review.replacesScheduled', { plan: planLabel(sub.scheduled), date: when })}
             </Note>
           )}
-          {!now && <Note>{t('review.cancelBefore', { date: when })}</Note>}
+          {startTrial && <Note>{t('trial.cardNote', { date: rows![0]!.v })}</Note>}
+          {cancelTrial ? (
+            <Note>{t('trial.cancelNote', { date: trialEnd })}</Note>
+          ) : (
+            !now && <Note>{t('review.cancelBefore', { date: when })}</Note>
+          )}
           {error && <InlineError text={error} />}
         </div>
         <div className="modalfoot shrink-0 justify-end max-desktop:px-4">
@@ -770,7 +913,9 @@ export function ChangePlanDialog({
           ? t('paying.expiredTitle')
           : outcome?.kind === 'error'
             ? t('paying.errorTitle')
-            : t('paying.title')
+            : trialCheckout
+              ? t('trial.confirmingCard')
+              : t('paying.title')
     const text =
       outcome?.kind === 'stalled'
         ? t('paying.stalledText')
@@ -826,13 +971,19 @@ export function ChangePlanDialog({
       ? plans?.options.find((o) => o.tierId === change.tierId && o.optionId === change.optionId)
       : option
     const scheduled = !change && path === 'scheduled'
-    const credits = change && quote ? quote.quote.grantMicro : (settled?.grantMicro ?? 0)
+    // A trial grants its own credit, not the plan's; the reread tells whether the card earned it.
+    const trialStarted = !!change && !quote && (trialCheckout || !!sub.trialEndsAt)
+    const credits = trialStarted ? 0 : change && quote ? quote.quote.grantMicro : (settled?.grantMicro ?? 0)
+    const active = settled ? planLabel(settled) : change?.tierId
     const title = scheduled
       ? sub.paidThrough
         ? t('done.scheduled', { date: day(sub.paidThrough) })
         : t('done.scheduledAtRenewal')
-      : t('done.upgraded')
-    const active = settled ? planLabel(settled) : change?.tierId
+      : trialStarted
+        ? t('trial.started')
+        : quote?.quote.endsTrial
+          ? t('trial.subscribed', { plan: active ?? '' })
+          : t('done.upgraded')
     const details = [
       ...(settled && scheduled ? [{ k: t('review.newPlan'), v: planLabel(settled) }] : []),
       ...(settled ? [{ k: t('sessionsPerMonth'), v: number(settled.sessionLimit) }] : []),
@@ -853,7 +1004,9 @@ export function ChangePlanDialog({
               </h2>
               {!scheduled && active && (
                 <p className="text-[12px] leading-4 text-(--text-secondary) [overflow-wrap:anywhere]">
-                  {t('done.active', { plan: active })}
+                  {trialStarted && sub.trialEndsAt
+                    ? t('trial.until', { plan: active, date: day(sub.trialEndsAt) })
+                    : t('done.active', { plan: active })}
                 </p>
               )}
             </div>
@@ -868,6 +1021,7 @@ export function ChangePlanDialog({
               ))}
             </dl>
           )}
+          {trialStarted && sub.trialCreditGranted === false && <Note warn>{t('trial.noCredit')}</Note>}
         </div>
         <div className="modalfoot shrink-0 justify-end max-desktop:px-4">
           <Button size="sm" onClick={onClose}>
