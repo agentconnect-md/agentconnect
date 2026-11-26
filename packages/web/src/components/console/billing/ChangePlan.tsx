@@ -211,11 +211,24 @@ function ChoiceMark() {
   )
 }
 
-function Note({ warn = false, icon = 'info', children }: { warn?: boolean; icon?: string; children: string }) {
+function Note({
+  warn = false,
+  icon = 'info',
+  title,
+  children
+}: {
+  warn?: boolean
+  icon?: string
+  title?: string
+  children: string
+}) {
   return (
     <div className={warn ? NOTE.warn : NOTE.info} data-plan-note={warn ? 'warn' : 'info'}>
       <Icon name={icon} size={14} className="mt-0.5 flex-none" />
-      <span className="min-w-0 flex-1">{children}</span>
+      <span className="min-w-0 flex-1">
+        {title && <strong className="block font-semibold">{title}</strong>}
+        {children}
+      </span>
     </div>
   )
 }
@@ -351,6 +364,17 @@ export function ChangePlanDialog({
   const same = !!option && isCurrent(sub, option)
   const trialDays = trialOffer(sub, option)
   const trialEnd = trialEndsAt ? day(trialEndsAt) : ''
+  const retentionWarning = (target: BillingPlanOption, effectiveAt: string | null) => {
+    const days = target.retentionDays
+    const keptDays = sub.retention ? sub.retention.days : sub.retentionDays
+    if (effectiveAt === null || days === null || (keptDays !== null && days >= keptDays)) return null
+    // Older services omit the hold, so fall back to the new retention window.
+    const holdDays = sub.retention?.shortenHoldDays ?? days
+    return {
+      days,
+      date: day(new Date(Date.parse(effectiveAt) + holdDays * DAY_MS).toISOString())
+    }
+  }
   const combo = (label: string, sessions: number) => t('combo', { plan: label, sessions: number(sessions) })
   const toLabel = option ? combo(planLabel(option), option.sessionLimit) : ''
   const support = helpSupportUrl()
@@ -720,6 +744,57 @@ export function ChangePlanDialog({
         </div>
       </>
     )
+  } else if (step === 'review' && option && path === 'scheduled' && trialEndsAt && option.tierId === FREE_TIER_ID) {
+    const history = retentionWarning(option, trialEndsAt)
+    body = (
+      <>
+        <div className="modalhead shrink-0">
+          <h2 id={titleId} className="flex-1 text-[17px] leading-normal font-semibold">
+            {t('trial.cancelTitle')}
+          </h2>
+          {close}
+        </div>
+        <div className="modalbody grid min-h-0 gap-3.5 overscroll-contain max-desktop:p-4" data-plan-review={path}>
+          <p className="text-[14px] leading-5">
+            {t.rich('trial.cancelSummary', {
+              plan: planLabel(sub),
+              date: trialEnd,
+              free: planLabel(option),
+              strong: (value) => <strong className="font-semibold">{value}</strong>
+            })}
+          </p>
+          <dl className="border-y border-(--border-subtle)">
+            <div
+              data-quote-row="true"
+              className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-2.5 text-[13px] leading-5"
+            >
+              <dt className="text-(--text-secondary)">{t('trial.monthlyLimit')}</dt>
+              <dd className="font-medium whitespace-nowrap tabular-nums">
+                {sub.sessionLimit !== option.sessionLimit && (
+                  <span className="text-(--text-secondary)">{number(sub.sessionLimit)} → </span>
+                )}
+                <strong className="font-semibold">{number(option.sessionLimit)}</strong>
+              </dd>
+            </div>
+          </dl>
+          {history && (
+            <Note warn icon="triangle-exclamation-point" title={t('trial.historyRetention')}>
+              {t('trial.historyWarning', history)}
+            </Note>
+          )}
+          <p className="text-[13px] leading-5 text-(--text-secondary)">{t('trial.cancelNote', { date: trialEnd })}</p>
+          {error && <InlineError text={error} />}
+        </div>
+        <div className="modalfoot flex-wrap shrink-0 justify-end max-desktop:px-4">
+          <Button size="sm" variant="secondary" disabled={busy} onClick={onClose}>
+            {t('trial.keep')}
+          </Button>
+          <Button size="sm" disabled={busy} onClick={() => void confirm()}>
+            {t('trial.confirmCancel')}
+          </Button>
+        </div>
+      </>
+    )
   } else if (step === 'review' && option && path) {
     const now = path !== 'scheduled'
     const paidThrough = path === 'immediate' ? (quote?.quote.paidThrough ?? sub.paidThrough) : sub.paidThrough
@@ -734,8 +809,7 @@ export function ChangePlanDialog({
     const price = option.priceCents ?? 0
     const startTrial = path === 'checkout' && via === 'trial' && !!trialDays
     const payNow = path === 'immediate' && !!quote?.quote.endsTrial
-    const cancelTrial = !!trialEndsAt && path === 'scheduled' && option.tierId === FREE_TIER_ID
-    const switchAtEnd = !!trialEndsAt && path === 'scheduled' && !cancelTrial
+    const switchAtEnd = !!trialEndsAt && path === 'scheduled'
     const due = startTrial ? 0 : path === 'checkout' ? price : path === 'scheduled' ? 0 : quote?.quote.amountCents
     const creditsAdded = (grant: number) => (grant > 0 ? `+${fmtMicroUsd(grant)}` : fmtMicroUsd(0))
     const monthlyPrice = t('optionMeta', { price: usd(price) })
@@ -754,7 +828,6 @@ export function ChangePlanDialog({
         ...(forfeit != null ? [{ k: t('trial.forfeit'), v: `−${fmtMicroUsd(forfeit)}` }] : []),
         { k: t('review.nextCharge'), v: t('review.nextChargeValue', { date: when, price: usd(price) }) }
       ]
-    else if (cancelTrial) rows = [{ k: t('trial.ends'), v: trialEnd }, sessions]
     else if (switchAtEnd)
       rows = [
         { k: t('review.takesEffect'), v: t('trial.atEnd', { date: trialEnd }) },
@@ -781,26 +854,17 @@ export function ChangePlanDialog({
         sessions,
         ...(option.tierId === FREE_TIER_ID ? [] : [{ k: t('review.monthlyRenewal'), v: monthlyPrice }])
       ]
-    // A shorter window starts the service's hold after the renewal; an older service sends no hold, so the new window stands in.
-    const keptDays = sub.retention ? sub.retention.days : sub.retentionDays
-    const shrinks =
-      !now &&
-      option.retentionDays !== null &&
-      (keptDays === null || option.retentionDays < keptDays) &&
-      sub.paidThrough !== null
-    const holdDays = sub.retention?.shortenHoldDays ?? option.retentionDays
+    const history = now ? null : retentionWarning(option, sub.paidThrough)
     const retry = path === 'immediate' && !quote && !!error
     const cta = startTrial
       ? t('trial.addCard')
-      : cancelTrial
-        ? t('trial.cancel')
-        : path === 'scheduled'
-          ? t('review.schedule')
-          : path === 'checkout'
-            ? t('review.pay', { amount: usd(price) })
-            : quote
-              ? t('review.pay', { amount: usd(quote.quote.amountCents) })
-              : t('review.quoting')
+      : path === 'scheduled'
+        ? t('review.schedule')
+        : path === 'checkout'
+          ? t('review.pay', { amount: usd(price) })
+          : quote
+            ? t('review.pay', { amount: usd(quote.quote.amountCents) })
+            : t('review.quoting')
     body = (
       <>
         <div className="modalhead shrink-0">
@@ -809,13 +873,11 @@ export function ChangePlanDialog({
               ? t('trial.start')
               : payNow
                 ? t('trial.payNow')
-                : cancelTrial
-                  ? t('trial.cancel')
-                  : switchAtEnd
-                    ? t('trial.switchTitle')
-                    : now
-                      ? t('review.upgrade')
-                      : t('review.scheduleTitle')}
+                : switchAtEnd
+                  ? t('trial.switchTitle')
+                  : now
+                    ? t('review.upgrade')
+                    : t('review.scheduleTitle')}
           </h2>
           {close}
         </div>
@@ -860,14 +922,7 @@ export function ChangePlanDialog({
             )
           )}
           {refreshed && quote && <Note warn>{t('review.refreshed')}</Note>}
-          {shrinks && (
-            <Note warn>
-              {t('review.historyWarning', {
-                days: option.retentionDays!,
-                date: day(new Date(Date.parse(sub.paidThrough!) + holdDays! * DAY_MS).toISOString())
-              })}
-            </Note>
-          )}
+          {history && <Note warn>{t('review.historyWarning', history)}</Note>}
           {payNow && quote.quote.grantMicro > 0 && (
             <Note>{t('trial.includes', { amount: fmtMicroUsd(quote.quote.grantMicro) })}</Note>
           )}
@@ -883,11 +938,7 @@ export function ChangePlanDialog({
             </Note>
           )}
           {startTrial && <Note>{t('trial.cardNote', { date: rows![0]!.v })}</Note>}
-          {cancelTrial ? (
-            <Note>{t('trial.cancelNote', { date: trialEnd })}</Note>
-          ) : (
-            !now && <Note>{t('review.cancelBefore', { date: when })}</Note>
-          )}
+          {!now && <Note>{t('review.cancelBefore', { date: when })}</Note>}
           {error && <InlineError text={error} />}
         </div>
         <div className="modalfoot shrink-0 justify-end max-desktop:px-4">

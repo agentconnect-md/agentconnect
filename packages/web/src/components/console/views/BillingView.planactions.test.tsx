@@ -202,7 +202,7 @@ async function click(el: Element | null | undefined) {
 const rows = () =>
   [...dialog()!.querySelectorAll('[data-quote-row]')].map((r) =>
     [...r.children].map((c) =>
-      c.childElementCount ? [...c.children].map((child) => child.textContent).join(' ') : c.textContent
+      c.childElementCount ? [...c.children].map((child) => child.textContent?.trim()).join(' ') : c.textContent
     )
   )
 const resultRows = () =>
@@ -904,9 +904,10 @@ describe('plan trial', () => {
   it('shows the trial on the Plan card and its credit in the balance strip', async () => {
     mocks.subscription.mockResolvedValue(TRIAL)
     await render()
-    expect(q('[data-plan-name]')!.textContent).toBe('ProStandard')
+    expect(q('[data-plan-name]')!.textContent).toBe('Pro Standard')
     expect(q('[data-plan-trial]')!.textContent).toBe('Trial')
-    expect(q('[data-plan-price]')!.textContent).toBe('Free · then $40 / month')
+    expect(q('[data-plan-price]')).toBeNull()
+    expect(q('[data-plan-trial-status]')!.textContent).toContain('Paid plan starts · $40/month')
     expect(q('[data-plan-billing-date]')!.textContent).toBe('Trial ends Dec 10')
     expect(card().querySelector('[data-plan-cancel-trial]')!.textContent).toBe('Cancel trial')
     expect(q('[data-plan-credits]')!.textContent).toContain('Trial credits$6.00')
@@ -928,31 +929,32 @@ describe('plan trial', () => {
     await render()
     await click(card().querySelector('[data-plan-cancel-trial]'))
     expect(step()).toBe('review')
-    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Cancel trial')
-    expect(dialog()!.textContent).toContain('Current planPro Standard · Trial')
-    expect(rows()).toEqual([
-      ['Due today', '$0.00'],
-      ['Trial ends', 'Dec 10'],
-      ['Sessions / month', '5,000 → 1,000']
-    ])
-    expect(notes()).toEqual([
-      'History older than 7 days is deleted from Dec 17.',
-      "You won't be charged. Undo anytime before Dec 10."
-    ])
+    expect(dialog()!.querySelector('.modalhead')!.textContent).toContain('Cancel trial?')
+    expect(dialog()!.textContent).toContain(
+      'You’ll keep Pro Standard until Dec 10. Then you’ll switch to Free with no subscription charge.'
+    )
+    expect(rows()).toEqual([['Monthly session limit', '5,000 → 1,000']])
+    expect(notes()).toEqual(['History retentionStarting Dec 17, session history older than 7 days will be deleted.'])
+    expect(dialog()!.textContent).toContain('You can undo this in Billing before Dec 10.')
+    await click(buttonIn(dialog()!, 'Keep trial'))
+    expect(dialog()).toBeNull()
+    expect(mocks.schedule).not.toHaveBeenCalled()
+
+    await click(card().querySelector('[data-plan-cancel-trial]'))
     mocks.subscription.mockResolvedValue({ ...TRIAL, scheduled: FREE_REF })
-    await click(buttonIn(dialog()!, 'Cancel trial'))
+    await click(buttonIn(dialog()!, 'Confirm cancellation'))
     expect(mocks.schedule).toHaveBeenCalledWith('org_example', { tierId: 'free', optionId: 'standard' })
     expect(dialog()).toBeNull()
-    expect(q('[data-plan-scheduled]')!.textContent).toBe('Trial ends Dec 10 · back to Free, no chargeUndo')
+    expect(q('[data-plan-scheduled]')!.textContent).toBe('Free after trial · No plan chargeUndo cancellation')
   })
 
   it('undoes a cancelled trial from the strip and drops Cancel trial while cancelled', async () => {
     mocks.subscription.mockResolvedValue({ ...TRIAL, scheduled: FREE_REF })
     await render()
-    expect(q('[data-plan-price]')!.textContent).toBe('Free trial')
+    expect(q('[data-plan-price]')).toBeNull()
     expect(q('[data-plan-cancel-trial]')).toBeNull()
     mocks.subscription.mockResolvedValue(TRIAL)
-    await click(buttonIn(q('[data-plan-scheduled]')!, 'Undo'))
+    await click(buttonIn(q('[data-plan-scheduled]')!, 'Undo cancellation'))
     expect(mocks.revoke).toHaveBeenCalledWith('org_example')
     expect(q('[data-plan-cancel-trial]')).not.toBeNull()
   })
@@ -1043,7 +1045,7 @@ describe('plan trial', () => {
       scheduled: { tierId: 'pro', tierName: 'Pro', optionId: 'double', optionName: '×2' }
     })
     await render()
-    expect(q('[data-plan-scheduled]')!.textContent).toBe('Switching to Pro ×2 when the trial ends Dec 10Cancel')
+    expect(q('[data-plan-scheduled]')!.textContent).toBe('Switches to Pro ×2Undo plan switch')
     expect(q('[data-plan-cancel-trial]')).not.toBeNull()
   })
 

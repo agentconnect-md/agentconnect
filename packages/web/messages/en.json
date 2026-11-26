@@ -5777,7 +5777,14 @@
           "replacesScheduled": "Paying now replaces your switch to {plan} at the end of the trial.",
           "atEnd": "{date} (trial end)",
           "firstCharge": "First charge",
-          "cancelNote": "You won't be charged. Undo anytime before {date}.",
+          "cancelTitle": "Cancel trial?",
+          "cancelSummary": "You’ll keep <strong>{plan} until {date}</strong>. Then you’ll switch to <strong>{free}</strong> with no subscription charge.",
+          "monthlyLimit": "Monthly session limit",
+          "historyRetention": "History retention",
+          "historyWarning": "Starting {date}, session history older than {days, plural, one {# day} other {# days}} will be deleted.",
+          "cancelNote": "You can undo this in Billing before {date}.",
+          "keep": "Keep trial",
+          "confirmCancel": "Confirm cancellation",
           "confirmingCard": "Confirming card…",
           "started": "Trial started",
           "until": "{plan} until {date}.",
@@ -5789,11 +5796,13 @@
       "trial": {
         "badge": "Trial",
         "cancel": "Cancel trial",
-        "undo": "Undo",
-        "price": "<amount>Free</amount> · then {price} / month",
-        "priceCancelled": "<amount>Free</amount> trial",
-        "cancelled": "Trial ends {date} · back to Free, no charge",
-        "switching": "Switching to {plan} when the trial ends {date}"
+        "undo": "Undo cancellation",
+        "undoSwitch": "Undo plan switch",
+        "renews": "Paid plan starts",
+        "monthlyPrice": "{price}/month",
+        "cancelled": "Free after trial",
+        "noCharge": "No plan charge",
+        "switching": "Switches to {plan}"
       }
     }
   },
