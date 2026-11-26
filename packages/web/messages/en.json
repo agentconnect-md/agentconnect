@@ -5625,7 +5625,7 @@
         "cancelBusy": "Cancelling…",
         "cancelError": "Couldn't cancel the upgrade: {error}",
         "trial": {
-          "title": "Your plan payment is waiting",
+          "title": "Your plan payment is pending",
           "body": "Your trial continues unchanged until the payment completes.",
           "cancel": "Cancel payment",
           "cancelTitle": "Cancel this payment?",
@@ -5779,7 +5779,7 @@
           "atEnd": "{date} (trial end)",
           "firstCharge": "First charge",
           "cancelTitle": "Cancel trial?",
-          "cancelSummary": "You’ll keep <strong>{plan} until {date}</strong>. Then you’ll switch to <strong>{free}</strong> with no subscription charge.",
+          "cancelSummary": "You'll keep <strong>{plan} until {date}</strong>. Then you'll switch to <strong>{free}</strong> with no subscription charge.",
           "monthlyLimit": "Monthly session limit",
           "historyRetention": "History retention",
           "historyWarning": "Starting {date}, session history older than {days, plural, one {# day} other {# days}} will be deleted.",

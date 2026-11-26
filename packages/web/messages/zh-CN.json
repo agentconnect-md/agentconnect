@@ -5625,13 +5625,13 @@
         "cancelBusy": "正在取消…",
         "cancelError": "无法取消升级：{error}",
         "trial": {
-          "title": "套餐付款正在等待完成",
+          "title": "套餐付款待完成",
           "body": "付款完成前，试用照常进行。",
-          "cancel": "放弃付款",
-          "cancelTitle": "放弃这笔付款？",
+          "cancel": "取消付款",
+          "cancelTitle": "取消这笔付款？",
           "cancelConfirm": "对应账单会作废，试用照常进行。",
           "cancelKeep": "保留付款",
-          "cancelError": "无法放弃付款：{error}"
+          "cancelError": "无法取消付款：{error}"
         }
       },
       "limitReached": {
@@ -5757,40 +5757,40 @@
         "trial": {
           "badge": "试用中",
           "offer": "免费试用 {days} 天",
-          "terms": "免费 {days, plural, other {# 天}}，之后 {price} / 月",
+          "terms": "免费试用 {days, plural, other {# 天}}，之后 {price} / 月",
           "start": "开始免费试用",
           "subscribeNow": "立即订阅",
           "payNow": "立即付费",
-          "switchOn": "{date} 起切换",
+          "switchOn": "{date} 切换",
           "switchTitle": "试用结束时切换",
           "cancel": "取消试用",
           "current": "{plan} · 试用中",
           "ends": "试用结束",
           "then": "之后",
           "credits": "试用额度",
-          "cardNote": "需要绑定信用卡，今天不扣费。{date} 之前可随时取消。",
-          "addCard": "添加信用卡",
+          "cardNote": "需要绑卡，今天不扣费。{date} 之前可随时取消。",
+          "addCard": "添加卡",
           "label": "试用",
           "endsNow": "立即结束",
           "forfeit": "未用完的试用额度",
           "includes": "包含本周期 {amount} 套餐额度。",
-          "replacesCancel": "立即付费会同时撤销试用的取消。",
-          "replacesScheduled": "立即付费会取代试用结束时换到 {plan} 的预约。",
+          "replacesCancel": "立即付费会同时撤销此前的取消试用。",
+          "replacesScheduled": "立即付费会取代试用结束时切换到 {plan} 的预约。",
           "atEnd": "{date}（试用结束）",
           "firstCharge": "首次扣费",
           "cancelTitle": "取消试用？",
           "cancelSummary": "你可以继续使用 <strong>{plan} 至 {date}</strong>。之后将切换到 <strong>{free}</strong>，无需支付订阅费。",
           "monthlyLimit": "每月会话上限",
           "historyRetention": "历史记录保留",
-          "historyWarning": "从 {date} 起，将删除超过 {days, plural, other {# 天}}的会话历史。",
-          "cancelNote": "你可以在 {date} 前前往账单页面撤销取消。",
+          "historyWarning": "超过 {days, plural, other {# 天}}的会话历史将从 {date} 起删除。",
+          "cancelNote": "{date} 之前，你可以随时在账单页面撤销取消。",
           "keep": "保留试用",
           "confirmCancel": "确认取消",
-          "confirmingCard": "正在确认信用卡…",
+          "confirmingCard": "正在确认你的卡…",
           "started": "试用已开始",
           "until": "{plan} 试用至 {date}。",
           "subscribed": "已订阅 {plan}",
-          "noCredit": "这张卡已在其他组织领取过试用额度，因此这里没有发放。试用期间的用量需要先充值。"
+          "noCredit": "这张卡已在其他组织领取过试用额度，因此这里没有发放。请先充值，以支付试用期间的用量。"
         }
       },
       "trialEnds": "试用 {date} 结束",
@@ -5802,7 +5802,7 @@
         "renews": "开始付费订阅",
         "monthlyPrice": "{price}/月",
         "cancelled": "试用结束后转为 Free",
-        "noCharge": "不收订阅费",
+        "noCharge": "无订阅费",
         "switching": "切换到 {plan}"
       }
     }
@@ -8577,7 +8577,7 @@
       "loadFailed": "无法加载此 Artifact，请稍后重试。",
       "noPreview": "此文件类型无法预览",
       "pdfUnsupported": "此浏览器无法在这里显示 PDF。",
-      "siteFallback": "此浏览器无法在这里加载这个网站的其余部分，因此只显示首页。下载后可以查看所有页面。"
+      "siteFallback": "此浏览器无法在这里加载该网站的其余页面，因此仅显示首页。下载后可查看所有页面。"
     },
     "page": {
       "kind": "ARTIFACT",
@@ -8585,7 +8585,7 @@
       "unavailablePre": "Artifact ",
       "unavailablePost": " 无法打开。它可能已被删除，或你没有访问权限。",
       "notEnabledTitle": "未启用 Artifact",
-      "notEnabledBody": "此部署未启用 Artifact，因此无法在这里打开这个 Artifact。",
+      "notEnabledBody": "此部署未启用 Artifact，因此无法在这里打开。",
       "backHome": "返回首页",
       "search": "搜索",
       "loadFailed": "无法加载此 Artifact，请稍后重试。"
