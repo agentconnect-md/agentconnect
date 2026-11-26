@@ -1743,7 +1743,7 @@
       "pickAgent": "选择要询问的 Agent",
       "imageBinaryMissing": "镜像中未安装所需程序",
       "removeImage": "移除图片",
-      "placeholder": "问问 AgentConnect…",
+      "placeholder": "让 AgentConnect 连接工作区、部署 Agent 或检查运行状态",
       "attachFile": "附加文件",
       "addPhotos": "添加图片",
       "removeAgent": "移除 {agent}",

@@ -1743,7 +1743,7 @@
       "pickAgent": "Pick the agent to ask",
       "imageBinaryMissing": "Binary not installed in image",
       "removeImage": "Remove image",
-      "placeholder": "Ask AgentConnect…",
+      "placeholder": "Ask AgentConnect to connect a workspace, deploy an agent, or check on a run",
       "attachFile": "Attach a file",
       "addPhotos": "Add photos",
       "removeAgent": "Remove {agent}",
