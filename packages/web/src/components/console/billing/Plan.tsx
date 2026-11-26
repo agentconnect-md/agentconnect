@@ -346,7 +346,7 @@ export function PlanCard({
         </div>
       )}
       {sub && (
-        <div className="min-h-13 px-[18px] py-1 @min-[360px]/plan:min-h-9 desktop:row-start-3">
+        <div className="min-h-13 px-[18px] pb-2 @min-[360px]/plan:min-h-9 desktop:row-start-3">
           {(trialEndsAt || sub.scheduled) && (
             <PlanChangeStatus
               key={sub.scheduled ? JSON.stringify([sub.scheduled.tierId, sub.scheduled.optionId]) : 'trial'}
