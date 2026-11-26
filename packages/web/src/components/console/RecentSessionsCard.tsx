@@ -161,10 +161,11 @@ export function RecentSessionsCard({
                     ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey!)}`)
                     : orgPath(`/sessions/${s.id}`)
                 }
-                className={`row click grid-cols-[1fr_auto] gap-3 ${rowClassName ?? ''}`}
+                className={`row click grid-cols-[1fr_auto] gap-x-3 ${rowClassName ?? ''}`}
               >
-                <span className="min-w-0">
-                  <span className="flex items-center gap-[7px]">
+                {/* `contents`: the title shares row one with the time, and the second line spans the full row so the integration lands on the card's right edge. */}
+                <span className="contents">
+                  <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-[7px]">
                     {s.unread && (
                       <span
                         role="img"
@@ -190,7 +191,7 @@ export function RecentSessionsCard({
                     middle and lines the channels up down the card. With the agents
                     hidden (agent detail, already scoped to one) there is nothing to
                     split from, so the channel stays where it was. */}
-                  <span className="mt-[3px] flex items-center gap-[6px] text-(--text-tertiary)">
+                  <span className="col-span-2 row-start-2 mt-[3px] flex min-w-0 items-center gap-[6px] text-(--text-tertiary)">
                     {showAgent && (
                       <span
                         className={
@@ -219,7 +220,9 @@ export function RecentSessionsCard({
                     )}
                   </span>
                 </span>
-                <span className="mono self-start whitespace-nowrap text-[11.5px] text-(--text-tertiary)">{s.time}</span>
+                <span className="mono col-start-2 row-start-1 self-start whitespace-nowrap text-[11.5px] text-(--text-tertiary)">
+                  {s.time}
+                </span>
               </Link>
             )
           })
