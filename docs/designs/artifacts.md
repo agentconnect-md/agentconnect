@@ -700,6 +700,10 @@ got the artifact from the console's worker in Chromium and Firefox until the wor
 (`packages/web/src/lib/artifact-content/`), served by `next start` with the content domain
 `localhost`.
 
+Both modes end with the hostile-artifact checks H1–H11: revision 1 carries a site that tries every
+escape §5.5 withholds, and each attempt must fail. `.oss-scanner/threat_model.md` lists them with the
+invariants they attack.
+
 These are Playwright 1.65.1's builds. Playwright turns Chromium's storage partitioning off
 and sets Firefox's `network.cookie.cookieBehavior` to 4 by default; the check restores both
 to the shipped defaults. Its WebKit is the Linux port, not Safari: Safari adds Intelligent

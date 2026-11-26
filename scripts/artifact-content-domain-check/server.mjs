@@ -8,9 +8,26 @@ const here = dirname(fileURLToPath(import.meta.url))
 const read = (f) => readFileSync(join(here, 'site', f))
 
 export const LABEL = 'a0123456789abcdef0123456789abcdefr1'
+// Revision 2 of the same artifact, whose origin and manifest the hostile site must not reach.
+export const OTHER_LABEL = LABEL.replace(/r1$/, 'r2')
+// What a signed-in console holds; no hostile check may read any of them.
+export const SECRETS = { token: 'console-token-7f3a', console: 'console-secret', cp: 'cp-secret' }
 
 export function startServer({ port = 0, ancestors = true, web } = {}) {
   const log = []
+  // A CP stand-in on its own origin: bearer auth only and CORS reflecting any origin without credentials, as the CP does.
+  const cp = createServer((req, res) => {
+    const auth = req.headers.authorization || ''
+    log.push({ host: req.headers.host || '', path: req.url, cookie: req.headers.cookie || '', auth })
+    const cors = { 'Access-Control-Allow-Origin': req.headers.origin || '*', Vary: 'Origin' }
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, { ...cors, 'Access-Control-Allow-Headers': 'authorization' })
+      return res.end()
+    }
+    const ok = auth === `Bearer ${SECRETS.token}`
+    res.writeHead(ok ? 200 : 401, { ...cors, 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(ok ? { secret: SECRETS.cp } : { error: 'unauthorized' }))
+  })
   const server = createServer((req, res) => {
     const host = (req.headers.host || '').toLowerCase()
     const url = new URL(req.url, `http://${host}`)
@@ -19,7 +36,8 @@ export function startServer({ port = 0, ancestors = true, web } = {}) {
       path: url.pathname,
       dest: req.headers['sec-fetch-dest'] || '',
       site: req.headers['sec-fetch-site'] || '',
-      mode: req.headers['sec-fetch-mode'] || ''
+      mode: req.headers['sec-fetch-mode'] || '',
+      cookie: req.headers.cookie || ''
     }
     log.push(entry)
     const consoleOrigin = `http://127.0.0.1:${server.address().port}`
@@ -34,11 +52,27 @@ export function startServer({ port = 0, ancestors = true, web } = {}) {
         'X-Frame-Options': 'SAMEORIGIN'
       }
       if (url.pathname === '/') return send(200, 'text/html', read('console.html'), noFrame)
-      if (url.pathname === '/console.js') return send(200, 'text/javascript', read('console.js'))
+      if (url.pathname === '/console.js')
+        return send(
+          200,
+          'text/javascript',
+          read('console.js')
+            .toString()
+            .replace('__CP_ORIGIN__', `http://127.0.0.1:${cp.address().port}`)
+            .replace('__WEB_ORIGIN__', web || '')
+            .replace('__TOKEN__', SECRETS.token)
+        )
+      // The hostile site's files, which the console puts into revision 1's manifest.
+      if (/^\/hostile\/[a-z-]+\.(html|js)$/.test(url.pathname))
+        return send(200, 'text/plain', read(url.pathname.slice(1)))
+      // Console data a page could only read with the console's own credentials; no CORS headers.
+      if (url.pathname === '/secret') return send(200, 'application/json', JSON.stringify({ secret: SECRETS.console }))
       if (url.pathname === '/frameable') return send(200, 'text/html', '<p id="frameable">frameable control</p>')
       return send(404, 'text/plain', 'console 404')
     }
     if (host.startsWith('evil.localhost:')) {
+      // Where a hostile page tries to send the console tab, a popup or a form; any hit here is an escape.
+      if (url.pathname !== '/') return send(200, 'text/html', '<p>escaped</p>')
       // A foreign top-level page that frames a content-domain address.
       const target = url.searchParams.get('t') || '/about.html'
       return send(
@@ -74,7 +108,9 @@ export function startServer({ port = 0, ancestors = true, web } = {}) {
     return send(404, 'text/plain', 'unknown host')
   })
   return new Promise((resolve) =>
-    server.listen(port, '127.0.0.1', () => resolve({ server, log, port: server.address().port }))
+    cp.listen(0, '127.0.0.1', () =>
+      server.listen(port, '127.0.0.1', () => resolve({ server, cp, log, port: server.address().port }))
+    )
   )
 }
 

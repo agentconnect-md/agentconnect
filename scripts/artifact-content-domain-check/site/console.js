@@ -26,7 +26,7 @@ function wav(seconds) {
 
 const page = (title, body) => enc(`<!doctype html><meta charset="utf-8"><title>${title}</title><body>${body}</body>`)
 
-const MANIFEST = {
+const MAIN = {
   entry: '/index.html',
   files: {
     '/index.html': {
@@ -69,16 +69,51 @@ const MANIFEST = {
   }
 }
 
+// Revision 2: what the hostile site in revision 1 tries to reach, by origin and over its own port.
+const OTHER = {
+  entry: '/index.html',
+  files: {
+    '/index.html': {
+      type: 'text/html',
+      body: page('b', `<h1 id="h">b-secret</h1><script>localStorage.setItem('b-secret', 'b-secret-value')</script>`)
+    },
+    '/b-secret.html': { type: 'text/html', body: page('b-secret', '<h1 id="h">b-secret</h1>') }
+  }
+}
+
 const params = new URLSearchParams(location.search)
 const label = params.get('a') || 'a0123456789abcdef0123456789abcdefr1'
 const contentOrigin = `http://${label}.localhost:${location.port}`
+const MANIFEST = label.endsWith('r2') ? OTHER : MAIN
 const log = (window.__acLog = [])
 window.__acPorts = 0
+window.__acPathMsgs = 0
+// The signed-in console's bearer token, which no artifact may read.
+localStorage.setItem('ac-token', '__TOKEN__')
 
 const frame = document.createElement('iframe')
 frame.setAttribute('sandbox', 'allow-scripts allow-same-origin')
-frame.src = `${contentOrigin}/__ac/shim`
-document.body.append(frame)
+
+// The hostile site joins revision 1 before the frame loads; its config names the origins it attacks.
+async function start() {
+  if (MANIFEST === MAIN) {
+    for (const name of ['index.html', 'hostile.js', 'evil-sw.js']) {
+      const type = name.endsWith('.html') ? 'text/html' : 'text/javascript'
+      MAIN.files[`/hostile/${name}`] = { type, body: enc(await (await fetch(`/hostile/${name}`)).text()) }
+    }
+    const config = {
+      console: location.origin,
+      cp: '__CP_ORIGIN__',
+      web: '__WEB_ORIGIN__' || null,
+      evil: `http://evil.localhost:${location.port}`,
+      other: contentOrigin.replace(/r1\./, 'r2.')
+    }
+    MAIN.files['/hostile/config.json'] = { type: 'application/json', body: enc(JSON.stringify(config)) }
+  }
+  frame.src = `${contentOrigin}/__ac/shim`
+  document.body.append(frame)
+}
+void start()
 
 const live = []
 // Simulates a console that lost its ports without the shim noticing: the worker must time out and ask again.
@@ -118,6 +153,7 @@ window.addEventListener('message', (e) => {
     frame.contentWindow.postMessage({ t: 'port', entry: params.get('p') || MANIFEST.entry }, contentOrigin, [newPort()])
   if (d.t === 'need-port') frame.contentWindow.postMessage({ t: 'port' }, contentOrigin, [newPort()])
   if (d.t === 'path' && typeof d.path === 'string' && d.path.startsWith('/') && !d.path.startsWith('/__ac/')) {
+    window.__acPathMsgs++
     params.set('p', d.path)
     history.replaceState(null, '', `?${params}`)
   }

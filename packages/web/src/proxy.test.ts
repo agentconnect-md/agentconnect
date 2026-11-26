@@ -42,7 +42,8 @@ describe('proxy on the content domain', () => {
     '/cp/api/v1/me',
     '/api/acp-registry',
     '/llms.txt',
-    '/index.html'
+    '/index.html',
+    '/%5F%5Fac/sw.js'
   ])('answers 404 for %s, never the app', async (path) => {
     const response = proxy(request(CONTENT, path))
     expect(response.status).toBe(404)
