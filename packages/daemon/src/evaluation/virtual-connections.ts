@@ -618,6 +618,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('workspace searches')
   }
 
+  async lookupUserByEmail(): Promise<never> {
+    this.unmodelled('email lookups')
+  }
+
   async listBookmarks(): Promise<never> {
     this.unmodelled('bookmarks')
   }
