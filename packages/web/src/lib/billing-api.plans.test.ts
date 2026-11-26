@@ -7,6 +7,7 @@ import {
   BillingShapeError,
   cancelBillingSubscriptionChange,
   confirmBillingUpgrade,
+  createBillingSubscriptionCheckout,
   fetchBillingPlans,
   fetchBillingSubscription,
   fetchBillingSubscriptionChange,
@@ -116,6 +117,22 @@ describe('assertSubscription', () => {
     }
   })
 
+  it('keeps a trial end and credit flag, and reads null as not in a trial', () => {
+    const trial = { trialEndsAt: '2026-12-10T08:00:00.000Z', trialCreditGranted: false }
+    const body: Record<string, unknown> = { ...SUBSCRIPTION, ...trial }
+    assertSubscription(body)
+    expect(body).toMatchObject(trial)
+    expect(() => assertSubscription({ ...SUBSCRIPTION, trialEndsAt: null, trialCreditGranted: null })).not.toThrow()
+  })
+
+  it('drops a malformed trial field and keeps the plan', () => {
+    for (const trial of [{ trialEndsAt: 'soon' }, { trialEndsAt: 1 }, { trialCreditGranted: 'no' }]) {
+      const body: Record<string, unknown> = { ...SUBSCRIPTION, ...trial }
+      expect(() => assertSubscription(body)).not.toThrow()
+      for (const field of Object.keys(trial)) expect(body).not.toHaveProperty(field)
+    }
+  })
+
   it('drops a malformed retention and keeps the plan', () => {
     const next = { days: 7, from: '2026-12-08T00:00:00.000Z', awaitingNotice: false }
     for (const retention of [
@@ -192,6 +209,17 @@ describe('assertPlans', () => {
     ).not.toThrow()
   })
 
+  it('keeps a trial offer, reads absent or null as none, and drops a malformed one', () => {
+    const body: unknown = { options: [{ ...OPTION, trialDays: 14 }, { ...OPTION, trialDays: null }, { ...OPTION }] }
+    assertPlans(body)
+    expect(body.options.map((o) => o.trialDays)).toEqual([14, null, undefined])
+    for (const trialDays of ['14', 0, -1, Number.NaN]) {
+      const malformed: { options: Record<string, unknown>[] } = { options: [{ ...OPTION, trialDays }] }
+      expect(() => assertPlans(malformed)).not.toThrow()
+      expect(malformed.options[0]).not.toHaveProperty('trialDays')
+    }
+  })
+
   it('refuses an unknown sales mode or a missing flag', () => {
     expect(() => assertPlans({ options: [{ ...OPTION, salesMode: 'auction' }] })).toThrow(BillingShapeError)
     expect(() => assertPlans({ options: [{ ...OPTION, current: undefined }] })).toThrow(BillingShapeError)
@@ -243,6 +271,37 @@ describe('plan writes', () => {
     await expect(quoteBillingUpgrade('org_example', { tierId: 'pro', optionId: 'double' })).rejects.toBeInstanceOf(
       BillingShapeError
     )
+  })
+
+  it('reads a trial-ending quote, tolerates null trial fields, and refuses malformed ones', async () => {
+    const quote = {
+      quoteId: 'q2',
+      tierId: 'pro',
+      optionId: 'standard',
+      amountCents: 4000,
+      grantMicro: 40_000_000,
+      expiresAt: '2026-11-23T10:15:00.000Z',
+      paidThrough: '2026-12-23T10:00:00.000Z'
+    }
+    const args = { tierId: 'pro', optionId: 'standard' }
+    stub(200, { ...quote, endsTrial: true, forfeitMicro: 3_000_000 })
+    expect(await quoteBillingUpgrade('org_example', args)).toMatchObject({ endsTrial: true, forfeitMicro: 3_000_000 })
+    stub(200, { ...quote, endsTrial: null, forfeitMicro: null })
+    expect((await quoteBillingUpgrade('org_example', args)).endsTrial).toBeNull()
+    for (const bad of [{ endsTrial: 'yes' }, { endsTrial: true, forfeitMicro: '3' }]) {
+      stub(200, { ...quote, ...bad })
+      await expect(quoteBillingUpgrade('org_example', args)).rejects.toBeInstanceOf(BillingShapeError)
+    }
+  })
+
+  it('sends trial on a checkout only when asked for', async () => {
+    const args = { tierId: 'pro', optionId: 'standard', idempotencyKey: 'k1', returnPath: '/billing' }
+    stub(200, { changeId: 'c1', url: 'https://checkout.example.test/c1' })
+    await createBillingSubscriptionCheckout('org_example', args)
+    await createBillingSubscriptionCheckout('org_example', { ...args, trial: false })
+    await createBillingSubscriptionCheckout('org_example', { ...args, trial: true })
+    expect(calls.map((c) => c.body)).toEqual([args, args, { ...args, trial: true }])
+    expect(calls[0]!.url).toBe(`${base}/subscription/checkout`)
   })
 
   it('keeps only an https pay link on a change, and refuses an unknown status', async () => {

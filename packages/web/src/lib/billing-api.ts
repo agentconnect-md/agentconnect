@@ -260,6 +260,10 @@ export interface BillingSubscription extends BillingPlanRef {
   batches?: BillingPlanBatch[]
   /** Absent ⇒ an older service. */
   retention?: BillingRetention
+  /** ISO instant the free trial ends (equal to `paidThrough`); absent or null ⇒ not in one. */
+  trialEndsAt?: string | null
+  /** In a trial with trial credit: false ⇒ the card already received it on another org; absent or null ⇒ nothing to say. */
+  trialCreditGranted?: boolean | null
 }
 
 export interface BillingPlanOption extends BillingPlanRef {
@@ -279,6 +283,8 @@ export interface BillingPlanOption extends BillingPlanRef {
   current: boolean
   /** The org has exactly this option scheduled for its renewal. */
   scheduled: boolean
+  /** Free-trial days this org may start on this option now; absent or null ⇒ offer no trial. */
+  trialDays?: number | null
 }
 
 export interface BillingPlans {
@@ -313,8 +319,12 @@ export interface BillingUpgradeQuote {
   grantMicro: number
   /** After this instant the quote must be previewed again. */
   expiresAt: string
-  /** The renewal, which the upgrade does not move. */
+  /** The renewal, which the upgrade does not move; with `endsTrial`, the expected new renewal. */
   paidThrough: string
+  /** True ⇒ paying ends the free trial: `amountCents` is a full month. Absent or null ⇒ an ordinary upgrade. */
+  endsTrial?: boolean | null
+  /** With `endsTrial`: unused trial credit that paying forfeits, microUSD. */
+  forfeitMicro?: number | null
 }
 
 /** Billing base URL, or null when this deployment has no billing service. */
@@ -567,6 +577,9 @@ export function assertSubscription(body: unknown): asserts body is BillingSubscr
   )
     delete b.batches
   if (b.retention !== undefined && !isRetention(b.retention)) delete b.retention
+  if (b.trialEndsAt != null && !(typeof b.trialEndsAt === 'string' && !Number.isNaN(Date.parse(b.trialEndsAt))))
+    delete b.trialEndsAt
+  if (b.trialCreditGranted != null && typeof b.trialCreditGranted !== 'boolean') delete b.trialCreditGranted
 }
 
 function isRetention(v: unknown): v is BillingRetention {
@@ -603,6 +616,8 @@ export function assertPlans(body: unknown): asserts body is BillingPlans {
     ) {
       throw new BillingShapeError('plan catalog')
     }
+    // A malformed trial offer drops to no offer: the plain subscribe path is always safe.
+    if (o.trialDays != null && !(isFiniteNumber(o.trialDays) && o.trialDays > 0)) delete o.trialDays
   }
 }
 
@@ -631,7 +646,10 @@ export function assertUpgradeQuote(body: unknown): asserts body is BillingUpgrad
     !isFiniteNumber(b.amountCents) ||
     !isFiniteNumber(b.grantMicro) ||
     typeof b.expiresAt !== 'string' ||
-    typeof b.paidThrough !== 'string'
+    typeof b.paidThrough !== 'string' ||
+    // Refused rather than dropped: a trial-ending payment must not render as an ordinary upgrade.
+    !(b.endsTrial == null || typeof b.endsTrial === 'boolean') ||
+    !(b.forfeitMicro == null || isFiniteNumber(b.forfeitMicro))
   ) {
     throw new BillingShapeError('upgrade quote')
   }
@@ -786,9 +804,12 @@ const changeView = (body: unknown): BillingSubscriptionChange => {
 /** First purchase from Free: a hosted checkout the browser is redirected to; it returns to `returnPath` with `?checkout=success|cancel&subscriptionChange=<id>`, which proves nothing. */
 export async function createBillingSubscriptionCheckout(
   orgId: string,
-  args: { tierId: string; optionId: string; idempotencyKey: string; returnPath: string }
+  args: { tierId: string; optionId: string; idempotencyKey: string; returnPath: string; trial?: boolean }
 ): Promise<BillingSubscriptionCheckout> {
-  const body = await request<unknown>(`${orgPath(orgId)}/subscription/checkout`, { method: 'POST', body: args })
+  // `trial` goes on the wire only when true, so a plain subscribe reads exactly as before.
+  const { trial, ...rest } = args
+  const payload = trial ? { ...rest, trial: true } : rest
+  const body = await request<unknown>(`${orgPath(orgId)}/subscription/checkout`, { method: 'POST', body: payload })
   const b = body as Partial<BillingSubscriptionCheckout> | null
   if (!b || typeof b.changeId !== 'string' || typeof b.url !== 'string') throw new BillingShapeError('plan checkout')
   return { changeId: b.changeId, url: b.url }
