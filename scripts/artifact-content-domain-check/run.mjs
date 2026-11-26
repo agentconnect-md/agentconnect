@@ -1,4 +1,4 @@
-// Browser check for docs/designs/artifacts.md §5.5; usage: npm install && npx playwright install && node run.mjs <chromium|firefox|webkit> [--no-partition] [--no-ancestors]
+// Browser check for docs/designs/artifacts.md §5.5; usage: npm install --no-package-lock && npx playwright install && node run.mjs <chromium|firefox|webkit> [--no-partition] [--no-ancestors]
 // WebKit needs Playwright's system libraries: run it in mcr.microsoft.com/playwright:v1.65.1-noble with --add-host a1r1.localhost:127.0.0.1 --add-host evil.localhost:127.0.0.1
 import { chromium, firefox, webkit } from 'playwright'
 import { startServer } from './server.mjs'
