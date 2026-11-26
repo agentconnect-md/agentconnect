@@ -81,6 +81,7 @@ const CHECK_READ_TOOLS = new Set([
   'listKnownUsers',
   'listChannelMembers',
   'getUserProfile',
+  'lookupUserByEmail',
   'getReactions',
   'listBookmarks',
   'readList',

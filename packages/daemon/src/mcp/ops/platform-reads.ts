@@ -42,6 +42,12 @@ export const GET_USER_PROFILE_ARGS = z.object({
   user: requiredString('user')
 })
 
+/** `lookupUserByEmail` arguments: port-gated, so the session's own platform, with an optional bot selector. */
+export const LOOKUP_USER_BY_EMAIL_ARGS = z.object({
+  integrationId: optionalString('integrationId'),
+  email: requiredString('email').regex(/^[^\s@]+@[^\s@]+$/, 'email must be an email address')
+})
+
 /** `getChannelHistory` arguments; `channel` defaults to the current one on the same platform. */
 export const GET_CHANNEL_HISTORY_ARGS = z.object({
   integrationId: optionalString('integrationId'),
@@ -351,6 +357,24 @@ export async function getUserProfile(
     purpose: 'read this user profile'
   })
   return { platform, ...(await gw.getUserProfile(parsed.user)) }
+}
+
+/** Resolve a work email to a person on the session's platform; `found: false` is an answer, not a failure. */
+export async function lookupUserByEmail(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformReadDeps
+): Promise<unknown> {
+  const parsed = parseArgs(LOOKUP_USER_BY_EMAIL_ARGS, args)
+  const platform = ctx.platform
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId, {
+    ask: true,
+    purpose: 'look up a user by email'
+  })
+  if (!gw.lookupUserByEmail)
+    throw new Error(`email lookup is unavailable on this ${platformLabel(platform)} connection`)
+  const user = await gw.lookupUserByEmail(parsed.email.toLowerCase())
+  return user ? { platform, found: true, user } : { platform, found: false }
 }
 
 /** A getting-to-know task's rows (§5.13), or research's per channel (§5.15): none older than the window or past the message cap; `ended` once a page crossed either. */

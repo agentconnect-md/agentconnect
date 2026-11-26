@@ -184,6 +184,8 @@ export interface PlatformReadPorts {
   readonly messageDelete?: boolean
   /** `searchPublicMessages`: the platform offers a workspace search this bot identity may run. */
   readonly publicMessageSearch?: boolean
+  /** `lookupUserByEmail`: the platform resolves a work email to a member of the bot's workspace. */
+  readonly userEmailLookup?: boolean
   /** `createConversation`: the bot may create a channel or open a group conversation. */
   readonly conversationCreate?: boolean
   /** `scheduleMessage`: the platform accepts a message for later delivery. */
@@ -241,6 +243,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       reactions: true,
       conversationCreate: true,
       publicMessageSearch: true,
+      userEmailLookup: true,
       publicChannelReach: true,
       authoritativeMembers: true,
       channelPrivacy: true,
@@ -471,6 +474,7 @@ export type PlatformToolPort =
   | 'messageDelete'
   | 'conversationCreate'
   | 'publicMessageSearch'
+  | 'userEmailLookup'
   | 'scheduledMessages'
   | 'canvas'
   | 'bookmarks'

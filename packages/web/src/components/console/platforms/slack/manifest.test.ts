@@ -32,6 +32,7 @@ describe('manifest parity with the Control Plane', () => {
       'reactions:write',
       'assistant:write',
       'users:read',
+      'users:read.email',
       'canvases:read',
       'canvases:write',
       'channels:manage',

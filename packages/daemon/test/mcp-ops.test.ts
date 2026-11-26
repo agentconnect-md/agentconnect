@@ -2338,6 +2338,46 @@ describe('executeTool: reactions', () => {
   })
 })
 
+describe('executeTool: lookupUserByEmail', () => {
+  it('returns the profile of the member with that email, lower-cased before the lookup', async () => {
+    const lookupUserByEmail = vi.fn(async () => ({ id: 'U7', realName: 'Ada Example', statusText: 'On holiday' }))
+    const { deps: d } = deps(fakeGateway({ lookupUserByEmail }))
+
+    const res = await executeTool(ctx, 'lookupUserByEmail', { email: 'Ada@Example.com' }, d)
+
+    expect(lookupUserByEmail).toHaveBeenCalledWith('ada@example.com')
+    expect(res).toEqual({
+      platform: 'slack',
+      found: true,
+      user: { id: 'U7', realName: 'Ada Example', statusText: 'On holiday' }
+    })
+  })
+
+  it('answers found: false when no member has the email', async () => {
+    const { deps: d } = deps(fakeGateway({ lookupUserByEmail: vi.fn(async () => undefined) }))
+    expect(await executeTool(ctx, 'lookupUserByEmail', { email: 'nobody@example.com' }, d)).toEqual({
+      platform: 'slack',
+      found: false
+    })
+  })
+
+  it('refuses something that is not an email before calling the platform', async () => {
+    const lookupUserByEmail = vi.fn(async () => undefined)
+    const { deps: d } = deps(fakeGateway({ lookupUserByEmail }))
+    await expect(executeTool(ctx, 'lookupUserByEmail', { email: 'Ada Example' }, d)).rejects.toThrow(
+      /must be an email address/
+    )
+    expect(lookupUserByEmail).not.toHaveBeenCalled()
+  })
+
+  it('refuses on a connection that does not offer it', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'lookupUserByEmail', { email: 'ada@example.com' }, d)).rejects.toThrow(
+      /email lookup is unavailable/
+    )
+  })
+})
+
 describe('executeTool: deleteMessage', () => {
   it('deletes in the session conversation by default', async () => {
     const del = vi.fn(async () => true)

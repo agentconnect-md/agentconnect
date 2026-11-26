@@ -1206,8 +1206,8 @@ A second group is gated by a **declared port** rather than by a platform name
 (`platforms/read-ports.ts`, §7.1 of
 [integration-plugin-architecture.md](integration-plugin-architecture.md)): the bounded reads
 `getChannelHistory` and `getThreadHistory`, the reactions `addReaction` / `getReactions`,
-`deleteMessage`, `createConversation`, `scheduleMessage`, and the canvas trio `createCanvas` /
-`readCanvas` / `updateCanvas`. Slack declares all of them but `deleteMessage`, which Telegram
+`deleteMessage`, `createConversation`, `scheduleMessage`, the directory read
+`lookupUserByEmail`, and the canvas trio `createCanvas` / `readCanvas` / `updateCanvas`. Slack declares all of them but `deleteMessage`, which Telegram
 declares. The gate
 is the **session's** platform, not the agent's integration list: a session on a declaring
 platform is injected that platform's tools, and the same agent answering where the port is
@@ -1307,9 +1307,11 @@ from the rows a read returns and handed back with them — the read is not a con
 the write, it is the only source of the ids and types the write needs.
 
 The manifest requests only scopes with implemented callers. `channels:join` backs channel
-reach, below. The unused `team:read` and `users:read.email` scopes are no longer requested;
-existing installations that already granted them still pass the scope check. A future
-directory feature must add its scope alongside its implementation.
+reach, below. `users:read.email` backs `lookupUserByEmail` (`users.lookupByEmail`), the
+directory read that resolves a work email to a member, and the `email` a profile read returns;
+an installation granted before it was requested sees the tool refuse with `missing_scope`
+until the workspace re-authorizes. The unused `team:read` scope is no longer requested;
+existing installations that already granted it still pass the scope check.
 
 **Channel reach.** Slack requires bot membership for `conversations.history` / `.replies` and
 `chat.postMessage` even in a public channel, and a bot is a member only of the channels a human

@@ -33,6 +33,8 @@ export const SLACK_BOT_SCOPES = [
   'reactions:write',
   'assistant:write',
   'users:read',
+  // `lookupUserByEmail` and the email on a profile read; nothing else uses it.
+  'users:read.email',
   'canvases:read',
   'canvases:write',
   // `conversations.leave` has always needed one of these two; the manifest never asked.
