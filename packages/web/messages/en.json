@@ -5766,6 +5766,7 @@
           "current": "{plan} · Trial",
           "ends": "Trial ends",
           "then": "Then",
+          "credits": "Trial credits",
           "cardNote": "Card required — not charged today. Cancel anytime before {date}.",
           "addCard": "Add card",
           "label": "Trial",

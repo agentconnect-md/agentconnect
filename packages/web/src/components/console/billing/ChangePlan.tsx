@@ -745,6 +745,7 @@ export function ChangePlanDialog({
     if (startTrial)
       rows = [
         { k: t('trial.ends'), v: day(new Date(Date.now() + trialDays * DAY_MS).toISOString()) },
+        ...(option.trialGrantMicro ? [{ k: t('trial.credits'), v: creditsAdded(option.trialGrantMicro) }] : []),
         { k: t('trial.then'), v: monthlyPrice }
       ]
     else if (payNow)

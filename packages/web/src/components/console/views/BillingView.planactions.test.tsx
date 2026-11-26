@@ -758,8 +758,10 @@ describe('Increase limit', () => {
 describe('plan trial', () => {
   const TRIAL_END = '2026-12-10T10:00:00.000Z'
   // The catalog for an org the service finds eligible: only the Pro options carry trial days.
-  const trialCatalog = () => ({
-    options: catalogOn('free').options.map((o) => ({ ...o, trialDays: o.tierId === 'pro' ? 14 : null }))
+  const trialCatalog = (trialGrantMicro?: number) => ({
+    options: catalogOn('free').options.map((o) =>
+      o.tierId === 'pro' ? { ...o, trialDays: 14, trialGrantMicro } : { ...o, trialDays: null }
+    )
   })
   const TRIAL = {
     ...PRO,
@@ -845,6 +847,25 @@ describe('plan trial', () => {
     await click(buttonIn(dialog()!, 'Add card'))
     expect(mocks.checkout.mock.calls[0]![1]).toMatchObject({ tierId: 'pro', optionId: 'standard', trial: true })
     expect(mocks.assign).toHaveBeenCalledWith('https://checkout.example.test/c/1')
+  })
+
+  it('shows the trial credit the service sends, and no row for none', async () => {
+    mocks.subscription.mockResolvedValue(FREE)
+    for (const [grant, row] of [
+      [10_000_000, [['Trial credits', '+$10.00']]],
+      [0, []]
+    ] as const) {
+      mocks.plans.mockImplementation(async () => trialCatalog(grant))
+      await render()
+      await openChangePlan()
+      await click(dialog()!.querySelector('[data-plan-tier="pro"]'))
+      await click(buttonIn(dialog()!, 'Start free trial'))
+      expect(rows()).toEqual([['Due today', '$0.00'], ['Trial ends', 'Dec 10'], ...row, ['Then', '$40.00 / mo']])
+      await act(async () => root.unmount())
+      host.remove()
+      host = document.createElement('div')
+      root = createRoot(host)
+    }
   })
 
   it('keeps Subscribe now a plain paid checkout', async () => {

@@ -5766,6 +5766,7 @@
           "current": "{plan} · 试用中",
           "ends": "试用结束",
           "then": "之后",
+          "credits": "试用额度",
           "cardNote": "需要绑定信用卡，今天不扣费。{date} 之前可随时取消。",
           "addCard": "添加信用卡",
           "label": "试用",
