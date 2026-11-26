@@ -207,6 +207,22 @@ describe('createPortServer', () => {
     close.mockRestore()
     server.close()
   })
+
+  it('bounds a flood of port requests to MAX_OPEN_PORTS open, the newest still answering', async () => {
+    const { server } = serve()
+    const close = vi.spyOn(MessagePort.prototype, 'close')
+    const issued = Array.from({ length: 100 }, () => server.port())
+    expect(close).toHaveBeenCalledTimes(100 - MAX_OPEN_PORTS)
+    close.mockRestore()
+    const newest = issued.at(-1)!
+    const reply = new Promise<ContentReply>((resolve) => {
+      newest.onmessage = (event) => !('ack' in event.data) && resolve(event.data)
+    })
+    newest.postMessage({ id: 1, path: '/index.html', navigate: false, range: null })
+    expect(dec((await reply).body)).toBe('<h1>index</h1>')
+    server.close()
+    for (const port of issued) port.close()
+  })
 })
 
 describe('ByteCache', () => {

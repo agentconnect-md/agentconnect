@@ -1,4 +1,5 @@
 // Browser check for docs/designs/artifacts.md §5.5; usage: npm install --no-package-lock && npx playwright install && node run.mjs <chromium|firefox|webkit> [--no-partition] [--no-ancestors] [--web, after `pnpm --filter @agentconnect.md/web build`]
+// --web serves web's shim and worker under `next start` and runs web's port server and viewer-path logic in the console
 // WebKit needs Playwright's system libraries: run it in mcr.microsoft.com/playwright:v1.65.1-noble with --add-host for <label>r1.localhost, <label>r2.localhost and evil.localhost, each 127.0.0.1
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -14,15 +15,14 @@ const results = []
 // Playwright 1.65.1's default --disable-features switch, which includes ThirdPartyStoragePartitioning.
 const DISABLED =
   '--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,HttpsUpgrades,HttpsFirstBalancedModeAutoEnable,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,AvoidCorsURLLoaderRestartOnRedirect,TcpPortRandomizationWin,OptimizationHints,NetworkTimeServiceQuerying,AimEnabled,PreconnectToSearch,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion'
-// A pending check is one whose control another PR adds; it is reported, not failed.
-const record = (id, ok, note = '', pending = false) => {
-  results.push({ id, ok, note, ...(pending ? { pending } : {}) })
-  console.log(`${pending ? 'PEND' : ok ? 'PASS' : 'FAIL'} ${id}${note ? ' — ' + note : ''}`)
+const record = (id, ok, note = '') => {
+  results.push({ id, ok, note })
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${id}${note ? ' — ' + note : ''}`)
 }
 const step = async (id, fn) => {
   try {
     const r = await fn()
-    record(id, r?.ok ?? true, r?.note ?? '', r?.pending)
+    record(id, r?.ok ?? true, r?.note ?? '')
   } catch (e) {
     record(id, false, String(e?.message || e).split('\n')[0])
   }
@@ -114,6 +114,9 @@ const consoleLog = () => page.evaluate(() => window.__acLog)
 const h = (f) => f.evaluate(() => document.getElementById('h')?.textContent)
 
 await page.goto(consoleUrl)
+// The console URL parameter holding the frame's page: web's VIEWER_PATH_PARAM in --web mode.
+const P = await page.evaluate(() => window.AcProduct?.VIEWER_PATH_PARAM ?? 'p')
+if (useWeb && P === 'p') throw new Error("web's port server did not load in the console")
 
 await step('0 cross-site and secure', async () => {
   await sleep(500)
@@ -166,8 +169,8 @@ if (useWeb)
   await step('3b history.pushState in the nested frame reaches the console URL', async () => {
     await nested().evaluate(() => history.pushState(null, '', '/app/pushed?tab=2'))
     await sleep(500)
-    const p = new URL(page.url()).searchParams.get('p')
-    return { ok: p === '/app/pushed?tab=2', note: `console p=${p}` }
+    const p = new URL(page.url()).searchParams.get(P)
+    return { ok: p === '/app/pushed?tab=2', note: `console ${P}=${p}` }
   })
 
 const go = (path) => nested().evaluate((p) => (location.href = p), path)
@@ -361,16 +364,16 @@ try {
 const hostile = async () => {
   const tab = await context.newPage()
   tab.on('console', (m) => process.env.VERBOSE && console.log('  [hostile]', m.text()))
-  await tab.goto(`${consoleUrl}?p=/hostile/index.html`)
+  await tab.goto(`${consoleUrl}?${P}=/hostile/index.html`)
   const f = await waitNested('/hostile/index.html', 15000, tab)
   await f.waitForFunction(() => window.attack?.ready, null, { timeout: 5000 })
   return { tab, f }
 }
 // A failed or stalled attack rejects, so step() records a failure instead of asserting on an empty result.
-const attack = (f, name) =>
+const attack = (f, name, ms = 20000) =>
   within(
     f.evaluate((n) => window.attack[n](), name),
-    20000
+    ms
   )
 const stillConsole = (tab) => new URL(tab.url()).origin === consoleOrigin
 const portsOf = (tab) => tab.evaluate(() => window.__acPorts)
@@ -472,22 +475,25 @@ if (useWeb)
     const res = await fetch(`http://127.0.0.1:${webPort}/-/home`)
     const csp = res.headers.get('content-security-policy') || ''
     const xfo = res.headers.get('x-frame-options') || ''
-    const guarded = /frame-ancestors/.test(csp) || /deny|sameorigin/i.test(xfo)
+    const guarded = /frame-ancestors\s+'(self|none)'/.test(csp)
     const { tab, f } = await hostile()
     await attack(f, 'frames')
-    const fr = nested(tab)
+    // A blocked frame may lose its name (Firefox), so any frame named for web's console or at its origin counts.
+    const webOrigin = `http://127.0.0.1:${webPort}`
+    const framed = nested(tab)
       .childFrames()
-      .find((x) => x.name() === 'webConsole')
-    const text = await within(
-      fr.evaluate(() => document.body?.innerText ?? ''),
-      2000
-    ).catch(() => null)
-    const loaded = typeof text === 'string' && text.length > 0
-    // frame-ancestors on the console is 2d's; until it lands this reports what web sends today.
+      .filter((x) => x.name() === 'webConsole' || x.url().startsWith(webOrigin))
+    let loaded = false
+    for (const fr of framed) {
+      const text = await within(
+        fr.evaluate(() => document.body?.innerText ?? ''),
+        2000
+      ).catch(() => '')
+      loaded ||= text.length > 0
+    }
     return {
-      ok: guarded ? !loaded : false,
-      pending: !guarded,
-      note: `CSP=${JSON.stringify(csp.slice(0, 60))} XFO=${JSON.stringify(xfo)}; framed console rendered=${loaded}`
+      ok: guarded && !loaded,
+      note: `CSP=${JSON.stringify(csp.slice(0, 60))} XFO=${JSON.stringify(xfo)}; frames at web's console: ${framed.map((x) => x.url()).join(' ') || 'none'}; rendered=${loaded}`
     }
   })
 
@@ -499,19 +505,22 @@ await step('H8 spoofed shim messages from the nested frame are ignored', async (
   const [portsAfter, urlAfter] = [await portsOf(tab), tab.url()]
   return {
     ok: portsAfter === ports && urlAfter === url && !urlAfter.includes('spoofed'),
-    note: `ports ${ports} -> ${portsAfter}, console p=${new URL(urlAfter).searchParams.get('p')}; ${brief(r)}`
+    note: `ports ${ports} -> ${portsAfter}, console ${P}=${new URL(urlAfter).searchParams.get(P)}; ${brief(r)}`
   }
 })
 
 await step('H9 the console answers only revision 1 manifest paths, even on a stolen port', async () => {
   const { tab, f } = await hostile()
-  const r = await attack(f, 'outsideManifest')
+  // Web's port server drops a malformed request unanswered, and each such ask waits 3 s.
+  const r = await attack(f, 'outsideManifest', 40000)
   const fetched = Object.entries(r).filter(([k]) => k.startsWith('fetch '))
   const asked = Object.entries(r).filter(([k]) => k.startsWith('port ') && !k.includes('control'))
   const fetchOk = fetched.every(([, v]) => v.startsWith('got 404'))
-  // A navigation outside the manifest gets revision 1's entry, the history-route fallback.
+  // A navigation outside the manifest gets revision 1's entry, the history-route fallback; a malformed path may go unanswered.
   const portOk = asked.every(([k, v]) =>
-    k.includes('navigate') ? v.startsWith('200') && v.includes('<title>index') : v.startsWith('404')
+    k.includes('navigate')
+      ? v.startsWith('200') && v.includes('<title>index')
+      : v.startsWith('404') || v === 'no answer'
   )
   const control = r['port /index.html (control)'] || ''
   const log1 = await tab.evaluate(() => window.__acLog.map((e) => e.path))
@@ -537,13 +546,22 @@ await step('H10 hostile page cannot install another service worker', async () =>
 await step('H11 a flood of path reports and port requests stays bounded', async () => {
   const { tab, f } = await hostile()
   await sleep(500)
-  const [paths, ports] = await tab.evaluate(() => [window.__acPathMsgs, window.__acPorts])
+  const counts = () =>
+    tab.evaluate(() => [window.__acPathMsgs, window.__acPathWrites, window.__acPorts, window.__acOpenPorts])
+  const [paths, writes, ports] = await counts()
   const r = await attack(f, 'flood')
-  const [pathsAfter, portsAfter] = await tab.evaluate(() => [window.__acPathMsgs, window.__acPorts])
-  // The web shim coalesces reports; the prototype shim reports loads only. Port requests are the console's to bound (2d).
+  const [pathsAfter, writesAfter, portsAfter, open] = await counts()
+  // The web shim coalesces reports, and web's console coalesces URL writes and keeps MAX_OPEN_PORTS ports open.
+  const max = await tab.evaluate(() => window.__acMaxPorts)
+  // The worker keeps the newest port, so the frame still loads after the older ones close.
+  const after = await within(
+    f.evaluate(() => fetch('/data.json').then((x) => x.status)),
+    15000
+  ).catch(() => 'failed')
+  const portsOk = !useWeb || open <= max
   return {
-    ok: pathsAfter - paths <= 5 && stillConsole(tab),
-    note: `path reports for a pushState burst: ${pathsAfter - paths}; ports issued for 100 need-port: ${portsAfter - ports}; console p=${new URL(tab.url()).searchParams.get('p')}; ${brief(r)}`
+    ok: pathsAfter - paths <= 5 && writesAfter - writes <= 5 && portsOk && after === 200 && stillConsole(tab),
+    note: `path reports for a pushState burst: ${pathsAfter - paths}, console URL writes: ${writesAfter - writes}; ports issued for 100 need-port: ${portsAfter - ports}${useWeb ? `, open after: ${open} (cap ${max})` : ''}; fetch after: ${after}; console ${P}=${new URL(tab.url()).searchParams.get(P)}; ${brief(r)}`
   }
 })
 
@@ -555,4 +573,4 @@ server.closeAllConnections()
 server.close()
 cp.closeAllConnections()
 cp.close()
-process.exit(results.every((r) => r.ok || r.pending) ? 0 : 1)
+process.exit(results.every((r) => r.ok) ? 0 : 1)
