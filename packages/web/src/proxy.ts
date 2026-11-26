@@ -20,6 +20,14 @@ const CONSOLE_ROOTS = [
   'profile'
 ]
 
+// The console refuses foreign framing, since a content-domain page may frame it under a console tab (artifacts.md §5.5).
+const FRAME_HEADERS = { 'Content-Security-Policy': "frame-ancestors 'self'", 'X-Frame-Options': 'SAMEORIGIN' }
+
+function sameOriginFramesOnly(response: NextResponse): NextResponse {
+  for (const [name, value] of Object.entries(FRAME_HEADERS)) response.headers.set(name, value)
+  return response
+}
+
 let contentConfig: { key: string; config: ContentHostConfig | undefined } | undefined
 
 // Read from web's own environment, never from the request: the content domain and the console origin that may frame it.
@@ -40,12 +48,12 @@ export function proxy(req: NextRequest) {
   }
   const first = pathname.split('/')[1]!
   const isEntry = pathname === '/' || CONSOLE_ROOTS.includes(first)
-  if (!isEntry) return NextResponse.next()
+  if (!isEntry) return sameOriginFramesOnly(NextResponse.next())
 
   const consolePath = pathname === '/' ? '/home' : pathname
   const url = req.nextUrl.clone()
   url.pathname = `/-${consolePath}`
-  return NextResponse.rewrite(url)
+  return sameOriginFramesOnly(NextResponse.rewrite(url))
 }
 
 export const config = {

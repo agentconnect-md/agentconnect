@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"settings":{"enableIframePageLoading":true,"navigation":{"disableChildFrameNavigation":true}}}
 
+import { MessageChannel as NodeChannel } from 'node:worker_threads'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SWRConfig } from 'swr'
@@ -33,6 +35,7 @@ vi.mock('@/components/console/search-open', () => ({ useSearchOpen: () => () => 
 
 import { ApiError } from '@/lib/api'
 import ArtifactView, { requestedRevision } from './ArtifactView'
+import { PATH_SYNC_MS } from '@/lib/artifact-content/viewer-path'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -149,6 +152,50 @@ describe('ArtifactView', () => {
     expect(items[0]!.getAttribute('aria-checked')).toBe('true')
     await act(async () => items[1]!.click())
     expect(nav.replace).toHaveBeenCalledWith(`/acme/artifacts/${ID}?revision=2`, { scroll: false })
+  })
+
+  it('drops the site page from the URL when the revision changes', async () => {
+    await renderView('revision=2&path=%2Fdocs%2Fabout.html')
+    const latest = [...container.querySelectorAll('button')].find((b) => b.textContent === 'View latest')!
+    await act(async () => latest.click())
+    expect(nav.replace).toHaveBeenCalledWith(`/acme/artifacts/${ID}?revision=3`, { scroll: false })
+  })
+
+  it('opens the site page the URL names and keeps the page shown in the URL', async () => {
+    vi.stubGlobal('MessageChannel', NodeChannel)
+    api.getArtifactRevision.mockImplementation(async (_id: string, number: number) => ({
+      ...summary(number, 'Atlas'),
+      entry: 'index.html',
+      entryMediaType: 'text/html',
+      artifactId: ID,
+      latestRevision: 3,
+      manifest: {
+        entry: 'index.html',
+        files: [{ path: 'index.html', sha256: '0'.repeat(64), bytes: 10, mediaType: 'text/html' }]
+      }
+    }))
+    window.history.replaceState(null, '', `/acme/artifacts/${ID}?revision=3&path=%2Fdocs%2Fabout.html`)
+    await renderView('revision=3&path=%2Fdocs%2Fabout.html')
+    const frame = container.querySelector('iframe')!
+    const origin = `https://a${ID.replaceAll('-', '')}r3.example-usercontent.net`
+    expect(frame.getAttribute('src')).toBe(`${origin}/__ac/shim`)
+    const shim = { postMessage: vi.fn() }
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, get: () => shim })
+    const send = (data: unknown) => {
+      const event = new MessageEvent('message', { data, origin })
+      Object.defineProperty(event, 'source', { value: shim })
+      act(() => void window.dispatchEvent(event))
+    }
+    send({ t: 'ready' })
+    expect(shim.postMessage.mock.calls[0]![0]).toEqual({ t: 'port', entry: '/docs/about.html' })
+    send({ t: 'path', path: '/app/settings?tab=2' })
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, PATH_SYNC_MS + 50)))
+    expect(window.location.search).toBe(`?revision=3&path=${encodeURIComponent('/app/settings?tab=2')}`)
+    send({ t: 'path', path: '/index.html' })
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, PATH_SYNC_MS + 50)))
+    expect(window.location.search).toBe('?revision=3')
+    for (const call of shim.postMessage.mock.calls) for (const port of call[2] ?? []) port.close()
+    vi.unstubAllGlobals()
   })
 
   it('opens the latest with a notice when the URL’s revision is no longer kept', async () => {

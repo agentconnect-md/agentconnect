@@ -8566,7 +8566,8 @@
       "viewLatest": "View latest",
       "loadFailed": "This artifact couldn’t be loaded. Try again later.",
       "noPreview": "No preview for this file type",
-      "pdfUnsupported": "This browser can’t show the PDF here."
+      "pdfUnsupported": "This browser can’t show the PDF here.",
+      "siteFallback": "This browser can’t load the rest of this site here, so only its first page is shown. Download it to see every page."
     },
     "page": {
       "kind": "ARTIFACT",

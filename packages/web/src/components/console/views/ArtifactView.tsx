@@ -1,7 +1,7 @@
 'use client'
 
-// The standalone artifact page (artifacts.md §8.2, §11.2): `?revision=` pins what is shown, so a reload keeps it.
-import { useEffect } from 'react'
+// The standalone artifact page (artifacts.md §8.2, §11.2): `?revision=` pins what is shown and `?path=` the site page, so a reload keeps both.
+import { useCallback, useEffect } from 'react'
 import useSWR from 'swr'
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -15,6 +15,7 @@ import { NotFound } from '@/components/console/NotFound'
 import { LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { ArtifactViewer } from '@/components/console/artifact/ArtifactViewer'
+import { readViewerPath, VIEWER_PATH_PARAM } from '@/lib/artifact-content/viewer-path'
 
 /** The revision a `?revision=` value asks for, or undefined when it names none. */
 export function requestedRevision(value: string | null): number | undefined {
@@ -37,6 +38,14 @@ export default function ArtifactView() {
     { shouldRetryOnError: (err) => !(err instanceof ApiError && (err.status === 404 || err.status === 409)) }
   )
   const artifact = read.data
+  // The native history call updates useSearchParams without a server round trip per page the site visits.
+  const syncPath = useCallback((path: string | null) => {
+    const next = new URLSearchParams(window.location.search)
+    if (path === null) next.delete(VIEWER_PATH_PARAM)
+    else next.set(VIEWER_PATH_PARAM, path)
+    const query = next.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`)
+  }, [])
 
   // The mobile push bar reads the title from this slot.
   const { register: registerCrumb } = useCrumbSlot()
@@ -105,6 +114,7 @@ export default function ArtifactView() {
   const select = (revision: number) => {
     const next = new URLSearchParams(search.toString())
     next.set('revision', String(revision))
+    next.delete(VIEWER_PATH_PARAM)
     router.replace(`${pathname}?${next.toString()}`, { scroll: false })
   }
 
@@ -115,6 +125,8 @@ export default function ArtifactView() {
         revision={shown}
         {...(asked !== undefined && !kept ? { missing: asked } : {})}
         onRevision={select}
+        path={readViewerPath(search.get(VIEWER_PATH_PARAM))}
+        onPath={syncPath}
       />
     </div>
   )

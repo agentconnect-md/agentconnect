@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"settings":{"enableIframePageLoading":true,"navigation":{"disableChildFrameNavigation":true}}}
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -53,7 +54,7 @@ async function settle() {
     })
 }
 
-async function renderBody(entry: string, files: Record<string, [string, string]>) {
+async function renderBody(entry: string, files: Record<string, [string, string]>, contentDomain?: string) {
   bytes.fetch.mockImplementation(async (_id: string, _rev: number, file: { path: string; mediaType: string }) => {
     const found = files[file.path]
     if (!found) throw new Error('no such file')
@@ -66,6 +67,7 @@ async function renderBody(entry: string, files: Record<string, [string, string]>
         revision={revisionOf(entry, files)}
         title="Report"
         download={<button type="button">Download</button>}
+        contentDomain={contentDomain}
       />
     )
   })
@@ -97,6 +99,21 @@ describe('ArtifactBody', () => {
     expect(frame.getAttribute('srcdoc')).toBe(html)
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(frame.getAttribute('src')).toBeNull()
+  })
+
+  it('runs a page on its revision’s content-domain origin when one is configured, fetching nothing itself', async () => {
+    await renderBody('index.html', { 'index.html': ['text/html', '<h1>Hi</h1>'] }, 'example-usercontent.net')
+    const frame = container.querySelector('iframe')!
+    expect(frame.getAttribute('src')).toBe(`https://a${ID.replaceAll('-', '')}r1.example-usercontent.net/__ac/shim`)
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+    expect(frame.getAttribute('srcdoc')).toBeNull()
+    expect(bytes.fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps other types in the console with a content domain configured', async () => {
+    await renderBody('chart.png', { 'chart.png': ['image/png', 'png-bytes'] }, 'example-usercontent.net')
+    expect(container.querySelector('img')!.getAttribute('src')).toBe('blob:test/1')
+    expect(container.querySelector('iframe')).toBeNull()
   })
 
   it('shows an image from a typed blob URL', async () => {

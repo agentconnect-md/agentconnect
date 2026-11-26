@@ -851,9 +851,16 @@ names the producing agent, the audience in the session audience's words, and whe
 revision was published. An older revision notes that a newer one exists and offers to switch.
 
 The console renders a revision from its bytes, fetched through the signed address after the
-access check; nothing renders on the store's origin. A page runs as `srcdoc` in a frame
-sandboxed with `allow-scripts` alone (no same-origin, forms, popups or top navigation) and may
-make outbound requests. Images show from typed `blob:` URLs, except SVG, which shows from a
+access check; nothing renders on the store's origin. An HTML entry, single file or site, runs
+on the revision's own content-domain origin in a frame sandboxed with `allow-scripts
+allow-same-origin` (no forms, popups or top navigation), so its other pages, scripts, styles,
+modules and local `fetch` calls load, and it may make outbound requests. The console answers
+only paths in that revision's manifest; a page navigation outside it gets the entry, so a
+history-routed app works. The page shown is kept in the URL as `?path=`, so reload, back and a
+copied link return to it; switching revisions drops it. A browser that cannot run the content
+domain's service worker gets the entry alone as `srcdoc`, sandboxed with `allow-scripts`, under
+a notice that the rest of the site cannot load there, with **Download** beside it. The console
+and every web page it serves refuse to be framed by another origin. Images show from typed `blob:` URLs, except SVG, which shows from a
 `data:` URL so it stays inert even opened in its own tab. A PDF uses the browser's viewer, with
 a download where the browser embeds none. Markdown renders with the console's Markdown view,
 its local images taken from the revision's own files. Source, text, JSON and CSV are

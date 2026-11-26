@@ -40,10 +40,8 @@ export function contentHostRevision(
   return { artifactId, revision: Number(match[2]) }
 }
 
-/** The origin revision `revision` of artifact `artifactId` renders at. */
-export function artifactContentOrigin(artifactId: string, revision: number, domain: string): string {
-  return `https://a${artifactId.replaceAll('-', '').toLowerCase()}r${revision}.${domain}`
-}
+// Defined beside the protocol so the console's client bundle reaches it without the shim's `node:crypto`.
+export { artifactContentOrigin } from './protocol'
 
 export interface ContentResponse {
   status: number
