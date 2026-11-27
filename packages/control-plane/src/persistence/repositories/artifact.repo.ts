@@ -23,7 +23,7 @@ export class ArtifactIdempotencyConflictError extends Error {
   }
 }
 
-function toArtifact(row: Artifact): ArtifactRecord {
+export function toArtifact(row: Artifact): ArtifactRecord {
   return {
     id: row.id,
     orgId: row.orgId,

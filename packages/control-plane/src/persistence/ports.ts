@@ -1134,6 +1134,52 @@ export interface ArtifactRepo {
   listProducedInSession(orgId: string, sessionId: string, page: ArtifactPageQuery): Promise<ArtifactRecord[]>
 }
 
+/** Who a share link admits (artifacts.md §8.3). */
+export type ArtifactShareAudience = 'public' | 'org'
+
+/** A link to one revision (artifacts.md §4); the token is never stored, only its peppered hash. */
+export interface ArtifactShareRecord {
+  id: string
+  orgId: string
+  artifactId: string
+  revisionNumber: number
+  displayTail: string
+  audience: ArtifactShareAudience
+  createdByIdentity: string
+  createdAt: Date
+  updatedAt: Date
+  revokedAt: Date | null
+}
+
+export interface NewArtifactShare {
+  orgId: string
+  artifactId: string
+  revisionNumber: number
+  tokenHash: string
+  displayTail: string
+  audience: ArtifactShareAudience
+  createdByIdentity: string
+}
+
+export interface ArtifactShareRepo {
+  /** Throws P2003 when the artifact is gone. */
+  create(share: NewArtifactShare): Promise<ArtifactShareRecord>
+  /** Unrevoked shares of one artifact, newest first. */
+  listActive(orgId: string, artifactId: string): Promise<ArtifactShareRecord[]>
+  get(orgId: string, artifactId: string, id: string): Promise<ArtifactShareRecord | null>
+  /** Change an unrevoked share's audience; null when it is gone or revoked. */
+  setAudience(
+    orgId: string,
+    artifactId: string,
+    id: string,
+    audience: ArtifactShareAudience
+  ): Promise<ArtifactShareRecord | null>
+  /** Revoke once; a revoked share keeps its first `revokedAt`, and null means no such share. */
+  revoke(orgId: string, artifactId: string, id: string, at: Date): Promise<ArtifactShareRecord | null>
+  /** The share holding `tokenHash`, revoked or not, with its artifact. */
+  findByTokenHash(tokenHash: string): Promise<{ share: ArtifactShareRecord; artifact: ArtifactRecord } | null>
+}
+
 export interface ComputerScreenshotRepo {
   /** Reserve a row for one upload; an existing row for the same Computer, session and hash is returned instead. */
   reserve(row: Omit<ComputerScreenshotRecord, 'storedAt'>): Promise<ComputerScreenshotRecord>
@@ -7916,6 +7962,9 @@ export interface OrgRepo {
   /** The org's slug (its URL segment in the console), or null when the org is absent.
    *  Used to build org-scoped session deep links (`<webAppUrl>/<slug>/sessions/<id>`). */
   slugById(orgId: string): Promise<string | null>
+
+  /** The org's display name, its slug when it has none; null when the org is absent. */
+  displayNameById(orgId: string): Promise<string | null>
 
   /** Up to `limit` organization ids, oldest first. */
   listIds(limit: number): Promise<string[]>
