@@ -62,6 +62,8 @@ export interface DaemonEvaluationEnvironment {
   tools?: readonly EvaluationToolDefinition[]
   // Offline replacement for the CP identity directory; production place policy still judges access.
   linkedMember?(agentId: string, integrationId: string, asker: ReadAsker): Promise<string | null>
+  /** True when the world answers the cards an agent posts; otherwise an ask is declined instead of parking the turn. */
+  answersAsks?: boolean
 }
 
 // ─── §4 ingress payloads ────────────────────────────────────────────────────

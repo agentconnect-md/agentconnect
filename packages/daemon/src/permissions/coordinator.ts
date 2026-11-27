@@ -3092,6 +3092,8 @@ export class PermissionCoordinator {
     // A check and a coordinator ask no one.
     if (refusesEveryAsk(p.plan.sessionThread)) return { action: 'decline' }
     const isApproval = isMcpToolApprovalElicitation(params)
+    // An evaluation world with no one to answer a question declines it, or the turn would wait out the run.
+    if (!isApproval && this.host.evalHooks().asksGoUnanswered) return { action: 'decline' }
     if (isApproval && this.callerAnswers(p)) {
       return await this.askCaller<CreateElicitationResponse>(p, sessionId, this.elicitationParts(agentId, params, p), {
         allow: () => ({ action: 'accept' }),
