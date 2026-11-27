@@ -347,6 +347,10 @@ describe('PgArtifactRepo (real Postgres)', () => {
     const repo = new PgArtifactRepo(prisma)
     const ready = async (key: string, patch: Partial<ArtifactAudience>, rev: Partial<NewArtifactRevision> = {}) => {
       const { artifact } = await repo.create(fresh(patch), revision(key, rev))
+      // No membership rows exist here, so create drops a `user:` owner (§6.3); set it directly for the filters.
+      if (patch.ownerIdentity) {
+        await prisma.artifact.update({ where: { id: artifact.id }, data: { ownerIdentity: patch.ownerIdentity } })
+      }
       return (await repo.markReady(ORG, artifact.id, 1))!
     }
     const alices = await ready('f1', { ownerIdentity: 'user:alice' })
