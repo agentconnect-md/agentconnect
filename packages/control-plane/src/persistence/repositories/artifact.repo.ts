@@ -78,6 +78,25 @@ function revisionData(revision: NewArtifactRevision, artifactId: string, number:
   }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The opaque list cursor: the last row's `updatedAt` and id, in the order every artifact list pages by. */
+export function encodeArtifactCursor(row: Pick<ArtifactRecord, 'updatedAt' | 'id'>): string {
+  return Buffer.from(JSON.stringify([row.updatedAt.toISOString(), row.id]), 'utf8').toString('base64url')
+}
+
+/** The position an `encodeArtifactCursor` cursor names; null for anything this control plane did not issue. */
+export function decodeArtifactCursor(cursor: string): NonNullable<ArtifactPageQuery['cursor']> | null {
+  try {
+    const [at, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as [unknown, unknown]
+    const updatedAt = new Date(String(at))
+    // The id is compared against a uuid column, so anything else would fail in SQL rather than read as a bad cursor.
+    return typeof id === 'string' && UUID.test(id) && !Number.isNaN(updatedAt.getTime()) ? { updatedAt, id } : null
+  } catch {
+    return null
+  }
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
 }
@@ -274,6 +293,10 @@ export class PgArtifactRepo implements ArtifactRepo {
   ): Promise<ArtifactRecord[]> {
     const where = artifactReachWhere(session, sessionOwner)
     return where ? this.page(where, page) : []
+  }
+
+  async listProducedInSession(orgId: string, sessionId: string, page: ArtifactPageQuery): Promise<ArtifactRecord[]> {
+    return this.page({ orgId, revisions: { some: { producedInSessionId: sessionId, state: 'ready' } } }, page)
   }
 
   private async updateWhere(
