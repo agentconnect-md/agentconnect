@@ -12,6 +12,7 @@ import { LogtoApiError } from '../../github/logto-identity.js'
 import { OrgOwnerRequired } from '../../persistence/errors.js'
 import { DELETED_ACCOUNT_CUTOFF_TTL_SECONDS } from '../plugins/auth.js'
 import { announceMemberChatRelease, planMemberChatRelease } from '../member-chat-release.js'
+import { departingMemberIdentities } from '../departing-member-identities.js'
 
 export function meRoutes(deps: HttpDeps) {
   return async function meRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -99,9 +100,10 @@ export function meRoutes(deps: HttpDeps) {
         for (const membership of memberships) {
           const { orgId } = membership
           const plan = await planMemberChatRelease(deps, orgId, userId, req.log)
+          const identities = await departingMemberIdentities(deps, orgId, userId, req.log)
           let removed
           try {
-            removed = await deps.repos.user.removeMember(orgId, userId, userId, plan.release)
+            removed = await deps.repos.user.removeMember(orgId, userId, userId, plan.release, identities)
           } catch (err) {
             // Another owner stepped down meanwhile; the orgs already left stay left, and a retry lists this one.
             if (err instanceof OrgOwnerRequired) return soleOwned([membership])

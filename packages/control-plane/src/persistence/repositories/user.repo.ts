@@ -312,7 +312,8 @@ async function removeMembershipTx(
   orgId: string,
   userId: string,
   actingUserId: string,
-  chat: MemberChatRelease = NO_MEMBER_CHAT_RELEASE
+  chat: MemberChatRelease = NO_MEMBER_CHAT_RELEASE,
+  linkedIdentities: readonly string[] = []
 ): Promise<MemberRemovalResult> {
   await lockOrgOwnerTransition(tx, orgId)
   const membershipSnapshot = await tx.membership.findMany({
@@ -352,6 +353,11 @@ async function removeMembershipTx(
     data: { revokedAt: endedAt, revokedReason: 'member removed' }
   })
   await tx.oAuthGrant.updateMany({ where: { orgId, userId, revokedAt: null }, data: { revokedAt: endedAt } })
+  // Their artifacts pass to organization owners for good (artifacts.md §6.3); coming back does not restore them.
+  await tx.artifact.updateMany({
+    where: { orgId, ownerIdentity: { in: [`user:${userId}`, ...linkedIdentities] } },
+    data: { ownerIdentity: null }
+  })
   // A membership-delete trigger ends GitLab OAuth authority (§9.4) on every removal path.
   await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
   return { computerAgents, removedIntegrationIds, closedDirectMessages }
@@ -899,11 +905,12 @@ export class PgUserRepo implements UserRepo {
     orgId: string,
     userId: string,
     actingUserId: string,
-    chat?: MemberChatRelease
+    chat?: MemberChatRelease,
+    linkedIdentities?: readonly string[]
   ): Promise<MemberRemovalResult> {
     return withAmbientTx(this.db, async (tx) => {
       await assertUserKind(tx, userId, 'human')
-      const removed = await removeMembershipTx(tx, orgId, userId, actingUserId, chat)
+      const removed = await removeMembershipTx(tx, orgId, userId, actingUserId, chat, linkedIdentities)
       const action = userId === actingUserId ? 'member_left' : 'member_removed'
       await auditMemberChange(tx, orgId, actingUserId, action, { userId })
       return removed
@@ -943,6 +950,8 @@ export class PgUserRepo implements UserRepo {
       if (!row) return
       // Recorded with the delete so a still-live bearer cannot re-provision the account on another replica.
       if (row.oidcSubject) await new PgUserRepo(tx).recordDeletedIdentity(row.oidcSubject, cutoffAt, expiresAt)
+      // A membership this cascade removes skipped `removeMember`, so its artifacts pass to organization owners here.
+      await tx.artifact.updateMany({ where: { ownerIdentity: `user:${userId}` }, data: { ownerIdentity: null } })
       await tx.user.delete({ where: { id: userId } })
     })
   }
