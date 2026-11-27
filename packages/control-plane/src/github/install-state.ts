@@ -3,9 +3,7 @@
  *
  * The setup callback is unauthenticated (GitHub redirects a browser), so the
  * org being claimed rides inside a signed state: HMAC-SHA256 under a subkey
- * DOMAIN-SEPARATED from API_KEY_PEPPER (never the pepper itself — the pepper
- * already keys api_key hashing, and cross-purpose key reuse entangles two
- * rotation lifecycles). Payload = orgId + expiry + a random nonce; the nonce is
+ * domain-separated from the token signing root (never the root itself). Payload = orgId + expiry + a random nonce; the nonce is
  * persisted and consumed exactly once (replay ⇒ reject), and expiry is inside
  * the signature so a stale row can never be resurrected.
  *
@@ -19,9 +17,9 @@ import type { Clock } from '../domain/clock.js'
 
 export const INSTALL_STATE_TTL_MS = 15 * 60 * 1000
 
-/** Domain-separated signing subkey; the pepper itself never signs states. */
-export function deriveInstallStateKey(pepper: string): Buffer {
-  return createHmac('sha256', pepper).update('github-install-state-v1').digest()
+/** Domain-separated signing subkey; the token signing root itself never signs states. */
+export function deriveInstallStateKey(signingSecret: string): Buffer {
+  return createHmac('sha256', signingSecret).update('github-install-state-v1').digest()
 }
 
 export interface InstallState {
@@ -74,8 +72,8 @@ function verifiedPayload<T>(key: Buffer, state: string): T | null {
 }
 
 /** The manifest flow's own subkey, so an install state never verifies as a manifest state or back. */
-export function deriveManifestStateKey(pepper: string): Buffer {
-  return createHmac('sha256', pepper).update('github-app-manifest-state-v1').digest()
+export function deriveManifestStateKey(signingSecret: string): Buffer {
+  return createHmac('sha256', signingSecret).update('github-app-manifest-state-v1').digest()
 }
 
 /** An organization App's creation in flight: the agent that started it and the App row id its setup URL already names. */

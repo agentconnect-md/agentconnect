@@ -165,7 +165,7 @@ function stubbedGithub(): GithubService {
     clock: systemClock,
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),
-    pepper: TEST_API_KEY_PEPPER,
+    signingSecret: TEST_API_KEY_PEPPER,
     fetchImpl
   })
 }

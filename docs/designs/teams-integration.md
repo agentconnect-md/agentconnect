@@ -957,7 +957,7 @@ app's secret** once every Control Plane and relay runs it.
 **The relay's credential.** The Control Plane's deployment snapshot carries the
 app (`msTeamsApp`: app ID, home tenant, secret, and a ticket key) whenever the
 app is configured, independent of the anchor. The ticket key is derived from
-the Control Plane's pepper by a domain-separated HMAC, as its other signing
+the Control Plane's token signing secret by a domain-separated HMAC, as its other signing
 keys are, so it needs no operator configuration and is the same on every relay.
 
 **Conversation tickets.** When the relay forwards a verified activity of a

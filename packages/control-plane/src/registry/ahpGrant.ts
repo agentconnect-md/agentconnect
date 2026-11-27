@@ -27,10 +27,10 @@ const AUDIENCE = 'agentconnect.ahp-client.v1'
 export class AhpGrantService {
   private readonly key: Uint8Array
   constructor(
-    pepper: string,
+    signingSecret: string,
     private readonly now: () => number = Date.now
   ) {
-    this.key = createHmac('sha256', pepper).update(AUDIENCE).digest()
+    this.key = createHmac('sha256', signingSecret).update(AUDIENCE).digest()
   }
 
   async mint(claims: AhpGrantClaims, validUntilMs = Infinity): Promise<{ token: string; expiresAtMs: number }> {

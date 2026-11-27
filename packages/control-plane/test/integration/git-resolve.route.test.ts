@@ -41,7 +41,7 @@ function stubbedGithub(): GithubService {
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),
     repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
-    pepper: TEST_API_KEY_PEPPER,
+    signingSecret: TEST_API_KEY_PEPPER,
     fetchImpl: async (url: string): Promise<Response> => {
       if (url.includes('/access_tokens')) {
         return Response.json(

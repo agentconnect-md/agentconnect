@@ -77,6 +77,11 @@ describe('compose.yaml service environment', () => {
     expect(compose).not.toMatch(/USAGE_INGEST_TOKEN\s*=/)
   })
 
+  it('passes the token signing secret through empty by default, which the CP treats as unset', () => {
+    expect(serviceEnv('control-plane')).toContain('TOKEN_SIGNING_SECRET')
+    expect(compose).toContain('- TOKEN_SIGNING_SECRET=${AGENTCONNECT_TOKEN_SIGNING_SECRET:-}\n')
+  })
+
   it('passes the session-policy delivery credential through without inventing a default', () => {
     expect(serviceEnv('control-plane')).toContain('SESSION_POLICY_TOKEN')
     expect(compose).not.toMatch(/SESSION_POLICY_TOKEN\s*=/)

@@ -31,9 +31,9 @@ interface Env {
   EMAIL_PLATFORM_DAILY_SEND_LIMIT?: number | undefined
 }
 
-/** The key relays sign reply tickets with (§6.2), derived from the pepper like the CP's other signing keys; base64url. */
-export function emailRelayTicketKey(pepper: string): string {
-  return createHmac('sha256', pepper).update('email-relay-ticket-v1').digest('base64url')
+/** The key relays sign reply tickets with (§6.2), derived from the token signing root like the CP's other signing keys; base64url. */
+export function emailRelayTicketKey(signingSecret: string): string {
+  return createHmac('sha256', signingSecret).update('email-relay-ticket-v1').digest('base64url')
 }
 
 /** Undefined ⇒ Email is not set up. Throws on a partial set, and on a value the relay would refuse. */
@@ -74,7 +74,7 @@ function relayShape(email: EmailDeployment, ticketKey: string): RcEmailDeploymen
 /** The configuration as the relay receives and sends with it (§7); none while Email is not set up. */
 export function emailRelayDeployment(
   email: EmailDeployment | undefined,
-  pepper: string
+  signingSecret: string
 ): RcEmailDeployment | undefined {
-  return email ? RcEmailDeployment.parse(relayShape(email, emailRelayTicketKey(pepper))) : undefined
+  return email ? RcEmailDeployment.parse(relayShape(email, emailRelayTicketKey(signingSecret))) : undefined
 }

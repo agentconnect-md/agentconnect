@@ -9,9 +9,9 @@ export class ComputerChannelKeys {
   private readonly deliveryMs: number
 
   /** `deliveryMs`: how long after a window opens a live desktop may still lack its key (it arrives with a heartbeat). */
-  constructor(pepper: string, ttlSec: number, deliveryMs = 0) {
-    // Domain-separated from every other use of the pepper.
-    this.base = createHmac('sha256', pepper).update('agentconnect/computer-channel-key/v1').digest()
+  constructor(signingSecret: string, ttlSec: number, deliveryMs = 0) {
+    // Domain-separated from every other key under the token signing root.
+    this.base = createHmac('sha256', signingSecret).update('agentconnect/computer-channel-key/v1').digest()
     this.ttlMs = ttlSec * 1000
     this.deliveryMs = Math.min(Math.max(0, deliveryMs), this.ttlMs / 2)
   }

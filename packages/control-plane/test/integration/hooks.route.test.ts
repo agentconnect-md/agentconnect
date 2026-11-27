@@ -349,7 +349,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         clock: systemClock,
         installations: new PgGithubInstallationRepo(prisma),
         installState: new PgGithubInstallStateStore(prisma),
-        pepper: TEST_API_KEY_PEPPER,
+        signingSecret: TEST_API_KEY_PEPPER,
         fetchImpl
       })
     }

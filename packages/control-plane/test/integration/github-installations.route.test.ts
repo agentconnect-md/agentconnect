@@ -54,7 +54,7 @@ function appAs(
     clock: systemClock,
     installations: new PgGithubInstallationRepo(prisma),
     installState: new PgGithubInstallStateStore(prisma),
-    pepper: TEST_API_KEY_PEPPER,
+    signingSecret: TEST_API_KEY_PEPPER,
     fetchImpl: async (url, init) => {
       calls.push({ url, method: init?.method })
       if (opts.githubFetch) return opts.githubFetch(url, init)

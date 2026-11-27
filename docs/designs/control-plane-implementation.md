@@ -299,7 +299,9 @@ export interface SessionEventSink {
 
 `config/env.ts` parses `process.env` through zod — fail-fast on boot, mirroring the daemon's "validate config or refuse to start" discipline.
 
-`DATABASE_URL` and `API_KEY_PEPPER` are required. Transport, lifecycle,
+`DATABASE_URL` and `API_KEY_PEPPER` are required. The optional
+`TOKEN_SIGNING_SECRET` roots the signing keys apart from the stored-hash pepper
+(see [daemon-api-key-auth.md](daemon-api-key-auth.md)). Transport, lifecycle,
 authentication, encryption, and feature settings are validated in the same
 schema; `config/env.ts` is the authoritative config surface.
 

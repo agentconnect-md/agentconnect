@@ -110,7 +110,7 @@ export interface GithubAppsServiceDeps {
   agentScope: (agent: AgentRecord) => Promise<AgentGithubScope>
   /** Whether a live installation reaches one repository (selected installations are asked). */
   covers: (installation: GithubInstallationRecord, owner: string, repo: string) => Promise<boolean>
-  pepper: string
+  signingSecret: string
   clock: Clock
   /** The CP's public origin: GitHub redirects the browser to its `/v1` callbacks. */
   publicCpUrl: string
@@ -138,7 +138,7 @@ export class GithubAppsService {
   private stopped = false
 
   constructor(private readonly deps: GithubAppsServiceDeps) {
-    this.stateKey = deriveManifestStateKey(deps.pepper)
+    this.stateKey = deriveManifestStateKey(deps.signingSecret)
   }
 
   list(orgId: OrgId): Promise<GithubAppRecord[]> {

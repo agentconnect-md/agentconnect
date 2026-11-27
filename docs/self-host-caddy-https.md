@@ -38,7 +38,10 @@ docker compose version
 Before the first database initialization, copy `.env.example` to `.env` and
 set unique deployment credentials. The API-key pepper is effectively
 immutable, and PostgreSQL applies its password when initializing the volume, so
-do not initialize with the defaults and try to rotate them afterward.
+do not initialize with the defaults and try to rotate them afterward. An
+optional `AGENTCONNECT_TOKEN_SIGNING_SECRET` (at least 32 characters, different
+from the pepper) roots the signing keys and can be rotated later; unset, they
+derive from the pepper.
 
 ```dotenv
 AGENTCONNECT_HTTPS_HOST=192.0.2.10

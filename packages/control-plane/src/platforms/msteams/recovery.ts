@@ -74,12 +74,12 @@ export class MsTeamsRecoveryOAuth {
   constructor(
     readonly app: MsTeamsPlatformApp,
     private readonly webAppUrl: string,
-    pepper: string,
+    signingSecret: string,
     private readonly clock: Clock,
     private readonly fetch: typeof globalThis.fetch
   ) {
-    this.stateKey = createHmac('sha256', pepper).update('msteams-recovery-state-v1').digest()
-    this.ticketKey = createHmac('sha256', pepper).update('msteams-recovery-ticket-v1').digest()
+    this.stateKey = createHmac('sha256', signingSecret).update('msteams-recovery-state-v1').digest()
+    this.ticketKey = createHmac('sha256', signingSecret).update('msteams-recovery-ticket-v1').digest()
     this.jwks = createRemoteJWKSet(new URL('https://login.microsoftonline.com/common/discovery/v2.0/keys'), {
       [customFetch]: (url, init) => this.fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(15_000) })
     })

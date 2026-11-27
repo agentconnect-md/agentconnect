@@ -99,12 +99,12 @@ export class GoogleChatRecoveryOAuth {
   private readonly jwks: ReturnType<typeof createRemoteJWKSet>
   constructor(
     readonly application: GoogleChatRecoveryApplication,
-    pepper: string,
+    signingSecret: string,
     private readonly clock: Clock,
     private readonly fetch: typeof globalThis.fetch
   ) {
-    this.stateKey = createHmac('sha256', pepper).update('googlechat-recovery-state-v1').digest()
-    this.ticketKey = createHmac('sha256', pepper).update('googlechat-recovery-ticket-v1').digest()
+    this.stateKey = createHmac('sha256', signingSecret).update('googlechat-recovery-state-v1').digest()
+    this.ticketKey = createHmac('sha256', signingSecret).update('googlechat-recovery-ticket-v1').digest()
     this.jwks = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'), {
       [customFetch]: (url, init) => this.fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(15_000) })
     })

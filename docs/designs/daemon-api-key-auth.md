@@ -46,6 +46,32 @@ Rotating `API_KEY_PEPPER` invalidates every stored hash. Safe pepper rotation
 therefore requires a versioned-pepper migration; until that exists, treat the
 configured pepper as immutable.
 
+The pepper keys only stored lookup hashes (API keys, invite links, and other
+one-time tokens kept as hashes). The keys the Control Plane signs or MACs with
+(webchat tokens, AHP grants, install and connect states, flow tickets, relay
+ticket keys, the Computer channel and TURN secrets, the Mattermost action
+secret) derive from `TOKEN_SIGNING_SECRET` by domain-separated HMAC. Unset or
+empty, it defaults to `API_KEY_PEPPER`, so a deployment that never sets it
+derives the same keys as before. It must be at least 32 characters and differ
+from the pepper.
+
+### Rotating the token signing secret
+
+Set a fresh value different from the pepper (for example
+`openssl rand -hex 32`) as `TOKEN_SIGNING_SECRET` on every Control Plane
+replica and restart them. There is no overlap window:
+
+- Relays receive the new ticket keys and TURN secret when they reconnect.
+- Open webchat connections, in-flight GitHub, Teams, Google Chat and Azure
+  DevOps install, connect and recovery flows, and outstanding AHP grants are
+  rejected and must be started again.
+- Teams conversation tickets and Email reply tickets that daemons keep beside
+  their sessions stop verifying; a conversation or thread can be sent to again
+  once its next inbound message brings a fresh ticket.
+- Mattermost buttons already posted stop working unless
+  `MATTERMOST_ACTION_SECRET` is set explicitly.
+- Stored API keys, OAuth tokens and invite links are unaffected.
+
 ---
 
 ## 2. Key format and storage

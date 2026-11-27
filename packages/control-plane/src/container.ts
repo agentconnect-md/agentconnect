@@ -38,7 +38,7 @@ import {
   MATTERMOST_PLATFORM
 } from '@agentconnect.md/protocol'
 
-import { type AppConfig, resolveWebAppUrl } from './config/env.js'
+import { type AppConfig, resolveWebAppUrl, tokenSigningRoot } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import { resolveGitlabAppConfig } from './gitlab/config.js'
 import { GitlabApiClient, gitlabCurrentUser, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
@@ -788,9 +788,11 @@ export function buildContainer(
   const epoch = new EpochService(repos.daemon, clock)
 
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: config.API_KEY_PEPPER })
+  // Keys the CP signs and verifies itself; stored lookup hashes stay on API_KEY_PEPPER.
+  const signingRoot = tokenSigningRoot(config)
   const webAppUrl = resolveWebAppUrl(config)
   const relayPublicBase = relayHttpBase(config.PUBLIC_RELAY_URL) ?? undefined
-  const mattermostActionSecret = config.MATTERMOST_ACTION_SECRET ?? deriveMattermostActionSecret(config.API_KEY_PEPPER)
+  const mattermostActionSecret = config.MATTERMOST_ACTION_SECRET ?? deriveMattermostActionSecret(signingRoot)
   // In-cluster Kubernetes access: assembled ONLY when the daemon pool is enabled. Hoisted
   // above the auth service because an in-cluster daemon authenticates against this client.
   const clusterAccess = loadClusterAccess(config)
@@ -837,7 +839,7 @@ export function buildContainer(
   const missedBeatsMs = config.HEARTBEAT_SEC * config.MISSED_BEATS * 1000
   // A desktop seen within missedBeatsMs got the newest key with that heartbeat; the margin covers the push itself.
   const computerChannelKeys = new ComputerChannelKeys(
-    config.API_KEY_PEPPER,
+    signingRoot,
     config.COMPUTER_CREDENTIAL_TTL_SEC,
     missedBeatsMs + 5_000
   )
@@ -994,7 +996,7 @@ export function buildContainer(
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
   // {userId, user, agentId, orgId, conversationId}. The relay delegates verification
   // here via rc/verify(webchat-token); the CP re-resolves the agent's CURRENT placement.
-  const webchatTokens = new WebchatTokenService(config.API_KEY_PEPPER)
+  const webchatTokens = new WebchatTokenService(signingRoot)
 
   const registry = new DaemonRegistryService(repos.daemon, repos.runtimeProfile, repos.daemonLifecycleOp, clock)
   // Resolves the latest daemon version in the deployment's npm channel (the pinned
@@ -1472,7 +1474,7 @@ export function buildContainer(
   // External STUN is the operator's explicit choice, as external TURN is; otherwise the relays' own.
   const externalStun = stunUrlsFrom(config)
   // Relays that serve TURN check viewer credentials with this; they receive it on rc/auth/ok (computer-use.md §7.2).
-  const computerRelayTurnSecret = relayTurnSecret(config.API_KEY_PEPPER)
+  const computerRelayTurnSecret = relayTurnSecret(signingRoot)
   const computerChannelGrants = new ComputerChannelGrants(repos.computer, computerChannelKeys, clock, {
     staleAfterMs: missedBeatsMs,
     relays: () => relayRoster.entries(),
@@ -1737,7 +1739,7 @@ export function buildContainer(
           await wakeGithubReviewProjections(installationId, orgId)
           await codeHostConnected(orgId, 'github', null)
         },
-        pepper: config.API_KEY_PEPPER,
+        signingSecret: signingRoot,
         log: { warn: (message) => http.log.warn(message) },
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
@@ -1759,7 +1761,7 @@ export function buildContainer(
             hooks: repos.hook
           }),
           covers: (installation, owner, repo) => github.installationCoversRepo(installation, owner, repo),
-          pepper: config.API_KEY_PEPPER,
+          signingSecret: signingRoot,
           clock,
           publicCpUrl: config.PUBLIC_CP_URL,
           ...(webAppUrl ? { webAppUrl } : {}),
@@ -2202,7 +2204,7 @@ export function buildContainer(
     }),
     connect: new AzureDevOpsConnectFlowService({
       api: azureDevOpsApi,
-      keys: azureDevOpsConnectKeys(config.API_KEY_PEPPER),
+      keys: azureDevOpsConnectKeys(signingRoot),
       clock,
       connections: azureDevOpsConnectionService,
       connectionRepo: repos.azureDevOpsConnection,
@@ -3522,7 +3524,7 @@ export function buildContainer(
               clientSecret: googleClientSecret,
               webAppUrl
             },
-            config.API_KEY_PEPPER,
+            signingRoot,
             clock,
             (input, init) => fetch(input, init)
           )
@@ -3575,18 +3577,14 @@ export function buildContainer(
   const msTeamsSeams: MsTeamsConnectSeams = {
     ...(msTeamsPlatformApp ? { app: msTeamsPlatformApp } : {}),
     ...(msTeamsAgentBots ? { agentBots: msTeamsAgentBots } : {}),
-    keys: msTeamsConnectKeys(config.API_KEY_PEPPER),
+    keys: msTeamsConnectKeys(signingRoot),
     bindingMutations: msTeamsBindingMutations,
     ...(msTeamsAgentBotRequests ? { requests: msTeamsAgentBotRequests } : {}),
     ...(webAppUrl ? { webAppUrl } : {}),
     ...(msTeamsPlatformApp && webAppUrl
       ? {
-          recovery: new MsTeamsRecoveryOAuth(
-            msTeamsPlatformApp,
-            webAppUrl,
-            config.API_KEY_PEPPER,
-            clock,
-            (input, init) => fetch(input, init)
+          recovery: new MsTeamsRecoveryOAuth(msTeamsPlatformApp, webAppUrl, signingRoot, clock, (input, init) =>
+            fetch(input, init)
           )
         }
       : {})
@@ -3796,7 +3794,7 @@ export function buildContainer(
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const ahpAuthorization = new AhpAuthorization({
-    grants: new AhpGrantService(config.API_KEY_PEPPER, () => clock.now()),
+    grants: new AhpGrantService(signingRoot, () => clock.now()),
     tokens: webchatTokens,
     keys: apiKeys,
     keyRows: repos.apiKey,
@@ -3850,7 +3848,7 @@ export function buildContainer(
     ahpSessions: new AhpSessionService({
       authorization: ahpAuthorization,
       bindings: repos.ahpSessionBinding,
-      cursors: new AhpCatalogCursor(config.API_KEY_PEPPER, () => clock.now())
+      cursors: new AhpCatalogCursor(signingRoot, () => clock.now())
     }),
     log: { error: (o, m) => http.log.error(o, m), warn: (o, m) => http.log.warn(o, m) },
     auth,
@@ -4092,11 +4090,11 @@ export function buildContainer(
     // The relay answers a Teams tenant no organization connected with the deployment app's own card (teams-integration.md §8.4).
     msTeamsConnectAnchor(msTeamsPlatformApp, webAppUrl),
     // The relay sends the app's rows' Bot Connector calls and mints their Graph tokens (§8.5).
-    msTeamsRelayApp(msTeamsPlatformApp, config.API_KEY_PEPPER, msTeamsAgentBots),
+    msTeamsRelayApp(msTeamsPlatformApp, signingRoot, msTeamsAgentBots),
     // The relay sends the app's customer rows' Chat API calls (google-chat-integration.md §10.10).
     googleChatRelayApp(googleChatPlatformApp),
     // The relay receives and sends every address's mail (email-integration.md §7).
-    emailRelayDeployment(emailDeployment, config.API_KEY_PEPPER)
+    emailRelayDeployment(emailDeployment, signingRoot)
   )
   const relayWsDeps: RelayWsServerDeps = {
     log: http.log,

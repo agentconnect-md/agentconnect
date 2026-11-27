@@ -141,15 +141,15 @@ export function msTeamsDeploymentSecrets(): BotSecretMaterial {
   return { botToken: MSTEAMS_DEPLOYMENT_SECRET_MARKER, appToken: null, signingSecret: null }
 }
 
-/** The key relays sign conversation tickets with, derived from the pepper like the CP's other signing keys; base64url. */
-export function msTeamsRelayTicketKey(pepper: string): string {
-  return createHmac('sha256', pepper).update('msteams-relay-ticket-v1').digest('base64url')
+/** The key relays sign conversation tickets with, derived from the token signing root like the CP's other signing keys; base64url. */
+export function msTeamsRelayTicketKey(signingSecret: string): string {
+  return createHmac('sha256', signingSecret).update('msteams-relay-ticket-v1').digest('base64url')
 }
 
 /** The deployment app as the relay sends its rows' egress with (§8.5), and the blueprint for its agent bots' (§8.6.7); none without an app. */
 export function msTeamsRelayApp(
   app: MsTeamsPlatformApp | undefined,
-  pepper: string,
+  signingSecret: string,
   agentBots?: MsTeamsAgentBots
 ): RcMsTeamsDeploymentApp | undefined {
   if (!app) return undefined
@@ -157,7 +157,7 @@ export function msTeamsRelayApp(
     appId: app.appId,
     tenantId: app.tenantId,
     clientSecret: app.clientSecret,
-    ticketKey: msTeamsRelayTicketKey(pepper),
+    ticketKey: msTeamsRelayTicketKey(signingSecret),
     ...(agentBots ? { blueprint: { appId: agentBots.blueprintId, clientSecret: agentBots.clientSecret } } : {})
   })
   return parsed.success ? parsed.data : undefined

@@ -106,7 +106,7 @@ export const RcMsTeamsDeploymentApp = z.object({
   tenantId: z.string().uuid(),
   /** Secret material, never logged. */
   clientSecret: z.string().min(1),
-  /** The base64url key every relay signs and checks conversation tickets with; derived from the CP's pepper, never logged. */
+  /** The base64url key every relay signs and checks conversation tickets with; derived from the CP's token signing root, never logged. */
   ticketKey: z.string().min(43),
   /** Present when the deployment configures agent bots; absent, the relay serves none. */
   blueprint: RcMsTeamsBlueprint.optional()
@@ -130,7 +130,7 @@ export const RcEmailDeployment = z.object({
   authservId: z.string().min(1).max(253),
   /** The most messages the whole deployment sends in a day (§6.3); absent, only the per-address and per-organization budgets apply. */
   dailySendLimit: z.number().int().positive().optional(),
-  /** The base64url key every relay signs and checks reply tickets with (§6.2); derived from the CP's pepper, never logged. */
+  /** The base64url key every relay signs and checks reply tickets with (§6.2); derived from the CP's token signing root, never logged. */
   ticketKey: z.string().min(43)
 })
 export type RcEmailDeployment = z.infer<typeof RcEmailDeployment>

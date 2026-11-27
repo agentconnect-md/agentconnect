@@ -112,7 +112,7 @@ function stubbedGithub(): GithubService {
     installState: new PgGithubInstallStateStore(prisma),
     repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
     installationAuths: new PgAgentInstallationAuthorizationRepo(prisma),
-    pepper: TEST_API_KEY_PEPPER,
+    signingSecret: TEST_API_KEY_PEPPER,
     fetchImpl
   })
 }

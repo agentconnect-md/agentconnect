@@ -94,6 +94,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.existingSecret }}
                   key: {{ .Values.secrets.apiKeyPepperKey }}
+            - name: TOKEN_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.tokenSigningSecretKey }}
+                  optional: true
             # Logto origins are startup topology. Browser/M2M identities,
             # audiences, provider ids, and provider secrets are loaded from the
             # CP-owned deployment_config singleton instead of pod env.

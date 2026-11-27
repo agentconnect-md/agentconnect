@@ -654,7 +654,7 @@ session, marked undelivered with the provider's reason.
 When the relay forwards an inbound message it adds a ticket:
 `e1.<thread key>.<issued at>.<HMAC over the version, the bot, the thread key,
 the issue time and the sorted set of the message's sender and recipients>`. The
-key is derived from the Control Plane's pepper by a domain-separated HMAC, as
+key is derived from the Control Plane's token signing secret by a domain-separated HMAC, as
 the Teams ticket key is. The daemon keeps the latest ticket of each thread
 beside the session.
 

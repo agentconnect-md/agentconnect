@@ -18,9 +18,9 @@ const TOKEN_MARGIN_MS = 60_000
 export const CONSUMER_TENANT = '9188040d-6c67-4c5b-b112-36a304b66dad'
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-/** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
-export function azureDevOpsConnectKeys(pepper: string) {
-  const derive = (label: string) => createHmac('sha256', pepper).update(label).digest()
+/** Domain-separated keys from the token signing root, one per purpose; the root itself never signs or encrypts. */
+export function azureDevOpsConnectKeys(signingSecret: string) {
+  const derive = (label: string) => createHmac('sha256', signingSecret).update(label).digest()
   return { state: derive('azure-devops-connect-state-v1'), ticket: derive('azure-devops-connect-ticket-v1') }
 }
 export type AzureDevOpsConnectKeys = ReturnType<typeof azureDevOpsConnectKeys>

@@ -21,7 +21,7 @@ export { mattermostExternalAppId, normalizeMattermostServerUrl }
 export const MattermostCpEnvSchema = {
   /** Bound Mattermost server URL for Logto oauth2 social sign-in; projected from deployment config when set. */
   MATTERMOST_OAUTH_SERVER_URL: z.string().optional(),
-  /** Optional master HMAC secret for signing Mattermost interactive action button tokens (falls back to API_KEY_PEPPER). */
+  /** Optional master HMAC secret for signing Mattermost interactive action button tokens (falls back to the token signing root). */
   MATTERMOST_ACTION_SECRET: z.string().min(32).optional(),
   /** Whether tenant-supplied Mattermost serverUrl values may dial private/loopback IPs (default: true outside production). */
   MATTERMOST_ALLOW_PRIVATE_NETWORK: z.enum(['true', 'false']).optional()
@@ -168,8 +168,8 @@ export async function verifyMattermostBot(
 }
 
 /** Derive the shared HMAC secret used by daemons to sign Mattermost interactive button tokens and by relays to verify them. */
-export function deriveMattermostActionSecret(pepper: string): string {
-  return createHmac('sha256', pepper).update('agentconnect:mattermost-action:v1').digest('base64url')
+export function deriveMattermostActionSecret(signingSecret: string): string {
+  return createHmac('sha256', signingSecret).update('agentconnect:mattermost-action:v1').digest('base64url')
 }
 
 export interface MattermostCpProviderDeps {
