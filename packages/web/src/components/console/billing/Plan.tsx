@@ -526,7 +526,7 @@ function AmberBanner({
 }
 
 /** Withdraws an unpaid upgrade after a confirmation; a trial's pay-now reads as a payment, since the plan may not change. */
-function CancelPendingButton({
+export function CancelPendingButton({
   change,
   trial,
   onCancel

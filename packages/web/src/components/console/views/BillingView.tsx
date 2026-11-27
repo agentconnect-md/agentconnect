@@ -1565,6 +1565,7 @@ export default function BillingView() {
                   start={planDialog}
                   returnPath={returnPath}
                   onClose={() => setPlanDialog(null)}
+                  onCancelPending={cancelPending}
                   onChanged={() => {
                     void plan.subscription.mutate()
                     void plan.usage.mutate()

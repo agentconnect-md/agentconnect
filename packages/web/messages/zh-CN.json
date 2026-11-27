@@ -5618,6 +5618,7 @@
         "upgradeTitle": "套餐升级正在等待付款",
         "body": "付款完成后套餐随即变更。",
         "bodyNoLink": "付款页面正在准备中，请稍后再查看。",
+        "blocksChange": "请先完成或取消这笔付款，再变更套餐。",
         "pay": "完成付款",
         "cancel": "取消升级",
         "cancelTitle": "取消这次升级？",
