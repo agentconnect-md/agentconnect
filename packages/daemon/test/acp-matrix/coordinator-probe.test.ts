@@ -308,8 +308,9 @@ describe('runtime matrix coordinator probe', () => {
     expect(board).toContain(
       `- #${CO_IDS.exportChannelName} · delegated task · running · "Fix the nightly analytics export"`
     )
-    // Its summary predates the pull request, which only readTask names.
-    expect(JSON.stringify(scenario('elsewhere-read-task').elsewhere)).not.toContain('#57')
+    // Its board line and summary predate the pull request, which listTasks and readTask name as the daemon saw it opened.
+    expect(board).not.toContain('#57')
+    expect(scenario('elsewhere-read-task').elsewhere?.[1]?.summary).not.toContain('#57')
     const [ask] = scopeOf('elsewhere-read-task').messages
     const answered = recorded('elsewhere-read-task', [
       { action: 'replyToMessage', messageId: ask, message: 'Yes: https://github.com/example-org/analytics/pull/57' }
@@ -335,9 +336,15 @@ describe('runtime matrix coordinator probe', () => {
       const read = JSON.parse((await call(CO_IDS.exportTask)).result.content[0].text)
       expect(read.opened[0]).toMatchObject({ label: 'example-org/analytics#57' })
       expect((await call(CO_IDS.webhookTask)).result.isError).toBe(true)
+      const listed = await fetch(url, {
+        method: 'POST',
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'listTasks' } })
+      }).then((res) => res.json() as Promise<any>)
+      expect(JSON.parse(listed.result.content[0].text).elsewhere[1].opened).toEqual(read.opened)
       expect(fixture.calls('r').map((one) => [one.tool, one.error === undefined])).toEqual([
         ['readTask', true],
-        ['readTask', false]
+        ['readTask', false],
+        ['listTasks', true]
       ])
     } finally {
       fixture.server.close()
