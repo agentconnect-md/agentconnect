@@ -88,10 +88,12 @@ import {
   SessionFileArea,
   HOOK_INSTRUCTIONS_MAX,
   AgentApiProtocol,
-  McpCatalogTool
+  McpCatalogTool,
+  ArtifactTitle
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
+import { ARTIFACT_KINDS } from '../../artifacts/kind.js'
 import { MAX_USAGE_WINDOW_DAYS } from '../../persistence/ports.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
@@ -5583,6 +5585,46 @@ export const SessionArtifactPageDto = z.object({
   /** Pass back as `cursor` for older artifacts; null on the last page. */
   nextCursor: z.string().nullable()
 })
+// ── The organization's Artifacts page (artifacts.md §6.3, §11.5): list, rename and audience change ──
+const ARTIFACT_PAGE_MAX = 50
+export const ArtifactKindDto = z.enum(ARTIFACT_KINDS)
+export const ArtifactListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(ARTIFACT_PAGE_MAX).default(25),
+  cursor: z.string().min(1).max(200).optional(),
+  /** `mine` keeps the artifacts the caller owns; `org` (the default) is everything they can view. */
+  scope: z.enum(['mine', 'org']).default('org'),
+  /** Artifacts with a ready revision this agent produced. */
+  agentId: z.string().uuid().optional(),
+  /** The latest revision's entry opens as this kind. */
+  type: ArtifactKindDto.optional(),
+  /** Only artifacts with an active `public` share. */
+  publiclyShared: z.enum(['true']).optional()
+})
+/** A list row: `listSessionArtifacts`'s fields plus what the Artifacts page shows and may offer. */
+export const OrgArtifactDto = SessionArtifactDto.extend({
+  /** How the latest revision's entry opens (artifacts.md §9). */
+  kind: ArtifactKindDto,
+  /** Whether the artifact has any active share, and any active `public` share. */
+  shared: z.object({ any: z.boolean(), public: z.boolean() }),
+  /** Whether `originSessionId` still exists and the caller can view it, for the link back to the session. */
+  originSessionVisible: z.boolean(),
+  /** What the caller may do (artifacts.md §6.3); revoking one's own share is allowed beyond `revokeShares`. */
+  permissions: z.object({
+    rename: z.boolean(),
+    changeAudience: z.boolean(),
+    sharePublic: z.boolean(),
+    revokeShares: z.boolean()
+  })
+})
+export const OrgArtifactPageDto = z.object({
+  artifacts: z.array(OrgArtifactDto),
+  /** Pass back as `cursor` for older artifacts; null on the last page. */
+  nextCursor: z.string().nullable()
+})
+export const UpdateArtifactBody = z
+  .object({ title: ArtifactTitle.optional(), audience: z.enum(['private', 'org']).optional() })
+  .strict()
+  .refine((body) => body.title !== undefined || body.audience !== undefined, 'name a title, an audience or both')
 export const ArtifactRevisionDto = ArtifactRevisionSummaryDto.extend({
   artifactId: z.string(),
   latestRevision: z.number().int(),
@@ -5618,6 +5660,27 @@ export const ArtifactShareDto = z.object({
   revokedAt: z.string().nullable()
 })
 export const ArtifactShareListDto = z.object({ shares: z.array(ArtifactShareDto) })
+export const OrgArtifactShareListQuery = z.object({
+  /** Only `public` shares are moderated (artifacts.md §6.3). */
+  audience: z.enum(['public']).default('public'),
+  limit: z.coerce.number().int().min(1).max(ARTIFACT_PAGE_MAX).default(25),
+  cursor: z.string().min(1).max(200).optional()
+})
+/** A moderated share: the share and its artifact's metadata, never its manifest or files. */
+export const OrgArtifactShareDto = ArtifactShareDto.extend({
+  artifact: z.object({
+    id: z.string(),
+    title: z.string(),
+    owner: ArtifactDto.shape.owner,
+    /** Whether the caller is in the artifact's audience and may open it. */
+    viewerCanView: z.boolean()
+  })
+})
+export const OrgArtifactSharePageDto = z.object({
+  shares: z.array(OrgArtifactShareDto),
+  /** Pass back as `cursor` for older shares; null on the last page. */
+  nextCursor: z.string().nullable()
+})
 export const CreatedArtifactShareDto = ArtifactShareDto.extend({
   /** The link token, returned only here; the console page is `linkPath`. */
   token: z.string(),

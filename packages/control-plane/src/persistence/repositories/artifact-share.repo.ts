@@ -5,6 +5,7 @@ import type { PrismaLike } from '../prisma.js'
 import type {
   ArtifactRecord,
   ArtifactShareAudience,
+  ArtifactSharePageQuery,
   ArtifactShareRecord,
   ArtifactShareRepo,
   NewArtifactShare
@@ -65,6 +66,40 @@ export class PgArtifactShareRepo implements ArtifactShareRepo {
       data: { revokedAt: at, updatedAt: at }
     })
     return this.get(orgId, artifactId, id)
+  }
+
+  async activeAudiences(
+    orgId: string,
+    artifactIds: readonly string[]
+  ): Promise<Array<{ artifactId: string; audience: ArtifactShareAudience }>> {
+    if (artifactIds.length === 0) return []
+    return this.db.artifactShare.findMany({
+      where: { orgId, artifactId: { in: [...artifactIds] }, revokedAt: null },
+      select: { artifactId: true, audience: true },
+      distinct: ['artifactId', 'audience']
+    })
+  }
+
+  async listActiveInOrg(
+    orgId: string,
+    audience: ArtifactShareAudience,
+    page: ArtifactSharePageQuery
+  ): Promise<Array<{ share: ArtifactShareRecord; artifact: ArtifactRecord }>> {
+    const cursor = page.cursor
+    const rows = await this.db.artifactShare.findMany({
+      where: {
+        orgId,
+        audience,
+        revokedAt: null,
+        ...(cursor
+          ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }
+          : {})
+      },
+      include: { artifact: true },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: page.limit
+    })
+    return rows.map(({ artifact, ...share }) => ({ share: toShare(share), artifact: toArtifact(artifact) }))
   }
 
   async findByTokenHash(tokenHash: string): Promise<{ share: ArtifactShareRecord; artifact: ArtifactRecord } | null> {

@@ -4,6 +4,7 @@ import type { Clock } from '../domain/clock.js'
 import type {
   ArtifactRecord,
   ArtifactShareAudience,
+  ArtifactSharePageQuery,
   ArtifactShareRecord,
   ArtifactShareRepo
 } from '../persistence/ports.js'
@@ -78,6 +79,16 @@ export class ArtifactShareService {
 
   get(orgId: string, artifactId: string, shareId: string): Promise<ArtifactShareRecord | null> {
     return this.deps.shares.get(orgId, artifactId, shareId)
+  }
+
+  /** The audiences of the given artifacts' active shares, one row per artifact and audience. */
+  activeAudiences(orgId: string, artifactIds: readonly string[]) {
+    return this.deps.shares.activeAudiences(orgId, artifactIds)
+  }
+
+  /** Every active share of one audience in the organization with its artifact, for moderation (artifacts.md §6.3). */
+  listActiveInOrg(orgId: string, audience: ArtifactShareAudience, page: ArtifactSharePageQuery) {
+    return this.deps.shares.listActiveInOrg(orgId, audience, page)
   }
 
   /** The link stays the same (D16); null when the share is gone or revoked. */
