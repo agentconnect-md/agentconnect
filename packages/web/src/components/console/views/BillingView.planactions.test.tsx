@@ -593,6 +593,51 @@ describe('a pending upgrade', () => {
     expect(banner()!.querySelector('a')).not.toBeNull()
     expect(cancelButton()).toBeNull()
   })
+
+  const blocked = () => dialog()?.querySelector('[data-plan-blocked]') ?? null
+
+  it('offers its two ways out in Change plan instead of a choice that would be refused', async () => {
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    await render()
+    await openChangePlan()
+    expect(blocked()!.textContent).toContain('Your plan upgrade is waiting for payment')
+    expect(blocked()!.textContent).toContain('Complete or cancel this payment before making another plan change.')
+    expect(blocked()!.querySelector('a')!.getAttribute('href')).toBe('https://pay.example.test/i/1')
+    expect(dialog()!.querySelector('[data-plan-tier]')).toBeNull()
+    expect(buttonIn(dialog()!, 'Try again')).toBeUndefined()
+    mocks.subscription.mockResolvedValue(PRO)
+    await click(blocked()!.querySelector('[data-plan-pending-cancel]'))
+    await click(buttonIn(blocked()!.querySelector('[role="dialog"]')!, 'Cancel upgrade'))
+    expect(mocks.cancelChange).toHaveBeenCalledWith('org_example', 'chg_1')
+    expect(blocked()).toBeNull()
+    expect(dialog()!.querySelector('[data-plan-tier]')).not.toBeNull()
+  })
+
+  it('closes only the cancel confirmation on Escape, then Change plan on the next', async () => {
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    await render()
+    await openChangePlan()
+    await click(blocked()!.querySelector('[data-plan-pending-cancel]'))
+    const escape = () =>
+      act(async () => void window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })))
+    await escape()
+    expect(blocked()!.querySelector('[role="dialog"]')).toBeNull()
+    await escape()
+    expect(dialog()).toBeNull()
+    expect(mocks.cancelChange).not.toHaveBeenCalled()
+  })
+
+  it('shows up in Change plan when a refused change reveals one the page had not read yet', async () => {
+    mocks.schedule.mockRejectedValue(new BillingError('a plan change for this organization has not settled yet', 409))
+    await render()
+    await openChangePlan()
+    await click(dialog()!.querySelector('[data-plan-tier="free"]'))
+    await click(buttonIn(dialog()!, 'Review change'))
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    await click(buttonIn(dialog()!, 'Schedule'))
+    expect(blocked()!.textContent).toContain('Your plan upgrade is waiting for payment')
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull()
+  })
 })
 
 describe('Change plan: first purchase from Free', () => {
@@ -1075,5 +1120,21 @@ describe('plan trial', () => {
     expect(mocks.cancelChange).toHaveBeenCalledWith('org_example', 'chg_1')
     expect(q('[data-plan-banner="pending"]')).toBeNull()
     expect(q('[data-plan-cancel-trial]')).not.toBeNull()
+  })
+
+  it('names an unpaid Pay now in Change plan as a payment, with no plan to pick until it is cancelled', async () => {
+    const pendingChange = { id: 'chg_1', kind: 'upgrade', tierId: 'pro', optionId: 'standard', payUrl: null }
+    mocks.subscription.mockResolvedValue({ ...TRIAL, pendingChange })
+    await render()
+    await openChangePlan()
+    const blocked = dialog()!.querySelector('[data-plan-blocked]')!
+    expect(blocked.textContent).toContain('Your plan payment is pending')
+    expect(blocked.textContent).toContain('The payment page is being prepared. Check back shortly.')
+    expect(blocked.querySelector('a')).toBeNull()
+    expect(footButtons()).toEqual(['Close'])
+    mocks.subscription.mockResolvedValue(TRIAL)
+    await click(blocked.querySelector('[data-plan-pending-cancel]'))
+    await click(buttonIn(blocked.querySelector('[role="dialog"]')!, 'Cancel payment'))
+    expect(footButtons()).toEqual(['Cancel', 'Pay now'])
   })
 })

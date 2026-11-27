@@ -5618,6 +5618,7 @@
         "upgradeTitle": "Your plan upgrade is waiting for payment",
         "body": "The plan changes once the payment completes.",
         "bodyNoLink": "The payment page is being prepared. Check back shortly.",
+        "blocksChange": "Complete or cancel this payment before making another plan change.",
         "pay": "Complete payment",
         "cancel": "Cancel upgrade",
         "cancelTitle": "Cancel this upgrade?",

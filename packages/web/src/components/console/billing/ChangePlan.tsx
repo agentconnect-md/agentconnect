@@ -17,6 +17,7 @@ import {
   fmtMicroUsd,
   quoteBillingUpgrade,
   scheduleBillingChange,
+  type BillingPendingChange,
   type BillingPlanOption,
   type BillingPlans,
   type BillingSubscription,
@@ -26,7 +27,8 @@ import {
 import { helpSupportUrl } from '@/lib/help-links'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
-import { planLabel, useUtcDates } from './Plan'
+import { useEscapeLayer } from '@/components/console/Scrim'
+import { CancelPendingButton, planLabel, useUtcDates } from './Plan'
 
 const POLL_INTERVAL_MS = 2_500
 const POLL_MAX_ATTEMPTS = 120
@@ -199,6 +201,8 @@ const NOTE = {
 } as const
 
 const TIER_BADGE = 'rounded-full px-1.5 text-[11px] leading-4 font-medium'
+const AMBER_TILE =
+  'mx-auto flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)'
 
 function ChoiceMark() {
   return (
@@ -250,6 +254,7 @@ export function ChangePlanDialog({
   start,
   returnPath,
   onClose,
+  onCancelPending,
   onChanged
 }: {
   orgId: string
@@ -258,9 +263,11 @@ export function ChangePlanDialog({
   start: ChangePlanStart
   returnPath: string
   onClose: () => void
+  onCancelPending?: (change: BillingPendingChange) => Promise<void>
   onChanged: () => void
 }) {
   const t = useTranslations('Billing.plan.change')
+  const tPending = useTranslations('Billing.plan.pending')
   const titleId = useId()
   const { day, number } = useUtcDates()
   const plans = catalog.data
@@ -285,13 +292,8 @@ export function ChangePlanDialog({
   const changed = useRef(onChanged)
   changed.current = onChanged
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  // A layer, not a window listener, so Escape closes only the confirmation open on top of this dialog.
+  useEscapeLayer(onClose)
 
   const settle = (c: BillingSubscriptionChange, attempt: number) => {
     setChange(c)
@@ -391,6 +393,11 @@ export function ChangePlanDialog({
     </a>
   )
 
+  // A 409 means the plan state moved under the dialog, so the reread shows why (a payment pending elsewhere, say).
+  const refreshOnConflict = (e: unknown) => {
+    if (e instanceof BillingError && e.status === 409) changed.current()
+  }
+
   const requestQuote = async (again: boolean) => {
     if (!option) return
     const seq = ++quoteSeq.current
@@ -402,6 +409,7 @@ export function ChangePlanDialog({
       if (seq === quoteSeq.current) setQuote({ quote: q, key: crypto.randomUUID() })
     } catch (e) {
       if (seq === quoteSeq.current) setError((e as Error).message)
+      refreshOnConflict(e)
     }
   }
 
@@ -460,6 +468,7 @@ export function ChangePlanDialog({
         setStep('done')
       } catch (e) {
         setError((e as Error).message)
+        refreshOnConflict(e)
       }
       setBusy(false)
       return
@@ -485,8 +494,54 @@ export function ChangePlanDialog({
     </button>
   )
 
+  // An unpaid upgrade blocks every other plan change, so the dialog offers its two ways out instead of a choice.
+  const blocked =
+    (step === 'choose' || step === 'review') && sub.pendingChange?.kind === 'upgrade' ? sub.pendingChange : null
+
   let body: ReactNode = null
-  if (step === 'choose' && onContract) {
+  if (blocked) {
+    body = (
+      <>
+        {/* Centered per element: the cancel confirmation renders inside and must not inherit it. */}
+        <div className="modalbody px-7 py-10" data-plan-blocked="true">
+          <span className={AMBER_TILE}>
+            <Icon name="clock" size={21} />
+          </span>
+          <h2 id={titleId} className="mt-3.5 text-center font-sans text-[15px] leading-normal font-semibold">
+            {tPending(trialEndsAt ? 'trial.title' : 'upgradeTitle')}
+          </h2>
+          <div className="mx-auto mt-1.5 max-w-[400px] text-center font-sans text-[12.5px] font-normal leading-[1.65] text-(--text-secondary)">
+            {tPending('blocksChange')}
+            {!blocked.payUrl && ` ${tPending('bodyNoLink')}`}
+          </div>
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+            {blocked.payUrl && (
+              <a className="lnk flex w-fit" href={blocked.payUrl} target="_blank" rel="noopener noreferrer">
+                {tPending('pay')}
+                <Icon name="arrow-up-right" size={12} />
+              </a>
+            )}
+            {onCancelPending && (
+              <CancelPendingButton
+                change={blocked}
+                trial={!!trialEndsAt}
+                onCancel={async (c) => {
+                  await onCancelPending(c)
+                  back()
+                }}
+              />
+            )}
+          </div>
+        </div>
+        <div className="modalfoot">
+          <span className="flex-1" />
+          <Button size="sm" variant="secondary" onClick={onClose}>
+            {t('close')}
+          </Button>
+        </div>
+      </>
+    )
+  } else if (step === 'choose' && onContract) {
     const rows = [
       { k: t('sessionsPerMonth'), v: number(sub.sessionLimit) },
       ...(sub.paidThrough ? [{ k: t('contract.ends'), v: day(sub.paidThrough) }] : [])
@@ -981,7 +1036,7 @@ export function ChangePlanDialog({
       <>
         <div className="modalbody px-7 py-10 text-center" data-plan-paying={outcome?.kind ?? 'confirming'}>
           {outcome ? (
-            <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)">
+            <span className={AMBER_TILE}>
               <Icon name={outcome.kind === 'stalled' ? 'clock' : 'triangle-exclamation-point'} size={21} />
             </span>
           ) : (
@@ -1088,7 +1143,7 @@ export function ChangePlanDialog({
     <div className="scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         className={
-          step === 'choose' && !onContract
+          step === 'choose' && !onContract && !blocked
             ? 'modal max-w-[900px]'
             : step === 'done'
               ? 'modal max-w-[420px]'
