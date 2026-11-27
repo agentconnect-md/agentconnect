@@ -60,6 +60,11 @@ export function servedPath(manifestPath: string): string {
   return `/${manifestPath.split('/').map(encodeURIComponent).join('/')}`
 }
 
+/** The URL path a site opens at: an `index.html` entry opens at its directory, as a web server would, so a router sees `/`. */
+export function entryPagePath(entry: string): string {
+  return servedPath(entry).replace(/(^|\/)index\.html$/, '$1')
+}
+
 /** The manifest type, with UTF-8 named for text that names no charset, since agents write UTF-8. */
 export function replyType(mediaType: string): string {
   const type = mediaType.trim()

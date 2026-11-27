@@ -6,6 +6,7 @@ import {
   MAX_OPEN_PORTS,
   readContentRequest,
   replyType,
+  entryPagePath,
   servedPath,
   type PortServerFile
 } from './port-server'
@@ -91,6 +92,13 @@ describe('manifestPathOf', () => {
   it('serves a manifest path under its encoded segments', () => {
     expect(servedPath('docs/a b.html')).toBe('/docs/a%20b.html')
     expect(servedPath('q?#.html')).toBe('/q%3F%23.html')
+  })
+
+  it('opens an index.html entry at its directory', () => {
+    expect(entryPagePath('index.html')).toBe('/')
+    expect(entryPagePath('docs/index.html')).toBe('/docs/')
+    expect(entryPagePath('report.html')).toBe('/report.html')
+    expect(entryPagePath('my index.html')).toBe('/my%20index.html')
   })
 
   it('names UTF-8 for text without a charset', () => {
