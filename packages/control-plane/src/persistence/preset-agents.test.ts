@@ -33,11 +33,10 @@ describe('GENERAL_PRESET validation parity', () => {
   })
 })
 
-describe('PRESET_SKILL_SOURCE validation parity', () => {
+// Provisioning no longer writes this source (skill-over-mcp.md §7.1); the pins keep its §7.2 cleanup and rollback exact.
+describe('deprecated PRESET_SKILL_SOURCE validation parity', () => {
   it('projects to a legal AgentSpec skill entry (the exact shape the daemon installs)', () => {
-    // Mirrors agentSpecAssembler's candidate construction: if the constants ever
-    // stop parsing, resolveAgentSkillEntries would silently DROP the source and
-    // the preset would ship skill-less — fail here instead.
+    // Mirrors agentSpecAssembler's candidate construction, so a rollback that restores the source still resolves.
     const entry = AgentSkillEntry.safeParse({
       name: PRESET_SKILL_SOURCE.name,
       source: PRESET_SKILL_SOURCE.source,
@@ -55,9 +54,7 @@ describe('PRESET_SKILL_SOURCE validation parity', () => {
   })
 
   it('follows the source repo head: an unfiltered source, enabled whole', () => {
-    // Both halves must stay open, or adding a skill to the repo would need a CP
-    // release again: a filter here, or a specific-skill enable-ref there, re-pins
-    // the roster (resolveAgentSkillEntries intersects the two).
+    // A filter or a specific-skill enable-ref would re-pin the roster (resolveAgentSkillEntries intersects them).
     expect(PRESET_SKILL_SOURCE.skills).toEqual([])
     expect(PRESET_AGENT_SKILLS.length).toBeGreaterThan(0)
     for (const ref of PRESET_AGENT_SKILLS) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { unzipSync } from 'fflate'
-import { packageSkillBundle, SkillBundleValidationError } from './skill-bundle.js'
+import { packageSkillBundle, RESERVED_SKILL_NAMES, SkillBundleValidationError } from './skill-bundle.js'
 
 const manifest = `---
 name: deploy-helper
@@ -57,6 +57,13 @@ describe('packageSkillBundle', () => {
   it('requires SKILL.md name to match the suggested skill', () => {
     expect(() => packageSkillBundle([{ path: 'SKILL.md', encoding: 'utf8', content: manifest }], 'other')).toThrow(
       'SKILL.md name must match suggestion title'
+    )
+  })
+
+  it.each([...RESERVED_SKILL_NAMES])('reserves the built-in system skill name %s', (name) => {
+    const reserved = manifest.replace('name: deploy-helper', `name: ${name}`)
+    expect(() => packageSkillBundle([{ path: 'SKILL.md', encoding: 'utf8', content: reserved }], name)).toThrow(
+      `skill name "${name}" is reserved for a built-in AgentConnect system skill`
     )
   })
 
