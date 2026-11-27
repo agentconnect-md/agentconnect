@@ -148,6 +148,7 @@ the picture it draws.
 - [memory-dreaming.md](designs/memory-dreaming.md) — Offline memory consolidation ("dreaming").
 - [organization-knowledge.md](designs/organization-knowledge.md) — Organization knowledge bundles and dream suggestions.
 - [shared-skills.md](designs/shared-skills.md) — One isolated `skills` CLI for git and local skill sources.
+- **(draft)** [skill-over-mcp.md](designs/skill-over-mcp.md) — Built-in system skills (`agentconnect-images`, `agentconnect-platform`, `agentconnect-create-agent`, `agentconnect-create-team`) served on demand through the daemon's `readSkill` MCP tool instead of workspace files, with capability-scoped exposure and two-phase retirement of the preset `agentconnect` Git skill source.
 - [centralized-tool-management.md](designs/centralized-tool-management.md) — Centralized tool management: the relay-data-plane MCP proxy.
 - [mcp-tool-permissions.md](designs/mcp-tool-permissions.md) — Per-agent MCP tool permissions: agent grants bound to per-tool allow, approval, ask and block decisions; the relay blocks, and the daemon's credential proxy checks runtime approvals.
 - [mcp-provider-oauth.md](designs/mcp-provider-oauth.md) — OAuth-authorized MCP providers: the CP holds the grant, the relay injects the current access token.
