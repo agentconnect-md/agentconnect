@@ -50,8 +50,11 @@ export function proxy(req: NextRequest) {
   const isEntry = pathname === '/' || CONSOLE_ROOTS.includes(first)
   if (!isEntry) {
     const response = sameOriginFramesOnly(NextResponse.next())
-    // A share page's address carries its token, so nothing it loads may learn that address (artifacts.md §8.3).
-    if (first === 'share') response.headers.set('Referrer-Policy', 'no-referrer')
+    // A share page's address carries its token: leak it to nothing it loads, and keep it out of search (artifacts.md §8.3).
+    if (first === 'share') {
+      response.headers.set('Referrer-Policy', 'no-referrer')
+      response.headers.set('X-Robots-Tag', 'noindex')
+    }
     return response
   }
 
