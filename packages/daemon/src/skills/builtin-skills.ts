@@ -1,5 +1,4 @@
-// Daemon-owned builtin skills (webchat-generated-images.md §3): versioned with the daemon, installed through the ordinary ledger.
-import { createHash } from 'node:crypto'
+// Daemon-owned system skills (skill-over-mcp.md §4.1): versioned with the daemon and served by `readSkill`, never installed on disk.
 import { readdir, readFile, realpath } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,10 +44,8 @@ export function isBuiltinMcpSkillName(name: string): name is BuiltinMcpSkillName
   return (BUILTIN_MCP_SKILL_NAMES as readonly string[]).includes(name)
 }
 
-/** Source keys of builtin skills start here, so receipts and inventories can tell them apart. */
+/** Source keys an older daemon gave its installed builtins, so legacy receipts and inventories can tell them apart. */
 export const BUILTIN_SKILL_KEY_PREFIX = 'builtin:'
-
-let cached: Promise<LocalSkillSource[]> | undefined
 
 /** The packaged skill directories: beside the bundle in dist, or the package's own builtin-skills in source. */
 async function builtinSkillDir(name: string): Promise<string | undefined> {
@@ -64,31 +61,6 @@ async function builtinSkillDir(name: string): Promise<string | undefined> {
     }
   }
   return undefined
-}
-
-async function loadBuiltinSkillSources(): Promise<LocalSkillSource[]> {
-  const sources: LocalSkillSource[] = []
-  for (const name of [BUILTIN_IMAGES_SKILL]) {
-    const sourceDir = await builtinSkillDir(name)
-    if (!sourceDir) continue
-    const digest = createHash('sha256')
-      .update(await readFile(join(sourceDir, 'SKILL.md')))
-      .digest('hex')
-    sources.push({
-      kind: 'managed',
-      key: `${BUILTIN_SKILL_KEY_PREFIX}${name}:${digest}`,
-      name,
-      sourceDir,
-      contentDigest: digest
-    })
-  }
-  return sources
-}
-
-/** The builtin skill sources this daemon ships; empty when the package lacks them, never a startup failure. */
-export function builtinSkillSources(): Promise<LocalSkillSource[]> {
-  cached ??= loadBuiltinSkillSources().catch(() => [])
-  return cached
 }
 
 /** Drop a leading `---` YAML block; the tool descriptor already carries the name and summary. */
@@ -139,17 +111,40 @@ export function builtinMcpSkills(): Promise<ReadonlyMap<BuiltinMcpSkillName, Bui
   return mcpCached
 }
 
-/** Builtins win their reserved names and install last; a same-named configured source is dropped with a diagnosis. */
+/** Built-in names are reserved: a same-named managed or Dream source is dropped with a diagnosis (skill-over-mcp.md §6.3). */
 export function reserveBuiltinSkills(sources: LocalSkillSource[], warn: (message: string) => void): LocalSkillSource[] {
-  const builtins = sources.filter((source) => source.key.startsWith(BUILTIN_SKILL_KEY_PREFIX))
-  const reserved = new Set(builtins.map((source) => source.name))
-  const kept = sources.filter((source) => {
+  return sources.filter((source) => {
+    // A legacy builtin source is never installed again; readSkill serves it.
     if (source.key.startsWith(BUILTIN_SKILL_KEY_PREFIX)) return false
-    if (!reserved.has(source.name)) return true
+    if (!isBuiltinMcpSkillName(source.name)) return true
     warn(
       `skills: "${source.name}" is reserved for the daemon's builtin skill; the source ${source.key} is not installed`
     )
     return false
   })
-  return [...kept, ...builtins]
+}
+
+/** The preset `agentconnect` Git source (preset-agents.md §3.1), whose skills `readSkill` now serves. */
+export const PRESET_AGENTCONNECT_SKILL_NAME = 'agentconnect'
+export const PRESET_AGENTCONNECT_SKILL_REPO_ID = '1322557433'
+const PRESET_AGENTCONNECT_SKILL_SOURCE_RE =
+  /^(?:(?:https?:\/\/(?:www\.)?|ssh:\/\/git@|git@)?github\.com[/:])?agentconnect-md\/agentconnect-skill(?:\.git)?\/?$/i
+
+/** True for the unmodified preset source; a renamed, repointed, re-ref'd, re-rooted or widened one keeps its Git install (skill-over-mcp.md §6.2). */
+export function isMigratedBuiltinGitSkillSource(entry: {
+  name?: string
+  source: string
+  githubRepoId?: string
+  ref?: string
+  subDir?: string
+  skills?: readonly string[]
+}): boolean {
+  if (entry.name !== undefined && entry.name !== PRESET_AGENTCONNECT_SKILL_NAME) return false
+  if (!PRESET_AGENTCONNECT_SKILL_SOURCE_RE.test(entry.source.trim())) return false
+  if (entry.githubRepoId !== undefined && entry.githubRepoId !== PRESET_AGENTCONNECT_SKILL_REPO_ID) return false
+  const ref = entry.ref?.trim()
+  if (ref && ref !== 'main') return false
+  const subDir = entry.subDir?.trim().replace(/^\/+|\/+$/g, '')
+  if (subDir && subDir !== 'skills') return false
+  return (entry.skills ?? []).every((skill) => isBuiltinMcpSkillName(skill))
 }

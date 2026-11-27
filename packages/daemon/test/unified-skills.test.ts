@@ -625,6 +625,63 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(await readFile(join(cwd, '.runtime/skills/repair/SKILL.md'), 'utf8')).toBe('tampered')
   }, 120_000)
 
+  it('retires the builtin skills an older daemon installed once readSkill serves them, leaving a user-edited one', async () => {
+    const legacy = ['agentconnect-images', 'agentconnect-platform', 'agentconnect-create-agent']
+    const cli = fakeCli(() => '.claude')
+    const older: LocalSkillSource[] = await Promise.all(
+      legacy.map(async (name) => ({
+        kind: 'managed' as const,
+        key: `builtin:${name}:${digest(name)}`,
+        name,
+        sourceDir: await writeSkill(sources, name)
+      }))
+    )
+    const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills: older,
+      runCli: cli.run
+    })
+    expect(first.owned.sort()).toEqual(legacy.map((name) => `.claude/skills/${name}`).sort())
+    await writableTree(join(cwd, '.claude/skills/agentconnect-create-agent'))
+    await writeFile(join(cwd, '.claude/skills/agentconnect-create-agent/SKILL.md'), 'mine')
+
+    // The upgraded daemon: no builtin source, and the preset Git source is skipped without a fetch or a failure.
+    const preset = {
+      name: 'agentconnect',
+      source: 'agentconnect-md/agentconnect-skill',
+      githubRepoId: '1322557433',
+      ref: 'main',
+      subDir: 'skills',
+      skills: []
+    }
+    const acquireGit = vi.fn()
+    const upgraded = await installSkills({ id: 'a1', runtime: 'claude', skills: [preset] }, cwd, {
+      stateDir,
+      localSkills: [],
+      acquireGit,
+      runCli: cli.run
+    })
+    expect(acquireGit).not.toHaveBeenCalled()
+    expect(upgraded.sourceFailures).toBeUndefined()
+    expect(upgraded.owned).toEqual([])
+    expect(upgraded.removed.sort()).toEqual([
+      '.claude/skills/agentconnect-images',
+      '.claude/skills/agentconnect-platform'
+    ])
+    expect(existsSync(join(cwd, '.claude/skills/agentconnect-images'))).toBe(false)
+    expect(existsSync(join(cwd, '.claude/skills/agentconnect-platform'))).toBe(false)
+    expect(await readFile(join(cwd, '.claude/skills/agentconnect-create-agent/SKILL.md'), 'utf8')).toBe('mine')
+    expect(cli.calls).toHaveLength(legacy.length)
+
+    const again = await installSkills({ id: 'a1', runtime: 'claude', skills: [preset] }, cwd, {
+      stateDir,
+      localSkills: [],
+      acquireGit,
+      runCli: cli.run
+    })
+    expect(again).toMatchObject({ skipped: 'unchanged', owned: [] })
+  }, 120_000)
+
   it('refuses a workspace-planted parent symlink without touching the outside canary', async () => {
     const sourceDir = await writeSkill(sources, 'safe', 'safe')
     const outside = join(root, 'outside')

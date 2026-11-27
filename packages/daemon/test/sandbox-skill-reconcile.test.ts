@@ -702,6 +702,32 @@ describe('sandbox skill reconcile: routing', () => {
     })
   }, 120_000)
 
+  it.each(['daemon', 'pod'] as const)(
+    'skips the preset agentconnect Source readSkill serves, on the %s path, keeping its siblings’ ids',
+    async (mode) => {
+      await withWorld(async (w) => {
+        const preset = AgentSkillEntry.parse({
+          name: 'agentconnect',
+          source: 'agentconnect-md/agentconnect-skill',
+          githubRepoId: '1322557433',
+          ref: 'main',
+          subDir: 'skills'
+        })
+        const box = await sandbox(w, mode)
+        const acquired: string[] = []
+        const reported: NonNullable<Run['reported']> = []
+        const ledger = await run(w, box, mode, { skills: [preset, PUBLIC], acquired, reported })
+        expect(acquired).not.toContain('agentconnect')
+        expect(box.gitPlans().flat()).not.toContainEqual(expect.objectContaining({ name: 'agentconnect' }))
+        expect(reported).toEqual([[]])
+        expect(ledger.roots.filter((root) => root.sourceKind === 'agent').map((root) => root.sourceId)).toEqual([
+          expect.stringMatching(/^agent:1:/)
+        ])
+      })
+    },
+    120_000
+  )
+
   it('reports a daemon-path acquisition failure by its code, and clears it once the Source installs', async () => {
     await withWorld(async (w) => {
       const box = await sandbox(w, 'daemon')

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +13,7 @@ import { ExecutorPlane } from '../src/execution/executor-plane.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
 import { ClusterSkillCoordinator } from '../src/skills/cluster-skill-coordinator.js'
+import type { ClusterSkillLedger } from '../src/store/cluster-skill-ledger.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
 import { cwdWorkspaceIncarnation, workspaceIncarnationOf } from '../src/skills/workspace-incarnation.js'
 import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
@@ -894,12 +895,88 @@ describe('Daemon session lifecycle (#118)', () => {
     }
   })
 
+  it('asks a sandbox nothing without skills to install or retire, and retires legacy builtin roots once', async () => {
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
+    try {
+      await daemon.start()
+      const d = daemon as any
+      d.runtimeCatalog.entries.claude = { ...d.runtimeCatalog.entries.claude, skillsAgentId: 'claude' }
+      const preset = {
+        name: 'agentconnect',
+        source: 'agentconnect-md/agentconnect-skill',
+        githubRepoId: '1322557433',
+        ref: 'main',
+        subDir: 'skills',
+        skills: []
+      }
+      const agent = { ...d.agents.get('bot-a'), skills: [preset], managedSkills: [] }
+      const root = (path: string, sourceId: string, sourceKind: 'agent' | 'managed') => ({
+        path,
+        sourceId,
+        sourceKind,
+        digest: 'a'.repeat(64),
+        files: []
+      })
+      const ledgers = new Map<string, { revision: number; ledger: ClusterSkillLedger }>()
+      vi.spyOn(d.store, 'clusterSkillLedger').mockImplementation((async (_id: string, key: string) =>
+        ledgers.get(key)) as never)
+      const begin = vi.spyOn(d.store, 'beginClusterSkillReconcile')
+      const reconcile = vi.spyOn(ClusterSkillCoordinator.prototype, 'reconcile').mockImplementation(async (input) => {
+        ledgers.set(input.authority.workspaceIncarnation, { revision: 2, ledger: { roots: [] } })
+        return { roots: [] }
+      })
+      const peer = {
+        client: { manifestLimits: { maxFiles: 1, maxTotalBytes: 1 } },
+        workspaceIncarnation: 'workspace:w',
+        shimGeneration: 1,
+        isLaunchCurrent: () => true,
+        localAuthority: { groupId: 'group-a', term: '1', daemonId: 'daemon-a' }
+      }
+
+      // A fresh sandbox whose only source is the preset readSkill now serves.
+      expect(await d.reconcileSandboxSkills(agent, peer)).toBeUndefined()
+      expect(begin).not.toHaveBeenCalled()
+      expect(reconcile).not.toHaveBeenCalled()
+
+      // A volume an older daemon filled: one cleanup reconcile, then nothing.
+      ledgers.set('workspace:w', {
+        revision: 1,
+        ledger: {
+          roots: [
+            root('.claude/skills/agentconnect-images', `builtin:agentconnect-images:${'b'.repeat(64)}`, 'managed'),
+            root('.claude/skills/agentconnect-platform', `agent:0:${'c'.repeat(64)}:${'d'.repeat(40)}`, 'agent')
+          ]
+        }
+      })
+      await d.reconcileSandboxSkills(agent, peer)
+      expect(reconcile).toHaveBeenCalledOnce()
+      expect(reconcile.mock.calls[0]![0].sources).toEqual([])
+      await d.reconcileSandboxSkills(agent, peer)
+      expect(reconcile).toHaveBeenCalledOnce()
+
+      // A runtime without skill support starts over legacy roots rather than refusing.
+      d.runtimeCatalog.entries.claude = { ...d.runtimeCatalog.entries.claude, skillsAgentId: null }
+      ledgers.set('workspace:w', {
+        revision: 3,
+        ledger: { roots: [root('.claude/skills/agentconnect-create-team', `agent:0:${'c'.repeat(64)}:x`, 'agent')] }
+      })
+      await expect(d.reconcileSandboxSkills(agent, peer)).resolves.toBeUndefined()
+      expect(reconcile).toHaveBeenCalledOnce()
+      expect(begin).not.toHaveBeenCalled()
+    } finally {
+      vi.restoreAllMocks()
+      await daemon.stop()
+    }
+  })
+
   it("installs a placed session's skills into its checkout and retires those at its session directory", async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as never })
     try {
       await daemon.start()
       const d = daemon as any
       const agent = d.agents.get('bot-a')
+      // One managed binding the checkout installs; with nothing desired there, its preparation would ask the shim nothing.
+      agent.managedSkills = [{ id: randomUUID(), name: 'a', revision: 1, digest: `sha256:${'a'.repeat(64)}` }]
       d.runtimeCatalog.entries.claude = { ...d.runtimeCatalog.entries.claude, skillsAgentId: 'claude' }
       const cwd = '/srv/executor/sessions/leaf/workspace'
       const reported = 'workspace:reported'
