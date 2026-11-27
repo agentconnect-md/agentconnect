@@ -91,6 +91,8 @@ const CoreConfigShape = {
   // HMAC pepper for `api_key.hash` (C4). Required, ≥32 chars. Effectively immutable —
   // rotating it invalidates every stored key hash. See daemon-api-key-auth.md.
   API_KEY_PEPPER: z.string().min(32),
+  // Root of the CP's signing/MAC keys, rotatable apart from the pepper; unset or empty ⇒ API_KEY_PEPPER.
+  TOKEN_SIGNING_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
   // ── Relay (shared-bot-relay.md §8) — the unified ingress plane ──
   // Deployment-shared secret for the relay↔CP `rc/auth` token mode. Unset ⇒ token
   // mode is OFF (relays must present a per-relay ApiKey instead). ≥32 chars, and
@@ -527,6 +529,13 @@ const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
   .superRefine(validateSessionAccess)
   .superRefine(validateContentDomain)
   .superRefine((config, ctx) => {
+    if (config.TOKEN_SIGNING_SECRET === config.API_KEY_PEPPER) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TOKEN_SIGNING_SECRET'],
+        message: 'TOKEN_SIGNING_SECRET must differ from API_KEY_PEPPER'
+      })
+    }
     if (config.WEBCHAT_PROTOCOL === 'ahp' && config.AHP_MODE !== 'on') {
       ctx.addIssue({ code: 'custom', path: ['WEBCHAT_PROTOCOL'], message: 'AHP Webchat requires AHP_MODE=on' })
     }
@@ -586,6 +595,11 @@ export function corsWebOrigin(cors?: string): string | undefined {
     }
   }
   return undefined
+}
+
+/** The root every CP signing/MAC key derives from; the pepper itself only keys stored lookup hashes. */
+export function tokenSigningRoot(config: Pick<AppConfig, 'TOKEN_SIGNING_SECRET' | 'API_KEY_PEPPER'>): string {
+  return config.TOKEN_SIGNING_SECRET ?? config.API_KEY_PEPPER
 }
 
 /** The Web App console origin sent to daemons for session deep links (`<url>/sessions/<id>`).

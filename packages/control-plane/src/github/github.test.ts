@@ -91,7 +91,7 @@ describe('GithubService.getGitCommitIdentity', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl: async (url, init) => {
         calls += 1
         expect(url).toContain('/users/example-login-app%5Bbot%5D')
@@ -117,7 +117,7 @@ describe('GithubService.getGitCommitIdentity', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       log: { warn },
       fetchImpl: async () => {
         calls += 1
@@ -178,7 +178,7 @@ describe('GithubService.listHookDeliveries', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
 
@@ -263,7 +263,7 @@ describe('GithubService comment authorization lookups', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl: async () => Response.json(body, { status })
     })
     vi.spyOn(service.tokens, 'metadataToken').mockResolvedValue('ghs_test')
@@ -398,7 +398,7 @@ describe('GithubService.sync', () => {
       } as never,
       installState: { put: async () => {}, consume: async () => true },
       onInstallationFactsChanged,
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl: async (url) => {
         urls.push(url)
         if (url.endsWith('/app/installations/42')) {
@@ -442,7 +442,7 @@ describe('GithubService.outdatedInstallations', () => {
       clock,
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl: async (url) => {
         urls.push(url)
         return Response.json([
@@ -507,7 +507,7 @@ describe('GithubService repository picker reads', () => {
       clock,
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     vi.spyOn(svc.tokens, 'metadataToken').mockResolvedValue('ghs_metadata')
@@ -542,7 +542,7 @@ describe('GithubService repository picker reads', () => {
       clock: new FakeClock(),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     vi.spyOn(svc.tokens, 'metadataToken').mockResolvedValue('ghs_metadata')
@@ -566,7 +566,7 @@ describe('GithubService.uninstallInstallation', () => {
       clock,
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl: async (url, init) => {
         calls.push({ url, method: init?.method ?? 'GET' })
         if (init?.method === 'DELETE') {
@@ -598,7 +598,7 @@ describe('GithubService.uninstallInstallation', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       appRegistry: {
         configForInstallation: async (id: bigint) =>
           id === 43n ? { ...cfg(), appId: 2000, jwtIssuer: '2000' } : undefined
@@ -621,7 +621,7 @@ describe('GithubService.uninstallInstallation', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: {} as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl: async () => Response.json({ message: 'service unavailable' }, { status: 503 })
     })
 
@@ -1091,7 +1091,7 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
         liveByOrgAndAccount: async () => installation
       } as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     const agent = {
@@ -1156,7 +1156,7 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
         clock,
         installations: { get: async () => installation, liveByOrgAndAccount: async () => installation } as never,
         installState: { put: async () => {}, consume: async () => true },
-        pepper: 'p'.repeat(32),
+        signingSecret: 'p'.repeat(32),
         fetchImpl
       })
       const agent = {
@@ -1365,7 +1365,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       ...(opts.skillSources
         ? { skillSources: { getByName: async (_org: string, name: string) => opts.skillSources![name] ?? null } }
         : {}),
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     return {
@@ -2171,7 +2171,7 @@ describe('GithubService.mintReviewForAgent — persisted installation permission
       clock,
       installations: { liveByOrgAndAccount: async () => installation } as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     const agent = {
@@ -2280,7 +2280,7 @@ describe('GithubService.refreshInstallationFacts', () => {
       } as never,
       installState: { put: async () => {}, consume: async () => true },
       onInstallationFactsChanged,
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
 
@@ -2300,7 +2300,7 @@ describe('GithubService.refreshInstallationFacts', () => {
       clock: new FakeClock(1_700_000_000_000),
       installations: { getByInstallationId: vi.fn(async () => null) } as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
 
@@ -2352,7 +2352,7 @@ describe('GithubService.refreshInstallationFacts', () => {
         markRevokedByInstallationId: vi.fn()
       } as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     vi.spyOn(svc, 'resolveAgentRepoAuthorization').mockResolvedValue({
@@ -2418,7 +2418,7 @@ describe('GithubService mint budget', () => {
       clock,
       installations: { get: async () => installation, liveByOrgAndAccount: async () => installation } as never,
       installState: { put: async () => {}, consume: async () => true },
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       fetchImpl
     })
     // Each agent has its own repository, so no agent's mint is answered from another's cache entry.

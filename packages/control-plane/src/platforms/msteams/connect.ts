@@ -73,9 +73,9 @@ export interface MsTeamsConnectState {
   pin?: string
 }
 
-/** Domain-separated keys from the pepper, one per purpose; the pepper itself never signs or encrypts. */
-export function msTeamsConnectKeys(pepper: string) {
-  const derive = (label: string) => createHmac('sha256', pepper).update(label).digest()
+/** Domain-separated keys from the token signing root, one per purpose; the root itself never signs or encrypts. */
+export function msTeamsConnectKeys(signingSecret: string) {
+  const derive = (label: string) => createHmac('sha256', signingSecret).update(label).digest()
   return { state: derive('msteams-connect-state-v1'), ticket: derive('msteams-connect-ticket-v1') }
 }
 export type MsTeamsConnectKeys = ReturnType<typeof msTeamsConnectKeys>

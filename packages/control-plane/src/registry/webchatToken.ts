@@ -12,8 +12,7 @@
  * minting. The CP re-resolves the agent's CURRENT placement (daemonId) at verify time
  * (placement can change between mint and dial), so the token never encodes it.
  *
- * The signing key is DERIVED from `API_KEY_PEPPER` (domain-separated) so no new secret
- * config is required; it never leaves the CP.
+ * The signing key is derived (domain-separated) from the token signing root and never leaves the CP.
  */
 import { createHmac } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
@@ -93,11 +92,11 @@ export class WebchatTokenService {
   private readonly key: Uint8Array
 
   constructor(
-    pepper: string,
+    signingSecret: string,
     private readonly ttlSec: number = DEFAULT_TTL_SEC
   ) {
-    // Domain-separated HMAC of the pepper → a dedicated 256-bit signing key.
-    this.key = new Uint8Array(createHmac('sha256', pepper).update(KEY_INFO).digest())
+    // Domain-separated HMAC of the signing root → a dedicated 256-bit signing key.
+    this.key = new Uint8Array(createHmac('sha256', signingSecret).update(KEY_INFO).digest())
   }
 
   /** Mint a short-lived token for `claims` (call ONLY after human-auth + canView). */

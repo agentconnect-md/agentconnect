@@ -146,7 +146,9 @@ export function cloudflareIceServers(body: unknown): ComputerIceServer[] {
     .slice(0, COMPUTER_ICE_SERVERS_MAX)
 }
 
-/** The secret relay TURN credentials are minted from, derived from the pepper so relay TURN needs no secret of its own. */
-export function relayTurnSecret(pepper: string): string {
-  return Buffer.from(hkdfSync('sha256', pepper, 'agentconnect', 'computer relay TURN v1', 32)).toString('base64url')
+/** The secret relay TURN credentials are minted from, derived from the token signing root so relay TURN needs no secret of its own. */
+export function relayTurnSecret(signingSecret: string): string {
+  return Buffer.from(hkdfSync('sha256', signingSecret, 'agentconnect', 'computer relay TURN v1', 32)).toString(
+    'base64url'
+  )
 }

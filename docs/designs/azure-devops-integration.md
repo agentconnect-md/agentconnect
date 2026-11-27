@@ -147,7 +147,7 @@ The Console's Azure DevOps card leads with **Connect with Microsoft**:
    is refused with the message of §3.1, and with the tenant's admin-consent
    URL when the tenant is known. The administrator's delegated token lives
    only in an encrypted flow ticket, as in the Teams connect: AES-GCM under a
-   key derived from the deployment's pepper, bound to the organization, the
+   key derived from the token signing secret, bound to the organization, the
    caller, and a flow id, and expiring thirty minutes after the sign-in or
    before the token does. The Console holds the ticket and sends it back as a
    request header on each later step, never in a path; the Control Plane

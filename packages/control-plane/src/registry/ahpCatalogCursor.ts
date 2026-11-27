@@ -16,10 +16,10 @@ const scopeKey = (scope: CatalogScope) =>
 export class AhpCatalogCursor {
   private readonly key: Uint8Array
   constructor(
-    pepper: string,
+    signingSecret: string,
     private readonly now: () => number = Date.now
   ) {
-    this.key = createHmac('sha256', pepper).update(AUDIENCE).digest()
+    this.key = createHmac('sha256', signingSecret).update(AUDIENCE).digest()
   }
 
   async encode(scope: CatalogScope, after: string): Promise<string> {

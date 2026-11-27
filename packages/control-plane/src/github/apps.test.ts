@@ -184,7 +184,7 @@ describe('GithubAppsService', () => {
       agentScope: async () =>
         opts.scope ?? { repositories: [{ fullName: 'acme/tools', kind: 'workspace' }], accounts: [] },
       covers: async (_i, owner, repo) => (opts.covered ?? (() => true))(owner, repo),
-      pepper: 'p'.repeat(32),
+      signingSecret: 'p'.repeat(32),
       clock,
       publicCpUrl: 'https://api.example.test/',
       publicRelayUrl: 'https://relay.example.test',

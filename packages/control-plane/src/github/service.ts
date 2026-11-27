@@ -125,7 +125,7 @@ export interface GithubServiceDeps {
   onInstallationFactsChanged?: (installationId: bigint, orgId: OrgId) => void | Promise<void>
   /** Organization GitHub Apps; absent ⇒ every installation is signed with the built-in App. */
   appRegistry?: Pick<GithubAppRegistry, 'configForInstallation'>
-  pepper: string
+  signingSecret: string
   fetchImpl?: FetchLike
   baseUrl?: string
   log?: { warn: (message: string) => void }
@@ -264,7 +264,7 @@ export class GithubService {
         return { repos: res.repositories, totalCount: res.total_count }
       }
     })
-    this.stateKey = deriveInstallStateKey(deps.pepper)
+    this.stateKey = deriveInstallStateKey(deps.signingSecret)
     // 10 burst, one per 5 s: mints are cached 45+ min per repo and scope, so an honest agent spends a few per cold start.
     this.agentMintBucket = new TokenBucket(10, 0.2, deps.clock)
     // 60 burst, one per second: room for an org's agents to cold-start in the same minute.

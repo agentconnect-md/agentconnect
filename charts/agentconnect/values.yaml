@@ -1071,6 +1071,10 @@ secrets:
   existingSecret: agentconnect-secrets
   databaseUrlKey: DATABASE_URL
   apiKeyPepperKey: API_KEY_PEPPER
+  # Root of the CP's signing keys. optional:true — absent ⇒ they derive from API_KEY_PEPPER.
+  # Rotating it never affects stored API-key hashes; in-flight signed tokens and states are
+  # rejected once after a change. A ≥32-char value different from the pepper.
+  tokenSigningSecretKey: TOKEN_SIGNING_SECRET
   # Shared relay↔CP credential (see the `relay` block). Referenced by BOTH the CP
   # (to accept the relay) and the relay (to authenticate) when relay.enabled — so both
   # fail to start until it exists. Add it BEFORE enabling the relay.

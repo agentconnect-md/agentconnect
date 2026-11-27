@@ -444,7 +444,7 @@ sequenceDiagram
 ### 6.1 Signed `mm1` token format and per-org key derivation
 
 - **Master & org-scoped secrets:** Control Plane derives a default master secret via
-  `deriveMattermostActionSecret(API_KEY_PEPPER)` (`HMAC-SHA256(pepper, 'agentconnect:mattermost-action:v1')`)
+  `deriveMattermostActionSecret(signingRoot)` (`HMAC-SHA256(signingRoot, 'agentconnect:mattermost-action:v1')`, where `signingRoot` is `TOKEN_SIGNING_SECRET` or, unset, `API_KEY_PEPPER`)
   unless `MATTERMOST_ACTION_SECRET` (min 32 chars) is set. In `AuthService`, single-org daemons
   (`organizationMode: 'connection'`) receive `AuthOk.mattermostActionSecret = deriveMattermostOrgActionSecret(secret, orgId)`,
   whereas multi-tenant cluster pool daemons (`organizationMode: 'frame'`) receive none at auth.
@@ -561,7 +561,7 @@ have no chart values and go through `extraEnv`.
 | ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `FEATURE_FLAGS` / `features.mattermost`          | `web`, Helm `web.yaml`                      | `false` (off)                                     | Enables Mattermost install entry points in the Console.                                    |
 | `/mattermost/actions` (`MATTERMOST_ACTION_PATH`) | `relay`, Helm `httproute.yaml`              | Mounted on Relay HTTP server                      | Receives Mattermost interactive attachment button callbacks.                               |
-| `MATTERMOST_ACTION_SECRET`                       | `control-plane`, `relay`, `daemon`          | Derived from `API_KEY_PEPPER`                     | Master HMAC secret for `mm1` button callback tokens (`>= 32` chars).                       |
+| `MATTERMOST_ACTION_SECRET`                       | `control-plane`, `relay`, `daemon`          | Derived from the token signing secret             | Master HMAC secret for `mm1` button callback tokens (`>= 32` chars).                       |
 | `MATTERMOST_ALLOW_PRIVATE_NETWORK`               | `control-plane`, `daemon`, `compose.yaml`   | `false` in prod / `k8s`; `true` in dev / Compose  | Allows dialing private/loopback `serverUrl` targets (link-local/IMDS remain blocked).      |
 | `AGENTCONNECT_INTERNAL_ALLOWED_HOSTS`            | `control-plane`, `daemon`, `compose.yaml`   | Empty                                             | Comma-separated internal Mattermost/OAuth hostnames allowed when private networks are off. |
 | `MATTERMOST_ALLOWED_HOSTS`                       | `daemon`                                    | Empty                                             | Daemon-only additions to the internal host list for Mattermost servers.                    |

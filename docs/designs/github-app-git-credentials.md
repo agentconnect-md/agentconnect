@@ -204,9 +204,9 @@ stale until a network fetch succeeds.
 
 - **The CP callback endpoint is unauthenticated** because GitHub redirects the
   browser to it. `state` is signed with a **domain-separated subkey derived
-  from `API_KEY_PEPPER`**
-  (`HMAC-SHA256(pepper, 'github-install-state-v1')`, avoiding cross-purpose key
-  reuse with API-key hashing). Its contents are orgId + an expiry measured in
+  from the token signing secret**
+  (`HMAC-SHA256(TOKEN_SIGNING_SECRET or API_KEY_PEPPER, 'github-install-state-v1')`,
+  avoiding cross-purpose key reuse). Its contents are orgId + an expiry measured in
   minutes + nonce. **The nonce is persisted and consumed exactly once**;
   replays are rejected.
 - For `installation_id`, the setup callback **must** use an App JWT to query

@@ -1904,7 +1904,7 @@ Control Plane, which only issues credentials:
   (RFC 8656, in process, `packages/relay/src/turn/`): UDP and TCP on that port, and TLS (`RELAY_TURN_TLS_*`) for
   networks that only let 443 out. It registers its public URLs (`RELAY_TURN_URLS`) on `rc/register` (`turnUrls`),
   but only once `rc/auth/ok` has handed it `computerTurnSecret`, the secret the CP mints credentials from (derived
-  from `API_KEY_PEPPER`, so there is nothing to configure); the CP keeps the URLs on the relay row and names up to two
+  from the token signing secret, so there is nothing to configure); the CP keeps the URLs on the relay row and names up to two
   relays to both peers in the same order, picked per Computer by rendezvous hashing so viewings spread over every
   relay, each as one ICE server with its own credentials. Credentials are the REST
   scheme below, checked as long-term credentials (RFC 8489 §9.2) on every Allocate, Refresh, CreatePermission and
@@ -2116,7 +2116,7 @@ an `Origin` (against cross-site browser calls); a CSP on the viewer page.
   When the CP WebSocket is lost, the desktop daemon accepts no new channels, keeps existing ones only until their
   credentials expire, and then stops input, screenshots, and viewers; so the worst-case revocation delay is one
   credential lifetime, in line with the authority lifetimes in [high-availability.md](high-availability.md).
-  **[implemented]** The channel key. The CP derives the key from `API_KEY_PEPPER`, the Computer, its key and a window,
+  **[implemented]** The channel key. The CP derives the key from the token signing secret, the Computer, its key and a window,
   so it stores nothing and every replica derives the same key. A new key starts every half lifetime and lasts one
   lifetime (`COMPUTER_CREDENTIAL_TTL_SEC`, default 300 s). The CP sends a renewal on the first heartbeat of each
   window, so consecutive keys overlap by half a lifetime. A desktop may lack the newest key until that heartbeat, so
