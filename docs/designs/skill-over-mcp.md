@@ -3,7 +3,10 @@
 > **Summary:** This document specifies the engineering design for serving AgentConnect's four built-in system skills (`agentconnect-images`, `agentconnect-platform`, `agentconnect-create-agent`, and `agentconnect-create-team`) progressively on demand through a `readSkill` tool on the daemon's built-in `agentconnect` stdio MCP bridge, rather than installing them as files into agent workspaces. The design covers static asset packaging at build time, race-free dynamic capability filtering (`hasAdminMcp` and `shareFile`), `/skill` and `!skill` slash-command translation, ledger-backed cleanup of previously installed workspace directories and sandbox pod volumes, and a two-phase retirement of the Control Plane's preset `agentconnect` Git `SkillSource`. Every detail is aligned with current symbols, database schemas, and build scripts so implementation can ship in three independent pull requests.
 
 - **Status:** Draft
-- **Baseline commit:** `5ce7770b2ecbac0a5dc79bddbdbde038534d91f8` (`origin/main`; verified against initial design baseline `dd0dc6a41ed1a9db983fb826c97acf0332df24bf`)
+- **Baseline commit:** `5ce7770b2ecbac0a5dc79bddbdbde038534d91f8` (`origin/main`; verified against initial design baseline `dd0dc6a41ed1a9db983fb826c97acf0332df24bf`. Function and method symbols are normative; file line numbers are point-in-time anchors at this baseline commit.)
+- **Amends upon implementation:**
+  - [`docs/designs/preset-agents.md`](preset-agents.md) §3.1 (replaces the org-scoped `agentconnect` Git `SkillSource` tracking `agentconnect-md/agentconnect-skill@main` head — and migration `20261008000000_preset_skills_follow_head` — with daemon-bundled system skills served over MCP)
+  - [`docs/designs/webchat-generated-images.md`](webchat-generated-images.md) §3 (replaces ledger-backed workspace disk installation of `builtin:agentconnect-images` with on-demand delivery via `readSkill` for all MCP-capable runtimes)
 - **Related design documents:**
   - [`docs/designs/shared-skills.md`](shared-skills.md)
   - [`docs/designs/send-message-guide.md`](send-message-guide.md)
@@ -229,14 +232,37 @@ for (const skill of [
 }
 ```
 
-### 3.3 Single source of truth and synchronization with `agentconnect-md/agentconnect-skill`
+### 3.3 Single source of truth, superseded decisions, version-skew contract, and mirror sync
 
 **Policy: `packages/daemon/builtin-skills/` in this monorepo is the single source of truth; `agentconnect-md/agentconnect-skill` remains as a read-only mirror for pre-upgrade daemons and standalone external installs.**
 
-Rationale:
+#### 1. Superseded decisions and amended design documents
 
-1. `agentconnect-platform`, `agentconnect-create-agent`, and `agentconnect-create-team` document MCP tool names, argument schemas, and elicitation conventions defined in `packages/control-plane/src/http/mcp/tools.ts` and `packages/daemon/src/mcp/tools.ts`. Hosting the skill markdown in the same monorepo allows a single pull request to update an MCP tool schema and its skill instructions atomically, with unit tests verifying reference-link integrity at the commit gate.
-2. During the Phase 1 -> Phase 2 transition window, unupgraded daemons still fetch `agentconnect-md/agentconnect-skill@main` over Git, and external users may run `npx skills add agentconnect-md/agentconnect-skill`. Keeping `agentconnect-md/agentconnect-skill` as a one-way mirror updated whenever `packages/daemon/builtin-skills/agentconnect-{platform,create-agent,create-team}` changes preserves backward compatibility.
+This design deliberately reverses two earlier file-distribution decisions and amends their design documents:
+
+1. **Amends [`preset-agents.md`](preset-agents.md) §3.1 (and migration `20261008000000_preset_skills_follow_head`)**:
+   - `preset-agents.md` §3.1 previously established that the preset `@agentconnect` agent's skills were registered as an ordinary org-scoped Git `SkillSource` tracking the `main` branch head of `agentconnect-md/agentconnect-skill` (`skills: []`), so publishing a skill change to that repository reached every install without a Control Plane or daemon release.
+   - Moving `agentconnect-platform`, `agentconnect-create-agent`, and `agentconnect-create-team` into `packages/daemon/builtin-skills/` **pins system skill content to the daemon release** instead of a live Git branch head. In exchange, every MCP-capable runtime (including runtimes with `skillsAgentId: null`) and every agent in the organization receives capability-scoped system skills with zero GitHub rate-limit consumption, zero `skills` CLI cold-start overhead, and zero workspace disk mutation.
+2. **Amends [`webchat-generated-images.md`](webchat-generated-images.md) §3**:
+   - `webchat-generated-images.md` §3 previously specified that `agentconnect-images` is versioned with the daemon and installed into the workspace directory through the ordinary `SkillInstallLedger`.
+   - For all MCP-capable runtimes (`sessionMcpServers !== 'unsupported'`), `agentconnect-images` is now served in memory via `readSkill` whenever `shareFile` is in the session's tool set, and is no longer materialized onto workspace disk. (Runtimes with `sessionMcpServers: 'unsupported'` and a non-null `skillsAgentId`, such as `openclaw`, retain the disk fallback; see §6.1.)
+
+#### 2. Version-skew contract between daemon-bundled skills and Control Plane `/v1/mcp`
+
+While co-locating `packages/daemon/builtin-skills/` with `packages/control-plane/src/http/mcp/tools.ts` and `packages/daemon/src/mcp/tools.ts` makes tool and skill updates atomic in the repository, **a deployment is not always upgraded atomically**: a self-hosted daemon may lag behind a hosted or newly upgraded Control Plane whose live `agentconnect-admin` catalog (`/v1/mcp`) has evolved.
+
+To prevent version skew from breaking administrative workflows:
+
+1. **Live MCP `tools/list` is authoritative over prose examples:** The `readSkill` response header banner (§4.5) and the `SKILL.md` bodies for `agentconnect-platform`, `agentconnect-create-agent`, and `agentconnect-create-team` state explicitly that the live MCP tool schemas attached to the current session (`agentconnect-admin` and `agentconnect`) are the authoritative contract for tool names, required fields, and enum values. Whenever a live tool's `inputSchema` differs from an example in the skill document, the model must follow the live tool schema (and call `getToolGuide` where available).
+2. **Additive backward compatibility on `agentconnect-admin` tools:** Control Plane changes to `agentconnect-admin` tool schemas follow the repository's additive compatibility discipline (new fields are optional or carry defaults; renamed tools or actions retain dispatch aliases across the supported daemon skew window, matching `ops.ts`).
+3. **Direction of future convergence:** If a future administrative workflow requires zero skew between `/v1/mcp` and `agentconnect-create-*`, §9 item 1 documents how the Control Plane can serve or override admin-bound skill bundles directly.
+
+#### 3. Maintaining the `agentconnect-md/agentconnect-skill` one-way mirror
+
+During the transition window while older self-hosted daemons still pull `agentconnect-md/agentconnect-skill@main` over Git (and for external users running `npx skills add agentconnect-md/agentconnect-skill`):
+
+- **Who and how:** Maintainers keep `agentconnect-md/agentconnect-skill` as a read-only mirror of `packages/daemon/builtin-skills/agentconnect-{platform,create-agent,create-team}`. Any pull request that modifies files under those three directories updates the mirror on merge (via a release-sync workflow or maintainer push from `packages/daemon/builtin-skills/` to `agentconnect-md/agentconnect-skill/skills/`).
+- **Dual-compatible cross-skill wording:** Any wording added to `SKILL.md` for MCP callers (such as Layer 2 in §3.4) is phrased so it works both via `readSkill` and when installed on disk by an older daemon (see §3.4 item 2).
 
 ### 3.4 Adapting `references/*.md` citations inside `SKILL.md`
 
@@ -253,11 +279,11 @@ To ensure models **always call `readSkill({ name, path })` and never attempt loc
 
 1. **Layer 1: Server-side response framing (§4.5)**:
    - Every `readSkill` response prepends a high-priority MCP notice header:
-     `> [MCP System Skill: <name>] This skill is served in memory via the AgentConnect MCP server (it is NOT on the workspace filesystem). To read any reference file cited below, call the \`readSkill\` tool with \`{"name": "<name>", "path": "references/..."}\` — do not use filesystem Read/cat tools.`
+     `> [MCP System Skill: <name>] This skill is served in memory via the AgentConnect MCP server (it is NOT on the workspace filesystem). To read any reference file cited below, call the \`readSkill\` tool with \`{"name": "<name>", "path": "references/..."}\` — do not use filesystem Read/cat tools. If any tool argument example below differs from the live MCP tool schema in your session, follow the live tool schema.`
    - When `path` is omitted (reading `SKILL.md`) and the skill has bundled reference files, `readSkill` appends a `## Bundled reference files in <name>` section listing the exact `path` strings accepted by `readSkill`.
-2. **Layer 2: Explicit cross-skill instructions in `SKILL.md`**:
-   - At lines 86 and 92 of `agentconnect-create-team/SKILL.md` (and in `references/teams/engineering-pod.md`), clarify cross-skill citations inline:
-     `` `agentconnect-create-agent/references/code-hosts.md` (load via `readSkill` with `{"name": "agentconnect-create-agent", "path": "references/code-hosts.md"}`) ``.
+2. **Layer 2: Explicit cross-skill instructions in `SKILL.md` (compatible with both MCP and legacy disk installs)**:
+   - At lines 86 and 92 of `agentconnect-create-team/SKILL.md` (and in `references/teams/engineering-pod.md`), clarify cross-skill citations inline without breaking legacy disk readers:
+     `` `agentconnect-create-agent/references/code-hosts.md` (when using the AgentConnect MCP server, load via `readSkill` with `{"name": "agentconnect-create-agent", "path": "references/code-hosts.md"}`) ``.
 3. **Layer 3: Automatic cross-skill prefix routing in `readSkill` path normalization (§4.4)**:
    - If a model calls `readSkill` with a skill-prefixed `path` (such as `{ name: "agentconnect-create-team", path: "agentconnect-create-agent/references/code-hosts.md" }` or `{ name: "agentconnect-create-agent", path: "agentconnect-create-agent/references/code-hosts.md" }`), the path normalizer extracts `<targetSkill>/references/...` and routes the lookup to `<targetSkill>`'s reference map whenever `<targetSkill>` is also in the session's authorized `availableSkills` set.
 
@@ -365,6 +391,13 @@ runtime-session.ts:224  const ordinaryMcpServers = input.toolContext?.mcpServers
    - The `ToolDescriptor` returned by `buildReadSkillTool(availableSkills)` is part of `tools`.
    - `toolContextFingerprint(tools, configuredServers, instructions)` (`tool-context.ts:24`) hashes every tool's `name`, `description`, and `inputSchema` with SHA-256.
    - Whenever `adminMcpActive` or `shareFile` availability changes for a session, `readSkill`'s `description` and `inputSchema.properties.name.enum` change -> `toolContext.fingerprint` changes -> `openRuntimeSession` (`runtime-session.ts:115`) automatically closes the stale attachment, runs `loadSession` or `newSession` with a freshly registered `McpControlServer` context, and injects a `[Tool definitions updated]` block (`tool-context.ts:57`) for runtimes that cache initial tool definitions.
+4. **Handling `openRuntimeSession`'s attachment fallback (`additionalMcpAttached = false`)**:
+   - In `openRuntimeSession` (`runtime-session.ts:136-148, 226-231, 274-285`), `withAdditionalMcpFallback` attempts `newSession` / `loadSession` with `[...ordinaryMcpServers, ...additionalMcpServers]` first. If the runtime rejects attaching the remote `agentconnect-admin` HTTP server, `withAdditionalMcpFallback` retries with `ordinaryMcpServers` alone and sets `additionalMcpAttached = false`.
+   - Because `toolContextFor` computed `availableSkills` before `openRuntimeSession` ran, `ordinaryMcpServers` would otherwise retain a `SessionContext` in `McpControlServer` whose `readSkill` descriptor still advertises `agentconnect-create-agent` and `agentconnect-create-team` despite `agentconnect-admin` having been dropped.
+   - **Fallback synchronization:** `SessionToolContext` exposes an optional `onAdditionalMcpFallback?: () => void` callback invoked by `withAdditionalMcpFallback` before calling `fallback()`. That callback updates the registered `SessionContext` in `McpControlServer` in place — recalculating `availableSkills` with `hasAdminMcp: false` (dropping `agentconnect-create-agent` and `agentconnect-create-team`) and replacing the `readSkill` `ToolDescriptor` in `ctx.tools` before the runtime connects to the stdio bridge on the fallback attempt. In addition, if `opened.additionalMcpAttached === false`, `SessionManager.handle` uses the downgraded `toolContext.tools` when recording `rec.toolDigests`, ensuring the advertised `readSkill` enum and `ctx.builtinSkills` always match actual `agentconnect-admin` attachment.
+5. **Accepted trade-off: `agentconnect-platform` is always available in ordinary sessions (no per-agent off switch in v1)**:
+   - Under Locked Decision 1 (Option A), `agentconnect-platform` is exposed in every ordinary session where the `agentconnect` MCP bridge is active, including on customer-facing agents or in organizations that previously unbound `agentconnect/*` from an agent.
+   - Because `agentconnect-platform` is read-only documentation loaded only when the model explicitly calls `readSkill({ name: 'agentconnect-platform' })` in response to an AgentConnect platform question, and grants zero administrative authority of its own (all administrative mutations require `agentconnect-admin`, which is restricted to entitled webchat conversations), always offering `agentconnect-platform` in `readSkill` is an accepted trade-off in v1. A per-agent or per-organization opt-out setting can be added later if needed (§9).
 
 #### 3. System skill filtering rules by session kind
 
@@ -543,9 +576,10 @@ In `packages/daemon/src/mcp/ops/skill-guide.ts` and `packages/daemon/src/mcp/ops
    - Add `buildReadSkillTool()` to `ALL_TOOL_NAMES` in `packages/daemon/src/mcp/tools.ts:1007` alongside `GET_TOOL_GUIDE_TOOL`.
    - Every ACP runtime (such as Claude Code's `_meta.claudeCode.options.settings.permissions.allow`) automatically includes `mcp__agentconnect__readSkill` at session startup so reading a system skill never prompts the user for tool approval.
    - Register `['readSkill', readSkill]` in `HANDLERS` (`packages/daemon/src/mcp/ops.ts:331`) and `['readSkill', READ_SKILL_ARGS]` in `TOOL_ARG_SCHEMAS` (`packages/daemon/src/mcp/ops.ts:439`).
-2. **Division of responsibility with `getToolGuide`**:
+2. **Division of responsibility with `getToolGuide` and `listOrgSkills`**:
    - **`getToolGuide({ tool, action? })`** remains the **per-tool API reference and dynamic session-coordinate example generator** for complex daemon MCP tools (currently `sendMessage`'s five actions and `publishArtifact`, whose output interpolates live `ctx.agentId`, `taskReach`, and connected platforms).
-   - **`readSkill({ name, path? })`** is the **on-demand loader for multi-step domain workflows and reference knowledge bases (System Skills: `SKILL.md` + `references/**/*.md`)**. Keeping them separate preserves single responsibility.
+   - **`listOrgSkills({})`** (`packages/daemon/src/mcp/ops/collaboration.ts`) lists the organization's user-configured skill catalog (Git `SkillSource` entries and uploaded `ManagedSkill` bundles) for administrative discovery (for example, when `agentconnect-create-agent` checks which organization skills exist to bind to an agent). Those skills are installed onto workspace disk per agent binding and are **not** loaded through `readSkill` in v1.
+   - **`readSkill({ name, path? })`** is the **on-demand loader for built-in multi-step domain workflows and reference knowledge bases (System Skills: `SKILL.md` + `references/**/*.md`)**. Its `inputSchema.properties.name.enum` is restricted to the active `BuiltinMcpSkillName` values for the session; if a model passes a user-configured skill name from `listOrgSkills` into `readSkill`, the self-correcting argument error explicitly states that `readSkill` only loads the built-in system skills listed in `name.enum` and that organization skills from `listOrgSkills` are materialized in the workspace when enabled on the agent. (When §9 item 2 later extends `readSkill` to Markdown-only `ManagedSkill` bundles, `listOrgSkills` will mark which entries are readable via `readSkill`.)
 
 ---
 
@@ -653,57 +687,61 @@ const invocation =
 
 ## 6. Filesystem pipeline offloading, deduplication, and legacy workspace cleanup
 
-### 6.1 Stop feeding `builtin:agentconnect-images` into the filesystem installer
+### 6.1 Stop feeding `builtin:agentconnect-images` into the filesystem installer on MCP-capable runtimes
 
-Two exact call sites change in `packages/daemon/src/daemon.ts`:
+Two call sites change in `packages/daemon/src/daemon.ts` (in `prepareAgentWorkspace` at lines 9189–9192 and `reconcileSandboxSkills` at lines 9499–9524), gated on whether the agent's runtime supports session MCP servers (`this.runtimes[agent.runtime]?.sessionMcpServers !== 'unsupported'`):
 
-1. **`packages/daemon/src/daemon.ts:9189-9192` (Local Host / SRT / Microsandbox path)**:
-   ```typescript
-   // Before:
-   managedSkills: async (value: Agent) => [
-     ...((await this.managedSkillCache?.resolve(value)) ?? []),
-     ...(await builtinSkillSources())
-   ],
-   // After (remove builtinSkillSources()):
-   managedSkills: async (value: Agent) => (await this.managedSkillCache?.resolve(value)) ?? [],
-   ```
-2. **`packages/daemon/src/daemon.ts:9499-9524` (K8s Sandbox Pod / VM `reconcileSandboxSkills` path)**:
-   Remove `const builtins = await builtinSkillSources()` and the `withBuiltins` retry wrapper, running a single reconcile over `reserveBuiltinSkills([...managed, ...dreamed], ...)`.
+1. **MCP-capable runtimes (`sessionMcpServers !== 'unsupported'`, which covers all curated runtimes except `openclaw`)**:
+   - In `prepareAgentWorkspace` (`daemon.ts:9189-9192`), `managedSkills` stops appending `await builtinSkillSources()`:
+     ```typescript
+     managedSkills: async (value: Agent) =>
+       this.runtimes[value.runtime]?.sessionMcpServers === 'unsupported'
+         ? [...((await this.managedSkillCache?.resolve(value)) ?? []), ...(await builtinSkillSources())]
+         : ((await this.managedSkillCache?.resolve(value)) ?? []),
+     ```
+   - In `reconcileSandboxSkills` (`daemon.ts:9499-9524`), `builtins` is empty when `this.runtimes[agent.runtime]?.sessionMcpServers !== 'unsupported'`, avoiding the `withBuiltins` reconcile path.
+2. **Runtimes without session MCP support (`sessionMcpServers === 'unsupported'`, e.g. `openclaw` which has `skillsAgentId: 'openclaw'` but no MCP bridge)**:
+   - Because `toolContextFor` (`daemon.ts:6327`) returns `mcpServers: () => []` when `sessionMcpServers === 'unsupported'`, such a runtime cannot call `readSkill`. Preserving `builtinSkillSources()` and the preset Git skill source when `sessionMcpServers === 'unsupported'` ensures `openclaw` does not lose disk-installed system skills.
+   - If `mcpToolServerReachable()` is transiently false on an MCP-capable runtime (`daemon.ts:6364`), all daemon bridge tools (`shareFile`, `sendMessage`, `readSkill`, etc.) are unavailable together for that turn; filesystem installation is not used as a per-turn fallback for a broken local MCP socket.
 
 ### 6.2 Daemon-side identification and skipping of legacy `agentconnect-md/agentconnect-skill` Git sources
 
-During Phase 1 (before Phase 2's Control Plane database migration runs), existing organizations still carry `agentconnect-md/agentconnect-skill` in `AgentSpec.skills`. The daemon must recognize and filter out unmodified preset entries at the filesystem installer boundary so it no longer queries GitHub or writes them to disk.
+During Phase 1 (before Phase 2's Control Plane database migration runs), existing organizations still carry `agentconnect-md/agentconnect-skill` in `AgentSpec.skills`. On MCP-capable runtimes (`sessionMcpServers !== 'unsupported'`), the daemon recognizes and filters out unmodified preset entries at the filesystem installer boundary so it no longer queries GitHub or writes them to disk.
 
 #### Exact matching predicate (`isMigratedBuiltinGitSkillSource`)
 
-Add the predicate to `packages/daemon/src/skills/builtin-skills.ts`:
+To avoid skipping a user-renamed skill source or a source that an operator repointed to a different repository while leaving a stale `githubRepoId`, `isMigratedBuiltinGitSkillSource` requires `name`, `source`, and `githubRepoId` (when present) to agree with the unmodified preset definition (matching the Phase 2 SQL predicate in §7.2):
 
 ```typescript
 // GitHub numeric repository ID of `agentconnect-md/agentconnect-skill` (preset-agents.ts).
+export const PRESET_AGENTCONNECT_SKILL_NAME = 'agentconnect'
 export const PRESET_AGENTCONNECT_SKILL_REPO_ID = '1322557433'
 export const PRESET_AGENTCONNECT_SKILL_SOURCE_RE =
   /^(?:https?:\/\/github\.com\/)?agentconnect-md\/agentconnect-skill(?:\.git)?\/?$/i
 
 /**
- * True when an AgentSkillEntry points at the official `agentconnect-md/agentconnect-skill`
- * repository on its default ref (`main` or omitted) and selects only skills now served by
- * the daemon's built-in `readSkill` MCP tool.
+ * True when an AgentSkillEntry is the unmodified `agentconnect` preset pointing at
+ * `agentconnect-md/agentconnect-skill` on its default ref (`main` or omitted) and
+ * selecting only skills now served by the daemon's built-in `readSkill` MCP tool.
  *
- * Edge-case guard: if an operator manually repointed the source to a custom fork, a non-main
- * branch/tag/commit ref, a non-`skills` subDir, or selected a custom skill name outside
- * BUILTIN_MCP_SKILL_NAMES, this returns `false` so the custom Git installation is preserved.
+ * Edge-case guard: if an operator registered a separately named source, repointed
+ * `source` to a custom fork (even if a stale githubRepoId remained), pinned a non-main
+ * branch/tag/commit ref, used a non-`skills` subDir, or selected a custom skill name
+ * outside BUILTIN_MCP_SKILL_NAMES, this returns `false` so the Git installation is preserved.
  */
 export function isMigratedBuiltinGitSkillSource(entry: {
+  name?: string
   source: string
   githubRepoId?: string
   ref?: string
   subDir?: string
   skills?: readonly string[]
 }): boolean {
-  const sameRepo =
-    entry.githubRepoId === PRESET_AGENTCONNECT_SKILL_REPO_ID ||
-    PRESET_AGENTCONNECT_SKILL_SOURCE_RE.test(entry.source.trim())
-  if (!sameRepo) return false
+  if (entry.name !== undefined && entry.name !== PRESET_AGENTCONNECT_SKILL_NAME) return false
+  if (!PRESET_AGENTCONNECT_SKILL_SOURCE_RE.test(entry.source.trim())) return false
+  if (entry.githubRepoId !== undefined && entry.githubRepoId !== PRESET_AGENTCONNECT_SKILL_REPO_ID) {
+    return false
+  }
 
   // If the operator pinned a custom branch, tag, or commit SHA other than 'main', keep their custom Git install.
   const ref = entry.ref?.trim()
@@ -722,19 +760,23 @@ export function isMigratedBuiltinGitSkillSource(entry: {
 }
 ```
 
-- **Filter injection points**:
+- **Filter injection points (applied when `sessionMcpServers !== 'unsupported'`)**:
   1. `packages/daemon/src/skills/install-skills.ts:203` (inside `installSkillsLocked` when iterating `wireGitSources`): if `isMigratedBuiltinGitSkillSource(parsed.data)` is `true`, `continue` immediately (excluding it from `gitSources`, making zero GitHub API calls, and reporting no `sourceFailures`).
   2. `packages/daemon/src/skills/sandbox-skill-reconcile.ts:120` (filtering `input.skills` in `reconcileSandboxSkillSources`) and `packages/daemon/src/daemon.ts:9466` (computing `effectiveGitSkills` in `reconcileSandboxSkills`): filter with `!isMigratedBuiltinGitSkillSource(entry)`.
 
-### 6.3 `reserveBuiltinSkills` name-collision protection
+### 6.3 `reserveBuiltinSkills` name-collision protection and custom fork semantics
 
-What happens if an organization creates a `ManagedSkill` or Dream skill with the same name as one of the four built-in system skills (for example, `agentconnect-images` or `agentconnect-platform`)?
+How are same-named user skills handled across `ManagedSkill` / Dream bundles versus custom Git forks?
 
-- Retain and expand `reserveBuiltinSkills(sources, warn)` (`packages/daemon/src/skills/builtin-skills.ts:58`):
-  Expand the reserved name set from `new Set(['agentconnect-images'])` to `new Set(BUILTIN_MCP_SKILL_NAMES)` (`'agentconnect-images'`, `'agentconnect-platform'`, `'agentconnect-create-agent'`, and `'agentconnect-create-team'`).
-- If `localSkills` (`ManagedSkill` or Dream skills) contains any of the four reserved names, `reserveBuiltinSkills` drops it from disk installation and logs a diagnostic warning:
-  `skills: "${source.name}" is reserved for the daemon's builtin skill; the source ${source.key} is not installed`.
-- This prevents a local bundle from shadowing a built-in system skill or creating a split brain between disk and MCP.
+1. **`ManagedSkill` and Dream local bundles (`reserveBuiltinSkills`)**:
+   - Retain and expand `reserveBuiltinSkills(sources, warn)` (`packages/daemon/src/skills/builtin-skills.ts:58`):
+     Expand the reserved name set from `new Set(['agentconnect-images'])` to `new Set(BUILTIN_MCP_SKILL_NAMES)` (`'agentconnect-images'`, `'agentconnect-platform'`, `'agentconnect-create-agent'`, and `'agentconnect-create-team'`).
+   - If `localSkills` (`ManagedSkill` or Dream skills) contains any of the four reserved names, `reserveBuiltinSkills` drops it from disk installation and logs a diagnostic warning:
+     `skills: "${source.name}" is reserved for the daemon's builtin skill; the source ${source.key} is not installed`.
+   - To prevent organizations from accidentally uploading a new `ManagedSkill` or accepting a Dream skill with one of the four reserved names and having it silently skipped on the daemon, the Control Plane's managed-skill admission (`packages/control-plane/src/skills/managed-skill-bundle.ts`) also rejects those four reserved skill names at upload/acceptance time with a `400` validation error. Any pre-existing managed or Dream bundle with a reserved name is skipped on daemon upgrade with the warning above.
+2. **Custom Git forks preserved by §6.2**:
+   - `reserveBuiltinSkills` applies only to `localSkills` (`ManagedSkill` and Dream sources), not to Git `SkillSource` entries.
+   - If an operator deliberately customized the `agentconnect` Git `SkillSource` (for example, pointing it at a custom fork or a custom branch), §6.2 intentionally preserves its disk installation. In that case, the custom fork's skill is installed onto workspace disk and advertised by the runtime as a `'runtime'` slash command (which `matchSkillInvocation` in §5.1 prioritizes ahead of `'mcp'`), while `readSkill` continues to serve the daemon's built-in system skill when invoked directly as an MCP tool.
 
 ### 6.4 Safe cleanup of previously installed directories in existing workspaces
 
@@ -797,12 +839,21 @@ In `packages/control-plane/src/persistence/preset-agents.ts`:
 
 ### 7.2 Phase 2: Safe database cleanup migration for existing organizations (Prisma Migration SQL)
 
-#### 1. Why Phase 1 and Phase 2 must ship in order (rollout ordering constraint)
+#### 1. Rollout ordering, observable release gate, and accepted behavior on lagging self-hosted daemons
 
-- **Rolling-upgrade and self-hosted daemon compatibility**:
-  - In self-hosted or hybrid deployments, the Control Plane may upgrade before edge self-hosted daemons.
-  - If the Control Plane deleted existing organizations' `agentconnect` `SkillSource` rows in Phase 1 before daemons upgraded, **older self-hosted daemons** (which do not yet have the `readSkill` MCP tool) would receive an updated `AgentSpec.skills` without `agentconnect/*` and uninstall `agentconnect-platform`, `agentconnect-create-agent`, and `agentconnect-create-team` from disk, leaving them without those skills until the daemon binary was upgraded.
-  - By shipping **Phase 1 first (new orgs stop creating the row; upgraded daemons skip the Git source and serve `readSkill` over MCP)** and running **Phase 2's database migration after online daemons have upgraded**, neither new nor old daemons experience a skill gap during the transition.
+- **Why Phase 1 and Phase 2 are separated across releases**:
+  - In self-hosted or hybrid deployments, the Control Plane and edge self-hosted daemons upgrade independently, whereas the managed Kubernetes daemon pool upgrades in lockstep with the Control Plane.
+  - Because Phase 2 is a Prisma migration (`migration.sql`), it runs automatically via `prisma migrate deploy` whenever an operator upgrades the Control Plane to the release containing PR 3; a SQL migration itself cannot inspect whether offline or third-party self-hosted daemons have upgraded.
+  - Splitting Phase 1 (PR 1 + PR 2) and Phase 2 (PR 3) across separate releases narrows the transition window:
+    - **During Phase 1 (after PR 1 and PR 2 ship, before PR 3 is merged)**: Existing organizations keep their `agentconnect` `SkillSource` row in PostgreSQL. Upgraded daemons skip that Git source via `isMigratedBuiltinGitSkillSource` (§6.2) and serve all four skills via `readSkill`, while existing organizations' unupgraded self-hosted daemons continue to receive `AgentSpec.skills` with `agentconnect/*` and install from `agentconnect-md/agentconnect-skill@main`.
+    - **Accepted limitation for lagging self-hosted daemons**:
+      1. _New organizations created after Phase 1 (PR 2)_ have no `agentconnect` `SkillSource` row. If a newly created organization places an agent on a self-hosted daemon binary that predates PR 1 (`readSkill`), that agent will not have `agentconnect-platform`, `agentconnect-create-agent`, or `agentconnect-create-team` until the daemon is upgraded (`agentconnect upgrade` or auto-upgrade per [`daemon-auto-upgrade.md`](daemon-auto-upgrade.md)).
+      2. _Existing organizations after Phase 2 (PR 3) lands_: Once the Control Plane runs the Phase 2 Prisma migration, the unmodified `agentconnect` `SkillSource` row and `agentconnect/*` bindings are removed from the database and `configRevision` increments. Any self-hosted daemon that still predates PR 1 when the Control Plane upgrades to the Phase 2 release will uninstall the three Git skills on its next workspace preparation and will not have them until the daemon binary is upgraded.
+    - **Observable gate for merging PR 3 (Phase 2 migration)**:
+      - On the hosted platform, PR 3 is merged only after PR 1 and PR 2 have shipped in a stable release, the managed Kubernetes daemon pool is running that release, and connected-daemon telemetry (`daemon.version` reported on `register`) shows active self-hosted daemons have crossed the Phase 1 release version (or their auto-upgrade window has elapsed).
+      - For self-hosted Control Plane operators, the release notes for the Phase 2 release state that self-hosted daemons must be upgraded to at least the Phase 1 daemon version so they retain the built-in system skills over `readSkill`.
+    - **Evaluated alternative (per-peer `domain/daemon-features.ts` projection gate)**:
+      - We considered having the daemon advertise a `builtin-mcp-skills-v1` capability in `domain/daemon-features.ts` and having `encodeAgentSpecForPeer` strip the `agentconnect` skill source only for peers advertising that feature. However, `encodeAgentSpecForPeer` only filters what travels over the daemon WebSocket; as long as the row remains in `skill_source`, it still appears as a mutable/deletable entry in the Console's Tools & Skills library (one of the primary pain points in §1.1), and once the row is deleted from `skill_source` in PostgreSQL, the Control Plane no longer projects it to any daemon regardless of feature flags. We therefore keep Locked Decision 3's two-phase migration and document the accepted loss for unupgraded self-hosted daemons above.
 
 #### 2. Exact predicate for an "unmodified preset `skill_source` row"
 
@@ -912,13 +963,13 @@ When `packages/daemon/src/mcp/ops/skill-guide.ts` executes `readSkill`:
 
 ### 8.2 Verification and test matrix
 
-| Test layer                                                                                | Test files (new or updated)                                                                                                       | Core verification cases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| :---------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **1. Built-in skill assets and bundle self-check**                                        | `packages/daemon/test/builtin-skills.test.ts`<br>`packages/daemon/scripts/assert-self-contained.mjs`                              | - Verify all 4 built-in system skills' `SKILL.md` files and all 12 `references/**/*.md` files load from both the source tree and `dist/builtin-skills/`;<br>- Verify every `references/[A-Za-z0-9/_-]+\.md` path cited in any `SKILL.md` exists in that skill's `bundle.references` Map (preventing broken reference links);<br>- Verify `reserveBuiltinSkills` reserves all 4 built-in skill names and emits a warning on collision.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| **2. `readSkill` tool contract and Codex 1,024-char budget**                              | `packages/daemon/test/mcp-tool-args.test.ts`<br>`packages/daemon/test/mcp/skill-guide.test.ts` (new)                              | - Verify `READ_SKILL_ARGS` and `buildReadSkillTool()` JSON Schema fields match strictly;<br>- **Hard assertion**: with all 4 skills active, `buildReadSkillTool().description.length <= 1024` (measured at 831 chars);<br>- Verify primary `SKILL.md` reads (omitted `path`, `path: ""`, `path: "SKILL.md"`) return the MCP header banner, frontmatter-stripped body, and reference file manifest;<br>- Verify secondary `references/*.md` reads, cross-skill prefix routing (`path: "agentconnect-create-agent/references/code-hosts.md"`), and omitted `references/` prefix resolution;<br>- Verify path traversal inputs (`../`, `/etc/passwd`), unknown skill names, and skills unauthorized in the current session (e.g. calling `agentconnect-create-agent` from Slack) return self-correcting errors listing available choices;<br>- Verify `'readSkill'` is included in `ALL_TOOL_NAMES`. |
-| **3. Dynamic session capability filtering and slash-command translation**                 | `packages/daemon/test/session/skill-invocation.test.ts`<br>`packages/daemon/test/daemon-tool-context.test.ts`                     | - Verify entitled webchat sessions (`hasAdminMcp: true`, `shareFile: true`) expose all 4 skills;<br>- Verify webchat sessions on runtimes without HTTP MCP support (e.g. `muse-acp`) expose only `agentconnect-images` + `agentconnect-platform`;<br>- Verify ordinary Slack/Discord sessions expose `agentconnect-images` + `agentconnect-platform`;<br>- Verify sessions without `shareFile` expose only `agentconnect-platform`;<br>- Verify `coordinator` / `check` / `research` / `gettingToKnow` internal subsessions do not expose `readSkill`;<br>- Verify `/agentconnect-create-agent args` and `!agentconnect-platform args` translate via `matchSkillInvocation` + `renderSkillInvocation` into `readSkill` tool-call instructions, and runtime-advertised disk skills take precedence over same-named MCP skills.                                                                     |
-| **4. Filesystem pipeline deduplication, legacy workspace cleanup, and pod short-circuit** | `packages/daemon/test/skills/install-skills.test.ts`<br>`packages/daemon/test/skills/sandbox-skill-reconcile.test.ts`             | - Verify `isMigratedBuiltinGitSkillSource` skips default `agentconnect-md/agentconnect-skill` (`1322557433`) while preserving custom branches/forks/non-builtin skills;<br>- **Legacy workspace upgrade regression test**: install `builtin:agentconnect-images` and `agentconnect-platform` under a prior ledger, run `installSkills` with the new configuration, and assert the old read-only directories are cleanly removed and `owned` becomes `[]`, while user-modified directories are left untouched;<br>- **K8s Pod / VM short-circuit test**: verify `desiredSources === 0 && priorRootsCount === 0` makes `reconcileSandboxSkills` issue 0 `client.begin` / `client.reconcile` calls, while a non-empty `priorLedger.roots` with legacy `builtin:` roots runs one cleanup reconcile and short-circuits on subsequent runs.                                                             |
-| **5. Control Plane preset deprecation and Phase 2 migration**                             | `packages/control-plane/src/persistence/preset-agents.test.ts`<br>`packages/control-plane/test/integration/preset-agents.test.ts` | - Verify creating a new organization no longer inserts an `agentconnect` `SkillSource` row and leaves `skills: []` on the preset `@agentconnect` agent;<br>- Verify the Phase 2 SQL migration deletes only unmodified default `agentconnect` `SkillSource` rows, strips `agentconnect/*` bindings, increments `configRevision` on affected agents, and preserves user-modified `agentconnect` sources untouched.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Test layer                                                                                | Test files (new or updated)                                                                                                       | Core verification cases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| :---------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Built-in skill assets and bundle self-check**                                        | `packages/daemon/test/builtin-skills.test.ts`<br>`packages/daemon/scripts/assert-self-contained.mjs`                              | - Verify all 4 built-in system skills' `SKILL.md` files and all 12 `references/**/*.md` files load from both the source tree and `dist/builtin-skills/`;<br>- Verify every `references/[A-Za-z0-9/_-]+\.md` path cited in any `SKILL.md` exists in that skill's `bundle.references` Map (preventing broken reference links);<br>- Verify `reserveBuiltinSkills` reserves all 4 built-in skill names and emits a warning on collision.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **2. `readSkill` tool contract and Codex 1,024-char budget**                              | `packages/daemon/test/mcp-tool-args.test.ts`<br>`packages/daemon/test/mcp/skill-guide.test.ts` (new)                              | - Verify `READ_SKILL_ARGS` and `buildReadSkillTool()` JSON Schema fields match strictly;<br>- **Hard assertion**: with all 4 skills active, `buildReadSkillTool().description.length <= 1024` (measured at 831 chars);<br>- Verify primary `SKILL.md` reads (omitted `path`, `path: ""`, `path: "SKILL.md"`) return the MCP header banner, frontmatter-stripped body, and reference file manifest;<br>- Verify secondary `references/*.md` reads, cross-skill prefix routing (`path: "agentconnect-create-agent/references/code-hosts.md"`), and omitted `references/` prefix resolution;<br>- Verify path traversal inputs (`../`, `/etc/passwd`), unknown skill names, and skills unauthorized in the current session (e.g. calling `agentconnect-create-agent` from Slack) return self-correcting errors listing available choices;<br>- Verify `'readSkill'` is included in `ALL_TOOL_NAMES`.                                                                                                                                                  |
+| **3. Dynamic session capability filtering and slash-command translation**                 | `packages/daemon/test/session/skill-invocation.test.ts`<br>`packages/daemon/test/daemon-tool-context.test.ts`                     | - Verify entitled webchat sessions (`hasAdminMcp: true`, `shareFile: true`) expose all 4 skills;<br>- Verify webchat sessions on runtimes without HTTP MCP support (e.g. `muse-acp`) or where `openRuntimeSession` falls back with `additionalMcpAttached = false` downgrade `readSkill` and `ctx.builtinSkills` to `agentconnect-images` + `agentconnect-platform`;<br>- Verify ordinary Slack/Discord sessions expose `agentconnect-images` + `agentconnect-platform`;<br>- Verify sessions without `shareFile` expose only `agentconnect-platform`;<br>- Verify `coordinator` / `check` / `research` / `gettingToKnow` internal subsessions do not expose `readSkill`;<br>- Verify `/agentconnect-create-agent args` and `!agentconnect-platform args` translate via `matchSkillInvocation` + `renderSkillInvocation` into `readSkill` tool-call instructions, and runtime-advertised disk skills take precedence over same-named MCP skills.                                                                                                   |
+| **4. Filesystem pipeline deduplication, legacy workspace cleanup, and pod short-circuit** | `packages/daemon/test/skills/install-skills.test.ts`<br>`packages/daemon/test/skills/sandbox-skill-reconcile.test.ts`             | - Verify `isMigratedBuiltinGitSkillSource` skips unmodified default `agentconnect` (`agentconnect-md/agentconnect-skill`, `1322557433`) on MCP-capable runtimes while preserving renamed sources, repointed `source` URLs with a stale `githubRepoId`, custom branches/forks, non-builtin skills, and disk installation on `sessionMcpServers: 'unsupported'` runtimes (`openclaw`);<br>- **Legacy workspace upgrade regression test**: install `builtin:agentconnect-images` and `agentconnect-platform` under a prior ledger, run `installSkills` with the new configuration, and assert the old read-only directories are cleanly removed and `owned` becomes `[]`, while user-modified directories are left untouched;<br>- **K8s Pod / VM short-circuit test**: verify `desiredSources === 0 && priorRootsCount === 0` makes `reconcileSandboxSkills` issue 0 `client.begin` / `client.reconcile` calls, while a non-empty `priorLedger.roots` with legacy `builtin:` roots runs one cleanup reconcile and short-circuits on subsequent runs. |
+| **5. Control Plane preset deprecation, reserved skill names, and Phase 2 migration**      | `packages/control-plane/src/persistence/preset-agents.test.ts`<br>`packages/control-plane/test/integration/preset-agents.test.ts` | - Verify creating a new organization no longer inserts an `agentconnect` `SkillSource` row and leaves `skills: []` on the preset `@agentconnect` agent;<br>- Verify managed-skill bundle validation rejects the 4 reserved built-in system skill names with a 400 error;<br>- Verify the Phase 2 SQL migration deletes only unmodified default `agentconnect` `SkillSource` rows, strips `agentconnect/*` bindings, increments `configRevision` on affected agents, and preserves user-modified `agentconnect` sources untouched.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### 8.3 Three-PR rollout breakdown
 
@@ -931,7 +982,7 @@ To keep each change focused and satisfy §7.2's rollout ordering constraint, imp
   - `packages/daemon/scripts/prepare-bundled-skills.mjs` and `packages/daemon/scripts/assert-self-contained.mjs`
   - `packages/daemon/src/skills/builtin-skills.ts` (in-memory loader, `BUILTIN_MCP_SKILL_NAMES`, `isMigratedBuiltinGitSkillSource`)
   - `packages/daemon/src/mcp/ops/skill-guide.ts` (new), `packages/daemon/src/mcp/ops/context.ts`, `packages/daemon/src/mcp/tools.ts` (`ALL_TOOL_NAMES`), `packages/daemon/src/mcp/ops.ts`
-  - `packages/daemon/src/session/skill-invocation.ts`, `packages/daemon/src/session/turn/tool-context.ts`, `packages/daemon/src/session/session-manager.ts`, `packages/daemon/src/daemon.ts` (wire `hasAdminMcp` and `buildReadSkillTool` into `toolContextFor`)
+  - `packages/daemon/src/session/skill-invocation.ts`, `packages/daemon/src/session/turn/tool-context.ts`, `packages/daemon/src/session/turn/runtime-session.ts` (`onAdditionalMcpFallback`), `packages/daemon/src/session/session-manager.ts`, `packages/daemon/src/daemon.ts` (wire `hasAdminMcp` and `buildReadSkillTool` into `toolContextFor`)
 - **Prerequisites**: None.
 - **Acceptance criteria**: `pnpm build && pnpm typecheck && pnpm test` pass; all ACP runtimes can read the 4 system skills and their `references/*.md` files via `mcp__agentconnect__readSkill` according to session capabilities; `/agentconnect-*` slash commands translate to `readSkill` instructions.
 - **Rollback**: Revert PR 1 directly; no persistent state or database schema changes.
@@ -939,9 +990,10 @@ To keep each change focused and satisfy §7.2's rollout ordering constraint, imp
 #### PR 2: Daemon filesystem skill pipeline offloading/deduplication and Control Plane Phase 1 preset `SkillSource` deprecation
 
 - **Touched modules**:
-  - `packages/daemon/src/daemon.ts` (stop passing `builtinSkillSources()` into `managedSkills` and `reconcileSandboxSkills`; add the `desiredSources === 0 && priorRootsCount === 0` zero-RPC pod short-circuit)
-  - `packages/daemon/src/skills/install-skills.ts` and `packages/daemon/src/skills/sandbox-skill-reconcile.ts` (filter out `isMigratedBuiltinGitSkillSource`)
-  - `packages/control-plane/src/persistence/preset-agents.ts` (`provisionPresetAgents` stops calling `providePresetSkillSource`) and corresponding Control Plane tests
+  - `packages/daemon/src/daemon.ts` (stop passing `builtinSkillSources()` into `managedSkills` and `reconcileSandboxSkills` on MCP-capable runtimes; add the `desiredSources === 0 && priorRootsCount === 0` zero-RPC pod short-circuit)
+  - `packages/daemon/src/skills/install-skills.ts` and `packages/daemon/src/skills/sandbox-skill-reconcile.ts` (filter out `isMigratedBuiltinGitSkillSource` on MCP-capable runtimes)
+  - `packages/control-plane/src/persistence/preset-agents.ts` (`provisionPresetAgents` stops calling `providePresetSkillSource`), `packages/control-plane/src/skills/managed-skill-bundle.ts` (reserve the 4 built-in skill names at upload/acceptance), and corresponding Control Plane tests
+  - `docs/designs/preset-agents.md` (§3.1) and `docs/designs/webchat-generated-images.md` (§3) (record the amendment to MCP-based system skill delivery)
 - **Prerequisites**: PR 1 merged (or shipped in the same release train).
 - **Acceptance criteria**: New organizations no longer create an `agentconnect` `SkillSource` row; existing organizations no longer query GitHub to download `agentconnect-md/agentconnect-skill` on upgraded daemons; previously installed `agentconnect-images` and `agentconnect-*` workspace directories are uninstalled automatically by the ledger on first preparation; K8s Sandbox Pods without custom skills skip `ClusterSkillCoordinator`.
 - **Rollback**: Revert PR 2; daemons resume `builtinSkillSources()` and Git skill materialization.
@@ -951,7 +1003,7 @@ To keep each change focused and satisfy §7.2's rollout ordering constraint, imp
 - **Touched modules**:
   - `packages/control-plane/prisma/migrations/<timestamp>_retire_preset_agentconnect_skill_source/migration.sql`
   - `packages/control-plane/test/integration/preset-agents.test.ts` (migration integration tests)
-- **Prerequisites**: Daemons containing PR 1 and PR 2 have rolled out across the managed pool and self-hosted environments.
+- **Prerequisites**: Daemons containing PR 1 and PR 2 have shipped in a stable release, the managed Kubernetes daemon pool has rolled forward to that release, and connected-daemon version telemetry (`daemon.version` on `register`) confirms active self-hosted daemons have crossed the Phase 1 release (or operators have been notified via release notes of the accepted loss on pre-Phase-1 daemons per §7.2.1).
 - **Acceptance criteria**: Unmodified `agentconnect` `SkillSource` rows and `agentconnect/*` agent bindings in existing organizations are idempotently removed, affected agents' `configRevision` values increment atomically, and connected daemons converge on the updated specs.
 - **Rollback**: Run the inverse compensation script calling `providePresetSkillSource` and incrementing `configRevision`.
 
@@ -964,4 +1016,6 @@ To keep each change focused and satisfy §7.2's rollout ordering constraint, imp
    - Extract `builtin-skills` into an internal workspace asset package and gate `readSkill` visibility in the Control Plane's `/v1/mcp` handler (`packages/control-plane/src/http/mcp/routes.ts`) by **authentication credential type**: advertise `readSkill` in `/v1/mcp` `tools/list` when the caller authenticates with an external OAuth token or personal API key (`ac_live_...`), and omit `readSkill` from `/v1/mcp` when the caller authenticates with a daemon webchat delegation grant (`acmcp_...`, whose session already receives `readSkill` from the daemon's `agentconnect` stdio bridge). This prevents two MCP servers in the same webchat session from advertising duplicate tool names.
 2. **On-demand MCP delivery for Markdown-only `ManagedSkill` and accepted Dream skill bundles**:
    - When an organization uploads a `ManagedSkill` ZIP bundle in the Console or accepts a Dream skill, `parseManagedSkillBundle` can inspect whether the bundle contains only Markdown documentation (`SKILL.md` + `references/**/*.md`, with no `scripts/` or executable files).
-   - Pure-documentation bundles can be merged into the daemon's dynamic `readSkill` MCP tool enum (automatically switching to the `StandingContext` `# Available system skills` index when the active skill summaries exceed the 900-character inline description budget), giving custom knowledge skills universal runtime compatibility (including `antigravity-acp`) and zero workspace disk footprint.
+   - Pure-documentation bundles can be merged into the daemon's dynamic `readSkill` MCP tool enum (automatically switching to the `StandingContext` `# Available system skills` index when the active skill summaries exceed the 900-character inline description budget, and annotating `listOrgSkills` results so models know which organization skills can be passed directly to `readSkill`), giving custom knowledge skills universal runtime compatibility (including `antigravity-acp`) and zero workspace disk footprint.
+3. **Optional per-agent or per-organization toggle for `agentconnect-platform`**:
+   - If organizations running locked-down external or customer-facing agents need to hide `agentconnect-platform` from `readSkill`, an optional `systemSkills` toggle on the agent or organization policy can suppress `BUILTIN_PLATFORM_SKILL` in `resolveSessionBuiltinSkills`.
