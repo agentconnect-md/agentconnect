@@ -543,7 +543,7 @@ import {
   placeholderHeaders,
   type McpGrantRoute
 } from './credential-proxy/mcp-grant-route.js'
-import { toolContextFingerprint } from './session/turn/tool-context.js'
+import { toolContextFingerprint, type SessionToolContext } from './session/turn/tool-context.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
 import { namesNativeUi, nativeUiChrome, nativeUiFromToolUpdate } from './mcp/native-ui.js'
@@ -1583,6 +1583,12 @@ import {
 } from './webchat/shared-image.js'
 import { prepareSharedImagePreview } from './images/index.js'
 import { BUILTIN_SKILL_KEY_PREFIX, builtinSkillSources, reserveBuiltinSkills } from './skills/builtin-skills.js'
+import {
+  buildReadSkillTool,
+  replaceReadSkillTool,
+  resolveSessionBuiltinSkills,
+  systemSkillsInstructions
+} from './mcp/ops/skill-guide.js'
 import type { LocalSkillSource } from './skills/install-skills.js'
 import {
   activationKey,
@@ -6322,7 +6328,8 @@ export class Daemon {
         transportScope,
         isDm,
         sessionKey,
-        threadedTask
+        threadedTask,
+        hasAdminMcp
       }) => {
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           const instructions = isResearchCoordinate(thread) ? this.organizationResearchPrompt(agent, []) : undefined
@@ -6361,13 +6368,24 @@ export class Daemon {
         const fills =
           computers && (platform === 'webchat' || this.turnSurfaces.exact(platform)?.fillCards !== undefined)
         if (fills) tools.push(...COMPUTER_FILL_TOOLS)
+        // skill-over-mcp.md §4.2: create-* need agentconnect-admin, which only an HTTP-MCP runtime can attach.
+        const adminMcpActive = hasAdminMcp === true && this.runtimeFacts.mcpCapabilities(agent.runtime)?.http === true
+        const builtinSkills = resolveSessionBuiltinSkills({
+          tools,
+          hasAdminMcp: adminMcpActive,
+          restricted: narrowed || isGettingToKnowCoordinate(thread)
+        })
+        if (builtinSkills.length > 0) tools.push(buildReadSkillTool(builtinSkills))
         if (!this.mcpToolServerReachable()) tools = []
+        const skillsOffered = tools.length > 0 ? builtinSkills : []
+        let registered: SessionContext | undefined
         const instructions =
           [
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
             coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
             codeHostEffectGuidance(tools),
             agentToolInstructions(agent.integrations, tools).join('\n') || undefined,
+            systemSkillsInstructions(skillsOffered),
             computers && tools.length > 0
               ? [
                   COMPUTER_USE_GUIDANCE,
@@ -6392,15 +6410,27 @@ export class Daemon {
               warn: (warning) => warnings.push(warning)
             })
         const restricted = this.restrictedMcpDefs(agent.id)
-        return {
+        const context: SessionToolContext = {
           fingerprint: toolContextFingerprint(tools, configuredServers, instructions),
           instructions,
           tools,
+          ...(skillsOffered.length > 0 ? { builtinSkills: skillsOffered } : {}),
+          // The runtime refused agentconnect-admin: drop the create-* skills before it lists the bridge's tools.
+          ...(adminMcpActive && skillsOffered.length > 0
+            ? {
+                onAdditionalMcpFallback: () => {
+                  const downgraded = resolveSessionBuiltinSkills({ tools, hasAdminMcp: false, restricted: false })
+                  replaceReadSkillTool(tools, downgraded)
+                  context.builtinSkills = downgraded
+                  if (registered) registered.builtinSkills = downgraded
+                }
+              }
+            : {}),
           mcpServers: () => {
             for (const warning of warnings) this.log.warn(warning)
             const servers: McpServer[] = []
             if (tools.length > 0) {
-              const token = this.mcp.register({
+              const session: SessionContext = {
                 agentId: agent.id,
                 platform,
                 ...(integrationId ? { integrationId } : {}),
@@ -6424,8 +6454,11 @@ export class Daemon {
                         layer: 'shared' as const
                       }
                     }
-                  : {})
-              })
+                  : {}),
+                ...(skillsOffered.length > 0 ? { builtinSkills: skillsOffered } : {})
+              }
+              registered = session
+              const token = this.mcp.register(session)
               servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
             }
             // A placeholder works only where the launch of the host serving this session (a model session's own included) routes the relay through the proxy.
@@ -6452,6 +6485,7 @@ export class Daemon {
             return servers
           }
         }
+        return context
       },
       // Download from the actual ingress integration, including platforms without a legacy reply connection.
       downloadAttachment: (agentId, att, integrationId) =>

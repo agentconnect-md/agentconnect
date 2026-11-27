@@ -88,3 +88,27 @@ describe('renderSkillInvocation', () => {
     expect(renderSkillInvocation({ name: '$code-review', args: 'x' })).toBe('Run the command /$code-review x')
   })
 })
+
+describe('MCP system skill invocation', () => {
+  const skills = ['agentconnect-images', 'agentconnect-platform'] as const
+
+  it('translates an active system skill into a readSkill instruction', () => {
+    const invocation = matchSkillInvocation('/agentconnect-platform how do crons work?', [], skills)
+    expect(invocation).toEqual({ name: 'agentconnect-platform', args: 'how do crons work?', source: 'mcp' })
+    expect(renderSkillInvocation(invocation!)).toBe(
+      'Use the "agentconnect-platform" system skill by calling the `readSkill` tool with `{"name":"agentconnect-platform"}`, then follow its instructions to handle this request: how do crons work?'
+    )
+    expect(renderSkillInvocation(matchSkillInvocation('!AgentConnect-Images', CODEX_TABLE, skills)!)).toMatch(
+      /"agentconnect-images".*handle this request\.$/
+    )
+  })
+
+  it('leaves inactive skills alone and lets a runtime-advertised skill of the same name win', () => {
+    expect(matchSkillInvocation('/agentconnect-create-agent qa', [], skills)).toBeNull()
+    const disk = [{ name: 'agentconnect-platform', description: 'fork (project)', hint: null }]
+    expect(matchSkillInvocation('/agentconnect-platform x', disk, skills)).toEqual({
+      name: 'agentconnect-platform',
+      args: 'x'
+    })
+  })
+})

@@ -666,6 +666,15 @@ The first implementation may keep the existing catalog's stricter exclusions whi
 browser confirmation is completed. It must not silently weaken confirmation to make
 remote MCP easier to ship.
 
+The daemon-bundled system skills served by `readSkill`
+([skill-over-mcp.md](skill-over-mcp.md) §3.3) cite this catalog's tools by name and
+argument shape, and a self-hosted daemon may lag the Control Plane it talks to. So
+catalog changes follow an additive compatibility rule across the supported
+daemon-to-CP skew window (at least one minor release train): new fields are optional
+or carry defaults, and a renamed tool or enum value keeps a compatibility alias for
+that window. The live `tools/list` schema stays authoritative over any example in a
+skill, and the skill text says so.
+
 ## 10. Session lifecycle
 
 ### 10.1 New conversation

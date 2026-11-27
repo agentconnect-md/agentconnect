@@ -74,6 +74,7 @@ import { COORDINATOR_MESSAGE_TOOLS, withoutBlankCoordinatorFields } from '../aut
 import { sendMessage, validateSendMessageAction } from './ops/send-message-actions.js'
 import { taskReachOf } from './ops/task-reach.js'
 import { getToolGuide, GET_TOOL_GUIDE_ARGS } from './ops/tool-guide.js'
+import { readSkill, READ_SKILL_ARGS } from './ops/skill-guide.js'
 import {
   addReaction,
   ADD_REACTION_ARGS,
@@ -329,6 +330,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['listOrgSkills', listOrgSkills],
   ['sendMessage', sendMessage],
   ['getToolGuide', getToolGuide],
+  ['readSkill', readSkill],
   ['submitCodeReview', submitCodeReview],
   // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
   ['submitGithubReview', submitCodeReview],
@@ -437,6 +439,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['updateCanvas', UPDATE_CANVAS_ARGS],
   ['recall', RECALL_ARGS],
   ['getToolGuide', GET_TOOL_GUIDE_ARGS],
+  ['readSkill', READ_SKILL_ARGS],
   ...ASSISTANT_ITEM_ARG_SCHEMAS,
   ['getToKnow', GETTING_TO_KNOW_ARGS],
   ...ASSISTANT_REMINDER_ARG_SCHEMAS,

@@ -144,3 +144,36 @@ describe('skill-invocation translation through dispatch', () => {
     }
   })
 })
+
+describe('built-in system skill invocation through dispatch', () => {
+  it('turns a typed active system skill into a readSkill instruction, and leaves an inactive one as text', async () => {
+    const root = scaffold()
+    roots.push(root)
+    const prompts: string[][] = []
+    const fakeHost = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: (id: string) => id === 'acp-1',
+      prompt: vi.fn(async (_sid: string, blocks: any[]) => {
+        prompts.push(blocks.map((b) => String(b.text ?? '')))
+        return 'end_turn'
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    }
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => fakeHost as any })
+    await daemon.start()
+    try {
+      await (daemon as any).dispatch('bot-a', msg('/agentconnect-platform how do crons work?', 1))
+      expect(prompts[0]!.join('\n')).toContain(
+        '[U123] Use the "agentconnect-platform" system skill by calling the `readSkill` tool with `{"name":"agentconnect-platform"}`, then follow its instructions to handle this request: how do crons work?'
+      )
+      // create-* needs agentconnect-admin, which a Slack DM never attaches.
+      await (daemon as any).dispatch('bot-a', msg('!agentconnect-create-agent a QA agent', 2))
+      expect(prompts[1]!.join('\n')).toContain('[U123] !agentconnect-create-agent a QA agent')
+    } finally {
+      await daemon.stop()
+    }
+  })
+})
