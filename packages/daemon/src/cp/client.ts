@@ -185,6 +185,9 @@ import {
   type SessionFilePutReq,
   ARTIFACTS_FEATURE,
   ARTIFACT_SHARES_FEATURE,
+  ARTIFACT_DELETE_FEATURE,
+  type ArtifactDeleteOk,
+  type ArtifactDeleteReq,
   type ArtifactFetchOk,
   type ArtifactFetchReq,
   type ArtifactListOk,
@@ -1317,6 +1320,11 @@ export class CpClient {
     return this.supportsArtifacts() && this.supportsServerFeature(ARTIFACT_SHARES_FEATURE)
   }
 
+  /** Whether the connected CP also answers `artifact/delete`; the delete tool is offered only then. */
+  supportsArtifactDelete(): boolean {
+    return this.supportsArtifacts() && this.supportsServerFeature(ARTIFACT_DELETE_FEATURE)
+  }
+
   /** Record a pending revision and presign one PUT per file, or the ready result a replayed key reached. */
   async beginArtifactPublish(payload: ArtifactPublishBeginReq, orgId?: string): Promise<ArtifactPublishBeginOk> {
     return (await this.artifactRequest('artifact/publish/begin', payload, orgId)) as ArtifactPublishBeginOk
@@ -1350,6 +1358,11 @@ export class CpClient {
     return (await this.artifactRequest('artifact/unshare', payload, orgId)) as ArtifactUnshareOk
   }
 
+  /** Delete an artifact, every revision and share, with the turn initiator's authority. */
+  async deleteArtifact(payload: ArtifactDeleteReq, orgId?: string): Promise<ArtifactDeleteOk> {
+    return (await this.artifactRequest('artifact/delete', payload, orgId)) as ArtifactDeleteOk
+  }
+
   /** An `artifact/*` request to a CP that advertised its feature; a refusal rejects with its `details.reason`. */
   private async artifactRequest(
     type:
@@ -1358,19 +1371,26 @@ export class CpClient {
       | 'artifact/fetch'
       | 'artifact/list'
       | 'artifact/share'
-      | 'artifact/unshare',
+      | 'artifact/unshare'
+      | 'artifact/delete',
     payload:
       | ArtifactPublishBeginReq
       | ArtifactPublishCompleteReq
       | ArtifactFetchReq
       | ArtifactListReq
       | ArtifactShareReq
-      | ArtifactUnshareReq,
+      | ArtifactUnshareReq
+      | ArtifactDeleteReq,
     orgId?: string
   ): Promise<unknown> {
     this.requireReady(type)
-    const sharing = type === 'artifact/share' || type === 'artifact/unshare'
-    if (!this.supportsServerFeature(sharing ? ARTIFACT_SHARES_FEATURE : ARTIFACTS_FEATURE)) {
+    const feature =
+      type === 'artifact/share' || type === 'artifact/unshare'
+        ? ARTIFACT_SHARES_FEATURE
+        : type === 'artifact/delete'
+          ? ARTIFACT_DELETE_FEATURE
+          : ARTIFACTS_FEATURE
+    if (!this.supportsServerFeature(feature)) {
       throw new WireError('UNKNOWN_FRAME', `this control plane does not answer ${type}`, false)
     }
     const rep =

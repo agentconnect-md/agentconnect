@@ -1,6 +1,11 @@
 // The `artifact/*` requests go only to a CP that advertised their feature, and a refusal keeps its named reason (artifacts.md §5.3, §7.1).
 import { describe, it, expect } from 'vitest'
-import { ARTIFACT_SHARES_FEATURE, ARTIFACTS_FEATURE, buildEnvelope } from '@agentconnect.md/protocol'
+import {
+  ARTIFACT_DELETE_FEATURE,
+  ARTIFACT_SHARES_FEATURE,
+  ARTIFACTS_FEATURE,
+  buildEnvelope
+} from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
@@ -201,6 +206,26 @@ describe('CpClient artifact requests', () => {
     }
     t.pushInbound(JSON.stringify(buildEnvelope('artifact/unshare/ok', revoked, { corr: revoke.id, orgId: ORG })))
     await expect(unshared).resolves.toEqual(revoked)
+    client.stop()
+  })
+
+  it('deletes only toward a CP that also advertises artifact-delete-v1', async () => {
+    const del = { agentId: AGENT, sessionId: 'webchat:s-1', artifactId: ARTIFACT }
+    const older = await ready([ARTIFACTS_FEATURE, ARTIFACT_SHARES_FEATURE])
+    expect(older.client.supportsArtifactDelete()).toBe(false)
+    await expect(older.client.deleteArtifact(del)).rejects.toThrow(/does not answer artifact\/delete/)
+    expect(sentOf(older.t, 'artifact/delete')).toEqual([])
+    older.client.stop()
+
+    const { client, t } = await ready([ARTIFACTS_FEATURE, ARTIFACT_DELETE_FEATURE])
+    expect(client.supportsArtifactDelete()).toBe(true)
+    const deleted = client.deleteArtifact(del)
+    await tick()
+    const [sent] = sentOf(t, 'artifact/delete')
+    expect(sent.orgId).toBe(ORG)
+    const ok = { artifactId: ARTIFACT, title: 'Report', deletedAt: '2026-11-27T10:00:00.000Z' }
+    t.pushInbound(JSON.stringify(buildEnvelope('artifact/delete/ok', ok, { corr: sent.id, orgId: ORG })))
+    await expect(deleted).resolves.toEqual(ok)
     client.stop()
   })
 

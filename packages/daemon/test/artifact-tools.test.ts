@@ -4,9 +4,11 @@ import { describe, expect, it } from 'vitest'
 import { WireError } from '@agentconnect.md/connection'
 import { parseArtifactMarker, type ArtifactPublishBeginReq } from '@agentconnect.md/protocol'
 import {
+  ARTIFACT_DELETE_TOOLS,
   ARTIFACT_SHARE_TOOLS,
   ARTIFACT_TOOLS,
   artifactToolsFor,
+  deleteArtifact,
   fetchArtifact,
   listArtifacts,
   publishArtifact,
@@ -53,6 +55,7 @@ function harness(root: FakeNode, overrides: Partial<ArtifactPort> = {}) {
   const port: ArtifactPort = {
     served: () => true,
     sharesServed: () => true,
+    deleteServed: () => true,
     turn: async () => ({ sessionId: 'session-1', turn: 'msg-1', initiator: { kind: 'console', userId: 'user-1' } }),
     begin: async (req) => {
       begins.push(req)
@@ -80,6 +83,9 @@ function harness(root: FakeNode, overrides: Partial<ArtifactPort> = {}) {
       throw new Error('unused')
     },
     unshare: async () => {
+      throw new Error('unused')
+    },
+    delete: async () => {
       throw new Error('unused')
     },
     network: () => 'public',
@@ -526,6 +532,61 @@ describe('unshareArtifact', () => {
   })
 })
 
+describe('deleteArtifact', () => {
+  it('deletes with the turn’s initiator and says the links stop opening and copies are not recalled', async () => {
+    const asked: unknown[] = []
+    const h = harness('x', {
+      delete: async (req) => {
+        asked.push(req)
+        return { artifactId: ARTIFACT, title: 'Q3 report', deletedAt: '2026-11-27T10:00:00.000Z' }
+      }
+    })
+    const result = await deleteArtifact(ctx(), { artifactId: ARTIFACT.toUpperCase() }, h.deps)
+    expect(asked).toEqual([
+      {
+        agentId: ctx().agentId,
+        sessionId: 'session-1',
+        artifactId: ARTIFACT,
+        initiator: { kind: 'console', userId: 'user-1' }
+      }
+    ])
+    expect(result).toMatchObject({
+      artifactId: ARTIFACT,
+      title: 'Q3 report',
+      deletedAt: '2026-11-27T10:00:00.000Z',
+      notice: /no longer open.*not recalled/
+    })
+    await expect(deleteArtifact(ctx(), { artifactId: 'Q3 report' }, h.deps)).rejects.toThrow(
+      /artifactId must be an artifact id/
+    )
+  })
+
+  it('warns that deletion is final in its description', () => {
+    const [tool] = ARTIFACT_DELETE_TOOLS
+    expect(tool?.name).toBe('deleteArtifact')
+    expect(tool?.description).toMatch(/for good/)
+    expect(tool?.description).toMatch(/every revision, its stored files and every share link/)
+    expect(tool?.description).toMatch(/cannot be recovered/)
+  })
+
+  it('maps the delete refusals to sentences the agent can act on', async () => {
+    const cases: [string, RegExp][] = [
+      ['no-member-authority', /only an organization member can delete/],
+      ['delete-forbidden', /only the artifact’s owner or an organization owner may delete it.*Nothing was deleted/],
+      ['not-producer', /you can delete only artifacts you created/],
+      ['not-found', /no such artifact or revision that this conversation can reach/]
+    ]
+    for (const [reason, pattern] of cases) {
+      const h = harness('x', {
+        delete: async () => {
+          throw new WireError('SCOPE_DENIED', 'boom', false, { reason })
+        }
+      })
+      await expect(deleteArtifact(ctx(), { artifactId: ARTIFACT }, h.deps)).rejects.toThrow(pattern)
+    }
+  })
+})
+
 describe('artifact tool gating', () => {
   it('offers the tools only toward a CP that serves them, and never in a check, research or getting-to-know task', () => {
     expect(artifactToolsFor(true, { thread: 'T1' }).map((t) => t.name)).toEqual([
@@ -540,6 +601,17 @@ describe('artifact tool gating', () => {
       'shareArtifact',
       'unshareArtifact'
     ])
+    expect(artifactToolsFor(true, { thread: 'T1' }, true, true).map((t) => t.name)).toEqual([
+      'publishArtifact',
+      'fetchArtifact',
+      'listArtifacts',
+      'shareArtifact',
+      'unshareArtifact',
+      'deleteArtifact'
+    ])
+    expect(artifactToolsFor(true, { thread: 'T1' }, false, true).map((t) => t.name)).toContain('deleteArtifact')
+    expect(artifactToolsFor(false, { thread: 'T1' }, true, true)).toEqual([])
+    expect(artifactToolsFor(true, { thread: checkCoordinate('d1') }, true, true)).toEqual([])
     expect(artifactToolsFor(false, { thread: 'T1' }, true)).toEqual([])
     expect(artifactToolsFor(true, { thread: checkCoordinate('d1') }, true)).toEqual([])
     expect(artifactToolsFor(false, { thread: 'T1' })).toEqual([])
@@ -556,6 +628,13 @@ describe('artifact tool gating', () => {
       /unshareArtifact is not available/
     )
     expect(ARTIFACT_SHARE_TOOLS.map((t) => t.name)).toEqual(['shareArtifact', 'unshareArtifact'])
+  })
+
+  it('refuses delete at execution toward a CP without it', async () => {
+    const h = harness('x', { deleteServed: () => false })
+    await expect(deleteArtifact(ctx(), { artifactId: ARTIFACT }, h.deps)).rejects.toThrow(
+      /deleteArtifact is not available in this session/
+    )
   })
 
   it('refuses at execution when the CP stopped serving them', async () => {

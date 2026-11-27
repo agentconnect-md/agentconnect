@@ -344,6 +344,7 @@ import {
   ComputerScreenshotReaper
 } from './orchestrator/computerScreenshotReaper.js'
 import { SESSION_FILE_REAP_INTERVAL_MS, SessionFileReaper } from './orchestrator/sessionFileReaper.js'
+import { ARTIFACT_DELETION_REAP_INTERVAL_MS, ArtifactDeletionReaper } from './orchestrator/artifactDeletionReaper.js'
 import { createLifecycleGate } from './file-transfer/lifecycle-gate.js'
 import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
@@ -1256,6 +1257,8 @@ export function buildContainer(
             }
           },
           ...(webAppUrl ? { webAppUrl } : {}),
+          ...(fileTransferConfig ? { uploadUrlSeconds: fileTransferConfig.limits.putUrlSeconds } : {}),
+          now: () => clock.now(),
           log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
         })
       : undefined
@@ -3199,6 +3202,11 @@ export function buildContainer(
     ? new SessionFileReaper(sessionFiles, clock, { intervalMs: SESSION_FILE_REAP_INTERVAL_MS }, http.log)
     : undefined
 
+  // Finishes artifact deletions: retries failed sweeps and sweeps once more after upload URLs expire (artifacts.md §5.6).
+  const artifactDeletionReaper = artifacts
+    ? new ArtifactDeletionReaper(artifacts, clock, { intervalMs: ARTIFACT_DELETION_REAP_INTERVAL_MS }, http.log)
+    : undefined
+
   // Deletes expired and abandoned screenshots, objects first (computer-use.md §9).
   const computerScreenshotReaper = computerScreenshots
     ? new ComputerScreenshotReaper(
@@ -4587,6 +4595,7 @@ export function buildContainer(
       computerPlan.start()
       computerScreenshotReaper?.start()
       sessionFileReaper?.start()
+      artifactDeletionReaper?.start()
       poolMemberReaper?.start()
       webchatMcpOperationReaper.start()
       agentMemoryStagingSweeper.start()
@@ -4634,6 +4643,7 @@ export function buildContainer(
       computerPlan.stop()
       computerScreenshotReaper?.stop()
       sessionFileReaper?.stop()
+      artifactDeletionReaper?.stop()
       poolMemberReaper?.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       agentMemoryStagingSweeper.stop()

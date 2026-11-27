@@ -1,4 +1,5 @@
 // Artifacts and revisions in PostgreSQL (artifacts.md §4): idempotent publish, revision numbering, and list predicates.
+import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import {
@@ -134,7 +135,7 @@ describe('PgArtifactRepo (real Postgres)', () => {
     expect((await repo.getRevision(ORG, artifact.id, 2))?.manifest.entry).toBe('index.html')
   })
 
-  it('renames, moves only between private and org, and deletes with its revisions', async () => {
+  it('renames and moves only between private and org', async () => {
     const repo = new PgArtifactRepo(prisma)
     const { artifact } = await repo.create(fresh({ ownerIdentity: 'user:alice' }), revision('m1'))
     expect((await repo.rename(ORG, artifact.id, 'Renamed'))?.title).toBe('Renamed')
@@ -145,10 +146,50 @@ describe('PgArtifactRepo (real Postgres)', () => {
       revision('m2')
     )
     expect(await repo.setVisibility(ORG, scoped.artifact.id, 'org')).toBeNull()
-    expect(await repo.delete(OTHER_ORG, artifact.id)).toBe(false)
-    expect(await repo.delete(ORG, artifact.id)).toBe(true)
+  })
+
+  it('deletes the rows at once, recording every revision’s keys until the last sweep drops them', async () => {
+    const repo = new PgArtifactRepo(prisma)
+    const { artifact } = await repo.create(fresh(), revision('d1'))
+    await repo.markReady(ORG, artifact.id, 1)
+    await repo.appendRevision(ORG, artifact.id, revision('d2'))
+    await prisma.artifactShare.create({
+      data: {
+        id: randomUUID(),
+        orgId: ORG,
+        artifactId: artifact.id,
+        revisionNumber: 1,
+        tokenHash: 'f'.repeat(64),
+        displayTail: '…abcdef',
+        audience: 'public',
+        createdByIdentity: 'user:alice'
+      }
+    })
+    const deletedAt = new Date('2026-11-27T10:00:00.000Z')
+    const purgeAfter = new Date('2026-11-27T10:20:00.000Z')
+    expect(await repo.deleteRecording(OTHER_ORG, artifact.id, { deletedAt, purgeAfter })).toBeNull()
+    const recorded = await repo.deleteRecording(ORG, artifact.id, { deletedAt, purgeAfter })
+    expect(recorded).toMatchObject({ id: artifact.id, orgId: ORG, deletedAt, purgeAfter, sweptAt: null })
+    // The pending revision 2 is recorded too, since its PUTs may still land.
+    expect([...recorded!.objectKeys].sort()).toEqual(
+      [1, 2].flatMap((n) => [
+        `src/${ORG}/artifact/${artifact.id}/${n}//app.js`,
+        `src/${ORG}/artifact/${artifact.id}/${n}//index.html`
+      ])
+    )
     expect(await repo.get(ORG, artifact.id)).toBeNull()
     expect(await prisma.artifactRevision.count({ where: { artifactId: artifact.id } })).toBe(0)
+    expect(await prisma.artifactShare.count({ where: { artifactId: artifact.id } })).toBe(0)
+    expect(await repo.deleteRecording(ORG, artifact.id, { deletedAt, purgeAfter })).toBeNull()
+
+    // Due until its first sweep succeeds, then again once purgeAfter has passed.
+    const before = new Date('2026-11-27T10:05:00.000Z')
+    expect((await repo.dueDeletions(before, 10)).map((d) => d.id)).toEqual([artifact.id])
+    await repo.markDeletionSwept(artifact.id, before)
+    expect(await repo.dueDeletions(before, 10)).toEqual([])
+    expect((await repo.dueDeletions(purgeAfter, 10)).map((d) => d.sweptAt)).toEqual([before])
+    await repo.dropDeletion(artifact.id)
+    expect(await repo.dueDeletions(purgeAfter, 10)).toEqual([])
   })
 
   it('refuses an audience whose copied scope does not match its tier', async () => {
