@@ -26,7 +26,7 @@ import { ArtifactShareDialog } from './ArtifactShareDialog'
 import { useArtifactDownload } from './useArtifactDownload'
 
 /** Who can see the artifact, in the session audience's own words. */
-function useAudienceLabel(): (audience: ArtifactDto['audience']) => string {
+export function useAudienceLabel(): (audience: ArtifactDto['audience']) => string {
   const t = useTranslations('Sessions.visibility')
   const ta = useTranslations('Artifacts.viewer')
   return (audience) => {

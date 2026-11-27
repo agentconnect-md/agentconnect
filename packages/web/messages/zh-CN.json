@@ -1188,7 +1188,8 @@
       "profile": "个人资料",
       "organizationSettings": "组织设置",
       "more": "更多",
-      "decisions": "决策"
+      "decisions": "决策",
+      "artifacts": "Artifact"
     },
     "brand": "AgentConnect",
     "brandAgent": "Agent",
@@ -1271,7 +1272,8 @@
       "linkCopied": "链接已复制",
       "cancel": "取消",
       "openMenu": "打开菜单",
-      "closeMenu": "关闭菜单"
+      "closeMenu": "关闭菜单",
+      "filterArtifacts": "筛选 Artifact"
     },
     "connectAi": {
       "title": "连接你的 AI",
@@ -8602,7 +8604,8 @@
       "empty": "还没有 Artifact",
       "loadFailed": "无法加载 Artifact，请稍后重试。",
       "more": "显示更多",
-      "loadingMore": "正在加载…"
+      "loadingMore": "正在加载…",
+      "allArtifacts": "所有 Artifact"
     },
     "share": {
       "title": "分享“{title}”",
@@ -8657,6 +8660,143 @@
       "signIn": "登录",
       "failedTitle": "无法打开此链接",
       "failedBody": "出错了，请稍后重试。"
+    },
+    "manage": {
+      "description": "你能打开的、由 Agent 发布的所有 Artifact。可以分享、重命名、更改可见范围或删除。",
+      "tabs": {
+        "artifacts": "Artifact",
+        "public": "公开链接"
+      },
+      "scope": {
+        "label": "显示",
+        "org": "组织",
+        "mine": "我的"
+      },
+      "agent": "Agent",
+      "allAgents": "所有 Agent",
+      "type": "类型",
+      "allTypes": "所有类型",
+      "types": {
+        "page": "页面",
+        "document": "文档",
+        "image": "图片",
+        "pdf": "PDF",
+        "code": "代码",
+        "other": "文件"
+      },
+      "sharing": "分享",
+      "publicAny": "不限",
+      "publiclyShared": "已公开分享",
+      "clearFilters": "清除筛选",
+      "clearFilter": "移除“{filter}”筛选",
+      "filterTitle": "筛选 Artifact",
+      "showResults": "查看 Artifact",
+      "columns": {
+        "title": "标题",
+        "type": "类型",
+        "agent": "Agent",
+        "owner": "所有者",
+        "updated": "更新时间",
+        "size": "大小",
+        "shared": "分享"
+      },
+      "owner": {
+        "you": "你",
+        "orgOwners": "组织所有者",
+        "unknown": "未知",
+        "platform": "{platform} 账号"
+      },
+      "shared": {
+        "public": "公开链接",
+        "org": "成员",
+        "none": "未分享"
+      },
+      "empty": {
+        "title": "还没有 Artifact",
+        "description": "Agent 发布页面、文档或文件后，会显示在这里。"
+      },
+      "noMatches": {
+        "title": "没有符合筛选条件的 Artifact",
+        "description": "清除一个筛选条件以查看更多。"
+      },
+      "loadFailed": "无法加载 Artifact，请稍后重试。",
+      "retry": "重试",
+      "loadMore": "加载更多",
+      "loadingMore": "加载中…",
+      "notEnabledTitle": "未启用 Artifact",
+      "notEnabledBody": "此部署未启用 Artifact。",
+      "backHome": "返回首页",
+      "close": "关闭",
+      "save": "保存",
+      "saving": "正在保存…",
+      "actions": {
+        "menu": "“{title}”的操作",
+        "cancel": "取消",
+        "open": "打开",
+        "openRevision": "打开修订版本 {number}",
+        "revisions": "修订版本",
+        "share": "分享",
+        "session": "前往会话",
+        "rename": "重命名",
+        "audience": "更改可见范围",
+        "audienceFixed": "可见范围沿用其所在会话，无法更改。",
+        "delete": "删除"
+      },
+      "rename": {
+        "title": "重命名 Artifact",
+        "label": "标题"
+      },
+      "audienceDialog": {
+        "title": "谁可以查看“{title}”",
+        "private": "私密",
+        "privateHint": "只有所有者可以打开。",
+        "privateHintOwners": "只有组织所有者可以打开。",
+        "org": "{org} 的所有人",
+        "orgHint": "{org} 的每位成员都可以打开所有修订版本。",
+        "sharesKept": "分享链接保持不变，可在“分享”中撤销。"
+      },
+      "delete": {
+        "title": "删除“{title}”？",
+        "body": "这会立即删除此 Artifact、它的所有修订版本以及所有分享链接。持有链接的人将无法再打开。此操作无法撤销。",
+        "confirm": "删除 Artifact",
+        "deleting": "正在删除…"
+      },
+      "revisionsDialog": {
+        "title": "“{title}”的修订版本",
+        "revision": "修订版本 {number}",
+        "latest": "最新",
+        "meta": "{date} · {agent} · {size}",
+        "loadFailed": "无法加载修订版本，请稍后重试。"
+      },
+      "errors": {
+        "forbidden": "只有此 Artifact 的所有者或组织所有者可以执行此操作。",
+        "audienceFixed": "此 Artifact 的可见范围沿用其所在会话，无法更改。",
+        "changed": "此 Artifact 刚刚被更改，请重试。",
+        "gone": "此 Artifact 已不存在。",
+        "failed": "出了点问题，请重试。"
+      },
+      "public": {
+        "description": "组织内所有有效的公开链接，仅组织所有者可见。无需打开 Artifact 即可撤销链接或删除 Artifact。",
+        "columns": {
+          "artifact": "Artifact",
+          "revision": "修订版本",
+          "createdBy": "分享者",
+          "sharedAt": "分享时间"
+        },
+        "sharedBy": "{name} 分享 · {date}",
+        "cannotView": "你无法打开此 Artifact",
+        "revoke": "撤销链接",
+        "revokeTitle": "撤销此公开链接？",
+        "revokeBody": "指向“{title}”修订版本 {number} 的链接将立即失效，对所有持有者都是如此。",
+        "revoking": "正在撤销…",
+        "deleteArtifact": "删除 Artifact",
+        "empty": {
+          "title": "没有公开链接",
+          "description": "有人把 Artifact 分享给任何拥有链接的人后，会显示在这里。"
+        },
+        "loadFailed": "无法加载公开链接，请稍后重试。",
+        "forbidden": "只有组织所有者可以查看组织的公开链接。"
+      }
     }
   }
 }

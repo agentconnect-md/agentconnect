@@ -12,7 +12,7 @@ const setFlags = (value?: string) => {
     value === undefined ? {} : { FEATURE_FLAGS: value }
 }
 
-const offered = (items: { href: string; requires?: string }[]) =>
+const offered = (items: { href: string; requires?: string; capability?: string }[]) =>
   items.filter((i) => navVisible(i as Parameters<typeof navVisible>[0])).map((i) => i.href)
 
 afterEach(() => setFlags())
@@ -45,6 +45,15 @@ describe('navVisible', () => {
   it('offers the Decisions surface everywhere with no flag set', () => {
     setFlags('')
     for (const hrefs of [offered(NAV_GROUPS.flat()), offered(SEARCH_PAGES)]) expect(hrefs).toContain('/decisions')
+  })
+
+  it('offers Artifacts only where the deployment publishes a content domain', () => {
+    setFlags()
+    for (const hrefs of [offered(NAV_GROUPS.flat()), offered(SEARCH_PAGES)]) expect(hrefs).not.toContain('/artifacts')
+    ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {
+      ARTIFACTS_CONTENT_DOMAIN: 'content.example.test'
+    }
+    for (const hrefs of [offered(NAV_GROUPS.flat()), offered(SEARCH_PAGES)]) expect(hrefs).toContain('/artifacts')
   })
 
   it('leaves the rest of the rail alone when a flag is off', () => {

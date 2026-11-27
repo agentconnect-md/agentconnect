@@ -405,7 +405,7 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
     if (isMobile) setMobileSearch(true)
     else window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
   }, [isMobile])
-  // Filter slot the current view (Sessions) registers so the app bar can trigger it.
+  // Filter slot the current view (Sessions, Artifacts) registers so the app bar can trigger it.
   const [mobileFilter, setMobileFilter] = useState<MobileFilterSlot | null>(null)
   // Push-screen app-bar action the current view registers (the session rail's list).
   const [mobileAction, setMobileAction] = useState<MobileActionSlot | null>(null)
@@ -962,12 +962,13 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
                         <Icon name="circle-plus" size={22} />
                       </button>
                     )}
-                    {/* Sessions registers a filter slot; surface it as an app-bar button
-                  with a dot when any filter is active (design's Sessions tab). */}
-                    {barePath === '/sessions' && mobileFilter && (
+                    {/* A list view's filter slot, as an app-bar button dotted while a filter is set. */}
+                    {(barePath === '/sessions' || barePath === '/artifacts') && mobileFilter && (
                       <button
                         className="mappbtn relative"
-                        aria-label={t('actions.filterSessions')}
+                        aria-label={
+                          barePath === '/artifacts' ? t('actions.filterArtifacts') : t('actions.filterSessions')
+                        }
                         onClick={mobileFilter.open}
                       >
                         <Icon name="sliders-horizontal" size={20} />

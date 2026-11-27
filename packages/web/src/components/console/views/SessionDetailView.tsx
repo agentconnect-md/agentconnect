@@ -5150,6 +5150,16 @@ export default function SessionDetailView() {
                     sessionId={artifactsSessionId}
                     refreshKey={artifactMarkers}
                     onStatusChange={onArtifactsListStatus}
+                    pageLink={
+                      <Link
+                        href={orgPath('/artifacts')}
+                        data-artifacts-page-link=""
+                        className="inline-flex items-center gap-[5px] font-sans text-[12px] font-medium leading-[1.4] text-(--text-tertiary) no-underline hover:text-(--text-secondary)"
+                      >
+                        {artifactListT('allArtifacts')}
+                        <Icon name="arrow-right" size={12} />
+                      </Link>
+                    }
                   />
                 ) : undefined
               }

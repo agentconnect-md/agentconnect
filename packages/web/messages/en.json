@@ -1188,7 +1188,8 @@
       "profile": "Profile",
       "organizationSettings": "Organization settings",
       "more": "More",
-      "decisions": "Decisions"
+      "decisions": "Decisions",
+      "artifacts": "Artifacts"
     },
     "brand": "AgentConnect",
     "brandAgent": "Agent",
@@ -1271,7 +1272,8 @@
       "linkCopied": "Link copied",
       "cancel": "Cancel",
       "openMenu": "Open menu",
-      "closeMenu": "Close menu"
+      "closeMenu": "Close menu",
+      "filterArtifacts": "Filter artifacts"
     },
     "connectAi": {
       "title": "Connect your AI",
@@ -8602,7 +8604,8 @@
       "empty": "No artifacts yet",
       "loadFailed": "Artifacts couldn’t be loaded. Try again later.",
       "more": "Show more",
-      "loadingMore": "Loading…"
+      "loadingMore": "Loading…",
+      "allArtifacts": "All artifacts"
     },
     "share": {
       "title": "Share “{title}”",
@@ -8657,6 +8660,143 @@
       "signIn": "Sign in",
       "failedTitle": "This link couldn’t be opened",
       "failedBody": "Something went wrong. Try again later."
+    },
+    "manage": {
+      "description": "Everything your agents published that you can open. Share it, rename it, change who can see it, or delete it.",
+      "tabs": {
+        "artifacts": "Artifacts",
+        "public": "Public links"
+      },
+      "scope": {
+        "label": "Show",
+        "org": "Organization",
+        "mine": "Mine"
+      },
+      "agent": "Agent",
+      "allAgents": "All agents",
+      "type": "Type",
+      "allTypes": "All types",
+      "types": {
+        "page": "Page",
+        "document": "Document",
+        "image": "Image",
+        "pdf": "PDF",
+        "code": "Code",
+        "other": "File"
+      },
+      "sharing": "Sharing",
+      "publicAny": "Any",
+      "publiclyShared": "Publicly shared",
+      "clearFilters": "Clear filters",
+      "clearFilter": "Remove the {filter} filter",
+      "filterTitle": "Filter artifacts",
+      "showResults": "Show artifacts",
+      "columns": {
+        "title": "Title",
+        "type": "Type",
+        "agent": "Agent",
+        "owner": "Owner",
+        "updated": "Updated",
+        "size": "Size",
+        "shared": "Shared"
+      },
+      "owner": {
+        "you": "You",
+        "orgOwners": "Organization owners",
+        "unknown": "Unknown",
+        "platform": "{platform} account"
+      },
+      "shared": {
+        "public": "Public link",
+        "org": "Members",
+        "none": "Not shared"
+      },
+      "empty": {
+        "title": "No artifacts yet",
+        "description": "When an agent publishes a page, document or file, it shows up here."
+      },
+      "noMatches": {
+        "title": "No artifacts match these filters",
+        "description": "Clear a filter to see more."
+      },
+      "loadFailed": "Artifacts couldn’t be loaded. Try again later.",
+      "retry": "Try again",
+      "loadMore": "Load more",
+      "loadingMore": "Loading…",
+      "notEnabledTitle": "Artifacts are not enabled",
+      "notEnabledBody": "Artifacts are not enabled on this deployment.",
+      "backHome": "Back to home",
+      "close": "Close",
+      "save": "Save",
+      "saving": "Saving…",
+      "actions": {
+        "menu": "Actions for “{title}”",
+        "cancel": "Cancel",
+        "open": "Open",
+        "openRevision": "Open revision {number}",
+        "revisions": "Revisions",
+        "share": "Share",
+        "session": "Go to the session",
+        "rename": "Rename",
+        "audience": "Change who can see it",
+        "audienceFixed": "Who can see it comes from the session it was made in and can’t be changed.",
+        "delete": "Delete"
+      },
+      "rename": {
+        "title": "Rename artifact",
+        "label": "Title"
+      },
+      "audienceDialog": {
+        "title": "Who can see “{title}”",
+        "private": "Private",
+        "privateHint": "Only its owner can open it.",
+        "privateHintOwners": "Only organization owners can open it.",
+        "org": "Everyone in {org}",
+        "orgHint": "Every member of {org} can open every revision.",
+        "sharesKept": "Share links stay as they are. Revoke them from Share."
+      },
+      "delete": {
+        "title": "Delete “{title}”?",
+        "body": "This deletes the artifact, every revision of it, and every share link to it, at once. Its links stop working for everyone who has them. This can’t be undone.",
+        "confirm": "Delete artifact",
+        "deleting": "Deleting…"
+      },
+      "revisionsDialog": {
+        "title": "Revisions of “{title}”",
+        "revision": "Revision {number}",
+        "latest": "Latest",
+        "meta": "{date} · {agent} · {size}",
+        "loadFailed": "Revisions couldn’t be loaded. Try again later."
+      },
+      "errors": {
+        "forbidden": "Only the artifact’s owner or an organization owner can do this.",
+        "audienceFixed": "Who can see this artifact comes from the session it was made in and can’t be changed.",
+        "changed": "The artifact changed meanwhile. Try again.",
+        "gone": "This artifact no longer exists.",
+        "failed": "Something went wrong. Try again."
+      },
+      "public": {
+        "description": "Every active public link in the organization, shown only to organization owners. You can revoke a link or delete its artifact without opening it.",
+        "columns": {
+          "artifact": "Artifact",
+          "revision": "Revision",
+          "createdBy": "Shared by",
+          "sharedAt": "Shared"
+        },
+        "sharedBy": "Shared by {name} · {date}",
+        "cannotView": "You can’t open this artifact",
+        "revoke": "Revoke link",
+        "revokeTitle": "Revoke this public link?",
+        "revokeBody": "The link to revision {number} of “{title}” stops working at once, for everyone who has it.",
+        "revoking": "Revoking…",
+        "deleteArtifact": "Delete artifact",
+        "empty": {
+          "title": "No public links",
+          "description": "When someone shares an artifact with anyone who has the link, it shows up here."
+        },
+        "loadFailed": "Public links couldn’t be loaded. Try again later.",
+        "forbidden": "Only organization owners can see the organization’s public links."
+      }
     }
   }
 }
