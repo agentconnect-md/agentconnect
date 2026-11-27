@@ -3202,7 +3202,7 @@ export function buildContainer(
     ? new SessionFileReaper(sessionFiles, clock, { intervalMs: SESSION_FILE_REAP_INTERVAL_MS }, http.log)
     : undefined
 
-  // Finishes artifact deletions: retries failed sweeps and sweeps once more after upload URLs expire (artifacts.md §5.6).
+  // Expires old artifact revisions and finishes deletions: retries failed sweeps, sweeps once more after upload URLs expire (artifacts.md §5.6, §10.1).
   const artifactDeletionReaper = artifacts
     ? new ArtifactDeletionReaper(artifacts, clock, { intervalMs: ARTIFACT_DELETION_REAP_INTERVAL_MS }, http.log)
     : undefined

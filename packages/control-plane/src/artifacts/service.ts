@@ -45,6 +45,7 @@ import {
 } from '../file-transfer/transfer.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
 import type { ArtifactShareService } from './shares.js'
+import { revisionExpired } from './retention.js'
 import {
   ArtifactIdempotencyConflictError,
   decodeArtifactCursor,
@@ -73,6 +74,8 @@ const HEAD_CONCURRENCY = 16
 const DELETE_CONCURRENCY = 16
 /** Deletions one reaper pass sweeps. */
 const REAP_BATCH = 50
+/** Expired revisions one retention pass removes. */
+export const PRUNE_BATCH = 100
 /** The longest upload URL the transfer config admits, for a service built without its own value. */
 const MAX_UPLOAD_URL_SECONDS = 3600
 
@@ -125,8 +128,13 @@ export interface ArtifactServiceDeps {
 }
 
 export interface ArtifactService {
-  /** `artifact/publish/begin`; the caller has checked that the daemon serves `agent`. */
-  begin(orgId: string, agent: AgentRecord, req: ArtifactPublishBeginReq): Promise<ArtifactPublishBeginOk>
+  /** `artifact/publish/begin` from `daemonId`, whose retention ages the revision; the caller has checked that it serves `agent`. */
+  begin(
+    orgId: string,
+    agent: AgentRecord,
+    req: ArtifactPublishBeginReq,
+    daemonId?: string
+  ): Promise<ArtifactPublishBeginOk>
   /** `artifact/publish/complete`; HEADs every object before the revision becomes ready. */
   complete(orgId: string, req: ArtifactPublishCompleteReq): Promise<ArtifactPublished>
   /** `artifact/fetch`: GETs for a ready revision the session reaches. */
@@ -143,6 +151,8 @@ export interface ArtifactService {
   deleteArtifact(orgId: string, artifactId: string): Promise<{ deletedAt: Date } | null>
   /** Sweep the objects of deletions due now, dropping each record after its last sweep; returns how many were dropped. */
   reap(): Promise<number>
+  /** Remove up to `PRUNE_BATCH` revisions past their installation's retention, objects right after (§10.1); returns how many. */
+  prune(): Promise<number>
   /** A browser GET for one file of a ready revision, downloaded as an attachment; undefined without a bucket. */
   fileDownload(revision: ArtifactRevisionRecord, path: string): Promise<TransferUrl | undefined>
 }
@@ -418,7 +428,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
   }
 
   return {
-    async begin(orgId, agent, req) {
+    async begin(orgId, agent, req, daemonId) {
       const bucket = requireTransfer()
       const oversized = req.manifest.files.find((file) => file.bytes > bucket.maxBytes)
       if (oversized) {
@@ -439,7 +449,8 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         producedByAgentName: agent.displayName ?? agent.name,
         producedInSessionId: req.sessionId,
         initiatedBy,
-        idempotencyKey: req.idempotencyKey
+        idempotencyKey: req.idempotencyKey,
+        ...(daemonId ? { publishedByDaemonId: daemonId } : {})
       }
 
       let result
@@ -644,6 +655,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         audience: req.audience,
         createdByIdentity: `user:${viewer.principal.userId}`
       })
+      if (!created) throw notFound()
       return {
         shareId: created.share.id,
         artifactId: artifact.id,
@@ -713,6 +725,30 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       }
       if (failure !== undefined) throw failure
       return dropped
+    },
+
+    async prune() {
+      if (!transfer) return 0
+      const at = new Date(now())
+      let pruned = 0
+      let failure: unknown
+      for (const key of await artifacts.expiredRevisions(at, PRUNE_BATCH)) {
+        try {
+          // Re-decided under the artifact's lock: a share created or a retention changed since the scan keeps it.
+          const deletion = await artifacts.expireRecording(key, { deletedAt: at, purgeAfter: at }, (facts) =>
+            revisionExpired(facts, at.getTime())
+          )
+          if (!deletion) continue
+          pruned += 1
+          await sweep(transfer, deletion).catch((err: unknown) => {
+            deps.log?.warn({ err, ...key }, 'expired artifact revision sweep failed; the reaper retries it')
+          })
+        } catch (err) {
+          failure ??= err
+        }
+      }
+      if (failure !== undefined) throw failure
+      return pruned
     },
 
     async fileDownload(revision, path) {

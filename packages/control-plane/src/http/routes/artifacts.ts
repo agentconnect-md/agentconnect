@@ -612,6 +612,8 @@ export function artifactRoutes(deps: HttpDeps) {
           audience: req.body.audience,
           createdByIdentity: `user:${ctxOf(req).userId}`
         })
+        if (!created)
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'revision not found' })
         return reply.code(201).send({
           ...(await shareDto(req, created.share)),
           token: created.token,

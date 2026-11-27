@@ -5361,6 +5361,10 @@ model ArtifactRevision {
   producedInSessionId String
   // The identity that started the publishing turn; null for a turn with none.
   initiatedBy         String?
+  // The daemon that published it; its current `sessions.retention` ages the revision (artifacts.md §10.1, P3).
+  publishedByDaemonId String?               @db.Uuid
+  // That daemon's `sessions.retention` at publish, which ages the revision once the daemon row is gone.
+  publishedRetention  String?
   totalBytes          Int
   fileCount           Int
   state               ArtifactRevisionState @default(pending)
@@ -5374,6 +5378,7 @@ model ArtifactRevision {
   // Per producing agent, which covers the first publish whose artifact id the daemon does not know yet.
   @@unique([producedByAgentId, idempotencyKey])
   @@index([producedInSessionId])
+  @@index([createdAt])
   @@map("artifact_revision")
 }
 
@@ -5406,12 +5411,12 @@ model ArtifactShare {
   @@map("artifact_share")
 }
 
-// A deleted artifact's object keys, kept until the bucket no longer holds them (artifacts.md §5.6, §10.1).
+// A deleted artifact's or expired revision's object keys, kept until the bucket no longer holds them (artifacts.md §5.6, §10.1).
 model ArtifactDeletion {
-  // The deleted artifact's id; its rows are already gone, so there is no foreign key.
+  // The deleted artifact's or expired revision's id; its rows are already gone, so there is no foreign key.
   id         String    @id @db.Uuid
   orgId      String
-  // Every revision's manifest paths under its storage prefix, pending ones included.
+  // Each removed revision's manifest paths under its storage prefix, pending ones included.
   objectKeys String[]
   deletedAt  DateTime  @db.Timestamptz(3)
   // Upload URLs signed before the deletion have expired by then; the sweep that starts after it is the last one.

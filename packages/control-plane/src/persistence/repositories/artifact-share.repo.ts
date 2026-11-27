@@ -1,7 +1,7 @@
 // PgArtifactShareRepo — share links to one artifact revision (artifacts.md §4, §8.3); only the token's peppered hash is stored.
 import { randomUUID } from 'node:crypto'
 import type { ArtifactShare } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   ArtifactRecord,
   ArtifactShareAudience,
@@ -30,8 +30,18 @@ function toShare(row: ArtifactShare): ArtifactShareRecord {
 export class PgArtifactShareRepo implements ArtifactShareRepo {
   constructor(private readonly db: PrismaLike) {}
 
-  async create(share: NewArtifactShare): Promise<ArtifactShareRecord> {
-    return toShare(await this.db.artifactShare.create({ data: { id: randomUUID(), ...share } }))
+  async create(share: NewArtifactShare): Promise<ArtifactShareRecord | null> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The share lock waits out a retention sweep holding the row, so the revision read below sees its outcome.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "artifact" WHERE "id" = ${share.artifactId}::uuid AND "orgId" = ${share.orgId} FOR SHARE`
+      if (locked.length === 0) return null
+      const ready = await tx.artifactRevision.count({
+        where: { artifactId: share.artifactId, number: share.revisionNumber, state: 'ready' }
+      })
+      if (ready === 0) return null
+      return toShare(await tx.artifactShare.create({ data: { id: randomUUID(), ...share } }))
+    })
   }
 
   async listActive(orgId: string, artifactId: string): Promise<ArtifactShareRecord[]> {

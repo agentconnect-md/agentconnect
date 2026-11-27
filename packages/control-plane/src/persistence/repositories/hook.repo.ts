@@ -60,6 +60,7 @@ import { orgScope } from '../../secrets/scope.js'
 import { AgentId, HookId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
 import { PLACEMENT_ONLY, type PlacementResolver, type ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { ORPHANED_RUN_REASON } from './cron.repo.js'
+import { ARTIFACT_PURGE_DELAY_MAX_MS, recordOrgArtifactDeletions } from './artifact.repo.js'
 import {
   lockHookReviewAgentLifecycleScope,
   lockHookReviewAgentRepoScope,
@@ -3494,6 +3495,11 @@ export class PgHookRepo implements HookRepo {
         // in the same fenced transaction as the final Org cascade.
         await tx.hookReviewProjection.deleteMany({ where: { orgId } })
         await tx.hookRun.deleteMany({ where: { orgId } })
+        // Artifacts have no org FK by design, so their keys go to the deletion reaper here (artifacts.md §10.1).
+        await recordOrgArtifactDeletions(tx, orgId, {
+          deletedAt: at,
+          purgeAfter: new Date(at.getTime() + ARTIFACT_PURGE_DELAY_MAX_MS)
+        })
         // Record the crypto-shred intent in the SAME transaction as the delete
         // (docs/designs/per-org-secret-encryption.md §6). Deleting the Vault key
         // is a remote effect that cannot join this transaction, and after the

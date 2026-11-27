@@ -1,4 +1,4 @@
-// Sweeps deleted artifacts' objects and drops each record after its last sweep, objects first (artifacts.md §5.6, §10.1).
+// Expires old revisions, then sweeps deleted objects and drops each record after its last sweep (artifacts.md §5.6, §10.1).
 import type { ArtifactService } from '../artifacts/service.js'
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { ReaperLog } from './cronRunReaper.js'
@@ -10,7 +10,7 @@ export class ArtifactDeletionReaper {
   private stopped = false
 
   constructor(
-    private readonly artifacts: Pick<ArtifactService, 'reap'>,
+    private readonly artifacts: Pick<ArtifactService, 'reap' | 'prune'>,
     private readonly clock: Clock,
     private readonly cfg: { intervalMs: number },
     private readonly log?: ReaperLog
@@ -35,9 +35,15 @@ export class ArtifactDeletionReaper {
     this.timer = this.clock.setTimeout(() => void this.tick(), this.cfg.intervalMs)
   }
 
-  // One sweep, then re-arm; a failed sweep is logged and retried on the next tick.
+  // One retention pass and one sweep, then re-arm; either failing is logged and retried on the next tick.
   async tick(): Promise<void> {
     this.timer = undefined
+    try {
+      const expired = await this.artifacts.prune()
+      if (expired > 0) this.log?.info({ expired }, 'artifact-deletion-reaper: expired old revisions')
+    } catch (err) {
+      this.log?.error({ err }, 'artifact-deletion-reaper: retention pass failed')
+    }
     try {
       const deletions = await this.artifacts.reap()
       if (deletions > 0) this.log?.info({ deletions }, 'artifact-deletion-reaper: finished deletions')

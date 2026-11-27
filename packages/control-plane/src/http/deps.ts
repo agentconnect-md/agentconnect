@@ -660,7 +660,7 @@ export interface HttpDeps {
   /** Shared-file snapshots (agent-authored-attachments.md §4.1); absent ⇒ every snapshot read is not found. */
   sessionFiles?: Pick<SessionFileService, 'download'>
   /** Artifacts (artifacts.md §8.1, §12); absent ⇒ every artifact route answers 409 ARTIFACTS_NOT_ENABLED. */
-  artifacts?: Pick<ArtifactService, 'fileDownload' | 'deleteArtifact'>
+  artifacts?: Pick<ArtifactService, 'fileDownload' | 'deleteArtifact' | 'reap'>
   /** Share links to one artifact revision (artifacts.md §8.3); only used while `artifacts` is present. */
   artifactShares: ArtifactShareService
 }
