@@ -5569,6 +5569,19 @@ export const ArtifactDto = z.object({
   /** Ready revisions, newest first. */
   revisions: z.array(ArtifactRevisionSummaryDto)
 })
+export const SessionArtifactParams = z.object({ sessionId: z.string().min(1).max(256) })
+const SESSION_ARTIFACT_PAGE_MAX = 50
+export const SessionArtifactListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(SESSION_ARTIFACT_PAGE_MAX).default(25),
+  cursor: z.string().min(1).max(200).optional()
+})
+/** `getArtifact`'s fields without the revision list, plus the latest ready revision. */
+export const SessionArtifactDto = ArtifactDto.omit({ revisions: true }).extend({ latest: ArtifactRevisionSummaryDto })
+export const SessionArtifactPageDto = z.object({
+  artifacts: z.array(SessionArtifactDto),
+  /** Pass back as `cursor` for older artifacts; null on the last page. */
+  nextCursor: z.string().nullable()
+})
 export const ArtifactRevisionDto = ArtifactRevisionSummaryDto.extend({
   artifactId: z.string(),
   latestRevision: z.number().int(),

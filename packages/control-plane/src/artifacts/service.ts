@@ -33,7 +33,11 @@ import {
   type TransferUrl
 } from '../file-transfer/transfer.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
-import { ArtifactIdempotencyConflictError } from '../persistence/repositories/artifact.repo.js'
+import {
+  ArtifactIdempotencyConflictError,
+  decodeArtifactCursor,
+  encodeArtifactCursor
+} from '../persistence/repositories/artifact.repo.js'
 import type {
   AgentRecord,
   AgentRepo,
@@ -142,20 +146,12 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T
   return out
 }
 
-function encodeCursor(row: ArtifactRecord): string {
-  return Buffer.from(JSON.stringify([row.updatedAt.toISOString(), row.id]), 'utf8').toString('base64url')
-}
-
 function decodeCursor(cursor: string | undefined): { updatedAt: Date; id: string } | undefined {
   if (!cursor) return undefined
-  try {
-    const [at, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as [unknown, unknown]
-    const updatedAt = new Date(String(at))
-    if (typeof id !== 'string' || Number.isNaN(updatedAt.getTime())) throw new Error('bad cursor')
-    return { updatedAt, id }
-  } catch {
+  const decoded = decodeArtifactCursor(cursor)
+  if (!decoded)
     throw new ArtifactRefusal('not-found', 'BAD_PAYLOAD', 'the list cursor is not one this control plane issued')
-  }
+  return decoded
 }
 
 export function createArtifactService(deps: ArtifactServiceDeps): ArtifactService {
@@ -480,7 +476,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       const last = page.at(-1)
       return {
         artifacts: entries.filter((e): e is ArtifactListEntry => e !== null),
-        ...(rows.length > ARTIFACT_LIST_PAGE_MAX && last ? { nextCursor: encodeCursor(last) } : {})
+        ...(rows.length > ARTIFACT_LIST_PAGE_MAX && last ? { nextCursor: encodeArtifactCursor(last) } : {})
       }
     },
 

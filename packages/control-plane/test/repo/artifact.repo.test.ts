@@ -1,7 +1,12 @@
 // Artifacts and revisions in PostgreSQL (artifacts.md §4): idempotent publish, revision numbering, and list predicates.
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
-import { ArtifactIdempotencyConflictError, PgArtifactRepo } from '../../src/persistence/repositories/artifact.repo.js'
+import {
+  ArtifactIdempotencyConflictError,
+  PgArtifactRepo,
+  decodeArtifactCursor,
+  encodeArtifactCursor
+} from '../../src/persistence/repositories/artifact.repo.js'
 import {
   agentCanReachArtifact,
   canViewArtifact,
@@ -251,5 +256,49 @@ describe('PgArtifactRepo (real Postgres)', () => {
       cursor = { updatedAt: last.updatedAt, id: last.id }
     }
     expect(paged.map((a) => a.id)).toEqual(all.map((a) => a.id))
+  })
+
+  it('lists the artifacts with a ready revision produced in one session, newest activity first, page by page', async () => {
+    const repo = new PgArtifactRepo(prisma)
+    const ready = async (key: string, sessionId: string, org = ORG) => {
+      const { artifact } = await repo.create(
+        { ...fresh({ orgId: org }), originSessionId: sessionId },
+        revision(key, { producedInSessionId: sessionId })
+      )
+      return (await repo.markReady(org, artifact.id, 1))!
+    }
+    const first = await ready('p1', 'session-a')
+    const second = await ready('p2', 'session-a')
+    const revisedHere = await ready('p3', 'session-b')
+    await repo.appendRevision(ORG, revisedHere.id, revision('p3b', { producedInSessionId: 'session-a' }))
+    await repo.markReady(ORG, revisedHere.id, 2)
+    const pendingHere = await ready('p4', 'session-b')
+    await repo.appendRevision(ORG, pendingHere.id, revision('p4b', { producedInSessionId: 'session-a' }))
+    // Another organization's session with the same id, and an artifact whose only revision is still pending.
+    await ready('p5', 'session-a', OTHER_ORG)
+    await repo.create(fresh(), revision('p6', { producedInSessionId: 'session-a' }))
+    const times = new Map([
+      [first.id, '2026-11-25T10:00:03.000Z'],
+      [second.id, '2026-11-25T10:00:01.000Z'],
+      [revisedHere.id, '2026-11-25T10:00:02.000Z']
+    ])
+    for (const [id, at] of times) await prisma.artifact.update({ where: { id }, data: { updatedAt: new Date(at) } })
+
+    const all = await repo.listProducedInSession(ORG, 'session-a', { limit: 10 })
+    expect(all.map((a) => a.id)).toEqual([first.id, revisedHere.id, second.id])
+    const paged: string[] = []
+    let cursor: { updatedAt: Date; id: string } | undefined
+    for (;;) {
+      const page = await repo.listProducedInSession(ORG, 'session-a', { limit: 2, ...(cursor ? { cursor } : {}) })
+      if (page.length === 0) break
+      paged.push(...page.map((a) => a.id))
+      const last = page[page.length - 1]!
+      cursor = decodeArtifactCursor(encodeArtifactCursor(last))!
+    }
+    expect(paged).toEqual(all.map((a) => a.id))
+    expect(await repo.listProducedInSession(ORG, 'session-none', { limit: 10 })).toEqual([])
+    expect(decodeArtifactCursor('not-a-cursor')).toBeNull()
+    const foreignId = Buffer.from(JSON.stringify([new Date().toISOString(), 'not-a-uuid'])).toString('base64url')
+    expect(decodeArtifactCursor(foreignId)).toBeNull()
   })
 })

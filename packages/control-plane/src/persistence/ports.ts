@@ -1130,6 +1130,8 @@ export interface ArtifactRepo {
     sessionOwner: ArtifactViewer | undefined,
     page: ArtifactPageQuery
   ): Promise<ArtifactRecord[]>
+  /** Artifacts with a ready revision published in `sessionId`, unfiltered by audience; the caller checks each. */
+  listProducedInSession(orgId: string, sessionId: string, page: ArtifactPageQuery): Promise<ArtifactRecord[]>
 }
 
 export interface ComputerScreenshotRepo {
