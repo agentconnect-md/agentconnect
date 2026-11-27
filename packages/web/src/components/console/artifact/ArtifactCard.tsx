@@ -1,7 +1,8 @@
 'use client'
 
-// The card a publication leaves in a conversation, pinned to its revision (artifacts.md §11.1).
+// The card a publication leaves in a conversation, pinned to its revision (artifacts.md §11.1); Open opens in place on a session page (§11.2).
 import Link from 'next/link'
+import type { MouseEvent } from 'react'
 import useSWR from 'swr'
 import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
@@ -18,7 +19,9 @@ import {
   artifactsContentDomain,
   type ArtifactMarker
 } from '@/lib/artifact'
+import { useIsMobile } from '@/lib/use-is-mobile'
 import { useArtifactDownload } from './useArtifactDownload'
+import { useArtifactOpener, useArtifactPlacement } from './artifact-opener'
 
 const ACTION =
   'inline-flex flex-none items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-[10px] py-[5px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) no-underline transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) disabled:cursor-default disabled:opacity-55'
@@ -56,6 +59,17 @@ export function ArtifactCard({ marker }: { marker: ArtifactMarker }) {
   const kind = summary ? artifactKind(summary.entryMediaType, summary.entry) : null
   const download = useArtifactDownload(artifactId, revision, title)
   const unavailable = state === 'unavailable' || state === 'not-enabled'
+  // A phone has no dock, so there and outside a session page Open stays a link to the standalone page.
+  const opener = useArtifactOpener()
+  const placement = useArtifactPlacement()
+  const isMobile = useIsMobile()
+  const inPlace = opener !== null && !isMobile
+  const openInPlace = (event: MouseEvent<HTMLAnchorElement>) => {
+    // A modified or middle click keeps the link's own new-tab behavior.
+    if (!inPlace || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    opener.open({ artifactId, revision }, placement)
+  }
 
   const meta = [
     t('revision', { number: revision }),
@@ -97,8 +111,13 @@ export function ArtifactCard({ marker }: { marker: ArtifactMarker }) {
       </div>
       {!unavailable && (
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Link className={ACTION} href={orgPath(artifactPath(artifactId, revision))}>
-            <Icon name="external-link" size={13} color="var(--text-secondary)" />
+          <Link
+            className={ACTION}
+            href={orgPath(artifactPath(artifactId, revision))}
+            onClick={openInPlace}
+            data-artifact-open={inPlace ? placement : 'page'}
+          >
+            <Icon name={inPlace ? 'eye' : 'external-link'} size={13} color="var(--text-secondary)" />
             {t('open')}
           </Link>
           <button

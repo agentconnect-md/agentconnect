@@ -81,6 +81,27 @@ export function artifactPath(artifactId: string, revision?: number): string {
   return revision === undefined ? base : `${base}?revision=${revision}`
 }
 
+/** The revision a `?revision=` value asks for, or undefined when it names none. */
+export function requestedRevision(value: string | null): number | undefined {
+  if (!value || !/^[1-9]\d{0,8}$/.test(value)) return undefined
+  return Number(value)
+}
+
+/** The revision a viewer shows for an asked one: that revision while kept, else the latest kept, with the asked one as `missing`. */
+export function shownRevision(
+  artifact: Pick<ArtifactDto, 'revisions' | 'latestRevision'>,
+  asked: number | undefined
+): { shown: number; missing?: number } {
+  if (asked !== undefined && artifact.revisions.some((r) => r.number === asked)) return { shown: asked }
+  const shown = artifact.revisions[0]?.number ?? artifact.latestRevision
+  return asked === undefined ? { shown } : { shown, missing: asked }
+}
+
+/** Whether a string has the shape of an artifact id. */
+export function isArtifactId(value: string): boolean {
+  return UUID_RE.test(value)
+}
+
 /** How an entry opens (artifacts.md §9), which also picks the card's icon. */
 export type ArtifactKind = 'page' | 'document' | 'image' | 'pdf' | 'code' | 'other'
 

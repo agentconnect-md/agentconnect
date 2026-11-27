@@ -34,7 +34,8 @@ vi.mock('@/components/console/Shell', () => ({ useCrumbSlot: () => ({ register: 
 vi.mock('@/components/console/search-open', () => ({ useSearchOpen: () => () => undefined }))
 
 import { ApiError } from '@/lib/api'
-import ArtifactView, { requestedRevision } from './ArtifactView'
+import ArtifactView from './ArtifactView'
+import { requestedRevision } from '@/lib/artifact'
 import { PATH_SYNC_MS } from '@/lib/artifact-content/viewer-path'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
