@@ -96,11 +96,14 @@ describe('proxy on the console', () => {
     expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN')
   })
 
-  it('sends no referrer from a share page, whose address carries its token', () => {
+  it('sends no referrer and no indexing from a share page, whose address carries its token', () => {
     const share = proxy(request('console.example.test', '/share/abcDEF0123456789abcDEF0123456789abcDEF01234'))
     expect(share.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(share.headers.get('x-robots-tag')).toBe('noindex')
     expect(share.headers.get('x-middleware-rewrite')).toBeNull()
-    expect(proxy(request('console.example.test', '/agents')).headers.get('referrer-policy')).toBeNull()
+    const agents = proxy(request('console.example.test', '/agents'))
+    expect(agents.headers.get('referrer-policy')).toBeNull()
+    expect(agents.headers.get('x-robots-tag')).toBeNull()
   })
 })
 
