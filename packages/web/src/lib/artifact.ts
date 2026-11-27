@@ -35,6 +35,17 @@ export interface ArtifactDto {
   revisions: ArtifactRevisionSummary[]
 }
 
+/** One row of `GET /sessions/:sessionId/artifacts`: the artifact with its latest ready revision. */
+export interface SessionArtifactDto extends Omit<ArtifactDto, 'revisions'> {
+  latest: ArtifactRevisionSummary
+}
+
+/** A page of a session's artifacts, most recently updated first; it may hold fewer than asked for while `nextCursor` names more. */
+export interface SessionArtifactPageDto {
+  artifacts: SessionArtifactDto[]
+  nextCursor: string | null
+}
+
 /** `GET /artifacts/:artifactId/revisions/:revision`. */
 export interface ArtifactRevisionDto extends ArtifactRevisionSummary {
   artifactId: string
@@ -73,6 +84,17 @@ export function parseArtifactMarker(text: string): { caption: string; artifact: 
   if (typeof title !== 'string') return null
   const caption = text.slice(0, text.length - whole.length)
   return { caption, artifact: { artifactId, revision: Number(revision), title } }
+}
+
+/** The distinct markers in these texts as one string, which changes only when a new card or revision lands in the transcript. */
+export function artifactMarkerKey(texts: Iterable<string>): string {
+  const seen = new Set<string>()
+  for (const text of texts) {
+    if (!text.includes('[artifact: ')) continue
+    const marker = parseArtifactMarker(text)?.artifact
+    if (marker) seen.add(`${marker.artifactId}:${marker.revision}`)
+  }
+  return [...seen].sort().join(',')
 }
 
 /** The console path of one artifact, pinned to a revision when one is given (artifacts.md §8.2). */

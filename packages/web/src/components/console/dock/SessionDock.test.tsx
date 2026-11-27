@@ -932,6 +932,14 @@ describe('SessionDock with nothing to draw', () => {
     expect(container.querySelector('[data-dock-loading]')).toBeNull()
   })
 
+  it("draws an empty tab's own line in place of the generic one", () => {
+    const tabs = TABS.map((tab) =>
+      tab.key === 'files' ? { ...tab, status: 'empty' as DockTabStatus, emptyLabel: 'No files yet' } : tab
+    )
+    render(dock({ tabs }))
+    expect(container.querySelector('[data-dock-empty]')?.textContent).toBe('No files yet')
+  })
+
   it('draws no placeholder for a tab that has its own content', () => {
     render(dock())
     expect(container.querySelector('[data-dock-loading]')).toBeNull()

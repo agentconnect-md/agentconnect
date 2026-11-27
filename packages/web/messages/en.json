@@ -8595,6 +8595,12 @@
       "backHome": "Back to home",
       "search": "Search",
       "loadFailed": "This artifact couldn’t be loaded. Try again later."
+    },
+    "list": {
+      "empty": "No artifacts yet",
+      "loadFailed": "Artifacts couldn’t be loaded. Try again later.",
+      "more": "Show more",
+      "loadingMore": "Loading…"
     }
   }
 }

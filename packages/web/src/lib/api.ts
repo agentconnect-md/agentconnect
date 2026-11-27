@@ -91,7 +91,7 @@ import { isUpgradeAvailable } from '@/lib/version'
 import { cpBase } from '@/lib/endpoints'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 import type { SessionFileArea } from '@/lib/shared-file'
-import type { ArtifactDto, ArtifactFileUrlDto, ArtifactRevisionDto } from '@/lib/artifact'
+import type { ArtifactDto, ArtifactFileUrlDto, ArtifactRevisionDto, SessionArtifactPageDto } from '@/lib/artifact'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
  *  `code` carries the CP's machine-readable denial reason when the endpoint
@@ -3486,6 +3486,20 @@ export function getArtifact(artifactId: string): Promise<ArtifactDto> {
 /** One ready revision with its manifest. */
 export function getArtifactRevision(artifactId: string, revision: number): Promise<ArtifactRevisionDto> {
   return apiGet<ArtifactRevisionDto>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/revisions/${revision}`)
+}
+
+/** One page of the artifacts a session published or updated; 404 when the session is not visible (artifacts.md §11.2). */
+export function listSessionArtifacts(
+  sessionId: string,
+  opts: { cursor?: string; limit?: number; orgId?: string } = {}
+): Promise<SessionArtifactPageDto> {
+  const q = new URLSearchParams()
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+  if (opts.cursor) q.set('cursor', opts.cursor)
+  const query = q.toString()
+  return apiGet<SessionArtifactPageDto>(
+    `${orgBase(opts.orgId)}/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ''}`
+  )
 }
 
 /** A short-lived signed GET for one manifest file, signed as an `octet-stream` attachment so the console renders the bytes itself. */
