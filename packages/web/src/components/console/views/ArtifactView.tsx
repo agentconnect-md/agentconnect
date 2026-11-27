@@ -15,6 +15,7 @@ import { NotFound } from '@/components/console/NotFound'
 import { LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { ArtifactViewer } from '@/components/console/artifact/ArtifactViewer'
+import { useFollowLatest } from '@/components/console/artifact/useFollowLatest'
 import { readViewerPath, VIEWER_PATH_PARAM } from '@/lib/artifact-content/viewer-path'
 
 export default function ArtifactView() {
@@ -32,6 +33,18 @@ export default function ArtifactView() {
     { shouldRetryOnError: (err) => !(err instanceof ApiError && (err.status === 404 || err.status === 409)) }
   )
   const artifact = read.data
+  const requested = requestedRevision(search.get('revision'))
+  const select = useCallback(
+    (revision: number) => {
+      const next = new URLSearchParams(search.toString())
+      next.set('revision', String(revision))
+      next.delete(VIEWER_PATH_PARAM)
+      router.replace(`${pathname}?${next.toString()}`, { scroll: false })
+    },
+    [pathname, router, search]
+  )
+  // A newer revision read on a later refresh replaces the latest shown here too (§11.4).
+  const follow = useFollowLatest(artifact, requested, select)
   // The native history call updates useSearchParams without a server round trip per page the site visits.
   const syncPath = useCallback((path: string | null) => {
     const next = new URLSearchParams(window.location.search)
@@ -102,13 +115,7 @@ export default function ArtifactView() {
     return <LoadingState fill />
   }
 
-  const { shown, missing } = shownRevision(artifact, requestedRevision(search.get('revision')))
-  const select = (revision: number) => {
-    const next = new URLSearchParams(search.toString())
-    next.set('revision', String(revision))
-    next.delete(VIEWER_PATH_PARAM)
-    router.replace(`${pathname}?${next.toString()}`, { scroll: false })
-  }
+  const { shown, missing } = shownRevision(artifact, requested)
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-60px)] max-w-[1180px] flex-col max-desktop:h-[calc(100dvh-80px-env(safe-area-inset-bottom,0px))]">
@@ -116,9 +123,14 @@ export default function ArtifactView() {
         artifact={artifact}
         revision={shown}
         {...(missing !== undefined ? { missing } : {})}
-        onRevision={select}
+        onRevision={(revision) => {
+          follow.dismiss()
+          select(revision)
+        }}
         path={readViewerPath(search.get(VIEWER_PATH_PARAM))}
         onPath={syncPath}
+        updatedTo={follow.updatedTo}
+        onDismissUpdated={follow.dismiss}
       />
     </div>
   )

@@ -8575,6 +8575,8 @@
       "revisionGone": "修订版本 {missing} 已不再保留，现显示最新修订版本（r{number}）。",
       "newerAvailable": "有更新的修订版本（r{number}）。",
       "viewLatest": "查看最新版本",
+      "updatedTo": "已更新到 r{number}。",
+      "dismiss": "关闭",
       "backToList": "返回 Artifact 列表",
       "backToConversation": "返回会话",
       "fullScreen": "全屏",

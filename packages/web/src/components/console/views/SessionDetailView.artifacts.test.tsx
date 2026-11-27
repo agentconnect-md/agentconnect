@@ -6,11 +6,12 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Agent, DaemonRow, Session } from '@/lib/data'
+import type { Agent, DaemonRow, Session, SessionStep } from '@/lib/data'
 import { sessionFromDto, type SessionDetailDto, type SessionDto, type SessionMessageDto } from '@/lib/api'
 
 const ROOT = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b'
 const ARTIFACT = '0b6d1d55-5f43-4c8e-9a51-2f0a8f5b1c3d'
+const RUNBOOK = '7c2e9f10-3a4b-4c5d-8e6f-1a2b3c4d5e6f'
 const MARKER = `[artifact: ${ARTIFACT} r2 "Q3 dashboard"]`
 
 const nav = vi.hoisted(() => ({ search: '', replaced: [] as string[] }))
@@ -23,7 +24,9 @@ const wire = vi.hoisted(() => ({
   live: [] as unknown[],
   pg: null as null | ({ id: string; realSessionId?: string } & Record<string, unknown>),
   owns: true,
-  role: 'collaborator'
+  role: 'collaborator',
+  latest: {} as Record<string, number>,
+  activity: {} as Record<string, number>
 }))
 
 vi.mock('next/navigation', () => ({
@@ -101,13 +104,14 @@ vi.mock('@/lib/api', async (importOriginal) => {
     fetchSessionPullRequest: vi.fn(() => Promise.reject(new actual.ApiError('pull request not found', 404))),
     fetchAssistantSubsessions: vi.fn(() => Promise.resolve({ subsessions: [], truncated: false, nextCursor: null })),
     fetchAssistantSubsession: vi.fn(() => Promise.reject(new actual.ApiError('task not found', 404))),
-    getArtifact: vi.fn(() => Promise.resolve(artifactDto())),
+    getArtifact: vi.fn((id: string) => Promise.resolve(artifactDto(id))),
     // The body stays loading: these cases are about where the viewer opens, not what it draws.
     getArtifactRevision: vi.fn(() => new Promise(() => {}))
   }
 })
 
-function artifactDto() {
+function artifactDto(id: string = ARTIFACT) {
+  const latest = wire.latest[id] ?? 2
   const revision = (number: number) => ({
     number,
     entry: 'index.html',
@@ -119,16 +123,16 @@ function artifactDto() {
     createdAt: '2026-11-25T10:00:00.000Z'
   })
   return {
-    id: ARTIFACT,
-    title: 'Q3 dashboard',
+    id,
+    title: id === ARTIFACT ? 'Q3 dashboard' : 'Runbook',
     audience: { visibility: 'org', externalProvider: null, editorsAgentId: null },
     owner: null,
     viewerIsOwner: true,
     originSessionId: 'session-1',
-    latestRevision: 2,
+    latestRevision: latest,
     createdAt: '2026-11-25T10:00:00.000Z',
     updatedAt: '2026-11-25T10:00:00.000Z',
-    revisions: [revision(2), revision(1)]
+    revisions: Array.from({ length: latest }, (_, i) => revision(latest - i))
   }
 }
 
@@ -164,7 +168,7 @@ vi.mock('@/lib/data-context', () => ({
     bots: [],
     orgSetIds: new Set<string>(),
     members: [],
-    sessionActivityVersionById: {},
+    sessionActivityVersionById: wire.activity,
     sessionStreamGeneration: 0,
     revalidateSessionLists: () => {}
   })
@@ -363,6 +367,8 @@ beforeEach(() => {
   wire.pg = null
   wire.owns = true
   wire.role = 'collaborator'
+  wire.latest = {}
+  wire.activity = {}
   daemonFeatures.length = 0
   daemonFeatures.push('session-mode-auto-v1', 'webchat-threads-v1', 'session-thread-reads-v1')
   setViewport(false)
@@ -461,5 +467,122 @@ describe('the artifact viewer on a session page (artifacts.md §11.2)', () => {
     await open()
     expect(q('[data-dock-tab="artifacts"]')).toBeNull()
     expect(viewer()).toBeNull()
+  })
+})
+
+/** The agent answering this visit's message with a card, as the stream delivers it before the rows do. */
+function publishLive(artifactId: string, revision: number, title = 'Runbook') {
+  wire.live = [
+    { kind: 'msg', who: '@you', turnId: 't9', text: 'And a runbook' },
+    { kind: 'done', agentId: 'agent-1', turnId: 't9', text: `Done.\n[artifact: ${artifactId} r${revision} "${title}"]` }
+  ] satisfies SessionStep[]
+}
+const openedArtifacts = () => nav.replaced.filter((href) => href.includes('artifact='))
+
+describe('the viewer opening by itself (artifacts.md §11.2, D23)', () => {
+  it('leaves the cards already in the conversation closed', async () => {
+    conversation()
+    nav.search = `thread=${ROOT}`
+    await open()
+    expect(q('[data-transcript-scroll] [data-testid="artifact-card"]')).not.toBeNull()
+    expect(q(`[data-thread-panel="${ROOT}"] [data-testid="artifact-card"]`)).not.toBeNull()
+    expect(openedArtifacts()).toEqual([])
+    expect(viewer()).toBeNull()
+  })
+
+  it('opens a card that arrives in the main conversation in the dock’s Artifacts tab', async () => {
+    conversation()
+    await open()
+    publishLive(RUNBOOK, 1)
+    await open()
+    expect(nav.replaced.at(-1)).toBe(`/acme/sessions/session-1?artifact=${RUNBOOK}&artifactRevision=1`)
+    await open()
+    expect(q('[data-dock-tab="artifacts"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(viewer()?.dataset.variant).toBe('dock')
+    expect(conversationHidden()).toBe(false)
+  })
+
+  it('opens a card that arrives in a task thread in the left pane', async () => {
+    conversation()
+    nav.search = `thread=${ROOT}`
+    await open()
+    wire.threadReplies = [
+      ...wire.threadReplies,
+      {
+        seq: 7,
+        sender: 'agent-1',
+        ts: '1700000007',
+        kind: 'text',
+        text: `Runbook\n[artifact: ${RUNBOOK} r1 "Runbook"]`
+      }
+    ]
+    wire.activity = { 'session-1': 1 }
+    await open()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    await settle()
+    expect(nav.replaced.at(-1)).toBe(
+      `/acme/sessions/session-1?thread=${ROOT}&artifact=${RUNBOOK}&artifactRevision=1&artifactIn=pane`
+    )
+  })
+
+  it('does not reopen an artifact the person closed at that revision', async () => {
+    conversation()
+    await open()
+    publishLive(RUNBOOK, 1)
+    await open()
+    await open()
+    await click('[data-artifact-viewer-close]')
+    expect(nav.search).toBe('')
+    // The same card again, as its saved row replaces the stream.
+    wire.live = []
+    wire.messages = [
+      ...wire.messages,
+      row(3, 'sam', 'And a runbook'),
+      row(4, 'agent-1', `Done.\n[artifact: ${RUNBOOK} r1 "Runbook"]`)
+    ]
+    await open()
+    expect(nav.search).toBe('')
+  })
+
+  it('never opens by itself on a phone', async () => {
+    setViewport(true)
+    conversation()
+    await open()
+    publishLive(RUNBOOK, 1)
+    await open()
+    expect(openedArtifacts()).toEqual([])
+  })
+})
+
+describe('revision following in place (artifacts.md §11.4)', () => {
+  it('moves a viewer on the latest revision to the one the agent just published, with a notice', async () => {
+    conversation()
+    nav.search = `artifact=${ARTIFACT}&artifactRevision=2`
+    await open()
+    wire.latest[ARTIFACT] = 3
+    publishLive(ARTIFACT, 3, 'Q3 dashboard')
+    await open()
+    expect(nav.replaced.at(-1)).toBe(`/acme/sessions/session-1?artifact=${ARTIFACT}&artifactRevision=3`)
+    await open()
+    expect(viewer()?.textContent).toContain('Updated to r3.')
+    await click('[data-artifact-updated-dismiss]')
+    expect(viewer()?.textContent).not.toContain('Updated to r3.')
+  })
+
+  it('keeps a deliberately chosen older revision and offers the newer one', async () => {
+    conversation()
+    nav.search = `artifact=${ARTIFACT}&artifactRevision=1`
+    await open()
+    wire.latest[ARTIFACT] = 3
+    publishLive(ARTIFACT, 3, 'Q3 dashboard')
+    await open()
+    expect(nav.search).toBe(`artifact=${ARTIFACT}&artifactRevision=1`)
+    expect(viewer()?.textContent).toContain('A newer revision (r3) is available.')
+    expect(viewer()?.textContent).not.toContain('Updated to')
+    const latest = [...(viewer()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'View latest')!
+    await act(async () => latest.click())
+    expect(nav.replaced.at(-1)).toBe(`/acme/sessions/session-1?artifact=${ARTIFACT}&artifactRevision=3`)
   })
 })

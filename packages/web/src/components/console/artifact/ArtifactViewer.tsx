@@ -112,7 +112,9 @@ export function ArtifactViewer({
   onPath,
   variant = 'page',
   onClose,
-  fullScreenHref
+  fullScreenHref,
+  updatedTo,
+  onDismissUpdated
 }: {
   artifact: ArtifactDto
   revision: number
@@ -126,6 +128,9 @@ export function ArtifactViewer({
   onClose?: () => void
   /** In place only: the standalone page showing the same revision and site page. */
   fullScreenHref?: string
+  /** The revision the viewer just followed to, for its "Updated to rN" notice (§11.4). */
+  updatedTo?: number | null
+  onDismissUpdated?: () => void
 }) {
   const t = useTranslations('Artifacts.viewer')
   const format = useFormatter()
@@ -211,6 +216,28 @@ export function ArtifactViewer({
     </>
   )
 
+  const followed = missing === undefined && updatedTo === revision && (
+    <>
+      <span className="inline-flex min-w-0 flex-1 items-center gap-2">
+        <Icon name="refresh-cw" size={14} color="var(--text-tertiary)" />
+        {t('updatedTo', { number: revision })}
+      </span>
+      {onDismissUpdated ? (
+        <button
+          type="button"
+          className="iconbtn flex-none"
+          data-artifact-updated-dismiss=""
+          aria-label={t('dismiss')}
+          title={t('dismiss')}
+          onClick={onDismissUpdated}
+        >
+          <Icon name="x" size={14} />
+        </button>
+      ) : null}
+    </>
+  )
+  const notice = gone || newer || followed
+
   if (inPlace) {
     const kind = summary ? artifactKind(summary.entryMediaType, summary.entry) : null
     const close = onClose && (
@@ -278,12 +305,13 @@ export function ArtifactViewer({
             {failed}
           </div>
         ) : null}
-        {gone || newer ? (
+        {notice ? (
           <div
             role="status"
+            data-artifact-notice=""
             className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
           >
-            {gone || newer}
+            {notice}
           </div>
         ) : null}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-(--surface-card)">{body}</div>
@@ -324,12 +352,13 @@ export function ArtifactViewer({
           {gone}
         </div>
       )}
-      {newer && (
+      {(newer || followed) && (
         <div
           role="status"
+          data-artifact-notice=""
           className="mx-4 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:mx-0"
         >
-          {newer}
+          {newer || followed}
         </div>
       )}
       <div className="mt-3 flex min-h-[320px] flex-1 flex-col overflow-hidden border-y border-(--border-subtle) bg-(--surface-card) desktop:rounded-md desktop:border">
