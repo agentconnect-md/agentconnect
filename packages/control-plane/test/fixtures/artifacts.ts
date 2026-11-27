@@ -17,7 +17,7 @@ import {
   PgSessionRepo,
   PgUserRepo
 } from '../../src/persistence/index.js'
-import type { AgentRecord, CronRecord, OrgMemberRole } from '../../src/persistence/ports.js'
+import type { AgentRecord, ArtifactRepo, CronRecord, OrgMemberRole } from '../../src/persistence/ports.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
@@ -36,8 +36,12 @@ export const manifestOf = (...files: Array<[string, string, string?]>): Artifact
 })
 
 // A real signer over an in-memory bucket: the test "uploads" a signed PUT by recording its signed length and checksum.
-export function harness(crons: CronRecord[] = []) {
+export function harness(crons: CronRecord[] = [], artifacts: ArtifactRepo = new PgArtifactRepo(prisma)) {
   const objects = new Map<string, SourceCacheObjectHead>()
+  // The service's clock, every DELETE in order, and a switch that makes the bucket refuse them.
+  const clock = { now: T0 }
+  const deletes: string[] = []
+  const bucket = { failDeletes: false }
   const transfer = createFileTransfer({
     config: FileTransferConfigSchema.parse({
       version: 1,
@@ -51,7 +55,11 @@ export function harness(crons: CronRecord[] = []) {
     credentials: { source: 'static', get: async () => ({ accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' }) },
     objects: {
       head: async (key) => objects.get(key) ?? { exists: false },
-      delete: async (key) => void objects.delete(key),
+      delete: async (key) => {
+        if (bucket.failDeletes) throw new Error('bucket unavailable')
+        deletes.push(key)
+        objects.delete(key)
+      },
       createMultipartUpload: async () => 'mp'
     },
     enabled: () => true,
@@ -59,7 +67,7 @@ export function harness(crons: CronRecord[] = []) {
   })
   const service = createArtifactService({
     transfer,
-    artifacts: new PgArtifactRepo(prisma),
+    artifacts,
     sessions: new PgSessionRepo(prisma),
     users: new PgUserRepo(prisma),
     agents: new PgAgentRepo(prisma),
@@ -73,7 +81,9 @@ export function harness(crons: CronRecord[] = []) {
       clock: systemClock,
       webAppUrl: 'https://console.example.test'
     }),
-    webAppUrl: 'https://console.example.test'
+    webAppUrl: 'https://console.example.test',
+    uploadUrlSeconds: 900,
+    now: () => clock.now
   })
   const upload = (ok: ArtifactPublishBeginOk) => {
     if (ok.state !== 'pending') throw new Error('nothing to upload')
@@ -86,7 +96,7 @@ export function harness(crons: CronRecord[] = []) {
       })
     }
   }
-  return { service, objects, upload }
+  return { service, objects, upload, clock, deletes, bucket }
 }
 
 export async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {

@@ -11,6 +11,8 @@ import {
   ArtifactShareReq,
   ArtifactTitle,
   ArtifactUnshareReq,
+  ArtifactDeleteOk,
+  ArtifactDeleteReq,
   artifactPathProblem,
   buildEnvelope,
   decodeEnvelope,
@@ -119,14 +121,15 @@ describe('artifact frames', () => {
     initiator: { kind: 'console', userId: 'u-1' }
   }
 
-  it('registers the six request/reply pairs', () => {
+  it('registers the seven request/reply pairs', () => {
     for (const type of [
       'artifact/publish/begin',
       'artifact/publish/complete',
       'artifact/fetch',
       'artifact/list',
       'artifact/share',
-      'artifact/unshare'
+      'artifact/unshare',
+      'artifact/delete'
     ]) {
       expect(isFrameType(type)).toBe(true)
       expect(isFrameType(`${type}/ok`)).toBe(true)
@@ -224,6 +227,22 @@ describe('artifact share frames', () => {
     for (const reason of ['no-member-authority', 'share-forbidden', 'revision-not-ready', 'share-not-found']) {
       expect(ArtifactRefusalReason.safeParse(reason).success).toBe(true)
     }
+  })
+})
+
+describe('artifact delete frames', () => {
+  const del = { agentId: AGENT, sessionId: 'webchat:s-1', artifactId: ARTIFACT }
+
+  it('round-trips a delete by artifact id, with or without an initiator, and names its refusal', () => {
+    const withInitiator = { ...del, initiator: { kind: 'console', userId: 'u-1' } }
+    const decoded = decodeEnvelope(encode(buildEnvelope('artifact/delete', withInitiator)))
+    expect(decoded.ok && decoded.frame.payload).toEqual(withInitiator)
+    expect(ArtifactDeleteReq.safeParse(del).success).toBe(true)
+    expect(ArtifactDeleteReq.safeParse({ ...del, artifactId: 'not-a-uuid' }).success).toBe(false)
+    const ok = { artifactId: ARTIFACT, title: 'Q3 report', deletedAt: '2026-11-27T10:00:00.000Z' }
+    expect(ArtifactDeleteOk.safeParse(ok).success).toBe(true)
+    expect(ArtifactDeleteOk.safeParse({ ...ok, deletedAt: 'yesterday' }).success).toBe(false)
+    expect(ArtifactRefusalReason.safeParse('delete-forbidden').success).toBe(true)
   })
 })
 

@@ -9,7 +9,8 @@ import {
   handleArtifactPublishBegin,
   handleArtifactPublishComplete,
   handleArtifactShare,
-  handleArtifactUnshare
+  handleArtifactUnshare,
+  handleArtifactDelete
 } from './artifact.js'
 
 const agentId = '11111111-1111-4111-8111-111111111111'
@@ -42,6 +43,7 @@ const shareId = '44444444-4444-4444-8444-444444444444'
 const initiator = { kind: 'console', userId: 'u-1' }
 const share = frameOf('artifact/share', { agentId, sessionId: 'webchat:s-1', artifactId, audience: 'org', initiator })
 const unshare = frameOf('artifact/unshare', { agentId, sessionId: 'webchat:s-1', artifactId, shareId, initiator })
+const del = frameOf('artifact/delete', { agentId, sessionId: 'webchat:s-1', artifactId, initiator })
 
 function setup() {
   const agent = vi.fn(async () => ({ id: agentId, orgId, daemonId }) as unknown)
@@ -52,6 +54,7 @@ function setup() {
     list: vi.fn(async () => ({ artifacts: [] })),
     share: vi.fn(async () => ({ shareId })),
     unshare: vi.fn(async () => ({ shareId })),
+    delete: vi.fn(async () => ({ artifactId })),
     fileDownload: vi.fn()
   }
   const conn = { daemonId, orgId, replyTo: vi.fn(), sendError: vi.fn() }
@@ -78,6 +81,9 @@ describe('artifact/* handlers', () => {
     await handleArtifactUnshare(unshare, c, deps)
     expect(artifacts.unshare).toHaveBeenCalledWith(orgId, unshare.payload)
     expect(conn.replyTo).toHaveBeenLastCalledWith(unshare, 'artifact/unshare/ok', { shareId })
+    await handleArtifactDelete(del, c, deps)
+    expect(artifacts.delete).toHaveBeenCalledWith(orgId, del.payload)
+    expect(conn.replyTo).toHaveBeenLastCalledWith(del, 'artifact/delete/ok', { artifactId })
   })
 
   it('refuses a daemon that does not serve the agent, before the service sees the frame', async () => {
@@ -89,7 +95,8 @@ describe('artifact/* handlers', () => {
       [fetch, handleArtifactFetch],
       [list, handleArtifactList],
       [share, handleArtifactShare],
-      [unshare, handleArtifactUnshare]
+      [unshare, handleArtifactUnshare],
+      [del, handleArtifactDelete]
     ] as const) {
       await handler(frame, c, deps)
       expect(conn.sendError).toHaveBeenLastCalledWith(frame.id, 'SCOPE_DENIED', expect.any(String), false)
@@ -100,6 +107,7 @@ describe('artifact/* handlers', () => {
     expect(artifacts.begin).not.toHaveBeenCalled()
     expect(artifacts.list).not.toHaveBeenCalled()
     expect(artifacts.share).not.toHaveBeenCalled()
+    expect(artifacts.delete).not.toHaveBeenCalled()
   })
 
   it('refuses every frame on a deployment where artifacts are not enabled, naming the reason', async () => {
@@ -111,7 +119,8 @@ describe('artifact/* handlers', () => {
       [fetch, handleArtifactFetch],
       [list, handleArtifactList],
       [share, handleArtifactShare],
-      [unshare, handleArtifactUnshare]
+      [unshare, handleArtifactUnshare],
+      [del, handleArtifactDelete]
     ] as const) {
       await handler(frame, c, off)
       expect(conn.sendError).toHaveBeenLastCalledWith(frame.id, 'SCOPE_DENIED', expect.any(String), false, {
@@ -139,6 +148,11 @@ describe('artifact/* handlers', () => {
     await handleArtifactShare(share, c, deps)
     expect(conn.sendError).toHaveBeenLastCalledWith(share.id, 'SCOPE_DENIED', 'no member', false, {
       reason: 'no-member-authority'
+    })
+    artifacts.delete.mockRejectedValueOnce(new ArtifactRefusal('delete-forbidden', 'SCOPE_DENIED', 'not the owner'))
+    await handleArtifactDelete(del, c, deps)
+    expect(conn.sendError).toHaveBeenLastCalledWith(del.id, 'SCOPE_DENIED', 'not the owner', false, {
+      reason: 'delete-forbidden'
     })
   })
 

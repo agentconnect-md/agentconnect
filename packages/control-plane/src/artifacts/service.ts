@@ -1,6 +1,8 @@
 // Artifacts over the wire (artifacts.md §5.3, §6.1, §7.2): the CP authorizes, records and signs; bytes go daemon → bucket.
 import type {
   ArtifactAudienceSummary,
+  ArtifactDeleteOk,
+  ArtifactDeleteReq,
   ArtifactFetchOk,
   ArtifactFetchReq,
   ArtifactInitiator as WireInitiator,
@@ -19,6 +21,7 @@ import type {
   ErrorCode
 } from '@agentconnect.md/protocol'
 import { ARTIFACT_LIST_PAGE_MAX, ARTIFACT_LIST_SHARES_MAX } from '@agentconnect.md/protocol'
+import { SOURCE_CACHE_GRACE_SECONDS } from '@agentconnect.md/object-store'
 import {
   agentCanReachArtifact,
   ArtifactAction,
@@ -36,6 +39,7 @@ import {
   artifactObjectKey,
   artifactRevisionPrefix,
   FileTransferError,
+  isTransferObjectKey,
   type FileTransfer,
   type TransferUrl
 } from '../file-transfer/transfer.js'
@@ -49,6 +53,7 @@ import {
 import type {
   AgentRecord,
   AgentRepo,
+  ArtifactDeletionRecord,
   ArtifactManifest,
   ArtifactRecord,
   ArtifactRepo,
@@ -64,6 +69,12 @@ import type {
 
 /** HEADs one complete runs at once. */
 const HEAD_CONCURRENCY = 16
+/** Object DELETEs one sweep runs at once. */
+const DELETE_CONCURRENCY = 16
+/** Deletions one reaper pass sweeps. */
+const REAP_BATCH = 50
+/** The longest upload URL the transfer config admits, for a service built without its own value. */
+const MAX_UPLOAD_URL_SECONDS = 3600
 
 /** A refusal the WS handler answers as an error frame whose `details.reason` names the rule. */
 export class ArtifactRefusal extends Error {
@@ -107,6 +118,9 @@ export interface ArtifactServiceDeps {
   memberAccess?: ArtifactMemberAccess
   /** The console's origin, for absolute links. */
   webAppUrl?: string
+  /** The PUT lifetime the bucket signs (`limits.putUrlSeconds`); a deletion sweeps once more after it. */
+  uploadUrlSeconds?: number
+  now?: () => number
   log?: { warn(obj: unknown, msg: string): void }
 }
 
@@ -123,6 +137,12 @@ export interface ArtifactService {
   share(orgId: string, req: ArtifactShareReq): Promise<ArtifactShareOk>
   /** `artifact/unshare`: revoke one share, with the turn member's §6.3 authority (§7.3). */
   unshare(orgId: string, req: ArtifactUnshareReq): Promise<ArtifactUnshareOk>
+  /** `artifact/delete`: delete an artifact this agent produced, with the turn member's §6.3 authority (§7.3). */
+  delete(orgId: string, req: ArtifactDeleteReq): Promise<ArtifactDeleteOk>
+  /** Delete the artifact's rows at once and then its objects (§10.1); the caller has checked §6.3. Null when it is gone. */
+  deleteArtifact(orgId: string, artifactId: string): Promise<{ deletedAt: Date } | null>
+  /** Sweep the objects of deletions due now, dropping each record after its last sweep; returns how many were dropped. */
+  reap(): Promise<number>
   /** A browser GET for one file of a ready revision, downloaded as an attachment; undefined without a bucket. */
   fileDownload(revision: ArtifactRevisionRecord, path: string): Promise<TransferUrl | undefined>
 }
@@ -181,6 +201,8 @@ function decodeCursor(cursor: string | undefined): { updatedAt: Date; id: string
 
 export function createArtifactService(deps: ArtifactServiceDeps): ArtifactService {
   const { transfer, artifacts } = deps
+  const now = deps.now ?? Date.now
+  const purgeDelayMs = ((deps.uploadUrlSeconds ?? MAX_UPLOAD_URL_SECONDS) + SOURCE_CACHE_GRACE_SECONDS) * 1000
 
   const requireTransfer = (): FileTransfer => {
     if (!transfer)
@@ -313,13 +335,14 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
     orgId: string,
     agentId: string,
     artifactId: string,
-    session: SessionMetaRecord
+    session: SessionMetaRecord,
+    verb = 'shares'
   ): Promise<ArtifactRecord> => {
     const artifact = await artifacts.get(orgId, artifactId)
     if (!artifact || artifact.latestRevision === 0 || !(await reaches(artifact, session))) throw notFound()
     const first = await artifacts.getRevision(orgId, artifact.id, 1)
     if (first?.producedByAgentId !== agentId)
-      throw new ArtifactRefusal('not-producer', 'SCOPE_DENIED', 'an agent shares only the artifacts it produced')
+      throw new ArtifactRefusal('not-producer', 'SCOPE_DENIED', `an agent ${verb} only the artifacts it produced`)
     return artifact
   }
 
@@ -338,7 +361,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       throw new ArtifactRefusal(
         'no-member-authority',
         'SCOPE_DENIED',
-        'only a turn started by an organization member, or a trigger a member set up, may share or unshare'
+        'only a turn started by an organization member, or a trigger a member set up, may share, unshare or delete'
       )
     }
     const principal = { userId, role: member.role }
@@ -348,6 +371,36 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       : null
     const editableAgentIds = new Set(editors && canEdit(editors, principal) ? [editors.id as string] : [])
     return { orgId, principal, identitySet: new Set([`user:${userId}`]), editableAgentIds }
+  }
+
+  /** Delete every key, then drop the record if this sweep began after `purgeAfter`, else mark it swept; throws on a failed delete. */
+  const sweep = async (bucket: FileTransfer, deletion: ArtifactDeletionRecord): Promise<boolean> => {
+    const startedAt = now()
+    // Keys were built from validated prefixes and manifest paths; anything else is skipped rather than sent.
+    const keys = deletion.objectKeys.filter(isTransferObjectKey)
+    await mapLimited(keys, DELETE_CONCURRENCY, (key) => bucket.deleteObject(key))
+    if (startedAt >= deletion.purgeAfter.getTime()) {
+      await artifacts.dropDeletion(deletion.id)
+      return true
+    }
+    await artifacts.markDeletionSwept(deletion.id, new Date(startedAt))
+    return false
+  }
+
+  const deleteArtifact = async (orgId: string, artifactId: string): Promise<{ deletedAt: Date } | null> => {
+    const deletedAt = new Date(now())
+    const deletion = await artifacts.deleteRecording(orgId, artifactId, {
+      deletedAt,
+      purgeAfter: new Date(deletedAt.getTime() + purgeDelayMs)
+    })
+    if (!deletion) return null
+    // The first sweep cuts off GETs signed before the deletion; a failure is left to the reaper.
+    if (transfer) {
+      await sweep(transfer, deletion).catch((err: unknown) => {
+        deps.log?.warn({ err, artifactId }, 'artifact deletion sweep failed; the reaper retries it')
+      })
+    }
+    return { deletedAt }
   }
 
   const published = async (artifact: ArtifactRecord, revision: number): Promise<ArtifactPublished> => {
@@ -439,6 +492,8 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
             return { path: file.path, url: put.url, headers: put.headers, expiresAt: put.expiresAt }
           })
         )
+        // A deletion that landed while signing wins and no URL leaves, so its last sweep only waits out URLs signed before it.
+        if (!(await artifacts.get(orgId, artifactId))) throw notFound()
         return {
           state: 'pending',
           artifactId,
@@ -624,6 +679,40 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         audience: revoked.audience,
         revokedAt: revoked.revokedAt.toISOString()
       }
+    },
+
+    async delete(orgId, req) {
+      const session = await agentSession(orgId, req.agentId, req.sessionId)
+      const artifact = await ownArtifact(orgId, req.agentId, req.artifactId, session, 'deletes')
+      const viewer = await memberAuthority(orgId, req.agentId, req.initiator, artifact)
+      if (!canActOnArtifact(ArtifactAction.Delete, artifact, viewer)) {
+        throw new ArtifactRefusal(
+          'delete-forbidden',
+          'SCOPE_DENIED',
+          'only the artifact’s owner or an organization owner may delete it'
+        )
+      }
+      const deleted = await deleteArtifact(orgId, artifact.id)
+      if (!deleted) throw notFound()
+      return { artifactId: artifact.id, title: artifact.title, deletedAt: deleted.deletedAt.toISOString() }
+    },
+
+    deleteArtifact,
+
+    async reap() {
+      if (!transfer) return 0
+      let dropped = 0
+      let failure: unknown
+      for (const deletion of await artifacts.dueDeletions(new Date(now()), REAP_BATCH)) {
+        // One failed deletion never blocks the rest; its record stays for the next pass.
+        try {
+          if (await sweep(transfer, deletion)) dropped += 1
+        } catch (err) {
+          failure ??= err
+        }
+      }
+      if (failure !== undefined) throw failure
+      return dropped
     },
 
     async fileDownload(revision, path) {

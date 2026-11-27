@@ -249,7 +249,9 @@ import {
   ArtifactShareOk,
   ArtifactShareReq,
   ArtifactUnshareOk,
-  ArtifactUnshareReq
+  ArtifactUnshareReq,
+  ArtifactDeleteOk,
+  ArtifactDeleteReq
 } from './frames/artifact.js'
 import { TaskListReq, TaskList } from './frames/task.js'
 import {
@@ -671,6 +673,9 @@ export const FRAME_SCHEMAS = {
   'artifact/share/ok': ArtifactShareOk,
   'artifact/unshare': ArtifactUnshareReq,
   'artifact/unshare/ok': ArtifactUnshareOk,
+  // artifacts.md §7.1, D13: behind `artifact-delete-v1`, with the turn initiator's authority.
+  'artifact/delete': ArtifactDeleteReq,
+  'artifact/delete/ok': ArtifactDeleteOk,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitdiff': WorkspaceGitDiffReq,
@@ -1094,6 +1099,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('artifact/share/ok', FRAME_SCHEMAS['artifact/share/ok']),
   frame('artifact/unshare', FRAME_SCHEMAS['artifact/unshare']),
   frame('artifact/unshare/ok', FRAME_SCHEMAS['artifact/unshare/ok']),
+  frame('artifact/delete', FRAME_SCHEMAS['artifact/delete']),
+  frame('artifact/delete/ok', FRAME_SCHEMAS['artifact/delete/ok']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitdiff', FRAME_SCHEMAS['workspace/gitdiff']),

@@ -1,4 +1,4 @@
-/** `artifact/*` (artifacts.md §5.3, §7): only a daemon placed on the agent publishes, fetches, lists or shares for it. */
+/** `artifact/*` (artifacts.md §5.3, §7): only a daemon placed on the agent publishes, fetches, lists, shares or deletes for it. */
 import { isFrame, type AnyFrame } from '@agentconnect.md/protocol'
 import { ArtifactRefusal, type ArtifactService } from '../../artifacts/service.js'
 import { AgentId, type OrgId } from '../../domain/ids.js'
@@ -103,6 +103,17 @@ export const handleArtifactUnshare: Handler = async (frame, conn, deps) => {
   if (!ok) return
   try {
     conn.replyTo(frame, 'artifact/unshare/ok', await ok.artifacts.unshare(ok.orgId, frame.payload))
+  } catch (err) {
+    sendFailure(conn, deps, frame, err)
+  }
+}
+
+export const handleArtifactDelete: Handler = async (frame, conn, deps) => {
+  if (!isFrame('artifact/delete')(frame)) return
+  const ok = await authorize(frame, conn, deps)
+  if (!ok) return
+  try {
+    conn.replyTo(frame, 'artifact/delete/ok', await ok.artifacts.delete(ok.orgId, frame.payload))
   } catch (err) {
     sendFailure(conn, deps, frame, err)
   }

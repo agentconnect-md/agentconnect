@@ -7,6 +7,8 @@ import { TransferNetwork } from './file-transfer.js'
 export const ARTIFACTS_FEATURE = 'artifacts-v1'
 /** This CP also answers `artifact/share` and `artifact/unshare`, and lists active shares (artifacts.md §7.1, §8.3). */
 export const ARTIFACT_SHARES_FEATURE = 'artifact-shares-v1'
+/** This CP also answers `artifact/delete` (artifacts.md §7.1, D13). */
+export const ARTIFACT_DELETE_FEATURE = 'artifact-delete-v1'
 
 /** Files one revision may hold (artifacts.md §10.2, P4). */
 export const ARTIFACT_MAX_FILES = 200
@@ -336,6 +338,24 @@ export const ArtifactUnshareOk = z.object({
 })
 export type ArtifactUnshareOk = z.infer<typeof ArtifactUnshareOk>
 
+/** D→C REQ: delete an artifact this agent produced and the session reaches, every revision and share, as the turn's member (§7.3). */
+export const ArtifactDeleteReq = z.object({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(200),
+  artifactId: z.string().uuid(),
+  /** Whose §6.3 authority the deletion uses; absent, or not resolving to a member, is refused. */
+  initiator: ArtifactInitiator.optional()
+})
+export type ArtifactDeleteReq = z.infer<typeof ArtifactDeleteReq>
+
+/** C→D REP: the artifact is gone from every list, read and share link; its bytes follow (artifacts.md §10.1). */
+export const ArtifactDeleteOk = z.object({
+  artifactId: z.string().uuid(),
+  title: ArtifactTitle,
+  deletedAt: z.string().datetime()
+})
+export type ArtifactDeleteOk = z.infer<typeof ArtifactDeleteOk>
+
 /** `details.reason` of an `error` reply to an artifact frame; a string on the wire so a newer CP's reason still parses. */
 export const ArtifactRefusalReason = z.enum([
   /** The deployment does not offer artifacts: it has no transfer bucket or no content domain (artifacts.md §12). */
@@ -365,7 +385,9 @@ export const ArtifactRefusalReason = z.enum([
   /** The revision is still uploading. */
   'revision-not-ready',
   /** No such share on that artifact. */
-  'share-not-found'
+  'share-not-found',
+  /** The member may not delete it under §6.3: only the artifact's owner or an organization owner may. */
+  'delete-forbidden'
 ])
 export type ArtifactRefusalReason = z.infer<typeof ArtifactRefusalReason>
 

@@ -644,7 +644,12 @@ browser and components the console already has:
 | Deletion                           | Removes every revision, its bytes and its shares at once; not recoverable                       |
 
 The CP deletes the objects first and the rows second, so a failed delete is retried, as for
-session snapshots. `sessions.retention` is a daemon-side setting today; which value the CP
+session snapshots. A deletion is the exception that keeps D13 immediate: it removes the
+artifact's rows at once, so its reads answer 404 and its share links answer 404
+`ARTIFACT_SHARE_NOT_FOUND` like a link that never existed, and records every revision's
+object keys in a deletion record that stays until the objects are gone. The keys are deleted
+right away, retried until a sweep succeeds, and deleted once more after the upload URL
+lifetime plus a grace period (§5.6); only then is the record dropped. `sessions.retention` is a daemon-side setting today; which value the CP
 uses is open question P3.
 
 ### 10.2 Limits
