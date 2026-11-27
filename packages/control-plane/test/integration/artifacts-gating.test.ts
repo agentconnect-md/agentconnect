@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
-import { ARTIFACTS_FEATURE, isFrame, type AnyFrame } from '@agentconnect.md/protocol'
+import { ARTIFACT_SHARES_FEATURE, ARTIFACTS_FEATURE, isFrame, type AnyFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildApp, type App } from '../../src/app.js'
 import { loadConfig } from '../../src/config/env.js'
@@ -99,9 +99,10 @@ async function deployment(env: Record<string, string>) {
 }
 
 describe('artifact feature gating', () => {
-  it('advertises artifacts-v1 and tells the console the content domain only with a bucket and a content domain', async () => {
+  it('advertises artifacts-v1 and artifact-shares-v1 and tells the console the content domain only with a bucket and a content domain', async () => {
     const both = await deployment({ AC_FILE_TRANSFER: BUCKET, ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' })
     expect(both.features).toContain(ARTIFACTS_FEATURE)
+    expect(both.features).toContain(ARTIFACT_SHARES_FEATURE)
     expect(both.artifacts).toEqual({ enabled: true, contentDomain: 'example-usercontent.net' })
 
     const halves: Record<string, string>[] = [
@@ -111,6 +112,7 @@ describe('artifact feature gating', () => {
     for (const env of halves) {
       const off = await deployment(env)
       expect(off.features).not.toContain(ARTIFACTS_FEATURE)
+      expect(off.features).not.toContain(ARTIFACT_SHARES_FEATURE)
       expect(off.artifacts).toEqual({ enabled: false, contentDomain: null })
     }
   })

@@ -6139,7 +6139,7 @@ export class Daemon {
       },
       // read*File: a downloaded non-image binary lands in the session files directory's `uploads/` (inbound-file-attachments.md §2.4).
       saveAttachment: (ctx, name, bytes) => this.saveSessionUpload(ctx, name, bytes),
-      // publishArtifact, fetchArtifact, listArtifacts (artifacts.md §7), toward a CP that advertises artifacts-v1.
+      // The artifact tools (artifacts.md §7), toward a CP that advertises artifacts-v1 (and artifact-shares-v1 to share).
       artifacts: this.artifactPort(),
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
@@ -12747,7 +12747,14 @@ export class Daemon {
     // The agent's own crons, with no approval, toward a CP that serves them; execution re-checks.
     tools = [...tools, ...agentCronToolsFor(this.agentCronsServed(), { thread })]
     // Artifacts (artifacts.md §7), toward a CP that advertises them; execution re-checks.
-    tools = [...tools, ...artifactToolsFor(this.cpClient?.supportsArtifacts?.() === true, { thread })]
+    tools = [
+      ...tools,
+      ...artifactToolsFor(
+        this.cpClient?.supportsArtifacts?.() === true,
+        { thread },
+        this.cpClient?.supportsArtifactShares?.() === true
+      )
+    ]
     // §14.2 brokers: a host's tools ride with any repository the agent holds there, and the clamped lease still authorizes each call.
     for (const provider of this.codeHostBrokers.keys()) {
       if (this.holdsEffectRepository(agent, provider)) tools = [...tools, ...codeHostEffectToolsFor(provider)]
@@ -15316,11 +15323,14 @@ export class Daemon {
     }
     return {
       served: () => this.cpClient?.supportsArtifacts?.() === true,
+      sharesServed: () => this.cpClient?.supportsArtifactShares?.() === true,
       turn: (ctx) => this.artifactTurn(ctx),
       begin: (req) => client().beginArtifactPublish(req, this.orgForAgent(req.agentId)),
       complete: (req) => client().completeArtifactPublish(req, this.orgForAgent(req.agentId)),
       fetch: (req) => client().fetchArtifact(req, this.orgForAgent(req.agentId)),
       list: (req) => client().listArtifacts(req, this.orgForAgent(req.agentId)),
+      share: (req) => client().shareArtifact(req, this.orgForAgent(req.agentId)),
+      unshare: (req) => client().unshareArtifact(req, this.orgForAgent(req.agentId)),
       network: () => this.transferNetwork(),
       maxFileBytes: () => Math.min(ARTIFACT_MAX_BYTES, this.fileTransfer?.maxBytes ?? ARTIFACT_MAX_BYTES),
       normalizePath: async (ctx, path) => {

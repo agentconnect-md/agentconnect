@@ -4,6 +4,7 @@ import {
   agentCanReachArtifact,
   artifactAudienceFromSession,
   canActOnArtifact,
+  canRevokeArtifactShare,
   canViewArtifact,
   isArtifactOwner,
   type ArtifactAudience,
@@ -176,6 +177,28 @@ describe('canActOnArtifact (artifacts.md §6.3)', () => {
   it('names the owner by identity-set membership only', () => {
     expect(isArtifactOwner(artifacts.privateTuple, viewers.alice.identitySet)).toBe(true)
     expect(isArtifactOwner(artifacts.privateOwnerless, viewers.olga.identitySet)).toBe(false)
+  })
+})
+
+describe('canRevokeArtifactShare (artifacts.md §6.3)', () => {
+  const byBob = { createdByIdentity: 'user:bob' }
+  const byVera = { createdByIdentity: 'user:vera' }
+
+  it('lets the share’s creator revoke it beside the owner and organization owners, even without viewing', () => {
+    expect(canRevokeArtifactShare(artifacts.orgAlice, byBob, viewers.bob)).toBe(true)
+    expect(canRevokeArtifactShare(artifacts.orgAlice, byVera, viewers.bob)).toBe(false)
+    expect(canRevokeArtifactShare(artifacts.orgAlice, byBob, viewers.alice)).toBe(true)
+    expect(canRevokeArtifactShare(artifacts.orgAlice, byBob, viewers.olga)).toBe(true)
+    // Narrowed away from Bob after he shared it: revoking only narrows access, so it stays his to revoke.
+    expect(canViewArtifact(artifacts.privateAlice, viewers.bob)).toBe(false)
+    expect(canRevokeArtifactShare(artifacts.privateAlice, byBob, viewers.bob)).toBe(true)
+    expect(canRevokeArtifactShare(artifacts.privateAlice, byBob, viewers.vera)).toBe(false)
+  })
+
+  it('holds the organization boundary for a creator identity too', () => {
+    expect(canRevokeArtifactShare(artifacts.orgOwnerless, { createdByIdentity: 'user:alice' }, viewers.mallory)).toBe(
+      false
+    )
   })
 })
 

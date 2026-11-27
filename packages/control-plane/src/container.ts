@@ -1205,6 +1205,12 @@ export function buildContainer(
         now: () => clock.now()
       })
     : undefined
+  const artifactShares = new ArtifactShareService({
+    shares: repos.artifactShare,
+    codec: new ArtifactShareCodec(config.API_KEY_PEPPER),
+    clock,
+    ...(webAppUrl ? { webAppUrl } : {})
+  })
   // Artifacts (artifacts.md §12): offered only with both a transfer bucket and a content domain.
   const artifactsContentDomain = config.ARTIFACTS_CONTENT_DOMAIN
   const artifacts =
@@ -1222,16 +1228,37 @@ export function buildContainer(
           readAccess: (req, expectedOrgId) =>
             wsDeps.readAccess?.(req, expectedOrgId) ??
             Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
+          shares: artifactShares,
+          // Lazy over `httpDeps` (assigned below): a share uses the member's identities as the console resolves them.
+          memberAccess: async (orgId, principal, artifact) => {
+            const oidcSubject = await repos.user.getOidcSubject(principal.userId)
+            const access = await makeSessionAccessResolver(httpDeps).forPrincipal(
+              {
+                orgId: OrgId(orgId),
+                userId: principal.userId,
+                role: principal.role,
+                log: http.log,
+                ...(oidcSubject ? { oidcSubject } : {})
+              },
+              [
+                {
+                  visibility: artifact.visibility,
+                  externalProvider: artifact.externalProvider,
+                  externalScopeId: artifact.externalScopeId,
+                  ...(artifact.editorsAgentId ? { agentId: artifact.editorsAgentId } : {})
+                }
+              ]
+            )
+            return {
+              identitySet: access.identitySet,
+              externalAccess: access.externalAccess,
+              editableAgentIds: access.editableAgentIds
+            }
+          },
           ...(webAppUrl ? { webAppUrl } : {}),
           log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
         })
       : undefined
-  const artifactShares = new ArtifactShareService({
-    shares: repos.artifactShare,
-    codec: new ArtifactShareCodec(config.API_KEY_PEPPER),
-    clock,
-    ...(webAppUrl ? { webAppUrl } : {})
-  })
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
   const sharedImages = createSharedImageService({
     ...(fileTransferBucket ? { transfer: fileTransferBucket.transfer } : {}),

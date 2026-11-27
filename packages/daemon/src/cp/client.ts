@@ -184,6 +184,7 @@ import {
   type SessionFilePutOk,
   type SessionFilePutReq,
   ARTIFACTS_FEATURE,
+  ARTIFACT_SHARES_FEATURE,
   type ArtifactFetchOk,
   type ArtifactFetchReq,
   type ArtifactListOk,
@@ -192,6 +193,10 @@ import {
   type ArtifactPublishBeginReq,
   type ArtifactPublishCompleteOk,
   type ArtifactPublishCompleteReq,
+  type ArtifactShareOk,
+  type ArtifactShareReq,
+  type ArtifactUnshareOk,
+  type ArtifactUnshareReq,
   WEBCHAT_MCP_GRANT_RENEW_FEATURE,
   INTEGRATION_REVOKED_FEATURE,
   INTEGRATION_TENANT_FEATURE,
@@ -1307,6 +1312,11 @@ export class CpClient {
     return this.connected() && this.supportsServerFeature(ARTIFACTS_FEATURE)
   }
 
+  /** Whether the connected CP also answers `artifact/share|unshare`; the share tools are offered only then. */
+  supportsArtifactShares(): boolean {
+    return this.supportsArtifacts() && this.supportsServerFeature(ARTIFACT_SHARES_FEATURE)
+  }
+
   /** Record a pending revision and presign one PUT per file, or the ready result a replayed key reached. */
   async beginArtifactPublish(payload: ArtifactPublishBeginReq, orgId?: string): Promise<ArtifactPublishBeginOk> {
     return (await this.artifactRequest('artifact/publish/begin', payload, orgId)) as ArtifactPublishBeginOk
@@ -1330,14 +1340,37 @@ export class CpClient {
     return (await this.artifactRequest('artifact/list', payload, orgId)) as ArtifactListOk
   }
 
-  /** An `artifact/*` request to a CP that advertised `artifacts-v1`; a refusal rejects with its `details.reason`. */
+  /** A share link to one ready revision, with the turn initiator's authority. */
+  async shareArtifact(payload: ArtifactShareReq, orgId?: string): Promise<ArtifactShareOk> {
+    return (await this.artifactRequest('artifact/share', payload, orgId)) as ArtifactShareOk
+  }
+
+  /** Revoke one share, with the turn initiator's authority. */
+  async unshareArtifact(payload: ArtifactUnshareReq, orgId?: string): Promise<ArtifactUnshareOk> {
+    return (await this.artifactRequest('artifact/unshare', payload, orgId)) as ArtifactUnshareOk
+  }
+
+  /** An `artifact/*` request to a CP that advertised its feature; a refusal rejects with its `details.reason`. */
   private async artifactRequest(
-    type: 'artifact/publish/begin' | 'artifact/publish/complete' | 'artifact/fetch' | 'artifact/list',
-    payload: ArtifactPublishBeginReq | ArtifactPublishCompleteReq | ArtifactFetchReq | ArtifactListReq,
+    type:
+      | 'artifact/publish/begin'
+      | 'artifact/publish/complete'
+      | 'artifact/fetch'
+      | 'artifact/list'
+      | 'artifact/share'
+      | 'artifact/unshare',
+    payload:
+      | ArtifactPublishBeginReq
+      | ArtifactPublishCompleteReq
+      | ArtifactFetchReq
+      | ArtifactListReq
+      | ArtifactShareReq
+      | ArtifactUnshareReq,
     orgId?: string
   ): Promise<unknown> {
     this.requireReady(type)
-    if (!this.supportsServerFeature(ARTIFACTS_FEATURE)) {
+    const sharing = type === 'artifact/share' || type === 'artifact/unshare'
+    if (!this.supportsServerFeature(sharing ? ARTIFACT_SHARES_FEATURE : ARTIFACTS_FEATURE)) {
       throw new WireError('UNKNOWN_FRAME', `this control plane does not answer ${type}`, false)
     }
     const rep =

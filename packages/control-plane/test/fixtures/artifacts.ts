@@ -5,12 +5,22 @@ import type { SourceCacheObjectHead } from '@agentconnect.md/object-store'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from './seed.js'
 import { createArtifactService } from '../../src/artifacts/service.js'
+import { ArtifactShareCodec, ArtifactShareService } from '../../src/artifacts/shares.js'
+import { systemClock } from '../../src/domain/clock.js'
 import { FileTransferConfigSchema } from '../../src/file-transfer/config.js'
 import { createFileTransfer } from '../../src/file-transfer/transfer.js'
-import { PgAgentRepo, PgArtifactRepo, PgOrgRepo, PgSessionRepo, PgUserRepo } from '../../src/persistence/index.js'
+import {
+  PgAgentRepo,
+  PgArtifactRepo,
+  PgArtifactShareRepo,
+  PgOrgRepo,
+  PgSessionRepo,
+  PgUserRepo
+} from '../../src/persistence/index.js'
 import type { AgentRecord, CronRecord, OrgMemberRole } from '../../src/persistence/ports.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { TEST_API_KEY_PEPPER } from '../fakes/build-http.js'
 
 export const T0 = Date.parse('2026-11-25T10:00:00.000Z')
 
@@ -56,6 +66,13 @@ export function harness(crons: CronRecord[] = []) {
     crons: { listForAgent: async () => crons },
     hooks: { get: async () => null },
     orgs: new PgOrgRepo(prisma),
+    // The same pepper as `buildHttpApp`, so a link the agent creates opens through the share read routes.
+    shares: new ArtifactShareService({
+      shares: new PgArtifactShareRepo(prisma),
+      codec: new ArtifactShareCodec(TEST_API_KEY_PEPPER),
+      clock: systemClock,
+      webAppUrl: 'https://console.example.test'
+    }),
     webAppUrl: 'https://console.example.test'
   })
   const upload = (ok: ArtifactPublishBeginOk) => {

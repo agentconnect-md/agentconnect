@@ -1,4 +1,4 @@
-/** `artifact/*` (artifacts.md §5.3, §7.2): only a daemon placed on the agent publishes, fetches or lists for it. */
+/** `artifact/*` (artifacts.md §5.3, §7): only a daemon placed on the agent publishes, fetches, lists or shares for it. */
 import { isFrame, type AnyFrame } from '@agentconnect.md/protocol'
 import { ArtifactRefusal, type ArtifactService } from '../../artifacts/service.js'
 import { AgentId, type OrgId } from '../../domain/ids.js'
@@ -81,6 +81,28 @@ export const handleArtifactList: Handler = async (frame, conn, deps) => {
   if (!ok) return
   try {
     conn.replyTo(frame, 'artifact/list/ok', await ok.artifacts.list(ok.orgId, frame.payload))
+  } catch (err) {
+    sendFailure(conn, deps, frame, err)
+  }
+}
+
+export const handleArtifactShare: Handler = async (frame, conn, deps) => {
+  if (!isFrame('artifact/share')(frame)) return
+  const ok = await authorize(frame, conn, deps)
+  if (!ok) return
+  try {
+    conn.replyTo(frame, 'artifact/share/ok', await ok.artifacts.share(ok.orgId, frame.payload))
+  } catch (err) {
+    sendFailure(conn, deps, frame, err)
+  }
+}
+
+export const handleArtifactUnshare: Handler = async (frame, conn, deps) => {
+  if (!isFrame('artifact/unshare')(frame)) return
+  const ok = await authorize(frame, conn, deps)
+  if (!ok) return
+  try {
+    conn.replyTo(frame, 'artifact/unshare/ok', await ok.artifacts.unshare(ok.orgId, frame.payload))
   } catch (err) {
     sendFailure(conn, deps, frame, err)
   }

@@ -5,6 +5,8 @@ import { TransferNetwork } from './file-transfer.js'
 
 /** This CP answers `artifact/publish/begin|complete`, `artifact/fetch` and `artifact/list` (artifacts.md §5.3). */
 export const ARTIFACTS_FEATURE = 'artifacts-v1'
+/** This CP also answers `artifact/share` and `artifact/unshare`, and lists active shares (artifacts.md §7.1, §8.3). */
+export const ARTIFACT_SHARES_FEATURE = 'artifact-shares-v1'
 
 /** Files one revision may hold (artifacts.md §10.2, P4). */
 export const ARTIFACT_MAX_FILES = 200
@@ -17,6 +19,8 @@ export const ARTIFACT_SEGMENT_MAX_BYTES = 255
 export const ARTIFACT_TITLE_MAX = 200
 /** Artifacts one `artifact/list` page holds at most. */
 export const ARTIFACT_LIST_PAGE_MAX = 25
+/** Active shares one list entry carries at most, newest first. */
+export const ARTIFACT_LIST_SHARES_MAX = 20
 
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 const utf8 = new TextEncoder()
@@ -247,6 +251,20 @@ export const ArtifactListReq = z.object({
 })
 export type ArtifactListReq = z.infer<typeof ArtifactListReq>
 
+export const ArtifactShareAudience = z.enum(['public', 'org'])
+export type ArtifactShareAudience = z.infer<typeof ArtifactShareAudience>
+
+/** An active share as the agent sees it; never its token, which only the creating reply carries. */
+export const ArtifactShareSummary = z.object({
+  shareId: z.string().uuid(),
+  revision: z.number().int().positive(),
+  audience: ArtifactShareAudience,
+  /** The token's last characters, so a person can tell links apart. */
+  displayTail: z.string().min(1).max(16),
+  createdAt: z.string().datetime()
+})
+export type ArtifactShareSummary = z.infer<typeof ArtifactShareSummary>
+
 export const ArtifactListEntry = z.object({
   artifactId: z.string().uuid(),
   title: ArtifactTitle,
@@ -262,7 +280,9 @@ export const ArtifactListEntry = z.object({
     totalBytes: z.number().int().positive(),
     producedByAgentName: z.string(),
     createdAt: z.string().datetime()
-  })
+  }),
+  /** Its active shares, newest first; absent from a CP without `artifact-shares-v1`. */
+  shares: z.array(ArtifactShareSummary).max(ARTIFACT_LIST_SHARES_MAX).optional()
 })
 export type ArtifactListEntry = z.infer<typeof ArtifactListEntry>
 
@@ -272,6 +292,49 @@ export const ArtifactListOk = z.object({
   nextCursor: z.string().min(1).max(512).optional()
 })
 export type ArtifactListOk = z.infer<typeof ArtifactListOk>
+
+/** D→C REQ: share one ready revision of an artifact this agent produced and the session reaches, as the turn's member (§7.3). */
+export const ArtifactShareReq = z.object({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(200),
+  artifactId: z.string().uuid(),
+  /** Absent shares the latest ready revision. */
+  revision: z.number().int().positive().optional(),
+  audience: ArtifactShareAudience,
+  /** Whose §6.3 authority the share uses; absent, or not resolving to a member, is refused. */
+  initiator: ArtifactInitiator.optional()
+})
+export type ArtifactShareReq = z.infer<typeof ArtifactShareReq>
+
+/** C→D REP: the new share and its link, which carries the token and is returned only here. */
+export const ArtifactShareOk = ArtifactShareSummary.extend({
+  artifactId: z.string().uuid(),
+  /** The console path, `/share/<token>` (artifacts.md §8.3). */
+  linkPath: z.string().min(1).max(512),
+  /** The same link on the console's origin, when the CP knows it. */
+  link: z.string().url().optional()
+})
+export type ArtifactShareOk = z.infer<typeof ArtifactShareOk>
+
+/** D→C REQ: revoke one share, by its id, of an artifact this agent produced and the session reaches. */
+export const ArtifactUnshareReq = z.object({
+  agentId: z.string().uuid(),
+  sessionId: z.string().min(1).max(200),
+  artifactId: z.string().uuid(),
+  shareId: z.string().uuid(),
+  initiator: ArtifactInitiator.optional()
+})
+export type ArtifactUnshareReq = z.infer<typeof ArtifactUnshareReq>
+
+/** C→D REP: the revoked share; repeating an unshare answers the first revocation again. */
+export const ArtifactUnshareOk = z.object({
+  shareId: z.string().uuid(),
+  artifactId: z.string().uuid(),
+  revision: z.number().int().positive(),
+  audience: ArtifactShareAudience,
+  revokedAt: z.string().datetime()
+})
+export type ArtifactUnshareOk = z.infer<typeof ArtifactUnshareOk>
 
 /** `details.reason` of an `error` reply to an artifact frame; a string on the wire so a newer CP's reason still parses. */
 export const ArtifactRefusalReason = z.enum([
@@ -294,7 +357,15 @@ export const ArtifactRefusalReason = z.enum([
   /** A create named no title. */
   'title-required',
   /** At complete, an object is missing or does not hold the declared bytes. */
-  'incomplete'
+  'incomplete',
+  /** The turn has no organization member's authority: a non-member, an unlinked sender, or a trigger without a member creator (§7.3). */
+  'no-member-authority',
+  /** The member may not do this under §6.3, such as a `public` share by someone who is not the owner. */
+  'share-forbidden',
+  /** The revision is still uploading. */
+  'revision-not-ready',
+  /** No such share on that artifact. */
+  'share-not-found'
 ])
 export type ArtifactRefusalReason = z.infer<typeof ArtifactRefusalReason>
 

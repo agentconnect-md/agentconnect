@@ -12,7 +12,7 @@ import { GETTING_TO_KNOW_TOOL } from '../src/mcp/ops/getting-to-know.js'
 import { CODE_HOST_RESEARCH_TOOLS } from '../src/mcp/ops/code-host-research.js'
 import { CAPABILITY_REQUEST_TOOLS } from '../src/mcp/ops/capability-requests.js'
 import { AGENT_CRON_TOOLS } from '../src/mcp/ops/agent-crons.js'
-import { ARTIFACT_TOOLS } from '../src/mcp/ops/artifacts.js'
+import { ARTIFACT_SHARE_TOOLS, ARTIFACT_TOOLS } from '../src/mcp/ops/artifacts.js'
 import { buildReadSkillTool } from '../src/mcp/ops/skill-guide.js'
 import { allPortPlatforms, readPortsFor, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
@@ -178,6 +178,7 @@ const advertised: ToolDescriptor[] = [
   ...CAPABILITY_REQUEST_TOOLS,
   ...AGENT_CRON_TOOLS,
   ...ARTIFACT_TOOLS,
+  ...ARTIFACT_SHARE_TOOLS,
   // Built per session from its system skills; the widest form carries every name.
   buildReadSkillTool()
 ]
