@@ -613,6 +613,20 @@ describe('a pending upgrade', () => {
     expect(dialog()!.querySelector('[data-plan-tier]')).not.toBeNull()
   })
 
+  it('closes only the cancel confirmation on Escape, then Change plan on the next', async () => {
+    mocks.subscription.mockResolvedValue(pending('upgrade'))
+    await render()
+    await openChangePlan()
+    await click(blocked()!.querySelector('[data-plan-pending-cancel]'))
+    const escape = () =>
+      act(async () => void window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })))
+    await escape()
+    expect(blocked()!.querySelector('[role="dialog"]')).toBeNull()
+    await escape()
+    expect(dialog()).toBeNull()
+    expect(mocks.cancelChange).not.toHaveBeenCalled()
+  })
+
   it('shows up in Change plan when a refused change reveals one the page had not read yet', async () => {
     mocks.schedule.mockRejectedValue(new BillingError('a plan change for this organization has not settled yet', 409))
     await render()

@@ -27,6 +27,7 @@ import {
 import { helpSupportUrl } from '@/lib/help-links'
 import { consoleKeys } from '@/lib/swr-keys'
 import { Button, Icon } from '@/components/ui'
+import { useEscapeLayer } from '@/components/console/Scrim'
 import { CancelPendingButton, planLabel, useUtcDates } from './Plan'
 
 const POLL_INTERVAL_MS = 2_500
@@ -291,13 +292,8 @@ export function ChangePlanDialog({
   const changed = useRef(onChanged)
   changed.current = onChanged
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  // A layer, not a window listener, so Escape closes only the confirmation open on top of this dialog.
+  useEscapeLayer(onClose)
 
   const settle = (c: BillingSubscriptionChange, attempt: number) => {
     setChange(c)
