@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { formatArtifactMarker, parseArtifactMarker as protocolParseArtifactMarker } from '@agentconnect.md/protocol'
 import {
   artifactKind,
+  artifactMarkerKey,
   artifactPath,
   artifactZipName,
   markdownImageRefs,
@@ -30,6 +31,19 @@ describe('parseArtifactMarker', () => {
       caption: 'Here it is.',
       artifact: { artifactId: ID, revision: 3, title: 'Q3 "report" [draft]\nfinal' }
     })
+  })
+})
+
+describe('artifactMarkerKey', () => {
+  it('names every card in the transcript, so a new card or revision changes it', () => {
+    const one = `Done.\n${formatArtifactMarker({ artifactId: ID, revision: 1, title: 'Report' })}`
+    const two = formatArtifactMarker({ artifactId: ID, revision: 2, title: 'Report' })
+    expect(artifactMarkerKey(['hello', 'no marker'])).toBe('')
+    expect(artifactMarkerKey(['hello', one])).toBe(`${ID}:1`)
+    expect(artifactMarkerKey(['hello', one, two])).toBe(`${ID}:1,${ID}:2`)
+    // A streaming card and its saved row are one card, in whatever order they arrive.
+    expect(artifactMarkerKey([two, one, one])).toBe(`${ID}:1,${ID}:2`)
+    expect(artifactMarkerKey([`caption [artifact: ${ID} r1 "inline"] more`])).toBe('')
   })
 })
 

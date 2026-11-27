@@ -162,7 +162,13 @@ import { ApprovalRequestsCard, usePendingRequestCount } from '@/components/conso
 import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
 import type { SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
-import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
+import {
+  DockPanel,
+  SessionDock,
+  SessionDockSlot,
+  type DockTab,
+  type DockTabStatus
+} from '@/components/console/dock/SessionDock'
 import { ComputerPanel } from '@/components/console/dock/ComputerPanel'
 import {
   SessionsPanel,
@@ -218,7 +224,8 @@ import {
 } from '@/components/console/artifact/artifact-opener'
 import { SessionArtifactViewer } from '@/components/console/artifact/SessionArtifactViewer'
 import { ArtifactsPanel, artifactsTabStatus } from '@/components/console/dock/ArtifactsPanel'
-import { artifactsContentDomain } from '@/lib/artifact'
+import { ArtifactsList } from '@/components/console/dock/ArtifactsList'
+import { artifactMarkerKey, artifactsContentDomain } from '@/lib/artifact'
 import {
   ARTIFACT_PARAM,
   ARTIFACT_PATH_PARAM,
@@ -912,6 +919,7 @@ export default function SessionDetailView() {
   const tt = useTranslations('Common.taskThread')
   const runtimeModelT = useTranslations('Agents.dialog.runtimeModel')
   const commandMenuT = useTranslations('Common.commandMenu')
+  const artifactListT = useTranslations('Artifacts.list')
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
@@ -1711,6 +1719,23 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
+  // The Artifacts tab lists what the open session published, on the PR tab's scope and for the same reasons.
+  const artifactsSessionId = artifactsEnabled ? prSessionId : null
+  // The Artifacts tab list's status, held per session so a switch never shows the previous session's verdict.
+  const [artifactsListHeard, setArtifactsListHeard] = useState<{ sessionId: string; status: DockTabStatus } | null>(
+    null
+  )
+  const onArtifactsListStatus = useCallback(
+    (status: DockTabStatus) => {
+      if (artifactsSessionId) setArtifactsListHeard({ sessionId: artifactsSessionId, status })
+    },
+    [artifactsSessionId]
+  )
+  const artifactsListStatus = !artifactsSessionId
+    ? 'empty'
+    : artifactsListHeard?.sessionId === artifactsSessionId
+      ? artifactsListHeard.status
+      : 'loading'
   // Whether the Tasks tab reads the focused session's delegated tasks: that agent is in assistant mode or its daemon lists every agent's.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
   const subsessionsListed =
@@ -2082,11 +2107,17 @@ export default function SessionDetailView() {
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
                     : tab.key === 'artifacts'
-                      ? { ...tab, status: artifactsTabStatus(dockArtifactOpen) }
+                      ? {
+                          ...tab,
+                          status: artifactsTabStatus(dockArtifactOpen, artifactsListStatus),
+                          emptyLabel: artifactListT('empty')
+                        }
                       : tab
         ),
     [
+      artifactListT,
       artifactsEnabled,
+      artifactsListStatus,
       computerIds.length,
       computerManaged,
       coordinatorPage,
@@ -2801,6 +2832,10 @@ export default function SessionDetailView() {
   // Either viewer conceals the conversation and its composer.
   const paneTaken = viewerOpen || artifactPaneViewer !== null
   const liveSteps = isWebchat || isContinuable || pgOnRows ? getLiveSteps(session.id) : []
+  // A new artifact card in the transcript, saved or streaming, is what re-reads the dock's artifact list.
+  const artifactMarkers = artifactsSessionId
+    ? artifactMarkerKey([...(visibleMsgs ?? []).map((m) => m.text), ...liveSteps.map((step) => step.text)])
+    : ''
   // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
   const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
   // A message in a thread that a task answers there keeps this timeline still; one the coordinator answers streams here.
@@ -5090,6 +5125,16 @@ export default function SessionDetailView() {
                 dockArtifactViewer && setArtifactViewer({ ...dockArtifactViewer, revision, path: null })
               }
               onPath={syncArtifactPath}
+              list={
+                artifactsSessionId ? (
+                  <ArtifactsList
+                    key={artifactsSessionId}
+                    sessionId={artifactsSessionId}
+                    refreshKey={artifactMarkers}
+                    onStatusChange={onArtifactsListStatus}
+                  />
+                ) : undefined
+              }
             />
           ) : null}
         </DockPanel>

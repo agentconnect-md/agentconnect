@@ -8593,6 +8593,12 @@
       "backHome": "返回首页",
       "search": "搜索",
       "loadFailed": "无法加载此 Artifact，请稍后重试。"
+    },
+    "list": {
+      "empty": "还没有 Artifact",
+      "loadFailed": "无法加载 Artifact，请稍后重试。",
+      "more": "显示更多",
+      "loadingMore": "正在加载…"
     }
   }
 }
