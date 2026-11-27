@@ -560,7 +560,8 @@ const cut = (text: string, max: number): string => {
   return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : chars.join('')
 }
 
-const BOARD_NOTE =
+/** The note a coordinator's `listTasks` ends with. */
+export const BOARD_NOTE =
   'Open tasks in the work board’s order, the most recently changed first. `here` are this conversation’s own: their ' +
   'taskId is for messageTask, stopTask and readTask. `elsewhere` are other conversations’ tasks the people asking may ' +
   'see: read them, with readTask and their id for their latest words, point people to them by title or thread link, ' +

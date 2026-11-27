@@ -15,6 +15,7 @@ import {
   withoutBlankCoordinatorFields
 } from '../../src/auto-session/coordinator-prompt.js'
 import { REMINDER_TOOLS } from '../../src/mcp/ops/assistant-reminders.js'
+import { BOARD_NOTE } from '../../src/mcp/ops/assistant-subsessions.js'
 import { readOnlyExtractionMode } from '../../src/memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../../src/runtime-defs/claude-runtime.js'
 import { spokenTo } from '../../src/auto-session/coordinator-turns.js'
@@ -191,6 +192,9 @@ export interface ProbeElsewhereTask {
   summary: string
   summaryAt: string
   threads: Array<{ channel: string; thread: string; link: string }>
+  /** The message it was opened for and the pull requests it opened, which listTasks and readTask both show. */
+  openedFor?: { place: string; messageId: string }
+  opened?: Array<{ kind: string; label: string; url: string }>
 }
 
 const WEBHOOK_TASK: ProbeElsewhereTask = {
@@ -232,6 +236,14 @@ const EXPORT_TASK: ProbeElsewhereTask = {
       thread: '1700000000.000200',
       link: `https://chat.example.test/archives/${CO_IDS.exportChannel}/p1700000000000200`
     }
+  ],
+  openedFor: { place: `slack:${CO_IDS.exportChannel}`, messageId: 'msg-1700000000.000200' },
+  opened: [
+    {
+      kind: 'pull request',
+      label: 'example-org/analytics#57',
+      url: 'https://github.com/example-org/analytics/pull/57'
+    }
   ]
 }
 
@@ -246,14 +258,8 @@ const EXPORT_TASK_READ = {
   summaryAt: EXPORT_TASK.summaryAt,
   place: EXPORT_TASK.place,
   placeName: EXPORT_TASK.placeName,
-  openedFor: { place: EXPORT_TASK.place, messageId: 'msg-1700000000.000200' },
-  opened: [
-    {
-      kind: 'pull request',
-      label: 'example-org/analytics#57',
-      url: 'https://github.com/example-org/analytics/pull/57'
-    }
-  ],
+  openedFor: EXPORT_TASK.openedFor,
+  opened: EXPORT_TASK.opened,
   excerpts: [
     {
       at: '2026-11-01T07:40:00Z',
@@ -502,7 +508,7 @@ function callTool(
       result: text({
         here: scope.tasks,
         elsewhere: scope.elsewhere ?? [],
-        note: 'Open tasks in the work board’s order. `here` are this conversation’s own; `elsewhere` are read only.'
+        note: BOARD_NOTE
       }),
       call: { tool: name, args }
     }
@@ -1040,7 +1046,7 @@ export const CO_SCENARIOS: CoordinatorScenario[] = [
     }
   },
   {
-    // assistant-mode.md §5.18 ④: a status question its Elsewhere line's summary cannot answer, read from the task itself.
+    // assistant-mode.md §5.18 ④: a status question its Elsewhere line's summary cannot answer, read from what the task opened.
     id: 'elsewhere-read-task',
     tasks: [CHECKOUT_TASK],
     elsewhere: [WEBHOOK_TASK, EXPORT_TASK],
