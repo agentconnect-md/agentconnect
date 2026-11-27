@@ -20,7 +20,12 @@ import type {
   ArtifactUnshareReq,
   ErrorCode
 } from '@agentconnect.md/protocol'
-import { ARTIFACT_LIST_PAGE_MAX, ARTIFACT_LIST_SHARES_MAX } from '@agentconnect.md/protocol'
+import {
+  ARTIFACT_LIST_PAGE_MAX,
+  ARTIFACT_LIST_SHARES_MAX,
+  artifactRevisionLimitProblem,
+  formatArtifactBytes
+} from '@agentconnect.md/protocol'
 import { SOURCE_CACHE_GRACE_SECONDS } from '@agentconnect.md/object-store'
 import {
   agentCanReachArtifact,
@@ -48,6 +53,7 @@ import type { ArtifactShareService } from './shares.js'
 import { revisionExpired } from './retention.js'
 import {
   ArtifactIdempotencyConflictError,
+  ArtifactOrgLimitError,
   decodeArtifactCursor,
   encodeArtifactCursor
 } from '../persistence/repositories/artifact.repo.js'
@@ -119,6 +125,8 @@ export interface ArtifactServiceDeps {
   shares?: ArtifactShareService
   /** Absent gives a member only their `user:` identity, no `external` access, and edit rights read here. */
   memberAccess?: ArtifactMemberAccess
+  /** The organization's artifact total in bytes, null for none; absent sets no total (artifacts.md §10.2). */
+  orgBytesLimit?: (orgId: string) => Promise<number | null>
   /** The console's origin, for absolute links. */
   webAppUrl?: string
   /** The PUT lifetime the bucket signs (`limits.putUrlSeconds`); a deletion sweeps once more after it. */
@@ -430,6 +438,14 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
   return {
     async begin(orgId, agent, req, daemonId) {
       const bucket = requireTransfer()
+      const over = artifactRevisionLimitProblem(req.manifest)
+      if (over) {
+        throw new ArtifactRefusal('revision-limit', 'BAD_PAYLOAD', over.message, false, {
+          rule: over.rule,
+          limit: over.limit,
+          actual: over.actual
+        })
+      }
       const oversized = req.manifest.files.find((file) => file.bytes > bucket.maxBytes)
       if (oversized) {
         throw new ArtifactRefusal(
@@ -453,6 +469,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         ...(daemonId ? { publishedByDaemonId: daemonId } : {})
       }
 
+      const limits = { orgBytesLimit: (await deps.orgBytesLimit?.(orgId)) ?? null }
       let result
       try {
         if (req.artifactId === undefined) {
@@ -462,7 +479,11 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
             { ...reachSessionOf(session), ownerIdentity: session.ownerIdentity },
             initiator
           )
-          result = await artifacts.create({ ...audience, title: req.title, originSessionId: req.sessionId }, revision)
+          result = await artifacts.create(
+            { ...audience, title: req.title, originSessionId: req.sessionId },
+            revision,
+            limits
+          )
         } else {
           // Reach first, so an artifact the session may not see reads as absent rather than as someone else's.
           const artifact = await artifacts.get(orgId, req.artifactId)
@@ -471,12 +492,21 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
           if (first?.producedByAgentId !== agent.id) {
             throw new ArtifactRefusal('not-producer', 'SCOPE_DENIED', 'an agent revises only the artifacts it produced')
           }
-          result = await artifacts.appendRevision(orgId, artifact.id, revision)
+          result = await artifacts.appendRevision(orgId, artifact.id, revision, limits)
           if (!result) throw notFound()
         }
       } catch (err) {
         if (err instanceof ArtifactIdempotencyConflictError) {
           throw new ArtifactRefusal('idempotency-conflict', 'CONFLICT', err.message)
+        }
+        if (err instanceof ArtifactOrgLimitError) {
+          throw new ArtifactRefusal(
+            'org-limit',
+            'CONFLICT',
+            `the organization’s artifacts may hold at most ${formatArtifactBytes(err.limit)}; ${err.used} bytes are in use and this revision adds ${err.bytes} bytes`,
+            false,
+            { limit: err.limit, used: err.used, bytes: err.bytes }
+          )
         }
         throw err
       }

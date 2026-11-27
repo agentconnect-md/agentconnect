@@ -12,6 +12,7 @@ import type {
   ArtifactListFilter,
   ArtifactManifest,
   ArtifactPageQuery,
+  ArtifactPublishLimits,
   ArtifactPublishResult,
   ArtifactRecord,
   ArtifactRepo,
@@ -29,6 +30,34 @@ export class ArtifactIdempotencyConflictError extends Error {
     this.name = 'ArtifactIdempotencyConflictError'
   }
 }
+
+/** A new revision would take the organization past its artifact total (artifacts.md §10.2). */
+export class ArtifactOrgLimitError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly used: number,
+    readonly bytes: number
+  ) {
+    super('the organization artifact total would be exceeded')
+    this.name = 'ArtifactOrgLimitError'
+  }
+}
+
+/** Under the org's lock until commit, so concurrent publishes see each other's pending bytes; throws past the limit. */
+async function holdOrgTotal(tx: PrismaLike, orgId: string, bytes: number, limits?: ArtifactPublishLimits) {
+  const limit = limits?.orgBytesLimit ?? null
+  if (limit === null) return
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['artifact-org-total', orgId])}, 0))`
+  // Live revisions only: one expired, deleted or closed has left these rows and stops counting (§5.6, §10.1).
+  const rows = await tx.$queryRaw<Array<{ used: bigint | null }>>`
+    SELECT SUM(r."totalBytes") AS "used" FROM "artifact_revision" r
+    JOIN "artifact" a ON a."id" = r."artifactId"
+    WHERE a."orgId" = ${orgId} AND r."state" IN ('pending', 'ready')`
+  const used = Number(rows[0]?.used ?? 0)
+  if (used + bytes > limit) throw new ArtifactOrgLimitError(limit, used, bytes)
+}
+
+const manifestBytes = (manifest: ArtifactManifest): number => manifest.files.reduce((sum, file) => sum + file.bytes, 0)
 
 export function toArtifact(row: Artifact): ArtifactRecord {
   return {
@@ -104,7 +133,7 @@ function revisionData(
     initiatedBy: revision.initiatedBy,
     publishedByDaemonId: revision.publishedByDaemonId ?? null,
     publishedRetention,
-    totalBytes: revision.manifest.files.reduce((sum, file) => sum + file.bytes, 0),
+    totalBytes: manifestBytes(revision.manifest),
     fileCount: revision.manifest.files.length,
     idempotencyKey: revision.idempotencyKey
   }
@@ -259,7 +288,11 @@ export class PgArtifactRepo implements ArtifactRepo {
     return found
   }
 
-  async create(artifact: NewArtifact, revision: NewArtifactRevision): Promise<ArtifactPublishResult> {
+  async create(
+    artifact: NewArtifact,
+    revision: NewArtifactRevision,
+    limits?: ArtifactPublishLimits
+  ): Promise<ArtifactPublishResult> {
     // A first publish's replay must be the revision 1 of an artifact, never a later append.
     const isFirst = (found: ArtifactPublishResult) => found.revision.number === 1
     const replayed = await this.replayFor(revision, isFirst)
@@ -267,6 +300,7 @@ export class PgArtifactRepo implements ArtifactRepo {
     const id = randomUUID()
     try {
       return await withAmbientTx(this.db, async (tx) => {
+        await holdOrgTotal(tx, artifact.orgId, manifestBytes(revision.manifest), limits)
         const created = await tx.artifact.create({
           data: {
             id,
@@ -285,7 +319,8 @@ export class PgArtifactRepo implements ArtifactRepo {
         return { artifact: toArtifact(created), revision: toRevision(first), replayed: false }
       })
     } catch (err) {
-      if (!isUniqueViolation(err)) throw err
+      // A same-key begin that committed while this one waited is a replay, even when its bytes now fill the total.
+      if (!isUniqueViolation(err) && !(err instanceof ArtifactOrgLimitError)) throw err
       const raced = await this.replayFor(revision, isFirst)
       if (raced) return raced
       throw err
@@ -295,7 +330,8 @@ export class PgArtifactRepo implements ArtifactRepo {
   async appendRevision(
     orgId: string,
     artifactId: string,
-    revision: NewArtifactRevision
+    revision: NewArtifactRevision,
+    limits?: ArtifactPublishLimits
   ): Promise<ArtifactPublishResult | null> {
     const sameArtifact = (found: ArtifactPublishResult) =>
       found.artifact.id === artifactId && found.artifact.orgId === orgId
@@ -307,6 +343,8 @@ export class PgArtifactRepo implements ArtifactRepo {
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "artifact" WHERE "id" = ${artifactId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
         if (locked.length === 0) return null
+        // Taken after the artifact's row lock and never before it, so two appends cannot deadlock.
+        await holdOrgTotal(tx, orgId, manifestBytes(revision.manifest), limits)
         const top = await tx.artifactRevision.aggregate({ where: { artifactId }, _max: { number: true } })
         const retention = await daemonRetention(tx, revision.publishedByDaemonId)
         const appended = await tx.artifactRevision.create({
@@ -316,7 +354,7 @@ export class PgArtifactRepo implements ArtifactRepo {
         return { artifact: toArtifact(current), revision: toRevision(appended), replayed: false }
       })
     } catch (err) {
-      if (!isUniqueViolation(err)) throw err
+      if (!isUniqueViolation(err) && !(err instanceof ArtifactOrgLimitError)) throw err
       const raced = await this.replayFor(revision, sameArtifact)
       if (raced) return raced
       throw err

@@ -10,10 +10,10 @@ export const ARTIFACT_SHARES_FEATURE = 'artifact-shares-v1'
 /** This CP also answers `artifact/delete` (artifacts.md §7.1, D13). */
 export const ARTIFACT_DELETE_FEATURE = 'artifact-delete-v1'
 
-/** Files one revision may hold (artifacts.md §10.2, P4). */
+/** Files one revision may hold (artifacts.md §10.2). */
 export const ARTIFACT_MAX_FILES = 200
-/** Bytes one revision may hold across its files (artifacts.md §10.2, P4). */
-export const ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
+/** Bytes one revision may hold across its files (artifacts.md §10.2). */
+export const ARTIFACT_MAX_BYTES = 200 * 1024 * 1024
 /** UTF-8 bytes of one manifest path, so the whole object key stays inside S3's 1024-byte limit. */
 export const ARTIFACT_PATH_MAX_BYTES = 768
 /** UTF-8 bytes of one path segment, the common filesystem limit. */
@@ -47,6 +47,35 @@ export function artifactPathProblem(path: string): string | undefined {
   return undefined
 }
 
+/** Bytes as whole MB when they divide evenly, so a refusal reads `200 MB` rather than a byte count. */
+export function formatArtifactBytes(bytes: number): string {
+  const mb = 1024 * 1024
+  return bytes >= mb && bytes % mb === 0 ? `${bytes / mb} MB` : `${bytes} bytes`
+}
+
+/** A per-revision limit a manifest breaks (§10.2), or undefined; the CP refuses it at begin as `revision-limit`. */
+export function artifactRevisionLimitProblem(manifest: {
+  files: ReadonlyArray<{ bytes: number }>
+}): { rule: 'files' | 'bytes'; limit: number; actual: number; message: string } | undefined {
+  const count = manifest.files.length
+  if (count > ARTIFACT_MAX_FILES)
+    return {
+      rule: 'files',
+      limit: ARTIFACT_MAX_FILES,
+      actual: count,
+      message: `a revision holds at most ${ARTIFACT_MAX_FILES} files, and this one has ${count}`
+    }
+  const total = manifest.files.reduce((sum, file) => sum + file.bytes, 0)
+  if (total > ARTIFACT_MAX_BYTES)
+    return {
+      rule: 'bytes',
+      limit: ARTIFACT_MAX_BYTES,
+      actual: total,
+      message: `a revision holds at most ${formatArtifactBytes(ARTIFACT_MAX_BYTES)}, and this one has ${total} bytes`
+    }
+  return undefined
+}
+
 /** The form two paths collide in: Unicode NFC, then case-folded (upper then lower folds `ß` with `SS`). */
 export function artifactPathFoldKey(path: string): string {
   return path.normalize('NFC').toUpperCase().toLowerCase().normalize('NFC')
@@ -74,22 +103,20 @@ export const ArtifactManifestFile = z.object({
   path: ArtifactPath,
   sha256: ArtifactSha256,
   // An empty file has nothing to sign a checksum PUT for; the daemon leaves it out.
-  bytes: z.number().int().positive().max(ARTIFACT_MAX_BYTES),
+  bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   mediaType: ArtifactMediaType
 })
 export type ArtifactManifestFile = z.infer<typeof ArtifactManifestFile>
 
-/** One revision's content (artifacts.md §4, §5.4): paths unique after folding, no file inside another, the entry one of them. */
+/** One revision's content (§4, §5.4); the §10.2 limits are `artifactRevisionLimitProblem`, so the CP can refuse them by name. */
 export const ArtifactManifest = z
   .object({
     entry: ArtifactPath,
-    files: z.array(ArtifactManifestFile).min(1).max(ARTIFACT_MAX_FILES)
+    files: z.array(ArtifactManifestFile).min(1)
   })
   .superRefine((manifest, ctx) => {
     const folded = new Map<string, string>()
-    let total = 0
     for (const file of manifest.files) {
-      total += file.bytes
       const key = artifactPathFoldKey(file.path)
       const clash = folded.get(key)
       if (clash !== undefined) {
@@ -107,9 +134,6 @@ export const ArtifactManifest = z
           return
         }
       }
-    }
-    if (total > ARTIFACT_MAX_BYTES) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `a revision holds at most ${ARTIFACT_MAX_BYTES} bytes` })
     }
     if (!manifest.files.some((file) => file.path === manifest.entry)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'the entry must be one of the files', path: ['entry'] })
@@ -372,6 +396,10 @@ export const ArtifactRefusalReason = z.enum([
   'not-producer',
   /** A file is larger than one transfer may carry. */
   'too-large',
+  /** The revision breaks §10.2's file-count or size limit; `details` carry `rule` (`files` or `bytes`), `limit` and `actual`. */
+  'revision-limit',
+  /** The revision would take the organization past its total; `details` carry `limit`, `used` and `bytes` (§10.2). */
+  'org-limit',
   /** The idempotency key was already used for a different publication. */
   'idempotency-conflict',
   /** A create named no title. */

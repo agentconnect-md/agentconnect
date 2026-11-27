@@ -161,6 +161,19 @@ describe('artifact/* handlers', () => {
     })
   })
 
+  it('lets a manifest over the revision limits decode, so the service refuses it by name', () => {
+    const files = Array.from({ length: 201 }, (_, i) => ({ ...manifest.files[0]!, path: `f${i}.html` }))
+    const over = frameOf('artifact/publish/begin', {
+      agentId,
+      sessionId: 'webchat:s-1',
+      title: 'Report',
+      manifest: { entry: 'f0.html', files },
+      idempotencyKey: 'publish-0002',
+      network: 'cluster'
+    })
+    expect(over.type).toBe('artifact/publish/begin')
+  })
+
   it('answers an unexpected failure as a retryable INTERNAL and logs it', async () => {
     const { artifacts, conn, deps, log, c } = setup()
     artifacts.fetch.mockRejectedValueOnce(new Error('database down'))

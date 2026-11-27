@@ -342,6 +342,11 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
         ? `${name}: you can delete only artifacts you created; a person can delete it from the artifact in the console.`
         : `${name}: you can share and unshare only artifacts you created; a person can do it from the artifact in the console.`,
   'too-large': (name, err) => `${name}: a file is over this deployment’s size limit (${err.message}).`,
+  'revision-limit': (name, err) =>
+    `${name}: ${err.message}; nothing was published. Publish fewer or smaller files, for example only what the page needs.`,
+  'org-limit': (name, err) =>
+    `${name}: ${err.message}; nothing was published, and nothing already published was removed. Tell the person: ` +
+    'an artifact’s owner or an organization owner can free space by deleting artifacts that are no longer needed.',
   'idempotency-conflict': (name) =>
     `${name}: this publication collided with an earlier one from this turn — publish again.`,
   'title-required': (name) => `${name}: a new artifact needs a \`title\`.`,

@@ -4,7 +4,7 @@ import type { ArtifactInitiator, ArtifactManifest, ArtifactPublishBeginOk } from
 import type { SourceCacheObjectHead } from '@agentconnect.md/object-store'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from './seed.js'
-import { createArtifactService } from '../../src/artifacts/service.js'
+import { createArtifactService, type ArtifactServiceDeps } from '../../src/artifacts/service.js'
 import { ArtifactShareCodec, ArtifactShareService } from '../../src/artifacts/shares.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { FileTransferConfigSchema } from '../../src/file-transfer/config.js'
@@ -36,7 +36,11 @@ export const manifestOf = (...files: Array<[string, string, string?]>): Artifact
 })
 
 // A real signer over an in-memory bucket: the test "uploads" a signed PUT by recording its signed length and checksum.
-export function harness(crons: CronRecord[] = [], artifacts: ArtifactRepo = new PgArtifactRepo(prisma)) {
+export function harness(
+  crons: CronRecord[] = [],
+  artifacts: ArtifactRepo = new PgArtifactRepo(prisma),
+  extra: Partial<ArtifactServiceDeps> = {}
+) {
   const objects = new Map<string, SourceCacheObjectHead>()
   // The service's clock, every DELETE in order, and a switch that makes the bucket refuse them.
   const clock = { now: T0 }
@@ -83,7 +87,8 @@ export function harness(crons: CronRecord[] = [], artifacts: ArtifactRepo = new 
     }),
     webAppUrl: 'https://console.example.test',
     uploadUrlSeconds: 900,
-    now: () => clock.now
+    now: () => clock.now,
+    ...extra
   })
   const upload = (ok: ArtifactPublishBeginOk) => {
     if (ok.state !== 'pending') throw new Error('nothing to upload')

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_MAX_FILES,
+  artifactRevisionLimitProblem,
+  formatArtifactBytes,
   ArtifactManifest,
   ArtifactPublishBeginOk,
   ArtifactListEntry,
@@ -90,14 +92,36 @@ describe('ArtifactManifest', () => {
     expect(ArtifactManifest.safeParse({ entry: 'a', files: [file('a'), file('A/b')] }).success).toBe(false)
   })
 
-  it('bounds the file count and the total size', () => {
+  it('leaves the file count and the total size to the named limit check', () => {
     const many = Array.from({ length: ARTIFACT_MAX_FILES + 1 }, (_, i) => file(`f${i}.txt`))
-    expect(ArtifactManifest.safeParse({ entry: 'f0.txt', files: many }).success).toBe(false)
+    expect(ArtifactManifest.safeParse({ entry: 'f0.txt', files: many }).success).toBe(true)
+    expect(artifactRevisionLimitProblem({ files: many })).toMatchObject({
+      rule: 'files',
+      limit: ARTIFACT_MAX_FILES,
+      actual: ARTIFACT_MAX_FILES + 1,
+      message: `a revision holds at most 200 files, and this one has 201`
+    })
     const atLimit = Array.from({ length: ARTIFACT_MAX_FILES }, (_, i) => file(`f${i}.txt`))
-    expect(ArtifactManifest.safeParse({ entry: 'f0.txt', files: atLimit }).success).toBe(true)
+    expect(artifactRevisionLimitProblem({ files: atLimit })).toBeUndefined()
+  })
+
+  it('holds a revision to 200 MB in total', () => {
+    expect(ARTIFACT_MAX_BYTES).toBe(200 * 1024 * 1024)
     const half = Math.ceil(ARTIFACT_MAX_BYTES / 2) + 1
-    expect(ArtifactManifest.safeParse({ entry: 'a', files: [file('a', half), file('b', half)] }).success).toBe(false)
-    expect(ArtifactManifest.safeParse({ entry: 'a', files: [file('a', ARTIFACT_MAX_BYTES)] }).success).toBe(true)
+    const over = [file('a', half), file('b', half)]
+    expect(ArtifactManifest.safeParse({ entry: 'a', files: over }).success).toBe(true)
+    expect(artifactRevisionLimitProblem({ files: over })).toMatchObject({
+      rule: 'bytes',
+      limit: ARTIFACT_MAX_BYTES,
+      actual: 2 * half,
+      message: `a revision holds at most 200 MB, and this one has ${2 * half} bytes`
+    })
+    expect(artifactRevisionLimitProblem({ files: [file('a', ARTIFACT_MAX_BYTES)] })).toBeUndefined()
+  })
+
+  it('formats whole megabytes and leaves other sizes in bytes', () => {
+    expect(formatArtifactBytes(ARTIFACT_MAX_BYTES)).toBe('200 MB')
+    expect(formatArtifactBytes(1024 * 1024 + 1)).toBe('1048577 bytes')
   })
 
   it('refuses an empty file, an upper-case digest and a media type with parameters', () => {
@@ -224,7 +248,14 @@ describe('artifact share frames', () => {
       { shareId: SHARE, revision: 1, audience: 'public', displayTail: '…abcdef', createdAt: entry.updatedAt }
     ]
     expect(ArtifactListEntry.safeParse({ ...entry, shares }).success).toBe(true)
-    for (const reason of ['no-member-authority', 'share-forbidden', 'revision-not-ready', 'share-not-found']) {
+    for (const reason of [
+      'no-member-authority',
+      'share-forbidden',
+      'revision-not-ready',
+      'share-not-found',
+      'revision-limit',
+      'org-limit'
+    ]) {
       expect(ArtifactRefusalReason.safeParse(reason).success).toBe(true)
     }
   })
