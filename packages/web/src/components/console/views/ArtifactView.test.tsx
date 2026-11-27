@@ -17,9 +17,11 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   getArtifactRevision: api.getArtifactRevision
 }))
 vi.mock('@/lib/artifact-download', () => ({
-  fetchArtifactFile: async (_id: string, revision: number, file: { mediaType: string }) =>
-    new Blob([`body of r${revision}`], { type: file.mediaType }),
-  downloadArtifactRevision: vi.fn()
+  memberFileUrl: (_id: string, revision: number) => ({ revision }),
+  fetchArtifactFile: async (fileUrl: { revision: number }, file: { mediaType: string }) =>
+    new Blob([`body of r${fileUrl.revision}`], { type: file.mediaType }),
+  downloadArtifactRevision: vi.fn(),
+  downloadArtifactFiles: vi.fn()
 }))
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: ID }),

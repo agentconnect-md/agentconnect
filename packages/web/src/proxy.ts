@@ -48,7 +48,12 @@ export function proxy(req: NextRequest) {
   }
   const first = pathname.split('/')[1]!
   const isEntry = pathname === '/' || CONSOLE_ROOTS.includes(first)
-  if (!isEntry) return sameOriginFramesOnly(NextResponse.next())
+  if (!isEntry) {
+    const response = sameOriginFramesOnly(NextResponse.next())
+    // A share page's address carries its token, so nothing it loads may learn that address (artifacts.md §8.3).
+    if (first === 'share') response.headers.set('Referrer-Policy', 'no-referrer')
+    return response
+  }
 
   const consolePath = pathname === '/' ? '/home' : pathname
   const url = req.nextUrl.clone()

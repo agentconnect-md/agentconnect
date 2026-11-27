@@ -38,6 +38,8 @@ export const consoleKeys = {
   /** One revision's manifest; a revision never changes, so this never needs revalidating. */
   artifactRevision: (orgId: string | null | undefined, id: string, revision: number) =>
     consoleKey(orgId, 'artifact-revision', id, String(revision)),
+  /** One artifact's active share links, for its Share dialog. */
+  artifactShares: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'artifact-shares', id),
   /** One page of the artifacts a session published or updated; an empty cursor is the first page. */
   sessionArtifacts: (orgId: string | null | undefined, sessionId: string, cursor: string) =>
     consoleKey(orgId, 'session-artifacts', sessionId, cursor),

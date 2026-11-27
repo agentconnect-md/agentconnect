@@ -88,11 +88,19 @@ describe('proxy on the console', () => {
     '/agents',
     '/acme/artifacts/0b6d1d55-5f43-4c8e-9a51-2f0a8f5b1c3d',
     '/login',
+    '/share/abcDEF0123456789abcDEF0123456789abcDEF01234',
     '/_next/static/chunks/app.js'
   ])('refuses foreign framing of %s', (path) => {
     const response = proxy(request('console.example.test', path))
     expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'self'")
     expect(response.headers.get('x-frame-options')).toBe('SAMEORIGIN')
+  })
+
+  it('sends no referrer from a share page, whose address carries its token', () => {
+    const share = proxy(request('console.example.test', '/share/abcDEF0123456789abcDEF0123456789abcDEF01234'))
+    expect(share.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(share.headers.get('x-middleware-rewrite')).toBeNull()
+    expect(proxy(request('console.example.test', '/agents')).headers.get('referrer-policy')).toBeNull()
   })
 })
 
