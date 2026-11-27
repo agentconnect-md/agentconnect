@@ -118,7 +118,7 @@ describe('ArtifactSite', () => {
     await render()
     fromShim({ t: 'ready' })
     const [message, target, transfer] = shim.postMessage.mock.calls[0]!
-    expect(message).toEqual({ t: 'port', entry: '/index.html' })
+    expect(message).toEqual({ t: 'port', entry: '/' })
     expect(target).toBe(ORIGIN)
     expect(transfer[0]).toBeInstanceOf(NodePort)
     fromShim({ t: 'need-port' })
@@ -135,7 +135,7 @@ describe('ArtifactSite', () => {
   it('opens the entry for a path the console must not ask for', async () => {
     await render('/__ac/sw.js')
     fromShim({ t: 'ready' })
-    expect(shim.postMessage.mock.calls[0]![0]).toEqual({ t: 'port', entry: '/index.html' })
+    expect(shim.postMessage.mock.calls[0]![0]).toEqual({ t: 'port', entry: '/' })
   })
 
   it.each([

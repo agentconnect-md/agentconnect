@@ -8,7 +8,7 @@ import { Spinner } from '@/components/marks'
 import { ARTIFACT_FRAME_SANDBOX } from '@/lib/mcp-app-frame'
 import { fetchArtifactFile } from '@/lib/artifact-download'
 import { artifactContentOrigin, SHIM_PATH } from '@/lib/artifact-content/protocol'
-import { createPortServer, servedPath } from '@/lib/artifact-content/port-server'
+import { createPortServer, entryPagePath, servedPath } from '@/lib/artifact-content/port-server'
 import { createPathSync, readShimMessage, readViewerPath, SHIM_READY_MS } from '@/lib/artifact-content/viewer-path'
 import type { ArtifactRevisionDto } from '@/lib/artifact'
 
@@ -52,7 +52,9 @@ export function ArtifactSite({
   const number = revision.number
   const { entry, files } = revision.manifest
   const origin = artifactContentOrigin(artifactId, number, domain)
-  const entryPath = servedPath(entry)
+  const entryPath = entryPagePath(entry)
+  // The entry's own file path names the same page, so either one drops the viewer's path param.
+  const entryFile = servedPath(entry)
   const server = useMemo(
     () =>
       createPortServer({
@@ -76,7 +78,10 @@ export function ArtifactSite({
   useEffect(() => {
     if (fallback) return
     let current = opened
-    const sync = createPathSync((next) => onPathRef.current?.(next), opened === entryPath ? null : opened)
+    const sync = createPathSync(
+      (next) => onPathRef.current?.(next),
+      opened === entryPath || opened === entryFile ? null : opened
+    )
     const timer = window.setTimeout(() => setFallback(true), SHIM_READY_MS)
     const send = (message: { t: 'port'; entry?: string }) =>
       frame.current?.contentWindow?.postMessage(message, origin, [server.port()])
@@ -94,7 +99,7 @@ export function ArtifactSite({
         const next = readViewerPath(message.path)
         if (next === null) return
         current = next
-        sync.push(next === entryPath ? null : next)
+        sync.push(next === entryPath || next === entryFile ? null : next)
       }
     }
     window.addEventListener('message', listener)
@@ -103,7 +108,7 @@ export function ArtifactSite({
       window.clearTimeout(timer)
       sync.cancel()
     }
-  }, [fallback, origin, server, opened, entryPath])
+  }, [fallback, origin, server, opened, entryPath, entryFile])
 
   if (fallback)
     return <SiteFallback server={server} entry={entry} title={title} download={download} notice={t('siteFallback')} />
