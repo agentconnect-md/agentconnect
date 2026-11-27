@@ -212,6 +212,25 @@ import {
 } from '@/components/console/dock/PullRequestPanel'
 import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/components/console/viewer/SessionViewer'
 import {
+  ArtifactOpenerProvider,
+  ArtifactPlacementProvider,
+  type ArtifactOpener
+} from '@/components/console/artifact/artifact-opener'
+import { SessionArtifactViewer } from '@/components/console/artifact/SessionArtifactViewer'
+import { ArtifactsPanel, artifactsTabStatus } from '@/components/console/dock/ArtifactsPanel'
+import { artifactsContentDomain } from '@/lib/artifact'
+import {
+  ARTIFACT_PARAM,
+  ARTIFACT_PATH_PARAM,
+  ARTIFACT_PLACE_PARAM,
+  artifactStandalonePath,
+  readArtifactViewer,
+  writeArtifactViewer,
+  type ArtifactPlacement,
+  type ArtifactViewerState,
+  type ArtifactViewerTarget
+} from '@/lib/artifact-viewer-url'
+import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
   railSeedAgentIds,
@@ -818,9 +837,14 @@ const DOCK_TABS: DockTab[] = [
     actionIcon: 'refresh-cw',
     actionLabel: 'Refresh tasks'
   },
+  // The artifact viewer a main-conversation card opened (artifacts.md §11.2).
+  { key: 'artifacts', label: 'Artifacts', icon: 'shapes' },
   // The focused agent's Computers: watch, expand and take control (computer-use.md §10).
   { key: 'computer', label: 'Computer', icon: 'monitor' }
 ]
+
+/** The parameters that name the workspace file viewer. */
+const FILE_VIEWER_PARAMS = ['file', 'agent', 'repo', 'root', 'mode'] as const
 
 /** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
 // Asks once per card and session; a child so the request can follow the view's early returns without breaking hook order.
@@ -915,7 +939,11 @@ export default function SessionDetailView() {
       repo?: string,
       root?: SessionFileArea
     ) => {
-      const query = new URLSearchParams(searchParams)
+      // The left pane holds one viewer, so a file closes an artifact open there.
+      const query =
+        next && searchParams.get(ARTIFACT_PLACE_PARAM) === 'pane'
+          ? writeArtifactViewer(searchParams.toString(), null)
+          : new URLSearchParams(searchParams)
       if (next) query.set('file', next)
       else query.delete('file')
       // The workspace travels with the path, so the link resolves to the checkout it was made from rather than to whichever agent the header happens to focus on reopening.
@@ -933,6 +961,27 @@ export default function SessionDetailView() {
     },
     [pathname, router, searchParams]
   )
+  // The artifact viewer's place (artifacts.md §11.2), in the URL and written the REPLACE way `?file=` is; a deployment without artifacts reads none.
+  const artifactsEnabled = !MOCK_MODE && artifactsContentDomain() !== undefined
+  const artifactViewer = artifactsEnabled ? readArtifactViewer(searchParams) : null
+  const setArtifactViewer = useCallback(
+    (next: ArtifactViewerState | null) => {
+      const query = writeArtifactViewer(searchParams.toString(), next)
+      if (next?.placement === 'pane') for (const key of FILE_VIEWER_PARAMS) query.delete(key)
+      const search = query.toString()
+      router.replace(search ? `${pathname}?${search}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams]
+  )
+  // A site's page changes through the native history call, as on the standalone page, and never after the viewer closed.
+  const syncArtifactPath = useCallback((path: string | null) => {
+    const next = new URLSearchParams(window.location.search)
+    if (!next.get(ARTIFACT_PARAM)) return
+    if (path === null) next.delete(ARTIFACT_PATH_PARAM)
+    else next.set(ARTIFACT_PATH_PARAM, path)
+    const query = next.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`)
+  }, [])
   // Merged conversation mode (§5.3): the stable REPRESENTATIVE drives every session-scoped affordance; peers only feed the transcript and roster.
   const conversationKey = conversationKeyParam ? decodeURIComponent(conversationKeyParam) : null
   const {
@@ -1799,6 +1848,32 @@ export default function SessionDetailView() {
     setTaskThread(null)
     setThreadParam(null)
   }, [setThreadParam])
+  // Opens the artifact viewer opposite the card (artifacts.md §11.2), bringing the dock on screen as a task's thread does.
+  const openArtifact = useCallback(
+    (target: ArtifactViewerTarget, placement: ArtifactPlacement) => {
+      setArtifactViewer({
+        artifactId: target.artifactId,
+        ...(target.revision !== undefined ? { revision: target.revision } : {}),
+        path: target.path ?? null,
+        placement
+      })
+      if (placement !== 'dock') return
+      setDockTab('artifacts')
+      setDockReveal((n) => n + 1)
+    },
+    [setArtifactViewer]
+  )
+  // A phone has no dock: no opener, so its cards link out, and a link naming a viewer opens the standalone page.
+  const artifactOpener = useMemo<ArtifactOpener | null>(
+    () => (artifactsEnabled && !isMobile ? { open: openArtifact } : null),
+    [artifactsEnabled, isMobile, openArtifact]
+  )
+  const artifactStandaloneHref = artifactViewer ? orgPath(artifactStandalonePath(artifactViewer)) : null
+  useEffect(() => {
+    if (isMobile && artifactStandaloneHref) router.replace(artifactStandaloneHref)
+  }, [artifactStandaloneHref, isMobile, router])
+  const dockArtifactViewer = artifactViewer?.placement === 'dock' ? artifactViewer : null
+  const dockArtifactOpen = dockArtifactViewer !== null
   // Acts on a change of the address only, and not on one this page wrote, which lands a render after the panel moved.
   const seenThreadParam = useRef<string | null | undefined>(undefined)
   useEffect(() => {
@@ -1939,7 +2014,9 @@ export default function SessionDetailView() {
                   ? t('pullRequest')
                   : tab.key === 'computer'
                     ? t('computer')
-                    : t('tasks'),
+                    : tab.key === 'artifacts'
+                      ? t('artifacts')
+                      : t('tasks'),
         ...(tab.key === 'files'
           ? { actionLabel: t('refreshFiles') }
           : tab.key === 'git'
@@ -1954,8 +2031,10 @@ export default function SessionDetailView() {
   const dockTabs = useMemo<DockTab[]>(
     () =>
       localizedDockTabs
-        // A coordinator never touches files, git or a computer, so its panel keeps Tasks, then Sessions.
-        .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks')
+        // A coordinator never touches files, git or a computer, so its panel keeps Tasks, then Sessions and Artifacts.
+        .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks' || tab.key === 'artifacts')
+        // Artifacts only where the deployment offers them (artifacts.md §12).
+        .filter((tab) => tab.key !== 'artifacts' || artifactsEnabled)
         // A task's page is its own work: its Files, Git, Tasks and Computer, without the agent's session list.
         .filter((tab) => !taskOwnPage || tab.key !== 'sessions')
         .sort((a, b) => (coordinatorPage ? Number(b.key === 'tasks') - Number(a.key === 'tasks') : 0))
@@ -2002,12 +2081,16 @@ export default function SessionDetailView() {
                         // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
-                    : tab
+                    : tab.key === 'artifacts'
+                      ? { ...tab, status: artifactsTabStatus(dockArtifactOpen) }
+                      : tab
         ),
     [
+      artifactsEnabled,
       computerIds.length,
       computerManaged,
       coordinatorPage,
+      dockArtifactOpen,
       taskOwnPage,
       filesAgentId,
       filesStatus,
@@ -2032,11 +2115,14 @@ export default function SessionDetailView() {
   const dockTabKey =
     dockTab !== null && dockTabs.some((tab) => tab.key === dockTab)
       ? dockTab
-      : coordinatorPage && dockTabs.some((tab) => tab.key === 'tasks')
-        ? 'tasks'
-        : taskOwnPage && dockTabs.some((tab) => tab.key === 'files')
-          ? 'files'
-          : (dockTabs[0]?.key ?? DOCK_TABS[0]!.key)
+      : // A link naming a viewer in the dock reopens on its tab.
+        dockArtifactOpen && dockTab === null && dockTabs.some((tab) => tab.key === 'artifacts')
+        ? 'artifacts'
+        : coordinatorPage && dockTabs.some((tab) => tab.key === 'tasks')
+          ? 'tasks'
+          : taskOwnPage && dockTabs.some((tab) => tab.key === 'files')
+            ? 'files'
+            : (dockTabs[0]?.key ?? DOCK_TABS[0]!.key)
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
     railSeedWidened ? activeOrg?.id : null,
@@ -2710,6 +2796,10 @@ export default function SessionDetailView() {
     filesScopeReady &&
     !linkedFocusStale &&
     (!viewerRoot || sessionFilesId !== undefined)
+  // An artifact a task thread's card opened takes the left pane as the file viewer does (artifacts.md §11.2); a file named beside it wins.
+  const artifactPaneViewer = artifactViewer?.placement === 'pane' && !viewerOpen && !isMobile ? artifactViewer : null
+  // Either viewer conceals the conversation and its composer.
+  const paneTaken = viewerOpen || artifactPaneViewer !== null
   const liveSteps = isWebchat || isContinuable || pgOnRows ? getLiveSteps(session.id) : []
   // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
   const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
@@ -2818,7 +2908,7 @@ export default function SessionDetailView() {
     composerAgent !== undefined &&
     uploadPreviewsCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
   // Files dropped anywhere on the conversation take the paperclip's path.
-  const dropEnabled = attachmentsEnabled && isLive && !resumeDisabled && !viewerOpen
+  const dropEnabled = attachmentsEnabled && isLive && !resumeDisabled && !paneTaken
   onDropFilesRef.current = (files) => onAttachFiles(files)
   const onAttachFiles = (selected: File[]): void => {
     if (imageInputRef.current) imageInputRef.current.value = ''
@@ -3724,7 +3814,7 @@ export default function SessionDetailView() {
       />
     ) : null
 
-  return (
+  const page = (
     // Body · dock track, FLUSH in a full-width row (no gap): so the transcript's scrollbar rides
     // hard against the dock's left border. The track's −30px bleed reaches the page's right edge
     // while the 880px body centres in what remains, and the track is a column only above `wide:`
@@ -3778,8 +3868,8 @@ export default function SessionDetailView() {
           <FileDropOverlay top={dropHeader ? dropHeader.offsetTop + dropHeader.offsetHeight : 0} />
         ) : null}
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
-        {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
-        {!viewerOpen ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
+        {!paneTaken ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
+        {!paneTaken ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
@@ -4100,7 +4190,7 @@ export default function SessionDetailView() {
         {/* WAITING BANNER — between the fixed chrome and the scroller, so it pins to the top of the
         chat area without being a sticky child of the pane (which stays free to be virtualized). It
         draws only when what it names is off screen, so it costs nothing while the card is in view. */}
-        {!viewerOpen && <PendingActionsBanner />}
+        {!paneTaken && <PendingActionsBanner />}
         {/* SCROLL PANE — the transcript/viewer ONLY (all chrome is above, in the header). Full-width
         so the scrollbar rides the page edge via the −mr/pr bleed; nothing sticky scrolls inside it,
         so it is ready to host a virtualized turn list. useStickToBottom pins this element. */}
@@ -4108,7 +4198,7 @@ export default function SessionDetailView() {
           data-transcript-scroll=""
           ref={setTranscriptScroller}
           className={
-            viewerOpen
+            paneTaken
               ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
               : '@container flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:-ml-1 desktop:pt-[10px] desktop:pl-1 desktop:max-wide:pr-[30px] wide:pr-[10px]'
           }
@@ -4118,7 +4208,7 @@ export default function SessionDetailView() {
           pin the composer) and `mx-auto max-w-[880px]` centres it; in viewer mode a bounded flex-1. */}
           <div
             className={
-              viewerOpen
+              paneTaken
                 ? 'flex min-h-0 min-w-0 flex-1 flex-col'
                 : 'mx-auto flex min-h-full w-full min-w-0 max-w-[880px] shrink-0 flex-col'
             }
@@ -4160,7 +4250,17 @@ export default function SessionDetailView() {
 
             {/* CONVERSATION MODE, concealed rather than unmounted. Everything below belongs to the transcript and the composer, and all of it is state a session round trip must not spend: every expanded tool body and its refetch, the composer's caret and any open @mention menu (with the `mentionJoining` latch it reports upward, which has no owner left to clear it once the composer is gone), and the approval cards' poll. `contents` keeps the flex layout it has today exactly — an active box here would be a second flex item in the column.
           The cost, accepted: a pending webchat MCP write approval is concealed with the composer and has no header twin the way permission requests do (those stay in the Requests popover). A reader who opened a file sees the agent stall until they come back. */}
-            <div data-conversation-pane="" className={viewerOpen ? 'hidden' : 'contents'}>
+            {artifactPaneViewer ? (
+              <SessionArtifactViewer
+                key={artifactPaneViewer.artifactId}
+                viewer={artifactPaneViewer}
+                onClose={() => setArtifactViewer(null)}
+                onRevision={(revision) => setArtifactViewer({ ...artifactPaneViewer, revision, path: null })}
+                onPath={syncArtifactPath}
+              />
+            ) : null}
+
+            <div data-conversation-pane="" className={paneTaken ? 'hidden' : 'contents'}>
               {wantTranscript && visibleMsgLoading && !pgOnRows && (
                 <div className="flex justify-center py-10">
                   <Spinner size={30} />
@@ -4483,7 +4583,7 @@ export default function SessionDetailView() {
           // Below the scroller, so its scrollbar ends at the composer; the right inset is the scroller's padding plus its scrollbar, so the 880px columns line up.
           <div
             className={
-              viewerOpen
+              paneTaken
                 ? 'hidden'
                 : 'relative z-10 flex-none pt-2 pb-1 max-desktop:pr-[calc(12px+var(--transcript-gutter))] max-desktop:pl-3 desktop:max-wide:pr-(--transcript-gutter) desktop:pt-3 wide:pr-[calc(10px+var(--transcript-gutter))]'
             }
@@ -4870,7 +4970,7 @@ export default function SessionDetailView() {
           if (key === 'pr' && prVerdict.url) window.open(prVerdict.url, '_blank', 'noopener,noreferrer')
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
         }}
-        overlayKey={`${session.id}:${viewerPath ?? ''}`}
+        overlayKey={`${session.id}:${viewerPath ?? ''}:${artifactPaneViewer?.artifactId ?? ''}`}
         revealKey={dockReveal}
         label={t('panels')}
         onVisibleChange={setDockVisible}
@@ -4981,34 +5081,49 @@ export default function SessionDetailView() {
             />
           ) : null}
         </DockPanel>
+        <DockPanel active={dockTabKey === 'artifacts'}>
+          {artifactsEnabled ? (
+            <ArtifactsPanel
+              viewer={dockArtifactViewer}
+              onClose={() => setArtifactViewer(null)}
+              onRevision={(revision) =>
+                dockArtifactViewer && setArtifactViewer({ ...dockArtifactViewer, revision, path: null })
+              }
+              onPath={syncArtifactPath}
+            />
+          ) : null}
+        </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
           {(openThread || openRoot) && session.agentId ? (
-            <ThreadPanel
-              key={openRoot ?? openThread?.sessionId}
-              {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
-              onShowInConversation={showInConversation}
-              agentId={session.agentId}
-              agentName={session.agentName ?? ''}
-              agentIcon={owner?.icon}
-              agentRuntime={agentRuntime || undefined}
-              agentById={agentById}
-              platform={session.platform ?? ''}
-              {...(openThread ? { task: openThread } : openRootTask ? { task: openRootTask } : {})}
-              {...(openRoot ? { record: { sessionId: session.realSessionId ?? session.id, rootId: openRoot } } : {})}
-              {...(openRoot && threadWriter ? { writer: threadWriter } : {})}
-              {...(openRoot ? { onSummary: putThread, focusComposer: taskThread?.focus === true } : {})}
-              {...(openRootUrl ? { threadUrl: openRootUrl } : {})}
-              parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
-              {...(activeOrg && session.coordinator && webchatConversationId
-                ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
-                : {})}
-              onBack={closeThread}
-              {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
-              runtimeContext={taskRuntimeContext}
-              people={people}
-              fileTransfer={composerTransfer}
-              attachments={attachmentsEnabled}
-            />
+            // A card in a task's thread opens its artifact in the left pane, opposite the thread.
+            <ArtifactPlacementProvider placement="pane">
+              <ThreadPanel
+                key={openRoot ?? openThread?.sessionId}
+                {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
+                onShowInConversation={showInConversation}
+                agentId={session.agentId}
+                agentName={session.agentName ?? ''}
+                agentIcon={owner?.icon}
+                agentRuntime={agentRuntime || undefined}
+                agentById={agentById}
+                platform={session.platform ?? ''}
+                {...(openThread ? { task: openThread } : openRootTask ? { task: openRootTask } : {})}
+                {...(openRoot ? { record: { sessionId: session.realSessionId ?? session.id, rootId: openRoot } } : {})}
+                {...(openRoot && threadWriter ? { writer: threadWriter } : {})}
+                {...(openRoot ? { onSummary: putThread, focusComposer: taskThread?.focus === true } : {})}
+                {...(openRootUrl ? { threadUrl: openRootUrl } : {})}
+                parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+                {...(activeOrg && session.coordinator && webchatConversationId
+                  ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
+                  : {})}
+                onBack={closeThread}
+                {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
+                runtimeContext={taskRuntimeContext}
+                people={people}
+                fileTransfer={composerTransfer}
+                attachments={attachmentsEnabled}
+              />
+            </ArtifactPlacementProvider>
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}
           <div className={threadOpen ? 'hidden' : 'contents'}>
@@ -5033,4 +5148,6 @@ export default function SessionDetailView() {
       </SessionDock>
     </div>
   )
+  // Cards anywhere on the page open their artifact in place through this.
+  return <ArtifactOpenerProvider opener={artifactOpener}>{page}</ArtifactOpenerProvider>
 }

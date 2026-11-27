@@ -7,7 +7,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import { useTranslations } from 'next-intl'
 import Link from 'next/link'
 import { ApiError, getArtifact } from '@/lib/api'
-import { ARTIFACTS_NOT_ENABLED, artifactsContentDomain } from '@/lib/artifact'
+import { ARTIFACTS_NOT_ENABLED, artifactsContentDomain, requestedRevision, shownRevision } from '@/lib/artifact'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useCrumbSlot } from '@/components/console/Shell'
@@ -16,12 +16,6 @@ import { LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { ArtifactViewer } from '@/components/console/artifact/ArtifactViewer'
 import { readViewerPath, VIEWER_PATH_PARAM } from '@/lib/artifact-content/viewer-path'
-
-/** The revision a `?revision=` value asks for, or undefined when it names none. */
-export function requestedRevision(value: string | null): number | undefined {
-  if (!value || !/^[1-9]\d{0,8}$/.test(value)) return undefined
-  return Number(value)
-}
 
 export default function ArtifactView() {
   const t = useTranslations('Artifacts.page')
@@ -108,9 +102,7 @@ export default function ArtifactView() {
     return <LoadingState fill />
   }
 
-  const asked = requestedRevision(search.get('revision'))
-  const kept = asked !== undefined && artifact.revisions.some((r) => r.number === asked)
-  const shown = kept ? asked : (artifact.revisions[0]?.number ?? artifact.latestRevision)
+  const { shown, missing } = shownRevision(artifact, requestedRevision(search.get('revision')))
   const select = (revision: number) => {
     const next = new URLSearchParams(search.toString())
     next.set('revision', String(revision))
@@ -123,7 +115,7 @@ export default function ArtifactView() {
       <ArtifactViewer
         artifact={artifact}
         revision={shown}
-        {...(asked !== undefined && !kept ? { missing: asked } : {})}
+        {...(missing !== undefined ? { missing } : {})}
         onRevision={select}
         path={readViewerPath(search.get(VIEWER_PATH_PARAM))}
         onPath={syncPath}
