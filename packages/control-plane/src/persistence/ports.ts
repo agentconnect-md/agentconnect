@@ -7896,12 +7896,13 @@ export interface UserRepo {
    */
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole, actingUserId?: string): Promise<OrgMemberRecord>
 
-  /** Leave, or remove another member as an owner: prune Selected audiences (repairing any that would empty), revoke their Computers, apply `chat`, then delete the membership; refuses the final owner. */
+  /** Leave, or remove another member as an owner: prune Selected audiences (repairing any that would empty), revoke their Computers, apply `chat`, pass artifacts owned by `user:<id>` or `linkedIdentities` to organization owners, then delete the membership; refuses the final owner. */
   removeMember(
     orgId: string,
     userId: string,
     actingUserId: string,
-    chat?: MemberChatRelease
+    chat?: MemberChatRelease,
+    linkedIdentities?: readonly string[]
   ): Promise<MemberRemovalResult>
 
   /** Every org the user belongs to, suspended memberships included; `soleOwner` marks one leaving would orphan. */

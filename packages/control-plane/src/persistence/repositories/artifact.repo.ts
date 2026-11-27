@@ -159,6 +159,15 @@ export function artifactReachWhere(
   }
 }
 
+/** A `user:` owner who is no longer a member owns nothing new (§6.3); the key-share lock orders this against a removal. */
+async function memberOwnerIdentity(tx: PrismaLike, orgId: string, ownerIdentity: string | null) {
+  if (!ownerIdentity?.startsWith('user:')) return ownerIdentity
+  const member = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id" FROM "membership" WHERE "orgId" = ${orgId} AND "userId" = ${ownerIdentity.slice('user:'.length)}
+    FOR KEY SHARE`
+  return member.length > 0 ? ownerIdentity : null
+}
+
 export class PgArtifactRepo implements ArtifactRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -200,7 +209,7 @@ export class PgArtifactRepo implements ArtifactRepo {
             id,
             orgId: artifact.orgId,
             title: artifact.title,
-            ownerIdentity: artifact.ownerIdentity,
+            ownerIdentity: await memberOwnerIdentity(tx, artifact.orgId, artifact.ownerIdentity),
             visibility: artifact.visibility,
             externalProvider: artifact.externalProvider,
             externalScopeId: artifact.externalScopeId,

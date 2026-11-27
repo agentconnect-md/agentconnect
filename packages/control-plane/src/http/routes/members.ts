@@ -36,6 +36,7 @@ import {
 } from '../dto/index.js'
 import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
 import { announceMemberChatRelease, planMemberChatRelease } from '../member-chat-release.js'
+import { departingMemberIdentities } from '../departing-member-identities.js'
 
 function toDto(m: OrgMemberRecord, currentUserId: string, deps: HttpDeps): MemberDtoT {
   return {
@@ -182,7 +183,7 @@ export function memberRoutes(deps: HttpDeps) {
           tags: [Tag.Members],
           summary: 'Leave or remove a member',
           description:
-            'Any member can remove their own membership to leave the org. Only owners can remove another member. The last owner can’t leave, which would orphan the org. Chat bots bound to the member are deleted, and direct messages a restricted agent opened for their linked chat accounts are turned off.',
+            'Any member can remove their own membership to leave the org. Only owners can remove another member. The last owner can’t leave, which would orphan the org. Chat bots bound to the member are deleted, and direct messages a restricted agent opened for their linked chat accounts are turned off. Artifacts they own lose their owner and pass to organization owners, and coming back does not restore them.',
           operationId: 'removeMember',
           params: IdParam,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -194,7 +195,8 @@ export function memberRoutes(deps: HttpDeps) {
         const actingUserId = req.orgCtx!.userId
         if (denyMemberRemoval(req, reply, userId)) return
         const plan = await planMemberChatRelease(deps, orgId, userId, req.log)
-        const removed = await deps.repos.user.removeMember(orgId, userId, actingUserId, plan.release)
+        const identities = await departingMemberIdentities(deps, orgId, userId, req.log)
+        const removed = await deps.repos.user.removeMember(orgId, userId, actingUserId, plan.release, identities)
         // The removal revoked their Computers; their live channels close now and the agents that had them get new specs.
         await deps.computers.memberRemoved(orgId, userId, removed.computerAgents)
         // Their bound bots and the DMs opened for them are gone; their daemons drop or re-gate them now.
