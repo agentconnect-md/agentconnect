@@ -9,6 +9,7 @@ import { approvalRefusalText, CHAT_LINK_HINT, settingsRefusalText } from '../src
 import { Daemon } from '../src/daemon.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
 import { DiscordConnection } from '../src/discord/connection.js'
+import { DaemonEvaluationHooks } from '../src/evaluation/daemon-hooks.js'
 import { WorkBoundary } from '../src/messages/message-boundary.js'
 import { PermissionCoordinator, type PermissionHost } from '../src/permissions/coordinator.js'
 import type { SubsessionApprovalRoute } from '../src/permissions/subsession-approval.js'
@@ -484,6 +485,43 @@ describe.each(['telegram', 'discord'] as const)('%s permission cards', (platform
     await expect(decided).resolves.toMatchObject({ action: 'accept', content: { persist: 'once' } })
     await vi.waitFor(() => expect(w.rewrites()).toHaveLength(1))
     expect(w.rewrites()[0]!.text).toContain('Ada Example')
+    await w.store.close()
+  })
+})
+
+describe('an evaluation world with no one to answer a card', () => {
+  const question = {
+    sessionId: 's1',
+    mode: 'form',
+    message: 'Which tracker should I file this in?',
+    requestedSchema: {
+      type: 'object',
+      properties: { tracker: { type: 'string', enum: ['Slack List', 'GitHub Issues'] } },
+      required: ['tracker']
+    }
+  } as unknown as CreateElicitationRequest
+  const hooks = (environment?: { answersAsks?: boolean }) =>
+    new DaemonEvaluationHooks({} as never, environment ? { environment: environment as never } : undefined)
+
+  it('leaves an ask unanswered only once a world is installed that does not answer it', () => {
+    expect(hooks().asksGoUnanswered).toBe(false)
+    expect(hooks({}).asksGoUnanswered).toBe(true)
+    expect(hooks({ answersAsks: true }).asksGoUnanswered).toBe(false)
+  })
+
+  it('declines a question without posting it, so the turn ends instead of waiting out the run', async () => {
+    const w = await world('discord', { level: 'approve' })
+    w.daemon.evalHooks = hooks({})
+    await expect(w.permissions.onAcpElicit(AGENT, 's1', question)).resolves.toEqual({ action: 'decline' })
+    expect(w.posts()).toEqual([])
+    await w.store.close()
+  })
+
+  it('still cards an MCP approval, which has its own path', async () => {
+    const w = await world('discord', { level: 'approve' })
+    w.daemon.evalHooks = hooks({})
+    void w.permissions.onAcpElicit(AGENT, 's1', mcpApproval)
+    await vi.waitFor(() => expect(w.posts()).toHaveLength(1))
     await w.store.close()
   })
 })

@@ -131,6 +131,12 @@ export class DaemonEvaluationHooks {
     this.emitter.emit(input)
   }
 
+  /** Whether an installed evaluation world leaves an agent's ask with no one to answer it. */
+  get asksGoUnanswered(): boolean {
+    const environment = this.opts?.environment
+    return environment !== undefined && environment.answersAsks !== true
+  }
+
   /**
    * Install the Collaboration Arena environment (collaboration-arena.md §5): one
    * effective-integration registry, two projections. Every existing consumer —
