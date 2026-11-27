@@ -8,7 +8,10 @@ import type { ArtifactManifestFile, ArtifactRevisionDto } from '@/lib/artifact'
 
 const bytes = vi.hoisted(() => ({ fetch: vi.fn() }))
 
-vi.mock('@/lib/artifact-download', () => ({ fetchArtifactFile: bytes.fetch }))
+vi.mock('@/lib/artifact-download', () => ({
+  fetchArtifactFile: bytes.fetch,
+  memberFileUrl: (id: string, revision: number) => `${id}@r${revision}`
+}))
 vi.mock('next/dynamic', async () => {
   const { default: MarkdownView } = await import('@/components/console/MarkdownView')
   return { default: () => MarkdownView }
@@ -55,7 +58,7 @@ async function settle() {
 }
 
 async function renderBody(entry: string, files: Record<string, [string, string]>, contentDomain?: string) {
-  bytes.fetch.mockImplementation(async (_id: string, _rev: number, file: { path: string; mediaType: string }) => {
+  bytes.fetch.mockImplementation(async (_fileUrl: unknown, file: { path: string; mediaType: string }) => {
     const found = files[file.path]
     if (!found) throw new Error('no such file')
     return new Blob([found[1]], { type: file.mediaType })
@@ -149,7 +152,7 @@ describe('ArtifactBody', () => {
     const [local, remote] = [...container.querySelectorAll('img')]
     expect(local!.getAttribute('src')).toBe('blob:test/1')
     expect(remote!.getAttribute('src')).toBe('https://example.test/x.png')
-    expect(bytes.fetch).toHaveBeenCalledWith(ID, 1, expect.objectContaining({ path: 'docs/img/chart.png' }))
+    expect(bytes.fetch).toHaveBeenCalledWith(`${ID}@r1`, expect.objectContaining({ path: 'docs/img/chart.png' }))
   })
 
   it('highlights source', async () => {

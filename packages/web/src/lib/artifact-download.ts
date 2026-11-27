@@ -1,5 +1,5 @@
 // Artifact bytes in the browser (artifacts.md §5.5, §8.1): fetched through a signed GET, typed by the manifest, saved or zipped here.
-import { getArtifactFileUrl, getArtifactRevision } from '@/lib/api'
+import { getArtifactFileUrl, getArtifactRevision, getSharedArtifactFileUrl } from '@/lib/api'
 import { artifactFileName, artifactZipName, type ArtifactManifestFile } from '@/lib/artifact'
 import { saveBlob } from '@/lib/shared-file'
 
@@ -14,14 +14,26 @@ export class ArtifactFetchError extends Error {
   }
 }
 
+/** Where one revision's files are read: a signed GET for a manifest path, after whatever access check the route makes. */
+export type ArtifactFileUrl = (path: string) => Promise<{ url: string }>
+
+/** A member's reads through the organization's artifact routes. */
+export function memberFileUrl(artifactId: string, revision: number): ArtifactFileUrl {
+  return (path) => getArtifactFileUrl(artifactId, revision, path)
+}
+
+/** A share link's reads, admitted by the link instead of membership (artifacts.md §8.3). */
+export function sharedFileUrl(token: string): ArtifactFileUrl {
+  return (path) => getSharedArtifactFileUrl(token, path)
+}
+
 /** One manifest file's bytes as a blob typed by its manifest media type, never by the store's attachment headers. */
 export async function fetchArtifactFile(
-  artifactId: string,
-  revision: number,
+  fileUrl: ArtifactFileUrl,
   file: Pick<ArtifactManifestFile, 'path' | 'mediaType'>,
   signal?: AbortSignal
 ): Promise<Blob> {
-  const signed = await getArtifactFileUrl(artifactId, revision, file.path)
+  const signed = await fileUrl(file.path)
   const response = await fetch(signed.url, { credentials: 'omit', cache: 'no-store', ...(signal ? { signal } : {}) })
   if (!response.ok) throw new ArtifactFetchError(file.path, response.status)
   return new Blob([await response.arrayBuffer()], { type: file.mediaType })
@@ -47,7 +59,7 @@ function compressed(mediaType: string): boolean {
   return COMPRESSED_RE.test(mediaType.toLowerCase())
 }
 
-/** Download one revision: a single file as itself under its manifest name, several as one zip named after the title. */
+/** Download one revision a member can read, reading its manifest first when not given. */
 export async function downloadArtifactRevision(
   artifactId: string,
   revision: number,
@@ -55,15 +67,24 @@ export async function downloadArtifactRevision(
   files?: ArtifactManifestFile[]
 ): Promise<void> {
   const manifest = files ?? (await getArtifactRevision(artifactId, revision)).manifest.files
-  if (manifest.length === 1) {
-    const only = manifest[0]!
-    saveBlob(await fetchArtifactFile(artifactId, revision, only), artifactFileName(only.path))
+  await downloadArtifactFiles(memberFileUrl(artifactId, revision), title, manifest)
+}
+
+/** A single file downloads as itself under its manifest name, several as one zip named after the title. */
+export async function downloadArtifactFiles(
+  fileUrl: ArtifactFileUrl,
+  title: string,
+  files: readonly ArtifactManifestFile[]
+): Promise<void> {
+  if (files.length === 1) {
+    const only = files[0]!
+    saveBlob(await fetchArtifactFile(fileUrl, only), artifactFileName(only.path))
     return
   }
-  const entries = await mapLimited(manifest, FETCH_CONCURRENCY, async (file) => ({
+  const entries = await mapLimited(files, FETCH_CONCURRENCY, async (file) => ({
     path: file.path,
     mediaType: file.mediaType,
-    bytes: new Uint8Array(await (await fetchArtifactFile(artifactId, revision, file)).arrayBuffer())
+    bytes: new Uint8Array(await (await fetchArtifactFile(fileUrl, file)).arrayBuffer())
   }))
   saveBlob(await zipArtifactFiles(entries), artifactZipName(title))
 }

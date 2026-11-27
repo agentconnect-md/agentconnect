@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl'
 import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ARTIFACT_FRAME_SANDBOX } from '@/lib/mcp-app-frame'
-import { fetchArtifactFile } from '@/lib/artifact-download'
+import { fetchArtifactFile, type ArtifactFileUrl } from '@/lib/artifact-download'
 import { artifactContentOrigin, SHIM_PATH } from '@/lib/artifact-content/protocol'
 import { createPortServer, entryPagePath, servedPath } from '@/lib/artifact-content/port-server'
 import { createPathSync, readShimMessage, readViewerPath, SHIM_READY_MS } from '@/lib/artifact-content/viewer-path'
@@ -36,10 +36,11 @@ export function ArtifactSite({
   domain,
   path,
   onPath,
-  download
+  download,
+  fileUrl
 }: {
   artifactId: string
-  revision: ArtifactRevisionDto
+  revision: Pick<ArtifactRevisionDto, 'number' | 'manifest'>
   title: string
   domain: string
   /** The page to open, from the viewer's URL; the entry when absent. */
@@ -47,6 +48,8 @@ export function ArtifactSite({
   /** The page the frame shows, coalesced; null when it is the entry. */
   onPath?: (path: string | null) => void
   download: ReactNode
+  /** Where the port server reads the bytes: a member's organization routes, or a share link's (artifacts.md §8.3). */
+  fileUrl: ArtifactFileUrl
 }) {
   const t = useTranslations('Artifacts.viewer')
   const number = revision.number
@@ -60,9 +63,9 @@ export function ArtifactSite({
       createPortServer({
         files,
         entry,
-        load: async (file) => (await fetchArtifactFile(artifactId, number, file)).arrayBuffer()
+        load: async (file) => (await fetchArtifactFile(fileUrl, file)).arrayBuffer()
       }),
-    [artifactId, number, entry, files]
+    [fileUrl, entry, files]
   )
   useEffect(() => () => server.close(), [server])
 

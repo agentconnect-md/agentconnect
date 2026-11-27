@@ -8583,7 +8583,8 @@
       "loadFailed": "无法加载此 Artifact，请稍后重试。",
       "noPreview": "此文件类型无法预览",
       "pdfUnsupported": "此浏览器无法在这里显示 PDF。",
-      "siteFallback": "此浏览器无法在这里加载该网站的其余页面，因此仅显示首页。下载后可查看所有页面。"
+      "siteFallback": "此浏览器无法在这里加载该网站的其余页面，因此仅显示首页。下载后可查看所有页面。",
+      "share": "分享"
     },
     "page": {
       "kind": "ARTIFACT",
@@ -8601,6 +8602,60 @@
       "loadFailed": "无法加载 Artifact，请稍后重试。",
       "more": "显示更多",
       "loadingMore": "正在加载…"
+    },
+    "share": {
+      "title": "分享“{title}”",
+      "close": "关闭",
+      "newLink": "为修订版本 {number} 创建新链接",
+      "audience": {
+        "org": "{org} 的所有人",
+        "orgHint": "登录 {org} 的成员可以打开。",
+        "public": "任何拥有链接的人",
+        "publicHint": "无需登录。"
+      },
+      "publicNotAllowed": "只有此 Artifact 的所有者或组织所有者可以将其分享给任何人。",
+      "recallNotice": "任何拥有链接的人都可以打开并下载此修订版本。已下载的副本无法收回，即使撤销链接也一样。",
+      "create": "创建链接",
+      "createPublic": "创建公开链接",
+      "createdNotice": "已为{audience}创建新链接。请立即复制：它不会再次显示。",
+      "linkLabel": "分享链接",
+      "copy": "复制",
+      "copied": "已复制",
+      "copyFailed": "复制失败。请选中链接后手动复制。",
+      "links": "链接",
+      "noLinks": "还没有链接。",
+      "listFailed": "无法加载链接，请稍后重试。",
+      "shareMeta": "r{number} · {creator} · {date}",
+      "you": "你",
+      "unknownCreator": "未知",
+      "makePublic": "设为公开",
+      "makeOrg": "仅限成员",
+      "revoke": "撤销",
+      "revokeConfirm": "撤销此链接？它会立即对所有拥有链接的人失效。",
+      "cancel": "取消",
+      "forbidden": "只有此 Artifact 的所有者或组织所有者可以执行此操作。",
+      "notReady": "此修订版本仍在上传，请稍后重试。",
+      "failed": "出错了，请重试。"
+    },
+    "sharePage": {
+      "metadataTitle": "分享的 Artifact",
+      "ugcBanner": "由 {organization} 分享。其内容由该组织的用户及其 Agent 创建，而非本站。请勿在其中输入密码或其他敏感信息。",
+      "sharedOn": "分享于 {date}",
+      "notEnabledTitle": "未启用 Artifact",
+      "notEnabledBody": "此部署未启用 Artifact，因此无法在这里打开此链接。",
+      "revokedTitle": "此链接已被撤销",
+      "revokedBody": "分享者已关闭此链接。请向对方索取新链接。",
+      "notFoundTitle": "此链接无效",
+      "notFoundBody": "链接可能有误，或其分享的内容已不可用。",
+      "membersOnlyTitle": "仅成员可以打开此链接",
+      "membersOnlyBody": "只有分享此链接的组织的成员才能打开。如果你是成员，请使用你在该组织的账号登录。",
+      "membersOnlyBodyAs": "只有分享此链接的组织的成员才能打开，而 {email} 不是该组织成员。如果你是成员，请使用你在该组织的账号登录。",
+      "switchAccount": "使用其他账号登录",
+      "signInTitle": "登录后打开此链接",
+      "signInBody": "此链接仅向分享它的组织的成员开放。",
+      "signIn": "登录",
+      "failedTitle": "无法打开此链接",
+      "failedBody": "出错了，请稍后重试。"
     }
   }
 }

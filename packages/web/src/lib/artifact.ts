@@ -59,6 +59,44 @@ export interface ArtifactFileUrlDto extends ArtifactManifestFile {
   expiresAt: string
 }
 
+/** Who a share link admits (artifacts.md §8.3): anyone holding it, or signed-in members of the artifact's organization. */
+export type ArtifactShareAudience = 'public' | 'org'
+
+/** One share as its managers list it; the token itself is never listed, only its tail. */
+export interface ArtifactShareDto {
+  id: string
+  artifactId: string
+  revision: number
+  audience: ArtifactShareAudience
+  /** The token's last characters behind an ellipsis, to tell links apart. */
+  displayTail: string
+  createdBy: { userId: string | null; displayName: string | null; email: string | null; platform: string | null }
+  createdAt: string
+  updatedAt: string
+  revokedAt: string | null
+}
+
+/** `POST /artifacts/:artifactId/shares`: the only answer that carries the token, so the link can be copied only now. */
+export interface CreatedArtifactShareDto extends ArtifactShareDto {
+  token: string
+  /** `/share/<token>` on the console origin. */
+  linkPath: string
+  link: string | null
+}
+
+/** `POST /artifact-shares/read`: what a share link shows; no session, owner or newer revision. */
+export interface SharedArtifactDto {
+  artifactId: string
+  title: string
+  audience: ArtifactShareAudience
+  organization: { name: string }
+  sharedAt: string
+  revision: Pick<
+    ArtifactRevisionDto,
+    'number' | 'entry' | 'entryMediaType' | 'fileCount' | 'totalBytes' | 'createdAt' | 'manifest'
+  >
+}
+
 export interface ArtifactMarker {
   artifactId: string
   revision: number

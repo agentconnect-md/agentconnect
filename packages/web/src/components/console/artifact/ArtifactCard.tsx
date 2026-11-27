@@ -57,7 +57,7 @@ export function ArtifactCard({ marker }: { marker: ArtifactMarker }) {
               : 'latest'
   const title = artifact?.title ?? marker.title
   const kind = summary ? artifactKind(summary.entryMediaType, summary.entry) : null
-  const download = useArtifactDownload(artifactId, revision, title)
+  const download = useArtifactDownload({ artifactId, revision }, title)
   const unavailable = state === 'unavailable' || state === 'not-enabled'
   // A phone has no dock, so there and outside a session page Open stays a link to the standalone page.
   const opener = useArtifactOpener()

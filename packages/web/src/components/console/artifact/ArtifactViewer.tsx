@@ -1,7 +1,7 @@
 'use client'
 
-// The viewer: header with the revision menu and Download, the info line, notices, and the entry (artifacts.md §11.3–§11.4, §11.6).
-import { useState } from 'react'
+// The viewer: header with the revision menu, Share and Download, the info line, notices, and the entry (artifacts.md §11.3–§11.4, §11.6).
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
@@ -20,7 +20,9 @@ import {
   type ArtifactDto,
   type ArtifactRevisionSummary
 } from '@/lib/artifact'
+import { memberFileUrl } from '@/lib/artifact-download'
 import { ArtifactBody, ArtifactBodyNotice } from './ArtifactBody'
+import { ArtifactShareDialog } from './ArtifactShareDialog'
 import { useArtifactDownload } from './useArtifactDownload'
 
 /** Who can see the artifact, in the session audience's own words. */
@@ -143,8 +145,30 @@ export function ArtifactViewer({
     { revalidateOnFocus: false, revalidateIfStale: false }
   )
   const files = read.data?.manifest.files
-  const download = useArtifactDownload(artifact.id, revision, artifact.title, files)
+  const fileUrl = useMemo(() => memberFileUrl(artifact.id, revision), [artifact.id, revision])
+  const download = useArtifactDownload(
+    files ? { fileUrl, files } : { artifactId: artifact.id, revision },
+    artifact.title
+  )
+  const [sharing, setSharing] = useState(false)
   const inPlace = variant !== 'page'
+
+  const shareButton = (
+    <Button
+      variant="secondary"
+      size="sm"
+      ariaHasPopup="dialog"
+      ariaLabel={t('share')}
+      className="flex-none"
+      onClick={() => setSharing(true)}
+    >
+      <Icon name="share-2" size={14} />
+      <span className={inPlace ? 'hidden @min-[560px]:inline' : 'max-desktop:hidden'}>{t('share')}</span>
+    </Button>
+  )
+  const shareDialog = sharing ? (
+    <ArtifactShareDialog artifact={artifact} revision={revision} onClose={() => setSharing(false)} />
+  ) : null
 
   const downloadButton = (
     <Button
@@ -186,6 +210,7 @@ export function ArtifactViewer({
       contentDomain={artifactsContentDomain()}
       path={path ?? null}
       onPath={onPath}
+      fileUrl={fileUrl}
     />
   ) : read.error ? (
     <ArtifactBodyNotice icon="triangle-exclamation-point" tone="error">
@@ -262,7 +287,7 @@ export function ArtifactViewer({
             : '@container flex min-h-0 flex-1 flex-col'
         }
       >
-        {/* At the dock's 380px the title truncates and Download keeps only its icon; the revision menu and Full screen stay. */}
+        {/* At the dock's 380px the title truncates and Share and Download keep only their icons; the revision menu and Full screen stay. */}
         <div className="flex min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-2">
           {variant === 'dock' ? close : null}
           <Icon
@@ -278,6 +303,7 @@ export function ArtifactViewer({
             {artifact.title}
           </h2>
           <RevisionMenu revisions={artifact.revisions} shown={revision} onSelect={onRevision} />
+          {shareButton}
           {downloadButton}
           {fullScreenHref ? (
             <Link
@@ -315,6 +341,7 @@ export function ArtifactViewer({
           </div>
         ) : null}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-(--surface-card)">{body}</div>
+        {shareDialog}
       </section>
     )
   }
@@ -333,6 +360,7 @@ export function ArtifactViewer({
         </div>
         <div className="flex flex-none items-center gap-2">
           <RevisionMenu revisions={artifact.revisions} shown={revision} onSelect={onRevision} />
+          {shareButton}
           {downloadButton}
         </div>
       </div>
@@ -364,6 +392,7 @@ export function ArtifactViewer({
       <div className="mt-3 flex min-h-[320px] flex-1 flex-col overflow-hidden border-y border-(--border-subtle) bg-(--surface-card) desktop:rounded-md desktop:border">
         {body}
       </div>
+      {shareDialog}
     </div>
   )
 }

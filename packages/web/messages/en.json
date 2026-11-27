@@ -8583,7 +8583,8 @@
       "loadFailed": "This artifact couldn’t be loaded. Try again later.",
       "noPreview": "No preview for this file type",
       "pdfUnsupported": "This browser can’t show the PDF here.",
-      "siteFallback": "This browser can’t load the rest of this site here, so only its first page is shown. Download it to see every page."
+      "siteFallback": "This browser can’t load the rest of this site here, so only its first page is shown. Download it to see every page.",
+      "share": "Share"
     },
     "page": {
       "kind": "ARTIFACT",
@@ -8601,6 +8602,60 @@
       "loadFailed": "Artifacts couldn’t be loaded. Try again later.",
       "more": "Show more",
       "loadingMore": "Loading…"
+    },
+    "share": {
+      "title": "Share “{title}”",
+      "close": "Close",
+      "newLink": "New link to revision {number}",
+      "audience": {
+        "org": "Everyone in {org}",
+        "orgHint": "People signed in to {org} can open it.",
+        "public": "Anyone with the link",
+        "publicHint": "No sign-in needed."
+      },
+      "publicNotAllowed": "Only the artifact’s owner or an organization owner can share it with anyone.",
+      "recallNotice": "Anyone with the link can open and download this revision. Copies already downloaded can’t be recalled, even after you revoke the link.",
+      "create": "Create link",
+      "createPublic": "Create public link",
+      "createdNotice": "New link for {audience}. Copy it now: it isn’t shown again.",
+      "linkLabel": "Share link",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copyFailed": "Couldn’t copy. Select the link and copy it manually.",
+      "links": "Links",
+      "noLinks": "No links yet.",
+      "listFailed": "Links couldn’t be loaded. Try again later.",
+      "shareMeta": "r{number} · {creator} · {date}",
+      "you": "You",
+      "unknownCreator": "Unknown",
+      "makePublic": "Make public",
+      "makeOrg": "Limit to members",
+      "revoke": "Revoke",
+      "revokeConfirm": "Revoke this link? It stops working at once, for everyone who has it.",
+      "cancel": "Cancel",
+      "forbidden": "Only the artifact’s owner or an organization owner can do this.",
+      "notReady": "This revision is still uploading. Try again in a moment.",
+      "failed": "Something went wrong. Try again."
+    },
+    "sharePage": {
+      "metadataTitle": "Shared artifact",
+      "ugcBanner": "Shared by {organization}. Its content was made by its users and their agents, not by this site. Don’t enter passwords or other sensitive information into it.",
+      "sharedOn": "Shared {date}",
+      "notEnabledTitle": "Artifacts are not enabled",
+      "notEnabledBody": "Artifacts are not enabled on this deployment, so this link can’t be opened here.",
+      "revokedTitle": "This link has been revoked",
+      "revokedBody": "Whoever shared it has turned it off. Ask them for a new link.",
+      "notFoundTitle": "This link doesn’t work",
+      "notFoundBody": "It may be mistyped, or what it shared is no longer available.",
+      "membersOnlyTitle": "Only members can open this link",
+      "membersOnlyBody": "Only members of the organization that shared it can open this link. If you’re a member, sign in with the account you use there.",
+      "membersOnlyBodyAs": "Only members of the organization that shared it can open this link, and {email} isn’t one. If you’re a member, sign in with the account you use there.",
+      "switchAccount": "Sign in with another account",
+      "signInTitle": "Sign in to open this link",
+      "signInBody": "This link is open to members of the organization that shared it.",
+      "signIn": "Sign in",
+      "failedTitle": "This link couldn’t be opened",
+      "failedBody": "Something went wrong. Try again later."
     }
   }
 }

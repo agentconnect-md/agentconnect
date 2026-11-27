@@ -38,6 +38,18 @@ function readConfig(): { key?: string; host: string } {
   }
 }
 
+// A share link's token grants access to the artifact, so no address an event carries may name it (artifacts.md §8.3).
+const SHARE_TOKEN_RE = /\/share\/[^/?#\s"]+/g
+
+/** Every string in a captured event with share tokens replaced. */
+export function redactShareTokens<T>(value: T): T {
+  if (typeof value === 'string') return value.replace(SHARE_TOKEN_RE, '/share/[token]') as T
+  if (Array.isArray(value)) return value.map(redactShareTokens) as T
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactShareTokens(item)])) as T
+  return value
+}
+
 /** Initialize posthog-js once, on the client, when a project key is configured. */
 export async function initAnalytics(): Promise<void> {
   if (ph || starting || typeof window === 'undefined') return
@@ -52,7 +64,8 @@ export async function initAnalytics(): Promise<void> {
       // $pageview on the initial load AND on every client-side route change (plain
       // `true` under the legacy defaults only captures the first load).
       capture_pageview: 'history_change',
-      capture_pageleave: true
+      capture_pageleave: true,
+      before_send: (event) => (event ? redactShareTokens(event) : event)
     })
     ph = posthog
     // Replay the last identity action requested during the load (reset wins if it

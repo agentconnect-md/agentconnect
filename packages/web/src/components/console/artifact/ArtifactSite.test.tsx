@@ -18,6 +18,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const ID = '0b6d1d55-5f43-4c8e-9a51-2f0a8f5b1c3d'
 const DOMAIN = 'example-usercontent.net'
+const FILE_URL = async (path: string) => ({ url: `https://store.example.test/${path}` })
 const ORIGIN = `https://a${ID.replaceAll('-', '')}r2.${DOMAIN}`
 const FILES: Record<string, [string, string]> = {
   'index.html': ['text/html', '<h1>index</h1>'],
@@ -66,6 +67,7 @@ async function render(path: string | null = null) {
         path={path}
         onPath={onPath}
         download={<button type="button">Download</button>}
+        fileUrl={FILE_URL}
       />
     )
   })
@@ -84,7 +86,7 @@ function fromShim(data: unknown, options: { origin?: string; source?: unknown } 
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  bytes.fetch.mockReset().mockImplementation(async (_id: string, _rev: number, file: { path: string }) => {
+  bytes.fetch.mockReset().mockImplementation(async (_fileUrl: unknown, file: { path: string }) => {
     const found = FILES[file.path]!
     return new Blob([found[1]], { type: found[0] })
   })

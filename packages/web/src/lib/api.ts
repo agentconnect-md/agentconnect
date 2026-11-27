@@ -80,6 +80,7 @@ import {
   getToken,
   getIdTokenRaw,
   getUser,
+  isAuthConfigured,
   redirectExpiredSession,
   refreshTokenAfterUnauthorized,
   signOutDeletedAccount
@@ -91,7 +92,16 @@ import { isUpgradeAvailable } from '@/lib/version'
 import { cpBase } from '@/lib/endpoints'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 import type { SessionFileArea } from '@/lib/shared-file'
-import type { ArtifactDto, ArtifactFileUrlDto, ArtifactRevisionDto, SessionArtifactPageDto } from '@/lib/artifact'
+import type {
+  ArtifactDto,
+  ArtifactFileUrlDto,
+  ArtifactRevisionDto,
+  ArtifactShareAudience,
+  ArtifactShareDto,
+  CreatedArtifactShareDto,
+  SessionArtifactPageDto,
+  SharedArtifactDto
+} from '@/lib/artifact'
 
 /** A non-2xx CP response. `status` lets callers branch without parsing strings;
  *  `code` carries the CP's machine-readable denial reason when the endpoint
@@ -3508,6 +3518,62 @@ export function getArtifactFileUrl(artifactId: string, revision: number, path: s
   return apiGet<ArtifactFileUrlDto>(
     `${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/revisions/${revision}/file?${q.toString()}`
   )
+}
+
+/** The artifact's active share links, newest first (artifacts.md §8.3). */
+export async function listArtifactShares(artifactId: string): Promise<ArtifactShareDto[]> {
+  return (
+    await apiGet<{ shares: ArtifactShareDto[] }>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/shares`)
+  ).shares
+}
+
+/** A link to one ready revision; 403 `ARTIFACT_SHARE_FORBIDDEN` when §6.3 refuses this audience to the caller. */
+export function createArtifactShare(
+  artifactId: string,
+  input: { revision: number; audience: ArtifactShareAudience }
+): Promise<CreatedArtifactShareDto> {
+  return apiPost<CreatedArtifactShareDto>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/shares`, input)
+}
+
+/** Moves a share between `public` and `org`; its link stays the same. */
+export function updateArtifactShare(
+  artifactId: string,
+  shareId: string,
+  audience: ArtifactShareAudience
+): Promise<ArtifactShareDto> {
+  return apiPatch<ArtifactShareDto>(
+    `${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/shares/${encodeURIComponent(shareId)}`,
+    { audience }
+  )
+}
+
+/** Revokes a share; its link answers "revoked" from the next read on. */
+export function revokeArtifactShare(artifactId: string, shareId: string): Promise<void> {
+  return apiDelete<void>(
+    `${orgBase()}/artifacts/${encodeURIComponent(artifactId)}/shares/${encodeURIComponent(shareId)}`
+  )
+}
+
+// A signed-out visitor sends no bearer: the token helper would send them to sign-in before a `public` link could open.
+async function sharePost<T>(path: string, body: unknown): Promise<T> {
+  const init = { method: 'POST', body: JSON.stringify(body), cache: 'no-store' as const }
+  const headers = { 'content-type': 'application/json' }
+  const signedIn = !isAuthConfigured() || (await getUser()) !== null
+  const res = signedIn
+    ? await authenticatedFetch(path, init, headers)
+    : await fetch(`${cpBase()}${path}`, { ...init, headers })
+  if (!res.ok) throw await apiErrorFromResponse('POST', path, res)
+  return (await res.json()) as T
+}
+
+/** What a share link shows; the token travels in the body so it stays out of request URLs. */
+export function readSharedArtifact(token: string): Promise<SharedArtifactDto> {
+  return sharePost<SharedArtifactDto>('/artifact-shares/read', { token })
+}
+
+/** A short-lived signed GET for one file of a shared revision, admitted as `readSharedArtifact` is. */
+export function getSharedArtifactFileUrl(token: string, path: string): Promise<ArtifactFileUrlDto> {
+  return sharePost<ArtifactFileUrlDto>('/artifact-shares/file', { token, path })
 }
 
 /** Resolve a shared image's cached original for this viewer: its current state and, when ready, a fresh temporary GET. */
