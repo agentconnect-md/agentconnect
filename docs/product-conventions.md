@@ -969,6 +969,11 @@ conversation can reach.
   The link is returned once; `listArtifacts` shows active shares by the link's last
   characters, never the link. The owner, organization owners and the share's creator may
   revoke it.
+- **Deleting is final and acts for a member.** Toward a control plane that also serves
+  deletion, the session gets `deleteArtifact` for artifacts the agent created and the
+  conversation can reach. Its description says the deletion removes every revision, the
+  files and every share link and cannot be undone. It acts with the same member authority as
+  sharing, and only the owner or an organization owner may delete.
 
 ## Self-authored channel roots
 

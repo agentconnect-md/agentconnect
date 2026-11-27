@@ -1096,6 +1096,17 @@ export interface ArtifactPublishResult {
   replayed: boolean
 }
 
+/** A deleted artifact's object keys, kept until the bucket no longer holds them (artifacts.md §5.6, §10.1). */
+export interface ArtifactDeletionRecord {
+  id: string
+  orgId: string
+  objectKeys: string[]
+  deletedAt: Date
+  /** When upload URLs signed before the deletion have expired. */
+  purgeAfter: Date
+  sweptAt: Date | null
+}
+
 /** Newest-updated first; the cursor is the last row of the previous page. */
 export interface ArtifactPageQuery {
   limit: number
@@ -1149,8 +1160,17 @@ export interface ArtifactRepo {
     expected: Pick<ArtifactAudience, 'visibility' | 'ownerIdentity'>,
     change: ArtifactChange
   ): Promise<ArtifactRecord | null>
-  /** Delete the rows; the caller deletes the objects first (artifacts.md §10.1). */
-  delete(orgId: string, id: string): Promise<boolean>
+  /** Record every revision's object keys and delete the rows, revisions and shares, at once; null when the artifact is gone. */
+  deleteRecording(
+    orgId: string,
+    id: string,
+    at: { deletedAt: Date; purgeAfter: Date }
+  ): Promise<ArtifactDeletionRecord | null>
+  /** Deletions whose first sweep has not succeeded, or whose `purgeAfter` has passed, oldest first. */
+  dueDeletions(now: Date, limit: number): Promise<ArtifactDeletionRecord[]>
+  markDeletionSwept(id: string, at: Date): Promise<void>
+  /** Drop a deletion record once its last sweep succeeded. */
+  dropDeletion(id: string): Promise<void>
   /** Artifacts with a ready revision that `viewer` can view (`canViewArtifact`), narrowed by `filter`. */
   listVisible(viewer: ArtifactViewer, page: ArtifactPageQuery, filter?: ArtifactListFilter): Promise<ArtifactRecord[]>
   /** The distinct external scopes and editors agents the organization's artifacts were given. */

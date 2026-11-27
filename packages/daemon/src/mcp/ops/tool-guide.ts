@@ -391,7 +391,10 @@ export function artifactGuide(offered: boolean): Record<string, unknown> {
         'can keep working after the workspace was cleaned up; listArtifacts shows what this conversation can reach.',
       'Where offered, shareArtifact makes a link to one revision for people outside this conversation: "org" for ' +
         'signed-in members, "public" for anyone with the link (only when asked; downloaded copies cannot be ' +
-        'recalled). unshareArtifact revokes one. Both act for the organization member who started the turn.'
+        'recalled). unshareArtifact revokes one. Both act for the organization member who started the turn.',
+      'Where offered, deleteArtifact removes an artifact you published for good — every revision, its files and ' +
+        'its share links — so use it only when the person asks to delete it; only its owner or an organization ' +
+        'owner may.'
     ],
     examples: [
       {

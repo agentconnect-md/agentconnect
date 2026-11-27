@@ -307,7 +307,7 @@ describe('artifact share management', () => {
         payload: { revision: 1, audience: 'public' }
       })
     ).json()
-    await new PgArtifactRepo(prisma).delete(DEFAULT_ORG_ID, orgArtifact.artifactId)
+    await h.service.deleteArtifact(DEFAULT_ORG_ID, orgArtifact.artifactId)
     expect(await prisma.artifactShare.count({ where: { artifactId: orgArtifact.artifactId } })).toBe(0)
     const read = await app.inject({ method: 'POST', url: READ, payload: { token } })
     expect(read.statusCode).toBe(404)

@@ -6139,7 +6139,7 @@ export class Daemon {
       },
       // read*File: a downloaded non-image binary lands in the session files directory's `uploads/` (inbound-file-attachments.md §2.4).
       saveAttachment: (ctx, name, bytes) => this.saveSessionUpload(ctx, name, bytes),
-      // The artifact tools (artifacts.md §7), toward a CP that advertises artifacts-v1 (and artifact-shares-v1 to share).
+      // The artifact tools (artifacts.md §7), toward a CP that advertises artifacts-v1 (artifact-shares-v1 to share, artifact-delete-v1 to delete).
       artifacts: this.artifactPort(),
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
@@ -12752,7 +12752,8 @@ export class Daemon {
       ...artifactToolsFor(
         this.cpClient?.supportsArtifacts?.() === true,
         { thread },
-        this.cpClient?.supportsArtifactShares?.() === true
+        this.cpClient?.supportsArtifactShares?.() === true,
+        this.cpClient?.supportsArtifactDelete?.() === true
       )
     ]
     // §14.2 brokers: a host's tools ride with any repository the agent holds there, and the clamped lease still authorizes each call.
@@ -15324,6 +15325,7 @@ export class Daemon {
     return {
       served: () => this.cpClient?.supportsArtifacts?.() === true,
       sharesServed: () => this.cpClient?.supportsArtifactShares?.() === true,
+      deleteServed: () => this.cpClient?.supportsArtifactDelete?.() === true,
       turn: (ctx) => this.artifactTurn(ctx),
       begin: (req) => client().beginArtifactPublish(req, this.orgForAgent(req.agentId)),
       complete: (req) => client().completeArtifactPublish(req, this.orgForAgent(req.agentId)),
@@ -15331,6 +15333,7 @@ export class Daemon {
       list: (req) => client().listArtifacts(req, this.orgForAgent(req.agentId)),
       share: (req) => client().shareArtifact(req, this.orgForAgent(req.agentId)),
       unshare: (req) => client().unshareArtifact(req, this.orgForAgent(req.agentId)),
+      delete: (req) => client().deleteArtifact(req, this.orgForAgent(req.agentId)),
       network: () => this.transferNetwork(),
       maxFileBytes: () => Math.min(ARTIFACT_MAX_BYTES, this.fileTransfer?.maxBytes ?? ARTIFACT_MAX_BYTES),
       normalizePath: async (ctx, path) => {

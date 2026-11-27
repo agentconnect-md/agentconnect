@@ -1,4 +1,4 @@
-// Artifact reads, the Artifacts page and share management (artifacts.md §6.3, §8.1, §8.3, §11.5): an artifact the caller may not act on reads as 404.
+// Artifact reads, the Artifacts page, share management and deletion (artifacts.md §6.3, §8.1, §8.3, §11.5): an artifact the caller may not act on reads as 404.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
@@ -706,6 +706,40 @@ export function artifactRoutes(deps: HttpDeps) {
         if (!canRevokeArtifactShare(artifact, share, viewer)) return refuse(reply, canView)
         const revoked = await deps.artifactShares.revoke(orgOf(req), artifact.id, share.id)
         if (!revoked) return reply.code(404).send(shareNotFound)
+        return reply.code(204).send(null)
+      }
+    )
+
+    r.delete(
+      '/artifacts/:artifactId',
+      {
+        schema: {
+          tags: [Tag.Artifacts],
+          summary: 'Delete an artifact',
+          description:
+            'Deletes the artifact, every revision and every share link, at once and for good: it leaves every list, its reads answer 404, and its share links answer 404 `ARTIFACT_SHARE_NOT_FOUND`. A publish still uploading to it is refused when it completes. The stored files are deleted right after, and once more when upload links signed before the deletion have expired. The artifact’s owner and organization owners may delete, including an organization owner who cannot view it. 403 `ARTIFACT_DELETE_FORBIDDEN` for anyone else who can view the artifact; 404 when the caller cannot view it or it does not exist.',
+          operationId: 'deleteArtifact',
+          params: ArtifactParams,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const artifacts = deps.artifacts
+        if (!artifacts) return reply.code(409).send(notEnabled)
+        const found = await managed(req, req.params.artifactId)
+        if (!found) return reply.code(404).send(notFound)
+        const { artifact, viewer, canView } = found
+        if (!canActOnArtifact(ArtifactAction.Delete, artifact, viewer)) {
+          return canView
+            ? reply.code(403).send({
+                error: 'Forbidden',
+                statusCode: 403,
+                code: 'ARTIFACT_DELETE_FORBIDDEN',
+                message: 'only the artifact’s owner or an organization owner can delete it'
+              })
+            : reply.code(404).send(notFound)
+        }
+        if (!(await artifacts.deleteArtifact(orgOf(req), artifact.id))) return reply.code(404).send(notFound)
         return reply.code(204).send(null)
       }
     )

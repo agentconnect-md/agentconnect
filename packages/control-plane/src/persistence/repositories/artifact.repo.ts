@@ -1,12 +1,13 @@
 // PgArtifactRepo — artifacts and their revisions (artifacts.md §4); metadata only, the bytes live in the transfer bucket.
 import { randomUUID } from 'node:crypto'
-import type { Artifact, ArtifactRevision } from '../../generated/prisma/client.js'
+import type { Artifact, ArtifactDeletion, ArtifactRevision } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { ArtifactAudience, ArtifactReachSession, ArtifactViewer } from '../../authorization/artifact-policy.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   ArtifactAudienceKeys,
   ArtifactChange,
+  ArtifactDeletionRecord,
   ArtifactListFilter,
   ArtifactManifest,
   ArtifactPageQuery,
@@ -60,6 +61,17 @@ function toRevision(row: ArtifactRevision): ArtifactRevisionRecord {
     state: row.state,
     idempotencyKey: row.idempotencyKey,
     createdAt: row.createdAt
+  }
+}
+
+function toDeletion(row: ArtifactDeletion): ArtifactDeletionRecord {
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    objectKeys: row.objectKeys,
+    deletedAt: row.deletedAt,
+    purgeAfter: row.purgeAfter,
+    sweptAt: row.sweptAt
   }
 }
 
@@ -315,9 +327,45 @@ export class PgArtifactRepo implements ArtifactRepo {
     )
   }
 
-  async delete(orgId: string, id: string): Promise<boolean> {
-    const deleted = await this.db.artifact.deleteMany({ where: { id, orgId } })
-    return deleted.count > 0
+  async deleteRecording(
+    orgId: string,
+    id: string,
+    at: { deletedAt: Date; purgeAfter: Date }
+  ): Promise<ArtifactDeletionRecord | null> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The row lock orders this after any append in flight, so a pending revision's keys are recorded too.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "artifact" WHERE "id" = ${id}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+      if (locked.length === 0) return null
+      const revisions = await tx.artifactRevision.findMany({
+        where: { artifactId: id },
+        select: { storagePrefix: true, manifest: true }
+      })
+      const objectKeys = revisions.flatMap((revision) =>
+        (revision.manifest as unknown as ArtifactManifest).files.map((file) => `${revision.storagePrefix}/${file.path}`)
+      )
+      const recorded = await tx.artifactDeletion.create({ data: { id, orgId, objectKeys, ...at } })
+      // Revisions and shares cascade, so every read, list and share link answers as absent from here on.
+      await tx.artifact.delete({ where: { id } })
+      return toDeletion(recorded)
+    })
+  }
+
+  async dueDeletions(now: Date, limit: number): Promise<ArtifactDeletionRecord[]> {
+    const rows = await this.db.artifactDeletion.findMany({
+      where: { OR: [{ sweptAt: null }, { purgeAfter: { lte: now } }] },
+      orderBy: [{ deletedAt: 'asc' }, { id: 'asc' }],
+      take: limit
+    })
+    return rows.map(toDeletion)
+  }
+
+  async markDeletionSwept(id: string, at: Date): Promise<void> {
+    await this.db.artifactDeletion.updateMany({ where: { id }, data: { sweptAt: at } })
+  }
+
+  async dropDeletion(id: string): Promise<void> {
+    await this.db.artifactDeletion.deleteMany({ where: { id } })
   }
 
   async listVisible(

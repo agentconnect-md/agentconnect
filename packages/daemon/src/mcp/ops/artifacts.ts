@@ -1,4 +1,4 @@
-// The artifact tools (artifacts.md §7): publish, fetch and list toward `artifacts-v1`; share and unshare toward `artifact-shares-v1`.
+// The artifact tools (artifacts.md §7): publish, fetch and list toward `artifacts-v1`, share and unshare toward `artifact-shares-v1`, delete toward `artifact-delete-v1`.
 import { createHash } from 'node:crypto'
 import { WireError } from '@agentconnect.md/connection'
 import {
@@ -7,6 +7,8 @@ import {
   artifactPathProblem,
   formatArtifactMarker,
   type ArtifactAudienceSummary,
+  type ArtifactDeleteOk,
+  type ArtifactDeleteReq,
   type ArtifactFetchOk,
   type ArtifactFetchReq,
   type ArtifactInitiator,
@@ -66,6 +68,8 @@ export interface ArtifactPort {
   served(): boolean
   /** Whether it also answers `artifact/share|unshare`. */
   sharesServed(): boolean
+  /** Whether it also answers `artifact/delete`. */
+  deleteServed(): boolean
   turn(ctx: SessionContext): Promise<ArtifactTurn | undefined>
   begin(req: ArtifactPublishBeginReq): Promise<ArtifactPublishBeginOk>
   complete(req: ArtifactPublishCompleteReq): Promise<ArtifactPublishCompleteOk>
@@ -73,6 +77,7 @@ export interface ArtifactPort {
   list(req: ArtifactListReq): Promise<ArtifactListOk>
   share(req: ArtifactShareReq): Promise<ArtifactShareOk>
   unshare(req: ArtifactUnshareReq): Promise<ArtifactUnshareOk>
+  delete(req: ArtifactDeleteReq): Promise<ArtifactDeleteOk>
   network(): TransferNetwork
   /** The largest file one transfer carries here, clamped to the revision limit. */
   maxFileBytes(): number
@@ -259,22 +264,56 @@ export const UNSHARE_ARTIFACT_TOOL: ToolDescriptor = {
   )
 }
 
+export const DELETE_ARTIFACT_ARGS = z.object({ artifactId: ARTIFACT_ID })
+
+export const DELETE_ARTIFACT_TOOL: ToolDescriptor = {
+  name: 'deleteArtifact',
+  description:
+    'Delete an artifact you published, for good: every revision, its stored files and every share link to it go at ' +
+    'once, its links stop opening, and it cannot be recovered. Copies people already downloaded are not recalled. ' +
+    'Use it only when the person clearly asks to delete that artifact, and confirm which one (by its title from ' +
+    'listArtifacts) when there is any doubt; to stop a share link only, use unshareArtifact instead. You act for ' +
+    'the person who started this turn: only the artifact’s owner or an organization owner may delete it, and a ' +
+    'guest or a chat account not linked to a console member cannot delete at all.',
+  inputSchema: obj(
+    {
+      artifactId: { type: 'string', description: 'An artifact you published, from publishArtifact or listArtifacts.' }
+    },
+    ['artifactId']
+  )
+}
+
 export const ARTIFACT_TOOLS: ToolDescriptor[] = [PUBLISH_ARTIFACT_TOOL, FETCH_ARTIFACT_TOOL, LIST_ARTIFACTS_TOOL]
 export const ARTIFACT_SHARE_TOOLS: ToolDescriptor[] = [SHARE_ARTIFACT_TOOL, UNSHARE_ARTIFACT_TOOL]
+export const ARTIFACT_DELETE_TOOLS: ToolDescriptor[] = [DELETE_ARTIFACT_TOOL]
 
 const narrowed = (thread: string): boolean =>
   isCheckCoordinate(thread) || isResearchCoordinate(thread) || isGettingToKnowCoordinate(thread)
 
 /** The tools a session is offered: toward a CP that serves them, never in a check, research or getting-to-know task. */
-export function artifactToolsFor(served: boolean, at: { thread: string }, sharesServed = false): ToolDescriptor[] {
+export function artifactToolsFor(
+  served: boolean,
+  at: { thread: string },
+  sharesServed = false,
+  deleteServed = false
+): ToolDescriptor[] {
   if (!served || narrowed(at.thread)) return []
-  return sharesServed ? [...ARTIFACT_TOOLS, ...ARTIFACT_SHARE_TOOLS] : ARTIFACT_TOOLS
+  return [
+    ...ARTIFACT_TOOLS,
+    ...(sharesServed ? ARTIFACT_SHARE_TOOLS : []),
+    ...(deleteServed ? ARTIFACT_DELETE_TOOLS : [])
+  ]
 }
 
-function portFor(ctx: SessionContext, deps: ArtifactToolDeps, name: string, sharing = false): ArtifactPort {
+function portFor(
+  ctx: SessionContext,
+  deps: ArtifactToolDeps,
+  name: string,
+  needs: 'shares' | 'delete' | undefined = undefined
+): ArtifactPort {
   const port = deps.artifacts
-  if (!port?.served() || (sharing && !port.sharesServed()) || narrowed(ctx.thread))
-    throw new Error(`${name} is not available in this session.`)
+  const extra = needs === 'shares' ? port?.sharesServed() : needs === 'delete' ? port?.deleteServed() : true
+  if (!port?.served() || !extra || narrowed(ctx.thread)) throw new Error(`${name} is not available in this session.`)
   return port
 }
 
@@ -299,7 +338,9 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
   'not-producer': (name) =>
     name === 'publishArtifact'
       ? `${name}: you can publish revisions only of artifacts you created. Leave out artifactId to publish this as a new artifact.`
-      : `${name}: you can share and unshare only artifacts you created; a person can do it from the artifact in the console.`,
+      : name === 'deleteArtifact'
+        ? `${name}: you can delete only artifacts you created; a person can delete it from the artifact in the console.`
+        : `${name}: you can share and unshare only artifacts you created; a person can do it from the artifact in the console.`,
   'too-large': (name, err) => `${name}: a file is over this deployment’s size limit (${err.message}).`,
   'idempotency-conflict': (name) =>
     `${name}: this publication collided with an earlier one from this turn — publish again.`,
@@ -312,7 +353,7 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
     )
   },
   'no-member-authority': (name) =>
-    `${name}: only an organization member can share or unshare, and the person who started this turn is not one ` +
+    `${name}: only an organization member can ${name === 'deleteArtifact' ? 'delete' : 'share or unshare'}, and the person who started this turn is not one ` +
     'AgentConnect recognizes (a guest, a chat account not linked to a console member, or a schedule without a ' +
     'member owner). A member can do it from the artifact in the console, or link their chat account and ask again.',
   'share-forbidden': (name, err) =>
@@ -321,7 +362,10 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
   'revision-not-ready': (name) =>
     `${name}: that revision is still uploading. Share it once publishArtifact has finished, or omit revision.`,
   'share-not-found': (name) =>
-    `${name}: no such share on this artifact. listArtifacts shows each artifact’s active shares.`
+    `${name}: no such share on this artifact. listArtifacts shows each artifact’s active shares.`,
+  'delete-forbidden': (name) =>
+    `${name}: only the artifact’s owner or an organization owner may delete it, and the person who started this ` +
+    'turn is neither. Nothing was deleted; the owner can delete it from the artifact in the console.'
 }
 
 /** A CP call whose refusal becomes a sentence the agent can act on. */
@@ -603,7 +647,7 @@ export function whoCanOpenShare(audience: ArtifactShareAudience): string {
 
 export const shareArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, deps) => {
   const a = parseArgs(SHARE_ARTIFACT_ARGS, args)
-  const port = portFor(ctx, deps, 'shareArtifact', true)
+  const port = portFor(ctx, deps, 'shareArtifact', 'shares')
   const turn = await turnFor(ctx, port, 'shareArtifact')
   const shared = await cp('shareArtifact', () =>
     port.share({
@@ -628,7 +672,7 @@ export const shareArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, de
 
 export const unshareArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, deps) => {
   const a = parseArgs(UNSHARE_ARTIFACT_ARGS, args)
-  const port = portFor(ctx, deps, 'unshareArtifact', true)
+  const port = portFor(ctx, deps, 'unshareArtifact', 'shares')
   const turn = await turnFor(ctx, port, 'unshareArtifact')
   const revoked = await cp('unshareArtifact', () =>
     port.unshare({
@@ -646,5 +690,26 @@ export const unshareArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, 
     audience: revoked.audience,
     revokedAt: revoked.revokedAt,
     notice: 'The link no longer opens. Copies already downloaded are not recalled.'
+  }
+}
+
+export const deleteArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, deps) => {
+  const a = parseArgs(DELETE_ARTIFACT_ARGS, args)
+  const port = portFor(ctx, deps, 'deleteArtifact', 'delete')
+  const turn = await turnFor(ctx, port, 'deleteArtifact')
+  const deleted = await cp('deleteArtifact', () =>
+    port.delete({
+      agentId: ctx.agentId,
+      sessionId: turn.sessionId,
+      artifactId: a.artifactId,
+      ...(turn.initiator ? { initiator: turn.initiator } : {})
+    })
+  )
+  return {
+    artifactId: deleted.artifactId,
+    title: deleted.title,
+    deletedAt: deleted.deletedAt,
+    notice:
+      'The artifact, every revision and every share link are gone; its links no longer open. Copies already downloaded are not recalled.'
   }
 }
