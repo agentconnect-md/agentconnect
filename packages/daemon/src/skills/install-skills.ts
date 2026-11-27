@@ -30,6 +30,7 @@ import {
   SkillLedgerSafetyError,
   type SkillFileReceipt
 } from './skill-install-ledger.js'
+import { isMigratedBuiltinGitSkillSource } from './builtin-skills.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
 import { canonicalSkillMutationRoot } from './skill-workspace-mutator.js'
 import { acquireGitSkillSource, isPinnedGitSkillRef, resolveBoundedGitSkillSource } from './skill-git-source.js'
@@ -206,6 +207,8 @@ async function installSkillsLocked(
       opts.warn?.(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
       continue
     }
+    // readSkill serves the preset source's skills (skill-over-mcp.md §6.2): no acquisition, no failure report.
+    if (isMigratedBuiltinGitSkillSource(parsed.data)) continue
     if (sourceNames.has(parsed.data.name)) {
       opts.warn?.(`skills: omitted duplicate historical Git source name "${parsed.data.name}"`)
       continue

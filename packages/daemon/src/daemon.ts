@@ -1582,7 +1582,12 @@ import {
   type WebchatShareTurn
 } from './webchat/shared-image.js'
 import { prepareSharedImagePreview } from './images/index.js'
-import { BUILTIN_SKILL_KEY_PREFIX, builtinSkillSources, reserveBuiltinSkills } from './skills/builtin-skills.js'
+import {
+  BUILTIN_SKILL_KEY_PREFIX,
+  isBuiltinMcpSkillName,
+  isMigratedBuiltinGitSkillSource,
+  reserveBuiltinSkills
+} from './skills/builtin-skills.js'
 import {
   buildReadSkillTool,
   replaceReadSkillTool,
@@ -1709,6 +1714,12 @@ function postlessCall(callMeta: CallMeta | undefined): boolean {
     callMeta.opensPlace !== true &&
     callMeta.placeAudience !== true
   )
+}
+
+/** A root an older daemon installed for a skill readSkill now serves: a `builtin:` source, or a Git source's leaf of a built-in name. */
+function isLegacyBuiltinRoot(root: { path: string; sourceId: string; sourceKind: string }): boolean {
+  if (root.sourceId.startsWith(BUILTIN_SKILL_KEY_PREFIX)) return true
+  return root.sourceKind === 'agent' && isBuiltinMcpSkillName(root.path.slice(root.path.lastIndexOf('/') + 1))
 }
 
 /** The store row a memory dream executes under. */
@@ -9219,11 +9230,7 @@ export class Daemon {
       ...(this.usesMicrosandbox(agent)
         ? { installSkills: (value: Agent, cwd: string) => this.reconcileMicrosandboxSkills(value, cwd) }
         : {}),
-      // The builtin image workflow rides the managed sources; installation without a skillsAgentId simply skips it.
-      managedSkills: async (value: Agent) => [
-        ...((await this.managedSkillCache?.resolve(value)) ?? []),
-        ...(await builtinSkillSources())
-      ],
+      managedSkills: async (value: Agent) => (await this.managedSkillCache?.resolve(value)) ?? [],
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
       resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value),
@@ -9497,19 +9504,23 @@ export class Daemon {
     const duty = this.duties.dutyForAgent(agent.id) ?? peer.localAuthority
     const daemonId = peer.localAuthority?.daemonId ?? this.cfg.daemonId
     const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
-    const desiredSources = agent.skills.length + agent.managedSkills.length + dreamed.length
+    // The preset Git source's skills are served by readSkill (skill-over-mcp.md §6.2), so it is never installed.
+    const effectiveGitSkills = agent.skills.filter((entry) => !isMigratedBuiltinGitSkillSource(entry))
+    const desiredSources = effectiveGitSkills.length + agent.managedSkills.length + dreamed.length
     if (!workspaceIncarnation) {
       if (!client && desiredSources === 0) return
       throw new Error('cluster skill preparation authority is unavailable')
     }
     const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
     const priorLedger = prior?.ledger ?? peer.initialLedger
+    // Nothing to install and nothing to retire: no shim round trip (skill-over-mcp.md §6.4.2).
+    if (desiredSources === 0 && (priorLedger?.roots.length ?? 0) === 0) return priorLedger
     const supportRequired = clusterSkillSupportRequired({
-      configuredSources: agent.skills.length,
+      configuredSources: effectiveGitSkills.length,
       managedBindings: agent.managedSkills.length,
       acceptedDreamSources: dreamed.length,
-      // A builtin root alone never makes skill support mandatory.
-      priorRoots: priorLedger?.roots.filter((root) => !root.sourceId.startsWith(BUILTIN_SKILL_KEY_PREFIX)).length ?? 0
+      // A legacy builtin root alone never makes skill support mandatory.
+      priorRoots: priorLedger?.roots.filter((root) => !isLegacyBuiltinRoot(root)).length ?? 0
     })
     if (!client) {
       if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
@@ -9529,33 +9540,18 @@ export class Daemon {
         })
       : []
     const acquireOptions = { agentId: agent.id, useGitCredential: this.workspaces.skillGitCredentialEnabled(agent) }
-    // Builtins join after the support gate: an optional helper must never make an otherwise usable runtime refuse to start.
-    const builtins = await builtinSkillSources()
-    const reconcile = (withBuiltins: boolean) => {
-      const sources = reserveBuiltinSkills([...managed, ...dreamed, ...(withBuiltins ? builtins : [])], (msg) =>
-        this.log.warn(msg)
-      )
-      return this.reconcileSandboxSkillSet(agent, peer, client, {
-        managed: sources.filter((source) => source.kind === 'managed'),
-        dreamed: sources.filter((source) => source.kind === 'dream'),
-        acquireOptions,
-        priorLedger,
-        duty,
-        daemonId,
-        workspaceIncarnation,
-        skillsAgentId,
-        shimGeneration
-      })
-    }
-    if (builtins.length === 0) return await reconcile(false)
-    try {
-      return await reconcile(true)
-    } catch (err) {
-      // A user-authored directory already holds the reserved name: keep it, start without the builtin.
-      if (!/ownership conflict/i.test((err as Error).message)) throw err
-      this.log.warn(`skills: builtin skill not installed for ${agent.id} (${(err as Error).message})`)
-      return await reconcile(false)
-    }
+    const sources = reserveBuiltinSkills([...managed, ...dreamed], (msg) => this.log.warn(msg))
+    return await this.reconcileSandboxSkillSet(agent, peer, client, {
+      managed: sources.filter((source) => source.kind === 'managed'),
+      dreamed: sources.filter((source) => source.kind === 'dream'),
+      acquireOptions,
+      priorLedger,
+      duty,
+      daemonId,
+      workspaceIncarnation,
+      skillsAgentId,
+      shimGeneration
+    })
   }
 
   /** One sandbox skill reconcile over a fixed source set. */
