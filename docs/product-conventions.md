@@ -868,6 +868,21 @@ highlighted. Anything else shows its name and size with **Download**. **Download
 single-file revision as itself under its manifest name and zips a multi-file revision in the
 browser, named after the title. On a phone the page is the full-screen viewer.
 
+The **Artifacts** page in the console's navigation, shown only where artifacts are offered,
+lists every artifact the viewer can open, most recently updated first, with its type,
+producing agent, owner, last update, size and whether it has a public or members link. An
+artifact whose owner left the organization names organization owners as its owner. Filters
+for mine or the organization's, agent, type and publicly shared live in the URL. Each row
+opens the artifact, lists its revisions, opens the Share dialog, and links back to its
+session while that session exists and is visible. The owner, or an organization owner who
+can open it, can also rename it and move it between private and the whole organization; an
+audience copied from a channel or editors-only session says it cannot be changed. The owner
+and organization owners can delete it after a confirmation that says every revision and
+every share link go with it at once, for good. Organization owners also get a **Public
+links** tab listing every active public link with its artifact's title and owner, the
+revision, who shared it and when, and can revoke the link or delete the artifact without
+being able to open it. On a phone the rows are cards and the actions open in a bottom sheet.
+
 ### Publishing files to an explicit destination
 
 `sendMessage` with `action: "postMessage"` accepts up to ten `attachments`. Each item

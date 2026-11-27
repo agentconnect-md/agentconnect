@@ -40,6 +40,12 @@ export const consoleKeys = {
     consoleKey(orgId, 'artifact-revision', id, String(revision)),
   /** One artifact's active share links, for its Share dialog. */
   artifactShares: (orgId: string | null | undefined, id: string) => consoleKey(orgId, 'artifact-shares', id),
+  /** One page of the Artifacts page's list under `filters` (`artifactFilterKey`); an empty cursor is the first page. */
+  orgArtifacts: (orgId: string | null | undefined, filters: string, cursor: string) =>
+    consoleKey(orgId, 'org-artifacts', filters, cursor),
+  /** One page of the organization's active public shares, for its owners. */
+  orgArtifactShares: (orgId: string | null | undefined, cursor: string) =>
+    consoleKey(orgId, 'org-artifact-shares', cursor),
   /** One page of the artifacts a session published or updated; an empty cursor is the first page. */
   sessionArtifacts: (orgId: string | null | undefined, sessionId: string, cursor: string) =>
     consoleKey(orgId, 'session-artifacts', sessionId, cursor),

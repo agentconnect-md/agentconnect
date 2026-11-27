@@ -46,6 +46,37 @@ export interface SessionArtifactPageDto {
   nextCursor: string | null
 }
 
+/** What the caller may do with a listed artifact (artifacts.md §6.3); `revokeShares` is also the right to delete. */
+export interface ArtifactPermissions {
+  rename: boolean
+  changeAudience: boolean
+  sharePublic: boolean
+  revokeShares: boolean
+}
+
+/** One row of `GET /orgs/:orgId/artifacts`, the Artifacts page (artifacts.md §11.5). */
+export interface OrgArtifactDto extends SessionArtifactDto {
+  kind: ArtifactKind
+  shared: { any: boolean; public: boolean }
+  /** Whether the originating session still exists and the caller can open it. */
+  originSessionVisible: boolean
+  permissions: ArtifactPermissions
+}
+
+/** A page of the organization's artifacts; a `type` filter can return a short or empty page while `nextCursor` names more. */
+export interface OrgArtifactPageDto {
+  artifacts: OrgArtifactDto[]
+  nextCursor: string | null
+}
+
+/** The Artifacts page's filters as `listArtifacts` takes them. */
+export interface ArtifactListFilters {
+  scope?: 'mine' | 'org'
+  agentId?: string
+  type?: ArtifactKind
+  publiclyShared?: boolean
+}
+
 /** `GET /artifacts/:artifactId/revisions/:revision`. */
 export interface ArtifactRevisionDto extends ArtifactRevisionSummary {
   artifactId: string
@@ -74,6 +105,16 @@ export interface ArtifactShareDto {
   createdAt: string
   updatedAt: string
   revokedAt: string | null
+}
+
+/** One active `public` share as organization owners moderate it, with its artifact's metadata only (artifacts.md §6.3). */
+export interface OrgArtifactShareDto extends ArtifactShareDto {
+  artifact: { id: string; title: string; owner: ArtifactDto['owner']; viewerCanView: boolean }
+}
+
+export interface OrgArtifactSharePageDto {
+  shares: OrgArtifactShareDto[]
+  nextCursor: string | null
 }
 
 /** `POST /artifacts/:artifactId/shares`: the only answer that carries the token, so the link can be copied only now. */

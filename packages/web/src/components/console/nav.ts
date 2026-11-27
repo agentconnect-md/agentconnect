@@ -2,6 +2,7 @@
 // and GlobalSearch (the "Pages" and "Settings" result groups). One table per
 // surface, defined here so the nav and the search index can never drift apart.
 
+import { artifactsContentDomain } from '@/lib/artifact'
 import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
 
 export interface NavItem {
@@ -12,10 +13,13 @@ export interface NavItem {
    *  filters through `navVisible`, so the rail, the mobile drawer and the search
    *  index can never disagree about what this deployment offers. */
   requires?: FeatureFlagId
+  /** A deployment capability the destination needs; `artifacts` exists only with a content domain (artifacts.md §12). */
+  capability?: 'artifacts'
 }
 
 /** Is the destination's feature switched on for this deployment? */
-export function navVisible(item: { requires?: FeatureFlagId }): boolean {
+export function navVisible(item: { requires?: FeatureFlagId; capability?: 'artifacts' }): boolean {
+  if (item.capability === 'artifacts' && artifactsContentDomain() === undefined) return false
   return item.requires ? featureFlagEnabled(item.requires) : true
 }
 
@@ -29,6 +33,8 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/home', label: 'Home', icon: 'house' },
     { href: '/agents', label: 'Agents', icon: 'bot' },
     { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
+    // What agents published from sessions, so it sits beside them.
+    { href: '/artifacts', label: 'Artifacts', icon: 'shapes', capability: 'artifacts' },
     // The judgement a channel consults, so it sits with the work rather than with Infra.
     { href: '/decisions', label: 'Decisions', icon: 'split' },
     { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
@@ -51,6 +57,7 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/sessions', label: 'Sessions' },
   // Merged conversation pages live in the Sessions section (§5.3).
   { prefix: '/conversations', label: 'Sessions' },
+  { prefix: '/artifacts', label: 'Artifacts' },
   { prefix: '/decisions', label: 'Decisions' },
   { prefix: '/crons', label: 'Schedules' },
   { prefix: '/tools', label: 'Tools & Skills' },
@@ -74,6 +81,7 @@ export type ShellNavKey =
   | 'home'
   | 'agents'
   | 'sessions'
+  | 'artifacts'
   | 'decisions'
   | 'schedules'
   | 'tools'
@@ -92,6 +100,7 @@ export const NAV_LABEL_KEYS: Readonly<Record<string, ShellNavKey>> = {
   '/agents': 'agents',
   '/sessions': 'sessions',
   '/conversations': 'sessions',
+  '/artifacts': 'artifacts',
   '/decisions': 'decisions',
   '/crons': 'schedules',
   '/tools': 'tools',
@@ -123,6 +132,7 @@ export interface ConsolePage extends NavItem {
 // like "bots" land on the page that owns that feature.
 const PAGE_KEYWORDS: Record<string, string[]> = {
   '/crons': ['cron'],
+  '/artifacts': ['published', 'pages', 'documents', 'share links'],
   '/billing': ['balance', 'credit', 'invoice', 'payment', 'top up'],
   '/tools': ['mcp', 'connectors', 'skills'],
   '/integrations': ['bots', 'github', 'slack', 'telegram', 'discord', 'lark', 'feishu'],

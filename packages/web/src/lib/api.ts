@@ -98,7 +98,10 @@ import type {
   ArtifactRevisionDto,
   ArtifactShareAudience,
   ArtifactShareDto,
+  ArtifactListFilters,
   CreatedArtifactShareDto,
+  OrgArtifactPageDto,
+  OrgArtifactSharePageDto,
   SessionArtifactPageDto,
   SharedArtifactDto
 } from '@/lib/artifact'
@@ -3510,6 +3513,45 @@ export function listSessionArtifacts(
   return apiGet<SessionArtifactPageDto>(
     `${orgBase(opts.orgId)}/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ''}`
   )
+}
+
+/** One page of the organization's artifacts the caller can view, newest update first (artifacts.md §11.5). */
+export function listArtifacts(
+  filters: ArtifactListFilters,
+  opts: { cursor?: string; limit?: number; orgId?: string } = {}
+): Promise<OrgArtifactPageDto> {
+  const q = new URLSearchParams()
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+  if (opts.cursor) q.set('cursor', opts.cursor)
+  if (filters.scope) q.set('scope', filters.scope)
+  if (filters.agentId) q.set('agentId', filters.agentId)
+  if (filters.type) q.set('type', filters.type)
+  if (filters.publiclyShared) q.set('publiclyShared', 'true')
+  const query = q.toString()
+  return apiGet<OrgArtifactPageDto>(`${orgBase(opts.orgId)}/artifacts${query ? `?${query}` : ''}`)
+}
+
+/** Renames an artifact or moves its audience between `private` and `org`; 409 `ARTIFACT_AUDIENCE_FIXED` for any other audience. */
+export function updateArtifact(
+  artifactId: string,
+  input: { title?: string; audience?: 'private' | 'org' }
+): Promise<ArtifactDto> {
+  return apiPatch<ArtifactDto>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}`, input)
+}
+
+/** Deletes an artifact with every revision and share at once; there is no undo. */
+export function deleteArtifact(artifactId: string): Promise<void> {
+  return apiDelete<void>(`${orgBase()}/artifacts/${encodeURIComponent(artifactId)}`)
+}
+
+/** Organization owners only: one page of the organization's active `public` shares, newest first. */
+export function listOrgArtifactShares(
+  opts: { cursor?: string; limit?: number; orgId?: string } = {}
+): Promise<OrgArtifactSharePageDto> {
+  const q = new URLSearchParams({ audience: 'public' })
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+  if (opts.cursor) q.set('cursor', opts.cursor)
+  return apiGet<OrgArtifactSharePageDto>(`${orgBase(opts.orgId)}/artifact-shares?${q.toString()}`)
 }
 
 /** A short-lived signed GET for one manifest file, signed as an `octet-stream` attachment so the console renders the bytes itself. */
