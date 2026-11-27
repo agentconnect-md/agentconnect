@@ -1102,6 +1102,28 @@ export interface ArtifactPageQuery {
   cursor?: { updatedAt: Date; id: string }
 }
 
+/** Narrows an artifact list on top of the viewer's audience (artifacts.md §11.5). */
+export interface ArtifactListFilter {
+  /** Only artifacts owned by one of these identities; an empty list matches nothing. */
+  ownerIdentities?: readonly string[]
+  /** Only artifacts with a ready revision this agent produced. */
+  producedByAgentId?: string
+  /** Only artifacts with an active `public` share. */
+  publiclyShared?: boolean
+}
+
+/** The copied audiences an organization's artifacts name, so a viewer can be resolved for all of them at once. */
+export interface ArtifactAudienceKeys {
+  externalScopeIds: string[]
+  editorsAgentIds: string[]
+}
+
+/** A change to an artifact's title or `private`/`org` audience (artifacts.md §6.3). */
+export interface ArtifactChange {
+  title?: string
+  visibility?: 'private' | 'org'
+}
+
 export interface ArtifactRepo {
   /** Create an artifact with pending revision 1; a replayed key returns what that agent recorded under it. */
   create(artifact: NewArtifact, revision: NewArtifactRevision): Promise<ArtifactPublishResult>
@@ -1120,10 +1142,24 @@ export interface ArtifactRepo {
   rename(orgId: string, id: string, title: string): Promise<ArtifactRecord | null>
   /** Move between `private` and `org` only (artifacts.md §6.3); null when the artifact is gone or has another audience. */
   setVisibility(orgId: string, id: string, visibility: 'private' | 'org'): Promise<ArtifactRecord | null>
+  /** Apply `change` only while the audience is still `expected`, which the caller authorized against; null otherwise or when gone. */
+  update(
+    orgId: string,
+    id: string,
+    expected: Pick<ArtifactAudience, 'visibility' | 'ownerIdentity'>,
+    change: ArtifactChange
+  ): Promise<ArtifactRecord | null>
   /** Delete the rows; the caller deletes the objects first (artifacts.md §10.1). */
   delete(orgId: string, id: string): Promise<boolean>
-  /** Artifacts with a ready revision that `viewer` can view (`canViewArtifact`). */
-  listVisible(viewer: ArtifactViewer, page: ArtifactPageQuery): Promise<ArtifactRecord[]>
+  /** Artifacts with a ready revision that `viewer` can view (`canViewArtifact`), narrowed by `filter`. */
+  listVisible(viewer: ArtifactViewer, page: ArtifactPageQuery, filter?: ArtifactListFilter): Promise<ArtifactRecord[]>
+  /** The distinct external scopes and editors agents the organization's artifacts were given. */
+  audienceKeys(orgId: string): Promise<ArtifactAudienceKeys>
+  /** Each artifact's `latestRevision` row, in no particular order. */
+  latestRevisions(
+    orgId: string,
+    artifacts: ReadonlyArray<Pick<ArtifactRecord, 'id' | 'latestRevision'>>
+  ): Promise<ArtifactRevisionRecord[]>
   /** Artifacts with a ready revision an agent in `session` can reach (`agentCanReachArtifact`). */
   listReachable(
     session: ArtifactReachSession,
@@ -1178,6 +1214,23 @@ export interface ArtifactShareRepo {
   revoke(orgId: string, artifactId: string, id: string, at: Date): Promise<ArtifactShareRecord | null>
   /** The share holding `tokenHash`, revoked or not, with its artifact. */
   findByTokenHash(tokenHash: string): Promise<{ share: ArtifactShareRecord; artifact: ArtifactRecord } | null>
+  /** The audiences of the given artifacts' unrevoked shares, one row per artifact and audience. */
+  activeAudiences(
+    orgId: string,
+    artifactIds: readonly string[]
+  ): Promise<Array<{ artifactId: string; audience: ArtifactShareAudience }>>
+  /** Every unrevoked share of one audience in the organization, newest first, with its artifact. */
+  listActiveInOrg(
+    orgId: string,
+    audience: ArtifactShareAudience,
+    page: ArtifactSharePageQuery
+  ): Promise<Array<{ share: ArtifactShareRecord; artifact: ArtifactRecord }>>
+}
+
+/** Newest-created first; the cursor is the last row of the previous page. */
+export interface ArtifactSharePageQuery {
+  limit: number
+  cursor?: { createdAt: Date; id: string }
 }
 
 export interface ComputerScreenshotRepo {

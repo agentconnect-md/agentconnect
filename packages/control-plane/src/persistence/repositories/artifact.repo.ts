@@ -2,9 +2,12 @@
 import { randomUUID } from 'node:crypto'
 import type { Artifact, ArtifactRevision } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
-import type { ArtifactReachSession, ArtifactViewer } from '../../authorization/artifact-policy.js'
+import type { ArtifactAudience, ArtifactReachSession, ArtifactViewer } from '../../authorization/artifact-policy.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
+  ArtifactAudienceKeys,
+  ArtifactChange,
+  ArtifactListFilter,
   ArtifactManifest,
   ArtifactPageQuery,
   ArtifactPublishResult,
@@ -117,6 +120,17 @@ export function artifactViewWhere(viewer: ArtifactViewer): Prisma.ArtifactWhereI
     arms.push({ visibility: 'external', externalProvider: { in: providers }, externalScopeId: { in: scopes } })
   }
   return { orgId: viewer.orgId, OR: arms }
+}
+
+/** `ArtifactListFilter` as SQL, ANDed onto the audience predicate. */
+export function artifactFilterWhere(filter: ArtifactListFilter): Prisma.ArtifactWhereInput[] {
+  const where: Prisma.ArtifactWhereInput[] = []
+  if (filter.ownerIdentities) where.push({ ownerIdentity: { in: [...filter.ownerIdentities] } })
+  if (filter.producedByAgentId) {
+    where.push({ revisions: { some: { producedByAgentId: filter.producedByAgentId, state: 'ready' } } })
+  }
+  if (filter.publiclyShared) where.push({ shares: { some: { audience: 'public', revokedAt: null } } })
+  return where
 }
 
 /** The SQL projection of `agentCanReachArtifact`; null when the session reaches nothing. */
@@ -277,13 +291,65 @@ export class PgArtifactRepo implements ArtifactRepo {
     return this.updateWhere({ id, orgId, visibility: { in: ['private', 'org'] } }, { visibility })
   }
 
+  async update(
+    orgId: string,
+    id: string,
+    expected: Pick<ArtifactAudience, 'visibility' | 'ownerIdentity'>,
+    change: ArtifactChange
+  ): Promise<ArtifactRecord | null> {
+    return this.updateWhere(
+      { id, orgId, visibility: expected.visibility, ownerIdentity: expected.ownerIdentity },
+      {
+        ...(change.title !== undefined ? { title: change.title } : {}),
+        ...(change.visibility !== undefined ? { visibility: change.visibility } : {})
+      }
+    )
+  }
+
   async delete(orgId: string, id: string): Promise<boolean> {
     const deleted = await this.db.artifact.deleteMany({ where: { id, orgId } })
     return deleted.count > 0
   }
 
-  async listVisible(viewer: ArtifactViewer, page: ArtifactPageQuery): Promise<ArtifactRecord[]> {
-    return this.page(artifactViewWhere(viewer), page)
+  async listVisible(
+    viewer: ArtifactViewer,
+    page: ArtifactPageQuery,
+    filter: ArtifactListFilter = {}
+  ): Promise<ArtifactRecord[]> {
+    return this.page({ AND: [artifactViewWhere(viewer), ...artifactFilterWhere(filter)] }, page)
+  }
+
+  async audienceKeys(orgId: string): Promise<ArtifactAudienceKeys> {
+    const [external, editors] = await Promise.all([
+      this.db.artifact.findMany({
+        where: { orgId, visibility: 'external', externalScopeId: { not: null } },
+        select: { externalScopeId: true },
+        distinct: ['externalScopeId']
+      }),
+      this.db.artifact.findMany({
+        where: { orgId, visibility: 'editors', editorsAgentId: { not: null } },
+        select: { editorsAgentId: true },
+        distinct: ['editorsAgentId']
+      })
+    ])
+    return {
+      externalScopeIds: external.flatMap((row) => (row.externalScopeId ? [row.externalScopeId] : [])),
+      editorsAgentIds: editors.flatMap((row) => (row.editorsAgentId ? [row.editorsAgentId] : []))
+    }
+  }
+
+  async latestRevisions(
+    orgId: string,
+    artifacts: ReadonlyArray<Pick<ArtifactRecord, 'id' | 'latestRevision'>>
+  ): Promise<ArtifactRevisionRecord[]> {
+    if (artifacts.length === 0) return []
+    const rows = await this.db.artifactRevision.findMany({
+      where: {
+        artifact: { orgId },
+        OR: artifacts.map((artifact) => ({ artifactId: artifact.id, number: artifact.latestRevision }))
+      }
+    })
+    return rows.map(toRevision)
   }
 
   async listReachable(

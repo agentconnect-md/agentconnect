@@ -301,4 +301,73 @@ describe('PgArtifactRepo (real Postgres)', () => {
     const foreignId = Buffer.from(JSON.stringify([new Date().toISOString(), 'not-a-uuid'])).toString('base64url')
     expect(decodeArtifactCursor(foreignId)).toBeNull()
   })
+
+  it('narrows a visible list by filter, names the audiences it holds, and updates only an unchanged audience', async () => {
+    const repo = new PgArtifactRepo(prisma)
+    const ready = async (key: string, patch: Partial<ArtifactAudience>, rev: Partial<NewArtifactRevision> = {}) => {
+      const { artifact } = await repo.create(fresh(patch), revision(key, rev))
+      return (await repo.markReady(ORG, artifact.id, 1))!
+    }
+    const alices = await ready('f1', { ownerIdentity: 'user:alice' })
+    const scoped = await ready('f2', { visibility: 'external', externalProvider: 'slack', externalScopeId: S1 })
+    await ready('f3', { visibility: 'external', externalProvider: 'slack', externalScopeId: S1 })
+    const byAgent2 = await ready(
+      'f4',
+      { visibility: 'editors', editorsAgentId: AGENT_2 },
+      { producedByAgentId: AGENT_2 }
+    )
+    await ready('f5', { visibility: 'private', ownerIdentity: 'user:bob' })
+    await prisma.artifactShare.create({
+      data: {
+        id: '5ea5ea5e-1111-4111-8111-111111111111',
+        orgId: ORG,
+        artifactId: scoped.id,
+        revisionNumber: 1,
+        tokenHash: 'h'.repeat(64),
+        displayTail: '…abcdef',
+        audience: 'public',
+        createdByIdentity: 'user:alice'
+      }
+    })
+    const keys = await repo.audienceKeys(ORG)
+    expect(keys).toEqual({ externalScopeIds: [S1], editorsAgentIds: [AGENT_2] })
+    expect(await repo.audienceKeys(OTHER_ORG)).toEqual({ externalScopeIds: [], editorsAgentIds: [] })
+
+    const olga: ArtifactViewer = {
+      orgId: ORG,
+      principal: { userId: 'olga', role: 'owner' },
+      identitySet: new Set(['user:olga', 'user:alice']),
+      externalAccess: {
+        policies: [{ provider: 'slack', readFenceRev: null }],
+        allowedScopes: [{ id: S1, aclRevision: 0n }],
+        decisionAt: new Date()
+      }
+    }
+    const ids = async (filter: Parameters<PgArtifactRepo['listVisible']>[2]) =>
+      (await repo.listVisible(olga, { limit: 50 }, filter)).map((a) => a.id).sort()
+    expect(await ids({ ownerIdentities: ['user:alice'] })).toEqual([alices.id])
+    expect(await ids({ ownerIdentities: [] })).toEqual([])
+    expect(await ids({ producedByAgentId: AGENT_2 })).toEqual([byAgent2.id])
+    expect(await ids({ publiclyShared: true })).toEqual([scoped.id])
+    // A filter never widens the audience: Bob's private artifact stays out.
+    expect(await ids({ ownerIdentities: ['user:bob'] })).toEqual([])
+
+    const latest = await repo.latestRevisions(ORG, [alices, scoped])
+    expect(latest.map((r) => [r.artifactId, r.number]).sort()).toEqual(
+      [
+        [alices.id, 1],
+        [scoped.id, 1]
+      ].sort()
+    )
+    expect(await repo.latestRevisions(OTHER_ORG, [alices])).toEqual([])
+    expect(await repo.latestRevisions(ORG, [])).toEqual([])
+
+    const expected = { visibility: 'org' as const, ownerIdentity: 'user:alice' }
+    const moved = await repo.update(ORG, alices.id, expected, { title: 'Renamed', visibility: 'private' })
+    expect(moved).toMatchObject({ title: 'Renamed', visibility: 'private', ownerIdentity: 'user:alice' })
+    // Decided against `org`, but it is `private` now: nothing changes.
+    expect(await repo.update(ORG, alices.id, expected, { title: 'Stale' })).toBeNull()
+    expect(await repo.update(OTHER_ORG, alices.id, { ...expected, visibility: 'private' }, { title: 'x' })).toBeNull()
+    expect((await repo.get(ORG, alices.id))?.title).toBe('Renamed')
+  })
 })
