@@ -207,6 +207,11 @@ export class PgOrgRepo implements OrgRepo {
     return org?.slug ?? null
   }
 
+  async displayNameById(orgId: string): Promise<string | null> {
+    const org = await this.db.org.findUnique({ where: { id: orgId }, select: { name: true, slug: true } })
+    return org ? org.name || org.slug : null
+  }
+
   async listIds(limit: number): Promise<string[]> {
     const rows = await this.db.org.findMany({ select: { id: true }, orderBy: { createdAt: 'asc' }, take: limit })
     return rows.map((row) => row.id)

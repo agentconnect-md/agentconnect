@@ -4,6 +4,7 @@ import type { CapabilityRequestService } from '../capability/capability-request.
 import type { SharedImageService } from '../file-transfer/shared-image.js'
 import type { SessionFileService } from '../file-transfer/session-file.js'
 import type { ArtifactService } from '../artifacts/service.js'
+import type { ArtifactShareService } from '../artifacts/shares.js'
 /**
  * `http/deps.ts` — the dependency bundle the C2 BFF routes receive (design §2.1,
  * §2.4). Routes consume repository **ports** and cross-component services, never
@@ -660,4 +661,6 @@ export interface HttpDeps {
   sessionFiles?: Pick<SessionFileService, 'download'>
   /** Artifacts (artifacts.md §8.1, §12); absent ⇒ every artifact route answers 409 ARTIFACTS_NOT_ENABLED. */
   artifacts?: Pick<ArtifactService, 'fileDownload'>
+  /** Share links to one artifact revision (artifacts.md §8.3); only used while `artifacts` is present. */
+  artifactShares: ArtifactShareService
 }

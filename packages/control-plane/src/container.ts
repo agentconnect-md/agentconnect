@@ -166,6 +166,7 @@ import {
   PgComputerScreenshotRepo,
   PgSessionFileSnapshotRepo,
   PgArtifactRepo,
+  PgArtifactShareRepo,
   PgComputerUsageRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
@@ -348,6 +349,7 @@ import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
 import { createSessionFileService } from './file-transfer/session-file.js'
 import { createArtifactService } from './artifacts/service.js'
+import { ArtifactShareCodec, ArtifactShareService } from './artifacts/shares.js'
 import { createFileTransfer, isTransferObjectKey, transferPendingMinimumDays } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
@@ -704,6 +706,7 @@ export function buildContainer(
     computerScreenshot: new PgComputerScreenshotRepo(prisma),
     sessionFileSnapshot: new PgSessionFileSnapshotRepo(prisma),
     artifact: new PgArtifactRepo(prisma),
+    artifactShare: new PgArtifactShareRepo(prisma),
     computerUsage: new PgComputerUsageRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
@@ -1223,6 +1226,12 @@ export function buildContainer(
           log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
         })
       : undefined
+  const artifactShares = new ArtifactShareService({
+    shares: repos.artifactShare,
+    codec: new ArtifactShareCodec(config.API_KEY_PEPPER),
+    clock,
+    ...(webAppUrl ? { webAppUrl } : {})
+  })
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
   const sharedImages = createSharedImageService({
     ...(fileTransferBucket ? { transfer: fileTransferBucket.transfer } : {}),
@@ -3050,6 +3059,7 @@ export function buildContainer(
     sharedImages,
     ...(sessionFiles ? { sessionFiles } : {}),
     ...(artifacts ? { artifacts } : {}),
+    artifactShares,
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }
