@@ -1,7 +1,8 @@
 # Artifacts
 
-**Status:** Step 1 implemented (#4442); the rest is a draft. Product decisions recorded
-2026-11-24 and 2026-11-26 (§3); the open questions are in §13 and the rollout in §14.
+**Status:** Steps 1 to 4 implemented (#4442); step 5 and the concurrent-update rule (§5.6)
+are not yet built. Product decisions recorded 2026-11-24 and 2026-11-26 (§3); the open
+questions are in §13 and the rollout in §14.
 
 **Builds on:** [agent-authored-attachments.md](agent-authored-attachments.md) (`shareFile`
 and the session snapshot), [source-cache-file-transfer.md](source-cache-file-transfer.md)
