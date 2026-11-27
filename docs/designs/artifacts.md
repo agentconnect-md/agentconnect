@@ -635,7 +635,7 @@ browser and components the console already has:
 | Case                               | Rule                                                                                            |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
 | The artifact                       | Never expires on its own; kept until deleted                                                    |
-| An older revision                  | Removed once older than the session retention window (`sessions.retention`, 90 days by default) |
+| An older revision                  | Removed once older than the publishing daemon's `sessions.retention` (default: 90 days; see P3) |
 | The latest revision                | Always kept                                                                                     |
 | A revision with an active share    | Kept                                                                                            |
 | A revision that never became ready | Removed once its upload URLs have expired, plus a grace period; refused or abandoned alike      |
@@ -649,8 +649,21 @@ artifact's rows at once, so its reads answer 404 and its share links answer 404
 `ARTIFACT_SHARE_NOT_FOUND` like a link that never existed, and records every revision's
 object keys in a deletion record that stays until the objects are gone. The keys are deleted
 right away, retried until a sweep succeeds, and deleted once more after the upload URL
-lifetime plus a grace period (§5.6); only then is the record dropped. `sessions.retention` is a daemon-side setting today; which value the CP
-uses is open question P3.
+lifetime plus a grace period (§5.6); only then is the record dropped.
+
+An older revision ages from its creation against the `sessions.retention` (the console's
+"Expire sessions") the CP delivers to the daemon that published it. Per-session and
+per-organization history windows are ignored, and `never` keeps every revision (P3). Each
+revision records the publishing daemon and its value at publish. The CP reads the daemon's
+current value and falls back to the recorded one once the daemon is removed, as a retired pool
+member is; a revision with neither is kept. The deletion reaper starts each tick, every five
+minutes, with a retention pass over at most 100 revisions. It decides each one again under the
+artifact's row lock, swaps the revision row for a deletion record in one transaction and sweeps
+the objects as for a deletion; the record goes once they are gone. A share is created under the
+same lock, so no share can pin a removed revision. Revoked shares on it stay, and their links
+answer 410 until the artifact is deleted. A pinned link to a removed revision opens the latest
+one (§8.2). Deleting an organization records every artifact of it for the reaper in the
+transaction that deletes the organization, so its links stop at once and the objects follow.
 
 ### 10.2 Limits
 
@@ -768,7 +781,6 @@ the loopback address with a locally trusted certificate.
 | #   | Question                                                                                                                                                                              | Proposal                                                                                                                                                 |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1  | Manifest in the database or as an object in the bucket                                                                                                                                | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds                          |
-| P3  | Which retention value the CP applies to revisions                                                                                                                                     | The `sessions.retention` the CP delivers to the installation, ignoring per-session overrides; `never` keeps everything                                   |
 | P4  | Limit values                                                                                                                                                                          | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan                                  |
 | P5  | Whether the daemon also checks that the session fetched or published the base it names. The refusal tells the agent the latest number, so an agent can name it without merging (§5.6) | Not at first: the refusal tells the agent to fetch and reapply. Add the check if agents are seen skipping the merge                                      |
 | P6  | Where a fetched revision lands. Today one directory per artifact under `outputs/` is replaced by each fetch, which would discard the working copy during a merge (§5.6)               | One directory per revision under `outputs/`, named by the artifact and the revision number. The extra entries in the session's outputs list are accepted |
@@ -812,6 +824,13 @@ to the shipped defaults. Its WebKit is the Linux port, not Safari: Safari adds I
 Tracking Prevention, which can delete a site's script-writable storage after seven days
 without interaction. That costs only a registration, since the shim registers on every load,
 but step 2 still needs one manual pass in Safari on macOS and iOS.
+
+### 13.2 Settled: P3, the retention value
+
+Settled by the owner on 2026-11-27 as proposed: old revisions follow the `sessions.retention`
+the CP delivers to the installation, ignoring per-session overrides, and `never` keeps
+everything. The installation is the daemon that published the revision; §10.1 describes the
+sweep.
 
 ## 14. Rollout
 

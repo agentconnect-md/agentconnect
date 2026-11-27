@@ -47,7 +47,8 @@ export const handleArtifactPublishBegin: Handler = async (frame, conn, deps) => 
   const ok = await authorize(frame, conn, deps)
   if (!ok) return
   try {
-    conn.replyTo(frame, 'artifact/publish/begin/ok', await ok.artifacts.begin(ok.orgId, ok.agent, frame.payload))
+    const begun = await ok.artifacts.begin(ok.orgId, ok.agent, frame.payload, conn.daemonId)
+    conn.replyTo(frame, 'artifact/publish/begin/ok', begun)
   } catch (err) {
     sendFailure(conn, deps, frame, err)
   }

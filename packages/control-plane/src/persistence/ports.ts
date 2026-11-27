@@ -109,6 +109,7 @@ import type { LeaseWaiter } from '../domain/computerLeaseQueue.js'
 import type { ComputerAllocation, ComputerPoolPhase } from '../domain/computerPool.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { ArtifactAudience, ArtifactReachSession, ArtifactViewer } from '../authorization/artifact-policy.js'
+import type { RevisionRetentionFacts } from '../artifacts/retention.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
 import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
@@ -1087,6 +1088,8 @@ export interface NewArtifactRevision {
   producedInSessionId: string
   initiatedBy: string | null
   idempotencyKey: string
+  /** The daemon publishing it, whose `sessions.retention` the repository snapshots beside it (§10.1). */
+  publishedByDaemonId?: string
 }
 
 export interface ArtifactPublishResult {
@@ -1096,7 +1099,7 @@ export interface ArtifactPublishResult {
   replayed: boolean
 }
 
-/** A deleted artifact's object keys, kept until the bucket no longer holds them (artifacts.md §5.6, §10.1). */
+/** A deleted artifact's or expired revision's object keys, kept until the bucket no longer holds them (artifacts.md §5.6, §10.1). */
 export interface ArtifactDeletionRecord {
   id: string
   orgId: string
@@ -1105,6 +1108,13 @@ export interface ArtifactDeletionRecord {
   /** When upload URLs signed before the deletion have expired. */
   purgeAfter: Date
   sweptAt: Date | null
+}
+
+/** One revision of one artifact, as the retention sweep names it. */
+export interface ArtifactRevisionKey {
+  orgId: string
+  artifactId: string
+  number: number
 }
 
 /** Newest-updated first; the cursor is the last row of the previous page. */
@@ -1166,6 +1176,14 @@ export interface ArtifactRepo {
     id: string,
     at: { deletedAt: Date; purgeAfter: Date }
   ): Promise<ArtifactDeletionRecord | null>
+  /** Ready revisions older than their installation's retention, neither latest nor actively shared, oldest first (§10.1). */
+  expiredRevisions(now: Date, limit: number): Promise<ArtifactRevisionKey[]>
+  /** Re-check `expired` under the artifact's row lock, then record the revision's object keys and delete its row; null when kept or gone. */
+  expireRecording(
+    key: ArtifactRevisionKey,
+    at: { deletedAt: Date; purgeAfter: Date },
+    expired: (facts: RevisionRetentionFacts) => boolean
+  ): Promise<ArtifactDeletionRecord | null>
   /** Deletions whose first sweep has not succeeded, or whose `purgeAfter` has passed, oldest first. */
   dueDeletions(now: Date, limit: number): Promise<ArtifactDeletionRecord[]>
   markDeletionSwept(id: string, at: Date): Promise<void>
@@ -1218,8 +1236,8 @@ export interface NewArtifactShare {
 }
 
 export interface ArtifactShareRepo {
-  /** Throws P2003 when the artifact is gone. */
-  create(share: NewArtifactShare): Promise<ArtifactShareRecord>
+  /** Null when the artifact or its ready revision is gone; the artifact's share lock orders it against a retention sweep. */
+  create(share: NewArtifactShare): Promise<ArtifactShareRecord | null>
   /** Unrevoked shares of one artifact, newest first. */
   listActive(orgId: string, artifactId: string): Promise<ArtifactShareRecord[]>
   get(orgId: string, artifactId: string, id: string): Promise<ArtifactShareRecord | null>

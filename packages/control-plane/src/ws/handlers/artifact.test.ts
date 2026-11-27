@@ -67,7 +67,12 @@ describe('artifact/* handlers', () => {
   it('answers each frame for a daemon placed on the agent', async () => {
     const { artifacts, conn, deps, c } = setup()
     await handleArtifactPublishBegin(begin, c, deps)
-    expect(artifacts.begin).toHaveBeenCalledWith(orgId, expect.objectContaining({ id: agentId }), begin.payload)
+    expect(artifacts.begin).toHaveBeenCalledWith(
+      orgId,
+      expect.objectContaining({ id: agentId }),
+      begin.payload,
+      daemonId
+    )
     expect(conn.replyTo).toHaveBeenLastCalledWith(begin, 'artifact/publish/begin/ok', expect.anything())
     await handleArtifactPublishComplete(complete, c, deps)
     expect(conn.replyTo).toHaveBeenLastCalledWith(complete, 'artifact/publish/complete/ok', expect.anything())

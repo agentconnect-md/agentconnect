@@ -59,15 +59,17 @@ export interface ArtifactShareServiceDeps {
 export class ArtifactShareService {
   constructor(private readonly deps: ArtifactShareServiceDeps) {}
 
+  /** Null when the artifact or its ready revision is gone, as after a retention sweep. */
   async create(input: {
     orgId: string
     artifactId: string
     revisionNumber: number
     audience: ArtifactShareAudience
     createdByIdentity: string
-  }): Promise<CreatedArtifactShare> {
+  }): Promise<CreatedArtifactShare | null> {
     const minted = this.deps.codec.mint()
     const share = await this.deps.shares.create({ ...input, tokenHash: minted.hash, displayTail: minted.displayTail })
+    if (!share) return null
     const linkPath = artifactShareLinkPath(minted.token)
     const base = this.deps.webAppUrl?.replace(/\/+$/, '')
     return { share, token: minted.token, linkPath, ...(base ? { link: `${base}${linkPath}` } : {}) }

@@ -114,7 +114,7 @@ export async function agentAndSession(
   const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
   const sessionId = await newSession(agentId, opts)
   const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId))) as AgentRecord
-  return { agent, agentId, sessionId }
+  return { agent, agentId, sessionId, daemonId }
 }
 
 export const newSession = (
@@ -131,18 +131,23 @@ export async function publish(
   h: ReturnType<typeof harness>,
   agent: AgentRecord,
   sessionId: string,
-  extra: { artifactId?: string; initiator?: ArtifactInitiator; manifest?: ArtifactManifest } = {}
+  extra: { artifactId?: string; initiator?: ArtifactInitiator; manifest?: ArtifactManifest; daemonId?: string } = {}
 ) {
-  const begun = await h.service.begin(DEFAULT_ORG_ID, agent, {
-    agentId: agent.id,
-    sessionId,
-    title: 'Weekly report',
-    manifest: extra.manifest ?? manifestOf(['index.html', '<p>hi</p>']),
-    idempotencyKey: `key-${randomUUID()}`,
-    network: 'cluster',
-    ...(extra.artifactId ? { artifactId: extra.artifactId } : {}),
-    ...(extra.initiator ? { initiator: extra.initiator } : {})
-  })
+  const begun = await h.service.begin(
+    DEFAULT_ORG_ID,
+    agent,
+    {
+      agentId: agent.id,
+      sessionId,
+      title: 'Weekly report',
+      manifest: extra.manifest ?? manifestOf(['index.html', '<p>hi</p>']),
+      idempotencyKey: `key-${randomUUID()}`,
+      network: 'cluster',
+      ...(extra.artifactId ? { artifactId: extra.artifactId } : {}),
+      ...(extra.initiator ? { initiator: extra.initiator } : {})
+    },
+    extra.daemonId
+  )
   h.upload(begun)
   if (begun.state !== 'pending') throw new Error('expected a pending revision')
   return await h.service.complete(DEFAULT_ORG_ID, {

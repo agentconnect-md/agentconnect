@@ -301,6 +301,10 @@ export function orgScopedRoutes(deps: HttpDeps) {
           })
         }
         for (const bot of bots) if (bot.transport === 'http') await deps.httpBot.unassign(bot)
+        // The deleted artifacts' objects go now rather than at the reaper's next tick, which retries a failure.
+        void deps.artifacts?.reap().catch((err: unknown) => {
+          app.log.warn({ err, orgId }, 'org delete: artifact object sweep failed (the reaper retries it)')
+        })
         // Best-effort, like the agent delete's own removal push: the rows are gone either way, and a
         // member that missed this drops the agents on its next register roster.
         await announceRemovals((err, daemonId) => {

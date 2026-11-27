@@ -1,5 +1,6 @@
 // PgArtifactRepo — artifacts and their revisions (artifacts.md §4); metadata only, the bytes live in the transfer bucket.
 import { randomUUID } from 'node:crypto'
+import { SOURCE_CACHE_GRACE_SECONDS } from '@agentconnect.md/object-store'
 import type { Artifact, ArtifactDeletion, ArtifactRevision } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { ArtifactAudience, ArtifactReachSession, ArtifactViewer } from '../../authorization/artifact-policy.js'
@@ -14,10 +15,12 @@ import type {
   ArtifactPublishResult,
   ArtifactRecord,
   ArtifactRepo,
+  ArtifactRevisionKey,
   ArtifactRevisionRecord,
   NewArtifact,
   NewArtifactRevision
 } from '../ports.js'
+import type { RevisionRetentionFacts } from '../../artifacts/retention.js'
 
 /** An idempotency key the agent already used for a different publication. */
 export class ArtifactIdempotencyConflictError extends Error {
@@ -75,7 +78,19 @@ function toDeletion(row: ArtifactDeletion): ArtifactDeletionRecord {
   }
 }
 
-function revisionData(revision: NewArtifactRevision, artifactId: string, number: number) {
+/** The publishing daemon's `sessions.retention` now, snapshotted beside the revision for after the daemon is gone. */
+async function daemonRetention(tx: PrismaLike, daemonId: string | undefined): Promise<string | null> {
+  if (!daemonId) return null
+  const daemon = await tx.daemon.findUnique({ where: { id: daemonId }, select: { sessionRetention: true } })
+  return daemon?.sessionRetention ?? null
+}
+
+function revisionData(
+  revision: NewArtifactRevision,
+  artifactId: string,
+  number: number,
+  publishedRetention: string | null
+) {
   return {
     id: randomUUID(),
     artifactId,
@@ -87,6 +102,8 @@ function revisionData(revision: NewArtifactRevision, artifactId: string, number:
     producedByAgentName: revision.producedByAgentName,
     producedInSessionId: revision.producedInSessionId,
     initiatedBy: revision.initiatedBy,
+    publishedByDaemonId: revision.publishedByDaemonId ?? null,
+    publishedRetention,
     totalBytes: revision.manifest.files.reduce((sum, file) => sum + file.bytes, 0),
     fileCount: revision.manifest.files.length,
     idempotencyKey: revision.idempotencyKey
@@ -110,6 +127,40 @@ export function decodeArtifactCursor(cursor: string): NonNullable<ArtifactPageQu
   } catch {
     return null
   }
+}
+
+/** A revision's object keys: each manifest path under its storage prefix. */
+const objectKeysOf = (revision: Pick<ArtifactRevision, 'storagePrefix' | 'manifest'>): string[] =>
+  (revision.manifest as unknown as ArtifactManifest).files.map((file) => `${revision.storagePrefix}/${file.path}`)
+
+/** The day count in a `sessions.retention` value; `never` and anything malformed match nothing and keep the revision. */
+const RETENTION_DAYS_SQL = '^([1-9][0-9]{0,3})d$'
+/** One day, the shortest `sessions.retention`, which bounds the scan by the creation index. */
+const SHORTEST_RETENTION_MS = 24 * 60 * 60_000
+
+/** The longest upload URL lifetime the transfer config admits plus the grace, so a deletion's last sweep follows every PUT. */
+export const ARTIFACT_PURGE_DELAY_MAX_MS = (3600 + SOURCE_CACHE_GRACE_SECONDS) * 1000
+
+/** Record every artifact of a deleted organization for the reaper and delete their rows, in the caller's transaction. */
+export async function recordOrgArtifactDeletions(
+  tx: PrismaLike,
+  orgId: string,
+  at: { deletedAt: Date; purgeAfter: Date }
+): Promise<number> {
+  const recorded = await tx.$executeRaw`
+    INSERT INTO "artifact_deletion" ("id", "orgId", "objectKeys", "deletedAt", "purgeAfter")
+    SELECT a."id", a."orgId",
+           COALESCE(array_agg(r."storagePrefix" || '/' || (f.file ->> 'path')) FILTER (WHERE f.file IS NOT NULL), '{}'),
+           ${at.deletedAt}, ${at.purgeAfter}
+    FROM "artifact" a
+    LEFT JOIN "artifact_revision" r ON r."artifactId" = a."id"
+    LEFT JOIN LATERAL jsonb_array_elements(r."manifest" -> 'files') AS f(file) ON true
+    WHERE a."orgId" = ${orgId}
+    GROUP BY a."id", a."orgId"
+    ON CONFLICT ("id") DO NOTHING`
+  // Revisions and shares cascade, so no link of the organization's artifacts opens from here on.
+  await tx.artifact.deleteMany({ where: { orgId } })
+  return recorded
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -229,7 +280,8 @@ export class PgArtifactRepo implements ArtifactRepo {
             originSessionId: artifact.originSessionId
           }
         })
-        const first = await tx.artifactRevision.create({ data: revisionData(revision, id, 1) })
+        const retention = await daemonRetention(tx, revision.publishedByDaemonId)
+        const first = await tx.artifactRevision.create({ data: revisionData(revision, id, 1, retention) })
         return { artifact: toArtifact(created), revision: toRevision(first), replayed: false }
       })
     } catch (err) {
@@ -256,8 +308,9 @@ export class PgArtifactRepo implements ArtifactRepo {
           SELECT "id" FROM "artifact" WHERE "id" = ${artifactId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
         if (locked.length === 0) return null
         const top = await tx.artifactRevision.aggregate({ where: { artifactId }, _max: { number: true } })
+        const retention = await daemonRetention(tx, revision.publishedByDaemonId)
         const appended = await tx.artifactRevision.create({
-          data: revisionData(revision, artifactId, (top._max.number ?? 0) + 1)
+          data: revisionData(revision, artifactId, (top._max.number ?? 0) + 1, retention)
         })
         const current = await tx.artifact.findUniqueOrThrow({ where: { id: artifactId } })
         return { artifact: toArtifact(current), revision: toRevision(appended), replayed: false }
@@ -341,12 +394,75 @@ export class PgArtifactRepo implements ArtifactRepo {
         where: { artifactId: id },
         select: { storagePrefix: true, manifest: true }
       })
-      const objectKeys = revisions.flatMap((revision) =>
-        (revision.manifest as unknown as ArtifactManifest).files.map((file) => `${revision.storagePrefix}/${file.path}`)
-      )
+      const objectKeys = revisions.flatMap(objectKeysOf)
       const recorded = await tx.artifactDeletion.create({ data: { id, orgId, objectKeys, ...at } })
       // Revisions and shares cascade, so every read, list and share link answers as absent from here on.
       await tx.artifact.delete({ where: { id } })
+      return toDeletion(recorded)
+    })
+  }
+
+  async expiredRevisions(now: Date, limit: number): Promise<ArtifactRevisionKey[]> {
+    // The SQL projection of `revisionExpired`; the integration test holds the two to the same cases.
+    return this.db.$queryRaw<ArtifactRevisionKey[]>`
+      SELECT a."orgId", r."artifactId", r."number"
+      FROM "artifact_revision" r
+      JOIN "artifact" a ON a."id" = r."artifactId"
+      LEFT JOIN "daemon" d ON d."id" = r."publishedByDaemonId"
+      CROSS JOIN LATERAL (
+        SELECT substring(COALESCE(d."sessionRetention", r."publishedRetention") FROM ${RETENTION_DAYS_SQL})::int AS days
+      ) w
+      WHERE r."state" = 'ready'
+        AND r."createdAt" < ${new Date(now.getTime() - SHORTEST_RETENTION_MS)}
+        AND r."number" < a."latestRevision"
+        AND w.days IS NOT NULL
+        AND r."createdAt" + make_interval(days => w.days) < ${now}
+        AND NOT EXISTS (
+          SELECT 1 FROM "artifact_share" s
+          WHERE s."artifactId" = r."artifactId" AND s."revisionNumber" = r."number" AND s."revokedAt" IS NULL
+        )
+      ORDER BY r."createdAt", r."id"
+      LIMIT ${limit}`
+  }
+
+  async expireRecording(
+    key: ArtifactRevisionKey,
+    at: { deletedAt: Date; purgeAfter: Date },
+    expired: (facts: RevisionRetentionFacts) => boolean
+  ): Promise<ArtifactDeletionRecord | null> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The row lock orders this against a share being created on the revision, which takes the share lock.
+      const locked = await tx.$queryRaw<Array<{ latestRevision: number }>>`
+        SELECT "latestRevision" FROM "artifact"
+        WHERE "id" = ${key.artifactId}::uuid AND "orgId" = ${key.orgId} FOR UPDATE`
+      const latestRevision = locked[0]?.latestRevision
+      if (latestRevision === undefined) return null
+      const revision = await tx.artifactRevision.findUnique({
+        where: { artifactId_number: { artifactId: key.artifactId, number: key.number } }
+      })
+      if (!revision) return null
+      const [daemon, activeShares] = await Promise.all([
+        revision.publishedByDaemonId
+          ? tx.daemon.findUnique({ where: { id: revision.publishedByDaemonId }, select: { sessionRetention: true } })
+          : null,
+        tx.artifactShare.count({
+          where: { artifactId: key.artifactId, revisionNumber: key.number, revokedAt: null }
+        })
+      ])
+      const facts: RevisionRetentionFacts = {
+        state: revision.state,
+        number: revision.number,
+        createdAt: revision.createdAt,
+        latestRevision,
+        retention: daemon?.sessionRetention ?? revision.publishedRetention,
+        activelyShared: activeShares > 0
+      }
+      if (!expired(facts)) return null
+      const recorded = await tx.artifactDeletion.create({
+        data: { id: revision.id, orgId: key.orgId, objectKeys: objectKeysOf(revision), ...at }
+      })
+      // Revoked shares on it stay, so their links keep answering as revoked until the artifact is deleted.
+      await tx.artifactRevision.delete({ where: { id: revision.id } })
       return toDeletion(recorded)
     })
   }
