@@ -6,6 +6,8 @@ import {
   ArtifactManifest,
   artifactPathFoldKey,
   artifactPathProblem,
+  artifactRevisionLimitProblem,
+  formatArtifactBytes,
   type ArtifactManifestFile
 } from '@agentconnect.md/protocol'
 import type { WorkspaceFsKind } from '../workspace/workspace-fs.js'
@@ -112,7 +114,7 @@ async function walk(tree: ArtifactSourceTree, label: string): Promise<{ files: s
       files.push(rel)
       if (files.length > ARTIFACT_MAX_FILES)
         throw new ArtifactToolError(
-          `publishArtifact: "${label}" holds more than ${ARTIFACT_MAX_FILES} files; an artifact revision holds at most ${ARTIFACT_MAX_FILES}.`
+          `publishArtifact: "${label}" holds more than ${ARTIFACT_MAX_FILES} files; an artifact revision holds at most ${ARTIFACT_MAX_FILES}. Nothing was uploaded.`
         )
     }
   }
@@ -182,6 +184,8 @@ export async function buildArtifactManifest(
   const checked = ArtifactManifest.safeParse(manifest)
   if (!checked.success)
     throw new ArtifactToolError(`publishArtifact: ${checked.error.issues[0]?.message ?? 'the manifest is invalid'}.`)
+  const over = artifactRevisionLimitProblem(checked.data)
+  if (over) throw new ArtifactToolError(`publishArtifact: ${over.message}; nothing was uploaded.`)
   return { manifest: checked.data, files, skipped }
 }
 
@@ -207,8 +211,9 @@ function tooLarge(path: string, size: number, total: number, maxFileBytes: numbe
     return new ArtifactToolError(
       `publishArtifact: "${path}" is ${size} bytes, over this deployment's ${maxFileBytes}-byte limit per file.`
     )
+  const max = formatArtifactBytes(ARTIFACT_MAX_BYTES)
   return new ArtifactToolError(
-    `publishArtifact: the files add up to more than ${ARTIFACT_MAX_BYTES} bytes (${total + size} at "${path}"); an artifact revision holds at most ${ARTIFACT_MAX_BYTES}.`
+    `publishArtifact: the files add up to more than ${max} (${total + size} bytes at "${path}"); an artifact revision holds at most ${max}. Nothing was uploaded.`
   )
 }
 

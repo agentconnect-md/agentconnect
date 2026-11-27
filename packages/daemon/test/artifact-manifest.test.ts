@@ -1,7 +1,7 @@
 // The publish side's manifest building (artifacts.md §5.3–§5.4, §10.2): walk, path rules, limits, entry, hashing.
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { ARTIFACT_MAX_FILES } from '@agentconnect.md/protocol'
+import { ARTIFACT_MAX_BYTES, ARTIFACT_MAX_FILES } from '@agentconnect.md/protocol'
 import {
   artifactDirName,
   artifactIdempotencyKey,
@@ -16,7 +16,7 @@ const build = (root: Node, opts: { label?: string; entry?: string; maxFileBytes?
   buildArtifactManifest(fakeTree(root), {
     label: opts.label ?? 'files:outputs/site',
     ...(opts.entry !== undefined ? { entry: opts.entry } : {}),
-    maxFileBytes: opts.maxFileBytes ?? 50 * 1024 * 1024
+    maxFileBytes: opts.maxFileBytes ?? ARTIFACT_MAX_BYTES
   })
 
 describe('buildArtifactManifest', () => {
@@ -93,12 +93,18 @@ describe('buildArtifactManifest', () => {
       build({ 'a.bin': 'x'.repeat(20), 'b.bin': 'y' }, { entry: 'a.bin', maxFileBytes: 10 })
     ).rejects.toThrow(/"a.bin" is 20 bytes, over this deployment's 10-byte limit per file/)
     const tree = fakeTree({ 'a.bin': 'x', 'b.bin': 'y' })
-    // The second read gets what remains of the 50 MB budget; a file past it reads as too large.
-    tree.read = async (rel) =>
-      rel === 'a.bin' ? { bytes: Buffer.alloc(30 * 1024 * 1024, 1) } : { tooLarge: 30 * 1024 * 1024 }
+    // The second read gets what remains of the 200 MB budget; a file past it reads as too large.
+    const budgets: number[] = []
+    tree.read = async (rel, max) => {
+      budgets.push(max)
+      return rel === 'a.bin' ? { bytes: Buffer.from('x') } : { tooLarge: ARTIFACT_MAX_BYTES }
+    }
     await expect(
-      buildArtifactManifest(tree, { label: 'out', entry: 'a.bin', maxFileBytes: 50 * 1024 * 1024 })
-    ).rejects.toThrow(/add up to more than 52428800 bytes/)
+      buildArtifactManifest(tree, { label: 'out', entry: 'a.bin', maxFileBytes: ARTIFACT_MAX_BYTES })
+    ).rejects.toThrow(
+      /add up to more than 200 MB \(209715201 bytes at "b.bin"\); an artifact revision holds at most 200 MB/
+    )
+    expect(budgets).toEqual([ARTIFACT_MAX_BYTES, ARTIFACT_MAX_BYTES - 1])
   })
 
   it('reports refusals as ArtifactToolError', async () => {

@@ -5495,8 +5495,10 @@ model OrgSessionPolicy {
   monthlySessionLimit  Int?
   // Days hosted session history is kept; null leaves retention unbounded by this policy.
   historyRetentionDays Int?
-  // False counts only and never refuses.
+  // False counts only and never refuses; it governs the session limit only.
   enforce              Boolean  @default(false)
+  // Bytes the org's artifacts may hold across ready and pending revisions; null is no limit (artifacts.md §10.2).
+  artifactBytesLimit   BigInt?
   updatedAt            DateTime @updatedAt @db.Timestamptz(6)
 
   org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)

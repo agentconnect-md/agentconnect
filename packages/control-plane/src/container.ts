@@ -1232,6 +1232,8 @@ export function buildContainer(
             wsDeps.readAccess?.(req, expectedOrgId) ??
             Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
           shares: artifactShares,
+          // The total a deployment-level service delivers with the org's session policy (org-session-policy.md).
+          orgBytesLimit: (orgId) => repos.orgSessionPolicy.artifactBytesLimit(orgId),
           // Lazy over `httpDeps` (assigned below): a share uses the member's identities as the console resolves them.
           memberAccess: async (orgId, principal, artifact) => {
             const oidcSubject = await repos.user.getOidcSubject(principal.userId)

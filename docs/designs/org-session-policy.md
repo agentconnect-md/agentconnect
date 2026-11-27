@@ -8,7 +8,9 @@ off by default; see [Not yet](#not-yet).
 ## What it is
 
 A session policy is one row per organization, `org_session_policy`, that says how many sessions
-the organization may start and how long its hosted session history is kept.
+the organization may start and how long its hosted session history is kept. It also carries the
+organization's artifact total ([artifacts.md](artifacts.md) §10.2), which applies whenever it is
+set: `enforce` and the install switch govern the session limit only.
 
 | Field                  | Type              | Meaning                                                                          |
 | ---------------------- | ----------------- | -------------------------------------------------------------------------------- |
@@ -16,6 +18,7 @@ the organization may start and how long its hosted session history is kept.
 | `monthlySessionLimit`  | integer ≥ 0, null | Sessions the organization may start per UTC month; `null` is no limit.           |
 | `historyRetentionDays` | integer ≥ 1, null | Days hosted session history is kept; `null` means this policy does not bound it. |
 | `enforce`              | boolean           | `false` counts only and never refuses; `true` refuses new sessions at the limit. |
+| `artifactBytesLimit`   | integer ≥ 0, null | Bytes the organization's artifacts may hold; `null` or omitted is no limit.      |
 
 An organization with no row has no policy: no limit, no retention bound, nothing enforced.
 
@@ -30,8 +33,9 @@ server's org standing ([key-server.md](key-server.md) §1, §2.3) and managed co
 ## Delivery contract
 
 `PUT /api/v1/internal/orgs/{orgId}/session-policy` with `Authorization: Bearer <credential>` and
-a strict JSON body of the four fields above (unknown keys are refused). The route is hidden from
-the OpenAPI document and sits outside the organization subtree and human sign-in.
+a strict JSON body of the fields above (unknown keys are refused); `artifactBytesLimit` may be
+omitted, which stores no limit. The route is hidden from the OpenAPI document and sits outside
+the organization subtree and human sign-in.
 
 | Answer | When                                                                   |
 | ------ | ---------------------------------------------------------------------- |

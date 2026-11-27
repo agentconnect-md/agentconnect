@@ -667,12 +667,18 @@ transaction that deletes the organization, so its links stop at once and the obj
 
 ### 10.2 Limits
 
-- A revision has a file-count and a total-size limit; a publish over either is refused as a
-  whole, naming the rule.
-- An organization has a total artifact size limit; once reached, new publications are
-  refused and nothing old is evicted. Pending revisions count toward it (§5.6).
-- A revision holds at most 200 files and 50 MB (`ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_BYTES` in
-  the protocol package); the organization total is open question P4.
+- A revision holds at most 200 files and 200 MB (`ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_BYTES` in
+  the protocol package). The daemon checks both before it uploads anything, and the CP checks
+  them again at step 3, refusing with `revision-limit` and the rule (`files` or `bytes`) and
+  its limit. A deployment's per-file transfer cap can be lower and is refused as `too-large`.
+- An organization may have a total artifact size: the bytes of every ready and pending
+  revision it holds. A publish that would pass it is refused at step 3 with `org-limit`,
+  the limit and the bytes in use; nothing old is evicted. The check runs under a lock per
+  organization, so concurrent publishes cannot pass it together (§5.6). A pending revision
+  counts until it becomes ready or is removed (§10.1).
+- No total is set by default. It is the `artifactBytesLimit` field of the organization's
+  policy, which the managed service delivers per plan
+  ([org-session-policy.md](org-session-policy.md)); an operator can deliver one the same way.
 
 ## 11. Console
 
@@ -781,7 +787,6 @@ the loopback address with a locally trusted certificate.
 | #   | Question                                                                                                                                                                              | Proposal                                                                                                                                                 |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1  | Manifest in the database or as an object in the bucket                                                                                                                                | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds                          |
-| P4  | Limit values                                                                                                                                                                          | 200 files and 50 MB per revision to start; no default organization total, with the managed service setting one per plan                                  |
 | P5  | Whether the daemon also checks that the session fetched or published the base it names. The refusal tells the agent the latest number, so an agent can name it without merging (§5.6) | Not at first: the refusal tells the agent to fetch and reapply. Add the check if agents are seen skipping the merge                                      |
 | P6  | Where a fetched revision lands. Today one directory per artifact under `outputs/` is replaced by each fetch, which would discard the working copy during a merge (§5.6)               | One directory per revision under `outputs/`, named by the artifact and the revision number. The extra entries in the session's outputs list are accepted |
 
@@ -831,6 +836,12 @@ Settled by the owner on 2026-11-27 as proposed: old revisions follow the `sessio
 the CP delivers to the installation, ignoring per-session overrides, and `never` keeps
 everything. The installation is the daemon that published the revision; §10.1 describes the
 sweep.
+
+### 13.3 Settled: P4, the limit values
+
+Settled by the owner on 2026-11-27: a revision holds at most 200 files and 200 MB, raised from
+the proposed 50 MB. There is no default organization total; the managed service sets one per
+plan. §10.2 describes how both are enforced.
 
 ## 14. Rollout
 

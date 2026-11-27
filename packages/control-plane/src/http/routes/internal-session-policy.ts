@@ -16,7 +16,9 @@ export const SessionPolicyBody = z
     revision: z.number().int().min(1).max(INT4_MAX),
     monthlySessionLimit: z.number().int().min(0).max(INT4_MAX).nullable(),
     historyRetentionDays: z.number().int().min(1).max(INT4_MAX).nullable(),
-    enforce: z.boolean()
+    enforce: z.boolean(),
+    // Bytes the org's artifacts may hold (artifacts.md §10.2); omitted or null is no limit, and `enforce` does not gate it.
+    artifactBytesLimit: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().optional()
   })
   .strict()
 

@@ -1808,8 +1808,8 @@ const ROOM_GRANT_WAIT_MS = 5_000
 const ROOM_GRANT_RELAY_WAIT_MS = 1_000
 const ROOM_GRANT_POLL_MS = 50
 const ROOM_GRANT_GRACE_MS = 3_000
-/** One artifact file's PUT or GET, up to the 50 MB revision limit. */
-const ARTIFACT_TRANSFER_TIMEOUT_MS = 120_000
+/** One artifact file's PUT or GET, up to the 200 MB revision limit at about 0.4 MB/s. */
+const ARTIFACT_TRANSFER_TIMEOUT_MS = 480_000
 // One pod-local skill ref listing, the same bound the daemon's own ref naming has.
 const POD_SKILL_REF_TIMEOUT_MS = 10_000
 /** How many answered messages the §14.3 notice latch remembers before dropping the oldest. */

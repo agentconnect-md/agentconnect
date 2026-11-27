@@ -1145,14 +1145,25 @@ export interface ArtifactChange {
   visibility?: 'private' | 'org'
 }
 
+/** The organization total a new revision is held to under the org's lock; past it throws `ArtifactOrgLimitError` (§10.2). */
+export interface ArtifactPublishLimits {
+  /** Bytes of all the org's ready and pending revisions, this one included; null is no limit. */
+  orgBytesLimit: number | null
+}
+
 export interface ArtifactRepo {
   /** Create an artifact with pending revision 1; a replayed key returns what that agent recorded under it. */
-  create(artifact: NewArtifact, revision: NewArtifactRevision): Promise<ArtifactPublishResult>
+  create(
+    artifact: NewArtifact,
+    revision: NewArtifactRevision,
+    limits?: ArtifactPublishLimits
+  ): Promise<ArtifactPublishResult>
   /** Append a pending revision; null when the artifact is gone, and a key already used on another artifact throws `ArtifactIdempotencyConflictError`. */
   appendRevision(
     orgId: string,
     artifactId: string,
-    revision: NewArtifactRevision
+    revision: NewArtifactRevision,
+    limits?: ArtifactPublishLimits
   ): Promise<ArtifactPublishResult | null>
   /** Mark a revision ready and advance `latestRevision`; idempotent, null when the revision is gone. */
   markReady(orgId: string, artifactId: string, number: number): Promise<ArtifactRecord | null>
@@ -3328,6 +3339,8 @@ export interface OrgSessionPolicyInput {
   monthlySessionLimit: number | null
   historyRetentionDays: number | null
   enforce: boolean
+  /** Bytes the org's artifacts may hold across ready and pending revisions; absent or null is no limit (artifacts.md §10.2). */
+  artifactBytesLimit?: number | null
 }
 
 /** Sessions an org started this UTC month beside its policy, read in one statement at `asOf` (org-session-policy.md). */
@@ -3367,6 +3380,8 @@ export interface OrgSessionPolicyRepo {
   sessionMayAct(orgId: string, agentId: string, sessionId: string): Promise<boolean>
   /** The stored history retention of each listed org that has a policy; an org without one is absent. */
   historyRetention(orgIds: readonly string[]): Promise<OrgHistoryRetentionRow[]>
+  /** The org's artifact total in bytes; null without a policy or a limit (artifacts.md §10.2). */
+  artifactBytesLimit(orgId: string): Promise<number | null>
 }
 
 /** One org's stored history retention and the policy revision it came with; null days is unlimited. */

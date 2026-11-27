@@ -226,6 +226,8 @@ describe('publishArtifact', () => {
       ['not-found', /no such artifact or revision that this conversation can reach/],
       ['not-producer', /only of artifacts you created\. Leave out artifactId/],
       ['too-large', /over this deployment’s size limit \(boom\)/],
+      ['revision-limit', /publishArtifact: boom; nothing was published\. Publish fewer or smaller files/],
+      ['org-limit', /publishArtifact: boom; nothing was published, and nothing already published was removed/],
       ['idempotency-conflict', /collided with an earlier one/],
       ['title-required', /needs a `title`/],
       ['incomplete', /did not complete for "a.md"; nothing was published/, { paths: ['a.md'] }],
@@ -247,6 +249,35 @@ describe('publishArtifact', () => {
     await expect(publishArtifact(ctx(), { path: 'a.md', title: 'A' }, offline.deps)).rejects.toThrow(
       /control plane is not reachable right now/
     )
+  })
+
+  it('refuses a revision over 200 files before asking the control plane', async () => {
+    const many = Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`f${i}.txt`, 'x']))
+    const h = harness(many)
+    await expect(publishArtifact(ctx(), { path: 'site', title: 'A', entry: 'f0.txt' }, h.deps)).rejects.toThrow(
+      /holds more than 200 files; an artifact revision holds at most 200\. Nothing was uploaded/
+    )
+    expect(h.begins).toEqual([])
+    expect(h.puts).toEqual([])
+  })
+
+  it('relays the organization total the control plane names', async () => {
+    const message =
+      'the organization’s artifacts may hold at most 1 GB; 1073741000 bytes are in use and this revision adds 2000 bytes'
+    const h = harness('x', {
+      begin: async () => {
+        throw new WireError('CONFLICT', message, false, {
+          reason: 'org-limit',
+          limit: 1024 ** 3,
+          used: 1073741000,
+          bytes: 2000
+        })
+      }
+    })
+    await expect(publishArtifact(ctx(), { path: 'a.md', title: 'A' }, h.deps)).rejects.toThrow(
+      `publishArtifact: ${message}; nothing was published, and nothing already published was removed.`
+    )
+    expect(h.puts).toEqual([])
   })
 
   it('reports a card that could not be recorded as a notice, not a failure', async () => {

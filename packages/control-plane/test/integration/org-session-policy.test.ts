@@ -176,6 +176,8 @@ describe('PUT /internal/orgs/:orgId/session-policy — delivery', () => {
         policy(1, { enforce: 'yes' }),
         policy(1, { revision: 2_147_483_648 }),
         policy(1, { unknown: true }),
+        policy(1, { artifactBytesLimit: -1 }),
+        policy(1, { artifactBytesLimit: 1.5 }),
         { revision: 1, monthlySessionLimit: 1, historyRetentionDays: 1 }
       ]) {
         expect((await put(app, DEF_ORG, payload)).statusCode).toBe(400)
@@ -208,6 +210,18 @@ describe('PUT /internal/orgs/:orgId/session-policy — delivery', () => {
       expect((await put(app, DEF_ORG, open)).statusCode).toBe(200)
       expect(await stored()).toMatchObject(open)
     })
+  })
+
+  it('stores an artifact total, and a later delivery that omits it clears it', async () => {
+    await withApp(config, async (app) => {
+      const total = 5 * 1024 ** 3
+      expect((await put(app, DEF_ORG, policy(1, { artifactBytesLimit: total }))).statusCode).toBe(200)
+      expect((await stored())?.artifactBytesLimit).toBe(BigInt(total))
+      expect(await new PgOrgSessionPolicyRepo(prisma).artifactBytesLimit(DEF_ORG)).toBe(total)
+      expect((await put(app, DEF_ORG, policy(2))).statusCode).toBe(200)
+      expect(await new PgOrgSessionPolicyRepo(prisma).artifactBytesLimit(DEF_ORG)).toBeNull()
+    })
+    expect(await new PgOrgSessionPolicyRepo(prisma).artifactBytesLimit('org-without-policy')).toBeNull()
   })
 
   it('deletes the policy with its organization', async () => {
