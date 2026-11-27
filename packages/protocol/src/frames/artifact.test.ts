@@ -4,8 +4,13 @@ import {
   ARTIFACT_MAX_FILES,
   ArtifactManifest,
   ArtifactPublishBeginOk,
+  ArtifactListEntry,
   ArtifactPublishBeginReq,
+  ArtifactRefusalReason,
+  ArtifactShareOk,
+  ArtifactShareReq,
   ArtifactTitle,
+  ArtifactUnshareReq,
   artifactPathProblem,
   buildEnvelope,
   decodeEnvelope,
@@ -21,7 +26,17 @@ const SHA = 'a'.repeat(64)
 const file = (path: string, bytes = 10) => ({ path, sha256: SHA, bytes, mediaType: 'text/html' })
 
 describe('artifact path rules (artifacts.md §5.4)', () => {
-  it.each(['index.html', 'assets/app.js', 'a b/ü.md', '.well-known/x', 'dir.git/x', '..hidden'])('accepts %s', (p) => {
+  it.each([
+    'index.html',
+    'assets/app.js',
+    'a b/ü.md',
+    '.well-known/x',
+    'dir.git/x',
+    '..hidden',
+    'sub/__ac/x',
+    '__ac',
+    '__acx/y'
+  ])('accepts %s', (p) => {
     expect(artifactPathProblem(p)).toBeUndefined()
   })
 
@@ -37,6 +52,8 @@ describe('artifact path rules (artifacts.md §5.4)', () => {
     ['a/../b', /`\.`/],
     ['.git/config', /\.git/],
     ['sub/.GIT/HEAD', /\.git/],
+    ['__ac/shim', /reserved/],
+    ['__AC/sw.js', /reserved/],
     [`${'x'.repeat(256)}`, /segment/],
     [`${'a/'.repeat(400)}b`, /longer than/]
   ])('refuses %j', (p, why) => {
@@ -102,8 +119,15 @@ describe('artifact frames', () => {
     initiator: { kind: 'console', userId: 'u-1' }
   }
 
-  it('registers the four request/reply pairs', () => {
-    for (const type of ['artifact/publish/begin', 'artifact/publish/complete', 'artifact/fetch', 'artifact/list']) {
+  it('registers the six request/reply pairs', () => {
+    for (const type of [
+      'artifact/publish/begin',
+      'artifact/publish/complete',
+      'artifact/fetch',
+      'artifact/list',
+      'artifact/share',
+      'artifact/unshare'
+    ]) {
       expect(isFrameType(type)).toBe(true)
       expect(isFrameType(`${type}/ok`)).toBe(true)
     }
@@ -135,6 +159,71 @@ describe('artifact frames', () => {
       audience: { visibility: 'org', owned: true }
     }
     expect(ArtifactPublishBeginOk.safeParse(ready).success).toBe(true)
+  })
+})
+
+describe('artifact share frames', () => {
+  const SHARE = '33333333-3333-4333-8333-333333333333'
+  const share = {
+    agentId: AGENT,
+    sessionId: 'webchat:s-1',
+    artifactId: ARTIFACT,
+    audience: 'public',
+    initiator: { kind: 'chat', integrationId: '44444444-4444-4444-8444-444444444444', memberId: 'U1' }
+  }
+
+  it('round-trips a share with or without a revision, and only for a public or org audience', () => {
+    const decoded = decodeEnvelope(encode(buildEnvelope('artifact/share', share)))
+    expect(decoded.ok && decoded.frame.payload).toEqual(share)
+    expect(ArtifactShareReq.safeParse({ ...share, revision: 2 }).success).toBe(true)
+    expect(ArtifactShareReq.safeParse({ ...share, revision: 0 }).success).toBe(false)
+    expect(ArtifactShareReq.safeParse({ ...share, audience: 'private' }).success).toBe(false)
+  })
+
+  it('answers a share with its link and unshares by share id', () => {
+    const ok = {
+      shareId: SHARE,
+      artifactId: ARTIFACT,
+      revision: 1,
+      audience: 'org',
+      displayTail: '…abcdef',
+      createdAt: '2026-11-27T10:00:00.000Z',
+      linkPath: '/share/token',
+      link: 'https://console.example.test/share/token'
+    }
+    expect(ArtifactShareOk.safeParse(ok).success).toBe(true)
+    const unshare = { agentId: AGENT, sessionId: 'webchat:s-1', artifactId: ARTIFACT, shareId: SHARE }
+    expect(ArtifactUnshareReq.safeParse(unshare).success).toBe(true)
+    expect(ArtifactUnshareReq.safeParse({ ...unshare, shareId: 'https://console.example.test/share/x' }).success).toBe(
+      false
+    )
+  })
+
+  it('parses a list entry with or without shares, and names the share refusals', () => {
+    const entry = {
+      artifactId: ARTIFACT,
+      title: 'Q3 report',
+      audience: { visibility: 'org', owned: true },
+      producedByAgent: true,
+      updatedAt: '2026-11-27T10:00:00.000Z',
+      latest: {
+        revision: 1,
+        entry: 'index.html',
+        entryMediaType: 'text/html',
+        fileCount: 1,
+        totalBytes: 10,
+        producedByAgentName: 'Analyst',
+        createdAt: '2026-11-27T10:00:00.000Z'
+      }
+    }
+    expect(ArtifactListEntry.safeParse(entry).success).toBe(true)
+    const shares = [
+      { shareId: SHARE, revision: 1, audience: 'public', displayTail: '…abcdef', createdAt: entry.updatedAt }
+    ]
+    expect(ArtifactListEntry.safeParse({ ...entry, shares }).success).toBe(true)
+    for (const reason of ['no-member-authority', 'share-forbidden', 'revision-not-ready', 'share-not-found']) {
+      expect(ArtifactRefusalReason.safeParse(reason).success).toBe(true)
+    }
   })
 })
 

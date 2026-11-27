@@ -22,6 +22,7 @@ import {
   PgRelayRepo,
   PgSessionRepo,
   PgArtifactRepo,
+  PgArtifactShareRepo,
   PgSessionUsageRepo,
   PgOrgSessionPolicyRepo,
   PgWebchatConversationRepo,
@@ -124,6 +125,7 @@ import { WebchatTokenService } from '../../src/registry/webchatToken.js'
 import { WebchatMcpGrantTokenCodec } from '../../src/registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from '../../src/registry/orgInviteLink.js'
 import { OrgInviteLinkService } from '../../src/registry/orgInviteLinkService.js'
+import { ArtifactShareCodec, ArtifactShareService } from '../../src/artifacts/shares.js'
 import { WaitlistService } from '../../src/registry/waitlistService.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { DUTY_LEASE_DEFAULTS } from '../../src/orchestrator/dutyLease.js'
@@ -786,6 +788,12 @@ export function buildHttpApp(
     oauth: new OAuthService(oauthRepo, apiKeyService, codec, clock, new PgOrgRepo(prisma)),
     webchatTokens: new WebchatTokenService(TEST_API_KEY_PEPPER),
     inviteLinks,
+    artifactShares: new ArtifactShareService({
+      shares: new PgArtifactShareRepo(prisma),
+      codec: new ArtifactShareCodec(TEST_API_KEY_PEPPER),
+      clock,
+      webAppUrl: 'https://console.example.test'
+    }),
     waitlist,
     usageWriter: new SessionUsageWriter(sessionUsageRepo),
     events,

@@ -35,6 +35,7 @@ export function ComposerMenu({
   leading,
   trailing,
   footer,
+  className,
   triggerClassName,
   iconOnly = false,
   tooltips = true,
@@ -57,6 +58,7 @@ export function ComposerMenu({
   trailing?: ReactNode
   /** Optional row rendered below the options, behind a divider (e.g. the Fast-mode toggle). */
   footer?: ReactNode
+  className?: string
   /** Overrides the default trigger look (e.g. the Home composer's design pills). */
   triggerClassName?: string
   /** Icon-only trigger (e.g. the Home composer's "+ add agents" chip): render only
@@ -138,10 +140,8 @@ export function ComposerMenu({
   }
 
   return (
-    // min-w-0 (not flex-none): in a nowrap composer row (mobile) the trigger
-    // shrinks and truncates its label instead of wrapping the whole row. An
-    // icon-only trigger has no label to truncate — it keeps its fixed box.
-    <div className={`relative ${iconOnly ? 'flex-none' : 'min-w-0'}`}>
+    // Let labeled triggers shrink and truncate while icon-only triggers keep their width.
+    <div className={`relative ${iconOnly ? 'flex-none' : 'min-w-0'} ${className ?? ''}`}>
       <button
         ref={triggerRef}
         type="button"

@@ -136,25 +136,47 @@ export interface IncreaseLink {
   onClick: () => void
 }
 
-function SessionsMeter({ usage, increase }: { usage: SessionMonthUsageDto; increase?: IncreaseLink }) {
+function SessionsMeter({
+  usage,
+  syncing,
+  increase
+}: {
+  usage: SessionMonthUsageDto
+  syncing: boolean
+  increase?: IncreaseLink
+}) {
   const t = useTranslations('Billing.plan')
   const { day, number } = useUtcDates()
   const tone = meterTone(usage.used, usage.limit)
   // Width is data, so it rides an inline style.
   const pct = usage.limit ? Math.min(100, (usage.used / usage.limit) * 100) : 100
   return (
-    <div data-plan-sessions="true" className="flex h-[76px] flex-col justify-center px-[18px] desktop:row-start-4">
-      <div className="flex items-baseline justify-between gap-3">
+    <div data-plan-sessions="true" className="flex h-[76px] flex-col px-[18px] pt-2 desktop:row-start-4">
+      <div className="flex h-4 items-center justify-between gap-3">
         <span className="eyebrow">{t('sessions')}</span>
         <span className="mono text-[12.5px] text-(--text-tertiary)">
           <span className={`font-semibold ${tone === 'red' ? 'text-(--red-600)' : 'text-(--text-primary)'}`}>
             {number(usage.used)}
           </span>
-          {usage.limit !== null && ` / ${number(usage.limit)}`}
+          {usage.limit !== null && ' / '}
+          {usage.limit !== null &&
+            (syncing ? (
+              // The limit shown is still the previous plan's while the new one is being applied.
+              <span
+                data-plan-limit-syncing="true"
+                className="inline-flex items-baseline gap-1 text-(--status-info)"
+                title={t('syncingHint')}
+              >
+                {number(usage.limit)}
+                <Icon name="refresh-cw" size={11} className="animate-spin self-center" />
+              </span>
+            ) : (
+              number(usage.limit)
+            ))}
         </span>
       </div>
       {tone && (
-        <div className="mt-[9px] h-[7px] overflow-hidden rounded-[4px] border border-(--border-subtle) bg-(--surface-sunken)">
+        <div className="mt-3.5 h-[7px] overflow-hidden rounded-[4px] border border-(--border-subtle) bg-(--surface-sunken)">
           <span
             data-plan-meter={tone}
             className={`block h-full rounded-[4px] ${METER_FILL[tone]}`}
@@ -184,12 +206,16 @@ export function PlanCard({
   role,
   onChangePlan,
   onCancelScheduled,
+  onCancelTrial,
+  onCancelPending,
   increase
 }: {
   reads: PlanReads
   role: string | null
   onChangePlan?: () => void
   onCancelScheduled?: () => Promise<void>
+  onCancelTrial?: () => void
+  onCancelPending?: (change: BillingPendingChange) => Promise<void>
   increase?: IncreaseLink
 }) {
   const t = useTranslations('Billing.plan')
@@ -198,8 +224,13 @@ export function PlanCard({
   const sub = subscription.data
   // A failed read hides only the sessions block; nothing else on the card depends on it.
   const usage = reads.usage.error ? undefined : reads.usage.data
-  const billingDate =
-    sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
+  const trialEndsAt = sub?.trialEndsAt ?? null
+  // An unpaid pay-now blocks every other change, so its withdrawal takes Cancel trial's place.
+  const trialPending = trialEndsAt && sub?.pendingChange?.kind === 'upgrade' ? sub.pendingChange : null
+  const cancelTrial = role === 'owner' && onChangePlan && !(trialPending && onCancelPending) ? onCancelTrial : undefined
+  const billingDate = trialEndsAt
+    ? t('trialEnds', { date: day(trialEndsAt) })
+    : sub && (sub.priceCents === null || sub.priceCents > 0) && sub.paidThrough
       ? t(sub.priceCents === null || sub.scheduled?.tierId === FREE_TIER_ID ? 'ends' : 'renews', {
           date: day(sub.paidThrough)
         })
@@ -207,8 +238,11 @@ export function PlanCard({
   // The window in force; an older service sends only the plan's.
   const keptDays = sub ? (sub.retention ? sub.retention.days : sub.retentionDays) : null
   return (
-    <div className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid" data-plan-card="true">
-      <div className="cardhead h-[60px] justify-between gap-2 border-b-0">
+    <div
+      className="card @container/plan flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
+      data-plan-card="true"
+    >
+      <div className="cardhead h-14 justify-between gap-2 border-b-0">
         <span className="inline-flex min-w-0 items-center gap-2">
           <span className="cardtitle">{t('title')}</span>
           {sub?.entitlementSync === 'syncing' && (
@@ -228,9 +262,28 @@ export function PlanCard({
           </span>
         )}
         {role === 'owner' && sub && onChangePlan && (
-          <Button size="sm" variant="secondary" onClick={onChangePlan}>
-            {t('change.title')}
-          </Button>
+          <span className="inline-flex items-center gap-3.5">
+            {trialPending && onCancelPending ? (
+              <CancelPendingButton change={trialPending} trial onCancel={onCancelPending} />
+            ) : (
+              trialEndsAt &&
+              sub.scheduled &&
+              sub.scheduled.tierId !== FREE_TIER_ID &&
+              cancelTrial && (
+                <button
+                  type="button"
+                  className="lnk text-(--text-secondary)"
+                  data-plan-cancel-trial="true"
+                  onClick={cancelTrial}
+                >
+                  {t('trial.cancel')}
+                </button>
+              )
+            )}
+            <Button size="sm" variant="secondary" onClick={onChangePlan}>
+              {t('change.title')}
+            </Button>
+          </span>
         )}
       </div>
       {subscription.error ? (
@@ -248,113 +301,154 @@ export function PlanCard({
           </div>
         </div>
       ) : (
-        <div className="flex flex-1 flex-col justify-end gap-1 px-[18px] pt-3 pb-1">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <div className="flex flex-1 flex-col px-[18px] pt-3.5 pb-3">
+          <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
             <span
-              className="min-w-0 font-sans text-[32px] font-semibold leading-none tracking-[-0.03em] wrap-anywhere desktop:text-[44px]"
+              className="min-w-0 font-sans text-[28px] leading-9 font-semibold tracking-[-0.025em] wrap-anywhere desktop:text-[36px] desktop:leading-10"
               data-plan-name="true"
             >
               {sub.tierName}
               {sub.tierId !== FREE_TIER_ID && sub.optionName !== sub.tierName && (
-                <span className="ml-2.5 text-[16px] tracking-[-0.01em] text-(--text-secondary) desktop:text-[20px]">
-                  {sub.optionName}
-                </span>
+                <>
+                  {' '}
+                  <span className="font-medium text-(--text-tertiary)">{sub.optionName}</span>
+                </>
               )}
             </span>
-            <span
-              className="ms-auto font-sans text-[12px] leading-normal whitespace-nowrap text-(--text-tertiary)"
-              data-plan-price="true"
-            >
-              {sub.priceCents === null
-                ? t('contract')
-                : t.rich('price', {
-                    price: fmtCents(sub.priceCents),
-                    amount: (value) => (
-                      <strong className="text-[21px] font-semibold tracking-[-0.02em] text-(--text-primary) tabular-nums">
-                        {value}
-                      </strong>
-                    )
-                  })}
-            </span>
+            {trialEndsAt ? (
+              <span
+                data-plan-trial="true"
+                className="mb-2.5 inline-flex h-[19px] shrink-0 items-center rounded-[4px] bg-(--brand-soft) px-[7px] font-mono text-[10.5px] font-semibold tracking-[0.04em] text-(--brand-soft-text) uppercase"
+              >
+                {t('trial.badge')}
+              </span>
+            ) : (
+              <span
+                className="ms-auto shrink-0 pb-2 font-sans text-[12.5px] leading-normal whitespace-nowrap text-(--text-tertiary)"
+                data-plan-price="true"
+              >
+                {sub.priceCents === null ? t('contract') : t('price', { price: fmtCents(sub.priceCents) })}
+              </span>
+            )}
           </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 font-sans text-[12px] leading-4 text-(--text-secondary)">
+          <div className="mt-3 flex flex-wrap content-start gap-x-[18px] gap-y-1 font-sans text-[12.5px] leading-4 text-(--text-secondary) @max-[280px]/plan:min-h-9">
             {billingDate && (
-              <span className="inline-flex items-center gap-1.5" data-plan-billing-date="true">
-                <Icon name="calendar-days" size={13} className="flex-none" />
+              <span className="inline-flex items-center gap-[7px]" data-plan-billing-date="true">
+                <Icon name="calendar-days" size={14} color="var(--text-tertiary)" className="flex-none" />
                 {billingDate}
               </span>
             )}
-            <span className="inline-flex items-center gap-1.5" data-plan-retention="true">
-              <Icon name="clock" size={13} className="flex-none" />
+            <span className="inline-flex items-center gap-[7px]" data-plan-retention="true">
+              <Icon name="clock" size={14} color="var(--text-tertiary)" className="flex-none" />
               {keptDays === null ? t('change.historyUnlimited') : t('change.historyDays', { days: keptDays })}
             </span>
           </div>
         </div>
       )}
       {sub && (
-        <div className="min-h-[52px] px-[18px] py-1 max-desktop:@min-[382px]:min-h-9 desktop:row-start-3 desktop:@min-[782px]:min-h-9">
-          {sub.scheduled && (
-            <ScheduledChange
+        <div className="min-h-13 px-[18px] pb-2 @min-[360px]/plan:min-h-9 desktop:row-start-3">
+          {(trialEndsAt || sub.scheduled) && (
+            <PlanChangeStatus
+              key={sub.scheduled ? JSON.stringify([sub.scheduled.tierId, sub.scheduled.optionId]) : 'trial'}
               sub={sub}
-              scheduled={sub.scheduled}
-              onCancel={role === 'owner' ? onCancelScheduled : undefined}
+              onCancelScheduled={role === 'owner' ? onCancelScheduled : undefined}
+              onCancelTrial={cancelTrial}
             />
           )}
         </div>
       )}
-      {usage && <SessionsMeter usage={usage} increase={role === 'owner' ? increase : undefined} />}
+      {usage && (
+        <SessionsMeter
+          usage={usage}
+          syncing={sub?.entitlementSync === 'syncing'}
+          increase={role === 'owner' ? increase : undefined}
+        />
+      )}
     </div>
   )
 }
 
-/** A scheduled renewal change, inside the Plan card under the plan's name; owners can revoke it. */
-function ScheduledChange({
+function PlanChangeStatus({
   sub,
-  scheduled,
-  onCancel
+  onCancelScheduled,
+  onCancelTrial
 }: {
   sub: BillingSubscription
-  scheduled: BillingPlanRef
-  onCancel?: () => Promise<void>
+  onCancelScheduled?: () => Promise<void>
+  onCancelTrial?: () => void
 }) {
   const t = useTranslations('Billing.plan')
   const { day } = useUtcDates()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cancel = async () => {
-    if (!onCancel || busy) return
+  const cancelScheduled = async () => {
+    if (!onCancelScheduled || busy) return
     setBusy(true)
     setError(null)
     try {
-      await onCancel()
+      await onCancelScheduled()
     } catch (e) {
       setError(t('cancelScheduledError', { error: (e as Error).message }))
     }
     setBusy(false)
   }
-  const plan = planLabel(scheduled)
+  const { scheduled, trialEndsAt } = sub
+  const plan = scheduled ? planLabel(scheduled) : null
+  const trialCancelled = !!trialEndsAt && scheduled?.tierId === FREE_TIER_ID
+  const trialAction = !!trialEndsAt && !scheduled && onCancelTrial
+  const detail = trialCancelled
+    ? t('trial.noCharge')
+    : trialEndsAt && !scheduled && sub.priceCents !== null
+      ? t('trial.monthlyPrice', { price: fmtCents(sub.priceCents) })
+      : null
+  const message = trialEndsAt
+    ? trialCancelled
+      ? t('trial.cancelled')
+      : plan
+        ? t('trial.switching', { plan })
+        : t('trial.renews')
+    : plan &&
+      (sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan }))
   return (
     <div
-      data-plan-scheduled="true"
-      className="flex items-center gap-2.5 rounded-lg bg-(--status-info-soft) px-3 py-1.5 desktop:@max-[540px]:gap-1.5 desktop:@max-[540px]:px-2"
+      data-plan-scheduled={scheduled ? true : undefined}
+      data-plan-trial-status={trialEndsAt ? true : undefined}
+      className="flex min-h-9 items-center gap-2.5 rounded-lg border border-(--border-subtle) bg-(--surface-sunken) px-3 py-1 @max-[360px]/plan:min-h-11"
     >
-      <Icon
-        name="calendar-clock"
-        size={14}
-        color="var(--status-info)"
-        className="flex-none desktop:@max-[540px]:hidden"
-      />
-      <span className="min-w-0 flex-1 font-sans text-[12.5px] font-medium leading-4 wrap-anywhere">
-        {sub.paidThrough ? t('switching', { plan, date: day(sub.paidThrough) }) : t('switchingAtRenewal', { plan })}
+      <div className="min-w-0 flex-1 font-sans text-[12.5px] leading-4 wrap-anywhere">
+        <strong className="font-semibold">{message}</strong>
+        {detail && (
+          <span className="font-normal text-(--text-secondary) @max-[360px]/plan:block">
+            <span className="@max-[360px]/plan:hidden" aria-hidden="true">
+              &#32;·&#32;
+            </span>
+            {detail}
+          </span>
+        )}
         {error && (
           <span role="alert" className="mt-1 block font-normal text-(--status-error)">
             {error}
           </span>
         )}
-      </span>
-      {onCancel && (
-        <button type="button" className="lnk" disabled={busy} onClick={() => void cancel()}>
-          {t('cancelScheduled')}
+      </div>
+      {trialAction && (
+        <button
+          type="button"
+          className="lnk max-w-[41%] text-end"
+          data-plan-cancel-trial="true"
+          onClick={onCancelTrial}
+        >
+          {t('trial.cancel')}
+        </button>
+      )}
+      {scheduled && onCancelScheduled && (
+        <button
+          type="button"
+          className="lnk max-w-[41%] text-end"
+          disabled={busy}
+          onClick={() => void cancelScheduled()}
+        >
+          {trialCancelled ? t('trial.undo') : trialEndsAt ? t('trial.undoSwitch') : t('cancelScheduled')}
         </button>
       )}
     </div>
@@ -431,62 +525,50 @@ function AmberBanner({
   )
 }
 
-/** An owner can withdraw an unpaid upgrade; a pending checkout is replaced by starting checkout again. */
-function PendingPaymentBanner({
+/** Withdraws an unpaid upgrade after a confirmation; a trial's pay-now reads as a payment, since the plan may not change. */
+export function CancelPendingButton({
   change,
+  trial,
   onCancel
 }: {
   change: BillingPendingChange
-  onCancel?: (change: BillingPendingChange) => Promise<void>
+  trial: boolean
+  onCancel: (change: BillingPendingChange) => Promise<void>
 }) {
   const t = useTranslations('Billing.plan.pending')
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cancelable = change.kind === 'upgrade' && onCancel
+  const k = (key: 'cancel' | 'cancelTitle' | 'cancelConfirm' | 'cancelKeep' | 'cancelError') =>
+    trial ? (`trial.${key}` as const) : key
   const cancel = async () => {
-    if (!cancelable || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
       await onCancel(change)
       setConfirming(false)
     } catch (e) {
-      setError(t('cancelError', { error: (e as Error).message }))
+      setError(t(k('cancelError'), { error: (e as Error).message }))
     }
     setBusy(false)
   }
   return (
-    <AmberBanner data="pending" icon="clock" title={change.kind === 'upgrade' ? t('upgradeTitle') : t('checkoutTitle')}>
-      <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-        {change.payUrl ? t('body') : t('bodyNoLink')}
-      </div>
-      {(change.payUrl || cancelable) && (
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-          {change.payUrl && (
-            <a className="lnk flex w-fit" href={change.payUrl} target="_blank" rel="noopener noreferrer">
-              {t('pay')}
-              <Icon name="arrow-up-right" size={12} />
-            </a>
-          )}
-          {cancelable && (
-            <button
-              type="button"
-              className="lnk"
-              data-plan-pending-cancel="true"
-              aria-haspopup="dialog"
-              onClick={() => setConfirming(true)}
-            >
-              {t('cancel')}
-            </button>
-          )}
-        </div>
-      )}
-      {cancelable && confirming && (
+    <>
+      <button
+        type="button"
+        className="lnk"
+        data-plan-pending-cancel="true"
+        aria-haspopup="dialog"
+        onClick={() => setConfirming(true)}
+      >
+        {t(k('cancel'))}
+      </button>
+      {confirming && (
         <ConfirmationDialog
-          title={t('cancelTitle')}
-          confirmLabel={t('cancel')}
-          cancelLabel={t('cancelKeep')}
+          title={t(k('cancelTitle'))}
+          confirmLabel={t(k('cancel'))}
+          cancelLabel={t(k('cancelKeep'))}
           busy={busy}
           busyLabel={t('cancelBusy')}
           error={error}
@@ -496,8 +578,45 @@ function PendingPaymentBanner({
             setError(null)
           }}
         >
-          {t('cancelConfirm')}
+          {t(k('cancelConfirm'))}
         </ConfirmationDialog>
+      )}
+    </>
+  )
+}
+
+/** An owner can withdraw an unpaid upgrade; a pending checkout is replaced by starting checkout again. */
+function PendingPaymentBanner({
+  change,
+  trial,
+  onCancel
+}: {
+  change: BillingPendingChange
+  trial: boolean
+  onCancel?: (change: BillingPendingChange) => Promise<void>
+}) {
+  const t = useTranslations('Billing.plan.pending')
+  const cancelable = change.kind === 'upgrade' && onCancel
+  const upgrade = change.kind === 'upgrade'
+  return (
+    <AmberBanner
+      data="pending"
+      icon="clock"
+      title={upgrade && trial ? t('trial.title') : upgrade ? t('upgradeTitle') : t('checkoutTitle')}
+    >
+      <div className="mt-1 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+        {!change.payUrl ? t('bodyNoLink') : upgrade && trial ? t('trial.body') : t('body')}
+      </div>
+      {(change.payUrl || cancelable) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+          {change.payUrl && (
+            <a className="lnk flex w-fit" href={change.payUrl} target="_blank" rel="noopener noreferrer">
+              {t('pay')}
+              <Icon name="arrow-up-right" size={12} />
+            </a>
+          )}
+          {cancelable && <CancelPendingButton change={change} trial={trial} onCancel={onCancel} />}
+        </div>
       )}
     </AmberBanner>
   )
@@ -520,7 +639,13 @@ export function PlanBanners({
   const atLimit = usage !== undefined && usage.limit !== null && usage.used >= usage.limit
   return (
     <>
-      {change && <PendingPaymentBanner change={change} onCancel={onCancelPending} />}
+      {change && (
+        <PendingPaymentBanner
+          change={change}
+          trial={!!reads.subscription.data?.trialEndsAt}
+          onCancel={onCancelPending}
+        />
+      )}
       {atLimit && (
         <AmberBanner
           data="session-limit"
@@ -628,10 +753,10 @@ function PlanCreditsDialog({ rows, onClose }: { rows: PlanCreditRow[]; onClose: 
 function Stat({ label, value, soon = false }: { label: string; value: string; soon?: boolean }) {
   return (
     <span className="min-w-0">
-      <span className="eyebrow block truncate text-[10px]">{label}</span>
+      <span className="eyebrow block truncate leading-4">{label}</span>
       <span
         data-soon={soon ? 'true' : undefined}
-        className={`mono mt-1.5 block truncate text-[13.5px] font-semibold ${soon ? 'text-(--amber-500)' : 'text-(--text-primary)'}`}
+        className={`mono mt-2 block truncate text-[14px] leading-5 font-semibold ${soon ? 'text-(--amber-500)' : 'text-(--text-primary)'}`}
       >
         {value}
       </span>
@@ -655,16 +780,16 @@ export function PlanCreditStrip({ sub, balanceMicro }: { sub: BillingSubscriptio
         title={t('open')}
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
-        className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-center desktop:row-start-4 gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] text-left transition-colors hover:bg-(--surface-hover)"
+        className="grid h-[76px] w-full cursor-pointer grid-cols-[1fr_1fr_1fr_14px] items-start desktop:row-start-4 gap-3 rounded-b-[10px] border-0 bg-transparent px-[18px] pt-2 text-left transition-colors hover:bg-(--surface-hover)"
       >
-        <Stat label={t('planCredits')} value={fmtMicroUsd(split.planMicro)} />
+        <Stat label={t(sub.trialEndsAt ? 'trialCredits' : 'planCredits')} value={fmtMicroUsd(split.planMicro)} />
         <Stat label={t('topUps')} value={fmtMicroUsd(split.topUpMicro)} />
         <Stat
           label={next ? t('expiringOn', { date: day(next.expiresAt) }) : t('expiring')}
           value={fmtMicroUsd(next?.remainingMicro ?? 0)}
           soon={next !== null && expiresThisCycle(next.expiresAt, sub.paidThrough)}
         />
-        <Icon name="chevron-right" size={14} color="var(--text-tertiary)" />
+        <Icon name="chevron-right" size={14} color="var(--text-tertiary)" className="self-center" />
       </button>
       {open && <PlanCreditsDialog rows={planCreditRows(sub)} onClose={() => setOpen(false)} />}
     </>

@@ -78,6 +78,7 @@ import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { chatSettingsAllowed } from '@/lib/session-runtime-controls'
 import { localizedPermissionChoices } from '@/lib/permission-mode-i18n'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
+import { useScheduleTimeZone } from '@/lib/schedule-timezone'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import { agentStrategyValue, HOST_STRATEGY, strategyModelSource, strategyUsesImage } from '@/lib/execution-strategy'
 import { openCoordinatorConversation } from '@/lib/api'
@@ -89,21 +90,24 @@ import { opensCoordinator, prewarmAgentOnOpen, prewarmsOnOpen } from '@/componen
 const CHIP =
   'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
 
-// The literal Tailwind spelling of DASH_ROW_H (`.row` is a components-layer class, so
-// these utilities win). `content-center` centres the row's single grid track inside the
-// taller box instead of stretching it, which is what keeps a cell's `self-start` (the
-// timestamp / next-run column) riding the title line rather than the row's top edge.
-// Desktop only: the mobile layer stacks the cards, so there is nothing to align there
-// and rows keep their natural height.
-const DASH_ROW = 'desktop:h-[63px] desktop:content-center desktop:py-0'
+// The fixed desktop heights and gutter match dashboard-rows.ts.
+const DASH_CARD =
+  'rounded-lg shadow-none [&>.cardhead]:min-h-[42px] [&>.cardhead]:border-(--surface-active) [&>.cardhead]:px-[14px] [&>.cardhead]:py-2 desktop:[&>.cardhead]:h-[42px] desktop:[&>.cardhead]:py-0'
+const DASH_ROW =
+  'relative min-h-14 border-b-0 px-[14px] py-2 after:pointer-events-none after:absolute after:inset-x-[14px] after:bottom-0 after:h-px after:bg-(--surface-active) last:after:hidden desktop:h-14 desktop:content-center desktop:py-0'
+const RECENT_SCOPE_BUTTON = 'pill rounded-sm px-2 py-1 text-[12px]'
+const SELECTED_RECENT_SCOPE_BUTTON = `${RECENT_SCOPE_BUTTON} on bg-(--surface-active) shadow-none`
 
 type RecentScope = 'mine' | 'all'
 const RECENT_SCOPE_KEY = 'ac.home.recent-scope'
 
-// Leftover height under the composer, measured against the SCROLL CONTAINER — never
-// against the dashboard's own box, so a taller grid can't feed back into the row
-// count and oscillate. Returns null when it can't/shouldn't cap (mobile, no scroller).
-function useAvailableHeight(ref: RefObject<HTMLElement | null>, enabled: boolean, reflow: unknown): number | null {
+// Observe the scroller and composer so the row budget follows the available height without feeding back into itself.
+function useAvailableHeight(
+  ref: RefObject<HTMLElement | null>,
+  composerRef: RefObject<HTMLElement | null>,
+  enabled: boolean,
+  reflow: unknown
+): number | null {
   const [height, setHeight] = useState<number | null>(null)
   useEffect(() => {
     if (!enabled) {
@@ -121,8 +125,9 @@ function useAvailableHeight(ref: RefObject<HTMLElement | null>, enabled: boolean
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(scroller)
+    if (composerRef.current) ro.observe(composerRef.current)
     return () => ro.disconnect()
-  }, [ref, enabled, reflow])
+  }, [ref, composerRef, enabled, reflow])
   return height
 }
 
@@ -131,6 +136,7 @@ export default function HomeView() {
   const t = useTranslations('Home')
   const permissionT = useTranslations('Common.permissionModes')
   const locale = useLocale()
+  const clock = useScheduleTimeZone()
   const { user, me } = useProfile()
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath, activeOrg } = useOrgs()
@@ -535,7 +541,10 @@ export default function HomeView() {
   // that makes the two columns end on the same line.
   const isMobile = useIsMobile()
   const gridRef = useRef<HTMLDivElement>(null)
-  const availableHeight = useAvailableHeight(gridRef, !isMobile, blocked)
+  const composerRef = useRef<HTMLDivElement>(null)
+  // Hold the dashboard while onboarding decides whether to redirect or the first load is empty.
+  const dashboardHidden = holdForOnboarding || (loading && agents.length === 0 && recentSessions.length === 0)
+  const availableHeight = useAvailableHeight(gridRef, composerRef, !isMobile && !dashboardHidden, blocked)
   const { sessionRows, agentRows, cronRows, aligned } = useMemo(
     () =>
       isMobile
@@ -558,7 +567,7 @@ export default function HomeView() {
   const topAgents = rankedAgents.slice(0, agentRows)
   const scheduled = crons.slice(0, cronRows)
 
-  if (loading && agents.length === 0 && recentSessions.length === 0) return <LoadingState fill />
+  if (dashboardHidden) return <LoadingState fill />
 
   const agentOptions = agents.map((a) => {
     const ready = agentReady(a)
@@ -613,36 +622,29 @@ export default function HomeView() {
       }
     })
 
-  // While the redirect to /onboarding is in flight (or the skip flag is still being
-  // read), hold a spinner so the empty composer never flashes behind it.
-  if (holdForOnboarding) return <LoadingState fill />
-
   return (
-    // Every block here is content-sized: the dashboard picks a row count that fits the
-    // leftover viewport (useAvailableHeight), so the page fills a roomy window without
-    // stretching a card past its rows, and scrolls rather than squashing when it can't.
-    // Mobile keeps normal flow.
     <div
       {...(agent ? fileDrop.handlers : {})}
       className="wrap relative max-w-[1000px] max-desktop:px-4 max-desktop:pt-4 max-desktop:pb-6"
     >
       {agent && fileDrop.over ? <FileDropOverlay /> : null}
-      {/* Centered greeting above the composer (design: 32px mark, 27px title). */}
-      <div className="mt-[22px] mb-[22px] flex items-center justify-center gap-[13px]">
-        <LogoMark size={32} />
-        {/* Server and client can sit in different timezones, and the display name
-            only resolves after mount — both settle on the client. */}
-        <h1 className="ptitle text-[27px]" suppressHydrationWarning>
+      <div className="mb-[18px] flex items-center justify-center gap-3 desktop:mb-[22px]">
+        <span className="shrink-0">
+          <LogoMark size={27} />
+        </span>
+        {/* The local greeting and name settle on the client. */}
+        <h1
+          className="ptitle min-w-0 text-center text-[23px] wrap-break-word desktop:text-[28px]"
+          suppressHydrationWarning
+        >
           {greeting}
           {firstName ? `, ${firstName}` : ''}
         </h1>
       </div>
 
-      {/* Composer — hands off to a live session on send. The footer selectors mirror
-          the design: agent + model as pills (leading mark), effort + permission as
-          chips. Each picks the run's runtime; the choice is applied on send. */}
       <div
-        className="card mb-3 overflow-visible transition-[border-color,box-shadow] focus-within:border-(--border-default) focus-within:shadow-(--focus-shadow)"
+        ref={composerRef}
+        className="card mb-[18px] rounded-[14px] border-(--border-default) shadow-none transition-colors focus-within:border-(--brand)"
         onKeyDown={(event) => {
           if (event.key === 'Escape') setMenu(null)
         }}
@@ -692,9 +694,10 @@ export default function HomeView() {
                 send()
               }
             }}
-            rows={5}
+            rows={3}
+            aria-label={t('composer.placeholder')}
             placeholder={t('composer.placeholder')}
-            className="block max-h-[280px] min-h-[140px] w-full resize-none border-0 bg-transparent px-[15px] pt-[14px] pb-1 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+            className="block field-sizing-content max-h-[220px] min-h-[82px] w-full resize-none border-0 bg-transparent px-4 pt-[14px] pb-1 font-sans text-[16px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary) desktop:text-[14px]"
           />
           <MentionMenu
             options={mention.matches}
@@ -704,19 +707,16 @@ export default function HomeView() {
             onPick={mention.pick}
           />
         </div>
-        {/* items-start + a wrapping selector group so the controls reflow onto a second
-            row at phone widths instead of overflowing (mobile .content clips overflow-x);
-            the send button stays pinned top-right. */}
         {imageError && (
           <div className="px-[15px] pb-2 font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
             {imageError}
           </div>
         )}
-        <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
-          <div className="relative flex-none">
+        <div className="relative flex items-end gap-[6px] px-[10px] pb-[9px]">
+          <div className="relative flex-none self-start">
             <button
               type="button"
-              className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+              className="flex size-[30px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
               aria-label={t('composer.attachFile')}
               aria-haspopup="menu"
               aria-expanded={menu === 'attach'}
@@ -749,10 +749,8 @@ export default function HomeView() {
               </>
             )}
           </div>
-          {/* Wraps: a roster's chips are unbounded in count, and on phones even one
-            agent + model + isolation do not fit one line legibly — pills still
-            truncate (min-w-0) when a single one is wider than the line. */}
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          {/* Let the toolbar wrap and truncate a chip that is wider than the available space. */}
+          <div className="flex min-h-[30px] min-w-0 flex-1 flex-wrap items-center gap-[6px]">
             {agent ? (
               <>
                 {multi ? (
@@ -788,7 +786,8 @@ export default function HomeView() {
                     open={menu === 'agent'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    className="max-desktop:static"
+                    triggerClassName="inline-flex h-[30px] items-center gap-[7px] rounded-sm px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
                     leading={
                       <span className="av h-4 w-4 rounded-xs">
                         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
@@ -809,7 +808,8 @@ export default function HomeView() {
                     open={menu === 'add'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                    className="max-desktop:static"
+                    triggerClassName="inline-flex size-[30px] items-center justify-center rounded-sm font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                     tooltips={false}
                     leading={<Icon name="plus" size={14} />}
                     onOpenChange={(o) => setMenu(o ? 'add' : null)}
@@ -884,6 +884,7 @@ export default function HomeView() {
             )}
           </div>
           <SendButton
+            className="h-[30px] w-[30px] [&>span]:size-[30px] [&>span]:rounded-sm disabled:[&>span]:bg-(--surface-active) disabled:[&>span]:text-(--text-tertiary) [&_svg]:size-[14px]"
             label={t('composer.send')}
             disabled={
               (!input.trim() && !image && !readyFiles.length) ||
@@ -955,16 +956,7 @@ export default function HomeView() {
         </div>
       )}
 
-      {/* Dashboard grid. Both columns are content-sized and the row counts are chosen so
-          they come out the same height — see the row-budget note at the top of the file.
-          `gap-4` is the 16px the budget accounts for; changing it changes DASH_ROW_H. */}
-      <div ref={gridRef} className="grid grid-cols-1 gap-4 desktop:grid-cols-[1.5fr_1fr]">
-        {/* `self-start` is the sparse-state treatment. With enough sessions the card
-            already measures exactly the row height, so it changes nothing; with fewer
-            (a new or quiet org) it stops the grid stretching a two-row card down to
-            the right column's floor, which would trade a shared bottom edge for a tall
-            blank strip. A short card beside a taller column reads as "not much here
-            yet" — the stretched one just reads as broken. */}
+      <div ref={gridRef} className="grid grid-cols-1 gap-3 desktop:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <RecentSessionsCard
           sessions={recentSessions}
           loading={loading || recentRowsLoading}
@@ -972,14 +964,14 @@ export default function HomeView() {
           emptyText={t('dashboard.noSessions')}
           limit={sessionRows}
           rowClassName={DASH_ROW}
-          className={aligned ? undefined : 'desktop:self-start'}
-          lastReply
+          className={`${DASH_CARD} ${aligned ? '' : 'desktop:self-start'}`}
+          replyPreview
           tabs={
-            <span className="pillbar -my-1 flex-none p-[2px]">
+            <span className="pillbar flex-none border-0 bg-transparent p-0">
               <button
                 type="button"
                 aria-pressed={mine}
-                className={mine ? 'pill on px-[9px] py-[3px] text-[12px]' : 'pill px-[9px] py-[3px] text-[12px]'}
+                className={mine ? SELECTED_RECENT_SCOPE_BUTTON : RECENT_SCOPE_BUTTON}
                 onClick={() => pickRecentScope('mine')}
               >
                 {t('dashboard.scopeMine')}
@@ -987,7 +979,7 @@ export default function HomeView() {
               <button
                 type="button"
                 aria-pressed={!mine}
-                className={mine ? 'pill px-[9px] py-[3px] text-[12px]' : 'pill on px-[9px] py-[3px] text-[12px]'}
+                className={mine ? RECENT_SCOPE_BUTTON : SELECTED_RECENT_SCOPE_BUTTON}
                 onClick={() => pickRecentScope('all')}
               >
                 {t('dashboard.scopeAll')}
@@ -996,10 +988,11 @@ export default function HomeView() {
           }
         />
 
-        <div className="flex flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-3">
           <Card
             title={t('dashboard.agentsTitle')}
             action={<CardLink href={orgPath('/agents')}>{t('dashboard.allAgents')}</CardLink>}
+            className={DASH_CARD}
           >
             {topAgents.length === 0 ? (
               <EmptyRow className={DASH_ROW}>{t('dashboard.noAgents')}</EmptyRow>
@@ -1013,19 +1006,19 @@ export default function HomeView() {
                     title={agentLabel(a)}
                     className={`row click grid-cols-[auto_1fr_auto] gap-3 ${DASH_ROW} ${ready ? '' : 'opacity-60'}`}
                   >
-                    <span className="av h-7 w-7 rounded-md">
-                      <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
+                    <span className="av size-[26px] rounded-md">
+                      <AgentIconView icon={a.icon} runtime={a.runtime} size={26} />
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
                         {agentLabel(a)}
                       </span>
-                      <span className="mono block truncate text-[11px] text-(--text-tertiary)">
+                      <span className="mt-[3px] block truncate text-[12px] leading-normal text-(--text-tertiary)">
                         {runtimeLabel(a.runtime)} ·{' '}
                         {agentModelDisplay(agentCapabilitySource(a, daemons, memberSets), a.runtime, a.model)}
                       </span>
                     </span>
-                    <span className="mono whitespace-nowrap text-[12px] text-(--text-secondary)">
+                    <span className="whitespace-nowrap text-[12px] text-(--text-tertiary) tabular-nums">
                       {sessionsByAgent.get(a.id) ?? 0}
                     </span>
                   </Link>
@@ -1037,12 +1030,17 @@ export default function HomeView() {
           <Card
             title={t('dashboard.schedulesTitle')}
             action={<CardLink href={orgPath('/crons')}>{t('dashboard.allSchedules')}</CardLink>}
+            className={DASH_CARD}
           >
             {scheduled.length === 0 ? (
               <EmptyRow className={DASH_ROW}>{t('dashboard.noSchedules')}</EmptyRow>
             ) : (
               scheduled.map((c) => {
                 const owner = c.agentId ? getAgent(c.agentId) : undefined
+                const nextRun =
+                  c.enabled && clock.ready
+                    ? fmtNextRun(cronNext(c.schedule, c.timezone), clock.zoneFor(c.timezone))
+                    : '—'
                 return (
                   <Link
                     key={c.id}
@@ -1054,11 +1052,12 @@ export default function HomeView() {
                         {c.name || cronHuman(c.schedule, locale) || c.schedule}
                       </span>
                       <span className="mono mt-[3px] block truncate text-[11px] text-(--text-tertiary)">
-                        {owner ? agentLabel(owner) : '—'} · {t('dashboard.ran')} {formatAgo(c.lastRunAt)}
+                        {owner ? agentLabel(owner) : '—'} · {t('dashboard.ran')}{' '}
+                        {clock.ready ? formatAgo(c.lastRunAt) : '—'}
                       </span>
                     </span>
                     <span className="mono self-start whitespace-nowrap text-[11.5px] text-(--text-secondary)">
-                      {c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : t('dashboard.paused')}
+                      {c.enabled ? nextRun : t('dashboard.paused')}
                     </span>
                   </Link>
                 )

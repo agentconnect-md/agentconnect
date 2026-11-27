@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { runtimeStoreDir } from '../src/paths.js'
 import { MANAGED_RUNTIME_CATALOG } from '../src/runtimes/managed.js'
 import { runtimePackageTree } from '../src/runtimes/runtime-store.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
@@ -133,6 +134,54 @@ describe('daemon-owned adapter store', () => {
     } finally {
       await daemon.stop()
     }
+  })
+
+  it('retries an install that failed at start on a later launch, with no restart', async () => {
+    const root = scaffold('codex-acp')
+    const { tree: dir, bin } = tree(root)
+    let diskFull = true
+    let attempts = 0
+    const daemon = daemonWith(root, async () => {
+      attempts += 1
+      if (diskFull) throw new Error('npm install failed: npm warn tar TAR_ENTRY_ERROR ENOSPC: no space left on device')
+      return { tree: dir, version: '1.4.2', bin }
+    })
+    await daemon.start()
+    const local = daemon as unknown as {
+      localRuntimeCatalog: ResolvedRuntimeCatalog
+      ensureRuntimeInstalled(id: string, local: boolean): Promise<void>
+    }
+    try {
+      // The start-time failure took the runtime out of the catalog every later launch reads.
+      expect(local.localRuntimeCatalog.entries['codex-acp']).toBeUndefined()
+      await expect(local.ensureRuntimeInstalled('codex-acp', true)).rejects.toThrow('ENOSPC')
+      const failed = attempts
+      expect(failed).toBeGreaterThan(1)
+
+      diskFull = false
+      await local.ensureRuntimeInstalled('codex-acp', true)
+      expect(attempts).toBe(failed + 1)
+      expect(local.localRuntimeCatalog.runtimes['codex-acp']!.args).toEqual([bin])
+      expect(refusal(daemon)).not.toContain('no daemon-owned install')
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it('removes a staging tree a dead process left before it installs anything', async () => {
+    const root = scaffold('codex-acp')
+    const { tree: dir, bin } = tree(root)
+    const leftover = join(runtimeStoreDir(root), '.staging-0badc0de')
+    mkdirSync(join(leftover, 'node_modules'), { recursive: true })
+    let leftoverAtInstall: boolean | undefined
+    const daemon = daemonWith(root, async () => {
+      leftoverAtInstall ??= existsSync(leftover)
+      return { tree: dir, version: '1.4.2', bin }
+    })
+    await daemon.start()
+    expect(leftoverAtInstall).toBe(false)
+    expect(existsSync(leftover)).toBe(false)
+    await daemon.stop()
   })
 
   it('keeps that refusal to one line with no absolute path, however the failure was thrown', async () => {

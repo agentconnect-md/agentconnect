@@ -836,6 +836,12 @@ revision is no longer kept says so and still opens the artifact. A card for an a
 viewer cannot open, whether it was deleted or they are outside its audience, says only that
 it is unavailable: the console cannot tell those apart and must not imply which it is.
 
+Artifacts are offered only on a deployment with both a transfer bucket and a content domain
+([artifacts.md](designs/artifacts.md) §12). Elsewhere the card for an existing publication,
+and the artifact's own page, say neutrally that artifacts are not enabled on this deployment:
+they read nothing, offer no **Open** or **Download**, and never suggest the artifact was
+deleted or is out of reach. The state lifts by itself once the deployment configures both.
+
 **Open** goes to the artifact's own page, `/<org slug>/artifacts/<id>?revision=<n>`, the same
 link the agent writes. The URL names the revision shown, so a reload or a shared link keeps
 it; without one the latest opens, and a revision that is no longer kept opens the latest
@@ -845,9 +851,16 @@ names the producing agent, the audience in the session audience's words, and whe
 revision was published. An older revision notes that a newer one exists and offers to switch.
 
 The console renders a revision from its bytes, fetched through the signed address after the
-access check; nothing renders on the store's origin. A page runs as `srcdoc` in a frame
-sandboxed with `allow-scripts` alone (no same-origin, forms, popups or top navigation) and may
-make outbound requests. Images show from typed `blob:` URLs, except SVG, which shows from a
+access check; nothing renders on the store's origin. An HTML entry, single file or site, runs
+on the revision's own content-domain origin in a frame sandboxed with `allow-scripts
+allow-same-origin` (no forms, popups or top navigation), so its other pages, scripts, styles,
+modules and local `fetch` calls load, and it may make outbound requests. The console answers
+only paths in that revision's manifest; a page navigation outside it gets the entry, so a
+history-routed app works. The page shown is kept in the URL as `?path=`, so reload, back and a
+copied link return to it; switching revisions drops it. A browser that cannot run the content
+domain's service worker gets the entry alone as `srcdoc`, sandboxed with `allow-scripts`, under
+a notice that the rest of the site cannot load there, with **Download** beside it. The console
+and every web page it serves refuse to be framed by another origin. Images show from typed `blob:` URLs, except SVG, which shows from a
 `data:` URL so it stays inert even opened in its own tab. A PDF uses the browser's viewer, with
 a download where the browser embeds none. Markdown renders with the console's Markdown view,
 its local images taken from the revision's own files. Source, text, JSON and CSV are
@@ -916,7 +929,8 @@ conversation, because it would retry and post them twice.
 
 ### Publishing an artifact (agent tools)
 
-Toward a control plane that serves artifacts, every session except a follow-up's check,
+Toward a control plane that serves artifacts, which needs a transfer bucket and a content
+domain, every session except a follow-up's check,
 organization research and a getting-to-know task gets three tools beside `shareFile`
 ([artifacts.md](designs/artifacts.md) §7). `publishArtifact` turns a file or a directory
 from the workspace or the session files into a versioned deliverable people open in the
@@ -943,9 +957,18 @@ conversation can reach.
 - **Fetch replaces one directory.** A fetch writes into `files:outputs/<title>-<id>/`,
   verifying each file's size and checksum, and replaces what an earlier fetch of the same
   artifact left there only after every file arrived; a failed fetch changes nothing.
-- **Refusals say what to do.** Missing storage, an unknown session, an artifact the
+- **Refusals say what to do.** Artifacts not enabled on the deployment, missing storage, an unknown session, an artifact the
   conversation cannot reach, one the agent did not create, an oversized file and an
   incomplete upload each get their own sentence.
+- **Sharing acts for a member.** Toward a control plane that also serves share links, the
+  session gets `shareArtifact` and `unshareArtifact`, for artifacts the agent created and the
+  conversation can reach. They act with the authority of the person who started the turn,
+  or of a schedule's or hook's creator, and only when that person is an organization member:
+  a guest, an unlinked chat account or a turn with no member behind it is refused (§7.3). A
+  `public` link needs the owner or an organization owner; an `org` link, anyone who can view.
+  The link is returned once; `listArtifacts` shows active shares by the link's last
+  characters, never the link. The owner, organization owners and the share's creator may
+  revoke it.
 
 ## Self-authored channel roots
 

@@ -4,11 +4,14 @@ import { describe, expect, it } from 'vitest'
 import { WireError } from '@agentconnect.md/connection'
 import { parseArtifactMarker, type ArtifactPublishBeginReq } from '@agentconnect.md/protocol'
 import {
+  ARTIFACT_SHARE_TOOLS,
   ARTIFACT_TOOLS,
   artifactToolsFor,
   fetchArtifact,
   listArtifacts,
   publishArtifact,
+  shareArtifact,
+  unshareArtifact,
   whoCanOpen,
   type ArtifactPort
 } from '../src/mcp/ops/artifacts.js'
@@ -19,6 +22,7 @@ import { checkCoordinate, gettingToKnowCoordinate } from '../src/session/subsess
 import { fakeTree, type FakeNode } from './artifact-tree-support.js'
 
 const ARTIFACT = '0f8fad5b-d9cb-469f-a165-70867728950e'
+const SHARE = '7d444840-9dc0-41d0-8a3c-3a7b3e6f5b01'
 const sha = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex')
 
 const ctx = (thread = 'T1'): SessionContext => ({
@@ -48,6 +52,7 @@ function harness(root: FakeNode, overrides: Partial<ArtifactPort> = {}) {
   const completes: unknown[] = []
   const port: ArtifactPort = {
     served: () => true,
+    sharesServed: () => true,
     turn: async () => ({ sessionId: 'session-1', turn: 'msg-1', initiator: { kind: 'console', userId: 'user-1' } }),
     begin: async (req) => {
       begins.push(req)
@@ -71,6 +76,12 @@ function harness(root: FakeNode, overrides: Partial<ArtifactPort> = {}) {
       throw new Error('unused')
     },
     list: async () => ({ artifacts: [] }),
+    share: async () => {
+      throw new Error('unused')
+    },
+    unshare: async () => {
+      throw new Error('unused')
+    },
     network: () => 'public',
     maxFileBytes: () => 50 * 1024 * 1024,
     normalizePath: async (_ctx, path) => path,
@@ -202,6 +213,7 @@ describe('publishArtifact', () => {
 
   it('maps every refusal reason to a sentence the agent can act on', async () => {
     const cases: [string, RegExp, Record<string, unknown>?][] = [
+      ['not-enabled', /artifacts are not enabled on this deployment\. Use shareFile/],
       ['transfer-unavailable', /artifact storage is unavailable right now.*use shareFile/],
       ['session-unknown', /does not know this session yet/],
       ['session-denied', /may not use artifacts/],
@@ -344,7 +356,16 @@ describe('listArtifacts', () => {
                 totalBytes: 120,
                 producedByAgentName: 'Analyst',
                 createdAt: '2026-11-20T10:00:00.000Z'
-              }
+              },
+              shares: [
+                {
+                  shareId: SHARE,
+                  revision: 3,
+                  audience: 'public',
+                  displayTail: '…abcdef',
+                  createdAt: '2026-11-21T10:00:00.000Z'
+                }
+              ]
             }
           ],
           nextCursor: 'next-page'
@@ -365,11 +386,143 @@ describe('listArtifacts', () => {
           bytes: 120,
           visibility: 'private',
           canRevise: true,
-          updatedAt: '2026-11-20T10:00:00.000Z'
+          updatedAt: '2026-11-20T10:00:00.000Z',
+          shares: [
+            {
+              shareId: SHARE,
+              revision: 3,
+              audience: 'public',
+              displayTail: '…abcdef',
+              createdAt: '2026-11-21T10:00:00.000Z'
+            }
+          ]
         }
       ],
       nextCursor: 'next-page'
     })
+  })
+})
+
+describe('shareArtifact', () => {
+  it('shares with the turn’s initiator and answers the link, who can open it and the share id', async () => {
+    const asked: unknown[] = []
+    const h = harness('x', {
+      share: async (req) => {
+        asked.push(req)
+        return {
+          shareId: SHARE,
+          artifactId: ARTIFACT,
+          revision: 2,
+          audience: req.audience,
+          displayTail: '…abcdef',
+          createdAt: '2026-11-27T10:00:00.000Z',
+          linkPath: '/share/token-abcdef',
+          link: 'https://console.example.test/share/token-abcdef'
+        }
+      }
+    })
+    const result = await shareArtifact(ctx(), { artifactId: ARTIFACT.toUpperCase(), audience: 'public' }, h.deps)
+    expect(asked).toEqual([
+      {
+        agentId: ctx().agentId,
+        sessionId: 'session-1',
+        artifactId: ARTIFACT,
+        audience: 'public',
+        initiator: { kind: 'console', userId: 'user-1' }
+      }
+    ])
+    expect(result).toEqual({
+      shareId: SHARE,
+      artifactId: ARTIFACT,
+      revision: 2,
+      audience: 'public',
+      link: 'https://console.example.test/share/token-abcdef',
+      displayTail: '…abcdef',
+      whoCanOpen: expect.stringMatching(/Anyone who has the link.*cannot be recalled/)
+    })
+  })
+
+  it('passes a revision, falls back to the link path, and says an org link needs sign-in', async () => {
+    const h = harness('x', {
+      turn: async () => ({ sessionId: 'session-1', turn: 'msg-1' }),
+      share: async (req) => {
+        expect(req).not.toHaveProperty('initiator')
+        expect(req.revision).toBe(1)
+        return {
+          shareId: SHARE,
+          artifactId: ARTIFACT,
+          revision: 1,
+          audience: 'org',
+          displayTail: '…abcdef',
+          createdAt: '2026-11-27T10:00:00.000Z',
+          linkPath: '/share/token-abcdef'
+        }
+      }
+    })
+    const result = await shareArtifact(ctx(), { artifactId: ARTIFACT, audience: 'org', revision: 1 }, h.deps)
+    expect(result).toMatchObject({
+      link: '/share/token-abcdef',
+      whoCanOpen: expect.stringMatching(/Signed-in members/)
+    })
+  })
+
+  it('refuses a bad audience before asking the control plane', async () => {
+    const h = harness('x')
+    await expect(shareArtifact(ctx(), { artifactId: ARTIFACT, audience: 'private' }, h.deps)).rejects.toThrow(
+      /audience must be "org" or "public"/
+    )
+  })
+
+  it('maps the share refusals to sentences the agent can act on', async () => {
+    const cases: [string, RegExp][] = [
+      ['no-member-authority', /only an organization member can share or unshare/],
+      ['share-forbidden', /may not do this \(boom\)\. An "org" share is open/],
+      ['revision-not-ready', /still uploading/],
+      ['not-producer', /share and unshare only artifacts you created/],
+      ['share-not-found', /no such share on this artifact/]
+    ]
+    for (const [reason, pattern] of cases) {
+      const refuse = async () => {
+        throw new WireError('SCOPE_DENIED', 'boom', false, { reason })
+      }
+      const h = harness('x', { share: refuse, unshare: refuse })
+      const tool = reason === 'share-not-found' ? unshareArtifact : shareArtifact
+      await expect(tool(ctx(), { artifactId: ARTIFACT, audience: 'org', shareId: SHARE }, h.deps)).rejects.toThrow(
+        pattern
+      )
+    }
+  })
+})
+
+describe('unshareArtifact', () => {
+  it('revokes the share by id with the turn’s initiator and says copies are not recalled', async () => {
+    const asked: unknown[] = []
+    const h = harness('x', {
+      unshare: async (req) => {
+        asked.push(req)
+        return {
+          shareId: SHARE,
+          artifactId: ARTIFACT,
+          revision: 1,
+          audience: 'public',
+          revokedAt: '2026-11-27T10:00:00.000Z'
+        }
+      }
+    })
+    const result = await unshareArtifact(ctx(), { artifactId: ARTIFACT, shareId: SHARE }, h.deps)
+    expect(asked).toEqual([
+      {
+        agentId: ctx().agentId,
+        sessionId: 'session-1',
+        artifactId: ARTIFACT,
+        shareId: SHARE,
+        initiator: { kind: 'console', userId: 'user-1' }
+      }
+    ])
+    expect(result).toMatchObject({ shareId: SHARE, revokedAt: '2026-11-27T10:00:00.000Z', notice: /not recalled/ })
+    await expect(
+      unshareArtifact(ctx(), { artifactId: ARTIFACT, shareId: 'https://console.example.test/share/x' }, h.deps)
+    ).rejects.toThrow(/shareId must be a share id/)
   })
 })
 
@@ -380,9 +533,29 @@ describe('artifact tool gating', () => {
       'fetchArtifact',
       'listArtifacts'
     ])
+    expect(artifactToolsFor(true, { thread: 'T1' }, true).map((t) => t.name)).toEqual([
+      'publishArtifact',
+      'fetchArtifact',
+      'listArtifacts',
+      'shareArtifact',
+      'unshareArtifact'
+    ])
+    expect(artifactToolsFor(false, { thread: 'T1' }, true)).toEqual([])
+    expect(artifactToolsFor(true, { thread: checkCoordinate('d1') }, true)).toEqual([])
     expect(artifactToolsFor(false, { thread: 'T1' })).toEqual([])
     expect(artifactToolsFor(true, { thread: checkCoordinate('d1') })).toEqual([])
     expect(artifactToolsFor(true, { thread: gettingToKnowCoordinate('d1') })).toEqual([])
+  })
+
+  it('refuses share and unshare at execution toward a CP without share links', async () => {
+    const h = harness('x', { sharesServed: () => false })
+    await expect(shareArtifact(ctx(), { artifactId: ARTIFACT, audience: 'org' }, h.deps)).rejects.toThrow(
+      /shareArtifact is not available in this session/
+    )
+    await expect(unshareArtifact(ctx(), { artifactId: ARTIFACT, shareId: SHARE }, h.deps)).rejects.toThrow(
+      /unshareArtifact is not available/
+    )
+    expect(ARTIFACT_SHARE_TOOLS.map((t) => t.name)).toEqual(['shareArtifact', 'unshareArtifact'])
   })
 
   it('refuses at execution when the CP stopped serving them', async () => {

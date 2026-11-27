@@ -228,6 +228,57 @@ The Source Cache for Git bundles is a feature of the Kubernetes daemon pool.
 Compose runs no pool members, so this overlay enables file transfer and icon
 uploads only.
 
+## Artifacts and the content domain
+
+Artifacts, the pages and documents agents publish for people to open in the
+console ([design](designs/artifacts.md)), use the object store above and a
+**content domain**: a wildcard domain on a registrable domain of its own, such
+as `example-usercontent.net`, where every revision renders at its own origin.
+Without one, artifacts are off: agents get no artifact tools and the console
+says artifacts are not enabled. What was already published is kept and comes
+back once a content domain is configured.
+
+Set it in `.env`; Compose passes it to the Control Plane and the Web service:
+
+```dotenv
+ARTIFACTS_CONTENT_DOMAIN=example-usercontent.net
+```
+
+The Control Plane refuses to start when the value is an IP address, a
+single-label name or `localhost`, or when it is same-site with any origin the
+deployment knows: the console, the Control Plane, the Relay, Logto and the
+object store. A subdomain of `AGENTCONNECT_HTTPS_HOST`'s domain is therefore
+refused. Clients that reach the stack only by an IP address or a single-label
+host name cannot resolve a content domain either, so artifacts stay off there
+unless the LAN gives the content domain a DNS name.
+
+Give the content domain a Caddy site block of its own that reverse-proxies only
+to the Web service. Add it in your own override file rather than editing the
+console's site block, which also routes `/cp` and `/relay`; those must never be
+reachable on a host that serves artifact pages:
+
+```caddyfile
+https://*.example-usercontent.net {
+    tls internal
+    reverse_proxy web:8080
+}
+```
+
+Revision origins carry no port, so browsers reach the content domain on port 443. Publish Caddy's port 443 on the host as well, for example
+`'${AGENTCONNECT_HTTPS_BIND_ADDRESS:-0.0.0.0}:443:443'`, and point wildcard DNS
+for `*.example-usercontent.net` at the Docker host.
+
+The certificate depends on where the name resolves:
+
+- **A public domain.** Caddy obtains a publicly trusted wildcard certificate
+  only through the ACME DNS challenge. Build Caddy with your DNS provider's
+  module (`xcaddy build --with github.com/caddy-dns/<provider>`), give it an
+  API token for that provider, and replace `tls internal` with
+  `tls { dns <provider> {env.<PROVIDER_TOKEN>} }`.
+- **A LAN-only name.** `tls internal` issues the wildcard certificate from
+  Caddy's internal CA, which clients already trust for the console, provided
+  the LAN resolves every name under the content domain to the Docker host.
+
 ## Trust the Caddy internal CA
 
 `tls internal` issues certificates from the private Caddy CA. Browsers and

@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  html,
+  body,
+  iframe {
+    margin: 0;
+    border: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+</style>
+<body>
+  <script>
+    const CONSOLE = '__CONSOLE_ORIGIN__'
+    const state = { nested: null, worker: null }
+    window.__shim = state
+    ;(async () => {
+      // A shim opened outside the console's frame does nothing.
+      if (window.parent === window) return void (document.body.textContent = 'not framed')
+      const reg = await navigator.serviceWorker.register('/__ac/sw.js', { scope: '/' })
+      await navigator.serviceWorker.ready
+      state.worker = reg.active
+      // The worker asks for a port after it restarts; the shim asks the console for a fresh one.
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data?.t === 'need-port') parent.postMessage({ t: 'need-port' }, CONSOLE)
+        if (e.data?.t === 'port-ok' && state.pendingEntry) {
+          const entry = state.pendingEntry
+          state.pendingEntry = null
+          load(entry)
+        }
+      })
+      navigator.serviceWorker.startMessages()
+      window.addEventListener('message', (e) => {
+        if (e.origin !== CONSOLE || e.source !== parent) return
+        if (e.data?.t !== 'port' || !e.ports[0]) return
+        if (e.data.entry && !state.nested) state.pendingEntry = e.data.entry
+        ;(reg.active || state.worker).postMessage({ t: 'port' }, [e.ports[0]])
+      })
+      parent.postMessage({ t: 'ready' }, CONSOLE)
+    })().catch((err) => parent.postMessage({ t: 'error', message: String(err) }, CONSOLE))
+
+    function load(entry) {
+      if (!entry.startsWith('/') || entry.startsWith('/__ac/')) entry = '/'
+      const f = document.createElement('iframe')
+      f.addEventListener('load', () => {
+        const l = f.contentWindow.location
+        parent.postMessage({ t: 'path', path: l.pathname + l.search + l.hash }, CONSOLE)
+      })
+      f.src = entry
+      state.nested = f
+      document.body.append(f)
+    }
+  </script>
+</body>

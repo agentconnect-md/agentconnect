@@ -35,6 +35,17 @@ export interface ArtifactDto {
   revisions: ArtifactRevisionSummary[]
 }
 
+/** One row of `GET /sessions/:sessionId/artifacts`: the artifact with its latest ready revision. */
+export interface SessionArtifactDto extends Omit<ArtifactDto, 'revisions'> {
+  latest: ArtifactRevisionSummary
+}
+
+/** A page of a session's artifacts, most recently updated first; it may hold fewer than asked for while `nextCursor` names more. */
+export interface SessionArtifactPageDto {
+  artifacts: SessionArtifactDto[]
+  nextCursor: string | null
+}
+
 /** `GET /artifacts/:artifactId/revisions/:revision`. */
 export interface ArtifactRevisionDto extends ArtifactRevisionSummary {
   artifactId: string
@@ -46,6 +57,44 @@ export interface ArtifactRevisionDto extends ArtifactRevisionSummary {
 export interface ArtifactFileUrlDto extends ArtifactManifestFile {
   url: string
   expiresAt: string
+}
+
+/** Who a share link admits (artifacts.md §8.3): anyone holding it, or signed-in members of the artifact's organization. */
+export type ArtifactShareAudience = 'public' | 'org'
+
+/** One share as its managers list it; the token itself is never listed, only its tail. */
+export interface ArtifactShareDto {
+  id: string
+  artifactId: string
+  revision: number
+  audience: ArtifactShareAudience
+  /** The token's last characters behind an ellipsis, to tell links apart. */
+  displayTail: string
+  createdBy: { userId: string | null; displayName: string | null; email: string | null; platform: string | null }
+  createdAt: string
+  updatedAt: string
+  revokedAt: string | null
+}
+
+/** `POST /artifacts/:artifactId/shares`: the only answer that carries the token, so the link can be copied only now. */
+export interface CreatedArtifactShareDto extends ArtifactShareDto {
+  token: string
+  /** `/share/<token>` on the console origin. */
+  linkPath: string
+  link: string | null
+}
+
+/** `POST /artifact-shares/read`: what a share link shows; no session, owner or newer revision. */
+export interface SharedArtifactDto {
+  artifactId: string
+  title: string
+  audience: ArtifactShareAudience
+  organization: { name: string }
+  sharedAt: string
+  revision: Pick<
+    ArtifactRevisionDto,
+    'number' | 'entry' | 'entryMediaType' | 'fileCount' | 'totalBytes' | 'createdAt' | 'manifest'
+  >
 }
 
 export interface ArtifactMarker {
@@ -75,10 +124,42 @@ export function parseArtifactMarker(text: string): { caption: string; artifact: 
   return { caption, artifact: { artifactId, revision: Number(revision), title } }
 }
 
+/** The distinct markers in these texts as one string, which changes only when a new card or revision lands in the transcript. */
+export function artifactMarkerKey(texts: Iterable<string>): string {
+  const seen = new Set<string>()
+  for (const text of texts) {
+    if (!text.includes('[artifact: ')) continue
+    const marker = parseArtifactMarker(text)?.artifact
+    if (marker) seen.add(`${marker.artifactId}:${marker.revision}`)
+  }
+  return [...seen].sort().join(',')
+}
+
 /** The console path of one artifact, pinned to a revision when one is given (artifacts.md §8.2). */
 export function artifactPath(artifactId: string, revision?: number): string {
   const base = `/artifacts/${encodeURIComponent(artifactId)}`
   return revision === undefined ? base : `${base}?revision=${revision}`
+}
+
+/** The revision a `?revision=` value asks for, or undefined when it names none. */
+export function requestedRevision(value: string | null): number | undefined {
+  if (!value || !/^[1-9]\d{0,8}$/.test(value)) return undefined
+  return Number(value)
+}
+
+/** The revision a viewer shows for an asked one: that revision while kept, else the latest kept, with the asked one as `missing`. */
+export function shownRevision(
+  artifact: Pick<ArtifactDto, 'revisions' | 'latestRevision'>,
+  asked: number | undefined
+): { shown: number; missing?: number } {
+  if (asked !== undefined && artifact.revisions.some((r) => r.number === asked)) return { shown: asked }
+  const shown = artifact.revisions[0]?.number ?? artifact.latestRevision
+  return asked === undefined ? { shown } : { shown, missing: asked }
+}
+
+/** Whether a string has the shape of an artifact id. */
+export function isArtifactId(value: string): boolean {
+  return UUID_RE.test(value)
 }
 
 /** How an entry opens (artifacts.md §9), which also picks the card's icon. */
@@ -166,4 +247,14 @@ export function markdownImageRefs(markdown: string): string[] {
   for (const re of [MD_INLINE_IMAGE_RE, MD_DEFINITION_RE])
     for (const match of markdown.matchAll(re)) refs.add((match[1] ?? match[2])!)
   return [...refs]
+}
+
+/** The CP's refusal on a deployment that does not offer artifacts, told apart from a 404 by its code (artifacts.md §12). */
+export const ARTIFACTS_NOT_ENABLED = 'ARTIFACTS_NOT_ENABLED'
+
+/** The content domain revisions render under, published only while the deployment offers artifacts. */
+export function artifactsContentDomain(): string | undefined {
+  const domain =
+    typeof window === 'undefined' ? process.env.ARTIFACTS_CONTENT_DOMAIN : window.__AC_ENV?.ARTIFACTS_CONTENT_DOMAIN
+  return domain || undefined
 }

@@ -1,4 +1,4 @@
-// `publishArtifact`, `fetchArtifact`, `listArtifacts` (artifacts.md §7): offered only toward a CP that advertises `artifacts-v1`.
+// The artifact tools (artifacts.md §7): publish, fetch and list toward `artifacts-v1`; share and unshare toward `artifact-shares-v1`.
 import { createHash } from 'node:crypto'
 import { WireError } from '@agentconnect.md/connection'
 import {
@@ -17,6 +17,11 @@ import {
   type ArtifactPublishCompleteOk,
   type ArtifactPublishCompleteReq,
   type ArtifactPublished,
+  type ArtifactShareAudience,
+  type ArtifactShareOk,
+  type ArtifactShareReq,
+  type ArtifactUnshareOk,
+  type ArtifactUnshareReq,
   type TransferNetwork
 } from '@agentconnect.md/protocol'
 import { z } from 'zod'
@@ -59,11 +64,15 @@ export type ArtifactOutputsResult =
 export interface ArtifactPort {
   /** Whether the connected CP answers the artifact frames. */
   served(): boolean
+  /** Whether it also answers `artifact/share|unshare`. */
+  sharesServed(): boolean
   turn(ctx: SessionContext): Promise<ArtifactTurn | undefined>
   begin(req: ArtifactPublishBeginReq): Promise<ArtifactPublishBeginOk>
   complete(req: ArtifactPublishCompleteReq): Promise<ArtifactPublishCompleteOk>
   fetch(req: ArtifactFetchReq): Promise<ArtifactFetchOk>
   list(req: ArtifactListReq): Promise<ArtifactListOk>
+  share(req: ArtifactShareReq): Promise<ArtifactShareOk>
+  unshare(req: ArtifactUnshareReq): Promise<ArtifactUnshareOk>
   network(): TransferNetwork
   /** The largest file one transfer carries here, clamped to the revision limit. */
   maxFileBytes(): number
@@ -122,6 +131,24 @@ export const FETCH_ARTIFACT_ARGS = z.object({
 
 export const LIST_ARTIFACTS_ARGS = z.object({
   cursor: z.string('argument cursor must be a string').min(1).max(512).optional()
+})
+
+export const SHARE_ARTIFACT_ARGS = z.object({
+  artifactId: ARTIFACT_ID,
+  audience: z.enum(['public', 'org'], 'argument audience must be "org" or "public"'),
+  revision: z
+    .number('argument revision must be a number')
+    .int()
+    .positive('argument revision must be 1 or more')
+    .optional()
+})
+
+export const UNSHARE_ARTIFACT_ARGS = z.object({
+  artifactId: ARTIFACT_ID,
+  shareId: z
+    .string('argument shareId must be a string')
+    .uuid('argument shareId must be a share id from shareArtifact or listArtifacts')
+    .transform((id) => id.toLowerCase())
 })
 
 export const PUBLISH_ARTIFACT_TOOL: ToolDescriptor = {
@@ -184,24 +211,70 @@ export const FETCH_ARTIFACT_TOOL: ToolDescriptor = {
 export const LIST_ARTIFACTS_TOOL: ToolDescriptor = {
   name: 'listArtifacts',
   description:
-    'List the artifacts this conversation can reach, most recently updated first, with each one’s latest revision ' +
-    'and whether you may publish new revisions of it (`canRevise`). Pass the returned `nextCursor` for the next page.',
+    'List the artifacts this conversation can reach, most recently updated first, with each one’s latest revision, ' +
+    'whether you may publish new revisions of it (`canRevise`) and its active share links (`shares`, when sharing ' +
+    'is offered). Pass the returned `nextCursor` for the next page.',
   inputSchema: obj({ cursor: { type: 'string', description: 'The previous page’s `nextCursor`.' } })
 }
 
+export const SHARE_ARTIFACT_TOOL: ToolDescriptor = {
+  name: 'shareArtifact',
+  description:
+    'Create a share link to one revision of an artifact you published, so people outside this conversation can ' +
+    'open it. `audience: "org"` admits signed-in members of the organization. `audience: "public"` admits anyone ' +
+    'who has the link, without signing in: use it only when the person asks for a public link, and tell them that ' +
+    'anyone with the link can open it and that copies already downloaded cannot be recalled, even after the link ' +
+    'is revoked. The link stays on that revision; a later revision needs a new share. The result’s `link` is what ' +
+    'you give the person, and it is shown only this once. You act for the person who started this turn: a public ' +
+    'link needs the artifact’s owner or an organization owner, and a guest or a chat account not linked to a ' +
+    'console member cannot share at all.',
+  inputSchema: obj(
+    {
+      artifactId: { type: 'string', description: 'An artifact you published, from publishArtifact or listArtifacts.' },
+      audience: {
+        type: 'string',
+        enum: ['org', 'public'],
+        description: '"org" for signed-in organization members, "public" for anyone with the link.'
+      },
+      revision: { type: 'integer', minimum: 1, description: 'A specific revision; omit for the latest.' }
+    },
+    ['artifactId', 'audience']
+  )
+}
+
+export const UNSHARE_ARTIFACT_TOOL: ToolDescriptor = {
+  name: 'unshareArtifact',
+  description:
+    'Revoke one share link of an artifact you published; the link stops opening at once, but copies people already ' +
+    'downloaded are not recalled. Pass the `shareId` from shareArtifact or from the artifact’s `shares` in ' +
+    'listArtifacts; to find the share behind a link someone pastes, match the link’s last six characters against ' +
+    '`displayTail`. You act for the person who started this turn: the artifact’s owner, an organization owner, or ' +
+    'whoever created the share may revoke it.',
+  inputSchema: obj(
+    {
+      artifactId: { type: 'string', description: 'The shared artifact.' },
+      shareId: { type: 'string', description: 'The share to revoke.' }
+    },
+    ['artifactId', 'shareId']
+  )
+}
+
 export const ARTIFACT_TOOLS: ToolDescriptor[] = [PUBLISH_ARTIFACT_TOOL, FETCH_ARTIFACT_TOOL, LIST_ARTIFACTS_TOOL]
+export const ARTIFACT_SHARE_TOOLS: ToolDescriptor[] = [SHARE_ARTIFACT_TOOL, UNSHARE_ARTIFACT_TOOL]
 
 const narrowed = (thread: string): boolean =>
   isCheckCoordinate(thread) || isResearchCoordinate(thread) || isGettingToKnowCoordinate(thread)
 
 /** The tools a session is offered: toward a CP that serves them, never in a check, research or getting-to-know task. */
-export function artifactToolsFor(served: boolean, at: { thread: string }): ToolDescriptor[] {
-  return served && !narrowed(at.thread) ? ARTIFACT_TOOLS : []
+export function artifactToolsFor(served: boolean, at: { thread: string }, sharesServed = false): ToolDescriptor[] {
+  if (!served || narrowed(at.thread)) return []
+  return sharesServed ? [...ARTIFACT_TOOLS, ...ARTIFACT_SHARE_TOOLS] : ARTIFACT_TOOLS
 }
 
-function portFor(ctx: SessionContext, deps: ArtifactToolDeps, name: string): ArtifactPort {
+function portFor(ctx: SessionContext, deps: ArtifactToolDeps, name: string, sharing = false): ArtifactPort {
   const port = deps.artifacts
-  if (!port?.served() || narrowed(ctx.thread)) throw new Error(`${name} is not available in this session.`)
+  if (!port?.served() || (sharing && !port.sharesServed()) || narrowed(ctx.thread))
+    throw new Error(`${name} is not available in this session.`)
   return port
 }
 
@@ -213,6 +286,8 @@ async function turnFor(ctx: SessionContext, port: ArtifactPort, name: string): P
 
 /** What each `ArtifactRefusalReason` tells the agent; the CP's own message follows where it adds detail. */
 const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
+  'not-enabled': (name) =>
+    `${name}: artifacts are not enabled on this deployment. Use shareFile to hand the file over in this conversation instead.`,
   'transfer-unavailable': (name) =>
     `${name}: artifact storage is unavailable right now — try again shortly. If it persists, use shareFile to hand ` +
     'the file over in this conversation instead.',
@@ -222,7 +297,9 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
   'not-found': (name) =>
     `${name}: no such artifact or revision that this conversation can reach. listArtifacts shows the ones it can.`,
   'not-producer': (name) =>
-    `${name}: you can publish revisions only of artifacts you created. Leave out artifactId to publish this as a new artifact.`,
+    name === 'publishArtifact'
+      ? `${name}: you can publish revisions only of artifacts you created. Leave out artifactId to publish this as a new artifact.`
+      : `${name}: you can share and unshare only artifacts you created; a person can do it from the artifact in the console.`,
   'too-large': (name, err) => `${name}: a file is over this deployment’s size limit (${err.message}).`,
   'idempotency-conflict': (name) =>
     `${name}: this publication collided with an earlier one from this turn — publish again.`,
@@ -233,7 +310,18 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
       `${name}: the upload did not complete${paths.length ? ` for ${paths.map((p) => `"${p}"`).join(', ')}` : ''}; ` +
       'nothing was published. Publish again.'
     )
-  }
+  },
+  'no-member-authority': (name) =>
+    `${name}: only an organization member can share or unshare, and the person who started this turn is not one ` +
+    'AgentConnect recognizes (a guest, a chat account not linked to a console member, or a schedule without a ' +
+    'member owner). A member can do it from the artifact in the console, or link their chat account and ask again.',
+  'share-forbidden': (name, err) =>
+    `${name}: the person who started this turn may not do this (${err.message}). An "org" share is open to anyone ` +
+    'who can view the artifact.',
+  'revision-not-ready': (name) =>
+    `${name}: that revision is still uploading. Share it once publishArtifact has finished, or omit revision.`,
+  'share-not-found': (name) =>
+    `${name}: no such share on this artifact. listArtifacts shows each artifact’s active shares.`
 }
 
 /** A CP call whose refusal becomes a sentence the agent can act on. */
@@ -499,8 +587,64 @@ export const listArtifacts: ToolHandler<ArtifactToolDeps> = async (ctx, args, de
       bytes: item.latest.totalBytes,
       visibility: item.audience.visibility,
       canRevise: item.producedByAgent,
-      updatedAt: item.updatedAt
+      updatedAt: item.updatedAt,
+      ...(item.shares ? { shares: item.shares } : {})
     })),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+  }
+}
+
+/** Who a share link admits, in words the agent can repeat (artifacts.md §8.3). */
+export function whoCanOpenShare(audience: ArtifactShareAudience): string {
+  return audience === 'public'
+    ? 'Anyone who has the link can open this revision without signing in. Copies already downloaded cannot be recalled, even after the link is revoked.'
+    : 'Signed-in members of the organization who have the link can open this revision.'
+}
+
+export const shareArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, deps) => {
+  const a = parseArgs(SHARE_ARTIFACT_ARGS, args)
+  const port = portFor(ctx, deps, 'shareArtifact', true)
+  const turn = await turnFor(ctx, port, 'shareArtifact')
+  const shared = await cp('shareArtifact', () =>
+    port.share({
+      agentId: ctx.agentId,
+      sessionId: turn.sessionId,
+      artifactId: a.artifactId,
+      ...(a.revision !== undefined ? { revision: a.revision } : {}),
+      audience: a.audience,
+      ...(turn.initiator ? { initiator: turn.initiator } : {})
+    })
+  )
+  return {
+    shareId: shared.shareId,
+    artifactId: shared.artifactId,
+    revision: shared.revision,
+    audience: shared.audience,
+    link: shared.link ?? shared.linkPath,
+    displayTail: shared.displayTail,
+    whoCanOpen: whoCanOpenShare(shared.audience)
+  }
+}
+
+export const unshareArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, deps) => {
+  const a = parseArgs(UNSHARE_ARTIFACT_ARGS, args)
+  const port = portFor(ctx, deps, 'unshareArtifact', true)
+  const turn = await turnFor(ctx, port, 'unshareArtifact')
+  const revoked = await cp('unshareArtifact', () =>
+    port.unshare({
+      agentId: ctx.agentId,
+      sessionId: turn.sessionId,
+      artifactId: a.artifactId,
+      shareId: a.shareId,
+      ...(turn.initiator ? { initiator: turn.initiator } : {})
+    })
+  )
+  return {
+    shareId: revoked.shareId,
+    artifactId: revoked.artifactId,
+    revision: revoked.revision,
+    audience: revoked.audience,
+    revokedAt: revoked.revokedAt,
+    notice: 'The link no longer opens. Copies already downloaded are not recalled.'
   }
 }

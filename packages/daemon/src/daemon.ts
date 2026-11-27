@@ -543,7 +543,7 @@ import {
   placeholderHeaders,
   type McpGrantRoute
 } from './credential-proxy/mcp-grant-route.js'
-import { toolContextFingerprint } from './session/turn/tool-context.js'
+import { toolContextFingerprint, type SessionToolContext } from './session/turn/tool-context.js'
 import { DAEMON_VERSION } from './version.js'
 import { McpAppsHost, splitAppToolName } from './mcp/apps/host.js'
 import { namesNativeUi, nativeUiChrome, nativeUiFromToolUpdate } from './mcp/native-ui.js'
@@ -941,7 +941,12 @@ import {
   type HookQueueCandidate,
   type RevisionAdmissionPlan
 } from './codehost/hook-admission.js'
-import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog, type RuntimeSource } from './runtimes/registry.js'
+import {
+  resolveRuntimeCatalog,
+  type ResolvedRuntimeCatalog,
+  type ResolvedRuntimeEntry,
+  type RuntimeSource
+} from './runtimes/registry.js'
 import {
   internalPassSlot,
   InternalPassSessions,
@@ -1026,6 +1031,7 @@ import { showsMcpImages } from './runtimes/mcp-image-content.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
+import { sweepRuntimeStaging } from './runtimes/store-install.js'
 import {
   applyCodexSessionFloor,
   applyClaudeModelAliases,
@@ -1576,7 +1582,18 @@ import {
   type WebchatShareTurn
 } from './webchat/shared-image.js'
 import { prepareSharedImagePreview } from './images/index.js'
-import { BUILTIN_SKILL_KEY_PREFIX, builtinSkillSources, reserveBuiltinSkills } from './skills/builtin-skills.js'
+import {
+  BUILTIN_SKILL_KEY_PREFIX,
+  isBuiltinMcpSkillName,
+  isMigratedBuiltinGitSkillSource,
+  reserveBuiltinSkills
+} from './skills/builtin-skills.js'
+import {
+  buildReadSkillTool,
+  replaceReadSkillTool,
+  resolveSessionBuiltinSkills,
+  systemSkillsInstructions
+} from './mcp/ops/skill-guide.js'
 import type { LocalSkillSource } from './skills/install-skills.js'
 import {
   activationKey,
@@ -1699,6 +1716,12 @@ function postlessCall(callMeta: CallMeta | undefined): boolean {
   )
 }
 
+/** A root an older daemon installed for a skill readSkill now serves: a `builtin:` source, or a Git source's leaf of a built-in name. */
+function isLegacyBuiltinRoot(root: { path: string; sourceId: string; sourceKind: string }): boolean {
+  if (root.sourceId.startsWith(BUILTIN_SKILL_KEY_PREFIX)) return true
+  return root.sourceKind === 'agent' && isBuiltinMcpSkillName(root.path.slice(root.path.lastIndexOf('/') + 1))
+}
+
 /** The store row a memory dream executes under. */
 function dreamExecutionKey(agentId: string, dreamId: string): string {
   return sessionKey('dream', 'memory', dreamId, agentId)
@@ -1709,6 +1732,15 @@ const SESSION_VM_ID = /^([^/]+)\/session-[a-f0-9]{24}$/
 
 function acpUpdateChainKey(owner: HostKey, sessionId: string): string {
   return `${owner}\u001f${sessionId}`
+}
+
+/** `catalog` with `id` set to `entry`, leaving the original untouched. */
+function withRuntimeEntry(
+  catalog: ResolvedRuntimeCatalog,
+  id: string,
+  entry: ResolvedRuntimeEntry
+): ResolvedRuntimeCatalog {
+  return { entries: { ...catalog.entries, [id]: entry }, runtimes: { ...catalog.runtimes, [id]: entry.runtime } }
 }
 
 // One agent-discovery pass: what this daemon will serve, plus the whole active fleet on disk.
@@ -2018,8 +2050,8 @@ export class Daemon {
     string,
     { agentDir: string; childEnv?: Record<string, string | undefined>; materialized: boolean }
   >()
-  // Why a daemon-supplied adapter has no install in the runtime store, so a refusal can name its tree.
-  private runtimeStoreFailures = new Map<string, string>()
+  // Why a daemon-supplied adapter has no store install (a refusal names its tree), and the entry a retry starts from.
+  private runtimeStoreFailures = new Map<string, { detail: string; entry: ResolvedRuntimeEntry }>()
   private runtimeStore?: Pick<RuntimeStore, 'ensure'>
   private archiveStore?: Pick<ArchiveStore, 'ensure'>
   // Terminal ACP start failure per agent, so a later refusal can say the runtime did not start
@@ -5143,7 +5175,11 @@ export class Daemon {
    *  sandbox pod and an injected host factory never spawns a runtime child, so neither gets one. */
   private adapterStore(root: string): Pick<RuntimeStore, 'ensure'> | undefined {
     if (this.k8s || this.opts.hostFactory) return undefined
-    this.runtimeStore ??= this.opts.runtimeStore ?? new RuntimeStore({ root, log: this.log })
+    if (!this.runtimeStore) {
+      // Opened before either store installs anything, so every staging tree left here belongs to a dead process.
+      sweepRuntimeStaging(root, this.log)
+      this.runtimeStore = this.opts.runtimeStore ?? new RuntimeStore({ root, log: this.log, clock: this.clock })
+    }
     return this.runtimeStore
   }
 
@@ -5151,7 +5187,7 @@ export class Daemon {
    *  factory get none for the same reasons {@link adapterStore} does. */
   private vendorArchiveStore(root: string): Pick<ArchiveStore, 'ensure'> | undefined {
     if (this.k8s || this.opts.hostFactory) return undefined
-    this.archiveStore ??= this.opts.archiveStore ?? new ArchiveStore({ root, log: this.log })
+    this.archiveStore ??= this.opts.archiveStore ?? new ArchiveStore({ root, log: this.log, clock: this.clock })
     return this.archiveStore
   }
 
@@ -5190,10 +5226,12 @@ export class Daemon {
         this.log.info(`runtimes: "${id}" launches ${label}`)
       } catch (err) {
         delete entries[id]
-        // This detail reaches a console reader through the refusal, so it is the bounded, path-free
-        // line the convention requires; the full diagnostic stays in the daemon log beside it.
-        this.runtimeStoreFailures.set(id, startFailureDetail(err))
-        this.log.warn(`runtimes: "${id}" has no daemon-owned install — ${formatErr(err)}`)
+        // The refusal shows this bounded, path-free detail to a console reader; the full diagnostic stays in the log.
+        const detail = startFailureDetail(err)
+        const repeated = this.runtimeStoreFailures.get(id)?.detail === detail
+        this.runtimeStoreFailures.set(id, { detail, entry })
+        // The store answers every call inside its retry backoff with the same failure, so log it once.
+        if (!repeated) this.log.warn(`runtimes: "${id}" has no daemon-owned install — ${formatErr(err)}`)
       }
     }
     return {
@@ -5202,13 +5240,18 @@ export class Daemon {
     }
   }
 
-  /** Install the adapter for a runtime the start-time sweep did not cover — an agent the CP assigned
-   *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
+  /** Install a runtime's adapter before it launches; the store keeps a success and retries a failure later. */
   private async ensureRuntimeInstalled(runtimeId: string, local = false): Promise<void> {
     if (local && this.localRuntimeCatalog) {
-      const installed = await this.installManagedRuntimePackages(this.localRuntimeCatalog, [runtimeId])
-      if (!installed.entries[runtimeId]) throw new Error(this.runtimeUnavailableMessage(runtimeId))
-      this.localRuntimeCatalog = installed
+      // A failed install dropped its entry from the catalog; offer it again so the store decides whether to retry.
+      const failed = this.localRuntimeCatalog.entries[runtimeId] ? undefined : this.runtimeStoreFailures.get(runtimeId)
+      const catalog = failed
+        ? withRuntimeEntry(this.localRuntimeCatalog, runtimeId, failed.entry)
+        : this.localRuntimeCatalog
+      const installed = (await this.installManagedRuntimePackages(catalog, [runtimeId])).entries[runtimeId]
+      if (!installed) throw new Error(this.runtimeUnavailableMessage(runtimeId))
+      // Merged into the current catalog, so an install that finished meanwhile for another runtime is kept.
+      this.localRuntimeCatalog = withRuntimeEntry(this.localRuntimeCatalog, runtimeId, installed)
       return
     }
     const entry = this.runtimeCatalog.entries[runtimeId]
@@ -5221,7 +5264,7 @@ export class Daemon {
   /** Why a runtime cannot launch: a failed daemon-owned install names its tree, else it is simply absent. */
   private runtimeUnavailableMessage(id: string): string {
     const failure = this.runtimeStoreFailures.get(id)
-    if (failure) return `runtime "${id}" has no daemon-owned install: ${failure}`
+    if (failure) return `runtime "${id}" has no daemon-owned install: ${failure.detail}`
     return `runtime "${id}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
   }
 
@@ -6096,7 +6139,7 @@ export class Daemon {
       },
       // read*File: a downloaded non-image binary lands in the session files directory's `uploads/` (inbound-file-attachments.md §2.4).
       saveAttachment: (ctx, name, bytes) => this.saveSessionUpload(ctx, name, bytes),
-      // publishArtifact, fetchArtifact, listArtifacts (artifacts.md §7), toward a CP that advertises artifacts-v1.
+      // The artifact tools (artifacts.md §7), toward a CP that advertises artifacts-v1 (and artifact-shares-v1 to share).
       artifacts: this.artifactPort(),
       chargeShareBudget: (ctx, bytes) => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
@@ -6296,7 +6339,8 @@ export class Daemon {
         transportScope,
         isDm,
         sessionKey,
-        threadedTask
+        threadedTask,
+        hasAdminMcp
       }) => {
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
           const instructions = isResearchCoordinate(thread) ? this.organizationResearchPrompt(agent, []) : undefined
@@ -6335,13 +6379,24 @@ export class Daemon {
         const fills =
           computers && (platform === 'webchat' || this.turnSurfaces.exact(platform)?.fillCards !== undefined)
         if (fills) tools.push(...COMPUTER_FILL_TOOLS)
+        // skill-over-mcp.md §4.2: create-* need agentconnect-admin, which only an HTTP-MCP runtime can attach.
+        const adminMcpActive = hasAdminMcp === true && this.runtimeFacts.mcpCapabilities(agent.runtime)?.http === true
+        const builtinSkills = resolveSessionBuiltinSkills({
+          tools,
+          hasAdminMcp: adminMcpActive,
+          restricted: narrowed || isGettingToKnowCoordinate(thread)
+        })
+        if (builtinSkills.length > 0) tools.push(buildReadSkillTool(builtinSkills))
         if (!this.mcpToolServerReachable()) tools = []
+        const skillsOffered = tools.length > 0 ? builtinSkills : []
+        let registered: SessionContext | undefined
         const instructions =
           [
             research ? this.organizationResearchPrompt(agent, tools) : undefined,
             coordinator ? this.coordinatorInstructions(agent, { platform, channel, integrationId }) : undefined,
             codeHostEffectGuidance(tools),
             agentToolInstructions(agent.integrations, tools).join('\n') || undefined,
+            systemSkillsInstructions(skillsOffered),
             computers && tools.length > 0
               ? [
                   COMPUTER_USE_GUIDANCE,
@@ -6366,15 +6421,27 @@ export class Daemon {
               warn: (warning) => warnings.push(warning)
             })
         const restricted = this.restrictedMcpDefs(agent.id)
-        return {
+        const context: SessionToolContext = {
           fingerprint: toolContextFingerprint(tools, configuredServers, instructions),
           instructions,
           tools,
+          ...(skillsOffered.length > 0 ? { builtinSkills: skillsOffered } : {}),
+          // The runtime refused agentconnect-admin: drop the create-* skills before it lists the bridge's tools.
+          ...(adminMcpActive && skillsOffered.length > 0
+            ? {
+                onAdditionalMcpFallback: () => {
+                  const downgraded = resolveSessionBuiltinSkills({ tools, hasAdminMcp: false, restricted: false })
+                  replaceReadSkillTool(tools, downgraded)
+                  context.builtinSkills = downgraded
+                  if (registered) registered.builtinSkills = downgraded
+                }
+              }
+            : {}),
           mcpServers: () => {
             for (const warning of warnings) this.log.warn(warning)
             const servers: McpServer[] = []
             if (tools.length > 0) {
-              const token = this.mcp.register({
+              const session: SessionContext = {
                 agentId: agent.id,
                 platform,
                 ...(integrationId ? { integrationId } : {}),
@@ -6398,8 +6465,11 @@ export class Daemon {
                         layer: 'shared' as const
                       }
                     }
-                  : {})
-              })
+                  : {}),
+                ...(skillsOffered.length > 0 ? { builtinSkills: skillsOffered } : {})
+              }
+              registered = session
+              const token = this.mcp.register(session)
               servers.push(...this.mcpToolServerSpec(token, agent, sessionKey))
             }
             // A placeholder works only where the launch of the host serving this session (a model session's own included) routes the relay through the proxy.
@@ -6426,6 +6496,7 @@ export class Daemon {
             return servers
           }
         }
+        return context
       },
       // Download from the actual ingress integration, including platforms without a legacy reply connection.
       downloadAttachment: (agentId, att, integrationId) =>
@@ -9159,11 +9230,7 @@ export class Daemon {
       ...(this.usesMicrosandbox(agent)
         ? { installSkills: (value: Agent, cwd: string) => this.reconcileMicrosandboxSkills(value, cwd) }
         : {}),
-      // The builtin image workflow rides the managed sources; installation without a skillsAgentId simply skips it.
-      managedSkills: async (value: Agent) => [
-        ...((await this.managedSkillCache?.resolve(value)) ?? []),
-        ...(await builtinSkillSources())
-      ],
+      managedSkills: async (value: Agent) => (await this.managedSkillCache?.resolve(value)) ?? [],
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null,
       resolveGitSkillRef: (entry: AgentSkillEntrySchema, value: Agent) => this.trackedGitSkillCommit(entry, value),
@@ -9437,19 +9504,23 @@ export class Daemon {
     const duty = this.duties.dutyForAgent(agent.id) ?? peer.localAuthority
     const daemonId = peer.localAuthority?.daemonId ?? this.cfg.daemonId
     const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
-    const desiredSources = agent.skills.length + agent.managedSkills.length + dreamed.length
+    // The preset Git source's skills are served by readSkill (skill-over-mcp.md §6.2), so it is never installed.
+    const effectiveGitSkills = agent.skills.filter((entry) => !isMigratedBuiltinGitSkillSource(entry))
+    const desiredSources = effectiveGitSkills.length + agent.managedSkills.length + dreamed.length
     if (!workspaceIncarnation) {
       if (!client && desiredSources === 0) return
       throw new Error('cluster skill preparation authority is unavailable')
     }
     const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
     const priorLedger = prior?.ledger ?? peer.initialLedger
+    // Nothing to install and nothing to retire: no shim round trip (skill-over-mcp.md §6.4.2).
+    if (desiredSources === 0 && (priorLedger?.roots.length ?? 0) === 0) return priorLedger
     const supportRequired = clusterSkillSupportRequired({
-      configuredSources: agent.skills.length,
+      configuredSources: effectiveGitSkills.length,
       managedBindings: agent.managedSkills.length,
       acceptedDreamSources: dreamed.length,
-      // A builtin root alone never makes skill support mandatory.
-      priorRoots: priorLedger?.roots.filter((root) => !root.sourceId.startsWith(BUILTIN_SKILL_KEY_PREFIX)).length ?? 0
+      // A legacy builtin root alone never makes skill support mandatory.
+      priorRoots: priorLedger?.roots.filter((root) => !isLegacyBuiltinRoot(root)).length ?? 0
     })
     if (!client) {
       if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
@@ -9469,33 +9540,18 @@ export class Daemon {
         })
       : []
     const acquireOptions = { agentId: agent.id, useGitCredential: this.workspaces.skillGitCredentialEnabled(agent) }
-    // Builtins join after the support gate: an optional helper must never make an otherwise usable runtime refuse to start.
-    const builtins = await builtinSkillSources()
-    const reconcile = (withBuiltins: boolean) => {
-      const sources = reserveBuiltinSkills([...managed, ...dreamed, ...(withBuiltins ? builtins : [])], (msg) =>
-        this.log.warn(msg)
-      )
-      return this.reconcileSandboxSkillSet(agent, peer, client, {
-        managed: sources.filter((source) => source.kind === 'managed'),
-        dreamed: sources.filter((source) => source.kind === 'dream'),
-        acquireOptions,
-        priorLedger,
-        duty,
-        daemonId,
-        workspaceIncarnation,
-        skillsAgentId,
-        shimGeneration
-      })
-    }
-    if (builtins.length === 0) return await reconcile(false)
-    try {
-      return await reconcile(true)
-    } catch (err) {
-      // A user-authored directory already holds the reserved name: keep it, start without the builtin.
-      if (!/ownership conflict/i.test((err as Error).message)) throw err
-      this.log.warn(`skills: builtin skill not installed for ${agent.id} (${(err as Error).message})`)
-      return await reconcile(false)
-    }
+    const sources = reserveBuiltinSkills([...managed, ...dreamed], (msg) => this.log.warn(msg))
+    return await this.reconcileSandboxSkillSet(agent, peer, client, {
+      managed: sources.filter((source) => source.kind === 'managed'),
+      dreamed: sources.filter((source) => source.kind === 'dream'),
+      acquireOptions,
+      priorLedger,
+      duty,
+      daemonId,
+      workspaceIncarnation,
+      skillsAgentId,
+      shimGeneration
+    })
   }
 
   /** One sandbox skill reconcile over a fixed source set. */
@@ -12691,7 +12747,14 @@ export class Daemon {
     // The agent's own crons, with no approval, toward a CP that serves them; execution re-checks.
     tools = [...tools, ...agentCronToolsFor(this.agentCronsServed(), { thread })]
     // Artifacts (artifacts.md §7), toward a CP that advertises them; execution re-checks.
-    tools = [...tools, ...artifactToolsFor(this.cpClient?.supportsArtifacts?.() === true, { thread })]
+    tools = [
+      ...tools,
+      ...artifactToolsFor(
+        this.cpClient?.supportsArtifacts?.() === true,
+        { thread },
+        this.cpClient?.supportsArtifactShares?.() === true
+      )
+    ]
     // §14.2 brokers: a host's tools ride with any repository the agent holds there, and the clamped lease still authorizes each call.
     for (const provider of this.codeHostBrokers.keys()) {
       if (this.holdsEffectRepository(agent, provider)) tools = [...tools, ...codeHostEffectToolsFor(provider)]
@@ -15260,11 +15323,14 @@ export class Daemon {
     }
     return {
       served: () => this.cpClient?.supportsArtifacts?.() === true,
+      sharesServed: () => this.cpClient?.supportsArtifactShares?.() === true,
       turn: (ctx) => this.artifactTurn(ctx),
       begin: (req) => client().beginArtifactPublish(req, this.orgForAgent(req.agentId)),
       complete: (req) => client().completeArtifactPublish(req, this.orgForAgent(req.agentId)),
       fetch: (req) => client().fetchArtifact(req, this.orgForAgent(req.agentId)),
       list: (req) => client().listArtifacts(req, this.orgForAgent(req.agentId)),
+      share: (req) => client().shareArtifact(req, this.orgForAgent(req.agentId)),
+      unshare: (req) => client().unshareArtifact(req, this.orgForAgent(req.agentId)),
       network: () => this.transferNetwork(),
       maxFileBytes: () => Math.min(ARTIFACT_MAX_BYTES, this.fileTransfer?.maxBytes ?? ARTIFACT_MAX_BYTES),
       normalizePath: async (ctx, path) => {

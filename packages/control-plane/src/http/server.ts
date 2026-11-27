@@ -35,6 +35,7 @@ import { computerPlanAdminRoutes, computerPlanRoutes } from './routes/computer-p
 import { computerScreenshotRoutes } from './routes/computer-screenshots.js'
 import { sessionFileRoutes } from './routes/session-files.js'
 import { artifactRoutes } from './routes/artifacts.js'
+import { artifactShareReadRoutes } from './routes/artifact-shares.js'
 import { agentRoutes } from './routes/agents.js'
 import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
@@ -351,6 +352,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // Service-authenticated session-policy delivery — same root and same reason; its own credential (org-session-policy.md).
       await api.register(internalSessionPolicyRoutes(deps))
       await api.register(orgInviteAcceptRoutes(deps))
+      // Artifact share links: a `public` link admits non-members, whom the org subtree answers 404 (artifacts.md §8.3).
+      await api.register(artifactShareReadRoutes(deps))
       // OAuth consent BACKEND (agent-assistant.md §7.3) — version root, guarded
       // inside its plugin by interactive human auth for the console session.
       await api.register(oauthConsentRoutes(deps))

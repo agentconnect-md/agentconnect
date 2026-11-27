@@ -162,7 +162,13 @@ import { ApprovalRequestsCard, usePendingRequestCount } from '@/components/conso
 import { activityScope, ASSISTANT_TASK_HANDLE_FEATURE } from '@/lib/agent-activity'
 import type { SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
-import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
+import {
+  DockPanel,
+  SessionDock,
+  SessionDockSlot,
+  type DockTab,
+  type DockTabStatus
+} from '@/components/console/dock/SessionDock'
 import { ComputerPanel } from '@/components/console/dock/ComputerPanel'
 import {
   SessionsPanel,
@@ -212,6 +218,28 @@ import {
 } from '@/components/console/dock/PullRequestPanel'
 import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/components/console/viewer/SessionViewer'
 import {
+  ArtifactOpenerProvider,
+  ArtifactPlacementProvider,
+  type ArtifactOpener,
+  type ArtifactOpenOptions
+} from '@/components/console/artifact/artifact-opener'
+import { ArtifactArrivals, useArtifactAutoOpen } from '@/components/console/artifact/artifact-auto-open'
+import { SessionArtifactViewer } from '@/components/console/artifact/SessionArtifactViewer'
+import { ArtifactsPanel, artifactsTabStatus } from '@/components/console/dock/ArtifactsPanel'
+import { ArtifactsList } from '@/components/console/dock/ArtifactsList'
+import { artifactMarkerKey, artifactsContentDomain } from '@/lib/artifact'
+import {
+  ARTIFACT_PARAM,
+  ARTIFACT_PATH_PARAM,
+  ARTIFACT_PLACE_PARAM,
+  artifactStandalonePath,
+  readArtifactViewer,
+  writeArtifactViewer,
+  type ArtifactPlacement,
+  type ArtifactViewerState,
+  type ArtifactViewerTarget
+} from '@/lib/artifact-viewer-url'
+import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
   railSeedAgentIds,
@@ -247,13 +275,12 @@ type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 // Session composer chips (mirrors HomeView); effort and approval live in the model picker.
 const COMPOSER_CHIP =
   'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
-const COMPOSER_PILL =
-  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
-const COMPOSER_PILL_STATIC =
-  'inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
+const COMPOSER_TOOL =
+  'inline-flex size-[30px] flex-none cursor-pointer items-center justify-center rounded-sm text-(--text-tertiary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-secondary) pointer-coarse:size-10'
+const COMPOSER_PARTICIPANT =
+  'inline-flex h-[30px] max-w-full min-w-0 items-center gap-[6px] rounded-sm px-[7px] font-sans text-[13px] font-medium leading-normal pointer-coarse:h-[38px]'
 // A continued conversation's roster chips pick the one member a send reaches.
-const COMPOSER_RECIPIENT =
-  'inline-flex h-7 min-w-0 cursor-pointer items-center gap-[7px] rounded-full border px-[10px] font-mono text-[11.5px] font-medium leading-normal disabled:cursor-not-allowed disabled:opacity-50'
+const COMPOSER_RECIPIENT = `${COMPOSER_PARTICIPANT} cursor-pointer border disabled:cursor-not-allowed disabled:opacity-50`
 const COMPOSER_RECIPIENT_ON = `${COMPOSER_RECIPIENT} border-(--brand-soft-border) bg-(--brand-soft) text-(--brand-soft-text)`
 const COMPOSER_RECIPIENT_OFF = `${COMPOSER_RECIPIENT} border-transparent bg-transparent text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)`
 
@@ -304,7 +331,7 @@ const EMPTY_ROSTER: ReadonlyArray<{ agentId: string; name: string }> = []
 const noOwnerIcon = () => undefined
 const EMPTY_CONTROLS: readonly ControlCommand[] = []
 // The textarea's text box, shared with the overlay that marks a leading command so both lay text out identically.
-const COMPOSER_TEXT = 'px-[15px] py-[13px] font-sans text-[14px] leading-[1.55]'
+const COMPOSER_TEXT = 'px-4 pt-[13px] pb-[6px] font-sans text-[14px] leading-[1.4] pointer-coarse:text-[16px]'
 // How often a running turn's rows are read when no transcript signal arrives.
 const TAIL_FALLBACK_MS = 15_000
 
@@ -464,7 +491,8 @@ function ComposerTextarea({
           ref={textareaRef}
           rows={1}
           onScroll={(e) => syncCommandMirror(overlayRef.current, e.currentTarget)}
-          className={`${COMPOSER_TEXT} relative block max-h-[min(30vh,240px)] min-h-[56px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          className={`${COMPOSER_TEXT} relative block max-h-[min(30vh,220px)] min-h-[54px] w-full resize-none border-0 bg-transparent outline-none placeholder:text-(--text-tertiary) pointer-coarse:min-h-[56px] ${highlight ? 'text-transparent caret-(--text-primary)' : 'text-(--text-primary)'}`}
+          aria-label={placeholder}
           placeholder={suggestion ?? placeholder}
           value={draft}
           onChange={(e) => {
@@ -558,7 +586,7 @@ function ComposerSendButton({
   return (
     <SendButton
       stop={stop}
-      className="-ml-1"
+      className={`h-[30px] w-[30px] [&>span]:size-[30px] enabled:hover:[&>span]:bg-(--brand-hover) ${stop ? 'rounded-full' : 'rounded-sm disabled:[&>span]:bg-(--surface-active) disabled:[&>span]:text-(--text-tertiary) [&>span]:rounded-sm [&_svg]:size-[14px]'}`}
       label={stop ? t('stopResponse') : t('sendMessage')}
       onClick={() => (stop ? onStop() : onSend())}
       disabled={!stop && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
@@ -818,9 +846,14 @@ const DOCK_TABS: DockTab[] = [
     actionIcon: 'refresh-cw',
     actionLabel: 'Refresh tasks'
   },
+  // The artifact viewer a main-conversation card opened (artifacts.md §11.2).
+  { key: 'artifacts', label: 'Artifacts', icon: 'shapes' },
   // The focused agent's Computers: watch, expand and take control (computer-use.md §10).
   { key: 'computer', label: 'Computer', icon: 'monitor' }
 ]
+
+/** The parameters that name the workspace file viewer. */
+const FILE_VIEWER_PARAMS = ['file', 'agent', 'repo', 'root', 'mode'] as const
 
 /** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
 // Asks once per card and session; a child so the request can follow the view's early returns without breaking hook order.
@@ -888,6 +921,7 @@ export default function SessionDetailView() {
   const tt = useTranslations('Common.taskThread')
   const runtimeModelT = useTranslations('Agents.dialog.runtimeModel')
   const commandMenuT = useTranslations('Common.commandMenu')
+  const artifactListT = useTranslations('Artifacts.list')
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
@@ -915,7 +949,11 @@ export default function SessionDetailView() {
       repo?: string,
       root?: SessionFileArea
     ) => {
-      const query = new URLSearchParams(searchParams)
+      // The left pane holds one viewer, so a file closes an artifact open there.
+      const query =
+        next && searchParams.get(ARTIFACT_PLACE_PARAM) === 'pane'
+          ? writeArtifactViewer(searchParams.toString(), null)
+          : new URLSearchParams(searchParams)
       if (next) query.set('file', next)
       else query.delete('file')
       // The workspace travels with the path, so the link resolves to the checkout it was made from rather than to whichever agent the header happens to focus on reopening.
@@ -933,6 +971,27 @@ export default function SessionDetailView() {
     },
     [pathname, router, searchParams]
   )
+  // The artifact viewer's place (artifacts.md §11.2), in the URL and written the REPLACE way `?file=` is; a deployment without artifacts reads none.
+  const artifactsEnabled = !MOCK_MODE && artifactsContentDomain() !== undefined
+  const artifactViewer = artifactsEnabled ? readArtifactViewer(searchParams) : null
+  const setArtifactViewer = useCallback(
+    (next: ArtifactViewerState | null) => {
+      const query = writeArtifactViewer(searchParams.toString(), next)
+      if (next?.placement === 'pane') for (const key of FILE_VIEWER_PARAMS) query.delete(key)
+      const search = query.toString()
+      router.replace(search ? `${pathname}?${search}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams]
+  )
+  // A site's page changes through the native history call, as on the standalone page, and never after the viewer closed.
+  const syncArtifactPath = useCallback((path: string | null) => {
+    const next = new URLSearchParams(window.location.search)
+    if (!next.get(ARTIFACT_PARAM)) return
+    if (path === null) next.delete(ARTIFACT_PATH_PARAM)
+    else next.set(ARTIFACT_PATH_PARAM, path)
+    const query = next.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`)
+  }, [])
   // Merged conversation mode (§5.3): the stable REPRESENTATIVE drives every session-scoped affordance; peers only feed the transcript and roster.
   const conversationKey = conversationKeyParam ? decodeURIComponent(conversationKeyParam) : null
   const {
@@ -1662,6 +1721,23 @@ export default function SessionDetailView() {
     MOCK_MODE || !session || (syntheticPlayground && !session.realSessionId)
       ? null
       : (session.realSessionId ?? session.id)
+  // The Artifacts tab lists what the open session published, on the PR tab's scope and for the same reasons.
+  const artifactsSessionId = artifactsEnabled ? prSessionId : null
+  // The Artifacts tab list's status, held per session so a switch never shows the previous session's verdict.
+  const [artifactsListHeard, setArtifactsListHeard] = useState<{ sessionId: string; status: DockTabStatus } | null>(
+    null
+  )
+  const onArtifactsListStatus = useCallback(
+    (status: DockTabStatus) => {
+      if (artifactsSessionId) setArtifactsListHeard({ sessionId: artifactsSessionId, status })
+    },
+    [artifactsSessionId]
+  )
+  const artifactsListStatus = !artifactsSessionId
+    ? 'empty'
+    : artifactsListHeard?.sessionId === artifactsSessionId
+      ? artifactsListHeard.status
+      : 'loading'
   // Whether the Tasks tab reads the focused session's delegated tasks: that agent is in assistant mode or its daemon lists every agent's.
   const subsessionsAgent = filesAgentId ? agentById.get(filesAgentId) : undefined
   const subsessionsListed =
@@ -1799,6 +1875,44 @@ export default function SessionDetailView() {
     setTaskThread(null)
     setThreadParam(null)
   }, [setThreadParam])
+  // Opens the artifact viewer opposite the card (artifacts.md §11.2), bringing the dock on screen as a task's thread does.
+  const openArtifact = useCallback(
+    (target: ArtifactViewerTarget, placement: ArtifactPlacement, options?: ArtifactOpenOptions) => {
+      setArtifactViewer({
+        artifactId: target.artifactId,
+        ...(target.revision !== undefined ? { revision: target.revision } : {}),
+        path: target.path ?? null,
+        placement
+      })
+      if (placement !== 'dock') return
+      setDockTab('artifacts')
+      if (options?.reveal !== false) setDockReveal((n) => n + 1)
+    },
+    [setArtifactViewer]
+  )
+  // An agent's publication opens the viewer by itself on a desktop (artifacts.md §11.2, D23).
+  const artifactAutoOpen = useArtifactAutoOpen({
+    scope: id,
+    orgId: activeOrg?.id,
+    viewer: artifactViewer,
+    fileOpen: viewerPath !== null,
+    open: openArtifact
+  })
+  const closeArtifact = (shown: ArtifactViewerState) => {
+    artifactAutoOpen.closed(shown)
+    setArtifactViewer(null)
+  }
+  // A phone has no dock: no opener, so its cards link out, and a link naming a viewer opens the standalone page.
+  const artifactOpener = useMemo<ArtifactOpener | null>(
+    () => (artifactsEnabled && !isMobile ? { open: openArtifact, arrived: artifactAutoOpen.arrived } : null),
+    [artifactsEnabled, isMobile, openArtifact, artifactAutoOpen.arrived]
+  )
+  const artifactStandaloneHref = artifactViewer ? orgPath(artifactStandalonePath(artifactViewer)) : null
+  useEffect(() => {
+    if (isMobile && artifactStandaloneHref) router.replace(artifactStandaloneHref)
+  }, [artifactStandaloneHref, isMobile, router])
+  const dockArtifactViewer = artifactViewer?.placement === 'dock' ? artifactViewer : null
+  const dockArtifactOpen = dockArtifactViewer !== null
   // Acts on a change of the address only, and not on one this page wrote, which lands a render after the panel moved.
   const seenThreadParam = useRef<string | null | undefined>(undefined)
   useEffect(() => {
@@ -1939,7 +2053,9 @@ export default function SessionDetailView() {
                   ? t('pullRequest')
                   : tab.key === 'computer'
                     ? t('computer')
-                    : t('tasks'),
+                    : tab.key === 'artifacts'
+                      ? t('artifacts')
+                      : t('tasks'),
         ...(tab.key === 'files'
           ? { actionLabel: t('refreshFiles') }
           : tab.key === 'git'
@@ -1954,8 +2070,10 @@ export default function SessionDetailView() {
   const dockTabs = useMemo<DockTab[]>(
     () =>
       localizedDockTabs
-        // A coordinator never touches files, git or a computer, so its panel keeps Tasks, then Sessions.
-        .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks')
+        // A coordinator never touches files, git or a computer, so its panel keeps Tasks, then Sessions and Artifacts.
+        .filter((tab) => !coordinatorPage || tab.key === 'sessions' || tab.key === 'tasks' || tab.key === 'artifacts')
+        // Artifacts only where the deployment offers them (artifacts.md §12).
+        .filter((tab) => tab.key !== 'artifacts' || artifactsEnabled)
         // A task's page is its own work: its Files, Git, Tasks and Computer, without the agent's session list.
         .filter((tab) => !taskOwnPage || tab.key !== 'sessions')
         .sort((a, b) => (coordinatorPage ? Number(b.key === 'tasks') - Number(a.key === 'tasks') : 0))
@@ -2002,12 +2120,22 @@ export default function SessionDetailView() {
                         // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
                         ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
                       }
-                    : tab
+                    : tab.key === 'artifacts'
+                      ? {
+                          ...tab,
+                          status: artifactsTabStatus(dockArtifactOpen, artifactsListStatus),
+                          emptyLabel: artifactListT('empty')
+                        }
+                      : tab
         ),
     [
+      artifactListT,
+      artifactsEnabled,
+      artifactsListStatus,
       computerIds.length,
       computerManaged,
       coordinatorPage,
+      dockArtifactOpen,
       taskOwnPage,
       filesAgentId,
       filesStatus,
@@ -2032,11 +2160,14 @@ export default function SessionDetailView() {
   const dockTabKey =
     dockTab !== null && dockTabs.some((tab) => tab.key === dockTab)
       ? dockTab
-      : coordinatorPage && dockTabs.some((tab) => tab.key === 'tasks')
-        ? 'tasks'
-        : taskOwnPage && dockTabs.some((tab) => tab.key === 'files')
-          ? 'files'
-          : (dockTabs[0]?.key ?? DOCK_TABS[0]!.key)
+      : // A link naming a viewer in the dock reopens on its tab.
+        dockArtifactOpen && dockTab === null && dockTabs.some((tab) => tab.key === 'artifacts')
+        ? 'artifacts'
+        : coordinatorPage && dockTabs.some((tab) => tab.key === 'tasks')
+          ? 'tasks'
+          : taskOwnPage && dockTabs.some((tab) => tab.key === 'files')
+            ? 'files'
+            : (dockTabs[0]?.key ?? DOCK_TABS[0]!.key)
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
     railSeedWidened ? activeOrg?.id : null,
@@ -2149,6 +2280,8 @@ export default function SessionDetailView() {
   const viewerTransfer =
     viewerAgent !== undefined && transferCapable(agentCapabilitySource(viewerAgent, daemons, memberSets)?.caps.features)
   const visibleMsgLoading = transcriptMatchesSession ? msgLoading : wantTranscript
+  // The first page is in, so a card that shows up after it arrived live rather than with the history.
+  const transcriptRead = !wantTranscript || (visibleMsgs !== null && !visibleMsgLoading)
   const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
   const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
   const visibleTailReady = wantTranscript && transcriptMatchesSession && tailReady
@@ -2710,7 +2843,15 @@ export default function SessionDetailView() {
     filesScopeReady &&
     !linkedFocusStale &&
     (!viewerRoot || sessionFilesId !== undefined)
+  // An artifact a task thread's card opened takes the left pane as the file viewer does (artifacts.md §11.2); a file named beside it wins.
+  const artifactPaneViewer = artifactViewer?.placement === 'pane' && !viewerOpen && !isMobile ? artifactViewer : null
+  // Either viewer conceals the conversation and its composer.
+  const paneTaken = viewerOpen || artifactPaneViewer !== null
   const liveSteps = isWebchat || isContinuable || pgOnRows ? getLiveSteps(session.id) : []
+  // A new artifact card in the transcript, saved or streaming, is what re-reads the dock's artifact list.
+  const artifactMarkers = artifactsSessionId
+    ? artifactMarkerKey([...(visibleMsgs ?? []).map((m) => m.text), ...liveSteps.map((step) => step.text)])
+    : ''
   // Over its rows a page draws only what they cannot hold yet: its sends, the reply streaming now, cards and notices.
   const overlaySteps = wantTranscript ? liveOverlay(liveSteps) : liveSteps
   // A message in a thread that a task answers there keeps this timeline still; one the coordinator answers streams here.
@@ -2818,7 +2959,7 @@ export default function SessionDetailView() {
     composerAgent !== undefined &&
     uploadPreviewsCapable(agentCapabilitySource(composerAgent, daemons, memberSets)?.caps.features)
   // Files dropped anywhere on the conversation take the paperclip's path.
-  const dropEnabled = attachmentsEnabled && isLive && !resumeDisabled && !viewerOpen
+  const dropEnabled = attachmentsEnabled && isLive && !resumeDisabled && !paneTaken
   onDropFilesRef.current = (files) => onAttachFiles(files)
   const onAttachFiles = (selected: File[]): void => {
     if (imageInputRef.current) imageInputRef.current.value = ''
@@ -3724,7 +3865,7 @@ export default function SessionDetailView() {
       />
     ) : null
 
-  return (
+  const page = (
     // Body · dock track, FLUSH in a full-width row (no gap): so the transcript's scrollbar rides
     // hard against the dock's left border. The track's −30px bleed reaches the page's right edge
     // while the 880px body centres in what remains, and the track is a column only above `wide:`
@@ -3777,9 +3918,11 @@ export default function SessionDetailView() {
         {dropEnabled && fileDrop.over ? (
           <FileDropOverlay top={dropHeader ? dropHeader.offsetTop + dropHeader.offsetHeight : 0} />
         ) : null}
+        {/* Cards that arrive in the main conversation after its first page open the viewer in the dock. */}
+        <ArtifactArrivals turns={turns} ready={transcriptRead} scope={transcriptSid ?? session.id} />
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
-        {!viewerOpen ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
-        {!viewerOpen ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
+        {!paneTaken ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
+        {!paneTaken ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
         {/* HEADER CHROME — title + action bar (+ any notices). Centred to line up with the 880px
         transcript below. `flex-none`; no `sticky`, no bottom `margin` — the meta row's border-b is
         the flush divider with the transcript, with no blank gap under the line. */}
@@ -4100,7 +4243,7 @@ export default function SessionDetailView() {
         {/* WAITING BANNER — between the fixed chrome and the scroller, so it pins to the top of the
         chat area without being a sticky child of the pane (which stays free to be virtualized). It
         draws only when what it names is off screen, so it costs nothing while the card is in view. */}
-        {!viewerOpen && <PendingActionsBanner />}
+        {!paneTaken && <PendingActionsBanner />}
         {/* SCROLL PANE — the transcript/viewer ONLY (all chrome is above, in the header). Full-width
         so the scrollbar rides the page edge via the −mr/pr bleed; nothing sticky scrolls inside it,
         so it is ready to host a virtualized turn list. useStickToBottom pins this element. */}
@@ -4108,7 +4251,7 @@ export default function SessionDetailView() {
           data-transcript-scroll=""
           ref={setTranscriptScroller}
           className={
-            viewerOpen
+            paneTaken
               ? 'flex min-h-0 min-w-0 flex-1 flex-col desktop:pt-[10px]'
               : '@container flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto desktop:max-wide:-mr-[30px] desktop:-ml-1 desktop:pt-[10px] desktop:pl-1 desktop:max-wide:pr-[30px] wide:pr-[10px]'
           }
@@ -4118,7 +4261,7 @@ export default function SessionDetailView() {
           pin the composer) and `mx-auto max-w-[880px]` centres it; in viewer mode a bounded flex-1. */}
           <div
             className={
-              viewerOpen
+              paneTaken
                 ? 'flex min-h-0 min-w-0 flex-1 flex-col'
                 : 'mx-auto flex min-h-full w-full min-w-0 max-w-[880px] shrink-0 flex-col'
             }
@@ -4160,7 +4303,17 @@ export default function SessionDetailView() {
 
             {/* CONVERSATION MODE, concealed rather than unmounted. Everything below belongs to the transcript and the composer, and all of it is state a session round trip must not spend: every expanded tool body and its refetch, the composer's caret and any open @mention menu (with the `mentionJoining` latch it reports upward, which has no owner left to clear it once the composer is gone), and the approval cards' poll. `contents` keeps the flex layout it has today exactly — an active box here would be a second flex item in the column.
           The cost, accepted: a pending webchat MCP write approval is concealed with the composer and has no header twin the way permission requests do (those stay in the Requests popover). A reader who opened a file sees the agent stall until they come back. */}
-            <div data-conversation-pane="" className={viewerOpen ? 'hidden' : 'contents'}>
+            {artifactPaneViewer ? (
+              <SessionArtifactViewer
+                key={artifactPaneViewer.artifactId}
+                viewer={artifactPaneViewer}
+                onClose={() => closeArtifact(artifactPaneViewer)}
+                onRevision={(revision) => setArtifactViewer({ ...artifactPaneViewer, revision, path: null })}
+                onPath={syncArtifactPath}
+              />
+            ) : null}
+
+            <div data-conversation-pane="" className={paneTaken ? 'hidden' : 'contents'}>
               {wantTranscript && visibleMsgLoading && !pgOnRows && (
                 <div className="flex justify-center py-10">
                   <Spinner size={30} />
@@ -4483,7 +4636,7 @@ export default function SessionDetailView() {
           // Below the scroller, so its scrollbar ends at the composer; the right inset is the scroller's padding plus its scrollbar, so the 880px columns line up.
           <div
             className={
-              viewerOpen
+              paneTaken
                 ? 'hidden'
                 : 'relative z-10 flex-none pt-2 pb-1 max-desktop:pr-[calc(12px+var(--transcript-gutter))] max-desktop:pl-3 desktop:max-wide:pr-(--transcript-gutter) desktop:pt-3 wide:pr-[calc(10px+var(--transcript-gutter))]'
             }
@@ -4573,12 +4726,8 @@ export default function SessionDetailView() {
                 <RunningCommandsDock agentId={filesAgentId} sessionId={tasksSessionId} turnActive={focusBusy} />
               ) : null}
               <CloudCreditGate agent={owner} agentName={owner ? agentLabel(owner) : ''} />
-              {/* Composer card (design "achero"): textarea on top, a toolbar row below
-                  the divider — attach · model pill (fast toggle in its menu) · effort ·
-                  permission · context ring · send. Tokens/cost live in the header's
-                  Details popover, not here. */}
               <div
-                className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--border-strong) focus-within:shadow-(--focus-shadow)"
+                className="relative min-w-0 rounded-[14px] border border-(--border-default) bg-(--surface-card) transition-colors focus-within:border-(--brand)"
                 inert={resumeDisabled}
                 aria-disabled={resumeDisabled}
                 onKeyDown={(event) => {
@@ -4589,7 +4738,7 @@ export default function SessionDetailView() {
               >
                 {resumeDisabled && (
                   <textarea
-                    className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
+                    className={`${COMPOSER_TEXT} absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[13px] border-0 bg-(--surface-sunken) text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed`}
                     aria-label={t('conversationUnavailableLabel')}
                     placeholder={resumePlaceholder}
                     disabled
@@ -4607,7 +4756,7 @@ export default function SessionDetailView() {
                 )}
                 {attachmentsEnabled && (
                   <AttachmentCards
-                    className="px-[15px] pt-3"
+                    className="px-4 pt-3"
                     cards={composerCards(pgFiles, pgImage)}
                     onRemove={(key) =>
                       key === INLINE_IMAGE_KEY
@@ -4638,12 +4787,12 @@ export default function SessionDetailView() {
                   loadEarlier={loadEarlierConversation}
                   loadedRows={visibleMsgs?.length ?? 0}
                 />
-                <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                <div className="relative flex items-end gap-[6px] pr-[9px] pb-[9px] pl-[10px]">
                   {attachmentsEnabled && (
-                    <div className="relative flex-none">
+                    <div className="relative flex-none self-start">
                       <button
                         type="button"
-                        className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                        className={COMPOSER_TOOL}
                         aria-label={t('attachFile')}
                         aria-haspopup="menu"
                         aria-expanded={attachMenuOpen}
@@ -4684,15 +4833,12 @@ export default function SessionDetailView() {
                       )}
                     </div>
                   )}
-                  {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-                      instead of wrapping into a second toolbar line. Except with a
-                      multi-agent roster: those chips are unbounded in count, so no
-                      amount of truncation bounds one line — let that case wrap. */}
+                  {/* Keep single-agent controls on one line on mobile and let multi-agent rosters wrap. */}
                   <div
                     className={
                       multiLive
-                        ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                        : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+                        ? 'flex min-h-[30px] min-w-0 flex-1 flex-wrap items-center gap-[6px]'
+                        : 'flex min-h-[30px] min-w-0 flex-1 items-center gap-[6px] desktop:flex-wrap'
                     }
                   >
                     {multiLive &&
@@ -4711,12 +4857,16 @@ export default function SessionDetailView() {
                         if (!pickRecipient) {
                           const removable = isPg && !p.primary && p.agentId !== session.agentId
                           return (
-                            <span key={p.agentId} className={COMPOSER_PILL_STATIC} title={t('participant')}>
+                            <span
+                              key={p.agentId}
+                              className={`${COMPOSER_PARTICIPANT} text-(--text-primary)`}
+                              title={t('participant')}
+                            >
                               {chip}
                               {removable && (
                                 <button
                                   type="button"
-                                  className="-mr-1 inline-flex h-4 w-4 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="-mr-[5px] inline-flex size-[22px] flex-none cursor-pointer items-center justify-center rounded-sm text-(--text-tertiary) enabled:hover:bg-(--surface-hover) enabled:hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
                                   title={t('removeParticipant', { agent: p.name })}
                                   aria-label={t('removeParticipant', { agent: p.name })}
                                   disabled={pgBusy || pgQueue.length > 0}
@@ -4746,10 +4896,6 @@ export default function SessionDetailView() {
                           </button>
                         )
                       })}
-                    {/* h-7 w-7 like every other control on this row (and the Home composer's
-                        twin), so the dashed circle shares their 28px box instead of floating
-                        inside it. A lucide glyph, not a text "+": a text plus centres on its
-                        line box, which left it a hair low. */}
                     {isPg && addAgentOptions.length > 0 && (
                       <ComposerMenu
                         title={t('addAgents')}
@@ -4760,7 +4906,8 @@ export default function SessionDetailView() {
                         iconOnly
                         open={composerMenuOpen === 'addAgent'}
                         align="left"
-                        triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                        className="max-desktop:static"
+                        triggerClassName={COMPOSER_TOOL}
                         tooltips={false}
                         leading={<Icon name="plus" size={14} />}
                         onOpenChange={(open) => {
@@ -4876,7 +5023,7 @@ export default function SessionDetailView() {
           if (key === 'pr' && prVerdict.url) window.open(prVerdict.url, '_blank', 'noopener,noreferrer')
           if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
         }}
-        overlayKey={`${session.id}:${viewerPath ?? ''}`}
+        overlayKey={`${session.id}:${viewerPath ?? ''}:${artifactPaneViewer?.artifactId ?? ''}`}
         revealKey={dockReveal}
         label={t('panels')}
         onVisibleChange={setDockVisible}
@@ -4987,34 +5134,59 @@ export default function SessionDetailView() {
             />
           ) : null}
         </DockPanel>
+        <DockPanel active={dockTabKey === 'artifacts'}>
+          {artifactsEnabled ? (
+            <ArtifactsPanel
+              viewer={dockArtifactViewer}
+              onClose={() => dockArtifactViewer && closeArtifact(dockArtifactViewer)}
+              onRevision={(revision) =>
+                dockArtifactViewer && setArtifactViewer({ ...dockArtifactViewer, revision, path: null })
+              }
+              onPath={syncArtifactPath}
+              list={
+                artifactsSessionId ? (
+                  <ArtifactsList
+                    key={artifactsSessionId}
+                    sessionId={artifactsSessionId}
+                    refreshKey={artifactMarkers}
+                    onStatusChange={onArtifactsListStatus}
+                  />
+                ) : undefined
+              }
+            />
+          ) : null}
+        </DockPanel>
         <DockPanel active={dockTabKey === 'tasks'}>
           {(openThread || openRoot) && session.agentId ? (
-            <ThreadPanel
-              key={openRoot ?? openThread?.sessionId}
-              {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
-              onShowInConversation={showInConversation}
-              agentId={session.agentId}
-              agentName={session.agentName ?? ''}
-              agentIcon={owner?.icon}
-              agentRuntime={agentRuntime || undefined}
-              agentById={agentById}
-              platform={session.platform ?? ''}
-              {...(openThread ? { task: openThread } : openRootTask ? { task: openRootTask } : {})}
-              {...(openRoot ? { record: { sessionId: session.realSessionId ?? session.id, rootId: openRoot } } : {})}
-              {...(openRoot && threadWriter ? { writer: threadWriter } : {})}
-              {...(openRoot ? { onSummary: putThread, focusComposer: taskThread?.focus === true } : {})}
-              {...(openRootUrl ? { threadUrl: openRootUrl } : {})}
-              parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
-              {...(activeOrg && session.coordinator && webchatConversationId
-                ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
-                : {})}
-              onBack={closeThread}
-              {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
-              runtimeContext={taskRuntimeContext}
-              people={people}
-              fileTransfer={composerTransfer}
-              attachments={attachmentsEnabled}
-            />
+            // A card in a task's thread opens its artifact in the left pane, opposite the thread.
+            <ArtifactPlacementProvider placement="pane">
+              <ThreadPanel
+                key={openRoot ?? openThread?.sessionId}
+                {...(openRoot && threadWork.get(openRoot) ? { fromMain: threadWork.get(openRoot) } : {})}
+                onShowInConversation={showInConversation}
+                agentId={session.agentId}
+                agentName={session.agentName ?? ''}
+                agentIcon={owner?.icon}
+                agentRuntime={agentRuntime || undefined}
+                agentById={agentById}
+                platform={session.platform ?? ''}
+                {...(openThread ? { task: openThread } : openRootTask ? { task: openRootTask } : {})}
+                {...(openRoot ? { record: { sessionId: session.realSessionId ?? session.id, rootId: openRoot } } : {})}
+                {...(openRoot && threadWriter ? { writer: threadWriter } : {})}
+                {...(openRoot ? { onSummary: putThread, focusComposer: taskThread?.focus === true } : {})}
+                {...(openRootUrl ? { threadUrl: openRootUrl } : {})}
+                parentSessionId={session.agentId === filesAgentId ? subsessionsSessionId : null}
+                {...(activeOrg && session.coordinator && webchatConversationId
+                  ? { approvals: { orgId: activeOrg.id, conversationId: webchatConversationId } }
+                  : {})}
+                onBack={closeThread}
+                {...(taskApprovalScope ? { taskApprovals: taskApprovalScope } : {})}
+                runtimeContext={taskRuntimeContext}
+                people={people}
+                fileTransfer={composerTransfer}
+                attachments={attachmentsEnabled}
+              />
+            </ArtifactPlacementProvider>
           ) : null}
           {/* Mounted under an open thread too, so its verdict keeps the tab's badge and the reader comes back to the same lists. */}
           <div className={threadOpen ? 'hidden' : 'contents'}>
@@ -5039,4 +5211,6 @@ export default function SessionDetailView() {
       </SessionDock>
     </div>
   )
+  // Cards anywhere on the page open their artifact in place through this.
+  return <ArtifactOpenerProvider opener={artifactOpener}>{page}</ArtifactOpenerProvider>
 }

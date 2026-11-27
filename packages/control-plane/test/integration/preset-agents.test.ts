@@ -12,13 +12,7 @@ import type { IconStore } from '../../src/icons/icon-store.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { poolSetId, seedPoolMember } from '../fakes/member-set.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import {
-  GENERAL_PRESET,
-  PRESET_AGENT_SKILLS,
-  PRESET_SKILL_SOURCE,
-  PresetAgentBackfill,
-  provisionPresetAgents
-} from '../../src/persistence/index.js'
+import { GENERAL_PRESET, PresetAgentBackfill, provisionPresetAgents } from '../../src/persistence/index.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { ensureDefaultTenant } from '../../src/persistence/ensure-default-tenant.js'
@@ -64,43 +58,23 @@ describe('org-creation seam (POST /orgs)', () => {
       })
       expect(row).toMatchObject({ agentId: preset.id, status: 'created', placementSettledAt: null })
 
-      // Default skill (§3.1): the org-level source row plus the preset's enable-list,
-      // written in the same transaction as the org itself.
-      const source = await prisma.skillSource.findUnique({
-        where: { orgId_name: { orgId, name: PRESET_SKILL_SOURCE.name } }
-      })
-      expect(source).toMatchObject({
-        source: PRESET_SKILL_SOURCE.source,
-        githubRepoId: PRESET_SKILL_SOURCE.githubRepoId,
-        ref: PRESET_SKILL_SOURCE.ref,
-        subDir: PRESET_SKILL_SOURCE.subDir,
-        skills: [...PRESET_SKILL_SOURCE.skills],
-        visibility: 'org',
-        createdByUserId: null // system write, like the agent row
-      })
+      // No preset skill source (skill-over-mcp.md §7.1): built-in system skills come from the daemon's readSkill.
+      expect(await prisma.skillSource.count({ where: { orgId } })).toBe(0)
       const agentRow = await prisma.agent.findUniqueOrThrow({ where: { id: preset.id } })
-      expect((agentRow.runtimeOverrides as { skills?: string[] }).skills).toEqual([...PRESET_AGENT_SKILLS])
+      expect(((agentRow.runtimeOverrides ?? {}) as { skills?: string[] }).skills ?? []).toEqual([])
     } finally {
       await close()
     }
   })
 
-  it('an org already owning the skill-source name gets the preset without default skills', async () => {
+  it('leaves an org-owned source named like the retired preset source alone and unbound', async () => {
     const org = await prisma.org.create({ data: { slug: `src-collide-${randomUUID().slice(0, 8)}` } })
-    await prisma.skillSource.create({
-      data: { orgId: org.id, name: PRESET_SKILL_SOURCE.name, source: 'someone/else' }
-    })
+    await prisma.skillSource.create({ data: { orgId: org.id, name: 'agentconnect', source: 'someone/else' } })
 
     await provisionPresetAgents(prisma, { orgId: org.id })
 
-    // The user's source is untouched — never captured, never rewritten.
-    const source = await prisma.skillSource.findUnique({
-      where: { orgId_name: { orgId: org.id, name: PRESET_SKILL_SOURCE.name } }
-    })
-    expect(source?.source).toBe('someone/else')
-
-    // The preset still provisions — binding it to a source we did not write would
-    // install someone else's content, so the enable-list simply stays empty.
+    const sources = await prisma.skillSource.findMany({ where: { orgId: org.id } })
+    expect(sources.map((row) => row.source)).toEqual(['someone/else'])
     const agent = await prisma.agent.findUniqueOrThrow({
       where: { orgId_name: { orgId: org.id, name: GENERAL_PRESET.name } }
     })
@@ -303,6 +277,7 @@ describe('one-time backfill', () => {
     })
     expect(provisioned?.runtime).toBeNull()
     expect(provisioned?.createdByUserId).toBeNull() // system write, no personal creator
+    expect(await prisma.skillSource.count({ where: { orgId: clean.id } })).toBe(0) // no preset skill source
 
     const collidedRow = await prisma.presetAgent.findUnique({
       where: { orgId_preset: { orgId: collided.id, preset: 'general' } }
@@ -423,6 +398,7 @@ describe('org-creation atomicity (§3.2)', () => {
       where: { orgId_preset: { orgId: DEFAULT_ORG_ID, preset: 'general' } }
     })
     expect(row?.status).toBe('created')
+    expect(await prisma.skillSource.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
 
     // Idempotent across boots — no duplicate agent, no second marker attempt.
     await ensureDefaultTenant(prisma)

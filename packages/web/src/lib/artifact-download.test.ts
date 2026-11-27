@@ -2,13 +2,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { unzipSync, strFromU8 } from 'fflate'
 import type { ArtifactManifestFile } from './artifact'
 
-const api = vi.hoisted(() => ({ fileUrl: vi.fn(), revision: vi.fn() }))
+const api = vi.hoisted(() => ({ fileUrl: vi.fn(), revision: vi.fn(), sharedUrl: vi.fn() }))
 const saved = vi.hoisted(() => ({ save: vi.fn() }))
 
-vi.mock('@/lib/api', () => ({ getArtifactFileUrl: api.fileUrl, getArtifactRevision: api.revision }))
+vi.mock('@/lib/api', () => ({
+  getArtifactFileUrl: api.fileUrl,
+  getArtifactRevision: api.revision,
+  getSharedArtifactFileUrl: api.sharedUrl
+}))
 vi.mock('@/lib/shared-file', () => ({ saveBlob: saved.save }))
 
-import { ArtifactFetchError, downloadArtifactRevision, fetchArtifactFile } from './artifact-download'
+import {
+  ArtifactFetchError,
+  downloadArtifactFiles,
+  downloadArtifactRevision,
+  fetchArtifactFile,
+  memberFileUrl,
+  sharedFileUrl
+} from './artifact-download'
 
 const ID = '0b6d1d55-5f43-4c8e-9a51-2f0a8f5b1c3d'
 const BODIES: Record<string, string> = {
@@ -28,6 +39,10 @@ beforeEach(() => {
     path,
     url: `https://store.example.test/${encodeURIComponent(path)}`
   }))
+  api.sharedUrl.mockImplementation(async (_token: string, path: string) => ({
+    path,
+    url: `https://store.example.test/${encodeURIComponent(path)}`
+  }))
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -42,12 +57,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
   api.fileUrl.mockReset()
   api.revision.mockReset()
+  api.sharedUrl.mockReset()
   saved.save.mockReset()
 })
 
 describe('fetchArtifactFile', () => {
   it('types the bytes by the manifest, not by the store’s attachment headers, and reads without credentials', async () => {
-    const blob = await fetchArtifactFile(ID, 2, { path: 'report.pdf', mediaType: 'application/pdf' })
+    const blob = await fetchArtifactFile(memberFileUrl(ID, 2), { path: 'report.pdf', mediaType: 'application/pdf' })
     expect(blob.type).toBe('application/pdf')
     expect(await blob.text()).toBe(BODIES['report.pdf'])
     expect(api.fileUrl).toHaveBeenCalledWith(ID, 2, 'report.pdf')
@@ -55,9 +71,9 @@ describe('fetchArtifactFile', () => {
   })
 
   it('reports a refused signed read', async () => {
-    await expect(fetchArtifactFile(ID, 2, { path: 'missing.txt', mediaType: 'text/plain' })).rejects.toBeInstanceOf(
-      ArtifactFetchError
-    )
+    await expect(
+      fetchArtifactFile(memberFileUrl(ID, 2), { path: 'missing.txt', mediaType: 'text/plain' })
+    ).rejects.toBeInstanceOf(ArtifactFetchError)
   })
 })
 
@@ -95,5 +111,14 @@ describe('downloadArtifactRevision', () => {
       ])
     ).rejects.toBeInstanceOf(ArtifactFetchError)
     expect(saved.save).not.toHaveBeenCalled()
+  })
+})
+
+describe('downloadArtifactFiles', () => {
+  it('reads every file through the resolver it is given, as a share page does', async () => {
+    await downloadArtifactFiles(sharedFileUrl('tok'), 'Notes', [file('notes.md', 'text/markdown')])
+    expect(api.sharedUrl).toHaveBeenCalledWith('tok', 'notes.md')
+    expect(api.fileUrl).not.toHaveBeenCalled()
+    expect(saved.save.mock.calls[0]![1]).toBe('notes.md')
   })
 })

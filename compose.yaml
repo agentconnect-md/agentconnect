@@ -136,6 +136,8 @@ services:
       - SESSION_POLICY_TOKEN
       # Opt-in console file transfer: a JSON bucket document the Control Plane signs URLs for (docs/designs/source-cache-file-transfer.md §7).
       - AC_FILE_TRANSFER
+      # Opt-in artifacts: the bare content domain whose wildcard serves revisions, with a site block of its own (docs/self-host-caddy-https.md).
+      - ARTIFACTS_CONTENT_DOMAIN
       # Opt-in Computer screenshot storage: a JSON bucket document like AC_FILE_TRANSFER plus retention (docs/designs/computer-use.md §9).
       - AC_COMPUTER_SCREENSHOTS
       # Opt-in TURN for the Computer viewer (docs/designs/computer-use.md §7.2); compose.turn.yaml runs coturn and sets the first two.
@@ -272,6 +274,8 @@ services:
       - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
       - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
       - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      # Artifact content domain: web answers only the shim and its worker there, framed by PUBLIC_WEB_URL.
+      - ARTIFACTS_CONTENT_DOMAIN
       - LOGTO_ENDPOINT
       - LOGTO_APP_ID
       - LOGTO_API_RESOURCE

@@ -29,6 +29,7 @@ import {
   retainedAfterTracking,
   type LocalSkillSource
 } from './install-skills.js'
+import { isMigratedBuiltinGitSkillSource } from './builtin-skills.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
 import { gitlabSkillRepository } from './gitlab-skill-source.js'
 import { resolveBoundedGitSkillSource } from './skill-git-source.js'
@@ -118,6 +119,8 @@ export async function reconcileSandboxSkillSources(
   input: SandboxSkillReconcileInput
 ): Promise<SandboxSkillReconcileResult> {
   const configured = input.skills.flatMap((entry, index) => {
+    // readSkill serves the preset source's skills (skill-over-mcp.md §6.2); siblings keep their index-keyed source ids.
+    if (isMigratedBuiltinGitSkillSource(entry)) return []
     const parsed = AgentSkillEntry.safeParse(entry)
     if (parsed.success) return [{ index, entry: parsed.data }]
     if (entry.githubRepoId)

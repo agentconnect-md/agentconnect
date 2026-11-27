@@ -49,3 +49,32 @@ describe('analytics identity race during lazy init', () => {
     expect(sdk.init).not.toHaveBeenCalled()
   })
 })
+
+describe('share-link tokens', () => {
+  it('never reach an event: every address in it loses the token', async () => {
+    const a = await import('./analytics')
+    await a.initAnalytics()
+    const { before_send } = sdk.init.mock.calls[0]![1] as { before_send: (event: unknown) => unknown }
+    const event = {
+      event: '$pageview',
+      properties: {
+        $current_url: 'https://console.example.test/share/abcDEF0123456789_-xyz?path=%2Fdocs',
+        $pathname: '/share/abcDEF0123456789_-xyz',
+        $referrer: '$direct',
+        count: 2
+      },
+      $set_once: { $initial_current_url: 'https://console.example.test/share/abcDEF0123456789_-xyz' }
+    }
+    expect(before_send(event)).toEqual({
+      event: '$pageview',
+      properties: {
+        $current_url: 'https://console.example.test/share/[token]?path=%2Fdocs',
+        $pathname: '/share/[token]',
+        $referrer: '$direct',
+        count: 2
+      },
+      $set_once: { $initial_current_url: 'https://console.example.test/share/[token]' }
+    })
+    expect(before_send(null)).toBeNull()
+  })
+})

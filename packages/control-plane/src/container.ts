@@ -166,6 +166,7 @@ import {
   PgComputerScreenshotRepo,
   PgSessionFileSnapshotRepo,
   PgArtifactRepo,
+  PgArtifactShareRepo,
   PgComputerUsageRepo,
   PgAgentSkillSourceStatusRepo,
   PgOrganizationKnowledgeRepo,
@@ -348,6 +349,7 @@ import { createFileTransferService } from './file-transfer/service.js'
 import { createSharedImageService } from './file-transfer/shared-image.js'
 import { createSessionFileService } from './file-transfer/session-file.js'
 import { createArtifactService } from './artifacts/service.js'
+import { ArtifactShareCodec, ArtifactShareService } from './artifacts/shares.js'
 import { createFileTransfer, isTransferObjectKey, transferPendingMinimumDays } from './file-transfer/transfer.js'
 import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
@@ -704,6 +706,7 @@ export function buildContainer(
     computerScreenshot: new PgComputerScreenshotRepo(prisma),
     sessionFileSnapshot: new PgSessionFileSnapshotRepo(prisma),
     artifact: new PgArtifactRepo(prisma),
+    artifactShare: new PgArtifactShareRepo(prisma),
     computerUsage: new PgComputerUsageRepo(prisma),
     agentSkillSourceStatus: new PgAgentSkillSourceStatusRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
@@ -1202,25 +1205,60 @@ export function buildContainer(
         now: () => clock.now()
       })
     : undefined
-  // Artifacts (artifacts.md §5.3): signed-prefix storage in the transfer bucket, so only with a bucket.
-  const artifacts = fileTransferBucket
-    ? createArtifactService({
-        transfer: fileTransferBucket.transfer,
-        artifacts: repos.artifact,
-        sessions: repos.session,
-        users: repos.user,
-        agents: repos.agent,
-        crons: repos.cron,
-        hooks: repos.hook,
-        orgs: repos.org,
-        // Lazy over `wsDeps` (assigned below), whose resolver tells a linked chat member from an unlinked one.
-        readAccess: (req, expectedOrgId) =>
-          wsDeps.readAccess?.(req, expectedOrgId) ??
-          Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
-        ...(webAppUrl ? { webAppUrl } : {}),
-        log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
-      })
-    : undefined
+  const artifactShares = new ArtifactShareService({
+    shares: repos.artifactShare,
+    codec: new ArtifactShareCodec(config.API_KEY_PEPPER),
+    clock,
+    ...(webAppUrl ? { webAppUrl } : {})
+  })
+  // Artifacts (artifacts.md §12): offered only with both a transfer bucket and a content domain.
+  const artifactsContentDomain = config.ARTIFACTS_CONTENT_DOMAIN
+  const artifacts =
+    fileTransferBucket && artifactsContentDomain
+      ? createArtifactService({
+          transfer: fileTransferBucket.transfer,
+          artifacts: repos.artifact,
+          sessions: repos.session,
+          users: repos.user,
+          agents: repos.agent,
+          crons: repos.cron,
+          hooks: repos.hook,
+          orgs: repos.org,
+          // Lazy over `wsDeps` (assigned below), whose resolver tells a linked chat member from an unlinked one.
+          readAccess: (req, expectedOrgId) =>
+            wsDeps.readAccess?.(req, expectedOrgId) ??
+            Promise.resolve({ asker: 'unidentifiable', visibleSessionIds: [] }),
+          shares: artifactShares,
+          // Lazy over `httpDeps` (assigned below): a share uses the member's identities as the console resolves them.
+          memberAccess: async (orgId, principal, artifact) => {
+            const oidcSubject = await repos.user.getOidcSubject(principal.userId)
+            const access = await makeSessionAccessResolver(httpDeps).forPrincipal(
+              {
+                orgId: OrgId(orgId),
+                userId: principal.userId,
+                role: principal.role,
+                log: http.log,
+                ...(oidcSubject ? { oidcSubject } : {})
+              },
+              [
+                {
+                  visibility: artifact.visibility,
+                  externalProvider: artifact.externalProvider,
+                  externalScopeId: artifact.externalScopeId,
+                  ...(artifact.editorsAgentId ? { agentId: artifact.editorsAgentId } : {})
+                }
+              ]
+            )
+            return {
+              identitySet: access.identitySet,
+              externalAccess: access.externalAccess,
+              editableAgentIds: access.editableAgentIds
+            }
+          },
+          ...(webAppUrl ? { webAppUrl } : {}),
+          log: { warn: (obj, msg) => http.log.warn(obj as Record<string, unknown>, msg) }
+        })
+      : undefined
   // Shared-image originals: the console's resolve works with or without a bucket; signing needs one.
   const sharedImages = createSharedImageService({
     ...(fileTransferBucket ? { transfer: fileTransferBucket.transfer } : {}),
@@ -2840,6 +2878,7 @@ export function buildContainer(
     runtimeConfig: {
       webchatProtocol: config.WEBCHAT_PROTOCOL,
       ahp: { enabled: config.AHP_MODE === 'on', publicAccess: config.AHP_PUBLIC_ACCESS },
+      ...(artifacts && artifactsContentDomain ? { artifactsContentDomain } : {}),
       ...(opts.deploymentConfig || gitlab
         ? {
             ...(opts.deploymentConfig ? { deploymentRevision: opts.deploymentConfig.revision } : {}),
@@ -3047,6 +3086,7 @@ export function buildContainer(
     sharedImages,
     ...(sessionFiles ? { sessionFiles } : {}),
     ...(artifacts ? { artifacts } : {}),
+    artifactShares,
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }

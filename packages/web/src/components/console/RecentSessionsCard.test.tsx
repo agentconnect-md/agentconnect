@@ -19,6 +19,10 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 
+vi.mock('@/lib/use-last-reply', () => ({
+  useLastReply: (session: { id: string }) => (session.id === 'with-reply' ? 'Review complete.' : null)
+}))
+
 vi.mock('next/link', () => ({
   default: ({ children, href, className }: { children: ReactElement; href: string; className?: string }) => (
     <a href={href} className={className}>
@@ -51,7 +55,7 @@ function session(overrides: Partial<Session> = {}): Session {
   }
 }
 
-const card = (sessions: Session[], showAgent = true) =>
+const card = (sessions: Session[], showAgent = true, replyPreview = false) =>
   renderToStaticMarkup(
     <RecentSessionsCard
       sessions={sessions}
@@ -59,6 +63,7 @@ const card = (sessions: Session[], showAgent = true) =>
       allHref="/sessions"
       emptyText="none"
       showAgent={showAgent}
+      replyPreview={replyPreview}
     />
   )
 
@@ -72,6 +77,37 @@ function channelWrapperClasses(markup: string): string {
 }
 
 describe('RecentSessionsCard', () => {
+  it('keeps the reply in front of the icon-only roster and channel on Home', () => {
+    const markup = card(
+      [
+        session({
+          id: 'with-reply',
+          conversationKey: 'conv-1',
+          memberSessionIds: ['with-reply', 'peer'],
+          participants: [
+            { agentId: 'agent-1', name: 'agent-1', primary: true },
+            { agentId: 'agent-2', name: 'Helper' }
+          ]
+        })
+      ],
+      true,
+      true
+    )
+    const reply = markup.indexOf('>Review complete.</span>')
+    const agents = markup.indexOf('aria-label="ops-bot, Helper"')
+    const channel = markup.indexOf('aria-label="#ops"')
+    expect(reply).toBeGreaterThan(-1)
+    expect(agents).toBeGreaterThan(reply)
+    expect(channel).toBeGreaterThan(agents)
+    expect(markup).not.toContain('>#ops</span>')
+    expect(markup).not.toContain('>ops-bot, Helper</span>')
+    expect(markup).toContain('/conversations/conv-1')
+  })
+
+  it('shows a fallback when no reply is available on Home', () => {
+    expect(card([session()], true, true)).toContain('>No reply available</span>')
+  })
+
   it('marks only an unread row with the dot', () => {
     expect(card([session({ unread: true })])).toContain('aria-label="Unread"')
     expect(card([session()])).not.toContain('aria-label="Unread"')

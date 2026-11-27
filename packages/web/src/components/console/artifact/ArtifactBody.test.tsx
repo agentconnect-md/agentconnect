@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"settings":{"enableIframePageLoading":true,"navigation":{"disableChildFrameNavigation":true}}}
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -7,7 +8,10 @@ import type { ArtifactManifestFile, ArtifactRevisionDto } from '@/lib/artifact'
 
 const bytes = vi.hoisted(() => ({ fetch: vi.fn() }))
 
-vi.mock('@/lib/artifact-download', () => ({ fetchArtifactFile: bytes.fetch }))
+vi.mock('@/lib/artifact-download', () => ({
+  fetchArtifactFile: bytes.fetch,
+  memberFileUrl: (id: string, revision: number) => `${id}@r${revision}`
+}))
 vi.mock('next/dynamic', async () => {
   const { default: MarkdownView } = await import('@/components/console/MarkdownView')
   return { default: () => MarkdownView }
@@ -53,8 +57,8 @@ async function settle() {
     })
 }
 
-async function renderBody(entry: string, files: Record<string, [string, string]>) {
-  bytes.fetch.mockImplementation(async (_id: string, _rev: number, file: { path: string; mediaType: string }) => {
+async function renderBody(entry: string, files: Record<string, [string, string]>, contentDomain?: string) {
+  bytes.fetch.mockImplementation(async (_fileUrl: unknown, file: { path: string; mediaType: string }) => {
     const found = files[file.path]
     if (!found) throw new Error('no such file')
     return new Blob([found[1]], { type: file.mediaType })
@@ -66,6 +70,7 @@ async function renderBody(entry: string, files: Record<string, [string, string]>
         revision={revisionOf(entry, files)}
         title="Report"
         download={<button type="button">Download</button>}
+        contentDomain={contentDomain}
       />
     )
   })
@@ -97,6 +102,21 @@ describe('ArtifactBody', () => {
     expect(frame.getAttribute('srcdoc')).toBe(html)
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
     expect(frame.getAttribute('src')).toBeNull()
+  })
+
+  it('runs a page on its revision’s content-domain origin when one is configured, fetching nothing itself', async () => {
+    await renderBody('index.html', { 'index.html': ['text/html', '<h1>Hi</h1>'] }, 'example-usercontent.net')
+    const frame = container.querySelector('iframe')!
+    expect(frame.getAttribute('src')).toBe(`https://a${ID.replaceAll('-', '')}r1.example-usercontent.net/__ac/shim`)
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+    expect(frame.getAttribute('srcdoc')).toBeNull()
+    expect(bytes.fetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps other types in the console with a content domain configured', async () => {
+    await renderBody('chart.png', { 'chart.png': ['image/png', 'png-bytes'] }, 'example-usercontent.net')
+    expect(container.querySelector('img')!.getAttribute('src')).toBe('blob:test/1')
+    expect(container.querySelector('iframe')).toBeNull()
   })
 
   it('shows an image from a typed blob URL', async () => {
@@ -132,7 +152,7 @@ describe('ArtifactBody', () => {
     const [local, remote] = [...container.querySelectorAll('img')]
     expect(local!.getAttribute('src')).toBe('blob:test/1')
     expect(remote!.getAttribute('src')).toBe('https://example.test/x.png')
-    expect(bytes.fetch).toHaveBeenCalledWith(ID, 1, expect.objectContaining({ path: 'docs/img/chart.png' }))
+    expect(bytes.fetch).toHaveBeenCalledWith(`${ID}@r1`, expect.objectContaining({ path: 'docs/img/chart.png' }))
   })
 
   it('highlights source', async () => {

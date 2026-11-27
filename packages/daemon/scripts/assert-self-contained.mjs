@@ -8,11 +8,11 @@
 //
 // This check turns that silent degradation into a hard build failure. It runs
 // after tsdown in the daemon's `build` script; it ships nowhere (files: ["dist"]).
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const nodeBuiltins = new Set(builtinModules.flatMap((spec) => [spec, `node:${spec}`]))
@@ -183,6 +183,30 @@ if (!existsSync(gitCredentialWrapper) || (statSync(gitCredentialWrapper).mode & 
     '✗ the installation git credential helper is missing — `node scripts/emit-shim-git-credential-wrapper.mjs` did not run'
   )
   process.exit(1)
+}
+
+// readSkill serves the system skills from dist/builtin-skills, so every packaged source file must be staged there.
+const builtinSkillsSource = fileURLToPath(new URL('../builtin-skills', import.meta.url))
+const builtinSkillsDist = fileURLToPath(new URL('../dist/builtin-skills', import.meta.url))
+const builtinSkillFiles = readdirSync(builtinSkillsSource, { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+  .map((entry) => relative(builtinSkillsSource, join(entry.parentPath, entry.name)))
+for (const name of [
+  'agentconnect-images',
+  'agentconnect-platform',
+  'agentconnect-create-agent',
+  'agentconnect-create-team'
+]) {
+  if (!builtinSkillFiles.includes(join(name, 'SKILL.md'))) {
+    console.error(`✗ builtin system skill ${name} has no SKILL.md`)
+    process.exit(1)
+  }
+}
+for (const file of builtinSkillFiles) {
+  if (!existsSync(join(builtinSkillsDist, file))) {
+    console.error(`✗ daemon bundle is missing builtin system skill asset ${file}`)
+    process.exit(1)
+  }
 }
 
 console.log('✓ daemon bundle is self-contained (including skills CLI 1.5.21 and SRT seccomp helpers)')

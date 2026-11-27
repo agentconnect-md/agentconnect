@@ -2,6 +2,7 @@ import type { MemoryWriteSource } from '../../memory/store.js'
 import type { ReplyAttributionInfo } from '../../messages/attribution.js'
 import type { MemoryLayerChoice, MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
+import type { BuiltinMcpSkillName } from '../../skills/builtin-skills.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type {
   PlatformCanvas,
@@ -249,6 +250,8 @@ export interface SessionContext {
    *  `deliveryThreadNow()` instead; this is the fallback when no turn is live. */
   deliveryThread: string
   tools: ToolDescriptor[]
+  /** Built-in system skills `readSkill` may serve this session (skill-over-mcp.md §4.2), in display order. */
+  builtinSkills?: readonly BuiltinMcpSkillName[]
   /**
    * Binds the shared memory tools to THIS trigger's store (#41). Every path that
    * writes memory — an ordinary turn, per-turn distillation, a dream — uses the same

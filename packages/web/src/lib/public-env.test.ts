@@ -147,3 +147,27 @@ it('picks up a changed CP protocol after its refresh window and keeps serving th
     vi.useRealTimers()
   }
 })
+
+it('publishes the artifact content domain only while the CP offers artifacts, over a stale env value', async () => {
+  vi.resetModules()
+  vi.stubEnv('CP_INTERNAL_URL', 'https://example.test/api/v1')
+  vi.stubEnv('ARTIFACTS_CONTENT_DOMAIN', 'stale-usercontent.example')
+  const body = (artifacts: object) => JSON.stringify({ schemaVersion: '1', revision: 1, config: null, artifacts })
+  const fetch = vi.fn(async () => new Response(body({ enabled: true, contentDomain: 'example-usercontent.net' })))
+  vi.stubGlobal('fetch', fetch)
+  const { resolvePublicEnv } = await import('./public-env')
+  expect(await resolvePublicEnv()).toMatchObject({ ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' })
+
+  vi.resetModules()
+  fetch.mockImplementation(async () => new Response(body({ enabled: false, contentDomain: null })))
+  const fresh = await import('./public-env')
+  expect(await fresh.resolvePublicEnv()).not.toHaveProperty('ARTIFACTS_CONTENT_DOMAIN')
+
+  // Web's own value serves the content host and never stands in for an unreachable CP.
+  vi.resetModules()
+  fetch.mockImplementation(async () => {
+    throw new Error('down')
+  })
+  const down = await import('./public-env')
+  expect(await down.resolvePublicEnv()).not.toHaveProperty('ARTIFACTS_CONTENT_DOMAIN')
+})

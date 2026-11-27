@@ -1,10 +1,21 @@
-// Artifact reads (artifacts.md §6.3, §8.1): every route answers 404 for an artifact the viewer is not in the audience of.
-import type { FastifyInstance, FastifyRequest } from 'fastify'
+// Artifact reads and share management (artifacts.md §6.3, §8.1, §8.3): an artifact the caller may not act on reads as 404.
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
+import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { orgOf, ctxOf } from '../rbac.js'
-import { canViewArtifact, isArtifactOwner, type ArtifactViewer } from '../../authorization/artifact-policy.js'
-import type { ArtifactRecord, ArtifactRevisionRecord } from '../../persistence/ports.js'
+import {
+  ArtifactAction,
+  canActOnArtifact,
+  canRevokeArtifactShare,
+  canViewArtifact,
+  isArtifactOwner,
+  type ArtifactViewer
+} from '../../authorization/artifact-policy.js'
+import { canViewSession } from '../../authorization/policy.js'
+import { SessionId } from '../../domain/ids.js'
+import type { ArtifactRecord, ArtifactRevisionRecord, ArtifactShareRecord } from '../../persistence/ports.js'
+import { decodeArtifactCursor, encodeArtifactCursor } from '../../persistence/repositories/artifact.repo.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import {
   ArtifactDto,
@@ -13,11 +24,28 @@ import {
   ArtifactParams,
   ArtifactRevisionDto,
   ArtifactRevisionParams,
-  ErrorDto
+  ArtifactShareDto,
+  ArtifactShareListDto,
+  ArtifactShareParams,
+  CreateArtifactShareBody,
+  CreatedArtifactShareDto,
+  ErrorDto,
+  UpdateArtifactShareBody,
+  SessionArtifactListQuery,
+  SessionArtifactPageDto,
+  SessionArtifactParams
 } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 
 const notFound = { error: 'Not Found', statusCode: 404, message: 'artifact not found' }
+const shareNotFound = { error: 'Not Found', statusCode: 404, message: 'share not found' }
+// Without a bucket and a content domain (artifacts.md §12); deployment-wide, so it reveals nothing about one artifact.
+const notEnabled = {
+  error: 'Conflict',
+  statusCode: 409,
+  code: 'ARTIFACTS_NOT_ENABLED',
+  message: 'artifacts are not enabled on this deployment'
+}
 
 function revisionSummary(revision: ArtifactRevisionRecord) {
   const entry = revision.manifest.files.find((f) => f.path === revision.manifest.entry)
@@ -38,6 +66,26 @@ export function artifactRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const sessionAccess = makeSessionAccessResolver(deps)
 
+    /** The request's member as a viewer of `artifacts`; the session resolver answers the same external and editors questions for a copied audience. */
+    const viewerOf = async (req: FastifyRequest, artifacts: readonly ArtifactRecord[]): Promise<ArtifactViewer> => {
+      const access = await sessionAccess.forSessions(
+        req,
+        artifacts.map((artifact) => ({
+          visibility: artifact.visibility,
+          externalProvider: artifact.externalProvider,
+          externalScopeId: artifact.externalScopeId,
+          ...(artifact.editorsAgentId ? { agentId: artifact.editorsAgentId } : {})
+        }))
+      )
+      return {
+        orgId: orgOf(req),
+        principal: ctxOf(req),
+        identitySet: access.identitySet,
+        externalAccess: access.externalAccess,
+        editableAgentIds: access.editableAgentIds
+      }
+    }
+
     /** The artifact when it has a ready revision and the request's member is in its audience, with that member as a viewer. */
     const visible = async (
       req: FastifyRequest,
@@ -45,23 +93,59 @@ export function artifactRoutes(deps: HttpDeps) {
     ): Promise<{ artifact: ArtifactRecord; viewer: ArtifactViewer } | null> => {
       const artifact = await deps.repos.artifact.get(orgOf(req), artifactId)
       if (!artifact || artifact.latestRevision === 0) return null
-      // The session resolver answers the same external and editors questions for an artifact's copied audience.
-      const access = await sessionAccess.forSessions(req, [
-        {
+      const viewer = await viewerOf(req, [artifact])
+      return canViewArtifact(artifact, viewer) ? { artifact, viewer } : null
+    }
+
+    type Members = Map<string, ReturnType<typeof deps.repos.user.activeMember>>
+
+    /** A namespaced identity as a person; `members` memoizes member lookups across one request. */
+    const personOf = async (req: FastifyRequest, identity: string, members: Members) => {
+      if (identity.startsWith('user:')) {
+        const userId = identity.slice('user:'.length)
+        let lookup = members.get(userId)
+        if (!lookup) {
+          lookup = deps.repos.user.activeMember(orgOf(req), userId)
+          members.set(userId, lookup)
+        }
+        const member = await lookup
+        return { userId, displayName: member?.displayName ?? null, email: member?.email ?? null, platform: null }
+      }
+      const platform = identity.slice(0, identity.indexOf(':')) || null
+      return { userId: null, displayName: null, email: null, platform }
+    }
+
+    /** `getArtifact`'s fields other than the revision list. */
+    const summaryOf = async (
+      req: FastifyRequest,
+      artifact: ArtifactRecord,
+      viewer: ArtifactViewer,
+      members: Members = new Map()
+    ) => {
+      const owner = artifact.ownerIdentity ? await personOf(req, artifact.ownerIdentity, members) : null
+      return {
+        id: artifact.id,
+        title: artifact.title,
+        audience: {
           visibility: artifact.visibility,
           externalProvider: artifact.externalProvider,
-          externalScopeId: artifact.externalScopeId,
-          ...(artifact.editorsAgentId ? { agentId: artifact.editorsAgentId } : {})
-        }
-      ])
-      const viewer: ArtifactViewer = {
-        orgId: orgOf(req),
-        principal: ctxOf(req),
-        identitySet: access.identitySet,
-        externalAccess: access.externalAccess,
-        editableAgentIds: access.editableAgentIds
+          editorsAgentId: artifact.editorsAgentId
+        },
+        owner,
+        viewerIsOwner: isArtifactOwner(artifact, viewer.identitySet),
+        originSessionId: artifact.originSessionId,
+        latestRevision: artifact.latestRevision,
+        createdAt: artifact.createdAt.toISOString(),
+        updatedAt: artifact.updatedAt.toISOString()
       }
-      return canViewArtifact(artifact, viewer) ? { artifact, viewer } : null
+    }
+
+    /** The session gate the session routes use; an invisible session reads as absent. */
+    const sessionVisible = async (req: FastifyRequest, sessionId: string): Promise<boolean> => {
+      const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
+      if (!session) return false
+      const access = await sessionAccess.forSessions(req, [session])
+      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess, access.editableAgentIds)
     }
 
     /** A ready revision of a visible artifact. */
@@ -72,6 +156,40 @@ export function artifactRoutes(deps: HttpDeps) {
       return revision?.state === 'ready' ? { ...found, revision } : null
     }
 
+    /** An artifact with a ready revision, whether or not the caller can view it, with the caller as a viewer. */
+    const managed = async (
+      req: FastifyRequest,
+      artifactId: string
+    ): Promise<{ artifact: ArtifactRecord; viewer: ArtifactViewer; canView: boolean } | null> => {
+      const artifact = await deps.repos.artifact.get(orgOf(req), artifactId)
+      if (!artifact || artifact.latestRevision === 0) return null
+      const viewer = await viewerOf(req, [artifact])
+      return { artifact, viewer, canView: canViewArtifact(artifact, viewer) }
+    }
+
+    /** A refused share action: 403 to someone who can view the artifact, otherwise it does not exist for them. */
+    const refuse = (reply: FastifyReply, canView: boolean) =>
+      canView
+        ? reply.code(403).send({
+            error: 'Forbidden',
+            statusCode: 403,
+            code: 'ARTIFACT_SHARE_FORBIDDEN',
+            message: 'only the artifact’s owner or an organization owner can do this'
+          })
+        : reply.code(404).send(notFound)
+
+    const shareDto = async (req: FastifyRequest, share: ArtifactShareRecord, members: Members = new Map()) => ({
+      id: share.id,
+      artifactId: share.artifactId,
+      revision: share.revisionNumber,
+      audience: share.audience,
+      displayTail: share.displayTail,
+      createdBy: await personOf(req, share.createdByIdentity, members),
+      createdAt: share.createdAt.toISOString(),
+      updatedAt: share.updatedAt.toISOString(),
+      revokedAt: share.revokedAt?.toISOString() ?? null
+    })
+
     r.get(
       '/artifacts/:artifactId',
       {
@@ -79,41 +197,71 @@ export function artifactRoutes(deps: HttpDeps) {
           tags: [Tag.Artifacts],
           summary: 'Get an artifact',
           description:
-            'An artifact’s title, owner, audience and ready revisions, newest first, each with its entry file, size and the agent that produced it. The caller must be an organization member in the artifact’s audience; anything else, including an artifact whose first revision is not ready yet, is not found.',
+            'An artifact’s title, owner, audience and ready revisions, newest first, each with its entry file, size and the agent that produced it. The caller must be an organization member in the artifact’s audience; anything else, including an artifact whose first revision is not ready yet, is not found. Every artifact route answers 409 `ARTIFACTS_NOT_ENABLED` on a deployment without a transfer bucket and a content domain.',
           operationId: 'getArtifact',
           params: ArtifactParams,
-          response: { 200: ArtifactDto, 404: ErrorDto }
+          response: { 200: ArtifactDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
         const found = await visible(req, req.params.artifactId)
         if (!found) return reply.code(404).send(notFound)
         const { artifact, viewer } = found
-        const revisions = await deps.repos.artifact.listRevisions(orgOf(req), artifact.id)
-        let owner = null
-        if (artifact.ownerIdentity?.startsWith('user:')) {
-          const userId = artifact.ownerIdentity.slice('user:'.length)
-          const member = await deps.repos.user.activeMember(orgOf(req), userId)
-          owner = { userId, displayName: member?.displayName ?? null, email: member?.email ?? null, platform: null }
-        } else if (artifact.ownerIdentity) {
-          const platform = artifact.ownerIdentity.slice(0, artifact.ownerIdentity.indexOf(':')) || null
-          owner = { userId: null, displayName: null, email: null, platform }
+        const [summary, revisions] = await Promise.all([
+          summaryOf(req, artifact, viewer),
+          deps.repos.artifact.listRevisions(orgOf(req), artifact.id)
+        ])
+        return { ...summary, revisions: revisions.map(revisionSummary) }
+      }
+    )
+
+    r.get(
+      '/sessions/:sessionId/artifacts',
+      {
+        schema: {
+          tags: [Tag.Artifacts],
+          summary: 'List a session’s artifacts',
+          description:
+            'The artifacts with at least one ready revision published in this session, most recently updated first, each with `getArtifact`’s fields and its latest ready revision, which may have been published elsewhere. The caller must be able to view the session, else it is not found, and only artifacts whose audience includes the caller are listed, so a page can hold fewer than `limit`. Pass a page’s `nextCursor` back as `cursor` for older artifacts.',
+          operationId: 'listSessionArtifacts',
+          params: SessionArtifactParams,
+          querystring: SessionArtifactListQuery,
+          response: { 200: SessionArtifactPageDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto }
         }
+      },
+      async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
+        if (!(await sessionVisible(req, req.params.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        const cursor = req.query.cursor ? decodeArtifactCursor(req.query.cursor) : undefined
+        if (cursor === null) {
+          return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid cursor' })
+        }
+        const limit = req.query.limit
+        const rows = await deps.repos.artifact.listProducedInSession(orgOf(req), req.params.sessionId, {
+          limit: limit + 1,
+          ...(cursor ? { cursor } : {})
+        })
+        const page = rows.slice(0, limit)
+        const viewer = await viewerOf(req, page)
+        const members: Members = new Map()
+        const listed = await Promise.all(
+          page
+            .filter((artifact) => canViewArtifact(artifact, viewer))
+            .map(async (artifact) => {
+              const [summary, latest] = await Promise.all([
+                summaryOf(req, artifact, viewer, members),
+                deps.repos.artifact.getRevision(orgOf(req), artifact.id, artifact.latestRevision)
+              ])
+              return latest?.state === 'ready' ? { ...summary, latest: revisionSummary(latest) } : null
+            })
+        )
+        const last = page.at(-1)
         return {
-          id: artifact.id,
-          title: artifact.title,
-          audience: {
-            visibility: artifact.visibility,
-            externalProvider: artifact.externalProvider,
-            editorsAgentId: artifact.editorsAgentId
-          },
-          owner,
-          viewerIsOwner: isArtifactOwner(artifact, viewer.identitySet),
-          originSessionId: artifact.originSessionId,
-          latestRevision: artifact.latestRevision,
-          createdAt: artifact.createdAt.toISOString(),
-          updatedAt: artifact.updatedAt.toISOString(),
-          revisions: revisions.map(revisionSummary)
+          artifacts: listed.filter((entry) => entry !== null),
+          nextCursor: rows.length > limit && last ? encodeArtifactCursor(last) : null
         }
       }
     )
@@ -128,10 +276,11 @@ export function artifactRoutes(deps: HttpDeps) {
             'One ready revision’s manifest: its entry path and every file’s relative path, SHA-256, size and media type. The caller must be an organization member in the artifact’s audience. Not found for a revision that is pending, was never published, or has been removed.',
           operationId: 'getArtifactRevision',
           params: ArtifactRevisionParams,
-          response: { 200: ArtifactRevisionDto, 404: ErrorDto }
+          response: { 200: ArtifactRevisionDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
         const found = await visibleRevision(req, req.params.artifactId, req.params.revision)
         if (!found) return reply.code(404).send(notFound)
         const { artifact, revision } = found
@@ -151,22 +300,159 @@ export function artifactRoutes(deps: HttpDeps) {
           tags: [Tag.Artifacts],
           summary: 'Get a signed download for an artifact file',
           description:
-            'A short-lived signed URL for one file of a ready revision, named by its manifest path. The object store serves it as an `application/octet-stream` attachment, so nothing renders on the store’s origin; the console fetches the bytes and renders them itself by the manifest’s media type. The caller must be an organization member in the artifact’s audience. Not found when the deployment has no transfer bucket or the path is not in the manifest.',
+            'A short-lived signed URL for one file of a ready revision, named by its manifest path. The object store serves it as an `application/octet-stream` attachment, so nothing renders on the store’s origin; the console fetches the bytes and renders them itself by the manifest’s media type. The caller must be an organization member in the artifact’s audience. Not found when the path is not in the manifest.',
           operationId: 'getArtifactFileUrl',
           params: ArtifactRevisionParams,
           querystring: ArtifactFileQuery,
-          response: { 200: ArtifactFileUrlDto, 404: ErrorDto }
+          response: { 200: ArtifactFileUrlDto, 404: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
         const artifacts = deps.artifacts
-        if (!artifacts) return reply.code(404).send(notFound)
+        if (!artifacts) return reply.code(409).send(notEnabled)
         const found = await visibleRevision(req, req.params.artifactId, req.params.revision)
         const file = found?.revision.manifest.files.find((f) => f.path === req.query.path)
         if (!found || !file) return reply.code(404).send(notFound)
         const get = await artifacts.fileDownload(found.revision, file.path)
         if (!get) return reply.code(404).send(notFound)
         return { ...file, url: get.url, expiresAt: new Date(get.expiresAt).toISOString() }
+      }
+    )
+
+    r.post(
+      '/artifacts/:artifactId/shares',
+      {
+        schema: {
+          tags: [Tag.Artifacts],
+          summary: 'Share an artifact revision',
+          description:
+            'Creates a link to one ready revision. An `org` link admits signed-in members of the organization and may be created by anyone who can view the artifact; a `public` link admits anyone who has it and may be created by the artifact’s owner, or by an organization owner who can view it. The response carries the link token and the console path `/share/<token>` exactly once; only a hash of the token is stored. The share stays on this revision when a newer one is published. 403 `ARTIFACT_SHARE_FORBIDDEN` when the caller can view the artifact but may not create this audience; 404 when they cannot view it or the revision does not exist; 409 `ARTIFACT_REVISION_NOT_READY` while the revision is still uploading.',
+          operationId: 'createArtifactShare',
+          params: ArtifactParams,
+          body: CreateArtifactShareBody,
+          response: { 201: CreatedArtifactShareDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
+        const found = await managed(req, req.params.artifactId)
+        if (!found) return reply.code(404).send(notFound)
+        const { artifact, viewer, canView } = found
+        const action = req.body.audience === 'public' ? ArtifactAction.SharePublic : ArtifactAction.ShareOrg
+        if (!canActOnArtifact(action, artifact, viewer)) return refuse(reply, canView)
+        const revision = await deps.repos.artifact.getRevision(orgOf(req), artifact.id, req.body.revision)
+        if (!revision)
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'revision not found' })
+        if (revision.state !== 'ready') {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            code: 'ARTIFACT_REVISION_NOT_READY',
+            message: 'this revision is still uploading'
+          })
+        }
+        const created = await deps.artifactShares.create({
+          orgId: orgOf(req),
+          artifactId: artifact.id,
+          revisionNumber: revision.number,
+          audience: req.body.audience,
+          createdByIdentity: `user:${ctxOf(req).userId}`
+        })
+        return reply.code(201).send({
+          ...(await shareDto(req, created.share)),
+          token: created.token,
+          linkPath: created.linkPath,
+          link: created.link ?? null
+        })
+      }
+    )
+
+    r.get(
+      '/artifacts/:artifactId/shares',
+      {
+        schema: {
+          tags: [Tag.Artifacts],
+          summary: 'List an artifact’s shares',
+          description:
+            'The artifact’s active share links, newest first, each with its revision, audience, the tail of its token and who created it; never the token itself. Open to whoever can view the artifact, and to its owner and organization owners, who can revoke a share without viewing the artifact. Anyone else gets 404.',
+          operationId: 'listArtifactShares',
+          params: ArtifactParams,
+          response: { 200: ArtifactShareListDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
+        const found = await managed(req, req.params.artifactId)
+        if (!found) return reply.code(404).send(notFound)
+        const { artifact, viewer, canView } = found
+        if (!canView && !canActOnArtifact(ArtifactAction.RevokeShare, artifact, viewer)) {
+          return reply.code(404).send(notFound)
+        }
+        const members: Members = new Map()
+        const shares = await deps.artifactShares.listActive(orgOf(req), artifact.id)
+        return { shares: await Promise.all(shares.map((share) => shareDto(req, share, members))) }
+      }
+    )
+
+    r.patch(
+      '/artifacts/:artifactId/shares/:shareId',
+      {
+        schema: {
+          tags: [Tag.Artifacts],
+          summary: 'Change a share’s audience',
+          description:
+            'Moves an active share between `public` and `org`; the link stays the same. Only the artifact’s owner, or an organization owner who can view it, may do this. 403 `ARTIFACT_SHARE_FORBIDDEN` for anyone else who can view the artifact; 404 when the caller cannot view it, or the share does not exist or is revoked.',
+          operationId: 'updateArtifactShare',
+          params: ArtifactShareParams,
+          body: UpdateArtifactShareBody,
+          response: { 200: ArtifactShareDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
+        const found = await managed(req, req.params.artifactId)
+        if (!found) return reply.code(404).send(notFound)
+        const { artifact, viewer, canView } = found
+        if (!canActOnArtifact(ArtifactAction.SharePublic, artifact, viewer)) return refuse(reply, canView)
+        const share = await deps.artifactShares.setAudience(
+          orgOf(req),
+          artifact.id,
+          req.params.shareId,
+          req.body.audience
+        )
+        if (!share) return reply.code(404).send(shareNotFound)
+        return shareDto(req, share)
+      }
+    )
+
+    r.delete(
+      '/artifacts/:artifactId/shares/:shareId',
+      {
+        schema: {
+          tags: [Tag.Artifacts],
+          summary: 'Revoke a share',
+          description:
+            'Revokes a share link; the next read of the link answers 410 `ARTIFACT_SHARE_REVOKED`. The artifact’s owner and organization owners may revoke, including an organization owner who cannot view the artifact, and so may the member who created the share. Revoking a revoked share succeeds again. 403 `ARTIFACT_SHARE_FORBIDDEN` for anyone else who can view the artifact; 404 when the caller cannot view it or the share does not exist.',
+          operationId: 'revokeArtifactShare',
+          params: ArtifactShareParams,
+          response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (!deps.artifacts) return reply.code(409).send(notEnabled)
+        const found = await managed(req, req.params.artifactId)
+        if (!found) return reply.code(404).send(notFound)
+        const { artifact, viewer, canView } = found
+        const share = await deps.artifactShares.get(orgOf(req), artifact.id, req.params.shareId)
+        // Someone who can neither view nor manage the artifact learns nothing about it, not even that a share is missing.
+        if (!share) {
+          const manages = canView || canActOnArtifact(ArtifactAction.RevokeShare, artifact, viewer)
+          return reply.code(404).send(manages ? shareNotFound : notFound)
+        }
+        if (!canRevokeArtifactShare(artifact, share, viewer)) return refuse(reply, canView)
+        const revoked = await deps.artifactShares.revoke(orgOf(req), artifact.id, share.id)
+        if (!revoked) return reply.code(404).send(shareNotFound)
+        return reply.code(204).send(null)
       }
     )
   }

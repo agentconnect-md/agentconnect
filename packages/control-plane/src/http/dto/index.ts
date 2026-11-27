@@ -3394,7 +3394,8 @@ const RESERVED_SLUGS = new Set([
   'orgs',
   'health',
   'stream',
-  'assets'
+  'assets',
+  'share' // artifact share links (artifacts.md §8.3)
 ])
 
 /** Lowercase letters, digits and hyphens — the org-slug shape shown in URLs. */
@@ -5569,12 +5570,86 @@ export const ArtifactDto = z.object({
   /** Ready revisions, newest first. */
   revisions: z.array(ArtifactRevisionSummaryDto)
 })
+export const SessionArtifactParams = z.object({ sessionId: z.string().min(1).max(256) })
+const SESSION_ARTIFACT_PAGE_MAX = 50
+export const SessionArtifactListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(SESSION_ARTIFACT_PAGE_MAX).default(25),
+  cursor: z.string().min(1).max(200).optional()
+})
+/** `getArtifact`'s fields without the revision list, plus the latest ready revision. */
+export const SessionArtifactDto = ArtifactDto.omit({ revisions: true }).extend({ latest: ArtifactRevisionSummaryDto })
+export const SessionArtifactPageDto = z.object({
+  artifacts: z.array(SessionArtifactDto),
+  /** Pass back as `cursor` for older artifacts; null on the last page. */
+  nextCursor: z.string().nullable()
+})
 export const ArtifactRevisionDto = ArtifactRevisionSummaryDto.extend({
   artifactId: z.string(),
   latestRevision: z.number().int(),
   manifest: z.object({ entry: z.string(), files: z.array(ArtifactManifestFileDto) })
 })
 export const ArtifactFileUrlDto = ArtifactManifestFileDto.extend({ url: z.string(), expiresAt: z.string() })
+// ── Artifact shares (artifacts.md §4, §8.3): a link to one revision, `public` or `org` ──
+export const ArtifactShareAudienceDto = z.enum(['public', 'org'])
+export const ArtifactShareParams = ArtifactParams.extend({ shareId: z.string().uuid() })
+export const CreateArtifactShareBody = z
+  .object({ revision: z.number().int().positive(), audience: ArtifactShareAudienceDto })
+  .strict()
+export const UpdateArtifactShareBody = z.object({ audience: ArtifactShareAudienceDto }).strict()
+/** One share as its managers see it; the token is never included after creation. */
+export const ArtifactShareDto = z.object({
+  id: z.string(),
+  artifactId: z.string(),
+  /** The pinned revision; a newer revision never moves it. */
+  revision: z.number().int(),
+  audience: ArtifactShareAudienceDto,
+  /** The token's last six characters behind an ellipsis, to tell links apart. */
+  displayTail: z.string(),
+  /** `userId` is null for a creator known only by a platform identity. */
+  createdBy: z.object({
+    userId: z.string().nullable(),
+    displayName: z.string().nullable(),
+    email: z.string().nullable(),
+    platform: z.string().nullable()
+  }),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** Null while the share is active. */
+  revokedAt: z.string().nullable()
+})
+export const ArtifactShareListDto = z.object({ shares: z.array(ArtifactShareDto) })
+export const CreatedArtifactShareDto = ArtifactShareDto.extend({
+  /** The link token, returned only here; the console page is `linkPath`. */
+  token: z.string(),
+  /** The console path that opens the share, `/share/<token>`. */
+  linkPath: z.string(),
+  /** `linkPath` on the console origin; null when the deployment does not know that origin. */
+  link: z.string().nullable()
+})
+/** The share token travels in the body so it stays out of request URLs, traces and access logs. */
+export const SharedArtifactBody = z.object({ token: z.string().min(1).max(256) }).strict()
+export const SharedArtifactFileBody = z
+  .object({ token: z.string().min(1).max(256), path: z.string().min(1).max(1024) })
+  .strict()
+/** What a share link shows (artifacts.md §8.3): the artifact and its pinned revision, no session, owner or conversation. */
+export const SharedArtifactDto = z.object({
+  /** Names the revision's content-domain origin (§5.5); grants nothing by itself. */
+  artifactId: z.string(),
+  title: z.string(),
+  audience: ArtifactShareAudienceDto,
+  /** The source organization's display name, for the user-generated-content banner. */
+  organization: z.object({ name: z.string() }),
+  sharedAt: z.string(),
+  revision: z.object({
+    number: z.number().int(),
+    entry: z.string(),
+    entryMediaType: z.string(),
+    fileCount: z.number().int(),
+    totalBytes: z.number().int(),
+    createdAt: z.string(),
+    manifest: z.object({ entry: z.string(), files: z.array(ArtifactManifestFileDto) })
+  })
+})
 /** Screenshot storage an organization used (computer-use.md §9): bytes written in the window and held now. */
 export const ComputerScreenshotUsageDto = z.object({
   from: z.string(),

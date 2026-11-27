@@ -76,6 +76,7 @@ describe('buildArtifactManifest', () => {
 
   it('refuses a path the protocol rules reject', async () => {
     await expect(build({ 'a\\b.txt': 'x' })).rejects.toThrow(/contains a backslash/)
+    await expect(build({ __ac: { 'sw.js': 'x' } })).rejects.toThrow(/reserved/)
   })
 
   it('stops at the file-count limit while walking', async () => {

@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"settings":{"enableIframePageLoading":true,"navigation":{"disableChildFrameNavigation":true}}}
 
+import { MessageChannel as NodeChannel } from 'node:worker_threads'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { SWRConfig } from 'swr'
+import { SWRConfig, useSWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ArtifactDto } from '@/lib/artifact'
 
@@ -15,9 +17,11 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   getArtifactRevision: api.getArtifactRevision
 }))
 vi.mock('@/lib/artifact-download', () => ({
-  fetchArtifactFile: async (_id: string, revision: number, file: { mediaType: string }) =>
-    new Blob([`body of r${revision}`], { type: file.mediaType }),
-  downloadArtifactRevision: vi.fn()
+  memberFileUrl: (_id: string, revision: number) => ({ revision }),
+  fetchArtifactFile: async (fileUrl: { revision: number }, file: { mediaType: string }) =>
+    new Blob([`body of r${fileUrl.revision}`], { type: file.mediaType }),
+  downloadArtifactRevision: vi.fn(),
+  downloadArtifactFiles: vi.fn()
 }))
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: ID }),
@@ -32,7 +36,10 @@ vi.mock('@/components/console/Shell', () => ({ useCrumbSlot: () => ({ register: 
 vi.mock('@/components/console/search-open', () => ({ useSearchOpen: () => () => undefined }))
 
 import { ApiError } from '@/lib/api'
-import ArtifactView, { requestedRevision } from './ArtifactView'
+import ArtifactView from './ArtifactView'
+import { requestedRevision } from '@/lib/artifact'
+import { consoleKeys } from '@/lib/swr-keys'
+import { PATH_SYNC_MS } from '@/lib/artifact-content/viewer-path'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -70,12 +77,20 @@ async function settle() {
     })
 }
 
+// The page's own SWR cache, which a refresh revalidates as a focus or reconnect would.
+let swr: ReturnType<typeof useSWRConfig> | undefined
+function GrabSwr() {
+  swr = useSWRConfig()
+  return null
+}
+
 async function renderView(search: string) {
   nav.search = search
   await act(async () => {
     root.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <ArtifactView />
+        <GrabSwr />
       </SWRConfig>
     )
   })
@@ -83,6 +98,7 @@ async function renderView(search: string) {
 }
 
 beforeEach(() => {
+  window.__AC_ENV = { ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' }
   api.getArtifact.mockReset().mockResolvedValue(ARTIFACT)
   api.getArtifactRevision.mockReset().mockImplementation(async (_id: string, number: number) => ({
     ...summary(number, number === 3 ? 'Atlas' : 'Hermes'),
@@ -100,6 +116,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete window.__AC_ENV
   act(() => root.unmount())
   container.remove()
 })
@@ -149,6 +166,50 @@ describe('ArtifactView', () => {
     expect(nav.replace).toHaveBeenCalledWith(`/acme/artifacts/${ID}?revision=2`, { scroll: false })
   })
 
+  it('drops the site page from the URL when the revision changes', async () => {
+    await renderView('revision=2&path=%2Fdocs%2Fabout.html')
+    const latest = [...container.querySelectorAll('button')].find((b) => b.textContent === 'View latest')!
+    await act(async () => latest.click())
+    expect(nav.replace).toHaveBeenCalledWith(`/acme/artifacts/${ID}?revision=3`, { scroll: false })
+  })
+
+  it('opens the site page the URL names and keeps the page shown in the URL', async () => {
+    vi.stubGlobal('MessageChannel', NodeChannel)
+    api.getArtifactRevision.mockImplementation(async (_id: string, number: number) => ({
+      ...summary(number, 'Atlas'),
+      entry: 'index.html',
+      entryMediaType: 'text/html',
+      artifactId: ID,
+      latestRevision: 3,
+      manifest: {
+        entry: 'index.html',
+        files: [{ path: 'index.html', sha256: '0'.repeat(64), bytes: 10, mediaType: 'text/html' }]
+      }
+    }))
+    window.history.replaceState(null, '', `/acme/artifacts/${ID}?revision=3&path=%2Fdocs%2Fabout.html`)
+    await renderView('revision=3&path=%2Fdocs%2Fabout.html')
+    const frame = container.querySelector('iframe')!
+    const origin = `https://a${ID.replaceAll('-', '')}r3.example-usercontent.net`
+    expect(frame.getAttribute('src')).toBe(`${origin}/__ac/shim`)
+    const shim = { postMessage: vi.fn() }
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, get: () => shim })
+    const send = (data: unknown) => {
+      const event = new MessageEvent('message', { data, origin })
+      Object.defineProperty(event, 'source', { value: shim })
+      act(() => void window.dispatchEvent(event))
+    }
+    send({ t: 'ready' })
+    expect(shim.postMessage.mock.calls[0]![0]).toEqual({ t: 'port', entry: '/docs/about.html' })
+    send({ t: 'path', path: '/app/settings?tab=2' })
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, PATH_SYNC_MS + 50)))
+    expect(window.location.search).toBe(`?revision=3&path=${encodeURIComponent('/app/settings?tab=2')}`)
+    send({ t: 'path', path: '/index.html' })
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, PATH_SYNC_MS + 50)))
+    expect(window.location.search).toBe('?revision=3')
+    for (const call of shim.postMessage.mock.calls) for (const port of call[2] ?? []) port.close()
+    vi.unstubAllGlobals()
+  })
+
   it('opens the latest with a notice when the URL’s revision is no longer kept', async () => {
     await renderView('revision=1')
     expect(api.getArtifactRevision).toHaveBeenCalledWith(ID, 3)
@@ -161,5 +222,53 @@ describe('ArtifactView', () => {
     expect(container.textContent).toContain('Artifact unavailable')
     expect(container.textContent).toContain('may have been deleted, or you may not have access')
     expect(api.getArtifactRevision).not.toHaveBeenCalled()
+  })
+
+  it('says artifacts are not enabled, without reading anything, on a deployment without them', async () => {
+    window.__AC_ENV = {}
+    await renderView('?revision=2')
+    const notice = container.querySelector('[data-testid="artifacts-not-enabled"]')!
+    expect(notice.textContent).toContain('Artifacts are not enabled on this deployment')
+    expect(notice.querySelector('a')!.getAttribute('href')).toBe('/acme/home')
+    expect(api.getArtifact).not.toHaveBeenCalled()
+  })
+
+  it('says the same when the Control Plane answers that artifacts are not enabled', async () => {
+    api.getArtifact.mockRejectedValue(new ApiError('not enabled', 409, 'ARTIFACTS_NOT_ENABLED'))
+    await renderView('')
+    expect(container.querySelector('[data-testid="artifacts-not-enabled"]')).not.toBeNull()
+  })
+
+  describe('following a newer revision read on a refresh (artifacts.md §11.4)', () => {
+    const revised = { ...ARTIFACT, latestRevision: 4, revisions: [summary(4, 'Atlas'), ...ARTIFACT.revisions] }
+    async function refresh() {
+      api.getArtifact.mockResolvedValue(revised)
+      await act(async () => {
+        await swr!.mutate(consoleKeys.artifact('org-1', ID))
+      })
+      await settle()
+    }
+
+    it('moves a page pinned to the latest revision to the newer one', async () => {
+      await renderView('revision=3')
+      await refresh()
+      expect(nav.replace).toHaveBeenCalledWith(`/acme/artifacts/${ID}?revision=4`, { scroll: false })
+    })
+
+    it('shows the newer one with a notice when the URL names no revision', async () => {
+      await renderView('')
+      await refresh()
+      expect(api.getArtifactRevision).toHaveBeenLastCalledWith(ID, 4)
+      expect(container.textContent).toContain('Updated to r4.')
+      expect(nav.replace).not.toHaveBeenCalled()
+    })
+
+    it('keeps a chosen older revision and offers the newer one', async () => {
+      await renderView('revision=2')
+      await refresh()
+      expect(nav.replace).not.toHaveBeenCalled()
+      expect(container.textContent).toContain('A newer revision (r4) is available.')
+      expect(container.textContent).not.toContain('Updated to')
+    })
   })
 })

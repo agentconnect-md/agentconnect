@@ -1,7 +1,8 @@
 'use client'
 
-// The viewer: header with the revision menu and Download, the info line, notices, and the entry (artifacts.md §11.3–§11.4).
-import { useState } from 'react'
+// The viewer: header with the revision menu, Share and Download, the info line, notices, and the entry (artifacts.md §11.3–§11.4, §11.6).
+import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import useSWR from 'swr'
 import { useFormatter, useTranslations } from 'next-intl'
 import { isCodeHostProvider } from '@agentconnect.md/protocol/code-host'
@@ -12,8 +13,16 @@ import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { CODE_HOST_PROJECTION } from '@/lib/code-hosts'
 import { platformLabel } from '@/lib/platform-labels'
-import type { ArtifactDto, ArtifactRevisionSummary } from '@/lib/artifact'
+import {
+  ARTIFACT_KIND_ICON,
+  artifactKind,
+  artifactsContentDomain,
+  type ArtifactDto,
+  type ArtifactRevisionSummary
+} from '@/lib/artifact'
+import { memberFileUrl } from '@/lib/artifact-download'
 import { ArtifactBody, ArtifactBodyNotice } from './ArtifactBody'
+import { ArtifactShareDialog } from './ArtifactShareDialog'
 import { useArtifactDownload } from './useArtifactDownload'
 
 /** Who can see the artifact, in the session audience's own words. */
@@ -92,17 +101,38 @@ function RevisionMenu({
   )
 }
 
+/** Where the viewer sits: the standalone page, or in place on a session page, the dock's Artifacts tab or the left pane (artifacts.md §11.2). */
+export type ArtifactViewerVariant = 'page' | 'dock' | 'pane'
+
 /** One artifact at one revision; `missing` is a requested revision that is no longer kept, so the latest is shown instead. */
 export function ArtifactViewer({
   artifact,
   revision,
   missing,
-  onRevision
+  onRevision,
+  path,
+  onPath,
+  variant = 'page',
+  onClose,
+  fullScreenHref,
+  updatedTo,
+  onDismissUpdated
 }: {
   artifact: ArtifactDto
   revision: number
   missing?: number
   onRevision: (revision: number) => void
+  /** The site page to open first; see `ArtifactSite`. */
+  path?: string | null
+  onPath?: (path: string | null) => void
+  variant?: ArtifactViewerVariant
+  /** In place only: back to the dock's list, or back to the conversation from the left pane. */
+  onClose?: () => void
+  /** In place only: the standalone page showing the same revision and site page. */
+  fullScreenHref?: string
+  /** The revision the viewer just followed to, for its "Updated to rN" notice (§11.4). */
+  updatedTo?: number | null
+  onDismissUpdated?: () => void
 }) {
   const t = useTranslations('Artifacts.viewer')
   const format = useFormatter()
@@ -115,7 +145,30 @@ export function ArtifactViewer({
     { revalidateOnFocus: false, revalidateIfStale: false }
   )
   const files = read.data?.manifest.files
-  const download = useArtifactDownload(artifact.id, revision, artifact.title, files)
+  const fileUrl = useMemo(() => memberFileUrl(artifact.id, revision), [artifact.id, revision])
+  const download = useArtifactDownload(
+    files ? { fileUrl, files } : { artifactId: artifact.id, revision },
+    artifact.title
+  )
+  const [sharing, setSharing] = useState(false)
+  const inPlace = variant !== 'page'
+
+  const shareButton = (
+    <Button
+      variant="secondary"
+      size="sm"
+      ariaHasPopup="dialog"
+      ariaLabel={t('share')}
+      className="flex-none"
+      onClick={() => setSharing(true)}
+    >
+      <Icon name="share-2" size={14} />
+      <span className={inPlace ? 'hidden @min-[560px]:inline' : 'max-desktop:hidden'}>{t('share')}</span>
+    </Button>
+  )
+  const shareDialog = sharing ? (
+    <ArtifactShareDialog artifact={artifact} revision={revision} onClose={() => setSharing(false)} />
+  ) : null
 
   const downloadButton = (
     <Button
@@ -126,87 +179,220 @@ export function ArtifactViewer({
       ariaLabel={t('download')}
     >
       {download.busy ? <Spinner size={12} /> : <Icon name="download" size={14} />}
-      <span className={download.busy ? '' : 'max-desktop:hidden'}>
+      {/* In place the label yields to the title below the container's 560px; the page hides it on a phone. */}
+      <span className={download.busy ? '' : inPlace ? 'hidden @min-[560px]:inline' : 'max-desktop:hidden'}>
         {download.zipping ? t('zipping') : t('download')}
       </span>
     </Button>
   )
 
+  const info = summary && (
+    <>
+      <span className="inline-flex min-w-0 items-center gap-1">
+        <Icon name="bot" size={13} />
+        <span className="truncate">{summary.producedBy.name}</span>
+      </span>
+      <span aria-hidden>·</span>
+      <span>{audienceLabel(artifact.audience)}</span>
+      <span aria-hidden>·</span>
+      <span title={format.dateTime(new Date(summary.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}>
+        {t('updated', { time: format.relativeTime(new Date(summary.createdAt), { now: Date.now() }) })}
+      </span>
+    </>
+  )
+
+  const body = read.data ? (
+    <ArtifactBody
+      artifactId={artifact.id}
+      revision={read.data}
+      title={artifact.title}
+      download={downloadButton}
+      contentDomain={artifactsContentDomain()}
+      path={path ?? null}
+      onPath={onPath}
+      fileUrl={fileUrl}
+    />
+  ) : read.error ? (
+    <ArtifactBodyNotice icon="triangle-exclamation-point" tone="error">
+      {t('loadFailed')}
+    </ArtifactBodyNotice>
+  ) : (
+    <div className="flex flex-1 items-center justify-center py-12" aria-busy="true">
+      <Spinner size={30} />
+    </div>
+  )
+
+  const failed = download.failed && t('downloadFailed')
+  const gone = missing !== undefined && (
+    <>
+      <Icon name="info" size={14} color="var(--text-tertiary)" />
+      {t('revisionGone', { missing, number: revision })}
+    </>
+  )
+  const newer = missing === undefined && artifact.latestRevision > revision && (
+    <>
+      <span className="inline-flex items-center gap-2">
+        <Icon name="circle-arrow-up" size={14} color="var(--text-tertiary)" />
+        {t('newerAvailable', { number: artifact.latestRevision })}
+      </span>
+      <button type="button" className="lnk text-[12.5px]" onClick={() => onRevision(artifact.latestRevision)}>
+        {t('viewLatest')}
+      </button>
+    </>
+  )
+
+  const followed = missing === undefined && updatedTo === revision && (
+    <>
+      <span className="inline-flex min-w-0 flex-1 items-center gap-2">
+        <Icon name="refresh-cw" size={14} color="var(--text-tertiary)" />
+        {t('updatedTo', { number: revision })}
+      </span>
+      {onDismissUpdated ? (
+        <button
+          type="button"
+          className="iconbtn flex-none"
+          data-artifact-updated-dismiss=""
+          aria-label={t('dismiss')}
+          title={t('dismiss')}
+          onClick={onDismissUpdated}
+        >
+          <Icon name="x" size={14} />
+        </button>
+      ) : null}
+    </>
+  )
+  const notice = gone || newer || followed
+
+  if (inPlace) {
+    const kind = summary ? artifactKind(summary.entryMediaType, summary.entry) : null
+    const close = onClose && (
+      <button
+        type="button"
+        className="iconbtn flex-none"
+        data-artifact-viewer-close=""
+        aria-label={variant === 'dock' ? t('backToList') : t('backToConversation')}
+        title={variant === 'dock' ? t('backToList') : t('backToConversation')}
+        onClick={onClose}
+      >
+        <Icon name={variant === 'dock' ? 'chevron-left' : 'x'} size={15} />
+      </button>
+    )
+    return (
+      <section
+        data-testid="artifact-viewer"
+        data-variant={variant}
+        className={
+          variant === 'pane'
+            ? 'card @container flex min-h-0 flex-1 flex-col overflow-hidden'
+            : '@container flex min-h-0 flex-1 flex-col'
+        }
+      >
+        {/* At the dock's 380px the title truncates and Share and Download keep only their icons; the revision menu and Full screen stay. */}
+        <div className="flex min-w-0 flex-none items-center gap-2 border-b border-(--border-subtle) px-3 py-2">
+          {variant === 'dock' ? close : null}
+          <Icon
+            name={kind ? ARTIFACT_KIND_ICON[kind] : 'file'}
+            size={15}
+            color="var(--text-tertiary)"
+            className="flex-none"
+          />
+          <h2
+            className="m-0 min-w-0 flex-1 truncate font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)"
+            title={artifact.title}
+          >
+            {artifact.title}
+          </h2>
+          <RevisionMenu revisions={artifact.revisions} shown={revision} onSelect={onRevision} />
+          {shareButton}
+          {downloadButton}
+          {fullScreenHref ? (
+            <Link
+              href={fullScreenHref}
+              className="iconbtn flex-none"
+              data-artifact-viewer-full-screen=""
+              aria-label={t('fullScreen')}
+              title={t('fullScreen')}
+            >
+              <Icon name="maximize-2" size={15} />
+            </Link>
+          ) : null}
+          {variant === 'pane' ? close : null}
+        </div>
+        {info ? (
+          <div className="flex min-w-0 flex-none flex-wrap items-center gap-x-2 gap-y-[2px] border-b border-(--border-subtle) px-3 py-[6px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+            {info}
+          </div>
+        ) : null}
+        {failed ? (
+          <div
+            role="alert"
+            className="flex-none border-b border-(--border-subtle) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--red-600)"
+          >
+            {failed}
+          </div>
+        ) : null}
+        {notice ? (
+          <div
+            role="status"
+            data-artifact-notice=""
+            className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+          >
+            {notice}
+          </div>
+        ) : null}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-(--surface-card)">{body}</div>
+        {shareDialog}
+      </section>
+    )
+  }
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-viewer">
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-viewer" data-variant="page">
       <div className="flex min-w-0 flex-wrap items-start gap-x-4 gap-y-2 px-4 pt-3 desktop:px-0 desktop:pt-0">
         <div className="min-w-0 flex-1">
           {/* The mobile push bar carries the title, so only the desktop renders it here. */}
           <h1 className="ptitle hidden truncate desktop:block">{artifact.title}</h1>
-          {summary && (
+          {info && (
             <div className="flex desktop:mt-[6px] min-w-0 flex-wrap items-center gap-x-2 gap-y-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              <span className="inline-flex items-center gap-1">
-                <Icon name="bot" size={13} />
-                {summary.producedBy.name}
-              </span>
-              <span aria-hidden>·</span>
-              <span>{audienceLabel(artifact.audience)}</span>
-              <span aria-hidden>·</span>
-              <span title={format.dateTime(new Date(summary.createdAt), { dateStyle: 'medium', timeStyle: 'short' })}>
-                {t('updated', { time: format.relativeTime(new Date(summary.createdAt), { now: Date.now() }) })}
-              </span>
+              {info}
             </div>
           )}
         </div>
         <div className="flex flex-none items-center gap-2">
           <RevisionMenu revisions={artifact.revisions} shown={revision} onSelect={onRevision} />
+          {shareButton}
           {downloadButton}
         </div>
       </div>
-      {download.failed && (
+      {failed && (
         <div
           role="alert"
           className="px-4 pt-2 font-sans text-[12px] font-medium leading-normal text-(--red-600) desktop:px-0"
         >
-          {t('downloadFailed')}
+          {failed}
         </div>
       )}
-      {missing !== undefined && (
+      {gone && (
         <div
           role="status"
           className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:mx-0"
         >
-          <Icon name="info" size={14} color="var(--text-tertiary)" />
-          {t('revisionGone', { missing, number: revision })}
+          {gone}
         </div>
       )}
-      {missing === undefined && artifact.latestRevision > revision && (
+      {(newer || followed) && (
         <div
           role="status"
+          data-artifact-notice=""
           className="mx-4 mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-2 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:mx-0"
         >
-          <span className="inline-flex items-center gap-2">
-            <Icon name="circle-arrow-up" size={14} color="var(--text-tertiary)" />
-            {t('newerAvailable', { number: artifact.latestRevision })}
-          </span>
-          <button type="button" className="lnk text-[12.5px]" onClick={() => onRevision(artifact.latestRevision)}>
-            {t('viewLatest')}
-          </button>
+          {newer || followed}
         </div>
       )}
       <div className="mt-3 flex min-h-[320px] flex-1 flex-col overflow-hidden border-y border-(--border-subtle) bg-(--surface-card) desktop:rounded-md desktop:border">
-        {read.data ? (
-          <ArtifactBody
-            artifactId={artifact.id}
-            revision={read.data}
-            title={artifact.title}
-            download={downloadButton}
-          />
-        ) : read.error ? (
-          <ArtifactBodyNotice icon="triangle-exclamation-point" tone="error">
-            {t('loadFailed')}
-          </ArtifactBodyNotice>
-        ) : (
-          <div className="flex flex-1 items-center justify-center py-12" aria-busy="true">
-            <Spinner size={30} />
-          </div>
-        )}
+        {body}
       </div>
+      {shareDialog}
     </div>
   )
 }

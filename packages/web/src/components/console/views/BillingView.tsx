@@ -16,6 +16,7 @@ import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'rechar
 import {
   BillingError,
   BillingShapeError,
+  FREE_TIER_ID,
   PURCHASE_MAX_MICRO,
   PURCHASE_MIN_MICRO,
   cancelBillingSubscriptionChange,
@@ -31,6 +32,7 @@ import {
   type BillingDebit,
   type BillingDebitAgent,
   type BillingDebitModel,
+  type BillingPendingChange,
   type BillingPurchase,
   type BillingTransaction
 } from '@/lib/billing-api'
@@ -1159,6 +1161,20 @@ export default function BillingView() {
   const catalog = usePlanCatalog(planOwner)
   const increase = useIncreaseLimit(planOwner, plan.subscription.data, catalog.data)
   const [planDialog, setPlanDialog] = useState<ChangePlanStart | null>(null)
+  // Cancelling a trial schedules Free, so it needs Free's option from the catalog.
+  const freeOption = catalog.data?.options.find((o) => o.tierId === FREE_TIER_ID)
+  const cancelPending =
+    myRole === 'owner' && orgId
+      ? async (change: BillingPendingChange) => {
+          try {
+            await cancelBillingSubscriptionChange(orgId, change.id)
+          } catch (e) {
+            // Already paid or expired: the reread shows where it landed.
+            if (!(e instanceof BillingError && (e.status === 404 || e.status === 409))) throw e
+          }
+          await Promise.all([plan.subscription.mutate(), catalog.mutate()])
+        }
+      : undefined
   const openChangePlan = () => {
     const sub = plan.subscription.data
     if (sub) setPlanDialog({ target: { tierId: sub.tierId, optionId: sub.optionId } })
@@ -1466,19 +1482,7 @@ export default function BillingView() {
           {plansOffered && (
             <PlanBanners
               reads={plan}
-              onCancelPending={
-                myRole === 'owner'
-                  ? async (change) => {
-                      try {
-                        await cancelBillingSubscriptionChange(orgId, change.id)
-                      } catch (e) {
-                        // Already paid or expired: the reread shows where it landed.
-                        if (!(e instanceof BillingError && (e.status === 404 || e.status === 409))) throw e
-                      }
-                      await Promise.all([plan.subscription.mutate(), catalog.mutate()])
-                    }
-                  : undefined
-              }
+              onCancelPending={cancelPending}
               limitAction={
                 increase?.bannerLabel
                   ? { label: increase.bannerLabel, onClick: () => setPlanDialog({ target: increase.open }) }
@@ -1499,7 +1503,7 @@ export default function BillingView() {
                   className="card flex flex-col desktop:row-span-4 desktop:grid desktop:grid-rows-subgrid"
                   data-balance-card="true"
                 >
-                  <div className="cardhead h-[60px] justify-between gap-3 border-b-0">
+                  <div className="cardhead h-14 justify-between gap-3 border-b-0">
                     <span className="inline-flex items-center gap-3">
                       <span className="cardtitle">{t('balance')}</span>
                       {statePill}
@@ -1514,11 +1518,11 @@ export default function BillingView() {
                       </span>
                     ) : null}
                   </div>
-                  <div className="flex flex-1 items-end gap-3 px-[18px] py-6 desktop:pt-2">
-                    <span className="mono text-[44px] leading-none font-semibold tracking-[-0.02em]">
+                  <div className="flex items-end gap-3 self-start px-[18px] pt-3.5 pb-6">
+                    <span className="mono text-[36px] leading-10 font-semibold tracking-[-0.02em]">
                       {fmtMicroUsd(acct.balanceMicro)}
                     </span>
-                    <span className="mono pb-[5px] text-[12px] text-(--text-tertiary)">{t('usd')}</span>
+                    <span className="mono pb-[9px] text-[12px] leading-4 text-(--text-tertiary)">{t('usd')}</span>
                   </div>
                   {plan.subscription.data && (
                     <PlanCreditStrip sub={plan.subscription.data} balanceMicro={acct.balanceMicro} />
@@ -1532,6 +1536,16 @@ export default function BillingView() {
                     await revokeBillingScheduledChange(orgId)
                     await Promise.all([plan.subscription.mutate(), catalog.mutate()])
                   }}
+                  onCancelTrial={
+                    freeOption
+                      ? () =>
+                          setPlanDialog({
+                            target: { tierId: FREE_TIER_ID, optionId: freeOption.optionId },
+                            review: true
+                          })
+                      : undefined
+                  }
+                  onCancelPending={cancelPending}
                   increase={
                     increase
                       ? {
@@ -1551,6 +1565,7 @@ export default function BillingView() {
                   start={planDialog}
                   returnPath={returnPath}
                   onClose={() => setPlanDialog(null)}
+                  onCancelPending={cancelPending}
                   onChanged={() => {
                     void plan.subscription.mutate()
                     void plan.usage.mutate()

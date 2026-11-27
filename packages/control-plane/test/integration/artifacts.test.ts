@@ -1,140 +1,25 @@
 // Artifacts over the wire and the read routes (artifacts.md §5.3, §6.1, §7.2, §8.1), against real Postgres and a signing bucket.
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { ArtifactInitiator, ArtifactManifest, ArtifactPublishBeginOk } from '@agentconnect.md/protocol'
-import type { SourceCacheObjectHead } from '@agentconnect.md/object-store'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
-import { ArtifactRefusal, createArtifactService } from '../../src/artifacts/service.js'
-import { FileTransferConfigSchema } from '../../src/file-transfer/config.js'
-import { attachmentDisposition, createFileTransfer } from '../../src/file-transfer/transfer.js'
-import { PgAgentRepo, PgArtifactRepo, PgOrgRepo, PgSessionRepo, PgUserRepo } from '../../src/persistence/index.js'
-import type { AgentRecord, CronRecord, OrgMemberRole } from '../../src/persistence/ports.js'
-import { AgentId, OrgId } from '../../src/domain/ids.js'
+import { agentAndSession, harness, makeUser, manifestOf, newSession, publish, T0 } from '../fixtures/artifacts.js'
+import { ArtifactRefusal } from '../../src/artifacts/service.js'
+import { attachmentDisposition } from '../../src/file-transfer/transfer.js'
+import { PgArtifactRepo } from '../../src/persistence/index.js'
+import type { CronRecord } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
-const T0 = Date.parse('2026-11-25T10:00:00.000Z')
-
 const opened: HttpApp[] = []
 afterEach(async () => {
   await Promise.all(opened.splice(0).map((a) => a.close()))
 })
 
-const hex = (text: string) => createHash('sha256').update(text).digest('hex')
-const manifestOf = (...files: Array<[string, string, string?]>): ArtifactManifest => ({
-  entry: files[0]![0],
-  files: files.map(([path, body, mediaType]) => ({
-    path,
-    sha256: hex(body),
-    bytes: Buffer.byteLength(body),
-    mediaType: mediaType ?? 'text/html'
-  }))
-})
-
-// A real signer over an in-memory bucket: the test "uploads" a signed PUT by recording its signed length and checksum.
-function harness(crons: CronRecord[] = []) {
-  const objects = new Map<string, SourceCacheObjectHead>()
-  const transfer = createFileTransfer({
-    config: FileTransferConfigSchema.parse({
-      version: 1,
-      endpoint: 'https://store.internal.example.test',
-      publicEndpoint: 'https://store.example.test',
-      region: 'us-east-1',
-      bucket: 'ac-cache',
-      forcePathStyle: true,
-      credentials: { source: 'static', dir: '/creds', accessKeyIdKey: 'id', secretAccessKeyKey: 'secret' }
-    }),
-    credentials: { source: 'static', get: async () => ({ accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' }) },
-    objects: {
-      head: async (key) => objects.get(key) ?? { exists: false },
-      delete: async (key) => void objects.delete(key),
-      createMultipartUpload: async () => 'mp'
-    },
-    enabled: () => true,
-    now: () => T0
-  })
-  const service = createArtifactService({
-    transfer,
-    artifacts: new PgArtifactRepo(prisma),
-    sessions: new PgSessionRepo(prisma),
-    users: new PgUserRepo(prisma),
-    agents: new PgAgentRepo(prisma),
-    crons: { listForAgent: async () => crons },
-    hooks: { get: async () => null },
-    orgs: new PgOrgRepo(prisma),
-    webAppUrl: 'https://console.example.test'
-  })
-  const upload = (ok: ArtifactPublishBeginOk) => {
-    if (ok.state !== 'pending') throw new Error('nothing to upload')
-    for (const put of ok.uploads) {
-      const key = decodeURIComponent(new URL(put.url).pathname).slice('/ac-cache/'.length)
-      objects.set(key, {
-        exists: true,
-        contentLength: Number(put.headers['content-length']),
-        checksumSha256: put.headers['x-amz-checksum-sha256']!
-      })
-    }
-  }
-  return { service, objects, upload }
-}
-
-async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
-  const email = `${sub}@example.test`
-  const users = new PgUserRepo(prisma)
-  const { userId } = await users.provisionOidcUser({ oidcSubject: sub, email, emailVerified: true })
-  await users.addMemberByEmail(DEFAULT_ORG_ID, email, role)
-  return userId
-}
-
-async function agentAndSession(opts: { visibility?: 'org' | 'private' | 'editors'; ownerIdentity?: string } = {}) {
-  const daemonId = await seedDaemon(prisma, randomUUID())
-  const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
-  const sessionId = await newSession(agentId, opts)
-  const agent = (await new PgAgentRepo(prisma).get(OrgId(DEFAULT_ORG_ID), AgentId(agentId))) as AgentRecord
-  return { agent, agentId, sessionId }
-}
-
-const newSession = (
-  agentId: string,
-  opts: { visibility?: 'org' | 'private' | 'editors'; ownerIdentity?: string } = {}
-) =>
-  seedSessionMeta(prisma, `webchat:${randomUUID()}`, agentId, {
-    visibility: opts.visibility ?? 'org',
-    ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {})
-  })
-
 const refusal = async (p: Promise<unknown>) => {
   const err = await p.catch((e: unknown) => e)
   expect(err).toBeInstanceOf(ArtifactRefusal)
   return err as ArtifactRefusal
-}
-
-/** Begin, upload and complete one revision. */
-async function publish(
-  h: ReturnType<typeof harness>,
-  agent: AgentRecord,
-  sessionId: string,
-  extra: { artifactId?: string; initiator?: ArtifactInitiator; manifest?: ArtifactManifest } = {}
-) {
-  const begun = await h.service.begin(DEFAULT_ORG_ID, agent, {
-    agentId: agent.id,
-    sessionId,
-    title: 'Weekly report',
-    manifest: extra.manifest ?? manifestOf(['index.html', '<p>hi</p>']),
-    idempotencyKey: `key-${randomUUID()}`,
-    network: 'cluster',
-    ...(extra.artifactId ? { artifactId: extra.artifactId } : {}),
-    ...(extra.initiator ? { initiator: extra.initiator } : {})
-  })
-  h.upload(begun)
-  if (begun.state !== 'pending') throw new Error('expected a pending revision')
-  return await h.service.complete(DEFAULT_ORG_ID, {
-    agentId: agent.id,
-    artifactId: begun.artifactId,
-    revision: begun.revision
-  })
 }
 
 describe('artifact publishing', () => {
@@ -509,5 +394,140 @@ describe('artifact read routes', () => {
       url: `${ORG}/artifacts/${danas.artifactId}/revisions/1/file?path=index.html`
     })
     expect(file.statusCode).toBe(404)
+  })
+
+  const sessionArtifacts = (sessionId: string, query = '') =>
+    `${ORG}/sessions/${encodeURIComponent(sessionId)}/artifacts${query}`
+
+  it('lists a session’s artifacts to whoever can view the session, leaving out those outside their audience', async () => {
+    const h = harness()
+    const repo = new PgArtifactRepo(prisma)
+    const dana = await makeUser(`list-dana-${randomUUID()}`, 'collaborator')
+    const erin = await makeUser(`list-erin-${randomUUID()}`, 'collaborator')
+    const { agent, agentId, sessionId } = await agentAndSession()
+    const elsewhere = await newSession(agentId)
+
+    // Published here, then revised elsewhere: listed, with the newer revision as its latest.
+    const here = await publish(h, agent, sessionId)
+    await publish(h, agent, elsewhere, {
+      artifactId: here.artifactId,
+      manifest: manifestOf(['report.md', '# Q3', 'text/markdown'], ['chart.png', 'png', 'image/png'])
+    })
+    // Published elsewhere, then revised here: listed.
+    const revisedHere = await publish(h, agent, elsewhere)
+    await publish(h, agent, sessionId, { artifactId: revisedHere.artifactId })
+    // Published elsewhere only, with a revision here that never became ready: not listed.
+    const notHere = await publish(h, agent, elsewhere)
+    await h.service.begin(DEFAULT_ORG_ID, agent, {
+      agentId,
+      sessionId,
+      artifactId: notHere.artifactId,
+      manifest: manifestOf(['index.html', 'draft']),
+      idempotencyKey: `pending-${randomUUID()}`,
+      network: 'cluster'
+    })
+    // Dana's, narrowed to private after publication: listed for Dana alone.
+    const danas = await publish(h, agent, sessionId, { initiator: { kind: 'console', userId: dana } })
+    await repo.setVisibility(DEFAULT_ORG_ID, danas.artifactId, 'private')
+
+    const list = async (userId: string, sid = sessionId) =>
+      await appAs(userId, h.service).app.inject({ method: 'GET', url: sessionArtifacts(sid) })
+    const ids = async (userId: string) =>
+      ((await list(userId)).json().artifacts as Array<{ id: string }>).map((a) => a.id)
+
+    expect(new Set(await ids(erin))).toEqual(new Set([here.artifactId, revisedHere.artifactId]))
+    expect(new Set(await ids(dana))).toEqual(new Set([here.artifactId, revisedHere.artifactId, danas.artifactId]))
+    // An organization owner sees no other member's private artifact.
+    expect(await ids(DEFAULT_OWNER_ID)).not.toContain(danas.artifactId)
+
+    const body = (await list(erin)).json()
+    expect(body.nextCursor).toBeNull()
+    expect(body.artifacts.find((a: { id: string }) => a.id === here.artifactId)).toMatchObject({
+      id: here.artifactId,
+      title: 'Weekly report',
+      audience: { visibility: 'org', externalProvider: null, editorsAgentId: null },
+      owner: null,
+      viewerIsOwner: false,
+      originSessionId: sessionId,
+      latestRevision: 2,
+      latest: {
+        number: 2,
+        entry: 'report.md',
+        entryMediaType: 'text/markdown',
+        fileCount: 2,
+        totalBytes: Buffer.byteLength('# Q3') + Buffer.byteLength('png'),
+        producedBy: { agentId, name: agent.name },
+        producedInSessionId: elsewhere
+      }
+    })
+    expect(body.artifacts[0]).not.toHaveProperty('revisions')
+    const danaView = (await list(dana)).json().artifacts.find((a: { id: string }) => a.id === danas.artifactId)
+    expect(danaView).toMatchObject({
+      viewerIsOwner: true,
+      owner: { userId: dana },
+      latest: { producedInSessionId: sessionId }
+    })
+
+    // A session the caller cannot view, or none at all, is not found, whatever its artifacts' audience.
+    const danaPrivate = await newSession(agentId, { visibility: 'private', ownerIdentity: `user:${dana}` })
+    await publish(h, agent, danaPrivate)
+    expect((await list(dana, danaPrivate)).statusCode).toBe(200)
+    expect((await list(erin, danaPrivate)).statusCode).toBe(404)
+    expect((await list(erin, `webchat:${randomUUID()}`)).statusCode).toBe(404)
+  })
+
+  it('orders a session’s artifacts by latest activity and pages them with a cursor', async () => {
+    const h = harness()
+    const { agent, sessionId } = await agentAndSession()
+    const published: string[] = []
+    for (let i = 0; i < 5; i += 1) published.push((await publish(h, agent, sessionId)).artifactId)
+    // Pin activity times so the expected order does not hang on clock resolution; the first one is the most recent.
+    for (const [i, id] of published.entries()) {
+      await prisma.artifact.update({ where: { id }, data: { updatedAt: new Date(T0 + (i === 0 ? 99 : i) * 1000) } })
+    }
+    const expected = [published[0], published[4], published[3], published[2], published[1]]
+    const app = appAs(DEFAULT_OWNER_ID, h.service).app
+
+    const paged: string[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      const res = await app.inject({
+        method: 'GET',
+        url: sessionArtifacts(sessionId, `?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+      })
+      expect(res.statusCode).toBe(200)
+      const page = res.json() as { artifacts: Array<{ id: string }>; nextCursor: string | null }
+      expect(page.artifacts.length).toBeLessThanOrEqual(2)
+      paged.push(...page.artifacts.map((a) => a.id))
+      cursor = page.nextCursor
+      pages += 1
+    } while (cursor)
+    expect(paged).toEqual(expected)
+    expect(pages).toBe(3)
+
+    expect(
+      (await app.inject({ method: 'GET', url: sessionArtifacts(sessionId, '?cursor=not-a-cursor') })).statusCode
+    ).toBe(400)
+    expect((await app.inject({ method: 'GET', url: sessionArtifacts(sessionId, '?limit=51') })).statusCode).toBe(400)
+  })
+
+  it('refuses every route as not enabled, whatever the artifact, on a deployment without the feature', async () => {
+    const h = harness()
+    const { agent, sessionId } = await agentAndSession()
+    const done = await publish(h, agent, sessionId)
+    const off = buildHttpApp(prisma, { DEFAULT_OWNER_ID })
+    opened.push(off)
+    for (const url of [
+      `${ORG}/artifacts/${done.artifactId}`,
+      `${ORG}/artifacts/${done.artifactId}/revisions/1`,
+      `${ORG}/artifacts/${done.artifactId}/revisions/1/file?path=index.html`,
+      `${ORG}/artifacts/${randomUUID()}`,
+      `${ORG}/sessions/${encodeURIComponent(sessionId)}/artifacts`
+    ]) {
+      const res = await off.app.inject({ method: 'GET', url })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ code: 'ARTIFACTS_NOT_ENABLED' })
+    }
   })
 })

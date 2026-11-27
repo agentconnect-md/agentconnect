@@ -175,9 +175,8 @@ describe('BillingView plan layout', () => {
 
   it('names the plan, its price and renewal, and this month’s sessions', async () => {
     await render()
-    expect(q('[data-plan-name]')!.textContent).toBe('ProStandard')
+    expect(q('[data-plan-name]')!.textContent).toBe('Pro Standard')
     expect(q('[data-plan-price]')!.textContent).toBe('$20 / month')
-    expect(q('[data-plan-price] strong')!.textContent).toBe('$20')
     expect(q('[data-plan-billing-date]')!.textContent).toBe('Renews Dec 4')
     expect(q('[data-plan-retention]')!.textContent).toBe('30-day history')
     const sessions = q('[data-plan-sessions]')!.textContent
@@ -278,6 +277,7 @@ describe('BillingView plan layout', () => {
     expect(link.getAttribute('target')).toBe('_blank')
     expect(link.getAttribute('rel')).toContain('noopener')
     expect(q('[data-plan-syncing]')!.textContent).toBe('Limits updating')
+    expect(q('[data-plan-limit-syncing]')!.getAttribute('title')).toContain("previous plan's limits apply")
   })
 
   it('keeps the rest of the page when the plan read fails', async () => {

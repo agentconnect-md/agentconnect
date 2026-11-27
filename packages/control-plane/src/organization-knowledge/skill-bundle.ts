@@ -11,6 +11,14 @@ export const MAX_MANAGED_SKILL_FILE_BYTES = 512 * 1024
 export const MAX_MANAGED_SKILL_COMPRESSION_RATIO = 200
 
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
+
+/** Built-in system skills the daemon serves over `readSkill`; mirrors its `BUILTIN_MCP_SKILL_NAMES` (skill-over-mcp.md §6.3). */
+export const RESERVED_SKILL_NAMES: ReadonlySet<string> = new Set([
+  'agentconnect-images',
+  'agentconnect-platform',
+  'agentconnect-create-agent',
+  'agentconnect-create-team'
+])
 const ZIP_MTIME = new Date('1980-01-01T00:00:00.000Z')
 const ZIP_EOCD_SIGNATURE = 0x06054b50
 const ZIP_CENTRAL_SIGNATURE = 0x02014b50
@@ -101,6 +109,11 @@ function manifestFromSkillMd(skillMd: Uint8Array): { name: string; description: 
   const row = value as Record<string, unknown>
   if (typeof row.name !== 'string' || !SKILL_NAME_RE.test(row.name)) {
     throw new SkillBundleValidationError('SKILL.md name must be lowercase kebab-case (1-63 characters)')
+  }
+  if (RESERVED_SKILL_NAMES.has(row.name)) {
+    throw new SkillBundleValidationError(
+      `skill name "${row.name}" is reserved for a built-in AgentConnect system skill; choose a different name`
+    )
   }
   if (typeof row.description !== 'string' || !row.description.trim() || row.description.length > 1024) {
     throw new SkillBundleValidationError('SKILL.md description must be a non-empty string (max 1024 characters)')

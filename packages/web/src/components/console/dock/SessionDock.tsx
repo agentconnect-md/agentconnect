@@ -58,6 +58,8 @@ export interface DockTab {
   status?: DockTabStatus
   /** Custom `loading`-state body (e.g. a skeleton mirroring this tab's rows); the dock's generic spinner otherwise. */
   loadingPlaceholder?: ReactNode
+  /** Custom `empty`-state line ("No artifacts yet"); the dock's generic one otherwise. */
+  emptyLabel?: string
 }
 
 const TAB_BASE =
@@ -576,7 +578,7 @@ export function SessionDock({
             ) : null}
             {!vacant && activeStatus === 'empty' ? (
               <div data-dock-empty="" className={PLACEHOLDER}>
-                {t('nothingToShow')}
+                {active?.emptyLabel ?? t('nothingToShow')}
               </div>
             ) : null}
             {body}

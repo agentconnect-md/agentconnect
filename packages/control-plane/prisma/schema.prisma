@@ -5306,7 +5306,6 @@ model SessionFileSnapshot {
 
 enum ArtifactStorageMode {
   signed // read through short-lived per-file signed URLs (artifacts.md §5.2)
-  public // anonymous reads under a random public prefix (artifacts.md §5.2)
 }
 
 enum ArtifactRevisionState {
@@ -5337,6 +5336,7 @@ model Artifact {
   updatedAt        DateTime          @default(now()) @db.Timestamptz(3)
 
   revisions ArtifactRevision[]
+  shares    ArtifactShare[]
 
   @@index([orgId, updatedAt(sort: Desc), id(sort: Desc)])
   @@index([orgId, externalProvider, externalScopeId])
@@ -5375,6 +5375,35 @@ model ArtifactRevision {
   @@unique([producedByAgentId, idempotencyKey])
   @@index([producedInSessionId])
   @@map("artifact_revision")
+}
+
+enum ArtifactShareAudience {
+  public // anyone with the link
+  org // signed-in members of the artifact's organization
+}
+
+// A link to one revision of an artifact (artifacts.md §4, §8.3); "public" is an unrevoked public share, not an artifact state.
+model ArtifactShare {
+  id                String                @id @db.Uuid
+  orgId             String
+  artifactId        String                @db.Uuid
+  // Pinned at creation; a newer revision never moves it.
+  revisionNumber    Int
+  // Peppered HMAC of the link token; the token itself is returned once and never stored.
+  tokenHash         String                @unique
+  displayTail       String
+  audience          ArtifactShareAudience
+  // session-visibility.md §2 form of the member who created it.
+  createdByIdentity String
+  createdAt         DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime              @default(now()) @db.Timestamptz(3)
+  revokedAt         DateTime?             @db.Timestamptz(3)
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([artifactId, revisionNumber])
+  @@index([orgId, audience])
+  @@map("artifact_share")
 }
 
 // Screenshot bytes written per organization and UTC day, kept for Cloud metering after the screenshots expire.

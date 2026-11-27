@@ -145,6 +145,11 @@ spec:
             - name: PUBLIC_MCP_URL
               value: {{ printf "https://%s" .Values.mcpHost | quote }}
             {{- end }}
+            {{- with .Values.artifacts.contentDomain }}
+            # Artifact content domain (the -artifacts HTTPRoute): artifacts are offered only with it and a transfer bucket.
+            - name: ARTIFACTS_CONTENT_DOMAIN
+              value: {{ include "agentconnect.artifactsContentDomain" $ | quote }}
+            {{- end }}
             {{- if .Values.publicUrl }}
             # The web console origin. The CP 302s BROWSERS here — the OAuth consent
             # page (/oauth/consent; agentconnect-md/agentconnect docs/designs/agent-assistant.md §7.3) and other console

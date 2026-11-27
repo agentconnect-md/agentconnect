@@ -377,6 +377,39 @@ than an hour, and the role's `MaxSessionDuration` must allow it. Set
 `sourceCache.credentials.serviceAccount.sessionDurationSeconds` to pin the length
 instead.
 
+### Artifacts
+
+Artifacts, the pages and documents agents publish for people to open in the console
+([design](../../docs/designs/artifacts.md)), are stored in the same bucket, read only
+through URLs the Control Plane signs. They also need a **content domain**: a wildcard
+domain on a registrable domain of its own, such as `example-usercontent.net`, where each
+revision renders at its own origin. Without both a transfer bucket and a content domain,
+agents get no artifact tools and the console shows that artifacts are not enabled; what
+was already published is kept and comes back once both are configured.
+
+```yaml
+artifacts:
+  contentDomain: example-usercontent.net
+```
+
+The chart passes it to the Control Plane and the web service as `ARTIFACTS_CONTENT_DOMAIN`
+(web also gets `publicUrl`, the only origin that may frame a revision) and renders a
+separate HTTPRoute, `<release>-artifacts`, for `*.example-usercontent.net` whose only
+backend is the web service. The wildcard is never added to the website route, which also
+carries `/cp`. You provide, at your edge:
+
+- wildcard DNS for `*.<contentDomain>` pointing at the gateway;
+- a wildcard certificate for `*.<contentDomain>`, served on port 443, since revision
+  origins carry no port; most ACME issuers grant a wildcard only through a DNS-01
+  challenge;
+- a Gateway listener that accepts the wildcard host (`route.gateway`).
+
+The Control Plane refuses to start with a content domain that is not a DNS name under a
+public suffix (an IP address, a single-label name or `localhost`), or that is same-site
+with any origin the deployment knows: `publicUrl`, `apiHost`, `mcpHost`, the relay host,
+the identity provider, and the object store's endpoints. A subdomain of the console's own
+domain is therefore refused; use a separate registrable domain.
+
 ### Computer screenshots
 
 With a Source Cache configured, `computerScreenshots.enabled=true` stores the screenshots

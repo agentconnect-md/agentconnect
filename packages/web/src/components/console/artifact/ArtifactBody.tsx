@@ -1,6 +1,6 @@
 'use client'
 
-// A revision's entry rendered from its bytes by media type (artifacts.md §5.5, §9): nothing renders on the store's origin.
+// A revision's entry by media type (artifacts.md §5.5, §9): HTML on the content domain, the rest from bytes; nothing renders on the store's origin.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
 import { useTranslations } from 'next-intl'
@@ -8,8 +8,8 @@ import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { formatFileSize } from '@/components/console/FileBrowser'
 import { escapeHtml, highlight, linkifyHtml, loadHljs } from '@/lib/highlight'
-import { ARTIFACT_FRAME_SANDBOX } from '@/lib/mcp-app-frame'
-import { fetchArtifactFile } from '@/lib/artifact-download'
+import { fetchArtifactFile, memberFileUrl, type ArtifactFileUrl } from '@/lib/artifact-download'
+import { ArtifactSite, SrcdocPage } from './ArtifactSite'
 import {
   artifactFileName,
   artifactKind,
@@ -43,8 +43,11 @@ function revoke(url: string): void {
   if (url.startsWith('blob:')) URL.revokeObjectURL(url)
 }
 
+/** The revision fields a body reads; a share link's revision carries no more than these. */
+export type ArtifactBodyRevision = Pick<ArtifactRevisionDto, 'number' | 'manifest'>
+
 /** The entry file's bytes, fetched again whenever the revision changes. */
-function useEntryBlob(artifactId: string, revision: number, file: ArtifactManifestFile | undefined): Loaded {
+function useEntryBlob(fileUrl: ArtifactFileUrl, file: ArtifactManifestFile | undefined): Loaded {
   const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' })
   const path = file?.path
   const mediaType = file?.mediaType
@@ -55,14 +58,14 @@ function useEntryBlob(artifactId: string, revision: number, file: ArtifactManife
     }
     const controller = new AbortController()
     setLoaded({ status: 'loading' })
-    fetchArtifactFile(artifactId, revision, { path, mediaType }, controller.signal).then(
+    fetchArtifactFile(fileUrl, { path, mediaType }, controller.signal).then(
       (blob) => setLoaded({ status: 'ready', blob }),
       () => {
         if (!controller.signal.aborted) setLoaded({ status: 'failed' })
       }
     )
     return () => controller.abort()
-  }, [artifactId, revision, path, mediaType])
+  }, [fileUrl, path, mediaType])
   return loaded
 }
 
@@ -129,18 +132,33 @@ export function ArtifactBody({
   artifactId,
   revision,
   title,
-  download
+  download,
+  contentDomain,
+  path,
+  onPath,
+  fileUrl
 }: {
   artifactId: string
-  revision: ArtifactRevisionDto
+  revision: ArtifactBodyRevision
   title: string
   /** The Download action offered where nothing renders in the console. */
   download: ReactNode
+  /** Where HTML runs; without one a page falls back to `srcdoc`. */
+  contentDomain?: string
+  /** The site page to open first, from the viewer's URL. */
+  path?: string | null
+  /** The site page shown, for the viewer's URL. */
+  onPath?: (path: string | null) => void
+  /** Where the files are read; a member's organization routes when absent, a share link's on the share page. */
+  fileUrl?: ArtifactFileUrl
 }) {
   const t = useTranslations('Artifacts.viewer')
+  const number = revision.number
+  const files = useMemo(() => fileUrl ?? memberFileUrl(artifactId, number), [fileUrl, artifactId, number])
   const entry = revision.manifest.files.find((file) => file.path === revision.manifest.entry)
   const kind = entry ? artifactKind(entry.mediaType, entry.path) : 'other'
-  const loaded = useEntryBlob(artifactId, revision.number, kind === 'other' ? undefined : entry)
+  const site = kind === 'page' && contentDomain !== undefined
+  const loaded = useEntryBlob(files, kind === 'other' || site ? undefined : entry)
 
   if (kind === 'other' || !entry)
     return (
@@ -151,6 +169,20 @@ export function ArtifactBody({
         </span>
         {download}
       </ArtifactBodyNotice>
+    )
+  if (site)
+    return (
+      <ArtifactSite
+        key={`${artifactId}:${revision.number}`}
+        artifactId={artifactId}
+        revision={revision}
+        title={title}
+        domain={contentDomain}
+        path={path ?? null}
+        onPath={onPath}
+        download={download}
+        fileUrl={files}
+      />
     )
   if (loaded.status === 'loading')
     return (
@@ -168,31 +200,14 @@ export function ArtifactBody({
   if (kind === 'image') return <ArtifactImage blob={loaded.blob} title={title} />
   if (kind === 'pdf') return <ArtifactPdf blob={loaded.blob} title={title} download={download} />
   if (kind === 'document')
-    return (
-      <ArtifactMarkdown
-        artifactId={artifactId}
-        revision={revision.number}
-        entry={entry.path}
-        files={revision.manifest.files}
-        blob={loaded.blob}
-      />
-    )
+    return <ArtifactMarkdown fileUrl={files} entry={entry.path} files={revision.manifest.files} blob={loaded.blob} />
   return <ArtifactSource blob={loaded.blob} name={entry.path} />
 }
 
-/** A page in a sandboxed `srcdoc` frame: opaque origin, no forms, popups or top navigation (artifacts.md §5.5). */
+/** A page as `srcdoc`, where no content domain is configured. */
 function ArtifactPage({ blob, title }: { blob: Blob; title: string }) {
   const html = useBlobText(blob)
-  if (html === null) return null
-  return (
-    <iframe
-      title={title}
-      sandbox={ARTIFACT_FRAME_SANDBOX}
-      srcDoc={html}
-      referrerPolicy="no-referrer"
-      className="block min-h-0 w-full flex-1 border-0 bg-white"
-    />
-  )
+  return html === null ? null : <SrcdocPage html={html} title={title} />
 }
 
 function ArtifactImage({ blob, title }: { blob: Blob; title: string }) {
@@ -246,14 +261,12 @@ function ArtifactSource({ blob, name }: { blob: Blob; name: string }) {
 
 /** Markdown with its local image references swapped for URLs of the revision's own files (artifacts.md §9). */
 export function ArtifactMarkdown({
-  artifactId,
-  revision,
+  fileUrl,
   entry,
   files,
   blob
 }: {
-  artifactId: string
-  revision: number
+  fileUrl: ArtifactFileUrl
   entry: string
   files: ArtifactManifestFile[]
   blob: Blob
@@ -275,7 +288,7 @@ export function ArtifactMarkdown({
     let live = true
     setUrls(new Map())
     for (const path of wanted)
-      void fetchArtifactFile(artifactId, revision, images.get(path)!)
+      void fetchArtifactFile(fileUrl, images.get(path)!)
         .then(displayUrl)
         .then(
           (url) => {
@@ -289,7 +302,7 @@ export function ArtifactMarkdown({
       live = false
       made.forEach(revoke)
     }
-  }, [artifactId, revision, wanted, images])
+  }, [fileUrl, wanted, images])
 
   const resolveImage = (src: string): string | undefined => {
     const path = resolveArtifactRef(entry, src)

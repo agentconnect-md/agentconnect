@@ -710,6 +710,32 @@ relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches']
   abort("relay route must forward #{path}") unless relay_paths.include?(path)
 end
 
+# Artifact content domain: off by default; once set, a route of its own for the wildcard host with web as its only backend.
+abort('artifacts must be off by default') if public_cp_env.key?('ARTIFACTS_CONTENT_DOMAIN') ||
+                                             public_documents.any? { |doc| doc.dig('metadata', 'name') == 'example-agentconnect-artifacts' }
+artifacts_rendered, artifacts_error, artifacts_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'artifacts.contentDomain=example-usercontent.net'
+)
+abort("helm template (artifacts) failed:\n#{artifacts_error}") unless artifacts_status.success?
+artifacts_documents = YAML.load_stream(artifacts_rendered).compact
+artifacts_cp = artifacts_documents.find { |doc| doc['kind'] == 'Deployment' && doc.dig('metadata', 'name') == 'example-agentconnect-control-plane' }
+artifacts_cp_env = artifacts_cp.dig('spec', 'template', 'spec', 'containers').first.fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+abort('CP must get the content domain') unless artifacts_cp_env['ARTIFACTS_CONTENT_DOMAIN'] == 'example-usercontent.net'
+artifacts_route = artifacts_documents.find { |doc| doc['kind'] == 'HTTPRoute' && doc.dig('metadata', 'name') == 'example-agentconnect-artifacts' } ||
+                  abort('missing artifacts HTTPRoute')
+abort('artifacts route must carry only the wildcard content host') unless artifacts_route.dig('spec', 'hostnames') == ['*.example-usercontent.net']
+artifacts_backends = artifacts_route.dig('spec', 'rules').flat_map { |rule| rule['backendRefs'] }.map { |ref| ref['name'] }.uniq
+abort("artifacts route must send everything to web alone, got #{artifacts_backends}") unless artifacts_backends == ['example-agentconnect-web']
+artifacts_documents.select { |doc| doc['kind'] == 'HTTPRoute' && doc != artifacts_route }.each do |route|
+  abort("#{route.dig('metadata', 'name')} must never carry the content domain") if route.dig('spec', 'hostnames').to_a.any? { |host| host.include?('example-usercontent.net') }
+end
+_, artifacts_refused, artifacts_refused_status = Open3.capture3(
+  'helm', 'template', 'example-agentconnect', chart, '--namespace', 'agentconnect-example',
+  '--set', 'publicUrl=https://app.example.test', '--set', 'artifacts.contentDomain=*.example-usercontent.net'
+)
+abort('a wildcard or schemed content domain must fail the render') if artifacts_refused_status.success? || !artifacts_refused.include?('artifacts.contentDomain')
+
 # Relay STUN for viewer hole punching: off by default, and once on each pod gets a UDP Service that keeps the client's address.
 abort('relay STUN must be off by default') if public_relay_env.key?('RELAY_STUN_PORT') ||
                                               public_documents.any? { |doc| doc.dig('metadata', 'name').to_s.end_with?('-stun') }

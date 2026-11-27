@@ -124,6 +124,12 @@ later adapter feature, not a prerequisite for the workspace-file path.
 
 ### Installation and discovery
 
+> **Amended by [Skill over MCP](skill-over-mcp.md) §6.1.** `agentconnect-images` is no
+> longer installed on disk: the daemon serves it from memory through the `readSkill`
+> MCP tool, the ledger removes copies an older daemon installed, and the name stays
+> reserved against managed and Dream sources. The rest of this subsection records the
+> original installation design.
+
 Package the versioned skill source with the daemon and reconcile it through the
 existing skill installation ledger and sandbox publication path. Add an explicit
 builtin source kind if needed; do not label it as an accepted Dream skill or write
