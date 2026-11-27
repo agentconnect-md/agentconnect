@@ -4,7 +4,7 @@
 import { MessageChannel as NodeChannel } from 'node:worker_threads'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { SWRConfig } from 'swr'
+import { SWRConfig, useSWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ArtifactDto } from '@/lib/artifact'
 
@@ -36,6 +36,7 @@ vi.mock('@/components/console/search-open', () => ({ useSearchOpen: () => () => 
 import { ApiError } from '@/lib/api'
 import ArtifactView from './ArtifactView'
 import { requestedRevision } from '@/lib/artifact'
+import { consoleKeys } from '@/lib/swr-keys'
 import { PATH_SYNC_MS } from '@/lib/artifact-content/viewer-path'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -74,12 +75,20 @@ async function settle() {
     })
 }
 
+// The page's own SWR cache, which a refresh revalidates as a focus or reconnect would.
+let swr: ReturnType<typeof useSWRConfig> | undefined
+function GrabSwr() {
+  swr = useSWRConfig()
+  return null
+}
+
 async function renderView(search: string) {
   nav.search = search
   await act(async () => {
     root.render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
         <ArtifactView />
+        <GrabSwr />
       </SWRConfig>
     )
   })
@@ -226,5 +235,38 @@ describe('ArtifactView', () => {
     api.getArtifact.mockRejectedValue(new ApiError('not enabled', 409, 'ARTIFACTS_NOT_ENABLED'))
     await renderView('')
     expect(container.querySelector('[data-testid="artifacts-not-enabled"]')).not.toBeNull()
+  })
+
+  describe('following a newer revision read on a refresh (artifacts.md §11.4)', () => {
+    const revised = { ...ARTIFACT, latestRevision: 4, revisions: [summary(4, 'Atlas'), ...ARTIFACT.revisions] }
+    async function refresh() {
+      api.getArtifact.mockResolvedValue(revised)
+      await act(async () => {
+        await swr!.mutate(consoleKeys.artifact('org-1', ID))
+      })
+      await settle()
+    }
+
+    it('moves a page pinned to the latest revision to the newer one', async () => {
+      await renderView('revision=3')
+      await refresh()
+      expect(nav.replace).toHaveBeenCalledWith(`/acme/artifacts/${ID}?revision=4`, { scroll: false })
+    })
+
+    it('shows the newer one with a notice when the URL names no revision', async () => {
+      await renderView('')
+      await refresh()
+      expect(api.getArtifactRevision).toHaveBeenLastCalledWith(ID, 4)
+      expect(container.textContent).toContain('Updated to r4.')
+      expect(nav.replace).not.toHaveBeenCalled()
+    })
+
+    it('keeps a chosen older revision and offers the newer one', async () => {
+      await renderView('revision=2')
+      await refresh()
+      expect(nav.replace).not.toHaveBeenCalled()
+      expect(container.textContent).toContain('A newer revision (r4) is available.')
+      expect(container.textContent).not.toContain('Updated to')
+    })
   })
 })

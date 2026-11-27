@@ -12,6 +12,7 @@ import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { ArtifactViewer } from './ArtifactViewer'
 import { ArtifactBodyNotice } from './ArtifactBody'
+import { useFollowLatest } from './useFollowLatest'
 
 export function SessionArtifactViewer({
   viewer,
@@ -31,6 +32,12 @@ export function SessionArtifactViewer({
   })
   const artifact = read.data
   const variant = viewer.placement
+  // While the latest is shown a newer revision takes its place (§11.4); a choice of revision ends the notice.
+  const follow = useFollowLatest(artifact, viewer.revision, onRevision)
+  const choose = (revision: number) => {
+    follow.dismiss()
+    onRevision(revision)
+  }
 
   if (!artifact) {
     // A deleted artifact and one outside the viewer's audience answer the same 404, so the copy names neither.
@@ -83,12 +90,14 @@ export function SessionArtifactViewer({
       artifact={artifact}
       revision={shown}
       {...(missing !== undefined ? { missing } : {})}
-      onRevision={onRevision}
+      onRevision={choose}
       path={viewer.path}
       onPath={onPath}
       variant={variant}
       onClose={onClose}
       fullScreenHref={orgPath(artifactStandalonePath({ artifactId: artifact.id, revision: shown, path: viewer.path }))}
+      updatedTo={follow.updatedTo}
+      onDismissUpdated={follow.dismiss}
     />
   )
 }

@@ -8575,6 +8575,8 @@
       "revisionGone": "Revision {missing} is no longer kept, so the latest revision (r{number}) is shown.",
       "newerAvailable": "A newer revision (r{number}) is available.",
       "viewLatest": "View latest",
+      "updatedTo": "Updated to r{number}.",
+      "dismiss": "Dismiss",
       "backToList": "Back to artifacts",
       "backToConversation": "Back to the conversation",
       "fullScreen": "Full screen",

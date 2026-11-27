@@ -603,6 +603,12 @@ keeps its composer:
   updated, with a link to the Artifacts page.
 - Opening by itself (D23) follows the same table. It switches the dock away from its current
   tab, which is accepted. It does not happen on a phone.
+- A card opens the viewer by itself only when it arrives after the transcript's first page,
+  below the turns the page already showed; a page of history loaded on demand never does.
+- It does not reopen a revision the person closed during the visit, take the left pane from an
+  open workspace file, or open a collapsed dock over a composer being typed in, where it only
+  switches the dock's tab. A card for the artifact the viewer already shows is left to §11.4.
+- A hidden tab keeps the newest card that arrived and opens it when the person comes back.
 
 ### 11.3 The viewer
 
@@ -618,6 +624,7 @@ keeps its composer:
 - While the latest revision is shown and the agent publishes another, the viewer moves to
   it with a notice.
 - A deliberately chosen older revision stays put and only notes that a newer one exists.
+- The standalone page follows the same way when a refresh reads a newer revision.
 
 ### 11.5 The Artifacts page
 

@@ -214,8 +214,10 @@ import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/component
 import {
   ArtifactOpenerProvider,
   ArtifactPlacementProvider,
-  type ArtifactOpener
+  type ArtifactOpener,
+  type ArtifactOpenOptions
 } from '@/components/console/artifact/artifact-opener'
+import { ArtifactArrivals, useArtifactAutoOpen } from '@/components/console/artifact/artifact-auto-open'
 import { SessionArtifactViewer } from '@/components/console/artifact/SessionArtifactViewer'
 import { ArtifactsPanel, artifactsTabStatus } from '@/components/console/dock/ArtifactsPanel'
 import { artifactsContentDomain } from '@/lib/artifact'
@@ -1850,7 +1852,7 @@ export default function SessionDetailView() {
   }, [setThreadParam])
   // Opens the artifact viewer opposite the card (artifacts.md §11.2), bringing the dock on screen as a task's thread does.
   const openArtifact = useCallback(
-    (target: ArtifactViewerTarget, placement: ArtifactPlacement) => {
+    (target: ArtifactViewerTarget, placement: ArtifactPlacement, options?: ArtifactOpenOptions) => {
       setArtifactViewer({
         artifactId: target.artifactId,
         ...(target.revision !== undefined ? { revision: target.revision } : {}),
@@ -1859,14 +1861,26 @@ export default function SessionDetailView() {
       })
       if (placement !== 'dock') return
       setDockTab('artifacts')
-      setDockReveal((n) => n + 1)
+      if (options?.reveal !== false) setDockReveal((n) => n + 1)
     },
     [setArtifactViewer]
   )
+  // An agent's publication opens the viewer by itself on a desktop (artifacts.md §11.2, D23).
+  const artifactAutoOpen = useArtifactAutoOpen({
+    scope: id,
+    orgId: activeOrg?.id,
+    viewer: artifactViewer,
+    fileOpen: viewerPath !== null,
+    open: openArtifact
+  })
+  const closeArtifact = (shown: ArtifactViewerState) => {
+    artifactAutoOpen.closed(shown)
+    setArtifactViewer(null)
+  }
   // A phone has no dock: no opener, so its cards link out, and a link naming a viewer opens the standalone page.
   const artifactOpener = useMemo<ArtifactOpener | null>(
-    () => (artifactsEnabled && !isMobile ? { open: openArtifact } : null),
-    [artifactsEnabled, isMobile, openArtifact]
+    () => (artifactsEnabled && !isMobile ? { open: openArtifact, arrived: artifactAutoOpen.arrived } : null),
+    [artifactsEnabled, isMobile, openArtifact, artifactAutoOpen.arrived]
   )
   const artifactStandaloneHref = artifactViewer ? orgPath(artifactStandalonePath(artifactViewer)) : null
   useEffect(() => {
@@ -2235,6 +2249,8 @@ export default function SessionDetailView() {
   const viewerTransfer =
     viewerAgent !== undefined && transferCapable(agentCapabilitySource(viewerAgent, daemons, memberSets)?.caps.features)
   const visibleMsgLoading = transcriptMatchesSession ? msgLoading : wantTranscript
+  // The first page is in, so a card that shows up after it arrived live rather than with the history.
+  const transcriptRead = !wantTranscript || (visibleMsgs !== null && !visibleMsgLoading)
   const visibleMsgPaging = wantTranscript && transcriptMatchesSession && msgPaging
   const visibleMsgErr = wantTranscript && transcriptMatchesSession ? msgErr : null
   const visibleTailReady = wantTranscript && transcriptMatchesSession && tailReady
@@ -3867,6 +3883,8 @@ export default function SessionDetailView() {
         {dropEnabled && fileDrop.over ? (
           <FileDropOverlay top={dropHeader ? dropHeader.offsetTop + dropHeader.offsetHeight : 0} />
         ) : null}
+        {/* Cards that arrive in the main conversation after its first page open the viewer in the dock. */}
+        <ArtifactArrivals turns={turns} ready={transcriptRead} scope={transcriptSid ?? session.id} />
         {/* Only a transcript on screen is read: the file viewer hides it, so nothing is recorded meanwhile. */}
         {!paneTaken ? <SeenRecorder newestMs={newestTurnMs} markSeen={seen.markSeen} /> : null}
         {!paneTaken ? <TranscriptMap turns={mapTurns} onJump={() => releaseFollow()} /> : null}
@@ -4254,7 +4272,7 @@ export default function SessionDetailView() {
               <SessionArtifactViewer
                 key={artifactPaneViewer.artifactId}
                 viewer={artifactPaneViewer}
-                onClose={() => setArtifactViewer(null)}
+                onClose={() => closeArtifact(artifactPaneViewer)}
                 onRevision={(revision) => setArtifactViewer({ ...artifactPaneViewer, revision, path: null })}
                 onPath={syncArtifactPath}
               />
@@ -5085,7 +5103,7 @@ export default function SessionDetailView() {
           {artifactsEnabled ? (
             <ArtifactsPanel
               viewer={dockArtifactViewer}
-              onClose={() => setArtifactViewer(null)}
+              onClose={() => dockArtifactViewer && closeArtifact(dockArtifactViewer)}
               onRevision={(revision) =>
                 dockArtifactViewer && setArtifactViewer({ ...dockArtifactViewer, revision, path: null })
               }

@@ -28,6 +28,7 @@ import {
   type ThreadRecordRef
 } from '@/components/console/task-thread'
 import { buildTurns, turnTimeMs, type Turn } from '@/components/console/session-turns'
+import { ArtifactArrivals } from '@/components/console/artifact/artifact-auto-open'
 import { turnTimeLabel } from '@/lib/transcript-time'
 import { BotTurnView, UserTurnView } from '@/components/console/TurnViews'
 import type { TaskLink } from '@/components/console/task-link'
@@ -468,6 +469,9 @@ export function ThreadPanel({
       {...(record ? { 'data-thread-panel': record.rootId } : {})}
       className="flex min-h-0 flex-1 flex-col"
     >
+      {/* Cards that arrive in this thread after it was first read open the viewer opposite it, in the left pane. */}
+      <ArtifactArrivals turns={turns} ready={page !== undefined} scope={record?.rootId ?? id} />
+      <ArtifactArrivals turns={fromMain} ready scope={record?.rootId ?? id} />
       {shareSessionId ? (
         <SessionShareDialogFor
           key={shareSessionId}
