@@ -69,6 +69,7 @@ import { openRuntimeSession } from './turn/runtime-session.js'
 import { toolDefinitionsBlock, toolDigests, type SessionToolContext } from './turn/tool-context.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
+import { ADMIN_MCP_SERVER_NAME } from '../mcp/remote-webchat-grant.js'
 import {
   NO_FOLLOW_UPS,
   runningSubsessionsBlock,
@@ -358,6 +359,8 @@ export class SessionManager {
         sessionKey: string
         /** A task the coordinator opened on a platform thread (auto-session-mode.md §6.2). */
         threadedTask?: boolean
+        /** Whether this turn attaches the `agentconnect-admin` MCP server (skill-over-mcp.md §4.2). */
+        hasAdminMcp?: boolean
       }) => SessionToolContext
       /**
        * Download an inbound attachment's bytes (§9.2) — resolved by the daemon
@@ -773,7 +776,10 @@ export class SessionManager {
       ...(transportScope !== undefined ? { transportScope } : {}),
       isDm: msg.isDm,
       sessionKey: key,
-      ...(threadedTask ? { threadedTask } : {})
+      ...(threadedTask ? { threadedTask } : {}),
+      ...(options.additionalMcpServers?.some((server) => server.name === ADMIN_MCP_SERVER_NAME)
+        ? { hasAdminMcp: true }
+        : {})
     })
 
     const savedInitiator = sessionInitiator(rec)
@@ -1076,9 +1082,10 @@ export class SessionManager {
         // A delivery that assembled a prompt (a Linear delegation, a code-host event) carries it on
         // `turnBody.prompt`; the row's `text` is what the console shows. Same contract, other direction.
         const promptText = msg.turnBody?.prompt ?? msg.text
+        const mcpSkills = toolContext?.builtinSkills ?? []
         const invocation =
-          msg.source === 'user' && this.deps.advertisedCommandsFor
-            ? matchSkillInvocation(msg.text, this.deps.advertisedCommandsFor(agentId))
+          msg.source === 'user' && (this.deps.advertisedCommandsFor || mcpSkills.length > 0)
+            ? matchSkillInvocation(msg.text, this.deps.advertisedCommandsFor?.(agentId) ?? [], mcpSkills)
             : null
         const triggerText = invocation ? renderSkillInvocation(invocation) : promptText
         // The trigger's OWN attachments are named here, not only on its transcript row. A

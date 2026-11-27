@@ -27,6 +27,7 @@ import { GETTING_TO_KNOW_TOOL } from './ops/getting-to-know.js'
 import { SEND_MESSAGE_ACTIONS } from './ops/send-message-actions.js'
 import type { TaskReach } from '../session/subsession-coordinate.js'
 import { GET_TOOL_GUIDE_TOOL } from './ops/tool-guide.js'
+import { buildReadSkillTool } from './ops/skill-guide.js'
 import { MessageAttachment } from './ops/message-attachments.js'
 import { z } from 'zod'
 
@@ -1011,6 +1012,7 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       GET_TOOL_GUIDE_TOOL,
+      buildReadSkillTool(),
       buildShareFileTool(),
       // Built once per registered platform AS the session platform so every port gate opens:
       // the auto-allow set is about names, and a name some platform can inject must be listed

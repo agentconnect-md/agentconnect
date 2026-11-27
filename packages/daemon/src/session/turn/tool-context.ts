@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto'
 import type { McpServer } from '@agentclientprotocol/sdk/unstable'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
+import type { BuiltinMcpSkillName } from '../../skills/builtin-skills.js'
 
 export interface SessionToolContext {
   fingerprint: string
   instructions?: string
   // The daemon tools this context offers, as the bridge lists them.
   tools?: readonly ToolDescriptor[]
+  // Built-in system skills `readSkill` offers, which a typed `/skill` may also name.
+  builtinSkills?: readonly BuiltinMcpSkillName[]
+  // Runs before the runtime retries without the additional MCP servers, so `readSkill` stops advertising what needed them.
+  onAdditionalMcpFallback?: () => void
   // Credentials and executable resolution happen only when attaching to a runtime.
   mcpServers: () => McpServer[]
 }

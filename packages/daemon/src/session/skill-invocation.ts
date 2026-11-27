@@ -11,19 +11,26 @@
 // not match the agent's advertised table verbatim passes through untouched, so `/Users/pc/x is
 // broken` never changes.
 import { isSkillCommand, type RuntimeCommand } from '@agentconnect.md/protocol'
+import type { BuiltinMcpSkillName } from '../skills/builtin-skills.js'
 
 export interface SkillInvocation {
   /** The ADVERTISED name — `code-review` on claude, `$code-review` on codex. */
   name: string
   args: string
+  /** `mcp`: a built-in system skill the daemon's `readSkill` serves (skill-over-mcp.md §5.1); absent means runtime-advertised. */
+  source?: 'mcp'
 }
 
 /** The typed prefixes; `!` is the Slack alias (Slack swallows `/`), accepted everywhere like
  *  parseCommand's. Control words never reach this seam — parseCommand intercepts them upstream. */
 const PREFIXES = ['/', '!']
 
-/** Match a human turn against the agent's advertised commands. `null` ⇒ deliver unchanged. */
-export function matchSkillInvocation(text: string, commands: readonly RuntimeCommand[]): SkillInvocation | null {
+/** Match a human turn against the agent's advertised commands, then the session's MCP system skills. `null` ⇒ deliver unchanged. */
+export function matchSkillInvocation(
+  text: string,
+  commands: readonly RuntimeCommand[],
+  mcpSkills: readonly BuiltinMcpSkillName[] = []
+): SkillInvocation | null {
   const trimmed = text.trimStart()
   if (!PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return null
   const body = trimmed.slice(1)
@@ -38,13 +45,19 @@ export function matchSkillInvocation(text: string, commands: readonly RuntimeCom
     const name = entry.name.toLowerCase()
     return name === token || name === `$${token}`
   })
-  if (!command) return null
-  return { name: command.name, args: space === -1 ? '' : body.slice(space + 1).trim() }
+  const args = space === -1 ? '' : body.slice(space + 1).trim()
+  if (command) return { name: command.name, args }
+  // A runtime-advertised skill of the same name wins above; a system skill is not on disk, so the runtime cannot advertise it.
+  const bare = token.startsWith('$') ? token.slice(1) : token
+  const mcpSkill = mcpSkills.find((name) => name === bare)
+  return mcpSkill ? { name: mcpSkill, args, source: 'mcp' } : null
 }
 
-/** The instruction the model sees in place of the raw token. Template validated by probe on both
- *  runtimes (see module header); keep the literal `/name` — codex's inline expansion needs the
- *  advertised token present, and Claude's dispatch is anchored by it. */
+/** The instruction the model sees in place of the raw token; a runtime command keeps its literal `/name` (see module header). */
 export function renderSkillInvocation(invocation: SkillInvocation): string {
+  if (invocation.source === 'mcp') {
+    const suffix = invocation.args ? `: ${invocation.args}` : '.'
+    return `Use the "${invocation.name}" system skill by calling the \`readSkill\` tool with \`{"name":"${invocation.name}"}\`, then follow its instructions to handle this request${suffix}`
+  }
   return `Run the command /${invocation.name}${invocation.args ? ` ${invocation.args}` : ''}`
 }

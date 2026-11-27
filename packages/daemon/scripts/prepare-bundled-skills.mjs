@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,10 +43,18 @@ for (const [file, specifier] of Object.entries(wasmAssets)) {
   copyFileSync(require.resolve(specifier), fileURLToPath(new URL(`../dist/wasm/${file}`, import.meta.url)))
 }
 
-// Daemon-owned builtin skills ship as plain files beside the bundle (src/skills/builtin-skills.ts reads them from dist/builtin-skills).
-const builtinSkills = ['agentconnect-images']
+// Daemon-owned system skills (SKILL.md + references/**/*.md) ship beside the bundle; src/skills/builtin-skills.ts reads dist/builtin-skills.
+const builtinSkills = [
+  'agentconnect-images',
+  'agentconnect-platform',
+  'agentconnect-create-agent',
+  'agentconnect-create-team'
+]
+const distBuiltinRoot = fileURLToPath(new URL('../dist/builtin-skills', import.meta.url))
+rmSync(distBuiltinRoot, { recursive: true, force: true })
 for (const name of builtinSkills) {
-  const dest = fileURLToPath(new URL(`../dist/builtin-skills/${name}/SKILL.md`, import.meta.url))
-  mkdirSync(dirname(dest), { recursive: true, mode: 0o755 })
-  copyFileSync(fileURLToPath(new URL(`../builtin-skills/${name}/SKILL.md`, import.meta.url)), dest)
+  cpSync(fileURLToPath(new URL(`../builtin-skills/${name}`, import.meta.url)), join(distBuiltinRoot, name), {
+    recursive: true,
+    filter: (source) => !source.endsWith('.DS_Store')
+  })
 }

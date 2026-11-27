@@ -141,6 +141,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       return await primary()
     } catch (error) {
       if (signal?.aborted || error instanceof ModelSelectionError || !fallback) throw error
+      input.toolContext?.onAdditionalMcpFallback?.()
       const result = await fallback()
       additionalMcpAttached = false
       return result
