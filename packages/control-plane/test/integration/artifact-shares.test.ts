@@ -6,9 +6,12 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { agentAndSession, harness, makeUser, manifestOf, publish } from '../fixtures/artifacts.js'
+import type { ArtifactInitiator } from '@agentconnect.md/protocol'
+import { agentAndSession, harness, makeUser, manifestOf, newSession, publish } from '../fixtures/artifacts.js'
+import { ArtifactRefusal } from '../../src/artifacts/service.js'
 import { attachmentDisposition } from '../../src/file-transfer/transfer.js'
 import { PgArtifactRepo, PgUserRepo } from '../../src/persistence/index.js'
+import type { CronRecord } from '../../src/persistence/ports.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -266,6 +269,34 @@ describe('artifact share management', () => {
     expect((await app.inject({ method: 'GET', url: shares(orgArtifact.artifactId) })).json().shares).toEqual([])
   })
 
+  it('lets the member who created a share revoke it, even once they can no longer view the artifact', async () => {
+    const { h, dana, erin, orgArtifact } = await fixtures()
+    const o = orgArtifact.artifactId
+    const create = async (userId: string) =>
+      (
+        await appAs(userId, h.service).inject({
+          method: 'POST',
+          url: shares(o),
+          payload: { revision: 1, audience: 'org' }
+        })
+      ).json().id as string
+    const revoke = async (userId: string, id: string) =>
+      (await appAs(userId, h.service).inject({ method: 'DELETE', url: `${shares(o)}/${id}` })).statusCode
+
+    const erins = await create(erin.userId)
+    const danas = await create(dana.userId)
+    expect(await revoke(erin.userId, danas)).toBe(403)
+    expect(await revoke(erin.userId, erins)).toBe(204)
+    // Narrowed to Dana alone: Erin cannot view it any more, but her own share is still hers to revoke.
+    const later = await create(erin.userId)
+    await new PgArtifactRepo(prisma).setVisibility(DEFAULT_ORG_ID, o, 'private')
+    expect(await revoke(erin.userId, danas)).toBe(404)
+    expect(await revoke(erin.userId, later)).toBe(204)
+    expect(await revoke(erin.userId, randomUUID())).toBe(404)
+    const shareRows = await prisma.artifactShare.findMany({ where: { artifactId: o }, orderBy: { createdAt: 'asc' } })
+    expect(shareRows.map((row) => row.revokedAt !== null)).toEqual([true, false, true])
+  })
+
   it('removes the shares with their artifact', async () => {
     const { h, dana, orgArtifact } = await fixtures()
     const app = appAs(dana.userId, h.service)
@@ -463,5 +494,178 @@ describe('artifact share reads', () => {
       expect(res.statusCode).toBe(409)
       expect(res.json()).toMatchObject({ code: 'ARTIFACTS_NOT_ENABLED' })
     }
+  })
+})
+
+describe('agent share tools', () => {
+  const refusal = async (p: Promise<unknown>) => {
+    const err = await p.catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ArtifactRefusal)
+    return err as ArtifactRefusal
+  }
+  const console_ = (userId: string): ArtifactInitiator => ({ kind: 'console', userId })
+
+  it('shares and unshares with the initiating member’s authority, returning a link that opens', async () => {
+    const { h, dana, erin, orgArtifact, org } = await fixtures()
+    const artifactId = orgArtifact.artifactId
+    const base = { agentId: org.agent.id, sessionId: org.sessionId, artifactId }
+
+    // Dana owns the artifact, so she may share it publicly; the latest ready revision is the default.
+    const shared = await h.service.share(DEFAULT_ORG_ID, {
+      ...base,
+      audience: 'public',
+      initiator: console_(dana.userId)
+    })
+    expect(shared).toMatchObject({
+      artifactId,
+      revision: 1,
+      audience: 'public',
+      linkPath: expect.stringMatching(/^\/share\//)
+    })
+    expect(shared.link).toBe(`https://console.example.test${shared.linkPath}`)
+    expect(shared.displayTail).toBe(`…${shared.linkPath.slice(-6)}`)
+    const row = await prisma.artifactShare.findUniqueOrThrow({ where: { id: shared.shareId } })
+    expect(row.createdByIdentity).toBe(`user:${dana.userId}`)
+    const token = shared.linkPath.slice('/share/'.length)
+    const anyone = oidcApp(h.service)
+    expect((await anyone.inject({ method: 'POST', url: READ, payload: { token } })).statusCode).toBe(200)
+
+    // Erin can view it: an `org` share, never a public one.
+    const erins = await h.service.share(DEFAULT_ORG_ID, { ...base, audience: 'org', initiator: console_(erin.userId) })
+    expect(
+      (
+        await refusal(
+          h.service.share(DEFAULT_ORG_ID, { ...base, audience: 'public', initiator: console_(erin.userId) })
+        )
+      ).reason
+    ).toBe('share-forbidden')
+
+    // The agent lists the active shares, newest first.
+    const listed = (
+      await h.service.list(DEFAULT_ORG_ID, { agentId: org.agent.id, sessionId: org.sessionId })
+    ).artifacts.find((a) => a.artifactId === artifactId)
+    expect(listed?.shares?.map((s) => s.shareId)).toEqual([erins.shareId, shared.shareId])
+    expect(JSON.stringify(listed)).not.toContain(token)
+
+    // Erin revokes her own share but not Dana's; Dana, the owner, revokes hers.
+    const unshare = (shareId: string, initiator: ArtifactInitiator) =>
+      h.service.unshare(DEFAULT_ORG_ID, { ...base, shareId, initiator })
+    expect((await refusal(unshare(shared.shareId, console_(erin.userId)))).reason).toBe('share-forbidden')
+    expect(await unshare(erins.shareId, console_(erin.userId))).toMatchObject({
+      shareId: erins.shareId,
+      audience: 'org'
+    })
+    const revoked = await unshare(shared.shareId, console_(dana.userId))
+    expect(revoked).toMatchObject({
+      shareId: shared.shareId,
+      revision: 1,
+      audience: 'public',
+      revokedAt: expect.any(String)
+    })
+    // Repeating it answers the first revocation.
+    expect((await unshare(shared.shareId, console_(dana.userId))).revokedAt).toBe(revoked.revokedAt)
+    expect((await anyone.inject({ method: 'POST', url: READ, payload: { token } })).statusCode).toBe(410)
+    expect((await refusal(unshare(randomUUID(), console_(dana.userId)))).reason).toBe('share-not-found')
+  })
+
+  it('refuses a turn without a member: a stranger, an unlinked sender, no initiator, or a trigger without a member creator', async () => {
+    const { h, dana, orgArtifact, org } = await fixtures()
+    const base = {
+      agentId: org.agent.id,
+      sessionId: org.sessionId,
+      artifactId: orgArtifact.artifactId,
+      audience: 'org' as const
+    }
+    const { shareId } = await h.service.share(DEFAULT_ORG_ID, { ...base, initiator: console_(dana.userId) })
+    const suspended = await member('collaborator')
+    await prisma.membership.updateMany({ where: { userId: suspended.userId }, data: { suspendedAt: new Date() } })
+    for (const initiator of [
+      console_(randomUUID()),
+      console_(suspended.userId),
+      { kind: 'chat', integrationId: randomUUID(), memberId: 'U-unlinked' } as const,
+      { kind: 'hook', hookId: randomUUID() } as const,
+      undefined
+    ]) {
+      const extra = initiator ? { initiator } : {}
+      expect((await refusal(h.service.share(DEFAULT_ORG_ID, { ...base, ...extra }))).reason).toBe('no-member-authority')
+      const { audience: _audience, ...unshareBase } = base
+      expect((await refusal(h.service.unshare(DEFAULT_ORG_ID, { ...unshareBase, shareId, ...extra }))).reason).toBe(
+        'no-member-authority'
+      )
+    }
+    expect(await prisma.artifactShare.count({ where: { artifactId: orgArtifact.artifactId } })).toBe(1)
+
+    // A cron acts as its creator when that creator is a member, and is refused when it has none.
+    const withCreator = randomUUID()
+    const orphaned = randomUUID()
+    const crons = harness([
+      { id: withCreator, orgId: DEFAULT_ORG_ID, targetChannel: null, createdByUserId: dana.userId },
+      { id: orphaned, orgId: DEFAULT_ORG_ID, targetChannel: null, createdByUserId: null }
+    ] as unknown as CronRecord[])
+    const byCron = await crons.service.share(DEFAULT_ORG_ID, {
+      ...base,
+      audience: 'public',
+      initiator: { kind: 'cron', cronId: withCreator }
+    })
+    expect((await prisma.artifactShare.findUniqueOrThrow({ where: { id: byCron.shareId } })).createdByIdentity).toBe(
+      `user:${dana.userId}`
+    )
+    expect(
+      (await refusal(crons.service.share(DEFAULT_ORG_ID, { ...base, initiator: { kind: 'cron', cronId: orphaned } })))
+        .reason
+    ).toBe('no-member-authority')
+  })
+
+  it('reaches only what the agent produced and the session may see, and only a ready revision', async () => {
+    const { h, dana, erin, privateArtifact, orgArtifact, org } = await fixtures()
+    const as = { initiator: console_(dana.userId), audience: 'org' as const }
+
+    // Another agent's session reaches the org artifact but did not produce it.
+    const other = await agentAndSession()
+    expect(
+      (
+        await refusal(
+          h.service.share(DEFAULT_ORG_ID, {
+            agentId: other.agentId,
+            sessionId: other.sessionId,
+            artifactId: orgArtifact.artifactId,
+            ...as
+          })
+        )
+      ).reason
+    ).toBe('not-producer')
+
+    // Dana's private artifact is absent from Erin's private session of its own agent.
+    const priv = await prisma.artifactRevision.findFirstOrThrow({ where: { artifactId: privateArtifact.artifactId } })
+    const erinPrivate = await newSession(priv.producedByAgentId, {
+      visibility: 'private',
+      ownerIdentity: `user:${erin.userId}`
+    })
+    expect(
+      (
+        await refusal(
+          h.service.share(DEFAULT_ORG_ID, {
+            agentId: priv.producedByAgentId,
+            sessionId: erinPrivate,
+            artifactId: privateArtifact.artifactId,
+            ...as
+          })
+        )
+      ).reason
+    ).toBe('not-found')
+
+    // A pending revision is refused until it completes; one that does not exist is not found.
+    await h.service.begin(DEFAULT_ORG_ID, org.agent, {
+      agentId: org.agent.id,
+      sessionId: org.sessionId,
+      artifactId: orgArtifact.artifactId,
+      manifest: manifestOf(['index.html', '<p>v2</p>']),
+      idempotencyKey: `pending-${randomUUID()}`,
+      network: 'cluster'
+    })
+    const base = { agentId: org.agent.id, sessionId: org.sessionId, artifactId: orgArtifact.artifactId, ...as }
+    expect((await refusal(h.service.share(DEFAULT_ORG_ID, { ...base, revision: 2 }))).reason).toBe('revision-not-ready')
+    expect((await refusal(h.service.share(DEFAULT_ORG_ID, { ...base, revision: 9 }))).reason).toBe('not-found')
+    expect((await h.service.share(DEFAULT_ORG_ID, base)).revision).toBe(1)
   })
 })

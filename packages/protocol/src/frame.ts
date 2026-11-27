@@ -245,7 +245,11 @@ import {
   ArtifactPublishBeginOk,
   ArtifactPublishBeginReq,
   ArtifactPublishCompleteOk,
-  ArtifactPublishCompleteReq
+  ArtifactPublishCompleteReq,
+  ArtifactShareOk,
+  ArtifactShareReq,
+  ArtifactUnshareOk,
+  ArtifactUnshareReq
 } from './frames/artifact.js'
 import { TaskListReq, TaskList } from './frames/task.js'
 import {
@@ -662,6 +666,11 @@ export const FRAME_SCHEMAS = {
   'artifact/fetch/ok': ArtifactFetchOk,
   'artifact/list': ArtifactListReq,
   'artifact/list/ok': ArtifactListOk,
+  // artifacts.md §7.1, §8.3: behind `artifact-shares-v1`, with the turn initiator's authority.
+  'artifact/share': ArtifactShareReq,
+  'artifact/share/ok': ArtifactShareOk,
+  'artifact/unshare': ArtifactUnshareReq,
+  'artifact/unshare/ok': ArtifactUnshareOk,
   'workspace/gitstatus': WorkspaceGitStatusReq,
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitdiff': WorkspaceGitDiffReq,
@@ -1081,6 +1090,10 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('artifact/fetch/ok', FRAME_SCHEMAS['artifact/fetch/ok']),
   frame('artifact/list', FRAME_SCHEMAS['artifact/list']),
   frame('artifact/list/ok', FRAME_SCHEMAS['artifact/list/ok']),
+  frame('artifact/share', FRAME_SCHEMAS['artifact/share']),
+  frame('artifact/share/ok', FRAME_SCHEMAS['artifact/share/ok']),
+  frame('artifact/unshare', FRAME_SCHEMAS['artifact/unshare']),
+  frame('artifact/unshare/ok', FRAME_SCHEMAS['artifact/unshare/ok']),
   frame('workspace/gitstatus', FRAME_SCHEMAS['workspace/gitstatus']),
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitdiff', FRAME_SCHEMAS['workspace/gitdiff']),

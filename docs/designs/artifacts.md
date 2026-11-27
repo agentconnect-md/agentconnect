@@ -405,12 +405,16 @@ that agent is deleted, the audience becomes the organization owners; it never wi
 | Create an `org` share                                                            | Anyone who can view                                                       |
 | Create a `public` share, rename, change the audience between `private` and `org` | The owner; organization owners, only on an artifact they can view         |
 | Revoke a share, delete                                                           | The owner and organization owners, including without viewing the artifact |
+| Revoke a share they created                                                      | The member who created it, including without viewing the artifact         |
 
 An organization owner sees no other member's private artifact, as with private sessions,
 and cannot widen it or share it publicly, since either would let them read it. They keep
 moderation: they see every active public share's metadata (title, owner, share time) in
 the Artifacts page and can revoke a share or delete an artifact without opening it. An
 artifact with no owner is managed by organization owners within the same limit.
+
+Revoking only narrows access, so the member who created a share may always revoke it, even
+after the artifact was narrowed away from them; changing its audience stays with the owner.
 
 When a member leaves the organization, their artifacts pass to the organization owners:
 the owner is cleared, and the private ones become visible to and manageable by organization
@@ -428,10 +432,15 @@ sees: an artifact is a deliverable the organization may still need, not a conver
 | List    | None                                                                              | The artifacts the agent may see, with their latest revision                                                                     |
 | Delete  | Artifact id                                                                       | Deletes the artifact: every revision, its bytes and its shares                                                                  |
 | Share   | Artifact id, revision, audience                                                   | Creates a share and returns its link                                                                                            |
-| Unshare | Share id                                                                          | Revokes one share                                                                                                               |
+| Unshare | Artifact id, share id                                                             | Revokes one share                                                                                                               |
 
 Fetch is what makes "the agent can always revise" hold: workspaces are reclaimed, and the
 stored copy is the reliable source.
+
+Share defaults to the latest ready revision. Its link carries the token and is returned only
+once; List carries each artifact's active shares by id, revision, audience and the token's
+last characters, so the agent can unshare a link someone pastes without ever seeing a token
+again.
 
 ### 7.2 What an agent can reach
 

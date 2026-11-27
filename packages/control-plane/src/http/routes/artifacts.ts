@@ -7,6 +7,7 @@ import { orgOf, ctxOf } from '../rbac.js'
 import {
   ArtifactAction,
   canActOnArtifact,
+  canRevokeArtifactShare,
   canViewArtifact,
   isArtifactOwner,
   type ArtifactViewer
@@ -431,7 +432,7 @@ export function artifactRoutes(deps: HttpDeps) {
           tags: [Tag.Artifacts],
           summary: 'Revoke a share',
           description:
-            'Revokes a share link; the next read of the link answers 410 `ARTIFACT_SHARE_REVOKED`. The artifact’s owner and organization owners may revoke, including an organization owner who cannot view the artifact. Revoking a revoked share succeeds again. 403 `ARTIFACT_SHARE_FORBIDDEN` for anyone else who can view the artifact; 404 when the caller cannot view it or the share does not exist.',
+            'Revokes a share link; the next read of the link answers 410 `ARTIFACT_SHARE_REVOKED`. The artifact’s owner and organization owners may revoke, including an organization owner who cannot view the artifact, and so may the member who created the share. Revoking a revoked share succeeds again. 403 `ARTIFACT_SHARE_FORBIDDEN` for anyone else who can view the artifact; 404 when the caller cannot view it or the share does not exist.',
           operationId: 'revokeArtifactShare',
           params: ArtifactShareParams,
           response: { 204: z.null(), 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
@@ -442,9 +443,15 @@ export function artifactRoutes(deps: HttpDeps) {
         const found = await managed(req, req.params.artifactId)
         if (!found) return reply.code(404).send(notFound)
         const { artifact, viewer, canView } = found
-        if (!canActOnArtifact(ArtifactAction.RevokeShare, artifact, viewer)) return refuse(reply, canView)
-        const share = await deps.artifactShares.revoke(orgOf(req), artifact.id, req.params.shareId)
-        if (!share) return reply.code(404).send(shareNotFound)
+        const share = await deps.artifactShares.get(orgOf(req), artifact.id, req.params.shareId)
+        // Someone who can neither view nor manage the artifact learns nothing about it, not even that a share is missing.
+        if (!share) {
+          const manages = canView || canActOnArtifact(ArtifactAction.RevokeShare, artifact, viewer)
+          return reply.code(404).send(manages ? shareNotFound : notFound)
+        }
+        if (!canRevokeArtifactShare(artifact, share, viewer)) return refuse(reply, canView)
+        const revoked = await deps.artifactShares.revoke(orgOf(req), artifact.id, share.id)
+        if (!revoked) return reply.code(404).send(shareNotFound)
         return reply.code(204).send(null)
       }
     )

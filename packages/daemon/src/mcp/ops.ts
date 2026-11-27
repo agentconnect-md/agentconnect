@@ -195,6 +195,10 @@ import {
   LIST_ARTIFACTS_ARGS,
   publishArtifact,
   PUBLISH_ARTIFACT_ARGS,
+  shareArtifact,
+  SHARE_ARTIFACT_ARGS,
+  unshareArtifact,
+  UNSHARE_ARTIFACT_ARGS,
   type ArtifactToolDeps
 } from './ops/artifacts.js'
 
@@ -376,7 +380,9 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['deleteSchedule', deleteSchedule],
   ['publishArtifact', publishArtifact],
   ['fetchArtifact', fetchArtifact],
-  ['listArtifacts', listArtifacts]
+  ['listArtifacts', listArtifacts],
+  ['shareArtifact', shareArtifact],
+  ['unshareArtifact', unshareArtifact]
 ])
 
 /**
@@ -452,6 +458,8 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['publishArtifact', PUBLISH_ARTIFACT_ARGS],
   ['fetchArtifact', FETCH_ARTIFACT_ARGS],
   ['listArtifacts', LIST_ARTIFACTS_ARGS],
+  ['shareArtifact', SHARE_ARTIFACT_ARGS],
+  ['unshareArtifact', UNSHARE_ARTIFACT_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

@@ -12,12 +12,19 @@ import type {
   ArtifactPublishCompleteReq,
   ArtifactPublished,
   ArtifactRefusalReason,
+  ArtifactShareOk,
+  ArtifactShareReq,
+  ArtifactUnshareOk,
+  ArtifactUnshareReq,
   ErrorCode
 } from '@agentconnect.md/protocol'
-import { ARTIFACT_LIST_PAGE_MAX } from '@agentconnect.md/protocol'
+import { ARTIFACT_LIST_PAGE_MAX, ARTIFACT_LIST_SHARES_MAX } from '@agentconnect.md/protocol'
 import {
   agentCanReachArtifact,
+  ArtifactAction,
   artifactAudienceFromSession,
+  canActOnArtifact,
+  canRevokeArtifactShare,
   type ArtifactAudience,
   type ArtifactInitiator,
   type ArtifactReachSession,
@@ -33,6 +40,7 @@ import {
   type TransferUrl
 } from '../file-transfer/transfer.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
+import type { ArtifactShareService } from './shares.js'
 import {
   ArtifactIdempotencyConflictError,
   decodeArtifactCursor,
@@ -50,7 +58,8 @@ import type {
   OrgRepo,
   SessionMetaRecord,
   SessionRepo,
-  UserRepo
+  UserRepo,
+  ViewCtx
 } from '../persistence/ports.js'
 
 /** HEADs one complete runs at once. */
@@ -72,6 +81,14 @@ export class ArtifactRefusal extends Error {
 
 const notFound = () =>
   new ArtifactRefusal('not-found', 'SCOPE_DENIED', 'no such artifact or revision is reachable from this session')
+const shareNotFound = () => new ArtifactRefusal('share-not-found', 'SCOPE_DENIED', 'no such share on this artifact')
+
+/** A member's identities and provider decisions for one artifact, as the console resolves them for that member. */
+export type ArtifactMemberAccess = (
+  orgId: string,
+  principal: ViewCtx,
+  artifact: ArtifactAudience
+) => Promise<Pick<ArtifactViewer, 'identitySet' | 'externalAccess' | 'editableAgentIds'>>
 
 export interface ArtifactServiceDeps {
   transfer?: FileTransfer
@@ -84,6 +101,10 @@ export interface ArtifactServiceDeps {
   orgs: Pick<OrgRepo, 'slugById'>
   /** Resolves a chat member to the console member who linked it; absent leaves every chat initiator a non-member. */
   readAccess?: ReadAccessResolver
+  /** Share links; absent refuses `artifact/share|unshare` as not enabled and lists no shares. */
+  shares?: ArtifactShareService
+  /** Absent gives a member only their `user:` identity, no `external` access, and edit rights read here. */
+  memberAccess?: ArtifactMemberAccess
   /** The console's origin, for absolute links. */
   webAppUrl?: string
   log?: { warn(obj: unknown, msg: string): void }
@@ -98,6 +119,10 @@ export interface ArtifactService {
   fetch(orgId: string, req: ArtifactFetchReq): Promise<ArtifactFetchOk>
   /** `artifact/list`: a page of what the session reaches. */
   list(orgId: string, req: ArtifactListReq): Promise<ArtifactListOk>
+  /** `artifact/share`: a share link to a ready revision, with the turn member's §6.3 authority (§7.3). */
+  share(orgId: string, req: ArtifactShareReq): Promise<ArtifactShareOk>
+  /** `artifact/unshare`: revoke one share, with the turn member's §6.3 authority (§7.3). */
+  unshare(orgId: string, req: ArtifactUnshareReq): Promise<ArtifactUnshareOk>
   /** A browser GET for one file of a ready revision, downloaded as an attachment; undefined without a bucket. */
   fileDownload(revision: ArtifactRevisionRecord, path: string): Promise<TransferUrl | undefined>
 }
@@ -275,6 +300,54 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         return { initiator: { kind: 'trigger', ...trigger }, initiatedBy: `hook:${initiator.hookId}` }
       }
     }
+  }
+
+  const requireShares = (): ArtifactShareService => {
+    if (!deps.shares)
+      throw new ArtifactRefusal('not-enabled', 'SCOPE_DENIED', 'this deployment does not offer artifact share links')
+    return deps.shares
+  }
+
+  /** §7.2 for a change: an artifact the session reaches and whose revision 1 this agent produced. */
+  const ownArtifact = async (
+    orgId: string,
+    agentId: string,
+    artifactId: string,
+    session: SessionMetaRecord
+  ): Promise<ArtifactRecord> => {
+    const artifact = await artifacts.get(orgId, artifactId)
+    if (!artifact || artifact.latestRevision === 0 || !(await reaches(artifact, session))) throw notFound()
+    const first = await artifacts.getRevision(orgId, artifact.id, 1)
+    if (first?.producedByAgentId !== agentId)
+      throw new ArtifactRefusal('not-producer', 'SCOPE_DENIED', 'an agent shares only the artifacts it produced')
+    return artifact
+  }
+
+  /** §7.3: the initiator, or a trigger's creator, as a viewer of `artifact` — only while they are an organization member. */
+  const memberAuthority = async (
+    orgId: string,
+    agentId: string,
+    initiator: WireInitiator | undefined,
+    artifact: ArtifactRecord
+  ): Promise<ArtifactViewer> => {
+    const { initiator: resolved } = await initiatorOf(orgId, agentId, initiator)
+    const userId =
+      resolved.kind === 'member' ? resolved.userId : resolved.kind === 'trigger' ? resolved.createdByUserId : null
+    const member = userId ? await deps.users.activeMember(orgId, userId) : null
+    if (!userId || !member) {
+      throw new ArtifactRefusal(
+        'no-member-authority',
+        'SCOPE_DENIED',
+        'only a turn started by an organization member, or a trigger a member set up, may share or unshare'
+      )
+    }
+    const principal = { userId, role: member.role }
+    if (deps.memberAccess) return { orgId, principal, ...(await deps.memberAccess(orgId, principal, artifact)) }
+    const editors = artifact.editorsAgentId
+      ? await deps.agents.get(OrgId(orgId), AgentId(artifact.editorsAgentId))
+      : null
+    const editableAgentIds = new Set(editors && canEdit(editors, principal) ? [editors.id as string] : [])
+    return { orgId, principal, identitySet: new Set([`user:${userId}`]), editableAgentIds }
   }
 
   const published = async (artifact: ArtifactRecord, revision: number): Promise<ArtifactPublished> => {
@@ -456,6 +529,15 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         const first = row.latestRevision === 1 ? latest : await artifacts.getRevision(orgId, row.id, 1)
         if (!latest) return null
         const entry = latest.manifest.files.find((f) => f.path === latest.manifest.entry)
+        const shares = deps.shares
+          ? (await deps.shares.listActive(orgId, row.id)).slice(0, ARTIFACT_LIST_SHARES_MAX).map((share) => ({
+              shareId: share.id,
+              revision: share.revisionNumber,
+              audience: share.audience,
+              displayTail: share.displayTail,
+              createdAt: share.createdAt.toISOString()
+            }))
+          : undefined
         return {
           artifactId: row.id,
           title: row.title,
@@ -470,13 +552,77 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
             totalBytes: latest.totalBytes,
             producedByAgentName: latest.producedByAgentName,
             createdAt: latest.createdAt.toISOString()
-          }
+          },
+          ...(shares ? { shares } : {})
         }
       })
       const last = page.at(-1)
       return {
         artifacts: entries.filter((e): e is ArtifactListEntry => e !== null),
         ...(rows.length > ARTIFACT_LIST_PAGE_MAX && last ? { nextCursor: encodeArtifactCursor(last) } : {})
+      }
+    },
+
+    async share(orgId, req) {
+      const shares = requireShares()
+      const session = await agentSession(orgId, req.agentId, req.sessionId)
+      const artifact = await ownArtifact(orgId, req.agentId, req.artifactId, session)
+      const viewer = await memberAuthority(orgId, req.agentId, req.initiator, artifact)
+      const action = req.audience === 'public' ? ArtifactAction.SharePublic : ArtifactAction.ShareOrg
+      if (!canActOnArtifact(action, artifact, viewer)) {
+        throw new ArtifactRefusal(
+          'share-forbidden',
+          'SCOPE_DENIED',
+          req.audience === 'public'
+            ? 'only the artifact’s owner, or an organization owner who can view it, may share it publicly'
+            : 'the person who started this turn cannot view this artifact'
+        )
+      }
+      const revision = await artifacts.getRevision(orgId, artifact.id, req.revision ?? artifact.latestRevision)
+      if (!revision) throw notFound()
+      if (revision.state !== 'ready')
+        throw new ArtifactRefusal('revision-not-ready', 'CONFLICT', 'this revision is still uploading')
+      const created = await shares.create({
+        orgId,
+        artifactId: artifact.id,
+        revisionNumber: revision.number,
+        audience: req.audience,
+        createdByIdentity: `user:${viewer.principal.userId}`
+      })
+      return {
+        shareId: created.share.id,
+        artifactId: artifact.id,
+        revision: created.share.revisionNumber,
+        audience: created.share.audience,
+        displayTail: created.share.displayTail,
+        createdAt: created.share.createdAt.toISOString(),
+        linkPath: created.linkPath,
+        ...(created.link ? { link: created.link } : {})
+      }
+    },
+
+    async unshare(orgId, req) {
+      const shares = requireShares()
+      const session = await agentSession(orgId, req.agentId, req.sessionId)
+      const artifact = await ownArtifact(orgId, req.agentId, req.artifactId, session)
+      const viewer = await memberAuthority(orgId, req.agentId, req.initiator, artifact)
+      const share = await shares.get(orgId, artifact.id, req.shareId)
+      if (!share) throw shareNotFound()
+      if (!canRevokeArtifactShare(artifact, share, viewer)) {
+        throw new ArtifactRefusal(
+          'share-forbidden',
+          'SCOPE_DENIED',
+          'only the artifact’s owner, an organization owner, or the person who created the share may revoke it'
+        )
+      }
+      const revoked = await shares.revoke(orgId, artifact.id, share.id)
+      if (!revoked?.revokedAt) throw shareNotFound()
+      return {
+        shareId: revoked.id,
+        artifactId: artifact.id,
+        revision: revoked.revisionNumber,
+        audience: revoked.audience,
+        revokedAt: revoked.revokedAt.toISOString()
       }
     },
 

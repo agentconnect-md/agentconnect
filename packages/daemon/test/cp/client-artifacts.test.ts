@@ -1,6 +1,6 @@
-// The `artifact/*` requests go only to a CP that advertised `artifacts-v1`, and a refusal keeps its named reason (artifacts.md §5.3).
+// The `artifact/*` requests go only to a CP that advertised their feature, and a refusal keeps its named reason (artifacts.md §5.3, §7.1).
 import { describe, it, expect } from 'vitest'
-import { ARTIFACTS_FEATURE, buildEnvelope } from '@agentconnect.md/protocol'
+import { ARTIFACT_SHARES_FEATURE, ARTIFACTS_FEATURE, buildEnvelope } from '@agentconnect.md/protocol'
 import { WireError } from '@agentconnect.md/connection'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
@@ -158,6 +158,49 @@ describe('CpClient artifact requests', () => {
     }
     t.pushInbound(JSON.stringify(buildEnvelope('artifact/fetch/ok', ok, { corr: fetch.id, orgId: ORG })))
     await expect(fetched).resolves.toEqual(ok)
+    client.stop()
+  })
+
+  it('shares and unshares only toward a CP that also advertises artifact-shares-v1', async () => {
+    const share = { agentId: AGENT, sessionId: 'webchat:s-1', artifactId: ARTIFACT, audience: 'org' as const }
+    const older = await ready([ARTIFACTS_FEATURE])
+    expect(older.client.supportsArtifacts()).toBe(true)
+    expect(older.client.supportsArtifactShares()).toBe(false)
+    await expect(older.client.shareArtifact(share)).rejects.toThrow(/does not answer artifact\/share/)
+    expect(sentOf(older.t, 'artifact/share')).toEqual([])
+    older.client.stop()
+
+    const { client, t } = await ready([ARTIFACTS_FEATURE, ARTIFACT_SHARES_FEATURE])
+    expect(client.supportsArtifactShares()).toBe(true)
+    const shared = client.shareArtifact(share)
+    await tick()
+    const [sent] = sentOf(t, 'artifact/share')
+    expect(sent.orgId).toBe(ORG)
+    const SHARE = '55555555-5555-4555-8555-555555555555'
+    const ok = {
+      shareId: SHARE,
+      artifactId: ARTIFACT,
+      revision: 1,
+      audience: 'org',
+      displayTail: '…abcdef',
+      createdAt: '2026-11-27T10:00:00.000Z',
+      linkPath: '/share/token-abcdef'
+    }
+    t.pushInbound(JSON.stringify(buildEnvelope('artifact/share/ok', ok, { corr: sent.id, orgId: ORG })))
+    await expect(shared).resolves.toEqual(ok)
+
+    const unshared = client.unshareArtifact({ ...share, shareId: SHARE })
+    await tick()
+    const [revoke] = sentOf(t, 'artifact/unshare')
+    const revoked = {
+      shareId: SHARE,
+      artifactId: ARTIFACT,
+      revision: 1,
+      audience: 'org',
+      revokedAt: '2026-11-27T10:00:00.000Z'
+    }
+    t.pushInbound(JSON.stringify(buildEnvelope('artifact/unshare/ok', revoked, { corr: revoke.id, orgId: ORG })))
+    await expect(unshared).resolves.toEqual(revoked)
     client.stop()
   })
 

@@ -86,6 +86,18 @@ export function canActOnArtifact(action: ArtifactAction, artifact: ArtifactAudie
   }
 }
 
+/** §6.3: whoever may revoke any of the artifact's shares, or the member who created this one, since revoking only narrows access. */
+export function canRevokeArtifactShare(
+  artifact: ArtifactAudience,
+  share: { createdByIdentity: string },
+  viewer: ArtifactViewer
+): boolean {
+  if (artifact.orgId !== viewer.orgId) return false
+  return (
+    canActOnArtifact(ArtifactAction.RevokeShare, artifact, viewer) || viewer.identitySet.has(share.createdByIdentity)
+  )
+}
+
 /** The session an agent is acting in, as far as its reach is concerned. */
 export interface ArtifactReachSession {
   orgId: string

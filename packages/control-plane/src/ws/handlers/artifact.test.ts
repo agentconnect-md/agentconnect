@@ -7,7 +7,9 @@ import {
   handleArtifactFetch,
   handleArtifactList,
   handleArtifactPublishBegin,
-  handleArtifactPublishComplete
+  handleArtifactPublishComplete,
+  handleArtifactShare,
+  handleArtifactUnshare
 } from './artifact.js'
 
 const agentId = '11111111-1111-4111-8111-111111111111'
@@ -36,6 +38,10 @@ const begin = frameOf('artifact/publish/begin', {
 const complete = frameOf('artifact/publish/complete', { agentId, artifactId, revision: 1 })
 const fetch = frameOf('artifact/fetch', { agentId, sessionId: 'webchat:s-1', artifactId, network: 'public' })
 const list = frameOf('artifact/list', { agentId, sessionId: 'webchat:s-1' })
+const shareId = '44444444-4444-4444-8444-444444444444'
+const initiator = { kind: 'console', userId: 'u-1' }
+const share = frameOf('artifact/share', { agentId, sessionId: 'webchat:s-1', artifactId, audience: 'org', initiator })
+const unshare = frameOf('artifact/unshare', { agentId, sessionId: 'webchat:s-1', artifactId, shareId, initiator })
 
 function setup() {
   const agent = vi.fn(async () => ({ id: agentId, orgId, daemonId }) as unknown)
@@ -44,6 +50,8 @@ function setup() {
     complete: vi.fn(async () => ({})),
     fetch: vi.fn(async () => ({})),
     list: vi.fn(async () => ({ artifacts: [] })),
+    share: vi.fn(async () => ({ shareId })),
+    unshare: vi.fn(async () => ({ shareId })),
     fileDownload: vi.fn()
   }
   const conn = { daemonId, orgId, replyTo: vi.fn(), sendError: vi.fn() }
@@ -64,6 +72,12 @@ describe('artifact/* handlers', () => {
     expect(conn.replyTo).toHaveBeenLastCalledWith(fetch, 'artifact/fetch/ok', expect.anything())
     await handleArtifactList(list, c, deps)
     expect(conn.replyTo).toHaveBeenLastCalledWith(list, 'artifact/list/ok', { artifacts: [] })
+    await handleArtifactShare(share, c, deps)
+    expect(artifacts.share).toHaveBeenCalledWith(orgId, share.payload)
+    expect(conn.replyTo).toHaveBeenLastCalledWith(share, 'artifact/share/ok', { shareId })
+    await handleArtifactUnshare(unshare, c, deps)
+    expect(artifacts.unshare).toHaveBeenCalledWith(orgId, unshare.payload)
+    expect(conn.replyTo).toHaveBeenLastCalledWith(unshare, 'artifact/unshare/ok', { shareId })
   })
 
   it('refuses a daemon that does not serve the agent, before the service sees the frame', async () => {
@@ -73,7 +87,9 @@ describe('artifact/* handlers', () => {
       [begin, handleArtifactPublishBegin],
       [complete, handleArtifactPublishComplete],
       [fetch, handleArtifactFetch],
-      [list, handleArtifactList]
+      [list, handleArtifactList],
+      [share, handleArtifactShare],
+      [unshare, handleArtifactUnshare]
     ] as const) {
       await handler(frame, c, deps)
       expect(conn.sendError).toHaveBeenLastCalledWith(frame.id, 'SCOPE_DENIED', expect.any(String), false)
@@ -83,6 +99,7 @@ describe('artifact/* handlers', () => {
     expect(conn.sendError).toHaveBeenLastCalledWith(begin.id, 'SCOPE_DENIED', expect.any(String), false)
     expect(artifacts.begin).not.toHaveBeenCalled()
     expect(artifacts.list).not.toHaveBeenCalled()
+    expect(artifacts.share).not.toHaveBeenCalled()
   })
 
   it('refuses every frame on a deployment where artifacts are not enabled, naming the reason', async () => {
@@ -92,7 +109,9 @@ describe('artifact/* handlers', () => {
       [begin, handleArtifactPublishBegin],
       [complete, handleArtifactPublishComplete],
       [fetch, handleArtifactFetch],
-      [list, handleArtifactList]
+      [list, handleArtifactList],
+      [share, handleArtifactShare],
+      [unshare, handleArtifactUnshare]
     ] as const) {
       await handler(frame, c, off)
       expect(conn.sendError).toHaveBeenLastCalledWith(frame.id, 'SCOPE_DENIED', expect.any(String), false, {
@@ -115,6 +134,11 @@ describe('artifact/* handlers', () => {
     expect(conn.sendError).toHaveBeenLastCalledWith(complete.id, 'CONFLICT', '1 file(s) are missing', false, {
       reason: 'incomplete',
       paths: ['index.html']
+    })
+    artifacts.share.mockRejectedValueOnce(new ArtifactRefusal('no-member-authority', 'SCOPE_DENIED', 'no member'))
+    await handleArtifactShare(share, c, deps)
+    expect(conn.sendError).toHaveBeenLastCalledWith(share.id, 'SCOPE_DENIED', 'no member', false, {
+      reason: 'no-member-authority'
     })
   })
 

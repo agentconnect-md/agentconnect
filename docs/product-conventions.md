@@ -960,6 +960,15 @@ conversation can reach.
 - **Refusals say what to do.** Artifacts not enabled on the deployment, missing storage, an unknown session, an artifact the
   conversation cannot reach, one the agent did not create, an oversized file and an
   incomplete upload each get their own sentence.
+- **Sharing acts for a member.** Toward a control plane that also serves share links, the
+  session gets `shareArtifact` and `unshareArtifact`, for artifacts the agent created and the
+  conversation can reach. They act with the authority of the person who started the turn,
+  or of a schedule's or hook's creator, and only when that person is an organization member:
+  a guest, an unlinked chat account or a turn with no member behind it is refused (§7.3). A
+  `public` link needs the owner or an organization owner; an `org` link, anyone who can view.
+  The link is returned once; `listArtifacts` shows active shares by the link's last
+  characters, never the link. The owner, organization owners and the share's creator may
+  revoke it.
 
 ## Self-authored channel roots
 

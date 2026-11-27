@@ -79,7 +79,9 @@ import {
   handleArtifactFetch,
   handleArtifactList,
   handleArtifactPublishBegin,
-  handleArtifactPublishComplete
+  handleArtifactPublishComplete,
+  handleArtifactShare,
+  handleArtifactUnshare
 } from './artifact.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleGithubReviewDeclare } from './github-review-declare.js'
@@ -168,6 +170,8 @@ export class FrameRouter {
       'artifact/publish/complete': handleArtifactPublishComplete,
       'artifact/fetch': handleArtifactFetch,
       'artifact/list': handleArtifactList,
+      'artifact/share': handleArtifactShare,
+      'artifact/unshare': handleArtifactUnshare,
       'github/review-result': handleGithubReviewResult,
       'github/review-declare': handleGithubReviewDeclare,
       'codehost/note-result': handleCodeHostNoteResult,
