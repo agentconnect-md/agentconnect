@@ -186,6 +186,7 @@ import {
   ARTIFACTS_FEATURE,
   ARTIFACT_SHARES_FEATURE,
   ARTIFACT_DELETE_FEATURE,
+  ARTIFACT_BASE_FEATURE,
   type ArtifactDeleteOk,
   type ArtifactDeleteReq,
   type ArtifactFetchOk,
@@ -1323,6 +1324,11 @@ export class CpClient {
   /** Whether the connected CP also answers `artifact/delete`; the delete tool is offered only then. */
   supportsArtifactDelete(): boolean {
     return this.supportsArtifacts() && this.supportsServerFeature(ARTIFACT_DELETE_FEATURE)
+  }
+
+  /** Whether the connected CP checks an update's `baseRevision` or `replace`; the publish tool sends them only then. */
+  supportsArtifactBase(): boolean {
+    return this.supportsArtifacts() && this.supportsServerFeature(ARTIFACT_BASE_FEATURE)
   }
 
   /** Record a pending revision and presign one PUT per file, or the ready result a replayed key reached. */

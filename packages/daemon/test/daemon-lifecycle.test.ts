@@ -592,7 +592,7 @@ describe('Daemon session lifecycle (#118)', () => {
           reason: 'escape'
         })
 
-        // The publish tool walks the same fenced area on the pod, and a fetch replaces one outputs directory there (artifacts.md §5.3, §7.1).
+        // The publish tool walks the same fenced area on the pod, and a fetch lands in an outputs directory of its own there (artifacts.md §5.3, §7.1).
         pod.dirs.add(`${outputs}/site`)
         pod.files.set(`${outputs}/site/index.html`, '<p>hi</p>')
         pod.files.set(`${outputs}/site/app.js`, 'x')
@@ -604,9 +604,9 @@ describe('Daemon session lifecycle (#118)', () => {
         expect(await single.tree.read('', 1000)).toEqual({ bytes: png })
         expect(await artifacts.source(ctx, 'files:outputs/../home/x')).toEqual({ ok: false, reason: 'escape' })
         expect(
-          await artifacts.writeOutputs(ctx, 'report-0f8fad5b', (put: any) => put('img/a.svg', Buffer.from('<svg/>')))
-        ).toEqual({ ok: true, path: `${outputs}/report-0f8fad5b`, name: 'files:outputs/report-0f8fad5b' })
-        expect(String(pod.files.get(`${outputs}/report-0f8fad5b/img/a.svg`))).toBe('<svg/>')
+          await artifacts.writeOutputs(ctx, 'report-0f8fad5b-r1', (put: any) => put('img/a.svg', Buffer.from('<svg/>')))
+        ).toEqual({ ok: true, path: `${outputs}/report-0f8fad5b-r1`, name: 'files:outputs/report-0f8fad5b-r1' })
+        expect(String(pod.files.get(`${outputs}/report-0f8fad5b-r1/img/a.svg`))).toBe('<svg/>')
 
         // No pod of the agent bound: both refuse rather than fall back to this member's own disk.
         bound = false

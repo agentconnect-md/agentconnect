@@ -382,13 +382,21 @@ export function artifactGuide(offered: boolean): Record<string, unknown> {
         'implicitly, and outputs are cleaned up with the workspace; the published revision is kept.',
       'A new artifact needs `title`. To change it later, publish again with its `artifactId`: each publication is a ' +
         'new revision of the same artifact. You can revise only artifacts you created.',
+      'An update names what it was built on: `baseRevision` is the revision you fetched or last published. Another ' +
+        'conversation of yours may have published since; then the update is refused with the newer revision, who ' +
+        'published it and the files that changed. Fetch that revision, reapply your change to its files and publish ' +
+        'again with it as `baseRevision`. Nothing is merged for you. Pass `replace: true` instead of a base only ' +
+        'when your files should stand in for the latest revision, such as a report regenerated from scratch, or ' +
+        'when the person wants their version to win.',
       'A directory publishes every regular file in it (`.git` is left out) as one revision and needs `entry`, the ' +
-        'file that opens first. Up to 200 files and 50 MB per revision. Empty files, links and special files are ' +
+        'file that opens first. Up to 200 files and 200 MB per revision. Empty files, links and special files are ' +
         'refused by name. The console opens the entry file alone, so make an HTML page self-contained.',
       'Give the person the returned `link` in your reply, and say who can open it from `whoCanOpen`. On a chat ' +
         'platform publishing posts nothing by itself; in the console the conversation also shows a card.',
-      'fetchArtifact downloads a revision into `files:outputs/<name>/` (replacing an earlier fetch there) so you ' +
-        'can keep working after the workspace was cleaned up; listArtifacts shows what this conversation can reach.',
+      'fetchArtifact downloads a revision into a directory of its own, `files:outputs/<title>-<id>-r<revision>/`, so ' +
+        'you can keep working after the workspace was cleaned up or merge with a newer revision without losing your ' +
+        'files; fetching the same revision again replaces its directory. listArtifacts shows what this conversation ' +
+        'can reach, with each artifact’s latest revision.',
       'Where offered, shareArtifact makes a link to one revision for people outside this conversation: "org" for ' +
         'signed-in members, "public" for anyone with the link (only when asked; downloaded copies cannot be ' +
         'recalled). unshareArtifact revokes one. Both act for the organization member who started the turn.',
@@ -406,8 +414,20 @@ export function artifactGuide(offered: boolean): Record<string, unknown> {
         arguments: { path: 'files:outputs/dashboard', title: 'Build dashboard', entry: 'index.html' }
       },
       {
-        use: 'Publish the next revision of an artifact you created',
-        arguments: { path: 'files:outputs/q3-report.html', artifactId: '00000000-0000-4000-8000-000000000001' }
+        use: 'Publish the next revision of an artifact you created, built on revision 3',
+        arguments: {
+          path: 'files:outputs/q3-report.html',
+          artifactId: '00000000-0000-4000-8000-000000000001',
+          baseRevision: 3
+        }
+      },
+      {
+        use: 'Replace the latest revision with a report regenerated from scratch',
+        arguments: {
+          path: 'files:outputs/q3-report.html',
+          artifactId: '00000000-0000-4000-8000-000000000001',
+          replace: true
+        }
       }
     ] satisfies GuideExample[]
   }

@@ -958,23 +958,38 @@ conversation can reach.
   file (`files:outputs/…`) or a checkout-relative path; `.git`, escapes and links out are
   refused. A directory publishes every regular file in it as one revision, leaves out
   `.git`, and refuses a link or special file by name rather than skipping it.
-- **Checked before anything uploads.** At most 200 files and 50 MB per revision, paths
+- **Checked before anything uploads.** At most 200 files and 200 MB per revision, paths
   that collide after case folding or Unicode normalization, and empty files are refused
   naming the file. A directory of more than one file needs an entry, the file that opens
   first.
 - **Revisions, not copies.** A new artifact needs a title. Publishing again with its id adds
   a revision and keeps the title, which only people rename; an agent revises only the
   artifacts it created. A retried call within the same turn returns the same revision.
+- **An update names its base.** Toward a control plane that checks bases, an update carries
+  the revision it was built on, the one the agent fetched or last published, or a replace
+  mark when its files stand in for the latest without building on it, such as a regenerated
+  report; the tool refuses an update with neither before anything uploads. When another
+  conversation of the same agent published first, the update is refused and nothing is
+  published: the refusal names the newer revision, the agent that produced it and when, and
+  the files added, changed and removed since the base, and tells the agent to fetch that
+  revision, reapply its change and publish again on it, or to publish as a replacement if
+  the person wants their version to stand. Nothing is merged automatically
+  ([artifacts.md](designs/artifacts.md) §5.6). Toward an older control plane the tool sends
+  neither, every update replaces as before, and a named base earns a notice that it was not
+  checked. A retry keeps its base: the same call in the same turn returns the same revision.
 - **The link is the agent's to give.** The result carries a console link pinned to the
   revision and who can open it, in a sentence the agent repeats. Publishing posts nothing
   to a chat platform; the agent puts the link in its reply. Every publication leaves one
   card row in the session transcript, committed before a console turn shows it.
-- **Fetch replaces one directory.** A fetch writes into `files:outputs/<title>-<id>/`,
-  verifying each file's size and checksum, and replaces what an earlier fetch of the same
-  artifact left there only after every file arrived; a failed fetch changes nothing.
+- **Each fetched revision has its own directory.** A fetch writes into
+  `files:outputs/<title>-<id>-r<revision>/`, verifying each file's size and checksum, so
+  fetching a newer revision to merge with never touches the files the agent was working on.
+  Each fetched revision is one more entry in the session's outputs. Fetching the same
+  revision again replaces its directory only after every file arrived; a failed fetch
+  changes nothing.
 - **Refusals say what to do.** Artifacts not enabled on the deployment, missing storage, an unknown session, an artifact the
-  conversation cannot reach, one the agent did not create, an oversized file and an
-  incomplete upload each get their own sentence.
+  conversation cannot reach, one the agent did not create, an oversized file, an
+  incomplete upload and a stale base each get their own sentence.
 - **Sharing acts for a member.** Toward a control plane that also serves share links, the
   session gets `shareArtifact` and `unshareArtifact`, for artifacts the agent created and the
   conversation can reach. They act with the authority of the person who started the turn,

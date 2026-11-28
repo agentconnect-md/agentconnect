@@ -122,7 +122,7 @@ describe('artifact helpers', () => {
     expect(artifactMediaType('Makefile')).toBe('application/octet-stream')
   })
 
-  it('keys a publication by turn and content, so a retry in the same turn reuses it', () => {
+  it('keys a publication by turn, content and base, so a retry in the same turn reuses it', () => {
     const manifest = {
       entry: 'a.md',
       files: [{ path: 'a.md', sha256: sha('x'), bytes: 1, mediaType: 'text/markdown' }]
@@ -138,14 +138,19 @@ describe('artifact helpers', () => {
         manifest: { ...manifest, files: [{ ...manifest.files[0]!, sha256: sha('y') }] }
       })
     ).not.toBe(key)
+    const update = { ...base, artifactId: '0f8fad5b-d9cb-469f-a165-70867728950e' }
+    expect(artifactIdempotencyKey({ ...update, base: 3 })).toBe(artifactIdempotencyKey({ ...update, base: 3 }))
+    expect(artifactIdempotencyKey({ ...update, base: 3 })).not.toBe(artifactIdempotencyKey({ ...update, base: 4 }))
+    expect(artifactIdempotencyKey({ ...update, base: 'replace' })).not.toBe(artifactIdempotencyKey(update))
   })
 
-  it('names a fetch directory from the title and the id, safely', () => {
+  it('names a fetch directory from the title, the id and the revision, safely', () => {
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e'
-    expect(artifactDirName('Q3 revenue report', id)).toBe('Q3-revenue-report-0f8fad5b')
-    expect(artifactDirName('../../etc/passwd', id)).toBe('etc-passwd-0f8fad5b')
-    expect(artifactDirName('...', id)).toBe('artifact-0f8fad5b')
-    expect(artifactDirName('季度报告', id)).toBe('季度报告-0f8fad5b')
-    expect(artifactDirName('x'.repeat(300), id)).toHaveLength(60 + 9)
+    expect(artifactDirName('Q3 revenue report', id, 3)).toBe('Q3-revenue-report-0f8fad5b-r3')
+    expect(artifactDirName('Q3 revenue report', id, 12)).toBe('Q3-revenue-report-0f8fad5b-r12')
+    expect(artifactDirName('../../etc/passwd', id, 1)).toBe('etc-passwd-0f8fad5b-r1')
+    expect(artifactDirName('...', id, 1)).toBe('artifact-0f8fad5b-r1')
+    expect(artifactDirName('季度报告', id, 1)).toBe('季度报告-0f8fad5b-r1')
+    expect(artifactDirName('x'.repeat(300), id, 1)).toHaveLength(60 + 12)
   })
 })

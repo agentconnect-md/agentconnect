@@ -15326,6 +15326,7 @@ export class Daemon {
       served: () => this.cpClient?.supportsArtifacts?.() === true,
       sharesServed: () => this.cpClient?.supportsArtifactShares?.() === true,
       deleteServed: () => this.cpClient?.supportsArtifactDelete?.() === true,
+      baseServed: () => this.cpClient?.supportsArtifactBase?.() === true,
       turn: (ctx) => this.artifactTurn(ctx),
       begin: (req) => client().beginArtifactPublish(req, this.orgForAgent(req.agentId)),
       complete: (req) => client().completeArtifactPublish(req, this.orgForAgent(req.agentId)),
