@@ -207,7 +207,7 @@ describe('concurrent updates', () => {
     const { artifactId, begin, publish } = await setup()
     await publish({ baseRevision: 1 })
     await publish({ baseRevision: 2 })
-    await prisma.artifactRevision.delete({ where: { artifactId_number: { artifactId, number: 2 } } })
+    await prisma.artifactRevision.deleteMany({ where: { artifactId, number: { in: [1, 2] } } })
     const err = await refusal(begin({ baseRevision: 2 }))
     expect(err.reason).toBe('stale-base')
     expect(err.details).toEqual({ baseRevision: 2, latest: expect.objectContaining({ revision: 3 }) })

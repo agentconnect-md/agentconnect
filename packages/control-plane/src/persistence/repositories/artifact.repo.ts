@@ -79,6 +79,7 @@ export function toArtifact(row: Artifact): ArtifactRecord {
     externalScopeId: row.externalScopeId,
     editorsAgentId: row.editorsAgentId,
     originSessionId: row.originSessionId,
+    producedByAgentId: row.producedByAgentId,
     latestRevision: row.latestRevision,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
@@ -324,6 +325,7 @@ export class PgArtifactRepo implements ArtifactRepo {
             externalScopeId: artifact.externalScopeId,
             editorsAgentId: artifact.editorsAgentId,
             originSessionId: artifact.originSessionId,
+            producedByAgentId: revision.producedByAgentId,
             revisionCounter: 1
           }
         })
