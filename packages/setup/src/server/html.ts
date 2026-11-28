@@ -469,7 +469,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
           </ol>
           <dl class="credentials">
             <dt>Blueprint ID</dt><dd><code id="azuread-agent-bots-blueprint">Not configured</code></dd>
-            <dt>Blueprint secret</dt><dd><span id="azuread-agent-bots-secret" class="muted">Not configured</span></dd>
+            <dt>Blueprint secret</dt><dd class="secret-line"><span id="azuread-agent-bots-secret" class="muted">Not configured</span><button class="edit-secret" data-secret-key="msTeams.blueprintClientSecret" data-secret-display="azuread-agent-bots-secret" hidden>Edit</button></dd>
             <dt>Azure subscription ID</dt><dd><code id="azuread-agent-bots-subscription">Not configured</code></dd>
             <dt>Resource group</dt><dd><code id="azuread-agent-bots-group">Not configured</code></dd>
           </dl>
@@ -1264,11 +1264,10 @@ export const SETUP_HTML = String.raw`<!doctype html>
       renderUriList('azuread-teams-redirects', expectedTeams ? [expectedTeams.connectRedirectUri] : []);
       // Agent bots sit beside the Teams app: the group shows once it is configured, and its form until a blueprint is saved.
       const agentBots = values.msTeams && values.msTeams.agentBots;
-      const blueprintSecret = configured(byKey, 'msTeams.blueprintClientSecret');
       el('azuread-agent-bots').hidden = !values.msTeams;
       text('azuread-agent-bots-blueprint', agentBots && agentBots.blueprintId);
-      el('azuread-agent-bots-secret').textContent = blueprintSecret ? '***' : 'Not configured';
-      el('azuread-agent-bots-secret').className = blueprintSecret ? 'redacted' : 'muted';
+      // Replaceable in place once a blueprint is saved: clearing it instead would stop every agent's own bot.
+      secretText('azuread-agent-bots-secret', byKey, 'msTeams.blueprintClientSecret', Boolean(agentBots));
       text('azuread-agent-bots-subscription', agentBots && agentBots.subscriptionId);
       text('azuread-agent-bots-group', agentBots && agentBots.resourceGroup);
       el('azuread-agent-bots-controls').hidden = Boolean(agentBots);
