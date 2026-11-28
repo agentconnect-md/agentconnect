@@ -173,8 +173,8 @@ importers:
         specifier: ^8.18.2
         version: 8.18.2
       chrome-devtools-mcp:
-        specifier: 1.14.0
-        version: 1.14.0
+        specifier: 1.13.0
+        version: 1.13.0
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
@@ -524,8 +524,8 @@ importers:
         specifier: ^11.0.0
         version: 11.0.0
       microsandbox:
-        specifier: 0.8.2
-        version: 0.8.2
+        specifier: 0.7.15
+        version: 0.7.15
       testcontainers:
         specifier: ^12.2.2
         version: 12.2.2(bare-buffer@3.7.3)(supports-color@7.2.0)
@@ -2151,12 +2151,8 @@ packages:
     resolution: {integrity: sha512-9I2Zn6+NJLfaGoz9jN3lpwDgAYvfGeNYdbAIjJOqzs4Tpc+VU3Jqq4IofSUBKajiDS8k9fZIg18/z13mpk1bsA==}
     engines: {node: '>=8'}
 
-  '@microsandbox/core@0.8.2':
-    resolution: {integrity: sha512-yswK5asqTC/SnOOBKaFJ0V+XvAv13UgK8hihAGh7s7EccsX2fzV6TjMoBqMWYFl5prewb9MbH6cD01OPvBWbOA==}
-    engines: {node: '>= 22'}
-
-  '@microsandbox/types@0.8.2':
-    resolution: {integrity: sha512-TDLO7TWC6Kp0TXDXHEMqSGnH0PnJ8ZNHoCAsR/MP+1J2RKCyskw/970Z5G5SE7gl1uHz4c5UznVjQyqKImwMqw==}
+  '@microsandbox/types@0.7.15':
+    resolution: {integrity: sha512-PMwbMb3s4eiuYrbFmiUCPdLFt+SOq6566ViDvv6t9oTky4yOUg7U/oLSn2SybPlLjmHNwPTrm8nwFj9YoS1aig==}
 
   '@microsoft/agent-host-protocol@1.1.0':
     resolution: {integrity: sha512-6LXOqqXWGwMtrGxhIquNW9ECDPSHuW4yOpnIrOperBQuVZeRqbbmIGYn6ZZK3Q41/8heOi2LUlP9x9Wrsru3Eg==}
@@ -3600,6 +3596,38 @@ packages:
   '@standard-schema/utils@0.3.0':
     resolution: {integrity: sha512-e7Mew686owMaPJVNNLs55PUvgz371nKgwsc4vxE49zsODpJEnxgxRo2y/OKrqueavXgZNMDVj3DdHFlaSAeU8g==}
 
+  '@superradcompany/microsandbox-darwin-arm64@0.7.15':
+    resolution: {integrity: sha512-dmg7UvPhk1Nr4CIrSvNRVhSrNMkTPEaAZ70v4JND/KTDZ4YHxsIXrrnh6OJ8DeV2Bq30UWWBuGCnWwxB4h/u9g==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@superradcompany/microsandbox-linux-arm64-gnu@0.7.15':
+    resolution: {integrity: sha512-Njrd5O9Bbasr90jx5TGVmNxMIsbi+/Ucl48l6btcHV4NwP6dDIlZIYaSinRrlsM6XaN5gls4y29Z8HI1Gq/1jQ==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@superradcompany/microsandbox-linux-x64-gnu@0.7.15':
+    resolution: {integrity: sha512-4fLrUbZWVQTp29yTGH+8iTEJmFdG+lYyZ2iHyDT3COHUi0SDtM8JRcLVdK7Vf5EpjRh6PU5ooa2z9MHlO3bUag==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@superradcompany/microsandbox-win32-arm64-msvc@0.7.15':
+    resolution: {integrity: sha512-/yo8hr28oO5ABCSwFz5X3zu5mrkPr1m+Bn7M4DAGHI6N+ggl3T2XDCX//RXgy1sYWBNaxOqVGAo8Ub+9M6tWXg==}
+    engines: {node: '>= 22'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@superradcompany/microsandbox-win32-x64-msvc@0.7.15':
+    resolution: {integrity: sha512-jo1SCDkt2VLO2GJmWue/XfIihXfu7RFMa3Fe+1owqy3I3dn13YHG7tIbqfLzHFII16X51R02l6WQChfcHI1e1A==}
+    engines: {node: '>= 22'}
+    cpu: [x64]
+    os: [win32]
+
   '@swc/core-darwin-arm64@1.16.22':
     resolution: {integrity: sha512-PddkOjOK3MK01AVOvqG309iAJ0hn5vK37ug9g5Zt5e2aWF3IhVLdDLjMePXts1zi8yc4ild2h9FYCkVYb5+Qcw==}
     engines: {node: '>=10'}
@@ -4801,8 +4829,8 @@ packages:
     resolution: {integrity: sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==}
     engines: {node: '>=18'}
 
-  chrome-devtools-mcp@1.14.0:
-    resolution: {integrity: sha512-sO7GYmqnvmjQ0l9jiuvw2DyPxi3nBATFbxvNU8ArapYOUXE79z6fbigKuDbJ8/jsi/4OA3OvHlGq83mHLwemGA==}
+  chrome-devtools-mcp@1.13.0:
+    resolution: {integrity: sha512-Yf4qhS0+2oo7c+gOySMDHQt4ZL/yKXG2Mxxzjk0gcArINtcQ3tLiQVzAW6g2nsyQzAGhkcLwWWBAtlx3Bg+Spg==}
     engines: {node: ^20.19.0 || ^22.12.0 || >=23}
     hasBin: true
     peerDependencies:
@@ -6979,8 +7007,8 @@ packages:
     resolution: {integrity: sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==}
     engines: {node: '>=8.6'}
 
-  microsandbox@0.8.2:
-    resolution: {integrity: sha512-Ct7FiWyVxqmCu2lSuse4gJryFxauDox0oFdMgzcmTqiqazGMsjwxxMOiXIYadGXX0gqQ9Nfvao6yXNQU363gPQ==}
+  microsandbox@0.7.15:
+    resolution: {integrity: sha512-HbDR0Ps0I5ZmdC+tztarXzpLrrfhiQL9UjFxJt7Sutsld+BRcuBhSK/+F2RnTGKyeDVgQY+vwGUWu7bhqwgY9Q==}
     engines: {node: '>= 22'}
     hasBin: true
 
@@ -10871,11 +10899,7 @@ snapshots:
 
   '@lukeed/ms@2.0.2': {}
 
-  '@microsandbox/core@0.8.2':
-    dependencies:
-      '@microsandbox/types': 0.8.2
-
-  '@microsandbox/types@0.8.2': {}
+  '@microsandbox/types@0.7.15': {}
 
   '@microsoft/agent-host-protocol@1.1.0(patch_hash=03e3eb825265dfc355f8037f1d4c9c99a97c3b41033364a67a57bce54fc9d510)': {}
 
@@ -12354,6 +12378,21 @@ snapshots:
 
   '@standard-schema/utils@0.3.0': {}
 
+  '@superradcompany/microsandbox-darwin-arm64@0.7.15':
+    optional: true
+
+  '@superradcompany/microsandbox-linux-arm64-gnu@0.7.15':
+    optional: true
+
+  '@superradcompany/microsandbox-linux-x64-gnu@0.7.15':
+    optional: true
+
+  '@superradcompany/microsandbox-win32-arm64-msvc@0.7.15':
+    optional: true
+
+  '@superradcompany/microsandbox-win32-x64-msvc@0.7.15':
+    optional: true
+
   '@swc/core-darwin-arm64@1.16.22':
     optional: true
 
@@ -13551,7 +13590,7 @@ snapshots:
 
   chownr@3.0.0: {}
 
-  chrome-devtools-mcp@1.14.0: {}
+  chrome-devtools-mcp@1.13.0: {}
 
   cjs-module-lexer@2.3.0: {}
 
@@ -16004,9 +16043,15 @@ snapshots:
       braces: 3.0.3
       picomatch: 2.3.2
 
-  microsandbox@0.8.2:
+  microsandbox@0.7.15:
     dependencies:
-      '@microsandbox/core': 0.8.2
+      '@microsandbox/types': 0.7.15
+    optionalDependencies:
+      '@superradcompany/microsandbox-darwin-arm64': 0.7.15
+      '@superradcompany/microsandbox-linux-arm64-gnu': 0.7.15
+      '@superradcompany/microsandbox-linux-x64-gnu': 0.7.15
+      '@superradcompany/microsandbox-win32-arm64-msvc': 0.7.15
+      '@superradcompany/microsandbox-win32-x64-msvc': 0.7.15
 
   mime-db@1.52.0: {}
 

@@ -103,7 +103,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/ws": "^8.18.2",
     "json": "^11.0.0",
-    "microsandbox": "0.8.2",
+    "microsandbox": "0.7.15",
     "testcontainers": "^12.2.2",
     "tsdown": "^0.23.7",
     "tsx": "^4.23.15",
