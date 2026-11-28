@@ -138,6 +138,56 @@ describe('LogtoIdentityService SSO display reads', () => {
   })
 })
 
+describe('LogtoIdentityService rejected management token', () => {
+  const AUTH = { ...MGMT, endpoint: 'https://auth.example.test', resource: 'https://auth.example.test/api' }
+  // Issues tok-1, tok-2, … and answers a management call by the bearer it carries.
+  const setup = (answer: (bearer: string) => Response) => {
+    const bearers: string[] = []
+    let issued = 0
+    const fetchImpl: FetchImpl = async (url, init) => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: `tok-${++issued}`, expires_in: 3600 })
+      const bearer = new Headers(init?.headers).get('authorization')!.replace('Bearer ', '')
+      bearers.push(bearer)
+      return answer(bearer)
+    }
+    const svc = new LogtoIdentityService(AUTH, new FakeClock(0), MUTATIONS, fetchImpl)
+    return { svc, bearers, issued: () => issued }
+  }
+  const user = () => Response.json({ identities: { github: { userId: '1' } } })
+  const rejected = () => new Response('{}', { status: 401 })
+
+  it('refetches the token once and retries the call when the cached token is rejected', async () => {
+    const { svc, bearers, issued } = setup((bearer) => (bearer === 'tok-1' ? rejected() : user()))
+    expect(await svc.hasSignInIdentity('subject')).toBe(true)
+    expect(bearers).toEqual(['tok-1', 'tok-2'])
+    // The replacement token is cached, so the next call neither refetches nor retries.
+    expect(await svc.hasSignInIdentity('other')).toBe(true)
+    expect(bearers).toEqual(['tok-1', 'tok-2', 'tok-2'])
+    expect(issued()).toBe(2)
+  })
+
+  it('surfaces a 401 that the new token also gets, without a second refetch', async () => {
+    const { svc, bearers, issued } = setup(rejected)
+    await expect(svc.hasSignInIdentity('subject')).rejects.toThrow('logto user lookup failed: 401')
+    expect(bearers).toEqual(['tok-1', 'tok-2'])
+    expect(issued()).toBe(2)
+  })
+
+  it('keeps the cached token on a failure other than 401', async () => {
+    const { svc, bearers, issued } = setup(() => new Response('{}', { status: 502 }))
+    await expect(svc.hasSignInIdentity('subject')).rejects.toThrow('logto user lookup failed: 502')
+    expect(bearers).toEqual(['tok-1'])
+    expect(issued()).toBe(1)
+  })
+
+  it('shares one refetch between concurrent calls rejected on the same token', async () => {
+    const { svc, bearers, issued } = setup((bearer) => (bearer === 'tok-1' ? rejected() : user()))
+    expect(await Promise.all([svc.hasSignInIdentity('a'), svc.hasSignInIdentity('b')])).toEqual([true, true])
+    expect(bearers).toEqual(['tok-1', 'tok-1', 'tok-2', 'tok-2'])
+    expect(issued()).toBe(2)
+  })
+})
+
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
 /** A Logto user with a Slack identity in the given workspace. Synthetic ids. */
