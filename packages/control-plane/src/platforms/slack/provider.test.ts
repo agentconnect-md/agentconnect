@@ -248,6 +248,22 @@ describe('slack provider identity + declarative facets', () => {
     expect(provider.backgroundLoops).toBeUndefined()
   })
 
+  it('declares the signing-secret re-stamp beside the identity reconciler, and alone', () => {
+    const identityReconciler = { start: vi.fn(), stop: vi.fn() }
+    const signingSecretReconciler = { start: vi.fn(), stop: vi.fn() }
+    const both = createSlackCpProvider({ identityReconciler, signingSecretReconciler })
+    expect(both.backgroundLoops?.map((loop) => loop.label)).toEqual([
+      'slack-bot-identity',
+      'slack-signing-secret-restamp'
+    ])
+    const alone = createSlackCpProvider({ signingSecretReconciler })
+    expect(alone.backgroundLoops?.map((loop) => loop.label)).toEqual(['slack-signing-secret-restamp'])
+    alone.backgroundLoops![0]!.start()
+    alone.backgroundLoops![0]!.stop()
+    expect(signingSecretReconciler.start).toHaveBeenCalledTimes(1)
+    expect(signingSecretReconciler.stop).toHaveBeenCalledTimes(1)
+  })
+
   it('declares no install side effects (Slack renders per-message icon_url instead)', () => {
     expect(provider.sideEffects).toBeUndefined()
   })
