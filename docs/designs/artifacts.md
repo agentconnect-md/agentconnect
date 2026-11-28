@@ -133,6 +133,7 @@ The Control Plane stores metadata only, never file bytes.
 | `visibility`, audience scope | `private`, `org`, `external` with its recorded source scope, or `editors` with its agent (§6.2) |
 | `originSessionId`            | The session it was created in; used for the back link only, and may dangle after a purge        |
 | `latestRevision`             | Number of the newest ready revision; it only moves forward (§5.6)                               |
+| `producedByAgentId`          | The agent that created it, the one that may change it (§7.2); kept after revision 1 is pruned   |
 
 **Revision**
 

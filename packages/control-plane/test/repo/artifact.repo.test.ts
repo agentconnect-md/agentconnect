@@ -66,7 +66,7 @@ describe('PgArtifactRepo (real Postgres)', () => {
     const repo = new PgArtifactRepo(prisma)
     const first = await repo.create(fresh(), revision('k1'))
     expect(first.replayed).toBe(false)
-    expect(first.artifact.latestRevision).toBe(0)
+    expect(first.artifact).toMatchObject({ latestRevision: 0, producedByAgentId: AGENT })
     expect(first.revision).toMatchObject({
       number: 1,
       state: 'pending',

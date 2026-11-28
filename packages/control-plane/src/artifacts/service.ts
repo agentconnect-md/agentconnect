@@ -355,7 +355,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
     return deps.shares
   }
 
-  /** §7.2 for a change: an artifact the session reaches and whose revision 1 this agent produced. */
+  /** §7.2 for a change: an artifact the session reaches and this agent produced. */
   const ownArtifact = async (
     orgId: string,
     agentId: string,
@@ -365,8 +365,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
   ): Promise<ArtifactRecord> => {
     const artifact = await artifacts.get(orgId, artifactId)
     if (!artifact || artifact.latestRevision === 0 || !(await reaches(artifact, session))) throw notFound()
-    const first = await artifacts.getRevision(orgId, artifact.id, 1)
-    if (first?.producedByAgentId !== agentId)
+    if (artifact.producedByAgentId !== agentId)
       throw new ArtifactRefusal('not-producer', 'SCOPE_DENIED', `an agent ${verb} only the artifacts it produced`)
     return artifact
   }
@@ -528,8 +527,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
           // Reach first, so an artifact the session may not see reads as absent rather than as someone else's.
           const artifact = await artifacts.get(orgId, req.artifactId)
           if (!artifact || !(await reaches(artifact, session))) throw notFound()
-          const first = await artifacts.getRevision(orgId, artifact.id, 1)
-          if (first?.producedByAgentId !== agent.id) {
+          if (artifact.producedByAgentId !== agent.id) {
             throw new ArtifactRefusal('not-producer', 'SCOPE_DENIED', 'an agent revises only the artifacts it produced')
           }
           result = await artifacts.appendRevision(orgId, artifact.id, revision, limits)
@@ -688,7 +686,6 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       const page = rows.slice(0, ARTIFACT_LIST_PAGE_MAX)
       const entries = await mapLimited(page, HEAD_CONCURRENCY, async (row): Promise<ArtifactListEntry | null> => {
         const latest = await artifacts.getRevision(orgId, row.id, row.latestRevision)
-        const first = row.latestRevision === 1 ? latest : await artifacts.getRevision(orgId, row.id, 1)
         if (!latest) return null
         const entry = latest.manifest.files.find((f) => f.path === latest.manifest.entry)
         const shares = deps.shares
@@ -704,7 +701,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
           artifactId: row.id,
           title: row.title,
           audience: audienceSummary(row),
-          producedByAgent: first?.producedByAgentId === req.agentId,
+          producedByAgent: row.producedByAgentId === req.agentId,
           updatedAt: row.updatedAt.toISOString(),
           latest: {
             revision: latest.number,

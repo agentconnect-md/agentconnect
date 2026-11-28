@@ -5316,27 +5316,29 @@ enum ArtifactRevisionState {
 
 // An agent-published deliverable (artifacts.md §4): metadata only, the bytes live in the transfer bucket.
 model Artifact {
-  id               String            @id @db.Uuid
+  id                String            @id @db.Uuid
   // No foreign keys: the rows outlive the organization, session, agent and scope so the reaper still finds the objects.
-  orgId            String
-  title            String            @db.Text
+  orgId             String
+  title             String            @db.Text
   // session-visibility.md §2 form; null means organization owners manage it (artifacts.md §6.1).
-  ownerIdentity    String?
+  ownerIdentity     String?
   // Copied from the session at creation and never followed (artifacts.md §6.2); private with no owner is organization owners only.
-  visibility       SessionVisibility
+  visibility        SessionVisibility
   // The copied source scope, set exactly when visibility is external (a CHECK in the migration).
-  externalProvider String?
-  externalScopeId  String?           @db.Uuid
+  externalProvider  String?
+  externalScopeId   String?           @db.Uuid
   // The agent whose editors are the audience, set exactly when visibility is editors (a CHECK in the migration).
-  editorsAgentId   String?           @db.Uuid
+  editorsAgentId    String?           @db.Uuid
   // The session it was created in; a back link only, which may dangle after a purge.
-  originSessionId  String?
+  originSessionId   String?
+  // The agent that produced revision 1, the one that may change it (artifacts.md §7.2); kept after that revision is pruned.
+  producedByAgentId String?           @db.Uuid
   // The newest ready revision's number; 0 until the first revision is ready.
-  latestRevision   Int               @default(0)
+  latestRevision    Int               @default(0)
   // The highest number ever allocated, so a removed unfinished revision's number and prefix are never reused (§5.6).
-  revisionCounter  Int               @default(0)
-  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime          @default(now()) @db.Timestamptz(3)
+  revisionCounter   Int               @default(0)
+  createdAt         DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime          @default(now()) @db.Timestamptz(3)
 
   revisions ArtifactRevision[]
   shares    ArtifactShare[]

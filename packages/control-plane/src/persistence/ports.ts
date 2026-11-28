@@ -1046,6 +1046,8 @@ export interface ArtifactRecord extends ArtifactAudience {
   id: string
   title: string
   originSessionId: string | null
+  /** The agent that produced revision 1, which alone may change the artifact (§7.2); null only for a row with no revision. */
+  producedByAgentId: string | null
   /** The newest ready revision's number; 0 until the first one is ready. */
   latestRevision: number
   createdAt: Date

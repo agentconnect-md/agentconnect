@@ -148,6 +148,45 @@ describe('the retention sweep', () => {
     expect((await app.inject({ method: 'POST', url: READ, payload: { token } })).statusCode).toBe(410)
   })
 
+  it('keeps the creating agent the producer once revision 1 is gone, and still refuses another agent', async () => {
+    const { h, org, id } = await threeRevisions()
+    expect(await h.service.prune()).toBe(1)
+    expect(await numbers(id)).toEqual([2, 3])
+    const owner = { kind: 'console' as const, userId: DEFAULT_OWNER_ID }
+    const base = { agentId: org.agentId, sessionId: org.sessionId, artifactId: id, initiator: owner }
+
+    const other = await agentAndSession()
+    const refused = (p: Promise<unknown>) =>
+      p.then(
+        () => null,
+        (err: { reason?: string }) => err.reason
+      )
+    expect(
+      await refused(
+        h.service.begin(DEFAULT_ORG_ID, other.agent, {
+          agentId: other.agentId,
+          sessionId: other.sessionId,
+          artifactId: id,
+          manifest: manifestOf(['index.html', 'x']),
+          idempotencyKey: `key-${randomUUID()}`,
+          network: 'cluster'
+        })
+      )
+    ).toBe('not-producer')
+    const othersBase = { ...base, agentId: other.agentId, sessionId: other.sessionId }
+    expect(await refused(h.service.share(DEFAULT_ORG_ID, { ...othersBase, audience: 'org' }))).toBe('not-producer')
+    expect(await refused(h.service.delete(DEFAULT_ORG_ID, othersBase))).toBe('not-producer')
+
+    expect((await publish(h, org.agent, org.sessionId, { artifactId: id })).revision).toBe(4)
+    const listed = await h.service.list(DEFAULT_ORG_ID, { agentId: org.agentId, sessionId: org.sessionId })
+    expect(listed.artifacts.find((a) => a.artifactId === id)?.producedByAgent).toBe(true)
+    const shared = await h.service.share(DEFAULT_ORG_ID, { ...base, audience: 'org' })
+    expect(shared.revision).toBe(4)
+    await h.service.unshare(DEFAULT_ORG_ID, { ...base, shareId: shared.shareId })
+    await h.service.delete(DEFAULT_ORG_ID, base)
+    expect(await prisma.artifact.count({ where: { id } })).toBe(0)
+  })
+
   it('refuses a share on a revision the sweep removed', async () => {
     const { h, id } = await threeRevisions()
     expect(await h.service.prune()).toBe(1)
