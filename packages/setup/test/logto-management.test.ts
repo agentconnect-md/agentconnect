@@ -158,6 +158,56 @@ describe('Logto ADMIN claim', () => {
   })
 })
 
+describe('Logto rejected management token', () => {
+  // Issues token-1, token-2, … and answers a management call by the bearer it carries.
+  const setup = (answer: (bearer: string) => Response) => {
+    const bearers: string[] = []
+    let issued = 0
+    const fetcher: typeof fetch = async (input, init) => {
+      if (new URL(String(input)).pathname === '/oidc/token') {
+        return response({ access_token: `token-${++issued}`, expires_in: 3600 })
+      }
+      const bearer = new Headers(init?.headers).get('authorization')!.replace('Bearer ', '')
+      bearers.push(bearer)
+      return answer(bearer)
+    }
+    return { client: new LogtoAdminClaimClient(config, fetcher), bearers, issued: () => issued }
+  }
+  const roles = () => response([{ id: 'admin-role', name: 'ADMIN', type: 'User', isDefault: false }])
+  const role = { exists: true, type: 'User', isDefault: false }
+
+  it('refetches the token once and retries the call when the cached token is rejected', async () => {
+    const { client, bearers, issued } = setup((bearer) => (bearer === 'token-1' ? response({}, 401) : roles()))
+    await expect(client.inspectAdminRole()).resolves.toEqual(role)
+    expect(bearers).toEqual(['token-1', 'token-2'])
+    // The replacement token is cached, so the next call neither refetches nor retries.
+    await expect(client.inspectAdminRole()).resolves.toEqual(role)
+    expect(bearers).toEqual(['token-1', 'token-2', 'token-2'])
+    expect(issued()).toBe(2)
+  })
+
+  it('surfaces a 401 that the new token also gets, without a second refetch', async () => {
+    const { client, bearers, issued } = setup(() => response({}, 401))
+    await expect(client.inspectAdminRole()).rejects.toMatchObject({ code: 'LOGTO_UNAVAILABLE', status: 401 })
+    expect(bearers).toEqual(['token-1', 'token-2'])
+    expect(issued()).toBe(2)
+  })
+
+  it('keeps the cached token on a failure other than 401', async () => {
+    const { client, bearers, issued } = setup(() => response({}, 502))
+    await expect(client.inspectAdminRole()).rejects.toMatchObject({ code: 'LOGTO_UNAVAILABLE', status: 502 })
+    expect(bearers).toEqual(['token-1'])
+    expect(issued()).toBe(1)
+  })
+
+  it('shares one refetch between concurrent calls rejected on the same token', async () => {
+    const { client, bearers, issued } = setup((bearer) => (bearer === 'token-1' ? response({}, 401) : roles()))
+    await expect(Promise.all([client.inspectAdminRole(), client.inspectAdminRole()])).resolves.toEqual([role, role])
+    expect(bearers).toEqual(['token-1', 'token-1', 'token-2', 'token-2'])
+    expect(issued()).toBe(2)
+  })
+})
+
 describe('Logto named connectors', () => {
   it('reads Disable Email Sync from the connector form, not from a stored key Logto ignores', async () => {
     const oauth = (name: string, config: Record<string, unknown>, formKeys: string[]) => ({
