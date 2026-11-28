@@ -7,13 +7,14 @@ import type { OrgDto } from '@/lib/api'
 
 const mocks = vi.hoisted(() => ({
   activeOrg: null as OrgDto | null,
+  loading: false,
   loginWithSso: vi.fn(),
   writeFlowState: vi.fn()
 }))
 
 vi.mock('@/lib/org-context', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/org-context')>()),
-  useOrgs: () => ({ activeOrg: mocks.activeOrg, loading: false, error: null, refreshOrgs: vi.fn() })
+  useOrgs: () => ({ activeOrg: mocks.activeOrg, orgs: [], loading: mocks.loading, error: null, refreshOrgs: vi.fn() })
 }))
 vi.mock('@/lib/auth', () => ({
   currentUser: () => ({ name: 'Dana', email: 'dana@acme.example', initials: 'D' }),
@@ -39,10 +40,10 @@ const org = (patch: Partial<OrgDto> = {}): OrgDto => ({
 let host: HTMLDivElement
 let root: Root
 
-async function render() {
+async function render(orgless = false) {
   await act(async () => {
     root.render(
-      <OrgGate>
+      <OrgGate orgless={orgless}>
         <p>organization pages</p>
       </OrgGate>
     )
@@ -54,6 +55,8 @@ beforeEach(() => {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
+  mocks.activeOrg = null
+  mocks.loading = false
   mocks.loginWithSso.mockReset()
   mocks.writeFlowState.mockReset()
 })
@@ -81,5 +84,20 @@ describe('organization gate', () => {
     await act(async () => button.click())
     expect(mocks.writeFlowState).toHaveBeenCalledWith('returnTo', '/acme/agents?tab=all')
     expect(mocks.loginWithSso).toHaveBeenCalledWith('connector-acme', 'dana@acme.example')
+  })
+
+  it('keeps an organization page waiting for someone who belongs to none', async () => {
+    await render()
+    expect(host.textContent).not.toContain('organization pages')
+  })
+
+  it('opens an account page for someone who belongs to no organization, once that is known', async () => {
+    mocks.loading = true
+    await render(true)
+    expect(host.textContent).not.toContain('organization pages')
+
+    mocks.loading = false
+    await render(true)
+    expect(host.textContent).toBe('organization pages')
   })
 })

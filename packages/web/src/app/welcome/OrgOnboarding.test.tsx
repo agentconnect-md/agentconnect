@@ -33,6 +33,7 @@ vi.mock('@/lib/api', () => ({
   createOrg: mocks.createOrg
 }))
 vi.mock('@/lib/org-context', () => ({
+  ACCOUNT_PATH: '/profile',
   cacheCreatedOrg: mocks.cacheCreatedOrg,
   orgUrlPrefix: () => 'console.example.test/'
 }))
@@ -158,5 +159,11 @@ describe('org onboarding — who belongs here', () => {
     const signOut = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Sign out')!
     await act(async () => signOut.click())
     expect(mocks.logout).toHaveBeenCalledTimes(1)
+  })
+
+  it('links the avatar to the profile page, where an account with no organization can be deleted', async () => {
+    mocks.user = { sub: 'u1', initials: 'D' }
+    await render()
+    expect(host.querySelector('header a')?.getAttribute('href')).toBe('/profile')
   })
 })
