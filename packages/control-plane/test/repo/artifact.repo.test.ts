@@ -41,6 +41,7 @@ const revision = (key: string, patch: Partial<NewArtifactRevision> = {}): NewArt
   initiatedBy: 'user:alice',
   idempotencyKey: key,
   baseRevision: null,
+  uploadsSignedAt: new Date(),
   ...patch
 })
 

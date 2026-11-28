@@ -1,6 +1,11 @@
-// The retention sweep's decision (artifacts.md §10.1, P3).
+// The reaper's decisions (artifacts.md §10.1): retention (P3) and unfinished revisions.
 import { describe, expect, it } from 'vitest'
-import { retentionWindowMs, revisionExpired, type RevisionRetentionFacts } from './retention.js'
+import {
+  retentionWindowMs,
+  revisionExpired,
+  unfinishedRevisionExpired,
+  type RevisionRetentionFacts
+} from './retention.js'
 
 const DAY = 24 * 60 * 60_000
 const NOW = Date.parse('2026-11-27T00:00:00.000Z')
@@ -57,5 +62,28 @@ describe('revisionExpired', () => {
 
   it('follows a shorter window', () => {
     expect(revisionExpired(facts({ retention: '7d', createdAt: new Date(NOW - 8 * DAY) }), NOW)).toBe(true)
+  })
+})
+
+describe('unfinishedRevisionExpired', () => {
+  const DELAY = (900 + 300) * 1000
+
+  it('removes a pending or closed revision once its last PUTs expired plus the grace', () => {
+    for (const state of ['pending', 'closed'] as const) {
+      expect(unfinishedRevisionExpired({ state, uploadsSignedAt: new Date(NOW - DELAY - 1) }, NOW, DELAY)).toBe(true)
+    }
+  })
+
+  it('keeps one whose PUTs, or the grace after them, may still be live', () => {
+    for (const ago of [0, 900_000, DELAY]) {
+      const facts = { state: 'pending' as const, uploadsSignedAt: new Date(NOW - ago) }
+      expect(unfinishedRevisionExpired(facts, NOW, DELAY)).toBe(false)
+    }
+  })
+
+  it('never removes a ready revision', () => {
+    expect(unfinishedRevisionExpired({ state: 'ready', uploadsSignedAt: new Date(NOW - 30 * DAY) }, NOW, DELAY)).toBe(
+      false
+    )
   })
 })

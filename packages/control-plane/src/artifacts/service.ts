@@ -51,7 +51,7 @@ import {
 } from '../file-transfer/transfer.js'
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
 import type { ArtifactShareService } from './shares.js'
-import { revisionExpired } from './retention.js'
+import { revisionExpired, unfinishedRevisionExpired } from './retention.js'
 import { manifestChanges } from './stale-base.js'
 import {
   ArtifactIdempotencyConflictError,
@@ -85,6 +85,8 @@ const DELETE_CONCURRENCY = 16
 const REAP_BATCH = 50
 /** Expired revisions one retention pass removes. */
 export const PRUNE_BATCH = 100
+/** Unfinished revisions one cleanup pass removes. */
+export const UNFINISHED_BATCH = 100
 /** The longest upload URL the transfer config admits, for a service built without its own value. */
 const MAX_UPLOAD_URL_SECONDS = 3600
 
@@ -164,6 +166,8 @@ export interface ArtifactService {
   reap(): Promise<number>
   /** Remove up to `PRUNE_BATCH` revisions past their installation's retention, objects right after (§10.1); returns how many. */
   prune(): Promise<number>
+  /** Remove up to `UNFINISHED_BATCH` pending or closed revisions whose PUTs have expired plus the grace (§10.1); returns how many. */
+  removeUnfinished(): Promise<number>
   /** A browser GET for one file of a ready revision, downloaded as an attachment; undefined without a bucket. */
   fileDownload(revision: ArtifactRevisionRecord, path: string): Promise<TransferUrl | undefined>
 }
@@ -499,6 +503,7 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         producedInSessionId: req.sessionId,
         initiatedBy,
         idempotencyKey: req.idempotencyKey,
+        uploadsSignedAt: new Date(now()),
         // Neither a base nor `replace` is a replacement, which is what a daemon older than §5.6 sends.
         baseRevision: req.baseRevision ?? null,
         ...(daemonId ? { publishedByDaemonId: daemonId } : {})
@@ -561,6 +566,13 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         }
         if (result.revision.state === 'ready') {
           return { state: 'ready', ...(await published(result.artifact, result.revision.number)) }
+        }
+        // Fresh PUTs restart the cleanup clock; one completed meanwhile answers ready, one the reaper removed is gone.
+        const { artifactId, number } = result.revision
+        if (!(await artifacts.touchUploads(orgId, artifactId, number, new Date(now())))) {
+          const settled = await artifacts.getRevision(orgId, artifactId, number)
+          if (settled?.state === 'ready') return { state: 'ready', ...(await published(result.artifact, number)) }
+          throw notFound()
         }
       }
       const { storagePrefix, artifactId, number } = result.revision
@@ -833,6 +845,30 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       }
       if (failure !== undefined) throw failure
       return pruned
+    },
+
+    async removeUnfinished() {
+      if (!transfer) return 0
+      const at = new Date(now())
+      let removed = 0
+      let failure: unknown
+      for (const key of await artifacts.unfinishedRevisions(new Date(at.getTime() - purgeDelayMs), UNFINISHED_BATCH)) {
+        try {
+          // Every PUT signed for it has expired, so one sweep is the last; a replay since the scan keeps it.
+          const deletion = await artifacts.removeUnfinished(key, { deletedAt: at, purgeAfter: at }, (facts) =>
+            unfinishedRevisionExpired(facts, at.getTime(), purgeDelayMs)
+          )
+          if (!deletion) continue
+          removed += 1
+          await sweep(transfer, deletion).catch((err: unknown) => {
+            deps.log?.warn({ err, ...key }, 'unfinished artifact revision sweep failed; the reaper retries it')
+          })
+        } catch (err) {
+          failure ??= err
+        }
+      }
+      if (failure !== undefined) throw failure
+      return removed
     },
 
     async fileDownload(revision, path) {

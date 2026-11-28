@@ -1,4 +1,4 @@
-// Which old revisions the retention sweep removes (artifacts.md §10.1, P3): the publishing installation's `sessions.retention`.
+// Which revisions the reaper removes (artifacts.md §10.1): old ready ones past retention (P3), unfinished ones past their PUTs.
 import { SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
 import type { ArtifactRevisionState } from '../persistence/ports.js'
 
@@ -28,4 +28,16 @@ export function revisionExpired(facts: RevisionRetentionFacts, now: number): boo
   if (facts.state !== 'ready' || facts.number >= facts.latestRevision || facts.activelyShared) return false
   const window = retentionWindowMs(facts.retention)
   return window !== null && facts.createdAt.getTime() + window < now
+}
+
+/** What the reaper knows about a revision that never became ready, read under the artifact's row lock. */
+export interface UnfinishedRevisionFacts {
+  state: ArtifactRevisionState
+  /** When PUTs were last signed for it, at begin or a replay of it. */
+  uploadsSignedAt: Date
+}
+
+/** True when a pending or closed revision's last PUTs expired more than `delayMs` (URL lifetime plus grace) ago. */
+export function unfinishedRevisionExpired(facts: UnfinishedRevisionFacts, now: number, delayMs: number): boolean {
+  return facts.state !== 'ready' && facts.uploadsSignedAt.getTime() + delayMs < now
 }

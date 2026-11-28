@@ -22,7 +22,7 @@ import type {
   NewArtifact,
   NewArtifactRevision
 } from '../ports.js'
-import type { RevisionRetentionFacts } from '../../artifacts/retention.js'
+import type { RevisionRetentionFacts, UnfinishedRevisionFacts } from '../../artifacts/retention.js'
 
 /** An idempotency key the agent already used for a different publication. */
 export class ArtifactIdempotencyConflictError extends Error {
@@ -146,7 +146,8 @@ function revisionData(
     totalBytes: manifestBytes(revision.manifest),
     fileCount: revision.manifest.files.length,
     baseRevision: revision.baseRevision,
-    idempotencyKey: revision.idempotencyKey
+    idempotencyKey: revision.idempotencyKey,
+    uploadsSignedAt: revision.uploadsSignedAt
   }
 }
 
@@ -542,6 +543,58 @@ export class PgArtifactRepo implements ArtifactRepo {
       })
       // Revoked shares on it stay, so their links keep answering as revoked until the artifact is deleted.
       await tx.artifactRevision.delete({ where: { id: revision.id } })
+      return toDeletion(recorded)
+    })
+  }
+
+  async touchUploads(orgId: string, artifactId: string, number: number, at: Date): Promise<boolean> {
+    // A row the reaper removed, or one that settled, matches nothing, so the replay signs no PUT for it.
+    const touched = await this.db.artifactRevision.updateMany({
+      where: { artifactId, number, state: 'pending', artifact: { orgId } },
+      data: { uploadsSignedAt: at }
+    })
+    return touched.count > 0
+  }
+
+  async unfinishedRevisions(signedBefore: Date, limit: number): Promise<ArtifactRevisionKey[]> {
+    // The SQL projection of `unfinishedRevisionExpired`; the integration test holds the two to the same cases.
+    return this.db.$queryRaw<ArtifactRevisionKey[]>`
+      SELECT a."orgId", r."artifactId", r."number"
+      FROM "artifact_revision" r
+      JOIN "artifact" a ON a."id" = r."artifactId"
+      WHERE r."state" IN ('pending', 'closed') AND r."uploadsSignedAt" < ${signedBefore}
+      ORDER BY r."uploadsSignedAt", r."id"
+      LIMIT ${limit}`
+  }
+
+  async removeUnfinished(
+    key: ArtifactRevisionKey,
+    at: { deletedAt: Date; purgeAfter: Date },
+    expired: (facts: UnfinishedRevisionFacts) => boolean
+  ): Promise<ArtifactDeletionRecord | null> {
+    return withAmbientTx(this.db, async (tx) => {
+      // The row lock orders this against a completion, which settles the revision under the same lock.
+      const locked = await tx.$queryRaw<Array<{ latestRevision: number }>>`
+        SELECT "latestRevision" FROM "artifact"
+        WHERE "id" = ${key.artifactId}::uuid AND "orgId" = ${key.orgId} FOR UPDATE`
+      const latestRevision = locked[0]?.latestRevision
+      if (latestRevision === undefined) return null
+      const revision = await tx.artifactRevision.findUnique({
+        where: { artifactId_number: { artifactId: key.artifactId, number: key.number } }
+      })
+      if (!revision || !expired({ state: revision.state, uploadsSignedAt: revision.uploadsSignedAt })) return null
+      // A replay stamps without the artifact's lock, so the delete matches only the stamp that was judged.
+      const removed = await tx.artifactRevision.deleteMany({
+        where: { id: revision.id, state: { in: ['pending', 'closed'] }, uploadsSignedAt: revision.uploadsSignedAt }
+      })
+      if (removed.count === 0) return null
+      const recorded = await tx.artifactDeletion.create({
+        data: { id: revision.id, orgId: key.orgId, objectKeys: objectKeysOf(revision), ...at }
+      })
+      // An artifact that never had a ready revision was never listed or readable, so it goes with its last revision.
+      if (latestRevision === 0 && (await tx.artifactRevision.count({ where: { artifactId: key.artifactId } })) === 0) {
+        await tx.artifact.delete({ where: { id: key.artifactId } })
+      }
       return toDeletion(recorded)
     })
   }
