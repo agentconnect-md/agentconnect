@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import {
+  ARTIFACT_BASE_FEATURE,
   ARTIFACT_DELETE_FEATURE,
   ARTIFACT_SHARES_FEATURE,
   ARTIFACTS_FEATURE,
@@ -105,11 +106,12 @@ async function deployment(env: Record<string, string>) {
 }
 
 describe('artifact feature gating', () => {
-  it('advertises artifacts-v1, artifact-shares-v1 and artifact-delete-v1 and tells the console the content domain only with a bucket and a content domain', async () => {
+  it('advertises artifacts-v1, artifact-shares-v1, artifact-delete-v1 and artifact-base-v1 and tells the console the content domain only with a bucket and a content domain', async () => {
     const both = await deployment({ AC_FILE_TRANSFER: BUCKET, ARTIFACTS_CONTENT_DOMAIN: 'example-usercontent.net' })
     expect(both.features).toContain(ARTIFACTS_FEATURE)
     expect(both.features).toContain(ARTIFACT_SHARES_FEATURE)
     expect(both.features).toContain(ARTIFACT_DELETE_FEATURE)
+    expect(both.features).toContain(ARTIFACT_BASE_FEATURE)
     expect(both.artifacts).toEqual({ enabled: true, contentDomain: 'example-usercontent.net' })
 
     const halves: Record<string, string>[] = [
@@ -121,6 +123,7 @@ describe('artifact feature gating', () => {
       expect(off.features).not.toContain(ARTIFACTS_FEATURE)
       expect(off.features).not.toContain(ARTIFACT_SHARES_FEATURE)
       expect(off.features).not.toContain(ARTIFACT_DELETE_FEATURE)
+      expect(off.features).not.toContain(ARTIFACT_BASE_FEATURE)
       expect(off.artifacts).toEqual({ enabled: false, contentDomain: null })
     }
   })

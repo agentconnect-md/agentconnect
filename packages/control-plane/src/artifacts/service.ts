@@ -16,6 +16,7 @@ import type {
   ArtifactRefusalReason,
   ArtifactShareOk,
   ArtifactShareReq,
+  ArtifactStaleBase,
   ArtifactUnshareOk,
   ArtifactUnshareReq,
   ErrorCode
@@ -51,9 +52,11 @@ import {
 import type { ReadAccessResolver } from '../orchestrator/readAccess.js'
 import type { ArtifactShareService } from './shares.js'
 import { revisionExpired } from './retention.js'
+import { manifestChanges } from './stale-base.js'
 import {
   ArtifactIdempotencyConflictError,
   ArtifactOrgLimitError,
+  ArtifactStaleBaseError,
   decodeArtifactCursor,
   encodeArtifactCursor
 } from '../persistence/repositories/artifact.repo.js'
@@ -435,6 +438,36 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
     }
   }
 
+  /** The `stale-base` refusal (§5.6): the latest revision, and the paths changed since `baseRevision` while it is still kept. */
+  const staleBase = async (
+    orgId: string,
+    artifactId: string,
+    latestRevision: number,
+    baseRevision: number | null
+  ): Promise<ArtifactRefusal> => {
+    const [latest, base] = await Promise.all([
+      artifacts.getRevision(orgId, artifactId, latestRevision),
+      baseRevision === null ? null : artifacts.getRevision(orgId, artifactId, baseRevision)
+    ])
+    if (latest?.state !== 'ready') return notFound()
+    const details: ArtifactStaleBase = {
+      ...(baseRevision === null ? {} : { baseRevision }),
+      latest: {
+        revision: latest.number,
+        producedByAgentId: latest.producedByAgentId,
+        producedByAgentName: latest.producedByAgentName,
+        createdAt: latest.createdAt.toISOString()
+      },
+      ...(base?.state === 'ready' ? { changes: manifestChanges(base.manifest, latest.manifest) } : {})
+    }
+    const by = `${latest.producedByAgentName} at ${details.latest.createdAt}`
+    const message =
+      baseRevision === null
+        ? `revision ${latest.number} (published by ${by}) became ready after this replacement began; publish again`
+        : `revision ${latest.number} (published by ${by}) is now the latest, not revision ${baseRevision} this update was built on; fetch revision ${latest.number}, reapply the change and publish again on it`
+    return new ArtifactRefusal('stale-base', 'CONFLICT', message, false, details)
+  }
+
   return {
     async begin(orgId, agent, req, daemonId) {
       const bucket = requireTransfer()
@@ -466,6 +499,8 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         producedInSessionId: req.sessionId,
         initiatedBy,
         idempotencyKey: req.idempotencyKey,
+        // Neither a base nor `replace` is a replacement, which is what a daemon older than §5.6 sends.
+        baseRevision: req.baseRevision ?? null,
         ...(daemonId ? { publishedByDaemonId: daemonId } : {})
       }
 
@@ -499,6 +534,11 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         if (err instanceof ArtifactIdempotencyConflictError) {
           throw new ArtifactRefusal('idempotency-conflict', 'CONFLICT', err.message)
         }
+        if (err instanceof ArtifactStaleBaseError && req.artifactId !== undefined) {
+          // A base before any revision is ready names nothing the session could have fetched.
+          if (err.latestRevision === 0) throw notFound()
+          throw await staleBase(orgId, req.artifactId, err.latestRevision, req.baseRevision ?? null)
+        }
         if (err instanceof ArtifactOrgLimitError) {
           throw new ArtifactRefusal(
             'org-limit',
@@ -511,9 +551,13 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
         throw err
       }
 
+      // A replay is answered from what its key recorded, before any base comparison (§5.6).
       if (result.replayed) {
         if (canonicalManifest(result.revision.manifest) !== canonicalManifest(req.manifest)) {
           throw new ArtifactRefusal('idempotency-conflict', 'CONFLICT', 'the idempotency key recorded another manifest')
+        }
+        if (result.revision.baseRevision !== (req.baseRevision ?? null)) {
+          throw new ArtifactRefusal('idempotency-conflict', 'CONFLICT', 'the idempotency key recorded another base')
         }
         if (result.revision.state === 'ready') {
           return { state: 'ready', ...(await published(result.artifact, result.revision.number)) }
@@ -551,7 +595,14 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
       const bucket = requireTransfer()
       const revision = await artifacts.getRevision(orgId, req.artifactId, req.revision)
       if (!revision || revision.producedByAgentId !== req.agentId) throw notFound()
-      if (revision.state !== 'ready') {
+      // Staleness only grows, so one seen without the lock skips the HEADs; the locked check below closes it.
+      const current = await artifacts.get(orgId, req.artifactId)
+      if (!current) throw notFound()
+      const stale =
+        revision.baseRevision === null
+          ? current.latestRevision > revision.number
+          : current.latestRevision !== revision.baseRevision
+      if (revision.state === 'pending' && !stale) {
         const missing = (
           await mapLimited(revision.manifest.files, HEAD_CONCURRENCY, async (file) =>
             (await bucket.holds({
@@ -575,9 +626,12 @@ export function createArtifactService(deps: ArtifactServiceDeps): ArtifactServic
           )
         }
       }
-      const artifact = await artifacts.markReady(orgId, req.artifactId, req.revision)
-      if (!artifact) throw notFound()
-      return await published(artifact, req.revision)
+      const settled = await artifacts.markReady(orgId, req.artifactId, req.revision)
+      if (!settled) throw notFound()
+      if (settled.state === 'closed') {
+        throw await staleBase(orgId, req.artifactId, settled.artifact.latestRevision, revision.baseRevision)
+      }
+      return await published(settled.artifact, req.revision)
     },
 
     async fetch(orgId, req) {

@@ -5311,6 +5311,7 @@ enum ArtifactStorageMode {
 enum ArtifactRevisionState {
   pending // recorded, bytes still uploading; never shown
   ready // every file uploaded
+  closed // refused at completion because a newer revision got there first; never shown (artifacts.md §5.6)
 }
 
 // An agent-published deliverable (artifacts.md §4): metadata only, the bytes live in the transfer bucket.
@@ -5368,8 +5369,10 @@ model ArtifactRevision {
   totalBytes          Int
   fileCount           Int
   state               ArtifactRevisionState @default(pending)
-  // A retried publish returns the revision recorded under the same key (artifacts.md §5.3).
-  idempotencyKey      String
+  // The revision an update was built on; null for revision 1 and a replacement (artifacts.md §5.6).
+  baseRevision        Int?
+  // A retried publish returns the revision recorded under the same key (§5.3); null once closed, which releases it.
+  idempotencyKey      String?
   createdAt           DateTime              @default(now()) @db.Timestamptz(3)
 
   artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)

@@ -186,7 +186,8 @@ describe('PgArtifactRepo organization total lock', () => {
     producedByAgentName: 'Builder',
     producedInSessionId: 'session-1',
     initiatedBy: null,
-    idempotencyKey: `key-${randomUUID()}`
+    idempotencyKey: `key-${randomUUID()}`,
+    baseRevision: null
   })
   const artifact = {
     orgId: DEFAULT_ORG_ID,

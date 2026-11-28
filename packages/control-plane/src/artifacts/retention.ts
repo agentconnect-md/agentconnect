@@ -1,5 +1,6 @@
 // Which old revisions the retention sweep removes (artifacts.md §10.1, P3): the publishing installation's `sessions.retention`.
 import { SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
+import type { ArtifactRevisionState } from '../persistence/ports.js'
 
 const DAY_MS = 24 * 60 * 60_000
 
@@ -11,7 +12,7 @@ export function retentionWindowMs(setting: string | null | undefined): number | 
 
 /** What the sweep knows about one revision when it decides, read under the artifact's row lock. */
 export interface RevisionRetentionFacts {
-  state: 'pending' | 'ready'
+  state: ArtifactRevisionState
   number: number
   createdAt: Date
   /** The artifact's newest ready revision. */
@@ -22,7 +23,7 @@ export interface RevisionRetentionFacts {
   activelyShared: boolean
 }
 
-/** True when a ready, older, unshared revision has outlived its installation's window; a pending one is the publish path's. */
+/** True when a ready, older, unshared revision has outlived its installation's window; a pending or closed one is the publish path's. */
 export function revisionExpired(facts: RevisionRetentionFacts, now: number): boolean {
   if (facts.state !== 'ready' || facts.number >= facts.latestRevision || facts.activelyShared) return false
   const window = retentionWindowMs(facts.retention)

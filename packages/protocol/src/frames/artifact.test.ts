@@ -15,6 +15,8 @@ import {
   ArtifactUnshareReq,
   ArtifactDeleteOk,
   ArtifactDeleteReq,
+  ArtifactStaleBase,
+  ARTIFACT_STALE_PATHS_MAX,
   artifactPathProblem,
   buildEnvelope,
   decodeEnvelope,
@@ -172,6 +174,35 @@ describe('artifact frames', () => {
     expect(ArtifactPublishBeginReq.safeParse({ ...begin, title: '   ' }).success).toBe(false)
     expect(ArtifactTitle.safeParse('line one\nline two').success).toBe(false)
     expect(ArtifactPublishBeginReq.safeParse({ ...begin, idempotencyKey: 'short' }).success).toBe(false)
+  })
+
+  it('carries a base revision or a replace mark on an update, never both and never on a create', () => {
+    const update = { ...begin, title: undefined, artifactId: ARTIFACT }
+    expect(ArtifactPublishBeginReq.safeParse({ ...update, baseRevision: 3 }).success).toBe(true)
+    expect(ArtifactPublishBeginReq.safeParse({ ...update, replace: true }).success).toBe(true)
+    // Neither is what an older daemon sends; the CP treats it as a replacement.
+    expect(ArtifactPublishBeginReq.safeParse(update).success).toBe(true)
+    expect(ArtifactPublishBeginReq.safeParse({ ...update, baseRevision: 3, replace: true }).success).toBe(false)
+    expect(ArtifactPublishBeginReq.safeParse({ ...update, baseRevision: 0 }).success).toBe(false)
+    expect(ArtifactPublishBeginReq.safeParse({ ...update, replace: false }).success).toBe(false)
+    expect(ArtifactPublishBeginReq.safeParse({ ...begin, baseRevision: 1 }).success).toBe(false)
+    expect(ArtifactPublishBeginReq.safeParse({ ...begin, replace: true }).success).toBe(false)
+  })
+
+  it('describes a stale base with the latest revision and a capped list of changed paths', () => {
+    const latest = {
+      revision: 4,
+      producedByAgentId: AGENT,
+      producedByAgentName: 'Reporter',
+      createdAt: '2026-11-28T10:00:00.000Z'
+    }
+    const changes = { added: ['b.css'], changed: ['index.html'], removed: [], omitted: 0 }
+    expect(ArtifactStaleBase.safeParse({ baseRevision: 3, latest, changes }).success).toBe(true)
+    // A replacement, or a base no longer kept, describes only the latest.
+    expect(ArtifactStaleBase.safeParse({ latest }).success).toBe(true)
+    const tooMany = Array.from({ length: ARTIFACT_STALE_PATHS_MAX + 1 }, (_, i) => `f${i}.txt`)
+    expect(ArtifactStaleBase.safeParse({ latest, changes: { ...changes, added: tooMany } }).success).toBe(false)
+    expect(ArtifactRefusalReason.safeParse('stale-base').success).toBe(true)
   })
 
   it('answers either PUTs for a pending revision or a replayed ready result', () => {

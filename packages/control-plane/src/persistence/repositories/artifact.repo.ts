@@ -8,6 +8,7 @@ import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type {
   ArtifactAudienceKeys,
   ArtifactChange,
+  ArtifactCompletion,
   ArtifactDeletionRecord,
   ArtifactListFilter,
   ArtifactManifest,
@@ -31,6 +32,14 @@ export class ArtifactIdempotencyConflictError extends Error {
   }
 }
 
+/** An update's base is no longer the newest ready revision, checked at begin under the artifact's row lock (artifacts.md §5.6). */
+export class ArtifactStaleBaseError extends Error {
+  constructor(readonly latestRevision: number) {
+    super('the base revision is no longer the latest')
+    this.name = 'ArtifactStaleBaseError'
+  }
+}
+
 /** A new revision would take the organization past its artifact total (artifacts.md §10.2). */
 export class ArtifactOrgLimitError extends Error {
   constructor(
@@ -48,7 +57,7 @@ async function holdOrgTotal(tx: PrismaLike, orgId: string, bytes: number, limits
   const limit = limits?.orgBytesLimit ?? null
   if (limit === null) return
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['artifact-org-total', orgId])}, 0))`
-  // Live revisions only: one expired, deleted or closed has left these rows and stops counting (§5.6, §10.1).
+  // Live revisions only: an expired or deleted one has left these rows and a closed one stops counting (§5.6, §10.1).
   const rows = await tx.$queryRaw<Array<{ used: bigint | null }>>`
     SELECT SUM(r."totalBytes") AS "used" FROM "artifact_revision" r
     JOIN "artifact" a ON a."id" = r."artifactId"
@@ -91,6 +100,7 @@ function toRevision(row: ArtifactRevision): ArtifactRevisionRecord {
     totalBytes: row.totalBytes,
     fileCount: row.fileCount,
     state: row.state,
+    baseRevision: row.baseRevision,
     idempotencyKey: row.idempotencyKey,
     createdAt: row.createdAt
   }
@@ -135,6 +145,7 @@ function revisionData(
     publishedRetention,
     totalBytes: manifestBytes(revision.manifest),
     fileCount: revision.manifest.files.length,
+    baseRevision: revision.baseRevision,
     idempotencyKey: revision.idempotencyKey
   }
 }
@@ -315,7 +326,9 @@ export class PgArtifactRepo implements ArtifactRepo {
           }
         })
         const retention = await daemonRetention(tx, revision.publishedByDaemonId)
-        const first = await tx.artifactRevision.create({ data: revisionData(revision, id, 1, retention) })
+        const first = await tx.artifactRevision.create({
+          data: { ...revisionData(revision, id, 1, retention), baseRevision: null }
+        })
         return { artifact: toArtifact(created), revision: toRevision(first), replayed: false }
       })
     } catch (err) {
@@ -339,10 +352,14 @@ export class PgArtifactRepo implements ArtifactRepo {
     if (replayed) return replayed
     try {
       return await withAmbientTx(this.db, async (tx) => {
-        // The row lock serializes number allocation between concurrent publishes to one artifact.
-        const locked = await tx.$queryRaw<Array<{ id: string }>>`
-          SELECT "id" FROM "artifact" WHERE "id" = ${artifactId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
-        if (locked.length === 0) return null
+        // The row lock serializes number allocation and the base check between concurrent publishes to one artifact.
+        const locked = await tx.$queryRaw<Array<{ latestRevision: number }>>`
+          SELECT "latestRevision" FROM "artifact" WHERE "id" = ${artifactId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+        const latestRevision = locked[0]?.latestRevision
+        if (latestRevision === undefined) return null
+        if (revision.baseRevision !== null && revision.baseRevision !== latestRevision) {
+          throw new ArtifactStaleBaseError(latestRevision)
+        }
         // Taken after the artifact's row lock and never before it, so two appends cannot deadlock.
         await holdOrgTotal(tx, orgId, manifestBytes(revision.manifest), limits)
         const top = await tx.artifactRevision.aggregate({ where: { artifactId }, _max: { number: true } })
@@ -361,19 +378,40 @@ export class PgArtifactRepo implements ArtifactRepo {
     }
   }
 
-  async markReady(orgId: string, artifactId: string, number: number): Promise<ArtifactRecord | null> {
+  async markReady(orgId: string, artifactId: string, number: number): Promise<ArtifactCompletion | null> {
     return withAmbientTx(this.db, async (tx) => {
-      const marked = await tx.artifactRevision.updateMany({
-        where: { artifactId, number, artifact: { orgId } },
-        data: { state: 'ready' }
+      // The same row lock as begin, so of two updates that both passed begin only the first to complete is ready.
+      const locked = await tx.$queryRaw<Array<{ latestRevision: number }>>`
+        SELECT "latestRevision" FROM "artifact" WHERE "id" = ${artifactId}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+      const latestRevision = locked[0]?.latestRevision
+      if (latestRevision === undefined) return null
+      const revision = await tx.artifactRevision.findUnique({
+        where: { artifactId_number: { artifactId, number } },
+        select: { id: true, state: true, baseRevision: true }
       })
-      if (marked.count === 0) return null
-      // A late older revision never moves `latestRevision` back.
-      await tx.$executeRaw`
-        UPDATE "artifact" SET "latestRevision" = ${number}, "updatedAt" = now()
-        WHERE "id" = ${artifactId}::uuid AND "latestRevision" < ${number}`
-      const row = await tx.artifact.findUnique({ where: { id: artifactId } })
-      return row ? toArtifact(row) : null
+      if (!revision) return null
+      let state = revision.state
+      if (state === 'pending') {
+        // A base must still be the latest; a replacement must find no higher revision ready, so `latestRevision` only moves forward.
+        const current =
+          revision.baseRevision === null ? latestRevision < number : revision.baseRevision === latestRevision
+        if (current) {
+          await tx.artifactRevision.update({ where: { id: revision.id }, data: { state: 'ready' } })
+          await tx.$executeRaw`
+            UPDATE "artifact" SET "latestRevision" = ${number}, "updatedAt" = now()
+            WHERE "id" = ${artifactId}::uuid AND "latestRevision" < ${number}`
+          state = 'ready'
+        } else {
+          // Closed and its key released, so the same content can start a new revision; it never opens and counts no bytes.
+          await tx.artifactRevision.update({
+            where: { id: revision.id },
+            data: { state: 'closed', idempotencyKey: null }
+          })
+          state = 'closed'
+        }
+      }
+      const row = await tx.artifact.findUniqueOrThrow({ where: { id: artifactId } })
+      return { artifact: toArtifact(row), state }
     })
   }
 
