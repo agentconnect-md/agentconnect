@@ -147,9 +147,9 @@
     "fastify-plugin": "^6.0.1",
     "fastify-type-provider-zod": "^7.0.0",
     "fflate": "^0.8.3",
-    "jose": "^6.2.17",
+    "jose": "^6.2.18",
     "lru-cache": "^11.5.3",
-    "lucide": "^1.74.0",
+    "lucide": "^1.79.0",
     "sharp": "^0.35.5",
     "tldts": "^7.6.0",
     "ws": "^8.22.2",
@@ -158,16 +158,16 @@
   },
   "devDependencies": {
     "@opentelemetry/sdk-trace": "^3.1.1",
-    "@testcontainers/postgresql": "^12.2.1",
-    "@types/node": "^26.6.6",
+    "@testcontainers/postgresql": "^12.2.2",
+    "@types/node": "^26.6.7",
     "@types/ws": "^8.18.2",
     "dotenv": "^18.0.10",
     "execa": "^10.2.1",
     "prisma": "^7.10.1",
-    "testcontainers": "^12.2.1",
+    "testcontainers": "^12.2.2",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   },
   "keywords": [
     "agentconnect",
