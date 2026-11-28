@@ -109,7 +109,7 @@ import type { LeaseWaiter } from '../domain/computerLeaseQueue.js'
 import type { ComputerAllocation, ComputerPoolPhase } from '../domain/computerPool.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { ArtifactAudience, ArtifactReachSession, ArtifactViewer } from '../authorization/artifact-policy.js'
-import type { RevisionRetentionFacts } from '../artifacts/retention.js'
+import type { RevisionRetentionFacts, UnfinishedRevisionFacts } from '../artifacts/retention.js'
 import type { ApiKeyPermission } from '../domain/api-key-permission.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../domain/duty.js'
 import type { PlacementKind, PlacementRef, PlacementTarget } from '../domain/placement.js'
@@ -1095,6 +1095,8 @@ export interface NewArtifactRevision {
   baseRevision: number | null
   /** The daemon publishing it, whose `sessions.retention` the repository snapshots beside it (§10.1). */
   publishedByDaemonId?: string
+  /** When its PUTs are signed; the reaper removes it once they have expired if it never becomes ready (§10.1). */
+  uploadsSignedAt: Date
 }
 
 /** What completing a revision settled: `ready`, or `closed` because its base is stale or a higher revision is ready. */
@@ -1205,6 +1207,16 @@ export interface ArtifactRepo {
     key: ArtifactRevisionKey,
     at: { deletedAt: Date; purgeAfter: Date },
     expired: (facts: RevisionRetentionFacts) => boolean
+  ): Promise<ArtifactDeletionRecord | null>
+  /** Stamp a pending revision's PUTs as signed again at `at` before a replay signs them; false when it is no longer pending. */
+  touchUploads(orgId: string, artifactId: string, number: number, at: Date): Promise<boolean>
+  /** Pending or closed revisions whose PUTs were last signed before `signedBefore`, oldest first (§10.1). */
+  unfinishedRevisions(signedBefore: Date, limit: number): Promise<ArtifactRevisionKey[]>
+  /** Re-check `expired` under the artifact's row lock, then record the keys and delete the row, and a never-ready artifact left empty. */
+  removeUnfinished(
+    key: ArtifactRevisionKey,
+    at: { deletedAt: Date; purgeAfter: Date },
+    expired: (facts: UnfinishedRevisionFacts) => boolean
   ): Promise<ArtifactDeletionRecord | null>
   /** Deletions whose first sweep has not succeeded, or whose `purgeAfter` has passed, oldest first. */
   dueDeletions(now: Date, limit: number): Promise<ArtifactDeletionRecord[]>

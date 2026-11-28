@@ -377,8 +377,8 @@ The CP checks twice:
 
 Of two concurrent updates, the one that completes first becomes the latest and the other is
 refused. Revisions therefore become ready in number order, and `latestRevision` only moves
-forward. A number is taken at step 3, under the same row lock, which also gives each
-publish its own storage prefix. A publish that is refused at step 5, or abandoned, leaves
+forward. A number is taken at step 3, under the same row lock, from a counter on the artifact
+that removing a revision never lowers, which also gives each publish its own storage prefix. A publish that is refused at step 5, or abandoned, leaves
 its number unused, so numbers can skip.
 
 **What the refusal carries.** It names the rule and describes the revision that got there
@@ -681,6 +681,15 @@ same lock, so no share can pin a removed revision. Revoked shares on it stay, an
 answer 410 until the artifact is deleted. A pinned link to a removed revision opens the latest
 one (§8.2). Deleting an organization records every artifact of it for the reaper in the
 transaction that deletes the organization, so its links stop at once and the objects follow.
+
+A revision that never became ready, pending or closed, ages from the last time PUTs were signed
+for it (`uploadsSignedAt`), at begin or when a replay re-signs them, not from its creation. The
+same tick removes up to 100 whose last signing is older than the upload URL lifetime plus the
+300-second grace, decided again under the artifact's row lock and swapped for a deletion record
+the same way. Those URLs have already expired, so one successful sweep is the last. A completion
+or replay that arrives afterwards is refused as `not-found`. An artifact whose only revisions were
+removed this way never had a ready revision, was never listed or readable, and is removed with
+the last of them.
 
 ### 10.2 Limits
 

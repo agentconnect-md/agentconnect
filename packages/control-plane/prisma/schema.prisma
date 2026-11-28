@@ -5333,6 +5333,8 @@ model Artifact {
   originSessionId  String?
   // The newest ready revision's number; 0 until the first revision is ready.
   latestRevision   Int               @default(0)
+  // The highest number ever allocated, so a removed unfinished revision's number and prefix are never reused (§5.6).
+  revisionCounter  Int               @default(0)
   createdAt        DateTime          @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime          @default(now()) @db.Timestamptz(3)
 
@@ -5374,6 +5376,8 @@ model ArtifactRevision {
   // A retried publish returns the revision recorded under the same key (§5.3); null once closed, which releases it.
   idempotencyKey      String?
   createdAt           DateTime              @default(now()) @db.Timestamptz(3)
+  // When PUTs were last signed for it, at begin or a replay; an unfinished revision goes once they expire (artifacts.md §10.1).
+  uploadsSignedAt     DateTime              @default(now()) @db.Timestamptz(3)
 
   artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
 
@@ -5382,6 +5386,7 @@ model ArtifactRevision {
   @@unique([producedByAgentId, idempotencyKey])
   @@index([producedInSessionId])
   @@index([createdAt])
+  @@index([state, uploadsSignedAt])
   @@map("artifact_revision")
 }
 
