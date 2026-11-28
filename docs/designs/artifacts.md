@@ -376,8 +376,8 @@ The CP checks twice:
 
 Of two concurrent updates, the one that completes first becomes the latest and the other is
 refused. Revisions therefore become ready in number order, and `latestRevision` only moves
-forward. A number is taken at step 3, under the same row lock, which also gives each
-publish its own storage prefix. A publish that is refused at step 5, or abandoned, leaves
+forward. A number is taken at step 3, under the same row lock, from a counter on the artifact
+that removing a revision never lowers, which also gives each publish its own storage prefix. A publish that is refused at step 5, or abandoned, leaves
 its number unused, so numbers can skip.
 
 **What the refusal carries.** It names the rule and describes the revision that got there

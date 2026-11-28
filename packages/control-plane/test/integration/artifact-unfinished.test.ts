@@ -119,6 +119,29 @@ describe('unfinished revision cleanup', () => {
     expect((await refusal(complete(artifactId, 2))).reason).toBe('not-found')
   })
 
+  it('never reuses a removed revision’s number, so its deletion record cannot reach a later publish', async () => {
+    const { h, agent, sessionId, begin, complete } = await setup()
+    const { artifactId } = await publish(h, agent, sessionId)
+    const abandoned = pending(await begin({ artifactId, baseRevision: 1 }))
+    h.upload(abandoned)
+    h.bucket.failDeletes = true
+    h.clock.now = T0 + DELAY + 1
+    expect(await h.service.removeUnfinished()).toBe(1)
+    expect(await prisma.artifactDeletion.count()).toBe(1)
+
+    const next = pending(await begin({ artifactId, baseRevision: 1, manifest: manifestOf(['index.html', 'v2']) }))
+    expect(next.revision).toBe(3)
+    h.upload(next)
+    expect((await refusal(complete(artifactId, 2))).reason).toBe('not-found')
+    expect((await complete(artifactId, 3)).revision).toBe(3)
+
+    h.bucket.failDeletes = false
+    expect(await h.service.reap()).toBe(1)
+    expect(keysOf(h, artifactId, 2)).toEqual([])
+    expect(keysOf(h, artifactId, 3)).toHaveLength(1)
+    expect(await numbers(artifactId)).toEqual([1, 3])
+  })
+
   it('counts from the last signing, so a pending revision a replay re-signed is not removed early', async () => {
     const { h, begin, complete } = await setup()
     const first = pending(await begin({ idempotencyKey: 'replayed-key-0001' }))

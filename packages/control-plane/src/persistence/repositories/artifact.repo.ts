@@ -323,7 +323,8 @@ export class PgArtifactRepo implements ArtifactRepo {
             externalProvider: artifact.externalProvider,
             externalScopeId: artifact.externalScopeId,
             editorsAgentId: artifact.editorsAgentId,
-            originSessionId: artifact.originSessionId
+            originSessionId: artifact.originSessionId,
+            revisionCounter: 1
           }
         })
         const retention = await daemonRetention(tx, revision.publishedByDaemonId)
@@ -363,10 +364,14 @@ export class PgArtifactRepo implements ArtifactRepo {
         }
         // Taken after the artifact's row lock and never before it, so two appends cannot deadlock.
         await holdOrgTotal(tx, orgId, manifestBytes(revision.manifest), limits)
-        const top = await tx.artifactRevision.aggregate({ where: { artifactId }, _max: { number: true } })
+        // From the artifact's counter, never the highest row, so a removed unfinished revision's number is not reused.
+        const allocated = await tx.$queryRaw<Array<{ number: number }>>`
+          UPDATE "artifact" SET "revisionCounter" = GREATEST("revisionCounter",
+            (SELECT COALESCE(MAX("number"), 0) FROM "artifact_revision" WHERE "artifactId" = ${artifactId}::uuid)) + 1
+          WHERE "id" = ${artifactId}::uuid RETURNING "revisionCounter" AS "number"`
         const retention = await daemonRetention(tx, revision.publishedByDaemonId)
         const appended = await tx.artifactRevision.create({
-          data: revisionData(revision, artifactId, (top._max.number ?? 0) + 1, retention)
+          data: revisionData(revision, artifactId, allocated[0]!.number, retention)
         })
         const current = await tx.artifact.findUniqueOrThrow({ where: { id: artifactId } })
         return { artifact: toArtifact(current), revision: toRevision(appended), replayed: false }

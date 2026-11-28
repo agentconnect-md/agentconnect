@@ -5333,6 +5333,8 @@ model Artifact {
   originSessionId  String?
   // The newest ready revision's number; 0 until the first revision is ready.
   latestRevision   Int               @default(0)
+  // The highest number ever allocated, so a removed unfinished revision's number and prefix are never reused (§5.6).
+  revisionCounter  Int               @default(0)
   createdAt        DateTime          @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime          @default(now()) @db.Timestamptz(3)
 
