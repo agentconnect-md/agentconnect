@@ -80,6 +80,27 @@ export class PgBotCredentialWriter implements BotCredentialWriter {
     })
   }
 
+  async restampSigningSecret(
+    orgId: OrgId,
+    botId: BotId,
+    signingSecret: string,
+    at: Date,
+    fence: { revision: number }
+  ): Promise<number | null> {
+    const sealed = await this.cipher.seal(signingSecret, orgScope(orgId))
+    return withTx(this.prisma, async (tx) => {
+      // The same bot-row lock as install and revoke, so the fence is read and the write lands in one step.
+      const locked = await tx.$queryRaw<
+        { credentialRevision: number; revokedAt: Date | null }[]
+      >`SELECT "credentialRevision", "revokedAt" FROM bot WHERE id = ${botId} AND "orgId" = ${orgId} FOR UPDATE`
+      if (!locked[0] || locked[0].revokedAt || locked[0].credentialRevision !== fence.revision) return null
+      // Only this column: the bot token stays whatever a reinstall last wrote.
+      const { count } = await tx.botSecret.updateMany({ where: { botId }, data: { signingSecret: sealed } })
+      if (count === 0) return null
+      return new PgBotRepo(tx).bumpCredential(botId, at)
+    })
+  }
+
   async revoke(
     botId: BotId,
     at: Date,

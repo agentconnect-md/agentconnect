@@ -13,7 +13,7 @@ export interface SlackSigningSecretReconcilerLog {
 export interface SlackSigningSecretReconcilerDeps {
   bots: Pick<BotRepo, 'listForPlatform'>
   secrets: Pick<BotSecretStore, 'get'>
-  credentials: Pick<BotCredentialWriter, 'install'>
+  credentials: Pick<BotCredentialWriter, 'restampSigningSecret'>
   /** Re-broadcast `rc/bot-assign` for the bot whose row just moved (the orchestrator's `syncBot`). */
   resync(botId: BotId): Promise<void>
   /** The deployment app, read per tick; absent ⇒ the shared app is disabled and nothing is stamped. */
@@ -96,12 +96,16 @@ export class SlackSigningSecretReconciler {
         const secret = await this.deps.secrets.get(bot.orgId, bot.id)
         // A null slot is a socket-mode bot or one mid-install; neither holds a copy to correct.
         if (secret && secret.signingSecret !== null && secret.signingSecret !== app.signingSecret) {
-          const credentialRevision = await this.deps.credentials.install(
+          // Fenced on the listed revision and writing one column, so a concurrent reinstall or revoke is never overwritten.
+          const credentialRevision = await this.deps.credentials.restampSigningSecret(
             bot.orgId,
             bot.id,
-            { ...secret, signingSecret: app.signingSecret },
-            new Date(this.deps.clock.now())
+            app.signingSecret,
+            new Date(this.deps.clock.now()),
+            { revision: bot.credentialRevision }
           )
+          // Null ⇒ the bot moved under this pass; the next pass reads it fresh.
+          if (credentialRevision === null) continue
           // Marked before the broadcast, so a throwing resync leaves a debt the next pass repays.
           this.pendingResync.add(bot.id)
           this.deps.log?.info(

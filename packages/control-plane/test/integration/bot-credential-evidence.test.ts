@@ -325,3 +325,62 @@ describe('a fresh credential', () => {
     expect(await observations(botId)).toEqual([])
   })
 })
+
+describe('restampSigningSecret', () => {
+  const org = OrgId(DEFAULT_ORG_ID)
+
+  it('rewrites the signing secret alone and advances the generation', async () => {
+    const { app, botId } = await install()
+    const before = await botRow(botId)
+
+    const revision = await app.deps.repos.botCredential.restampSigningSecret(
+      org,
+      BotId(botId),
+      'signing-secret-v2',
+      new Date(),
+      { revision: before.credentialRevision }
+    )
+
+    expect(revision).toBe(before.credentialRevision + 1)
+    expect(await app.deps.repos.botSecret.get(org, BotId(botId))).toMatchObject({
+      botToken: SLACK.botToken,
+      appToken: SLACK.appToken,
+      signingSecret: 'signing-secret-v2'
+    })
+  })
+
+  it('writes nothing once the bot carries another generation', async () => {
+    const { app, botId } = await install()
+    const before = await botRow(botId)
+
+    const revision = await app.deps.repos.botCredential.restampSigningSecret(
+      org,
+      BotId(botId),
+      'signing-secret-v2',
+      new Date(),
+      { revision: before.credentialRevision - 1 }
+    )
+
+    expect(revision).toBeNull()
+    expect((await botRow(botId)).credentialRevision).toBe(before.credentialRevision)
+    expect((await app.deps.repos.botSecret.get(org, BotId(botId)))?.signingSecret ?? null).toBeNull()
+  })
+
+  it('leaves a revoked bot revoked', async () => {
+    const { app, botId } = await install()
+    const revokedAt = new Date()
+    await prisma.bot.update({ where: { id: botId }, data: { revokedAt } })
+    const before = await botRow(botId)
+
+    const revision = await app.deps.repos.botCredential.restampSigningSecret(
+      org,
+      BotId(botId),
+      'signing-secret-v2',
+      new Date(),
+      { revision: before.credentialRevision }
+    )
+
+    expect(revision).toBeNull()
+    expect((await botRow(botId)).revokedAt).toEqual(revokedAt)
+  })
+})

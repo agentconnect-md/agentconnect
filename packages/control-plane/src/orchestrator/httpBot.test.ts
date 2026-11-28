@@ -391,6 +391,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         botRow = { ...botRow, credentialRevision: botRow.credentialRevision + 1 }
         return botRow.credentialRevision
       },
+      restampSigningSecret: async () => null,
       revoke: async (id, at, fence, record) => {
         const applied = await bots.revokeIfCurrent!(id, at, fence, record)
         if (!applied) return { applied: false, integrationIds: [] }

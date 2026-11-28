@@ -64,9 +64,9 @@ type AppRef = { current: SlackPlatformAppConfig | undefined }
 
 function harness(rows: BotRecord[], secrets: Map<string, BotSecretMaterial>, appRef: AppRef = { current: APP }) {
   const order: string[] = []
-  const install = vi.fn(async (_org: OrgId, botId: BotId, material: BotSecretMaterial) => {
+  const install = vi.fn(async (_org: OrgId, botId: BotId, signingSecret: string): Promise<number | null> => {
     order.push(`install:${botId}`)
-    secrets.set(String(botId), material)
+    secrets.set(String(botId), { ...secrets.get(String(botId))!, signingSecret })
     return 2
   })
   const resync = vi.fn(async (botId: BotId) => {
@@ -75,7 +75,7 @@ function harness(rows: BotRecord[], secrets: Map<string, BotSecretMaterial>, app
   const reconciler = new SlackSigningSecretReconciler({
     bots: { listForPlatform: async () => rows },
     secrets: { get: async (_org, botId) => secrets.get(String(botId)) ?? null },
-    credentials: { install } as unknown as SlackSigningSecretReconcilerDeps['credentials'],
+    credentials: { restampSigningSecret: install } as unknown as SlackSigningSecretReconcilerDeps['credentials'],
     resync,
     clock: new FakeClock(),
     intervalMs: 60_000,
@@ -88,18 +88,15 @@ function harness(rows: BotRecord[], secrets: Map<string, BotSecretMaterial>, app
 }
 
 describe('SlackSigningSecretReconciler', () => {
-  it('rewrites a stale signing secret, keeps the bot token, then re-broadcasts', async () => {
+  it('rewrites a stale signing secret behind the revision fence, then re-broadcasts', async () => {
     const secrets = new Map([[String(BOT), stamped('signing-secret-v1')]])
     const { reconciler, install, order } = harness([bot()], secrets)
 
     await reconciler.tick()
 
-    expect(install).toHaveBeenCalledWith(
-      ORG,
-      BOT,
-      { botToken: 'xoxb-workspace-token', appToken: null, signingSecret: APP.signingSecret },
-      expect.any(Date)
-    )
+    // Fenced on the revision this pass listed, and it names the signing secret alone.
+    expect(install).toHaveBeenCalledWith(ORG, BOT, APP.signingSecret, expect.any(Date), { revision: 1 })
+    expect(secrets.get(String(BOT))?.botToken).toBe('xoxb-workspace-token')
     // A broadcast before the durable write would publish a secret nothing stored.
     expect(order).toEqual([`install:${BOT}`, `resync:${BOT}`])
   })
@@ -143,6 +140,17 @@ describe('SlackSigningSecretReconciler', () => {
 
     expect(install).toHaveBeenCalledTimes(1)
     expect(resync).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips the broadcast when the bot moved under the pass', async () => {
+    const secrets = new Map([[String(BOT), stamped('signing-secret-v1')]])
+    const { reconciler, install, resync } = harness([bot()], secrets)
+    install.mockImplementationOnce(async () => null)
+
+    await reconciler.tick()
+
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(resync).not.toHaveBeenCalled()
   })
 
   it('one unreadable row does not strand the rest', async () => {
