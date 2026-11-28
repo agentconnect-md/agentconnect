@@ -1,8 +1,9 @@
 # Artifacts
 
-**Status:** Steps 1 to 4 implemented (#4442); step 5 and the concurrent-update rule (§5.6)
-are not yet built. Product decisions recorded 2026-11-24 and 2026-11-26 (§3); the open
-questions are in §13 and the rollout in §14.
+**Status:** Steps 1 to 4 and the concurrent-update rule's base check and agent tools (§5.6)
+implemented (#4442); step 5 and the removal of unfinished revisions are not yet built.
+Product decisions recorded 2026-11-24 and 2026-11-26 (§3); the open questions are in §13
+and the rollout in §14.
 
 **Builds on:** [agent-authored-attachments.md](agent-authored-attachments.md) (`shareFile`
 and the session snapshot), [source-cache-file-transfer.md](source-cache-file-transfer.md)
@@ -515,15 +516,20 @@ sees: an artifact is a deliverable the organization may still need, not a conver
 | Tool    | Input                                                                                                                                              | Effect                                                                                                                          |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | Publish | Path (file or directory), title, entry file for a directory, optional artifact id; with an artifact id, the base revision or a replace mark (§5.6) | Creates an artifact, or appends a revision to the given one. Returns the id, revision number, console link and current audience |
-| Fetch   | Artifact id, optional revision                                                                                                                     | Puts that revision's files into a directory of its own under the session's `outputs/`, and returns its number                   |
+| Fetch   | Artifact id, optional revision                                                                                                                     | Puts that revision's files into a directory of its own under the session's `outputs/`, and returns its number and path          |
 | List    | None                                                                                                                                               | The artifacts the agent may see, with their latest revision                                                                     |
 | Delete  | Artifact id                                                                                                                                        | Deletes the artifact: every revision, its bytes and its shares                                                                  |
 | Share   | Artifact id, revision, audience                                                                                                                    | Creates a share and returns its link                                                                                            |
 | Unshare | Artifact id, share id                                                                                                                              | Revokes one share                                                                                                               |
 
 Fetch is what makes "the agent can always revise" hold: workspaces are reclaimed, and the
-stored copy is the reliable source. Each fetched revision gets its own directory, so
-fetching a newer revision to merge with leaves the agent's working files alone (§5.6).
+stored copy is the reliable source. Each fetched revision gets its own directory,
+`outputs/<title>-<id>-r<n>/` (the title made path-safe, the id's first eight characters,
+then the revision number), so fetching a newer revision to merge with leaves the agent's
+working files alone (§5.6). Fetching the same revision again replaces its directory once
+every file has arrived. An update without a base or a replace mark is refused by the tool
+before anything uploads, and the refusal of a stale base tells the agent which revision to
+fetch, which files changed and that it publishes again with that revision as the base.
 
 Share defaults to the latest ready revision. Its link carries the token and is returned only
 once; List carries each artifact's active shares by id, revision, audience and the token's
@@ -796,11 +802,10 @@ the loopback address with a locally trusted certificate.
 
 ## 13. Open questions
 
-| #   | Question                                                                                                                                                                              | Proposal                                                                                                                                                 |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | Manifest in the database or as an object in the bucket                                                                                                                                | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds                          |
-| P5  | Whether the daemon also checks that the session fetched or published the base it names. The refusal tells the agent the latest number, so an agent can name it without merging (§5.6) | Not at first: the refusal tells the agent to fetch and reapply. Add the check if agents are seen skipping the merge                                      |
-| P6  | Where a fetched revision lands. Today one directory per artifact under `outputs/` is replaced by each fetch, which would discard the working copy during a merge (§5.6)               | One directory per revision under `outputs/`, named by the artifact and the revision number. The extra entries in the session's outputs list are accepted |
+| #   | Question                                                                                                                                                                              | Proposal                                                                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| P1  | Manifest in the database or as an object in the bucket                                                                                                                                | The database. File counts are bounded, and paths, sizes and digests are metadata of the same kind `session_file_snapshot` holds |
+| P5  | Whether the daemon also checks that the session fetched or published the base it names. The refusal tells the agent the latest number, so an agent can name it without merging (§5.6) | Not at first: the refusal tells the agent to fetch and reapply. Add the check if agents are seen skipping the merge             |
 
 ### 13.1 Settled: P2, the content domain in current engines
 
@@ -854,6 +859,17 @@ sweep.
 Settled by the owner on 2026-11-27: a revision holds at most 200 files and 200 MB, raised from
 the proposed 50 MB. There is no default organization total; the managed service sets one per
 plan. §10.2 describes how both are enforced.
+
+### 13.4 Settled: P6, where a fetched revision lands
+
+Settled by implementing the proposal, not by an owner decision: each fetch lands in a
+directory of its own under the session's `outputs/`, `<title>-<id>-r<n>/`, the title made
+path-safe, then the artifact id's first eight characters and the revision number (§7.1).
+Before this, one directory per artifact was replaced by every fetch, which would have
+discarded the working copy during a merge (§5.6). Each fetched revision is one more entry in
+the session's outputs list, which the proposal accepted; fetching the same revision again
+replaces its own directory, and directories left by earlier daemons, named without the
+revision, are left alone.
 
 ## 14. Rollout
 

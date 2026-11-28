@@ -1,4 +1,4 @@
-// The artifact tools against a fake CP client (artifacts.md §5.3, §7): upload and complete, the card row, refusals, fetch, gating.
+// The artifact tools against a fake CP client (artifacts.md §5.3, §5.6, §7): upload and complete, the card row, bases, refusals, fetch, gating.
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { WireError } from '@agentconnect.md/connection'
@@ -56,6 +56,7 @@ function harness(root: FakeNode, overrides: Partial<ArtifactPort> = {}) {
     served: () => true,
     sharesServed: () => true,
     deleteServed: () => true,
+    baseServed: () => true,
     turn: async () => ({ sessionId: 'session-1', turn: 'msg-1', initiator: { kind: 'console', userId: 'user-1' } }),
     begin: async (req) => {
       begins.push(req)
@@ -159,9 +160,11 @@ describe('publishArtifact', () => {
     const h = harness('x')
     await expect(publishArtifact(ctx(), { path: 'a.md' }, h.deps)).rejects.toThrow(/a new artifact needs a `title`/)
     expect(h.begins).toHaveLength(0)
-    const result = (await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, title: 'Renamed' }, h.deps)) as {
-      notice?: string
-    }
+    const result = (await publishArtifact(
+      ctx(),
+      { path: 'a.md', artifactId: ARTIFACT, baseRevision: 1, title: 'Renamed' },
+      h.deps
+    )) as { notice?: string }
     expect(h.begins[0]).not.toHaveProperty('title')
     expect(h.begins[0]!.artifactId).toBe(ARTIFACT)
     expect(result.notice).toMatch(/keeps the artifact’s title "Q3 report"/)
@@ -228,7 +231,10 @@ describe('publishArtifact', () => {
       ['too-large', /over this deployment’s size limit \(boom\)/],
       ['revision-limit', /publishArtifact: boom; nothing was published\. Publish fewer or smaller files/],
       ['org-limit', /publishArtifact: boom; nothing was published, and nothing already published was removed/],
-      ['idempotency-conflict', /collided with an earlier one/],
+      [
+        'idempotency-conflict',
+        /same request key with other files or another base.*publish again with its number as `baseRevision`/
+      ],
       ['title-required', /needs a `title`/],
       ['incomplete', /did not complete for "a.md"; nothing was published/, { paths: ['a.md'] }],
       ['some-new-reason', /did not complete the request \(boom\)/]
@@ -292,6 +298,145 @@ describe('publishArtifact', () => {
   })
 })
 
+describe('publishArtifact base revision', () => {
+  const STALE = {
+    reason: 'stale-base',
+    baseRevision: 3,
+    latest: {
+      revision: 5,
+      producedByAgentId: '11111111-1111-4111-8111-111111111111',
+      producedByAgentName: 'Analyst',
+      createdAt: '2026-11-28T10:00:00.000Z'
+    },
+    changes: { added: ['img/new.png'], changed: ['index.html', 'app.js'], removed: [], omitted: 0 }
+  }
+  const staleAt = (details: Record<string, unknown>) =>
+    harness('x', {
+      begin: async () => {
+        throw new WireError('CONFLICT', 'revision 5 is now the latest', false, details)
+      }
+    })
+
+  it('refuses an update with neither a base nor replace before asking the control plane', async () => {
+    const h = harness('x')
+    await expect(publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT }, h.deps)).rejects.toThrow(
+      /an update needs `baseRevision`, the revision your files were built on.*Pass `replace: true` instead only if.*nothing was published/
+    )
+    expect(h.begins).toEqual([])
+  })
+
+  it('refuses both together, and either without an artifactId', async () => {
+    const h = harness('x')
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 2, replace: true }, h.deps)
+    ).rejects.toThrow(/pass `baseRevision` or `replace: true`, not both/)
+    await expect(publishArtifact(ctx(), { path: 'a.md', title: 'A', baseRevision: 2 }, h.deps)).rejects.toThrow(
+      /apply only to a new revision of an existing artifact; pass its `artifactId` too/
+    )
+    await expect(publishArtifact(ctx(), { path: 'a.md', title: 'A', replace: true }, h.deps)).rejects.toThrow(
+      /apply only to a new revision/
+    )
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 0 }, h.deps)
+    ).rejects.toThrow(/baseRevision must be 1 or more/)
+    expect(h.begins).toEqual([])
+  })
+
+  it('sends the base or the replace mark, and keys each base apart while a retry keeps its key', async () => {
+    const h = harness('x')
+    await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, h.deps)
+    await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, h.deps)
+    await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 4 }, h.deps)
+    await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, replace: true }, h.deps)
+    await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 2, replace: false }, h.deps)
+    const [first, retry, other, replaced, falseReplace] = h.begins
+    expect(first).toMatchObject({ artifactId: ARTIFACT, baseRevision: 3 })
+    expect(first).not.toHaveProperty('replace')
+    expect(replaced).toMatchObject({ artifactId: ARTIFACT, replace: true })
+    expect(replaced).not.toHaveProperty('baseRevision')
+    expect(falseReplace).toMatchObject({ baseRevision: 2 })
+    expect(falseReplace).not.toHaveProperty('replace')
+    expect(retry!.idempotencyKey).toBe(first!.idempotencyKey)
+    const keys = new Set([first, other, replaced, falseReplace].map((b) => b!.idempotencyKey))
+    expect(keys.size).toBe(4)
+  })
+
+  it('toward a control plane without artifact-base-v1, sends neither and publishes as before', async () => {
+    const h = harness('x', { baseServed: () => false })
+    const plain = (await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT }, h.deps)) as {
+      notice?: string
+    }
+    const based = (await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, h.deps)) as {
+      notice?: string
+    }
+    await publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, replace: true }, h.deps)
+    for (const begin of h.begins) {
+      expect(begin).not.toHaveProperty('baseRevision')
+      expect(begin).not.toHaveProperty('replace')
+    }
+    expect(new Set(h.begins.map((b) => b.idempotencyKey)).size).toBe(1)
+    expect(plain.notice).toBeUndefined()
+    expect(based.notice).toMatch(/does not check base revisions yet.*revision 3 was still the latest/)
+  })
+
+  it('turns a stale-base refusal into the newer revision, who made it, what changed and how to merge', async () => {
+    const h = staleAt(STALE)
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, h.deps)
+    ).rejects.toThrow(
+      'publishArtifact: revision 5 (published by Analyst at 2026-11-28T10:00:00.000Z) is now the latest, not ' +
+        'revision 3 this update was built on, so nothing was published. Since revision 3: added "img/new.png"; ' +
+        'changed "index.html", "app.js". Call fetchArtifact with revision 5: it lands in a directory of its own and ' +
+        'leaves your files alone. Then reapply your change to its files and publish that directory with ' +
+        '`baseRevision: 5`. Nothing is merged automatically. If the person wants your version to stand over it ' +
+        'instead, publish your files with `replace: true`.'
+    )
+    expect(h.puts).toEqual([])
+  })
+
+  it('counts the omitted paths, and says when the base is no longer kept', async () => {
+    const capped = staleAt({ ...STALE, changes: { added: [], changed: ['a.md'], removed: ['b.md'], omitted: 49 } })
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, capped.deps)
+    ).rejects.toThrow(/Since revision 3: changed "a.md"; removed "b.md" \(and 49 more paths\)\./)
+    const { changes: _changes, ...pruned } = STALE
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, staleAt(pruned).deps)
+    ).rejects.toThrow(
+      /Revision 3 is no longer kept, so the files changed since it cannot be listed\. Call fetchArtifact with revision 5/
+    )
+  })
+
+  it('tells a refused replacement it may replace again or reapply on the newer revision', async () => {
+    const { baseRevision: _b, changes: _c, ...replacement } = STALE
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, replace: true }, staleAt(replacement).deps)
+    ).rejects.toThrow(
+      /revision 5 \(published by Analyst at .*\) became ready while this replacement was uploading, so nothing was published\. Call fetchArtifact with revision 5.*publish your files again with `replace: true`; otherwise reapply your change to its files and publish that directory with `baseRevision: 5`\./
+    )
+  })
+
+  it('refuses at completion with the same text, and falls back when the details are unreadable', async () => {
+    const late = harness('x', {
+      complete: async () => {
+        throw new WireError('CONFLICT', 'boom', false, STALE)
+      }
+    })
+    await expect(
+      publishArtifact(ctx(), { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 }, late.deps)
+    ).rejects.toThrow(/revision 5 \(published by Analyst/)
+    await expect(
+      publishArtifact(
+        ctx(),
+        { path: 'a.md', artifactId: ARTIFACT, baseRevision: 3 },
+        staleAt({ reason: 'stale-base' }).deps
+      )
+    ).rejects.toThrow(
+      /a newer revision of this artifact got there first \(revision 5 is now the latest\); nothing was published\. Fetch the latest revision/
+    )
+  })
+})
+
 describe('fetchArtifact', () => {
   const files = { 'index.html': '<p>v2</p>', 'img/logo.svg': '<svg/>' }
   const fetched = (override: Partial<Record<keyof typeof files, string>> = {}) => ({
@@ -333,28 +478,47 @@ describe('fetchArtifact', () => {
     return { ...h, written, dirs }
   }
 
-  it('downloads each file, verifies it, and lands the revision in one outputs directory', async () => {
+  it('downloads each file, verifies it, and lands the revision in an outputs directory of its own', async () => {
     const h = fetchHarness(fetched())
     const result = await fetchArtifact(ctx(), { artifactId: ARTIFACT.toUpperCase() }, h.deps)
-    expect(h.dirs).toEqual(['Q3-report-0f8fad5b'])
+    expect(h.dirs).toEqual(['Q3-report-0f8fad5b-r2'])
     expect([...h.written]).toEqual([
-      ['Q3-report-0f8fad5b/index.html', '<p>v2</p>'],
-      ['Q3-report-0f8fad5b/img/logo.svg', '<svg/>']
+      ['Q3-report-0f8fad5b-r2/index.html', '<p>v2</p>'],
+      ['Q3-report-0f8fad5b-r2/img/logo.svg', '<svg/>']
     ])
     expect(result).toEqual({
       artifactId: ARTIFACT,
       revision: 2,
       title: 'Q3 report',
-      path: 'files:outputs/Q3-report-0f8fad5b',
-      entry: 'files:outputs/Q3-report-0f8fad5b/index.html',
+      path: 'files:outputs/Q3-report-0f8fad5b-r2',
+      entry: 'files:outputs/Q3-report-0f8fad5b-r2/index.html',
       files: 2
     })
+  })
+
+  it('lands a newer revision beside the earlier one, never over it', async () => {
+    const h = fetchHarness(fetched())
+    const asked: unknown[] = []
+    const reply = await h.port.fetch({} as never)
+    h.port.fetch = async (req) => {
+      asked.push(req.revision)
+      return { ...reply, revision: req.revision ?? 7 }
+    }
+    await fetchArtifact(ctx(), { artifactId: ARTIFACT, revision: 3 }, h.deps)
+    const latest = (await fetchArtifact(ctx(), { artifactId: ARTIFACT }, h.deps)) as { revision: number; path: string }
+    expect(asked).toEqual([3, undefined])
+    expect(h.dirs).toEqual(['Q3-report-0f8fad5b-r3', 'Q3-report-0f8fad5b-r7'])
+    expect(latest).toMatchObject({ revision: 7, path: 'files:outputs/Q3-report-0f8fad5b-r7' })
+    expect([...h.written.keys()].filter((k) => k.endsWith('index.html'))).toEqual([
+      'Q3-report-0f8fad5b-r3/index.html',
+      'Q3-report-0f8fad5b-r7/index.html'
+    ])
   })
 
   it('refuses a file whose bytes do not match the manifest, writing nothing', async () => {
     const h = fetchHarness(fetched({ 'img/logo.svg': '<svg>' }))
     await expect(fetchArtifact(ctx(), { artifactId: ARTIFACT }, h.deps)).rejects.toThrow(
-      /"img\/logo.svg" did not match its recorded size and checksum; nothing was replaced/
+      /"img\/logo.svg" did not match its recorded size and checksum; nothing was written/
     )
     expect(h.written.size).toBe(0)
   })

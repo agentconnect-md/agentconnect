@@ -217,13 +217,15 @@ function tooLarge(path: string, size: number, total: number, maxFileBytes: numbe
   )
 }
 
-/** A retry key unique to this turn's publication of exactly this content, so a retried call gets the same revision. */
+/** A retry key unique to this turn's publication of exactly this content on this base, so a retried call gets the same revision. */
 export function artifactIdempotencyKey(parts: {
   agentId: string
   sessionId: string
   turn: string
   artifactId?: string
   title?: string
+  /** The base sent with the update, or `replace`; absent when neither travels (artifacts.md §5.6). */
+  base?: number | 'replace'
   manifest: ArtifactManifest
 }): string {
   const files = [...parts.manifest.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
@@ -236,15 +238,16 @@ export function artifactIdempotencyKey(parts: {
         parts.artifactId ?? null,
         parts.title ?? null,
         parts.manifest.entry,
-        files.map((f) => [f.path, f.sha256, f.bytes, f.mediaType])
+        files.map((f) => [f.path, f.sha256, f.bytes, f.mediaType]),
+        ...(parts.base !== undefined ? [parts.base] : [])
       ])
     )
     .digest('hex')
   return `pub-${digest.slice(0, 48)}`
 }
 
-/** The `outputs/` directory a fetch lands in: the title made safe, then the id's first block, so two artifacts never share one. */
-export function artifactDirName(title: string, artifactId: string): string {
+/** The `outputs/` directory a fetch lands in: the title made safe, the id's first block and the revision, so no two revisions share one. */
+export function artifactDirName(title: string, artifactId: string, revision: number): string {
   const safe = title
     .normalize('NFKC')
     .replace(/[^\p{L}\p{N}._ -]+/gu, '-')
@@ -255,6 +258,6 @@ export function artifactDirName(title: string, artifactId: string): string {
     .slice(0, 60)
     .join('')
     .replace(/[-.]+$/, '')
-  const id = artifactId.slice(0, 8)
+  const id = `${artifactId.slice(0, 8)}-r${revision}`
   return slug ? `${slug}-${id}` : `artifact-${id}`
 }

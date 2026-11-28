@@ -1,10 +1,11 @@
-// The artifact tools (artifacts.md §7): publish, fetch and list toward `artifacts-v1`, share and unshare toward `artifact-shares-v1`, delete toward `artifact-delete-v1`.
+// The artifact tools (artifacts.md §7): publish, fetch and list toward `artifacts-v1` (an update's base toward `artifact-base-v1`), share and unshare toward `artifact-shares-v1`, delete toward `artifact-delete-v1`.
 import { createHash } from 'node:crypto'
 import { WireError } from '@agentconnect.md/connection'
 import {
   ARTIFACT_PATH_MAX_BYTES,
   ARTIFACT_TITLE_MAX,
   artifactPathProblem,
+  ArtifactStaleBase,
   formatArtifactMarker,
   type ArtifactAudienceSummary,
   type ArtifactDeleteOk,
@@ -70,6 +71,8 @@ export interface ArtifactPort {
   sharesServed(): boolean
   /** Whether it also answers `artifact/delete`. */
   deleteServed(): boolean
+  /** Whether it also checks an update's `baseRevision` or `replace` (artifacts.md §5.6). */
+  baseServed(): boolean
   turn(ctx: SessionContext): Promise<ArtifactTurn | undefined>
   begin(req: ArtifactPublishBeginReq): Promise<ArtifactPublishBeginOk>
   complete(req: ArtifactPublishCompleteReq): Promise<ArtifactPublishCompleteOk>
@@ -122,7 +125,13 @@ export const PUBLISH_ARTIFACT_ARGS = z.object({
     .min(1, 'argument entry must not be empty')
     .max(ARTIFACT_PATH_MAX_BYTES)
     .optional(),
-  artifactId: ARTIFACT_ID.optional()
+  artifactId: ARTIFACT_ID.optional(),
+  baseRevision: z
+    .number('argument baseRevision must be a number')
+    .int('argument baseRevision must be a whole revision number')
+    .positive('argument baseRevision must be 1 or more')
+    .optional(),
+  replace: z.boolean('argument replace must be true or false').optional()
 })
 
 export const FETCH_ARTIFACT_ARGS = z.object({
@@ -163,7 +172,10 @@ export const PUBLISH_ARTIFACT_TOOL: ToolDescriptor = {
     'AgentConnect console, such as an HTML page, a report, a Markdown document, a chart, a PDF or source. Use it ' +
     'when the person should open the result or come back to it later; use shareFile to drop a file into this ' +
     'conversation instead. To change something you published, edit the files and publish again with its ' +
-    '`artifactId`: that adds a revision rather than a near-duplicate. The result’s `link` is what you give the ' +
+    '`artifactId` and the `baseRevision` your files were built on (the revision you fetched or last published): ' +
+    'that adds a revision rather than a near-duplicate, and is refused if a newer revision got there first, so ' +
+    'no change is lost. Pass `replace: true` instead only when your files are meant to stand in for the current ' +
+    'revision without building on it, such as a report regenerated from scratch. The result’s `link` is what you give the ' +
     'person: put it in your reply, because publishing posts nothing to a chat platform. Tell them who can open it, ' +
     'from `whoCanOpen`. A directory publishes every file in it as one revision and needs `entry`, the file that ' +
     'opens first. The console shows the entry file alone, so make an HTML page self-contained (inline styles, ' +
@@ -190,7 +202,22 @@ export const PUBLISH_ARTIFACT_TOOL: ToolDescriptor = {
       },
       artifactId: {
         type: 'string',
-        description: 'Publish a new revision of an artifact you published (from an earlier result or listArtifacts).'
+        description:
+          'Publish a new revision of an artifact you published (from an earlier result or listArtifacts). Needs ' +
+          '`baseRevision` or `replace`.'
+      },
+      baseRevision: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'With `artifactId`: the revision your files were built on — the one you fetched, or the one you last ' +
+          'published. Refused if a newer revision exists; nothing merges automatically.'
+      },
+      replace: {
+        type: 'boolean',
+        description:
+          'With `artifactId`, instead of `baseRevision`: true when your files are meant to stand in for the latest ' +
+          'revision without building on it. No base is checked.'
       }
     },
     ['path']
@@ -201,9 +228,11 @@ export const FETCH_ARTIFACT_TOOL: ToolDescriptor = {
   name: 'fetchArtifact',
   description:
     'Download one revision of an artifact into your session outputs to keep working on it, for example after its ' +
-    'workspace was cleaned up. Its files land in the returned `files:outputs/…` directory, replacing what an ' +
-    'earlier fetch of the same artifact left there. Defaults to the latest revision. Edit them there, then ' +
-    'publishArtifact that directory (or the single file) with the same `artifactId` to publish the next revision.',
+    'workspace was cleaned up, or to reapply your change on a newer revision after publishArtifact was refused. ' +
+    'Each revision lands in a `files:outputs/…-r<revision>` directory of its own, so fetching another revision ' +
+    'never touches files you are working on; fetching the same revision again replaces its directory. Defaults ' +
+    'to the latest revision. Edit the files there, then publishArtifact that directory (or the single file) with ' +
+    'the same `artifactId` and the returned `revision` as `baseRevision`.',
   inputSchema: obj(
     {
       artifactId: { type: 'string', description: 'The artifact, from publishArtifact or listArtifacts.' },
@@ -323,6 +352,58 @@ async function turnFor(ctx: SessionContext, port: ArtifactPort, name: string): P
   return turn
 }
 
+const quoted = (paths: readonly string[]): string => paths.map((p) => `"${p}"`).join(', ')
+
+/** The `stale-base` refusal (artifacts.md §5.6): who got there first, what changed, and how to fetch, reapply and publish again. */
+function staleBaseText(name: string, err: WireError): string {
+  const parsed = ArtifactStaleBase.safeParse(err.details ?? {})
+  if (!parsed.success)
+    return (
+      `${name}: a newer revision of this artifact got there first (${err.message}); nothing was published. ` +
+      'Fetch the latest revision with fetchArtifact, reapply your change to its files and publish again with its ' +
+      'number as `baseRevision`.'
+    )
+  const { baseRevision, latest, changes } = parsed.data
+  const n = latest.revision
+  const who = `published by ${latest.producedByAgentName} at ${latest.createdAt}`
+  const lines: string[] = []
+  if (baseRevision === undefined) {
+    lines.push(
+      `${name}: revision ${n} (${who}) became ready while this replacement was uploading, so nothing was published.`
+    )
+  } else {
+    lines.push(
+      `${name}: revision ${n} (${who}) is now the latest, not revision ${baseRevision} this update was built on, so ` +
+        'nothing was published.'
+    )
+    if (changes) {
+      const parts = [
+        changes.added.length ? `added ${quoted(changes.added)}` : '',
+        changes.changed.length ? `changed ${quoted(changes.changed)}` : '',
+        changes.removed.length ? `removed ${quoted(changes.removed)}` : ''
+      ].filter(Boolean)
+      const more = changes.omitted ? ` (and ${changes.omitted} more path${changes.omitted === 1 ? '' : 's'})` : ''
+      lines.push(
+        parts.length
+          ? `Since revision ${baseRevision}: ${parts.join('; ')}${more}.`
+          : `No file differs between revision ${baseRevision} and revision ${n}${more}.`
+      )
+    } else {
+      lines.push(`Revision ${baseRevision} is no longer kept, so the files changed since it cannot be listed.`)
+    }
+  }
+  const fetch = `Call fetchArtifact with revision ${n}: it lands in a directory of its own and leaves your files alone.`
+  const reapply = `reapply your change to its files and publish that directory with \`baseRevision: ${n}\``
+  lines.push(
+    baseRevision === undefined
+      ? `${fetch} If your version should still stand over it, publish your files again with \`replace: true\`; ` +
+          `otherwise ${reapply}.`
+      : `${fetch} Then ${reapply}. Nothing is merged automatically. If the person wants your version to stand over ` +
+          'it instead, publish your files with `replace: true`.'
+  )
+  return lines.join(' ')
+}
+
 /** What each `ArtifactRefusalReason` tells the agent; the CP's own message follows where it adds detail. */
 const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
   'not-enabled': (name) =>
@@ -347,13 +428,16 @@ const REFUSALS: Record<string, (name: string, err: WireError) => string> = {
   'org-limit': (name, err) =>
     `${name}: ${err.message}; nothing was published, and nothing already published was removed. Tell the person: ` +
     'an artifact’s owner or an organization owner can free space by deleting artifacts that are no longer needed.',
+  'stale-base': staleBaseText,
   'idempotency-conflict': (name) =>
-    `${name}: this publication collided with an earlier one from this turn — publish again.`,
+    `${name}: an earlier publication in this turn used the same request key with other files or another base, so ` +
+    'this one was refused and nothing was published. Check listArtifacts for the latest revision: if your change ' +
+    'is not in it, fetch that revision, reapply your change and publish again with its number as `baseRevision`.',
   'title-required': (name) => `${name}: a new artifact needs a \`title\`.`,
   incomplete: (name, err) => {
     const paths = Array.isArray(err.details?.paths) ? (err.details.paths as unknown[]).map(String) : []
     return (
-      `${name}: the upload did not complete${paths.length ? ` for ${paths.map((p) => `"${p}"`).join(', ')}` : ''}; ` +
+      `${name}: the upload did not complete${paths.length ? ` for ${quoted(paths)}` : ''}; ` +
       'nothing was published. Publish again.'
     )
   },
@@ -478,10 +562,30 @@ function firstCard(cards: Set<string>, key: string): boolean {
 export const publishArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, deps) => {
   const a = parseArgs(PUBLISH_ARTIFACT_ARGS, args)
   const port = portFor(ctx, deps, 'publishArtifact')
+  const replace = a.replace === true
+  if (a.baseRevision !== undefined && replace)
+    throw new Error(
+      'publishArtifact: pass `baseRevision` or `replace: true`, not both — `baseRevision` when your files build on that revision, `replace` when they stand in for it.'
+    )
+  if (!a.artifactId && (a.baseRevision !== undefined || replace))
+    throw new Error(
+      'publishArtifact: `baseRevision` and `replace` apply only to a new revision of an existing artifact; pass its `artifactId` too, or leave them out to publish a new artifact.'
+    )
   if (!a.artifactId && !a.title)
     throw new Error(
       'publishArtifact: a new artifact needs a `title`. To publish a new revision of one you published, pass its `artifactId`.'
     )
+  // An older CP checks no base, so an update there publishes as it always did and nothing is sent (artifacts.md §5.6).
+  const checked = port.baseServed()
+  if (a.artifactId && checked && a.baseRevision === undefined && !replace)
+    throw new Error(
+      'publishArtifact: an update needs `baseRevision`, the revision your files were built on (the one you fetched ' +
+        'or last published), so a newer revision published meanwhile is not overwritten. Pass `replace: true` ' +
+        'instead only if your files should stand in for the latest revision without building on it. ' +
+        'listArtifacts shows the latest revision; nothing was published.'
+    )
+  const base: number | 'replace' | undefined =
+    !checked || !a.artifactId ? undefined : replace ? 'replace' : a.baseRevision
   const turn = await turnFor(ctx, port, 'publishArtifact')
   const label = await port.normalizePath(ctx, a.path).catch(() => a.path)
   const source = await port.source(ctx, a.path)
@@ -508,13 +612,16 @@ export const publishArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, 
       sessionId: turn.sessionId,
       ...(a.artifactId ? { artifactId: a.artifactId } : {}),
       ...(creating && a.title ? { title: a.title } : {}),
+      ...(base === 'replace' ? { replace: true as const } : base !== undefined ? { baseRevision: base } : {}),
       manifest: built.manifest,
+      // The key names the base, so a retry keeps it and another base is another publication (artifacts.md §5.6).
       idempotencyKey: artifactIdempotencyKey({
         agentId: ctx.agentId,
         sessionId: turn.sessionId,
         turn: turn.turn,
         ...(a.artifactId ? { artifactId: a.artifactId } : {}),
         ...(creating && a.title ? { title: a.title } : {}),
+        ...(base !== undefined ? { base } : {}),
         manifest: built.manifest
       }),
       network: port.network(),
@@ -537,6 +644,11 @@ export const publishArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, 
   if (!creating && a.title !== undefined && a.title !== published.title)
     notices.push(`A new revision keeps the artifact’s title "${published.title}"; only people rename it.`)
   if (built.skipped.length) notices.push(`Left out: ${built.skipped.join(', ')}.`)
+  if (a.baseRevision !== undefined && !checked)
+    notices.push(
+      'This control plane does not check base revisions yet, so this revision became the latest without checking ' +
+        `that revision ${a.baseRevision} was still the latest.`
+    )
   const cardKey = `${turn.sessionId}\u001f${published.artifactId}\u001f${published.revision}`
   if (firstCard(port.cards, cardKey)) {
     const text = formatArtifactMarker({
@@ -585,19 +697,21 @@ export const fetchArtifact: ToolHandler<ArtifactToolDeps> = async (ctx, args, de
     if (artifactPathProblem(file.path) || !urls.has(file.path))
       throw new Error(`fetchArtifact: the control plane answered an unusable file list for this revision.`)
   }
-  const written = await port.writeOutputs(ctx, artifactDirName(got.title, got.artifactId), async (put) => {
+  // Each revision in a directory of its own, so a fetch never replaces the files being worked on (artifacts.md §5.6, P6).
+  const dirName = artifactDirName(got.title, got.artifactId, got.revision)
+  const written = await port.writeOutputs(ctx, dirName, async (put) => {
     for (const file of got.manifest.files) {
       let bytes: Buffer
       try {
         bytes = await port.download(urls.get(file.path)!, file.bytes)
       } catch (err) {
         throw new ArtifactToolError(
-          `fetchArtifact: downloading "${file.path}" failed (${err instanceof Error ? err.message : String(err)}); nothing was replaced. Try again.`
+          `fetchArtifact: downloading "${file.path}" failed (${err instanceof Error ? err.message : String(err)}); nothing was written. Try again.`
         )
       }
       if (bytes.byteLength !== file.bytes || sha256Hex(bytes) !== file.sha256)
         throw new ArtifactToolError(
-          `fetchArtifact: "${file.path}" did not match its recorded size and checksum; nothing was replaced. Try again.`
+          `fetchArtifact: "${file.path}" did not match its recorded size and checksum; nothing was written. Try again.`
         )
       await put(file.path, bytes)
     }

@@ -1,4 +1,4 @@
-// A fetched revision lands as one `outputs/<dir>/` (artifacts.md §7.1), staged beside it and swapped in whole.
+// A fetched revision lands in an `outputs/<dir>/` of its own (artifacts.md §7.1), staged beside it and swapped in whole.
 import { randomUUID } from 'node:crypto'
 import { promises as nodeFs } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -16,7 +16,7 @@ export type ArtifactFilePut = (path: string, bytes: Buffer) => Promise<void>
 export type ReplaceOutputsResult =
   { ok: true; path: string; name: string } | { ok: false; reason: 'escape' | 'write-failed'; detail?: string }
 
-/** Write a revision into `outputs/<dirName>/`, replacing what an earlier fetch left there only once every file landed. */
+/** Write a revision into `outputs/<dirName>/`, replacing an earlier fetch of the same revision only once every file landed. */
 export async function replaceOutputsDir(
   target: SaveAttachmentTarget,
   dirName: string,

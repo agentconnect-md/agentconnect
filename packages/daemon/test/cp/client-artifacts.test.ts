@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   ARTIFACT_DELETE_FEATURE,
+  ARTIFACT_BASE_FEATURE,
   ARTIFACT_SHARES_FEATURE,
   ARTIFACTS_FEATURE,
   buildEnvelope
@@ -206,6 +207,15 @@ describe('CpClient artifact requests', () => {
     }
     t.pushInbound(JSON.stringify(buildEnvelope('artifact/unshare/ok', revoked, { corr: revoke.id, orgId: ORG })))
     await expect(unshared).resolves.toEqual(revoked)
+    client.stop()
+  })
+
+  it('reports base checks only toward a CP that also advertises artifact-base-v1', async () => {
+    const older = await ready([ARTIFACTS_FEATURE])
+    expect(older.client.supportsArtifactBase()).toBe(false)
+    older.client.stop()
+    const { client } = await ready([ARTIFACTS_FEATURE, ARTIFACT_BASE_FEATURE])
+    expect(client.supportsArtifactBase()).toBe(true)
     client.stop()
   })
 
