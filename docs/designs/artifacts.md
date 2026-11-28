@@ -138,7 +138,7 @@ The Control Plane stores metadata only, never file bytes.
 | Field                                    | Meaning                                                                       |
 | ---------------------------------------- | ----------------------------------------------------------------------------- |
 | `artifactId`, `number`                   | Numbered from 1 and increasing; a number can be skipped (§5.6)                |
-| `state`                                  | `pending` while its files upload, then `ready`; only a ready revision opens   |
+| `state`                                  | `pending` while uploading, then `ready`, or `closed` if refused (§5.6)        |
 | `baseRevision`                           | The revision an update was built on; null for revision 1 and a replacement    |
 | `manifest`                               | Entry path, and each file's relative path, SHA-256, size and media type       |
 | `storageMode`, `storagePrefix`           | Where the bytes live (§5.2); every revision is `signed` today                 |
@@ -385,6 +385,14 @@ first: its number, the agent that produced it and when. The CP holds both manife
 also lists the paths added, changed and removed between the base and the latest, up to a
 cap. If the base is no longer kept (§10.1), only the latest is described.
 
+On the wire the refusal is an `error` reply whose `details.reason` is `stale-base`; the rest
+of `details` is the protocol's `ArtifactStaleBase`: the base named, the latest revision's
+number, producing agent id and name and creation time, and `changes`. A path is changed when
+its SHA-256 differs. The cap is 50 paths across the three lists (`ARTIFACT_STALE_PATHS_MAX`),
+filled added first, then changed, then removed, with a count of the paths left out. A
+replacement refused at step 5 has no base, so it too describes only the latest. A base on an
+artifact with no ready revision yet is refused as `not-found`.
+
 **What the agent does.** It fetches the latest revision, reapplies its own change to it,
 and publishes again with that revision as the base. A fetch lands in a directory of its own
 per revision (§7.1), so it never replaces the files the agent was working on. If the person
@@ -396,8 +404,11 @@ what its change meant.
 
 - **Retries.** A replayed idempotency key is answered from the revision it recorded before
   any comparison, so retrying a publish that already succeeded returns that revision, not a
-  refusal. A revision refused at step 5 is closed and its key released, so publishing the
-  same content again starts a new revision.
+  refusal. The key names the base too: the same key with another base is an
+  `idempotency-conflict`. A revision refused at step 5 is closed, its state `closed` and its
+  key cleared, so publishing the same content again starts a new revision. A closed revision
+  never opens, stops counting toward the organization total at once, and is removed with
+  the other unfinished revisions (§10.1); a repeated completion of it is refused again.
 - **Deletion.** Deleting an artifact wins over a publish still uploading to it: its
   completion finds no artifact and is refused. PUTs signed before the deletion can still
   land afterwards, so the deletion is recorded and the artifact's prefix is cleared once
@@ -407,9 +418,9 @@ what its change meant.
 - **Title and audience.** These are single fields changed by people; the last write wins.
 
 **Compatibility.** The base and the replace mark travel in the publish frame behind a CP
-feature of their own, so a daemon sends them only to a CP that checks them. A publish that
-carries neither is treated as a replacement, which is what a daemon older than this rule
-sends.
+feature of their own, `artifact-base-v1`, so a daemon sends them only to a CP that checks
+them. A publish that carries neither is treated as a replacement, which is what a daemon
+older than this rule sends.
 
 **The object store takes no part.** Three of its mechanisms were considered and left out:
 
@@ -675,7 +686,8 @@ transaction that deletes the organization, so its links stop at once and the obj
   revision it holds. A publish that would pass it is refused at step 3 with `org-limit`,
   the limit and the bytes in use; nothing old is evicted. The check runs under a lock per
   organization, so concurrent publishes cannot pass it together (§5.6). A pending revision
-  counts until it becomes ready or is removed (§10.1).
+  counts until it becomes ready or is removed (§10.1); one closed at completion stops
+  counting when it is closed.
 - No total is set by default. It is the `artifactBytesLimit` field of the organization's
   policy, which the managed service delivers per plan
   ([org-session-policy.md](org-session-policy.md)); an operator can deliver one the same way.

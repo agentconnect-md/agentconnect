@@ -659,7 +659,7 @@ export const FRAME_SCHEMAS = {
   'image/original/resolve/ok': SharedImageResolveOk,
   'session/file/put': SessionFilePutReq,
   'session/file/put/ok': SessionFilePutOk,
-  // ── artifacts (artifacts.md §5.3; D→C REQ → REP behind `artifacts-v1`, presigned URLs only) ──
+  // ── artifacts (artifacts.md §5.3; D→C REQ → REP behind `artifacts-v1`, a begin's base behind `artifact-base-v1`, presigned URLs only) ──
   'artifact/publish/begin': ArtifactPublishBeginReq,
   'artifact/publish/begin/ok': ArtifactPublishBeginOk,
   'artifact/publish/complete': ArtifactPublishCompleteReq,

@@ -9,6 +9,8 @@ export const ARTIFACTS_FEATURE = 'artifacts-v1'
 export const ARTIFACT_SHARES_FEATURE = 'artifact-shares-v1'
 /** This CP also answers `artifact/delete` (artifacts.md §7.1, D13). */
 export const ARTIFACT_DELETE_FEATURE = 'artifact-delete-v1'
+/** This CP checks an update's `baseRevision` or `replace` at begin and completion, refusing a stale one as `stale-base` (artifacts.md §5.6). */
+export const ARTIFACT_BASE_FEATURE = 'artifact-base-v1'
 
 /** Files one revision may hold (artifacts.md §10.2). */
 export const ARTIFACT_MAX_FILES = 200
@@ -23,6 +25,8 @@ export const ARTIFACT_TITLE_MAX = 200
 export const ARTIFACT_LIST_PAGE_MAX = 25
 /** Active shares one list entry carries at most, newest first. */
 export const ARTIFACT_LIST_SHARES_MAX = 20
+/** Paths one `stale-base` refusal lists at most, across added, changed and removed (artifacts.md §5.6). */
+export const ARTIFACT_STALE_PATHS_MAX = 50
 
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 const utf8 = new TextEncoder()
@@ -202,19 +206,32 @@ export const ArtifactIdempotencyKey = z
   .regex(/^[A-Za-z0-9._:-]+$/)
 
 /** D→C REQ: record a pending revision, a new artifact when `artifactId` is absent, and presign one PUT per file. */
-export const ArtifactPublishBeginReq = z.object({
-  agentId: z.string().uuid(),
-  sessionId: z.string().min(1).max(200),
-  /** Append to this artifact; the agent must have produced its revision 1 and the session must reach it. */
-  artifactId: z.string().uuid().optional(),
-  /** Required to create; an append keeps the artifact's title, which only people rename. */
-  title: ArtifactTitle.optional(),
-  manifest: ArtifactManifest,
-  idempotencyKey: ArtifactIdempotencyKey,
-  network: TransferNetwork,
-  /** Absent for a turn no person or trigger started: the artifact then has no owner. */
-  initiator: ArtifactInitiator.optional()
-})
+export const ArtifactPublishBeginReq = z
+  .object({
+    agentId: z.string().uuid(),
+    sessionId: z.string().min(1).max(200),
+    /** Append to this artifact; the agent must have produced its revision 1 and the session must reach it. */
+    artifactId: z.string().uuid().optional(),
+    /** Required to create; an append keeps the artifact's title, which only people rename. */
+    title: ArtifactTitle.optional(),
+    manifest: ArtifactManifest,
+    idempotencyKey: ArtifactIdempotencyKey,
+    network: TransferNetwork,
+    /** Absent for a turn no person or trigger started: the artifact then has no owner. */
+    initiator: ArtifactInitiator.optional(),
+    /** An update built on this revision, accepted only while it is the latest (§5.6); send only to a CP with `artifact-base-v1`. */
+    baseRevision: z.number().int().positive().optional(),
+    /** An update meant to stand in for the latest, with no base compared; an update with neither is one too, as older daemons send. */
+    replace: z.literal(true).optional()
+  })
+  .superRefine((req, ctx) => {
+    if (req.baseRevision !== undefined && req.replace) {
+      ctx.addIssue({ code: 'custom', message: 'name a base revision or replace, not both', path: ['replace'] })
+    }
+    if (req.artifactId === undefined && (req.baseRevision !== undefined || req.replace)) {
+      ctx.addIssue({ code: 'custom', message: 'a base revision or replace needs an artifactId', path: ['artifactId'] })
+    }
+  })
 export type ArtifactPublishBeginReq = z.infer<typeof ArtifactPublishBeginReq>
 
 /** C→D REP: PUTs for a pending revision, or the ready result a replayed key already reached. */
@@ -240,9 +257,32 @@ export const ArtifactPublishCompleteReq = z.object({
 })
 export type ArtifactPublishCompleteReq = z.infer<typeof ArtifactPublishCompleteReq>
 
-/** C→D REP: the ready revision; a repeated complete answers the same. */
+/** C→D REP: the ready revision; a repeated complete answers the same, and one refused as `stale-base` is refused again. */
 export const ArtifactPublishCompleteOk = ArtifactPublished
 export type ArtifactPublishCompleteOk = z.infer<typeof ArtifactPublishCompleteOk>
+
+/** The `details` of a `stale-base` refusal beside `reason`: the revision that got there first and what changed (§5.6). */
+export const ArtifactStaleBase = z.object({
+  /** The base the publish named; absent for a replacement. */
+  baseRevision: z.number().int().positive().optional(),
+  latest: z.object({
+    revision: z.number().int().positive(),
+    producedByAgentId: z.string().uuid(),
+    producedByAgentName: z.string(),
+    createdAt: z.string().datetime()
+  }),
+  /** Paths between the base's manifest and the latest's; absent for a replacement or a base no longer kept (§10.1). */
+  changes: z
+    .object({
+      added: z.array(ArtifactPath).max(ARTIFACT_STALE_PATHS_MAX),
+      changed: z.array(ArtifactPath).max(ARTIFACT_STALE_PATHS_MAX),
+      removed: z.array(ArtifactPath).max(ARTIFACT_STALE_PATHS_MAX),
+      /** Paths left out past `ARTIFACT_STALE_PATHS_MAX`. */
+      omitted: z.number().int().nonnegative()
+    })
+    .optional()
+})
+export type ArtifactStaleBase = z.infer<typeof ArtifactStaleBase>
 
 /** D→C REQ: presign GETs for one ready revision the session reaches; the latest when `revision` is absent. */
 export const ArtifactFetchReq = z.object({
@@ -412,6 +452,8 @@ export const ArtifactRefusalReason = z.enum([
   'share-forbidden',
   /** The revision is still uploading. */
   'revision-not-ready',
+  /** A newer revision got there first: the base is no longer the latest, or a replacement found a higher one ready; `details` are `ArtifactStaleBase` (§5.6). */
+  'stale-base',
   /** No such share on that artifact. */
   'share-not-found',
   /** The member may not delete it under §6.3: only the artifact's owner or an organization owner may. */

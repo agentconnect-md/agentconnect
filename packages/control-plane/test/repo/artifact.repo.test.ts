@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import {
   ArtifactIdempotencyConflictError,
+  ArtifactStaleBaseError,
   PgArtifactRepo,
   decodeArtifactCursor,
   encodeArtifactCursor
@@ -39,6 +40,7 @@ const revision = (key: string, patch: Partial<NewArtifactRevision> = {}): NewArt
   producedInSessionId: 'session-1',
   initiatedBy: 'user:alice',
   idempotencyKey: key,
+  baseRevision: null,
   ...patch
 })
 
@@ -75,8 +77,11 @@ describe('PgArtifactRepo (real Postgres)', () => {
     expect(await repo.listVisible(viewer, { limit: 10 })).toEqual([])
 
     const ready = await repo.markReady(ORG, first.artifact.id, 1)
-    expect(ready?.latestRevision).toBe(1)
-    expect(await repo.markReady(ORG, first.artifact.id, 1)).toMatchObject({ latestRevision: 1 })
+    expect(ready).toMatchObject({ state: 'ready', artifact: { latestRevision: 1 } })
+    expect(await repo.markReady(ORG, first.artifact.id, 1)).toMatchObject({
+      state: 'ready',
+      artifact: { latestRevision: 1 }
+    })
     expect((await repo.listVisible(viewer, { limit: 10 })).map((a) => a.id)).toEqual([first.artifact.id])
 
     const retried = await repo.create({ ...fresh(), title: 'ignored' }, revision('k1'))
@@ -120,19 +125,80 @@ describe('PgArtifactRepo (real Postgres)', () => {
     expect(await repo.appendRevision(ORG, '00000000-0000-4000-8000-000000000000', revision('x5'))).toBeNull()
   })
 
-  it('never moves latestRevision back and lists only ready revisions, newest first', async () => {
+  it('makes revisions ready in number order, closing a late replacement and releasing its key', async () => {
     const repo = new PgArtifactRepo(prisma)
     const { artifact } = await repo.create(fresh(), revision('r1'))
     await repo.appendRevision(ORG, artifact.id, revision('r2'))
     await repo.appendRevision(ORG, artifact.id, revision('r3'))
-    await repo.markReady(ORG, artifact.id, 3)
-    expect((await repo.markReady(ORG, artifact.id, 2))?.latestRevision).toBe(3)
+    expect(await repo.markReady(ORG, artifact.id, 3)).toMatchObject({ state: 'ready', artifact: { latestRevision: 3 } })
+    expect(await repo.markReady(ORG, artifact.id, 2)).toMatchObject({
+      state: 'closed',
+      artifact: { latestRevision: 3 }
+    })
+    expect(await repo.markReady(ORG, artifact.id, 2)).toMatchObject({ state: 'closed' })
     expect(await repo.markReady(OTHER_ORG, artifact.id, 1)).toBeNull()
     expect(await repo.markReady(ORG, artifact.id, 9)).toBeNull()
-    expect((await repo.listRevisions(ORG, artifact.id)).map((r) => r.number)).toEqual([3, 2])
+    expect((await repo.listRevisions(ORG, artifact.id)).map((r) => r.number)).toEqual([3])
     expect(await repo.listRevisions(OTHER_ORG, artifact.id)).toEqual([])
+    expect(await repo.getRevision(ORG, artifact.id, 2)).toMatchObject({ state: 'closed', idempotencyKey: null })
     expect((await repo.getRevision(ORG, artifact.id, 1))?.state).toBe('pending')
-    expect((await repo.getRevision(ORG, artifact.id, 2))?.manifest.entry).toBe('index.html')
+    // The released key starts a new revision rather than replaying the closed one.
+    const again = await repo.appendRevision(ORG, artifact.id, revision('r2'))
+    expect(again).toMatchObject({ replayed: false, revision: { number: 4, state: 'pending', idempotencyKey: 'r2' } })
+  })
+
+  it('checks a base against the newest ready revision at begin and again at completion', async () => {
+    const repo = new PgArtifactRepo(prisma)
+    const { artifact } = await repo.create(fresh(), revision('b1'))
+    await repo.markReady(ORG, artifact.id, 1)
+    const one = await repo.appendRevision(ORG, artifact.id, revision('b2', { baseRevision: 1 }))
+    const two = await repo.appendRevision(ORG, artifact.id, revision('b3', { baseRevision: 1 }))
+    expect([one?.revision.baseRevision, two?.revision.number]).toEqual([1, 3])
+    expect(await repo.markReady(ORG, artifact.id, 3)).toMatchObject({ state: 'ready', artifact: { latestRevision: 3 } })
+    expect(await repo.markReady(ORG, artifact.id, 2)).toMatchObject({
+      state: 'closed',
+      artifact: { latestRevision: 3 }
+    })
+    const stale = await repo.appendRevision(ORG, artifact.id, revision('b4', { baseRevision: 1 })).catch((e) => e)
+    expect(stale).toBeInstanceOf(ArtifactStaleBaseError)
+    expect(stale).toMatchObject({ latestRevision: 3 })
+    expect(await prisma.artifactRevision.count({ where: { artifactId: artifact.id } })).toBe(3)
+    expect(await repo.appendRevision(ORG, artifact.id, revision('b4', { baseRevision: 3 }))).toMatchObject({
+      revision: { number: 4, baseRevision: 3 }
+    })
+  })
+
+  it('answers a same-key append that raced past the replay lookup from its revision, though its base is now stale', async () => {
+    const { artifact } = await new PgArtifactRepo(prisma).create(fresh(), revision('race1'))
+    await new PgArtifactRepo(prisma).markReady(ORG, artifact.id, 1)
+    const recorded = await new PgArtifactRepo(prisma).appendRevision(
+      ORG,
+      artifact.id,
+      revision('race2', { baseRevision: 1 })
+    )
+    await new PgArtifactRepo(prisma).markReady(ORG, artifact.id, 2)
+    // The first lookup misses, as for a begin that read the key before the other one committed and completed.
+    let hidden = true
+    const revisions = new Proxy(prisma.artifactRevision, {
+      get(target, prop) {
+        if (prop === 'findUnique' && hidden) {
+          hidden = false
+          return async () => null
+        }
+        const value: unknown = Reflect.get(target, prop)
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+    })
+    const db = new Proxy(prisma, {
+      get(target, prop) {
+        if (prop === 'artifactRevision') return revisions
+        const value: unknown = Reflect.get(target, prop)
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+    })
+    const raced = await new PgArtifactRepo(db).appendRevision(ORG, artifact.id, revision('race2', { baseRevision: 1 }))
+    expect(hidden).toBe(false)
+    expect(raced).toMatchObject({ replayed: true, revision: { id: recorded!.revision.id, state: 'ready' } })
   })
 
   it('renames and moves only between private and org', async () => {
@@ -219,7 +285,7 @@ describe('PgArtifactRepo (real Postgres)', () => {
         { ...entry, title: `a${index}`, originSessionId: null },
         revision(`v${index}`)
       )
-      stored.push((await repo.markReady(entry.orgId, artifact.id, 1))!)
+      stored.push((await repo.markReady(entry.orgId, artifact.id, 1))!.artifact)
     }
     const access = (allowed: string[]) => ({
       policies: [{ provider: 'slack', readFenceRev: null }],
@@ -306,7 +372,7 @@ describe('PgArtifactRepo (real Postgres)', () => {
         { ...fresh({ orgId: org }), originSessionId: sessionId },
         revision(key, { producedInSessionId: sessionId })
       )
-      return (await repo.markReady(org, artifact.id, 1))!
+      return (await repo.markReady(org, artifact.id, 1))!.artifact
     }
     const first = await ready('p1', 'session-a')
     const second = await ready('p2', 'session-a')
@@ -351,7 +417,7 @@ describe('PgArtifactRepo (real Postgres)', () => {
       if (patch.ownerIdentity) {
         await prisma.artifact.update({ where: { id: artifact.id }, data: { ownerIdentity: patch.ownerIdentity } })
       }
-      return (await repo.markReady(ORG, artifact.id, 1))!
+      return (await repo.markReady(ORG, artifact.id, 1))!.artifact
     }
     const alices = await ready('f1', { ownerIdentity: 'user:alice' })
     const scoped = await ready('f2', { visibility: 'external', externalProvider: 'slack', externalScopeId: S1 })

@@ -1039,7 +1039,7 @@ export interface ArtifactManifest {
 }
 
 export type ArtifactStorageMode = 'signed'
-export type ArtifactRevisionState = 'pending' | 'ready'
+export type ArtifactRevisionState = 'pending' | 'ready' | 'closed'
 
 /** An agent-published deliverable (artifacts.md §4); its audience was copied from the session at creation. */
 export interface ArtifactRecord extends ArtifactAudience {
@@ -1067,7 +1067,10 @@ export interface ArtifactRevisionRecord {
   totalBytes: number
   fileCount: number
   state: ArtifactRevisionState
-  idempotencyKey: string
+  /** The revision an update was built on; null for revision 1 and a replacement (§5.6). */
+  baseRevision: number | null
+  /** Null once the revision is closed, which releases the key. */
+  idempotencyKey: string | null
   createdAt: Date
 }
 
@@ -1088,8 +1091,16 @@ export interface NewArtifactRevision {
   producedInSessionId: string
   initiatedBy: string | null
   idempotencyKey: string
+  /** The revision an update is built on, compared with `latestRevision` at begin and completion; null for a replacement (§5.6). */
+  baseRevision: number | null
   /** The daemon publishing it, whose `sessions.retention` the repository snapshots beside it (§10.1). */
   publishedByDaemonId?: string
+}
+
+/** What completing a revision settled: `ready`, or `closed` because its base is stale or a higher revision is ready. */
+export interface ArtifactCompletion {
+  artifact: ArtifactRecord
+  state: Exclude<ArtifactRevisionState, 'pending'>
 }
 
 export interface ArtifactPublishResult {
@@ -1158,15 +1169,15 @@ export interface ArtifactRepo {
     revision: NewArtifactRevision,
     limits?: ArtifactPublishLimits
   ): Promise<ArtifactPublishResult>
-  /** Append a pending revision; null when the artifact is gone, and a key already used on another artifact throws `ArtifactIdempotencyConflictError`. */
+  /** Append a pending revision; null when gone, a key used elsewhere throws `ArtifactIdempotencyConflictError`, a stale base `ArtifactStaleBaseError`. */
   appendRevision(
     orgId: string,
     artifactId: string,
     revision: NewArtifactRevision,
     limits?: ArtifactPublishLimits
   ): Promise<ArtifactPublishResult | null>
-  /** Mark a revision ready and advance `latestRevision`; idempotent, null when the revision is gone. */
-  markReady(orgId: string, artifactId: string, number: number): Promise<ArtifactRecord | null>
+  /** Under the artifact's row lock, mark a pending revision ready or close it when a newer one got there first (§5.6); null when gone. */
+  markReady(orgId: string, artifactId: string, number: number): Promise<ArtifactCompletion | null>
   get(orgId: string, id: string): Promise<ArtifactRecord | null>
   getRevision(orgId: string, artifactId: string, number: number): Promise<ArtifactRevisionRecord | null>
   /** Ready revisions, newest first. */
