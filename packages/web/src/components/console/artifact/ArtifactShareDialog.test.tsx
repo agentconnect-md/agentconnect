@@ -195,7 +195,7 @@ describe('the owner', () => {
     api.revoke.mockResolvedValue(undefined)
     await open(true)
     await click(button('Revoke', row('share-aaaaaa')))
-    expect(row('share-aaaaaa').textContent).toContain('It stops working at once')
+    expect(row('share-aaaaaa').textContent).toContain('It will stop working immediately')
     await click(button('Revoke', row('share-aaaaaa').querySelector('[data-artifact-share-confirm]')!))
     expect(api.revoke).toHaveBeenCalledWith(ID, 'share-aaaaaa')
     expect(dialog().querySelector('[data-artifact-share="share-aaaaaa"]')).toBeNull()
