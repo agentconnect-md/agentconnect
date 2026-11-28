@@ -831,6 +831,14 @@ export class LogtoIdentityService {
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
     const token = await this.mgmtToken()
+    const res = await this.send(path, init, token)
+    if (res.status !== 401) return res
+    // A rotated signing key invalidates the cached token before it expires, so a 401 drops it and retries once on a new one.
+    if (this.token?.value === token) this.token = undefined
+    return this.send(path, init, await this.mgmtToken())
+  }
+
+  private async send(path: string, init: RequestInit, token: string): Promise<Response> {
     const headers = new Headers(init.headers)
     headers.set('authorization', `Bearer ${token}`)
     if (init.body) headers.set('content-type', 'application/json')

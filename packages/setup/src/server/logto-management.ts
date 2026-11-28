@@ -1212,13 +1212,21 @@ export class LogtoAdminClaimClient {
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<Response> {
-    let response: Response
-    try {
-      response = await this.fetchImpl(`${this.base}${path}`, {
+    const send = (token: string) =>
+      this.fetchImpl(`${this.base}${path}`, {
         ...init,
-        headers: { authorization: `Bearer ${await this.accessToken()}`, ...init.headers },
+        headers: { authorization: `Bearer ${token}`, ...init.headers },
         signal: AbortSignal.timeout(this.timeoutMs)
       })
+    let response: Response
+    try {
+      const token = await this.accessToken()
+      response = await send(token)
+      // A rotated signing key invalidates the cached token before it expires, so a 401 drops it and retries once on a new one.
+      if (response.status === 401) {
+        if (this.token?.value === token) this.token = undefined
+        response = await send(await this.accessToken())
+      }
     } catch (error) {
       throw new LogtoManagementError(
         'LOGTO_UNAVAILABLE',
