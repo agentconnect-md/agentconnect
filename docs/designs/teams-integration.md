@@ -1229,7 +1229,12 @@ The three permissions are needed only for that button, and Setup says so: the
 operator may remove them afterwards. Nothing at run time uses them, since
 agent identities are created with the blueprint's own token. Rotating the
 blueprint's secret from Setup needs `AgentIdentityBlueprint.AddRemoveCreds.All`
-again; an operator who removed it rotates by hand.
+again; an operator who removed it rotates by hand: add a client secret on the
+blueprint's Credentials page in the Entra admin center, then replace the stored
+one with **Edit** beside **Blueprint secret**. The replacement keeps the
+blueprint and its Azure settings, because clearing them would stop every agent
+bot until they were entered again. It is stored unchecked, like the other
+secrets replaced in place, and takes effect at the next restart.
 
 Before saving, Setup checks the blueprint's secret with a client-credentials
 request to the home tenant, that the blueprint is open to other organizations,
