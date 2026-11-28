@@ -168,6 +168,39 @@ describe('PgArtifactRepo (real Postgres)', () => {
     })
   })
 
+  it('answers a same-key append that raced past the replay lookup from its revision, though its base is now stale', async () => {
+    const { artifact } = await new PgArtifactRepo(prisma).create(fresh(), revision('race1'))
+    await new PgArtifactRepo(prisma).markReady(ORG, artifact.id, 1)
+    const recorded = await new PgArtifactRepo(prisma).appendRevision(
+      ORG,
+      artifact.id,
+      revision('race2', { baseRevision: 1 })
+    )
+    await new PgArtifactRepo(prisma).markReady(ORG, artifact.id, 2)
+    // The first lookup misses, as for a begin that read the key before the other one committed and completed.
+    let hidden = true
+    const revisions = new Proxy(prisma.artifactRevision, {
+      get(target, prop) {
+        if (prop === 'findUnique' && hidden) {
+          hidden = false
+          return async () => null
+        }
+        const value: unknown = Reflect.get(target, prop)
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+    })
+    const db = new Proxy(prisma, {
+      get(target, prop) {
+        if (prop === 'artifactRevision') return revisions
+        const value: unknown = Reflect.get(target, prop)
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+    })
+    const raced = await new PgArtifactRepo(db).appendRevision(ORG, artifact.id, revision('race2', { baseRevision: 1 }))
+    expect(hidden).toBe(false)
+    expect(raced).toMatchObject({ replayed: true, revision: { id: recorded!.revision.id, state: 'ready' } })
+  })
+
   it('renames and moves only between private and org', async () => {
     const repo = new PgArtifactRepo(prisma)
     const { artifact } = await repo.create(fresh({ ownerIdentity: 'user:alice' }), revision('m1'))

@@ -371,7 +371,10 @@ export class PgArtifactRepo implements ArtifactRepo {
         return { artifact: toArtifact(current), revision: toRevision(appended), replayed: false }
       })
     } catch (err) {
-      if (!isUniqueViolation(err) && !(err instanceof ArtifactOrgLimitError)) throw err
+      // A same-key begin that committed, or even completed, while this one waited is a replay, not a stale base or a full total.
+      const replayable =
+        isUniqueViolation(err) || err instanceof ArtifactOrgLimitError || err instanceof ArtifactStaleBaseError
+      if (!replayable) throw err
       const raced = await this.replayFor(revision, sameArtifact)
       if (raced) return raced
       throw err
