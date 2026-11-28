@@ -17,7 +17,7 @@ import { SWRConfig } from 'swr'
 import Link from 'next/link'
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { ConsoleDataProvider, useConsoleData } from '@/lib/data-context'
-import { OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
+import { ACCOUNT_PATH, OrgProvider, useOrgs, orgColor, subPath } from '@/lib/org-context'
 import { OrgGate } from './OrgGate'
 import { getMyAccess, type OrgDto } from '@/lib/api'
 import { CONSOLE_SWR_CONFIG } from '@/lib/console-swr'
@@ -190,10 +190,10 @@ export default function ConsoleShell({ children, authConfigured }: { children: R
 }
 
 // The playground resets per org by remounting, so it wraps only page content: keyed above the rail, every org change tore the rail down.
-function PageContent({ children }: { children: ReactNode }) {
+function PageContent({ children, orgless }: { children: ReactNode; orgless?: boolean }) {
   return (
     <PlaygroundProvider>
-      <OrgGate>{children}</OrgGate>
+      <OrgGate orgless={orgless}>{children}</OrgGate>
     </PlaygroundProvider>
   )
 }
@@ -456,7 +456,7 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
         }
         // Signup mints no org, so belonging to none is an ordinary new-account
         // state — org onboarding, not a console with nothing to scope requests to.
-        if (access.orgCount === 0) {
+        if (access.orgCount === 0 && subPath(window.location.pathname, '-') !== ACCOUNT_PATH) {
           router.replace('/welcome')
           return
         }
@@ -571,8 +571,8 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
   // so this watches the live list; a failed or in-flight /orgs must not trigger it.
   useEffect(() => {
     if (!isAuthConfigured() || !authReady || orgsLoading || orgsError != null) return
-    if (orgs.length === 0) router.replace('/welcome')
-  }, [authReady, orgs, orgsLoading, orgsError, router])
+    if (orgs.length === 0 && barePath !== ACCOUNT_PATH) router.replace('/welcome')
+  }, [authReady, orgs, orgsLoading, orgsError, router, barePath])
 
   // No-auth mode has no identity and a single implicit org, so Profile / Settings
   // don't exist — bounce any direct navigation to those routes back to the home landing.
@@ -1004,7 +1004,7 @@ function ShellChromeInner({ children, authConfigured }: { children: ReactNode; a
 
               <div className="content">
                 <SearchOpenContext.Provider value={openSearch}>
-                  <PageContent>{children}</PageContent>
+                  <PageContent orgless={barePath === ACCOUNT_PATH}>{children}</PageContent>
                 </SearchOpenContext.Provider>
               </div>
             </div>

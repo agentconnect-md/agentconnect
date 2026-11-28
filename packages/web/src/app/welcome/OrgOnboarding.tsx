@@ -11,13 +11,14 @@
 // an active org, which is exactly what the visitor does not have yet.
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button, Icon } from '@/components/ui'
 import { LogoMark, Spinner } from '@/components/marks'
 import { ApiError, createOrg, getMyAccess } from '@/lib/api'
 import { getUser, isAuthConfigured, logout, type AuthUser } from '@/lib/auth'
-import { cacheCreatedOrg, orgUrlPrefix } from '@/lib/org-context'
+import { ACCOUNT_PATH, cacheCreatedOrg, orgUrlPrefix } from '@/lib/org-context'
 
 /** Lowercase letters/digits/hyphens — mirrors the CP's OrgSlug shape. */
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
@@ -115,7 +116,7 @@ export default function OrgOnboarding() {
         </span>
         <div className="flex-1" />
         {user && (
-          <span className="flex items-center gap-[9px]">
+          <Link href={ACCOUNT_PATH} title={t('profile')} className="flex items-center gap-[9px]">
             {user.email && (
               <span className="hidden font-mono text-[12.5px] leading-none text-(--text-tertiary) desktop:inline">
                 {user.email}
@@ -124,7 +125,7 @@ export default function OrgOnboarding() {
             <span className="flex h-7 w-7 items-center justify-center rounded-full bg-(--gray-100) font-sans text-[11px] font-semibold text-(--text-secondary)">
               {user.initials}
             </span>
-          </span>
+          </Link>
         )}
         <Button variant="ghost" size="sm" onClick={() => void logout()}>
           <Icon name="log-out" size={14} />

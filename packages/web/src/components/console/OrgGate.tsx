@@ -11,11 +11,13 @@ import { writeFlowState } from '@/lib/flow-state'
 import { orgColor, useOrgs } from '@/lib/org-context'
 import { MOCK_MODE } from '@/lib/data'
 
-export function OrgGate({ children }: { children: ReactNode }) {
-  const { activeOrg, loading, error, refreshOrgs } = useOrgs()
+export function OrgGate({ children, orgless }: { children: ReactNode; orgless?: boolean }) {
+  const { activeOrg, orgs, loading, error, refreshOrgs } = useOrgs()
   const t = useTranslations('Common')
   if (activeOrg?.ssoSignIn) return <OrgSsoSignIn org={activeOrg} connection={activeOrg.ssoSignIn} />
   if (MOCK_MODE || activeOrg) return children
+  // An account page has nothing to wait for once the caller is known to belong to no organization.
+  if (orgless && !loading && !error && orgs.length === 0) return children
   if (error) {
     return (
       <div className="flex min-h-64 flex-col items-center justify-center gap-4 p-6 text-center">

@@ -47,6 +47,9 @@ function writeLastSlug(slug: string): void {
   }
 }
 
+/** The one console page that is about the account, not an org — so it opens for someone who belongs to none. */
+export const ACCOUNT_PATH = '/profile'
+
 /** The console path under the org segment: `/acme/agents` → `/agents`.
  *  During the first-visit rewrite window the address bar may still show a
  *  BARE path (`/agents`, `/`) — only strip the first segment when it really

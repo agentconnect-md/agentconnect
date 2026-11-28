@@ -1869,6 +1869,7 @@
     "organization": {
       "step": "第 1 步，共 2 步",
       "signOut": "退出登录",
+      "profile": "个人资料",
       "brandAgent": "Agent",
       "brandConnect": "Connect",
       "title": "创建组织",
