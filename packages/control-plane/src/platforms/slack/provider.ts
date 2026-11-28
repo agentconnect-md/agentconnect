@@ -257,6 +257,8 @@ export interface SlackCpProviderDeps {
    *  `startBackground()`/`shutdown` drive today. Absent ⇒ no background loop
    *  declared. */
   identityReconciler?: { start(): void; stop(): void }
+  /** Re-stamps a rotated deployment app signing secret onto installed bots; absent ⇒ no loop declared. */
+  signingSecretReconciler?: { start(): void; stop(): void }
 }
 
 /**
@@ -307,6 +309,7 @@ export function createSlackToolingCredentials(seams: {
 
 export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProvider<SlackCreateCredentials> {
   const { verifyBot, verifyAppToken, funnelRoutes, toolingCredentials, pendingInstalls, identityReconciler } = deps
+  const { signingSecretReconciler } = deps
   return {
     platformId: 'slack',
 
@@ -549,15 +552,29 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     // `startBackground()`/shutdown can drive it without naming platforms once
     // the registry is adopted; today's container lifecycle calls remain the
     // live path on the same instance.
-    ...(identityReconciler
+    // One array from two optional slots: two spreads would each carry the key and the later would drop the earlier.
+    ...(identityReconciler || signingSecretReconciler
       ? {
           backgroundLoops: [
-            {
-              label: 'slack-bot-identity',
-              start: () => identityReconciler.start(),
-              stop: () => identityReconciler.stop()
-            }
-          ] as const
+            ...(identityReconciler
+              ? [
+                  {
+                    label: 'slack-bot-identity',
+                    start: () => identityReconciler.start(),
+                    stop: () => identityReconciler.stop()
+                  }
+                ]
+              : []),
+            ...(signingSecretReconciler
+              ? [
+                  {
+                    label: 'slack-signing-secret-restamp',
+                    start: () => signingSecretReconciler.start(),
+                    stop: () => signingSecretReconciler.stop()
+                  }
+                ]
+              : [])
+          ]
         }
       : {}),
 

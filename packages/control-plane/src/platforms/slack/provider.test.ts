@@ -248,6 +248,22 @@ describe('slack provider identity + declarative facets', () => {
     expect(provider.backgroundLoops).toBeUndefined()
   })
 
+  it('declares the signing-secret re-stamp beside the identity reconciler, and alone', () => {
+    const identityReconciler = { start: vi.fn(), stop: vi.fn() }
+    const signingSecretReconciler = { start: vi.fn(), stop: vi.fn() }
+    const both = createSlackCpProvider({ identityReconciler, signingSecretReconciler })
+    expect(both.backgroundLoops?.map((loop) => loop.label)).toEqual([
+      'slack-bot-identity',
+      'slack-signing-secret-restamp'
+    ])
+    const alone = createSlackCpProvider({ signingSecretReconciler })
+    expect(alone.backgroundLoops?.map((loop) => loop.label)).toEqual(['slack-signing-secret-restamp'])
+    alone.backgroundLoops![0]!.start()
+    alone.backgroundLoops![0]!.stop()
+    expect(signingSecretReconciler.start).toHaveBeenCalledTimes(1)
+    expect(signingSecretReconciler.stop).toHaveBeenCalledTimes(1)
+  })
+
   it('declares no install side effects (Slack renders per-message icon_url instead)', () => {
     expect(provider.sideEffects).toBeUndefined()
   })
@@ -706,7 +722,11 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     bots as unknown as BotRepo,
     { get: async () => secret } as unknown as BotSecretStore,
     // Never reached by syncBot; present to satisfy the constructor.
-    { install: async () => 1, revoke: async () => ({ applied: false, integrationIds: [] }) },
+    {
+      install: async () => 1,
+      restampSigningSecret: async () => null,
+      revoke: async () => ({ applied: false, integrationIds: [] })
+    },
     { listForBot: async () => [integration] } as unknown as IntegrationRepo,
     { listForBot: async () => [] } as unknown as IntegrationChannelRepo,
     {

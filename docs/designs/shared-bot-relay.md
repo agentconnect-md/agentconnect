@@ -209,6 +209,19 @@ store. Lark / Feishu HTTP bots require `appId`, `appSecret`, Verification Token,
 optional Encrypt Key. Secret reads and writes pass through the configured
 `SecretCipher`; list and metadata APIs do not select secret material.
 
+A bot installed through the deployment Slack app stores a copy of that app's
+signing secret, and the relay verifies with the copy. Rotating the deployment
+signing secret therefore requires rewriting every such row: at startup, and on a
+15-minute interval, the Control Plane compares each live bot of the deployment
+app against the configured secret, rewrites a stale copy, and re-broadcasts the
+assignment. The rewrite touches the signing secret alone and commits only while
+the bot still carries the credential revision the pass read and is not revoked,
+so it cannot overwrite a concurrent reinstall or undo a revocation; a bot that
+moved is picked up by the next pass. Bots of a workspace's own app,
+revoked bots and Socket Mode bots are left alone. Slack invalidates the previous
+signing secret the moment a new one is generated, so deliveries fail between
+that moment and the restart that loads the new value.
+
 `IntegrationChannel.agentId` represents a conversation-scoped default agent. Exactly
 one active integration row carries that owner for each shared conversation, including
 an observed DM or group DM; sibling rows are null because membership is repeated per

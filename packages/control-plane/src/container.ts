@@ -465,6 +465,7 @@ import { createSlackCpProvider, createSlackToolingCredentials } from './platform
 import { createFeishuCpProvider } from './platforms/feishu/provider.js'
 import { createLinearCpProvider } from './platforms/linear/provider.js'
 import { LinearCredentialReconciler } from './platforms/linear/credential-reconciler.js'
+import { SlackSigningSecretReconciler } from './platforms/slack/signing-secret-reconciler.js'
 import { LinearApiClient } from './platforms/linear/api.js'
 import { LinearTokenService } from './platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweeper.js'
@@ -3503,6 +3504,17 @@ export function buildContainer(
     intervalMs: 15 * 60 * 1000,
     log: http.log
   })
+  // The relay verifies with the copy each shared-app install stamped, so a rotated signing secret needs the same pass.
+  const slackSigningSecretReconciler = new SlackSigningSecretReconciler({
+    bots: repos.bot,
+    secrets: repos.botSecret,
+    credentials: repos.botCredential,
+    resync: (botId) => httpBot.syncBot(botId),
+    ...(slackPlatformApp ? { app: slackPlatformApp } : {}),
+    clock,
+    intervalMs: 15 * 60 * 1000,
+    log: http.log
+  })
   const linearOrphanTokenSweeper = new LinearOrphanTokenSweeper({
     get app() {
       return linearPlatformApp
@@ -3664,7 +3676,8 @@ export function buildContainer(
         ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000,
         intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
       },
-      identityReconciler: slackBotIdentityReconciler
+      identityReconciler: slackBotIdentityReconciler,
+      signingSecretReconciler: slackSigningSecretReconciler
     }),
     createFeishuCpProvider({
       verifyBot: verifyFeishuBot,

@@ -620,7 +620,11 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     bots as unknown as BotRepo,
     { get: async () => secret } as unknown as BotSecretStore,
     // Never reached by syncBot; present to satisfy the constructor.
-    { install: async () => 1, revoke: async () => ({ applied: false, integrationIds: [] }) },
+    {
+      install: async () => 1,
+      restampSigningSecret: async () => null,
+      revoke: async () => ({ applied: false, integrationIds: [] })
+    },
     { listForBot: async () => [integration] } as unknown as IntegrationRepo,
     { listForBot: async () => [] } as unknown as IntegrationChannelRepo,
     {

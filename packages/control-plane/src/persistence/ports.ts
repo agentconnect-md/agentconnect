@@ -6236,6 +6236,14 @@ export interface BotCredentialWriter {
     at: Date,
     options?: { restoreRevokedMemberships?: boolean }
   ): Promise<number>
+  /** Replace the signing secret alone while the bot still carries `fence.revision` and is not revoked; null ⇒ it moved and nothing was written. */
+  restampSigningSecret(
+    orgId: OrgId,
+    botId: BotId,
+    signingSecret: string,
+    at: Date,
+    fence: { revision: number }
+  ): Promise<number | null>
   /** Apply a definitive revocation behind its generation fence, recording how it was learned and flipping the bot and its active installs together. */
   revoke(
     botId: BotId,
