@@ -21,7 +21,8 @@ import type {
   PlatformSearchOptions,
   PlatformSearchResults,
   PlatformThreadMessage,
-  PlatformThreadWindow
+  PlatformThreadWindow,
+  PlatformUserProfile
 } from '../../platforms/contract.js'
 
 /**
@@ -148,7 +149,9 @@ export interface MessageGateway {
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean; joined?: boolean }[]>
   /** The id of the one channel `listChannels` names `channel`; undefined for an id or a name it cannot pin to one channel. */
   resolveChannelName?(channel: string): Promise<string | undefined>
-  getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
+  getUserProfile(user: string): Promise<PlatformUserProfile>
+  /** The person with this work email, or undefined when none; offered where the platform declares `userEmailLookup`. */
+  lookupUserByEmail?(email: string): Promise<PlatformUserProfile | undefined>
   /** Read one bounded page from the conversation bound to the current session. */
   getChannelHistory?(channel: string, options?: PlatformChannelHistoryOptions): Promise<PlatformChannelHistoryPage>
   /** Root + replies of one thread. Long a daemon-internal context read; the `getThreadHistory`

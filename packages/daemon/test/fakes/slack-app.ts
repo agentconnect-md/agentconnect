@@ -71,6 +71,7 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
         },
         users: {
           info: async () => ({}),
+          lookupByEmail: async () => ({}),
           conversations: async () => ({ channels: [] })
         },
         bots: { info: async () => ({}) },

@@ -102,7 +102,8 @@ import type {
   PlatformReactionSummary,
   PlatformScheduledMessage,
   PlatformSearchOptions,
-  PlatformSearchResults
+  PlatformSearchResults,
+  PlatformUserProfile
 } from '../platforms/contract.js'
 
 /**
@@ -552,7 +553,17 @@ type SlackUserResult = {
   name?: string
   real_name?: string
   is_bot?: boolean
-  profile?: { real_name?: string; display_name?: string; image_48?: string; image_72?: string }
+  profile?: {
+    real_name?: string
+    display_name?: string
+    image_48?: string
+    image_72?: string
+    title?: string
+    status_text?: string
+    status_emoji?: string
+    /** Epoch seconds; 0 when the status does not expire. */
+    status_expiration?: number
+  }
   /** The member's IANA zone, and its offset in seconds east of UTC. */
   tz?: string
   tz_offset?: number
@@ -765,6 +776,7 @@ export type AppLike = {
     }
     users: {
       info: (a: unknown) => Promise<{ user?: SlackUserResult }>
+      lookupByEmail: (a: { email: string }) => Promise<{ user?: SlackUserResult }>
       // users.conversations — channels the AUTHED BOT is a member of (not the
       // workspace-wide conversations.list). Needs channels:read / groups:read.
       conversations: (a: unknown) => Promise<{
@@ -942,6 +954,26 @@ function slackApiErrorCode(err: unknown): string | undefined {
   if (!data || typeof data !== 'object') return undefined
   const code = (data as { error?: unknown }).error
   return typeof code === 'string' ? code : undefined
+}
+
+/** A Slack user object as a {@link PlatformUserProfile}; empty strings and a zero expiry are left out. */
+function slackUserProfile(u: SlackUserResult, fallbackId: string): PlatformUserProfile {
+  const p = u.profile ?? {}
+  const timeZone = profileTimeZone(u.tz, u.tz_offset)
+  const expires = p.status_expiration && p.status_expiration > 0 ? new Date(p.status_expiration * 1000) : undefined
+  return {
+    id: u.id ?? fallbackId,
+    name: u.name,
+    realName: u.real_name ?? p.real_name,
+    isBot: u.is_bot,
+    avatarUrl: p.image_72 ?? p.image_48,
+    ...(timeZone ? { timeZone } : {}),
+    ...(p.title ? { title: p.title } : {}),
+    ...(p.status_text ? { statusText: p.status_text } : {}),
+    ...(p.status_emoji ? { statusEmoji: p.status_emoji } : {}),
+    ...(p.status_text && expires && !Number.isNaN(expires.getTime()) ? { statusExpiresAt: expires.toISOString() } : {}),
+    ...(u.deleted ? { deleted: true } : {})
+  }
 }
 
 // Re-probe periodically so granting chat:write.customize to an existing Slack app
@@ -3181,19 +3213,19 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  async getUserProfile(
-    user: string
-  ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string; timeZone?: string }> {
+  async getUserProfile(user: string): Promise<PlatformUserProfile> {
     const res = await this.app.client.users.info({ user })
-    const u = res.user ?? {}
-    const timeZone = profileTimeZone(u.tz, u.tz_offset)
-    return {
-      id: u.id ?? user,
-      name: u.name,
-      realName: u.real_name ?? u.profile?.real_name,
-      isBot: u.is_bot,
-      avatarUrl: u.profile?.image_72 ?? u.profile?.image_48,
-      ...(timeZone ? { timeZone } : {})
+    return slackUserProfile(res.user ?? {}, user)
+  }
+
+  /** `users.lookupByEmail` (needs `users:read.email`); Slack's `users_not_found` is no match, not a failure. */
+  async lookupUserByEmail(email: string): Promise<PlatformUserProfile | undefined> {
+    try {
+      const res = await this.app.client.users.lookupByEmail({ email })
+      return res.user ? slackUserProfile(res.user, res.user.id ?? '') : undefined
+    } catch (err) {
+      if (slackApiErrorCode(err) === 'users_not_found') return undefined
+      throw this.toolFailure(err, 'looking up a user by email')
     }
   }
 

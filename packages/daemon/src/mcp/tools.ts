@@ -325,7 +325,11 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     {
       name: 'getUserProfile',
       description:
-        'Look up a user or bot by id on a platform, returning their display name, real name, and bot flag. Pass ' +
+        'Look up a user or bot by id on a platform, returning their display name, real name and bot flag, and ' +
+        'where the platform keeps them their title, status text and emoji with its expiry, and whether the ' +
+        'account is deactivated (`deleted`). A status such as "On holiday" is the person’s own word that they ' +
+        'are away. Title, status and deactivation come only on a turn full members of the workspace started, in a ' +
+        'conversation not shared with another organization; otherwise `withheld` says they were left out. Pass ' +
         '`platform` to target another connected platform, and `integrationId` to choose a specific bot when the ' +
         'agent has several on that platform.',
       inputSchema: obj(
@@ -342,6 +346,7 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     ...buildMessageDeleteTool(offered('messageDelete'), sameBotSelector),
     ...buildConversationCreateTool(offered('conversationCreate'), sameBotSelector),
     ...buildSearchTool(offered('publicMessageSearch')),
+    ...buildUserEmailLookupTool(offered('userEmailLookup'), sameBotSelector),
     ...buildBookmarkTools(offered('bookmarks'), sameBotSelector),
     ...buildListTools(offered('lists'), sameBotSelector),
     ...buildScheduleMessageTool(offered('scheduledMessages'), sameBotSelector),
@@ -633,6 +638,31 @@ function buildSearchTool(enabled: boolean): ToolDescriptor[] {
           before: { type: 'string', description: 'Only messages before this ISO-8601 instant.' }
         },
         ['query']
+      )
+    }
+  ]
+}
+
+/** `lookupUserByEmail` — a work email to the person's platform id, for people the agent has not met in a conversation. */
+function buildUserEmailLookupTool(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
+  return [
+    {
+      name: 'lookupUserByEmail',
+      description:
+        'Find the person in this workspace who has a given work email, and return the same profile ' +
+        '`getUserProfile` gives, including the user id to mention or message them. Use it when you know ' +
+        'someone from another system (a directory, a ticket, a code host) by email but have never seen them in ' +
+        'a conversation. The email itself is never returned. `found: false` means no current member has that ' +
+        'email: it may never have belonged to one, or its account may be deactivated, so it is not proof the ' +
+        'person was never a member. Only a turn full members of the workspace started, in a conversation not ' +
+        'shared with another organization, may look people up.',
+      inputSchema: obj(
+        {
+          integrationId,
+          email: { type: 'string', minLength: 3, description: 'The work email, e.g. `ada@example.com`.' }
+        },
+        ['email']
       )
     }
   ]

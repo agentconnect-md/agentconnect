@@ -123,6 +123,15 @@ export interface PlatformUserProfile {
   avatarUrl?: string
   /** The zone the person's profile names, where the platform keeps one; read for every agent's local time. */
   timeZone?: string
+  /** The job title the person's profile shows. */
+  title?: string
+  /** The person's own status line and its emoji, e.g. `On holiday` / `:palm_tree:`. */
+  statusText?: string
+  statusEmoji?: string
+  /** When the status clears, as an ISO-8601 instant; absent when it does not expire. */
+  statusExpiresAt?: string
+  /** The platform reports the account deactivated. */
+  deleted?: boolean
 }
 
 /** One historical message from a provider thread read (`getThreadReplies`).
@@ -387,6 +396,8 @@ export interface PlatformConnection {
   listMembers(channel: string): Promise<PlatformMemberRef[]>
   listChannels(): Promise<PlatformChannelRef[]>
   getUserProfile(user: string): Promise<PlatformUserProfile>
+  /** The person with this work email, or undefined when none; offered where the platform declares `userEmailLookup`. */
+  lookupUserByEmail?(email: string): Promise<PlatformUserProfile | undefined>
   /** Fetch an attachment with the connection's own credential, bounded by
    *  `maxBytes`. `null` = unavailable/oversized, never a throw. */
   downloadFile(ref: string, maxBytes?: number): Promise<Buffer | null>

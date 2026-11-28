@@ -1517,6 +1517,32 @@ The agent-to-agent forms of `sendMessage` and the parent-session reply are not p
 `toAgent` channel form keeps its own reach (on Slack, a public channel, or a private conversation
 only where the agent was invoked).
 
+## Reading the people directory
+
+An agent's platform profile read (`getUserProfile`) gives anyone a person's name, avatar, time zone
+and bot flag, as it always has. Facts from the workspace directory beyond that, a person's title,
+status and whether their account is deactivated, and finding a member by work email
+(`lookupUserByEmail`), are shared only when all of these hold:
+
+- a person is asking (see "Who is asking" in "Reading other conversations"). A hook run, a
+  scheduled run that records no person, a task's report and another agent's message get none;
+- every person asking is a full member of that bot's workspace, on that bot or by the chat account
+  they linked there. A guest or a member of another organization gets none;
+- the conversation the agent answers in is not shared with another organization, as the platform
+  confirms it. A share that cannot be confirmed counts as shared.
+
+A profile read that fails this keeps the name-level fields and says the rest was left out. An email
+lookup that fails it is refused before the platform is asked, so it never tells whether the address
+belongs to a member.
+
+A person's work email is never handed to the agent: the lookup takes an email and answers with the
+member it belongs to, and a profile read never carries one, even where the workspace shows emails on
+profiles. A lookup that finds no one does not prove the address never belonged to a member: Slack
+answers the same for a deactivated account.
+
+Directory facts are not facts a person states, so the people directory (see "Assistant-mode people
+directory") never records a title, a status or an email read this way.
+
 ## Joining a public channel
 
 A bot joins a channel only when a person says so. When a read or a write the rules above allow needs
@@ -2256,7 +2282,8 @@ outside the organization, whichever agents it is visible to.
   account once they linked one, else by their chat identity. It is written in an internal public
   channel only on a turn a person typed, and only about someone who sent a message of that turn or
   was mentioned in one. A fact someone states of themselves is sourced to them; anything said about
-  someone else is sourced to the channel. A private conversation, a conversation with people from
+  someone else is sourced to the channel. A profile's title or status is neither, and is never
+  written (see "Reading the people directory"). A private conversation, a conversation with people from
   outside, a scheduled run, a follow-up's check and another agent's message never write it.
 - **The person controls their entry.** In their own DM a person asks what the agent knows about
   them, and may correct or remove their entry; nothing else in the directory changes there. On

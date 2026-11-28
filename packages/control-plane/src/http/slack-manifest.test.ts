@@ -124,6 +124,7 @@ describe('buildInstallManifest', () => {
       'reactions:write',
       'assistant:write',
       'users:read',
+      'users:read.email',
       'canvases:read',
       'canvases:write',
       'channels:manage',
@@ -171,7 +172,7 @@ describe('checkSlackBotScopes', () => {
   })
 
   it('ignores extra scopes the workspace happens to have granted', () => {
-    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'team:read', 'users:read.email'])).toEqual({
+    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'team:read', 'emoji:read'])).toEqual({
       status: 'complete'
     })
   })
